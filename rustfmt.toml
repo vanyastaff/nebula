@@ -1,0 +1,28 @@
+# Specify the Rust edition to use
+
+# Maximum width of each line
+max_width = 100
+
+# Number of spaces per indentation level
+tab_spaces = 4
+
+# Use spaces instead of tabs
+hard_tabs = false
+
+# Line ending style: "Auto", "Native", "Unix", or "Windows"
+newline_style = "Unix"
+
+# Use small heuristics for short expressions
+use_small_heuristics = "Default"
+
+# Control of method chaining
+chain_width = 60
+
+# Use try shorthand (the ? operator)
+use_try_shorthand = true
+
+# Match block trailing comma
+match_block_trailing_comma = false
+
+# Merge multiple #[derive(...)] into one
+merge_derives = true
