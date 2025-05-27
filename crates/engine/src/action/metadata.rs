@@ -3,6 +3,7 @@ use crate::action::error::ActionError;
 use crate::types::Key;
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
+use crate::connection::Connections;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Builder)]
 #[builder(
@@ -31,6 +32,10 @@ pub struct ActionMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[builder(default)]
     pub parameters: Option<ParameterCollection>,
+
+    pub inputs: Option<Connections>,
+    
+    pub output: Option<Connections>,
 }
 
 impl ActionMetadata {

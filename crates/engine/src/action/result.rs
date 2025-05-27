@@ -8,17 +8,19 @@ use crate::instance::{LazyInstance, ResolvableInstance};
 #[derive(Debug, Clone)]
 pub enum ActionResult<T> {
     /// Successfully computed value
-    Value(T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> ),
+    Value(SerializeValue),
 
     /// Error during computation
     Error(String),
 
     /// Binary data
-    Binary(Vec<u8>),
+    Binary(BinaryResult),
 
     /// Route to another node
-    Route { target_id: String},
-
+    Route(RouteResult),
+    
+    Loop(LoopResult<T>),
+    
     /// Reference to a resolvable instance
     Instance(Arc<dyn ResolvableInstance<Output = T>>),
 
