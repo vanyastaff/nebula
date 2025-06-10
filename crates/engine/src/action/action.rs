@@ -1,15 +1,23 @@
+use crate::{ParameterCollection, ProcessAction};
+use crate::action::ActionContext;
 use crate::action::metadata::ActionMetadata;
-use crate::ParameterCollection;
+use crate::connection::ConnectionCollection;
 use async_trait::async_trait;
-use downcast_rs::{impl_downcast, Downcast};
-use dyn_clone::{ DynClone, clone_trait_object };
+use downcast_rs::{Downcast, impl_downcast};
+use dyn_clone::{DynClone, clone_trait_object};
+use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::fmt::Debug;
-use crate::action::ActionContext;
-use crate::connection::Connections;
+use crate::action::trigger::TriggerAction;
+
+pub trait TypedAction  {
+    /// Returns the type of the action
+    fn action_type(&self) -> ActionType;
+}
 
 #[async_trait]
-pub trait Action: DynClone + Downcast + Any + Debug + Send + Sync {
+pub trait Action: TypedAction + DynClone + Downcast + Any + Debug + Send + Sync {
+
     /// Returns the metadata associated with this action
     fn metadata(&self) -> &ActionMetadata;
 
@@ -22,31 +30,24 @@ pub trait Action: DynClone + Downcast + Any + Debug + Send + Sync {
     fn key(&self) -> &str {
         self.metadata().key.as_ref()
     }
-    
-    /// Returns the type of the action
-    fn action_type(&self) -> ActionType;
 
     /// Returns the input connections for this action
-    fn inputs(&self) -> Option<&Connections>;
+    fn inputs(&self) -> Option<&ConnectionCollection>;
 
     /// Returns the output connections for this action
-    fn outputs(&self) -> Option<&Connections>;
+    fn outputs(&self) -> Option<&ConnectionCollection>;
 
     /// Returns the parameters for this actions
     fn parameters(&self) -> Option<&ParameterCollection>;
 }
 
-
 impl_downcast!(Action);
 clone_trait_object!(Action);
 
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ActionType {
-    Executable,
+    Process,
     Trigger,
     Polling,
-    Hook,
     Webhook,
 }
-

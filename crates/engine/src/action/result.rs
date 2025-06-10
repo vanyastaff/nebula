@@ -1,29 +1,23 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::task::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use crate::action::ActionError;
 use crate::instance::{LazyInstance, ResolvableInstance};
 
-#[derive(Debug, Clone)]
-pub enum ActionResult<T> {
-    /// Successfully computed value
-    Value(SerializeValue),
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionResult<T = Value> {
+    /// The actual output/data from the action
+    pub output: ActionOutput<T>,
 
-    /// Error during computation
-    Error(String),
-
-    /// Binary data
-    Binary(BinaryResult),
-
-    /// Route to another node
-    Route(RouteResult),
-    
-    Loop(LoopResult<T>),
-    
-    /// Reference to a resolvable instance
-    Instance(Arc<dyn ResolvableInstance<Output = T>>),
-
-    /// Lazily computed value
-    LazyInstance(LazyResolver<T>),
+    /// Optional metadata about execution, timing, etc.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<HashMap<String, Value>>,
 }
+
+pub enum ActionOutput<T> {
+    Single(T),
+    Collection(Vec<T>),
+}
+

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/engine", "crates/nodes/chatgpt_node"]
+members = ["crates/engine", "crates/nodes/chatgpt_node", "crates/nodes/dadata_node"]
 resolver = "3"
 description = "Workflow automation toolkit"
 license = "MIT OR Apache-2.0"

@@ -4,7 +4,7 @@ use derive_builder::Builder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
+use crate::credential::Credential;
 use crate::request::{RequestAuth, RequestError, RequestMethod, RequestProxy, Response};
 
 pub const DEFAULT_TIMEOUT: u64 = 30;
@@ -143,5 +143,26 @@ impl RequestOptions {
     pub async fn execute_and_parse<T: DeserializeOwned>(self) -> Result<T, RequestError> {
         let response = self.execute().await?;
         response.json().map_err(Into::into)
+    }
+}
+
+impl RequestOptionsBuilder {
+    pub fn header(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.headers
+            .get_or_insert_with(HashMap::new)
+            .insert(key.into(), value.into());
+        self
+    }
+
+    pub fn with_credential(
+        self,
+        credential: &dyn Credential
+    ) -> Result<Self, RequestError> {
+        credential.authenticate(self)
+            .map_err(|e| RequestError::AuthError(e.to_string()))
     }
 }

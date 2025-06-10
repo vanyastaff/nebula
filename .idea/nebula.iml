@@ -5,6 +5,7 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/engine/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nodes/chatgpt_node/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nodes/dadata_node/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />
