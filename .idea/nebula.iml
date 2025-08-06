@@ -6,6 +6,11 @@
       <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nodes/chatgpt_node/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nodes/dadata_node/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-parameter/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-log/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-log/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-log/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-parameter/examples" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

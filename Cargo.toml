@@ -1,15 +1,16 @@
 [workspace]
-members = ["crates/engine", "crates/nodes/chatgpt_node", "crates/nodes/dadata_node"]
+members = [ "crates/nebula-log"]
 resolver = "3"
-description = "Workflow automation toolkit"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/vanyastaff/nebula"
+
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 keywords = ["workflow", "integrations", "no-code", "low-code", "automation"]
 authors = ["Vanya Stafford <vanya.john.stafford@gmail.com>"]
+description = "Workflow automation toolkit"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/vanyastaff/nebula"
 
 [workspace.lints.clippy]
 doc_markdown = "warn"
@@ -44,7 +45,7 @@ unused_qualifications = "warn"
 
 [workspace.dependencies]
 # Асинхронность
-tokio = { version = "1.44.2", default-features = false, features = ["rt", "rt-multi-thread", "macros", "tracing"] }
+tokio = { version = "1.47.1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "tracing"] }
 futures = { version = "0.3.31", default-features = false }
 async-trait = { version = "0.1.88", default-features = false }
 
@@ -53,7 +54,7 @@ chrono = { version = "0.4.41", default-features = false, features = ["serde"] }
 
 # Сериализация
 serde = { version = "1.0.219", features = ["derive"] }
-serde_json = { version = "1.0.140", features = ["default"] }
+serde_json = { version = "1.0.142", features = ["default"] }
 
 # Логирование
 tracing = { version = "0.1.41", default-features = false }
@@ -64,6 +65,7 @@ thiserror = { version = "2.0.12", default-features = false }
 anyhow = { version = "1.0.98", default-features = false }
 
 # Утилиты
+domain-key = "0.1.1"
 once_cell = "1.19.0"
 uuid = { version = "1.7.0", features = ["v4", "serde"] }
 
