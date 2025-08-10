@@ -36,7 +36,7 @@ pub mod prelude {
     pub use crate::manager::{CredentialManager, ManagerBuilder, RefreshPolicy};
     pub use async_trait::async_trait;
     pub use serde::{Serialize, Deserialize};
-}
+}так 
 
 // Re-export commonly used external types
 pub use uuid::Uuid;
