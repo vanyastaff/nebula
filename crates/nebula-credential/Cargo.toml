@@ -1,0 +1,14 @@
+[package]
+name = "nebula-credential"
+version.workspace = true
+edition.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

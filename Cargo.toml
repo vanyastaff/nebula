@@ -1,5 +1,5 @@
 [workspace]
-members = [ "crates/nebula-log"]
+members = [ "crates/nebula-credential", "crates/nebula-log"]
 resolver = "3"
 
 
