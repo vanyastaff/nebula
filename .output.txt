@@ -1,0 +1,421 @@
+warning: unused import: `Rolling`
+ --> crates\nebula-log\src\writer.rs:3:36
+  |
+3 | use crate::{config::{WriterConfig, Rolling}, Result};
+  |                                    ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+warning: fields `filter` and `current_filter` are never read
+  --> crates\nebula-log\src\builder.rs:36:5
+   |
+35 | pub struct ReloadHandle {
+   |            ------------ fields in this struct
+36 |     filter: tracing_subscriber::reload::Handle<EnvFilter, Registry>,
+   |     ^^^^^^
+37 |     current_filter: Arc<Mutex<String>>,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `ReloadHandle` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` on by default
+warning: methods `reload` and `current_filter` are never used
+   --> crates\nebula-log\src\builder.rs:493:12
+    |
+491 | impl ReloadHandle {
+    | ----------------- methods in this implementation
+492 |     /// Reload the log filter
+493 |     pub fn reload(&self, filter: &str) -> Result<()> {
+    |            ^^^^^^
+...
+502 |     pub fn current_filter(&self) -> String {
+    |            ^^^^^^^^^^^^^^
+warning: function `default_true` is never used
+   --> crates\nebula-log\src\config.rs:319:4
+    |
+319 | fn default_true() -> bool {
+    |    ^^^^^^^^^^^^
+warning: field `fields` is never read
+  --> crates\nebula-log\src\layer\fields.rs:12:5
+   |
+11 | pub struct FieldsLayer {
+   |            ----------- field in this struct
+12 |     fields: Fields,
+   |     ^^^^^^
+warning: struct `SplitStdWriter` is never constructed
+  --> crates\nebula-log\src\writer.rs:74:12
+   |
+74 | pub struct SplitStdWriter;
+   |            ^^^^^^^^^^^^^^
+warning: associated function `make_writer` is never used
+  --> crates\nebula-log\src\writer.rs:77:12
+   |
+76 | impl SplitStdWriter {
+   | ------------------- associated function in this implementation
+77 |     pub fn make_writer() -> BoxMakeWriter {
+   |            ^^^^^^^^^^^
+warning: function `generate_request_id` is never used
+ --> crates\nebula-log\src\utils.rs:6:8
+  |
+6 | pub fn generate_request_id() -> String {
+  |        ^^^^^^^^^^^^^^^^^^^
+warning: function `is_containerized` is never used
+  --> crates\nebula-log\src\utils.rs:26:8
+   |
+26 | pub fn is_containerized() -> bool {
+   |        ^^^^^^^^^^^^^^^^
+warning: function `detect_environment` is never used
+  --> crates\nebula-log\src\utils.rs:33:8
+   |
+33 | pub fn detect_environment() -> String {
+   |        ^^^^^^^^^^^^^^^^^^
+warning: function `format_duration` is never used
+  --> crates\nebula-log\src\utils.rs:56:8
+   |
+56 | pub fn format_duration(duration: std::time::Duration) -> String {
+   |        ^^^^^^^^^^^^^^^
+warning: function `truncate_string` is never used
+  --> crates\nebula-log\src\utils.rs:71:8
+   |
+71 | pub fn truncate_string(s: &str, max_len: usize) -> String {
+   |        ^^^^^^^^^^^^^^^
+error[E0428]: the name `key` is defined multiple times
+  --> crates\nebula-credential\src\core\mod.rs:13:1
+   |
+4  | mod key;
+   | -------- previous definition of the module `key` here
+...
+13 | mod key;
+   | ^^^^^^^^ `key` redefined here
+   |
+   = note: `key` must be defined only once in the type namespace of this module
+error[E0428]: the name `credential_key` is defined multiple times
+  --> crates\nebula-credential\src\core\key.rs:19:1
+   |
+19 | macro_rules! credential_key {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | |
+   | `credential_key` redefined here
+   | previous definition of the macro `credential_key` here
+   |
+   = note: `credential_key` must be defined only once in the macro namespace of this module
+warning: unused imports: `KeyParseError` and `static_key`
+ --> crates\nebula-credential\src\core\key.rs:1:34
+  |
+1 | use domain_key::{Key, KeyDomain, KeyParseError, static_key};
+  |                                  ^^^^^^^^^^^^^  ^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+warning: unused imports: `Deserialize` and `Serialize`
+ --> crates\nebula-credential\src\core\ephemeral.rs:1:13
+  |
+1 | use serde::{Serialize, Deserialize};
+  |             ^^^^^^^^^  ^^^^^^^^^^^
+warning: unexpected `cfg` condition value: `runtime`
+   --> crates\nebula-credential\src\manager\manager.rs:229:27
+    |
+229 |                     #[cfg(feature = "runtime")]
+    |                           ^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `runtime` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: requested on the command line with `-W unexpected-cfgs`
+warning: unexpected `cfg` condition value: `runtime`
+   --> crates\nebula-credential\src\manager\manager.rs:266:15
+    |
+266 |         #[cfg(feature = "runtime")]
+    |               ^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `runtime` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+warning: unexpected `cfg` condition value: `runtime`
+   --> crates\nebula-credential\src\manager\manager.rs:273:19
+    |
+273 |         #[cfg(not(feature = "runtime"))]
+    |                   ^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `runtime` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+error[E0191]: the value of the associated type `Guard` in `DistributedLock` must be specified
+  --> crates\nebula-credential\src\manager\builder.rs:10:26
+   |
+10 |     lock: Option<Arc<dyn DistributedLock>>,
+   |                          ^^^^^^^^^^^^^^^ help: specify the associated type: `DistributedLock<Guard = Type>`
+   |
+  ::: crates\nebula-credential\src\traits\lock.rs:29:5
+   |
+29 |     type Guard: LockGuard;
+   |     --------------------- `Guard` defined here
+error[E0191]: the value of the associated type `Guard` in `DistributedLock` must be specified
+  --> crates\nebula-credential\src\manager\builder.rs:35:46
+   |
+35 |     pub fn with_lock(mut self, lock: Arc<dyn DistributedLock>) -> Self {
+   |                                              ^^^^^^^^^^^^^^^ help: specify the associated type: `DistributedLock<Guard = Type>`
+   |
+  ::: crates\nebula-credential\src\traits\lock.rs:29:5
+   |
+29 |     type Guard: LockGuard;
+   |     --------------------- `Guard` defined here
+error[E0599]: no variant or associated item named `lock_failed` found for enum `CredentialError` in the current scope
+   --> crates\nebula-credential\src\manager\manager.rs:84:43
+    |
+84  |             .map_err(|e| CredentialError::lock_failed(
+    |                                           ^^^^^^^^^^^ variant or associated item not found in `CredentialError`
+    |
+   ::: crates\nebula-credential\src\core\error.rs:5:1
+    |
+5   | pub enum CredentialError {
+    | ------------------------ variant or associated item `lock_failed` not found for this enum
+    |
+note: if you're trying to build a new `CredentialError` consider using one of the following associated functions:
+      CredentialError::not_found
+      CredentialError::expired
+      CredentialError::refresh_not_supported
+      CredentialError::auth_failed
+      and 3 others
+   --> crates\nebula-credential\src\core\error.rs:88:5
+    |
+88  |     pub fn not_found(id: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+93  |     pub fn expired(id: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+98  |     pub fn refresh_not_supported(credential_type: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+105 |     pub fn auth_failed(reason: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: there is a variant with a similar name
+    |
+84  -             .map_err(|e| CredentialError::lock_failed(
+85  -                 format!("credential:{}", credential_id),
+86  -                 e.to_string()
+87  -             ))?;
+84  +             .map_err(|e| CredentialError::LockFailed { resource: /* value */, reason: /* value */ })?;
+    |
+error[E0599]: no variant or associated item named `type_not_registered` found for enum `CredentialError` in the current scope
+   --> crates\nebula-credential\src\manager\manager.rs:110:45
+    |
+110 | ...| CredentialError::type_not_registered(credential_type))?;
+    |                       ^^^^^^^^^^^^^^^^^^^ variant or associated item not found in `CredentialError`
+    |
+   ::: crates\nebula-credential\src\core\error.rs:5:1
+    |
+5   | pub enum CredentialError {
+    | ------------------------ variant or associated item `type_not_registered` not found for this enum
+    |
+note: if you're trying to build a new `CredentialError` consider using one of the following associated functions:
+      CredentialError::not_found
+      CredentialError::expired
+      CredentialError::refresh_not_supported
+      CredentialError::auth_failed
+      and 3 others
+   --> crates\nebula-credential\src\core\error.rs:88:5
+    |
+88  |     pub fn not_found(id: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+93  |     pub fn expired(id: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+98  |     pub fn refresh_not_supported(credential_type: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+105 |     pub fn auth_failed(reason: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: there is a variant with a similar name
+    |
+110 -             .ok_or_else(|| CredentialError::type_not_registered(credential_type))?;
+110 +             .ok_or_else(|| CredentialError::TypeNotRegistered { credential_type: /* value */ })?;
+    |
+error[E0599]: no variant or associated item named `type_not_registered` found for enum `CredentialError` in the current scope
+   --> crates\nebula-credential\src\manager\manager.rs:180:49
+    |
+180 | ...| CredentialError::type_not_registered(credential_type))?;
+    |                       ^^^^^^^^^^^^^^^^^^^ variant or associated item not found in `CredentialError`
+    |
+   ::: crates\nebula-credential\src\core\error.rs:5:1
+    |
+5   | pub enum CredentialError {
+    | ------------------------ variant or associated item `type_not_registered` not found for this enum
+    |
+note: if you're trying to build a new `CredentialError` consider using one of the following associated functions:
+      CredentialError::not_found
+      CredentialError::expired
+      CredentialError::refresh_not_supported
+      CredentialError::auth_failed
+      and 3 others
+   --> crates\nebula-credential\src\core\error.rs:88:5
+    |
+88  |     pub fn not_found(id: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+93  |     pub fn expired(id: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+98  |     pub fn refresh_not_supported(credential_type: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+105 |     pub fn auth_failed(reason: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: there is a variant with a similar name
+    |
+180 -                 .ok_or_else(|| CredentialError::type_not_registered(credential_type))?;
+180 +                 .ok_or_else(|| CredentialError::TypeNotRegistered { credential_type: /* value */ })?;
+    |
+error[E0599]: no variant or associated item named `CasConflict` found for enum `CredentialError` in the current scope
+   --> crates\nebula-credential\src\manager\manager.rs:216:46
+    |
+216 |                         Err(CredentialError::CasConflict) => {
+    |                                              ^^^^^^^^^^^ variant or associated item not found in `CredentialError`
+    |
+   ::: crates\nebula-credential\src\core\error.rs:5:1
+    |
+5   | pub enum CredentialError {
+    | ------------------------ variant or associated item `CasConflict` not found for this enum
+error[E0599]: no variant or associated item named `invalid_config` found for enum `CredentialError` in the current scope
+   --> crates\nebula-credential\src\authenticator\common.rs:19:41
+    |
+19  | ...Err(CredentialError::invalid_config("HttpBearer requires a Bearer t...
+    |                         ^^^^^^^^^^^^^^ variant or associated item not found in `CredentialError`
+    |
+   ::: crates\nebula-credential\src\core\error.rs:5:1
+    |
+5   | pub enum CredentialError {
+    | ------------------------ variant or associated item `invalid_config` not found for this enum
+    |
+note: if you're trying to build a new `CredentialError` consider using one of the following associated functions:
+      CredentialError::not_found
+      CredentialError::expired
+      CredentialError::refresh_not_supported
+      CredentialError::auth_failed
+      and 3 others
+   --> crates\nebula-credential\src\core\error.rs:88:5
+    |
+88  |     pub fn not_found(id: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+93  |     pub fn expired(id: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+98  |     pub fn refresh_not_supported(credential_type: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+105 |     pub fn auth_failed(reason: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+error[E0599]: no variant or associated item named `invalid_config` found for enum `CredentialError` in the current scope
+   --> crates\nebula-credential\src\authenticator\common.rs:54:41
+    |
+54  | ...Err(CredentialError::invalid_config("ApiKeyHeader requires an API k...
+    |                         ^^^^^^^^^^^^^^ variant or associated item not found in `CredentialError`
+    |
+   ::: crates\nebula-credential\src\core\error.rs:5:1
+    |
+5   | pub enum CredentialError {
+    | ------------------------ variant or associated item `invalid_config` not found for this enum
+    |
+note: if you're trying to build a new `CredentialError` consider using one of the following associated functions:
+      CredentialError::not_found
+      CredentialError::expired
+      CredentialError::refresh_not_supported
+      CredentialError::auth_failed
+      and 3 others
+   --> crates\nebula-credential\src\core\error.rs:88:5
+    |
+88  |     pub fn not_found(id: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+93  |     pub fn expired(id: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+98  |     pub fn refresh_not_supported(credential_type: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+105 |     pub fn auth_failed(reason: impl Into<String>) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+warning: unused variable: `state`
+  --> crates\nebula-credential\src\traits\credential.rs:30:9
+   |
+30 |         state: &mut Self::State,
+   |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+warning: unused variable: `ctx`
+  --> crates\nebula-credential\src\traits\credential.rs:31:9
+   |
+31 |         ctx: &mut CredentialContext,
+   |         ^^^ help: if this is intentional, prefix it with an underscore: `_ctx`
+warning: unused variable: `state`
+  --> crates\nebula-credential\src\traits\credential.rs:39:9
+   |
+39 |         state: &mut Self::State,
+   |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
+warning: unused variable: `ctx`
+  --> crates\nebula-credential\src\traits\credential.rs:40:9
+   |
+40 |         ctx: &mut CredentialContext,
+   |         ^^^ help: if this is intentional, prefix it with an underscore: `_ctx`
+warning: unused variable: `state`
+  --> crates\nebula-credential\src\traits\credential.rs:48:9
+   |
+48 |         state: &Self::State,
+   |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_state`
+warning: unused variable: `ctx`
+  --> crates\nebula-credential\src\traits\credential.rs:49:9
+   |
+49 |         ctx: &CredentialContext,
+   |         ^^^ help: if this is intentional, prefix it with an underscore: `_ctx`
+error[E0310]: the associated type `<L as DistributedLock>::Guard` may not live long enough
+  --> crates\nebula-credential\src\manager\manager.rs:38:12
+   |
+38 |         Ok(Box::new(guard))
+   |            ^^^^^^^^^^^^^^^
+   |            |
+   |            the associated type `<L as DistributedLock>::Guard` must be valid for the static lifetime...
+   |            ...so that the type `<L as DistributedLock>::Guard` will meet its required lifetime bounds
+   |
+help: consider adding an explicit lifetime bound
+   |
+34 | #[async_trait::async_trait], <L as DistributedLock>::Guard: 'static
+   |                            ++++++++++++++++++++++++++++++++++++++++
+error[E0521]: borrowed data escapes outside of method
+  --> crates\nebula-credential\src\migration\migrator.rs:53:28
+   |
+42 |         kind: &str,
+   |         ----  - let's call the lifetime of this reference `'1`
+   |         |
+   |         `kind` is a reference that is only valid in the method body
+...
+53 |             let migrator = self.migrators.get(&key)
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^^
+   |                            |
+   |                            `kind` escapes the method body here
+   |                            argument requires that `'1` must outlive `'static`
+   |
+   = note: requirement occurs because of the type `DashMap<(&str, u16, u16), Box
+<dyn StateMigrator>>`, which makes the generic argument `(&str, u16, u16)` invariant
+   = note: the struct `DashMap<K, V, S>` is invariant over the parameter `K`
+   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+error[E0521]: borrowed data escapes outside of method
+  --> crates\nebula-credential\src\migration\migrator.rs:71:17
+   |
+67 | ...n has_migration_path(&self, kind: &str, from: u16, to: u16) -> bool {
+   |                                ----  - let's call the lifetime of this reference `'1`
+   |                                |
+   |                                `kind` is a reference that is only valid in the method body
+...
+71 | ...   if !self.migrators.contains_key(&(kind, current, next)) {
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |           |
+   |           `kind` escapes the method body here
+   |           argument requires that `'1` must outlive `'static`
+   |
+   = note: requirement occurs because of the type `DashMap<(&str, u16, u16), Box
+<dyn StateMigrator>>`, which makes the generic argument `(&str, u16, u16)` invariant
+   = note: the struct `DashMap<K, V, S>` is invariant over the parameter `K`
+   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+Some errors have detailed explanations: E0191, E0310, E0428, E0521, E0599.
+For more information about an error, try `rustc --explain E0191`.
+error: could not compile `nebula-credential` (lib) due to 13 previous errors; 11 warnings emitted
