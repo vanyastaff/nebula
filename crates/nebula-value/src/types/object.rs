@@ -1,4 +1,4 @@
-use std::borrow::{Borrow, Cow};
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -78,7 +78,7 @@ pub struct Object {
 impl Object {
     // ==================== Constructors ====================
 
-    /// Creates a new empty ObjectValue
+    /// Creates a new empty Object
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -88,11 +88,11 @@ impl Object {
         }
     }
 
-    /// Creates an ObjectValue with specified capacity
+    /// Creates an Object with specified capacity
     #[inline]
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub fn with_capacity(_capacity: usize) -> Self {
         #[cfg(feature = "indexmap")]
-        let map = IndexMap::with_capacity(capacity);
+        let map = IndexMap::with_capacity(_capacity);
 
         #[cfg(not(feature = "indexmap"))]
         let map = BTreeMap::new(); // BTreeMap doesn't have with_capacity
@@ -104,7 +104,7 @@ impl Object {
         }
     }
 
-    /// Creates an ObjectValue from a map
+    /// Creates an Object from a map
     #[inline]
     pub fn from_map(map: InternalMap) -> Self {
         Self {
@@ -114,7 +114,7 @@ impl Object {
         }
     }
 
-    /// Creates an ObjectValue from key-value pairs
+    /// Creates an Object from key-value pairs
     pub fn from_pairs<I, K, V>(iter: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
@@ -128,7 +128,7 @@ impl Object {
         Self::from_map(map)
     }
 
-    /// Creates an ObjectValue from entries
+    /// Creates an Object from entries
     pub fn from_entries<I>(iter: I) -> ObjectResult<Self>
     where
         I: IntoIterator<Item = (String, Value)>,
@@ -244,8 +244,8 @@ impl Object {
 
         let mut current = self.try_get(parts[0])?;
 
-        for part in &parts[1..] {
-            // Assuming Value has as_object() method
+        for _part in &parts[1..] {
+            // TODO: Implement nested path navigation when Value has as_object() method
             // let obj = current.as_object().ok_or_else(|| ObjectError::PathNotFound {
             //     path: path.to_string(),
             // })?;
@@ -450,7 +450,7 @@ impl Object {
 
         for (key, other_value) in other.inner.iter() {
             match map.get(key) {
-                Some(self_value) => {
+                Some(_self_value) => {
                     // If both are objects, merge recursively
                     // This depends on your Value implementation
                     // if let (Some(self_obj), Some(other_obj)) =
@@ -891,15 +891,11 @@ impl From<InternalMap> for Object {
     }
 }
 
+#[cfg(feature = "indexmap")]
 impl From<BTreeMap<String, Value>> for Object {
     #[inline]
     fn from(map: BTreeMap<String, Value>) -> Self {
-        #[cfg(feature = "indexmap")]
         let internal: InternalMap = map.into_iter().collect();
-
-        #[cfg(not(feature = "indexmap"))]
-        let internal = map;
-
         Self::from_map(internal)
     }
 }
@@ -1147,7 +1143,7 @@ unsafe impl Sync for Object {}
 
 // ==================== Builder Pattern ====================
 
-/// Builder for creating ObjectValue instances
+/// Builder for creating Object instances
 pub struct ObjectBuilder {
     map: InternalMap,
 }
@@ -1185,7 +1181,7 @@ impl ObjectBuilder {
         self
     }
 
-    /// Builds the ObjectValue
+    /// Builds the Object
     pub fn build(self) -> Object {
         Object::from_map(self.map)
     }
@@ -1199,15 +1195,15 @@ impl Default for ObjectBuilder {
 
 // ==================== Macros ====================
 
-/// Macro for creating ObjectValue instances
+/// Macro for creating Object instances
 #[macro_export]
 macro_rules! object {
     () => {
-        $crate::ObjectValue::new()
+        $crate::Object::new()
     };
 
     ($($key:expr => $value:expr),* $(,)?) => {{
-        let mut _obj = $crate::ObjectValue::new();
+        let mut _obj = $crate::Object::new();
         $(
             _obj = _obj.insert($key, $value.into());
         )*

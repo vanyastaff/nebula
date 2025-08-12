@@ -1,8 +1,8 @@
-use std::borrow::{Borrow, Cow};
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::ops::{Add, AddAssign, Deref, Index, IndexMut, Range, RangeFrom, RangeFull, RangeTo};
+use std::ops::{Add, AddAssign, Deref, Index, Range, RangeFrom, RangeFull, RangeTo};
 use std::sync::Arc;
 
 #[cfg(feature = "serde")]
@@ -60,37 +60,31 @@ pub struct Array {
 impl Array {
     // ==================== Constructors ====================
 
-    /// Creates a new ArrayValue from a Vec
+    /// Creates a new Array from a Vec
     #[inline]
     pub fn new(values: Vec<Value>) -> Self {
-        Self {
-            inner: values.into(),
-            hash_cache: std::sync::OnceLock::new(),
-        }
+        Self { inner: values.into(), hash_cache: std::sync::OnceLock::new() }
     }
 
-    /// Creates an empty ArrayValue (const-friendly)
+    /// Creates an empty Array
     #[inline]
-    pub const fn empty() -> Self {
-        Self {
-            inner: Arc::from([]),
-            hash_cache: std::sync::OnceLock::new(),
-        }
+    pub fn empty() -> Self {
+        Self { inner: Arc::from([]), hash_cache: std::sync::OnceLock::new() }
     }
 
-    /// Creates an ArrayValue with specified capacity
+    /// Creates an Array with specified capacity
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
         Self::new(Vec::with_capacity(capacity))
     }
 
-    /// Creates an ArrayValue from a slice
+    /// Creates an Array from a slice
     #[inline]
     pub fn from_slice(slice: &[Value]) -> Self {
         Self::new(slice.to_vec())
     }
 
-    /// Creates an ArrayValue from an iterator
+    /// Creates an Array from an iterator
     #[inline]
     pub fn from_iter<I>(iter: I) -> Self
     where
@@ -99,18 +93,16 @@ impl Array {
         Self::new(iter.into_iter().collect())
     }
 
-    /// Creates an ArrayValue filled with n copies of a value
+    /// Creates an Array filled with n copies of a value
     #[inline]
     pub fn filled(value: &Value, count: usize) -> Self {
         Self::new(vec![value.clone(); count])
     }
 
-    /// Creates an ArrayValue from a range of integers
+    /// Creates an Array from a range of integers
     pub fn range(start: i64, end: i64, step: i64) -> ArrayResult<Self> {
         if step == 0 {
-            return Err(ArrayError::InvalidOperation {
-                msg: "Step cannot be zero".into(),
-            });
+            return Err(ArrayError::InvalidOperation { msg: "Step cannot be zero".into() });
         }
 
         let mut values = Vec::new();
@@ -169,10 +161,7 @@ impl Array {
     /// Gets element at index with bounds checking
     #[inline]
     pub fn try_get(&self, index: usize) -> ArrayResult<&Value> {
-        self.get(index).ok_or_else(|| ArrayError::IndexOutOfBounds {
-            index,
-            len: self.len(),
-        })
+        self.get(index).ok_or_else(|| ArrayError::IndexOutOfBounds { index, len: self.len() })
     }
 
     /// Gets first element
@@ -224,10 +213,7 @@ impl Array {
     /// Returns a new array with element inserted at index
     pub fn insert(&self, index: usize, value: Value) -> ArrayResult<Self> {
         if index > self.len() {
-            return Err(ArrayError::IndexOutOfBounds {
-                index,
-                len: self.len(),
-            });
+            return Err(ArrayError::IndexOutOfBounds { index, len: self.len() });
         }
         let mut vec = self.to_vec();
         vec.insert(index, value);
@@ -237,10 +223,7 @@ impl Array {
     /// Returns a new array with element at index removed
     pub fn remove(&self, index: usize) -> ArrayResult<(Self, Value)> {
         if index >= self.len() {
-            return Err(ArrayError::IndexOutOfBounds {
-                index,
-                len: self.len(),
-            });
+            return Err(ArrayError::IndexOutOfBounds { index, len: self.len() });
         }
         let mut vec = self.to_vec();
         let removed = vec.remove(index);
@@ -250,10 +233,7 @@ impl Array {
     /// Returns a new array with element replaced at index
     pub fn set(&self, index: usize, value: Value) -> ArrayResult<Self> {
         if index >= self.len() {
-            return Err(ArrayError::IndexOutOfBounds {
-                index,
-                len: self.len(),
-            });
+            return Err(ArrayError::IndexOutOfBounds { index, len: self.len() });
         }
         let mut vec = self.to_vec();
         vec[index] = value;
@@ -268,11 +248,7 @@ impl Array {
             return Err(ArrayError::InvalidRange { start, end });
         }
         if end > self.len() {
-            return Err(ArrayError::RangeOutOfBounds {
-                start,
-                end,
-                len: self.len(),
-            });
+            return Err(ArrayError::RangeOutOfBounds { start, end, len: self.len() });
         }
         Ok(Self::from_slice(&self.inner[start..end]))
     }
@@ -373,12 +349,7 @@ impl Array {
     where
         P: FnMut(&Value) -> bool,
     {
-        let result: Vec<Value> = self
-            .inner
-            .iter()
-            .filter(|v| predicate(v))
-            .cloned()
-            .collect();
+        let result: Vec<Value> = self.inner.iter().filter(|v| predicate(v)).cloned().collect();
         Self::new(result)
     }
 
@@ -406,7 +377,7 @@ impl Array {
                     acc = f(acc, value)?;
                 }
                 Ok(Some(acc))
-            }
+            },
         }
     }
 
@@ -550,10 +521,7 @@ impl Array {
         indexed.sort_by(|a, b| a.1.cmp(&b.1));
 
         // Build result in sorted order
-        let result: Vec<Value> = indexed
-            .into_iter()
-            .map(|(i, _)| self.inner[i].clone())
-            .collect();
+        let result: Vec<Value> = indexed.into_iter().map(|(i, _)| self.inner[i].clone()).collect();
 
         Ok(Self::new(result))
     }
@@ -616,11 +584,7 @@ impl Array {
 
     /// Joins array elements into a string
     pub fn join(&self, separator: &str) -> String {
-        self.inner
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(separator)
+        self.inner.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(separator)
     }
 
     /// Flattens nested arrays by one level
@@ -691,16 +655,11 @@ impl Array {
     /// Creates chunks of specified size
     pub fn chunks(&self, size: usize) -> ArrayResult<Vec<Self>> {
         if size == 0 {
-            return Err(ArrayError::InvalidOperation {
-                msg: "Chunk size cannot be zero".into(),
-            });
+            return Err(ArrayError::InvalidOperation { msg: "Chunk size cannot be zero".into() });
         }
 
-        let chunks: Vec<Self> = self
-            .inner
-            .chunks(size)
-            .map(|chunk| Self::from_slice(chunk))
-            .collect();
+        let chunks: Vec<Self> =
+            self.inner.chunks(size).map(|chunk| Self::from_slice(chunk)).collect();
 
         Ok(chunks)
     }
@@ -708,20 +667,15 @@ impl Array {
     /// Creates sliding windows of specified size
     pub fn windows(&self, size: usize) -> ArrayResult<Vec<Self>> {
         if size == 0 {
-            return Err(ArrayError::InvalidOperation {
-                msg: "Window size cannot be zero".into(),
-            });
+            return Err(ArrayError::InvalidOperation { msg: "Window size cannot be zero".into() });
         }
 
         if size > self.len() {
             return Ok(vec![]);
         }
 
-        let windows: Vec<Self> = self
-            .inner
-            .windows(size)
-            .map(|window| Self::from_slice(window))
-            .collect();
+        let windows: Vec<Self> =
+            self.inner.windows(size).map(|window| Self::from_slice(window)).collect();
 
         Ok(windows)
     }
@@ -776,11 +730,7 @@ impl Array {
             return self.map(f);
         }
 
-        let results: Result<Vec<_>, _> = self
-            .inner
-            .par_iter()
-            .map(|v| f(v))
-            .collect();
+        let results: Result<Vec<_>, _> = self.inner.par_iter().map(|v| f(v)).collect();
 
         Ok(Self::new(results?))
     }
@@ -796,12 +746,7 @@ impl Array {
             return self.filter(predicate);
         }
 
-        let result: Vec<Value> = self
-            .inner
-            .par_iter()
-            .filter(|v| predicate(v))
-            .cloned()
-            .collect();
+        let result: Vec<Value> = self.inner.par_iter().filter(|v| predicate(v)).cloned().collect();
 
         Self::new(result)
     }
@@ -826,8 +771,8 @@ impl Array {
     /// Calculates sum of numeric values
     pub fn sum(&self) -> ArrayResult<f64> {
         let mut sum = 0.0;
-        for value in self.inner.iter() {
-            // Assuming Value has a method to convert to number
+        for _value in self.inner.iter() {
+            // TODO: Implement when Value has numeric conversion methods
             // sum += value.as_number().ok_or_else(|| ArrayError::ValueError {
             //     msg: "Cannot sum non-numeric value".into(),
             // })?;
@@ -869,10 +814,7 @@ impl Array {
     /// Converts to owned Vec<Value>
     #[inline]
     pub fn into_vec(self) -> Vec<Value> {
-        match Arc::try_unwrap(self.inner) {
-            Ok(slice) => slice.into(),
-            Err(arc) => arc.to_vec(),
-        }
+        self.inner.to_vec()
     }
 }
 
@@ -987,20 +929,14 @@ impl From<&[Value]> for Array {
 impl From<Box<[Value]>> for Array {
     #[inline]
     fn from(boxed: Box<[Value]>) -> Self {
-        Self {
-            inner: Arc::from(boxed),
-            hash_cache: std::sync::OnceLock::new(),
-        }
+        Self { inner: Arc::from(boxed), hash_cache: std::sync::OnceLock::new() }
     }
 }
 
 impl From<Arc<[Value]>> for Array {
     #[inline]
     fn from(arc: Arc<[Value]>) -> Self {
-        Self {
-            inner: arc,
-            hash_cache: std::sync::OnceLock::new(),
-        }
+        Self { inner: arc, hash_cache: std::sync::OnceLock::new() }
     }
 }
 
@@ -1053,7 +989,18 @@ impl PartialOrd for Array {
 impl Ord for Array {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
-        self.inner.cmp(&other.inner)
+        let len_cmp = self.len().cmp(&other.len());
+        if len_cmp != Ordering::Equal {
+            return len_cmp;
+        }
+        for (a, b) in self.inner.iter().zip(other.inner.iter()) {
+            if let Some(ord) = a.partial_cmp(b) {
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+        }
+        Ordering::Equal
     }
 }
 
@@ -1062,7 +1009,11 @@ impl Hash for Array {
         let hash = self.hash_cache.get_or_init(|| {
             use std::collections::hash_map::DefaultHasher;
             let mut hasher = DefaultHasher::new();
-            self.inner.hash(&mut hasher);
+            // Hash length and stringified values to avoid requiring Value: Hash
+            self.len().hash(&mut hasher);
+            for v in self.inner.iter() {
+                v.to_string().hash(&mut hasher);
+            }
             hasher.finish()
         });
         hash.hash(state);
@@ -1167,10 +1118,7 @@ impl<'a> IntoIterator for &'a Array {
 impl From<Array> for serde_json::Value {
     fn from(array: Array) -> Self {
         serde_json::Value::Array(
-            array.into_vec()
-                .into_iter()
-                .map(|v| serde_json::Value::from(v))
-                .collect()
+            array.into_vec().into_iter().map(|v| serde_json::Value::from(v)).collect(),
         )
     }
 }
@@ -1188,7 +1136,7 @@ impl TryFrom<serde_json::Value> for Array {
                     .collect::<Result<_, _>>()
                     .map_err(|_| ArrayError::JsonTypeMismatch { found: "invalid element" })?;
                 Ok(Array::new(values))
-            }
+            },
             serde_json::Value::Null => Ok(Array::empty()),
             serde_json::Value::Bool(_) => Err(ArrayError::JsonTypeMismatch { found: "bool" }),
             serde_json::Value::Number(_) => Err(ArrayError::JsonTypeMismatch { found: "number" }),

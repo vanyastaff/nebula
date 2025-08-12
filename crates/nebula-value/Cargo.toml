@@ -39,16 +39,14 @@ decimal = {version = "2.1.0", optional = true}
 [features]
 default = ["std"]
 std = []
-serde = ["dep:serde", "dep:serde_regex", "dep:serde_bytes", "dep:serde_json", "bytes/serde", "decimal/serde", "indexmap?/serde"]
+serde = ["dep:serde", "dep:serde_regex", "dep:serde_bytes", "dep:serde_json", "bytes/serde", "decimal/serde", "indexmap?/serde", "chrono?/serde"]
 rayon = ["dep:rayon"]
 base64 = ["dep:base64"]
 indexmap = ["dep:indexmap"]
 pattern = ["dep:regex"]
 decimal = ["dep:decimal"]
-temporal = ["chrono"]
-collections = ["indexmap"]
+chrono = ["dep:chrono"]
 validation = ["pattern"]
-full = ["serde", "collections"]
 
 [dev-dependencies]
 serde = { workspace = true }
