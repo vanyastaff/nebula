@@ -74,7 +74,7 @@ pub fn make_writer(
 pub struct SplitStdWriter;
 
 impl SplitStdWriter {
-    pub fn make_writer() -> BoxMakeWriter {
+    pub fn new() -> BoxMakeWriter {
         BoxMakeWriter::new(Self)
     }
 }

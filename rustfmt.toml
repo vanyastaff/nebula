@@ -1,28 +1,63 @@
-# Specify the Rust edition to use
+# Main settings
+edition = "2024"  # Use the new edition
+max_width = 100   # Keep a reasonable line width
+hard_tabs = false # Soft tabs (spaces)
+tab_spaces = 4    # 4 spaces per indent (Rust standard)
+newline_style = "Unix"  # Unix-style line endings (LF)
+use_small_heuristics = "Max"  # More aggressive code compression
 
-# Maximum width of each line
-max_width = 100
+# Import settings
+imports_granularity = "Module"  # Group by modules (new standard)
+imports_layout = "Mixed"        # Flexible horizontal/vertical alignment
+group_imports = "StdExternalCrate"  # std + external crates separately
+reorder_imports = true          # Alphabetical sorting
+reorder_modules = true          # Module sorting
 
-# Number of spaces per indentation level
-tab_spaces = 4
+# Code style
+type_punctuation_density = "Wide"  # `T: Type` instead of `T:Type`
+space_before_colon = false         # `key: value` (no space before `:`)
+space_after_colon = true           # `key: value` (space after `:`)
+binop_separator = "Front"          # `x + y` instead of `x +y`
 
-# Use spaces instead of tabs
-hard_tabs = false
+# Functions and traits
+fn_params_layout = "Tall"          # Each parameter on a new line if it doesn't fit
+trailing_comma = "Vertical"        # Trailing comma for better diffs
+trailing_semicolon = true          # `;` in blocks
+use_field_init_shorthand = true    # `{ x }` instead of `{ x: x }`
+use_try_shorthand = true           # `?` instead of `try!()`
 
-# Line ending style: "Auto", "Native", "Unix", or "Windows"
-newline_style = "Unix"
+# Documentation and comments
+normalize_comments = true          # Comment standardization
+normalize_doc_attributes = true    # `///` instead of `#[doc = "..."]`
+wrap_comments = true               # Wrap long comments
+comment_width = 80                 # Narrower than code (easier to read)
+format_code_in_doc_comments = true # Format code examples in doc comments
 
-# Use small heuristics for short expressions
-use_small_heuristics = "Default"
+# Macros
+format_macro_matchers = true       # Formatting inside `macro_rules!`
+format_macro_bodies = true         # Formatting of macro bodies
 
-# Control of method chaining
-chain_width = 60
+# Strings (leave unformatted to avoid breaking JSON/templates)
+format_strings = false             # Don't touch strings
+format_generated_files = false     # Don't format generated code
 
-# Use try shorthand (the ? operator)
-use_try_shorthand = true
+# Control flow
+control_brace_style = "AlwaysSameLine"  # `if x { ... }` instead of `if x \n { ... }`
+brace_style = "SameLineWhere"           # `where` on the same line if possible
+empty_item_single_line = true           # `struct Foo;` on one line
+struct_lit_single_line = true           # `Foo { x: 1 }` on one line
+fn_single_line = false                  # Functions always with newlines
+where_single_line = true                # `where T: Trait` on one line if possible
 
-# Match block trailing comma
-match_block_trailing_comma = false
+# Match expressions
+match_block_trailing_comma = true       # Trailing comma in `match`
+match_arm_blocks = true                 # Blocks in `=> { ... }`
+match_arm_leading_pipes = "Never"       # No `|` before each arm
+force_multiline_blocks = false          # Don't force multiline
 
-# Merge multiple #[derive(...)] into one
-merge_derives = true
+# Miscellaneous
+remove_nested_parens = true             # Remove redundant parentheses
+combine_control_expr = true             # Compact `if`-`else`
+merge_derives = true                    # `#[derive(A, B)]` instead of two attributes
+force_explicit_abi = true               # Explicitly specify `extern "Rust"` (for FFI)
+color = "Auto"                          # Colored output (if supported)
