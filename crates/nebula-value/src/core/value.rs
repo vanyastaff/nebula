@@ -357,7 +357,6 @@ impl Value {
             #[cfg(feature = "decimal")]
             Value::Decimal(d) => !d.is_zero(),
             Value::Date(_) | Value::Time(_) | Value::DateTime(_) | Value::Duration(_) => true,
-            _ => true,
         }
     }
 
@@ -382,7 +381,6 @@ impl Value {
             Value::String(s) => s.len(),
             Value::Array(a) => a.len(),
             Value::Object(o) => o.len(),
-            #[cfg(feature = "bytes")]
             Value::Bytes(b) => b.len(),
             _ => 0,
         }
@@ -477,13 +475,12 @@ impl PartialEq for Value {
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Array(a), Value::Array(b)) => a == b,
             (Value::Object(a), Value::Object(b)) => a == b,
-            #[cfg(feature = "bytes")]
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             #[cfg(feature = "decimal")]
             (Value::Decimal(a), Value::Decimal(b)) => a == b,
-            #[cfg(feature = "temporal")]
+            (Value::Date(a), Value::Date(b)) => a == b,
+            (Value::Time(a), Value::Time(b)) => a == b,
             (Value::DateTime(a), Value::DateTime(b)) => a == b,
-            #[cfg(feature = "temporal")]
             (Value::Duration(a), Value::Duration(b)) => a == b,
             _ => false,
         }

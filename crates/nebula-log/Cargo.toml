@@ -48,12 +48,13 @@ opentelemetry-otlp = { version = "0.30.0", optional = true }
 tracing-opentelemetry = { version = "0.31.0", optional = true }
 sentry = { version = "0.42.0", optional = true }
 sentry-tracing = { version = "0.42", optional = true }
+flate2 = { version = "1.1.2",optional = true }
 
 [features]
 default = ["ansi", "async"]
 ansi = []
 async = ["tokio"]
-file = ["tracing-appender"]
+file = ["tracing-appender", "flate2"]
 log-compat = ["tracing-log"]
 telemetry = ["opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp", "tracing-opentelemetry"]
 sentry = ["dep:sentry", "sentry-tracing"]

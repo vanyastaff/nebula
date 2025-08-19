@@ -3,8 +3,6 @@ pub mod error;
 pub mod kind;
 pub mod path;
 pub mod value;
-mod traits;
-mod typed_value;
 
 // Re-exports for convenience
 pub use error::{ValueError, ValueResult};

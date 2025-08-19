@@ -1,6 +1,6 @@
 //! Writer implementations
 
-use crate::{config::{WriterConfig, Rolling}, Result};
+use crate::{config::{WriterConfig}, Result, Rolling};
 use std::io::{self, Write};
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 

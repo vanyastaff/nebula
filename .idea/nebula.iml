@@ -13,6 +13,8 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-parameter/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-credential/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-value/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-memory/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-memory/benches" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

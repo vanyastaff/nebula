@@ -561,7 +561,6 @@ impl Array {
     }
 
     /// Shuffles array randomly
-    #[cfg(feature = "rand")]
     #[must_use]
     pub fn shuffled(&self) -> Self {
         use rand::seq::SliceRandom;

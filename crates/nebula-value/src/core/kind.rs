@@ -35,7 +35,6 @@ impl ValueKind {
             Self::Object,
             Self::DateTime,
             Self::Duration,
-            #[cfg(feature = "bytes")]
             Self::Bytes,
             #[cfg(feature = "decimal")]
             Self::Decimal,
