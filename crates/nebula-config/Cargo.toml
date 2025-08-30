@@ -1,0 +1,49 @@
+[package]
+name = "nebula-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Configuration management system for Nebula workflow engine"
+keywords.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+yaml-rust = "0.4"
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = "1.0"
+
+# Async traits
+async-trait = "0.1"
+
+# File watching
+notify = "6.1"
+
+# Environment variables
+dotenvy = "0.15"
+
+# Collections
+dashmap = "5.5"
+
+# Time handling
+chrono = { workspace = true, features = ["serde"] }
+tokio = { workspace = true, features = ["fs", "time"] }
+
+# Logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+# Testing
+tokio = { workspace = true, features = ["full"] }
+tokio-test = "0.4"
+pretty_assertions = { workspace = true }
+tempfile = "3.8"

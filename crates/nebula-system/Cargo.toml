@@ -1,0 +1,28 @@
+[package]
+name = "nebula-system"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "System monitoring and metrics for the Nebula workflow engine"
+keywords.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+# Core types
+nebula-core = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["sync", "time"] }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+# Testing
+tokio = { workspace = true, features = ["full"] }
+tokio-test = "0.4"
+pretty_assertions = { workspace = true }

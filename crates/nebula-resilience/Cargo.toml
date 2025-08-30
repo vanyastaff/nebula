@@ -1,0 +1,47 @@
+[package]
+name = "nebula-resilience"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Resilience patterns for Nebula workflow engine"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
+
+# Error handling
+thiserror = { workspace = true }
+nebula-error = { path = "../nebula-error" }
+
+# Logging
+tracing = { workspace = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+
+# Utilities
+futures = { workspace = true }
+uuid = { workspace = true, features = ["v4", "serde"] }
+chrono = { workspace = true, features = ["serde"] }
+fastrand = "2.0"
+
+# Testing (optional)
+mockall = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+pretty_assertions = { workspace = true }
+
+[features]
+default = []
+test-utils = ["mockall"]
+
+[[example]]
+name = "basic"
+path = "examples/basic.rs"

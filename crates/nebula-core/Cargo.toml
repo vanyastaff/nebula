@@ -1,0 +1,39 @@
+[package]
+name = "nebula-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Core types and traits for the Nebula workflow engine"
+keywords.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+bincode = "1.3"
+
+# UUID generation
+uuid = { workspace = true, features = ["v4", "serde"] }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Async traits
+async-trait = "0.1"
+
+# Time handling
+chrono = { workspace = true, features = ["serde"] }
+
+# Collections
+dashmap = "5.5"
+
+[dev-dependencies]
+# Testing
+tokio = { workspace = true, features = ["full"] }
+tokio-test = "0.4"
+pretty_assertions = { workspace = true }
