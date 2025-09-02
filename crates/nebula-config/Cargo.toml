@@ -1,0 +1,31 @@
+[package]
+name = "nebula-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+serde_json = { version = "1", optional = true }
+serde_yaml = { version = "0.9", optional = true }
+toml = { version = "0.9.5", optional = true }
+thiserror = {workspace = true }
+
+
+
+[features]
+default = []
+yaml = ["dep:serde_yaml"]
+json = ["dep:serde_json"]
+toml = ["dep:toml"]
+
+
+
+[lints]
+workspace = true

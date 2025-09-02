@@ -1,0 +1,80 @@
+[package]
+name = "nebula-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description = "High-performance memory management for Nebula workflow automation"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme = "README.md"
+categories = ["memory-management", "data-structures", "caching", "no-std"]
+
+[features]
+default = ["std"]
+
+# Core features
+std = ["once_cell", "parking_lot", "libc"]
+alloc = []
+
+# Memory management features
+pool = ["std", "crossbeam-queue"]
+arena = ["std"]
+cache = ["std", "hashbrown"]
+stats = ["std"]
+budget = ["stats"]
+streaming = ["alloc"]
+
+# Full feature set
+full = ["std", "pool", "arena", "cache", "stats", "budget", "streaming"]
+
+[dependencies]
+# Core dependencies
+cfg-if = "1.0"
+
+# Use nebula-system for system information and utilities
+nebula-system = { path = "..\\nebula-system" }
+
+# Platform-specific
+libc = { version = "0.2", optional = true }
+
+# Synchronization
+once_cell = { version = "1.21", optional = true }
+parking_lot = { version = "0.12", optional = true }
+
+# Collections
+crossbeam-queue = { version = "0.3", optional = true, default-features = false }
+hashbrown = { version = "0.15", optional = true, default-features = false }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.6"
+rand = "0.8"
+
+[[bench]]
+name = "memory_benchmarks"
+harness = false
+required-features = ["std"]
+
+[[example]]
+name = "system_info"
+required-features = ["std"]
+
+[[example]]
+name = "memory_pressure"
+required-features = ["std"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc"
+]
+
+[lints]
+workspace = true
