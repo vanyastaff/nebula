@@ -1,9 +1,13 @@
 [workspace]
-members = [
-    "crates/nebula-credential",
+members = [ "crates/nebula-config",
+    "crates/nebula-core",
+    "crates/nebula-credential", "crates/nebula-error",
     "crates/nebula-log",
     "crates/nebula-memory",
-    "crates/nebula-value"
+    "crates/nebula-resilience",
+    "crates/nebula-system",
+    "crates/nebula-value",
+    "crates/nebula-validator"
 ]
 resolver = "2"  # Исправлено с "3"
 
@@ -48,6 +52,9 @@ bytes = "1.10"
 pretty_assertions = "1.4"
 mockall = "0.13.0"
 tempfile = "3.21"
+
+# Core types
+nebula-core = { path = "crates/nebula-core" }
 
 [workspace.lints.rust]
 # Rust compiler lints
