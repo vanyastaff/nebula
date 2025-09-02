@@ -468,17 +468,14 @@ impl RegistryExt for ValidatorRegistry {
     
     async fn register_batch(
         &self,
-        validators: Vec<(Box<dyn Validatable + Send + Sync>, ValidatorMetadata)>,
+        _validators: Vec<(Box<dyn Validatable + Send + Sync>, ValidatorMetadata)>,
     ) -> Result<(), RegistryError> {
-        for (validator, metadata) in validators {
-            // Convert Box<dyn Validatable> to concrete type for registration
-            // This is a limitation of the current design - we'd need to use
-            // type erasure or a different approach for truly dynamic registration
-            return Err(RegistryError::OperationFailed(
-                "Batch registration not yet implemented".to_string()
-            ));
-        }
-        Ok(())
+        // Convert Box<dyn Validatable> to concrete type for registration
+        // This is a limitation of the current design - we'd need to use
+        // type erasure or a different approach for truly dynamic registration
+        Err(RegistryError::OperationFailed(
+            "Batch registration not yet implemented".to_string()
+        ))
     }
     
     async fn get_by_categories(

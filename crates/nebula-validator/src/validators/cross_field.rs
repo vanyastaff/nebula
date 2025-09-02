@@ -29,12 +29,13 @@ impl<F: Validatable + Send + Sync> Validatable for CrossFieldValidator<F> {
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "cross_field",
-            description: Some(&format!("Cross-field validation for field: {}", self.field_path)),
-            category: crate::ValidatorCategory::CrossField,
-            tags: vec!["cross_field", "context"],
-        }
+        crate::ValidatorMetadata::new(
+            format!("cross_field_{}", self.field_path),
+            "cross_field",
+            crate::ValidatorCategory::CrossField,
+        )
+        .with_description(format!("Cross-field validation for field: {}", self.field_path))
+        .with_tags(vec!["cross_field".to_string(), "context".to_string()])
     }
 }
 
@@ -57,22 +58,23 @@ impl Validatable for EqualsField {
         // This validator would typically be used with a ValidationContext
         // For now, we'll just validate that the value is not null
         if !value.is_null() {
-            Ok(())
+            ValidationResult::success(())
         } else {
-            Err(ValidationError::new(
-                ErrorCode::ValidationFailed,
+            ValidationResult::failure(vec![ValidationError::new(
+                ErrorCode::XorValidationFailed,
                 format!("Field value must equal field '{}'", self.other_field)
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "equals_field",
-            description: Some(&format!("Field value must equal field '{}'", self.other_field)),
-            category: crate::ValidatorCategory::CrossField,
-            tags: vec!["cross_field", "equals"],
-        }
+        crate::ValidatorMetadata::new(
+            format!("equals_field_{}", self.other_field),
+            "equals_field",
+            crate::ValidatorCategory::CrossField,
+        )
+        .with_description(format!("Field value must equal field '{}'", self.other_field))
+        .with_tags(vec!["cross_field".to_string(), "equals".to_string()])
     }
 }
 
@@ -95,22 +97,23 @@ impl Validatable for GreaterThanField {
         // This validator would typically be used with a ValidationContext
         // For now, we'll just validate that the value is numeric
         if let Some(_) = value.as_f64() {
-            Ok(())
+            ValidationResult::success(())
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected numeric value for comparison"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "greater_than_field",
-            description: Some(&format!("Field value must be greater than field '{}'", self.other_field)),
-            category: crate::ValidatorCategory::CrossField,
-            tags: vec!["cross_field", "comparison"],
-        }
+        crate::ValidatorMetadata::new(
+            format!("greater_than_field_{}", self.other_field),
+            "greater_than_field",
+            crate::ValidatorCategory::CrossField,
+        )
+        .with_description(format!("Field value must be greater than field '{}'", self.other_field))
+        .with_tags(vec!["cross_field".to_string(), "comparison".to_string()])
     }
 }
 
@@ -133,22 +136,23 @@ impl Validatable for LessThanField {
         // This validator would typically be used with a ValidationContext
         // For now, we'll just validate that the value is numeric
         if let Some(_) = value.as_f64() {
-            Ok(())
+            ValidationResult::success(())
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected numeric value for comparison"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "less_than_field",
-            description: Some(&format!("Field value must be less than field '{}'", self.other_field)),
-            category: crate::ValidatorCategory::CrossField,
-            tags: vec!["cross_field", "comparison"],
-        }
+        crate::ValidatorMetadata::new(
+            format!("less_than_field_{}", self.other_field),
+            "less_than_field",
+            crate::ValidatorCategory::CrossField,
+        )
+        .with_description(format!("Field value must be less than field '{}'", self.other_field))
+        .with_tags(vec!["cross_field".to_string(), "comparison".to_string()])
     }
 }
 
@@ -173,25 +177,26 @@ impl Validatable for RequiredIf {
         // This validator would typically be used with a ValidationContext
         // For now, we'll just validate that the value is not null if it's provided
         if !value.is_null() {
-            Ok(())
+            ValidationResult::success(())
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::RequiredFieldMissing,
                 format!("Field is required when field '{}' equals {:?}", 
                     self.other_field, self.expected_value)
             ).with_actual_value(value.clone())
-             .with_expected_value(self.expected_value.clone()))
+             .with_expected_value(self.expected_value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "required_if",
-            description: Some(&format!("Field is required when field '{}' equals {:?}", 
-                self.other_field, self.expected_value)),
-            category: crate::ValidatorCategory::CrossField,
-            tags: vec!["cross_field", "conditional"],
-        }
+        crate::ValidatorMetadata::new(
+            format!("required_if_{}", self.other_field),
+            "required_if",
+            crate::ValidatorCategory::CrossField,
+        )
+        .with_description(format!("Field is required when field '{}' equals {:?}", 
+            self.other_field, self.expected_value))
+        .with_tags(vec!["cross_field".to_string(), "conditional".to_string()])
     }
 }
 
@@ -216,25 +221,26 @@ impl Validatable for ForbiddenIf {
         // This validator would typically be used with a ValidationContext
         // For now, we'll just validate that the value is null if it's forbidden
         if value.is_null() {
-            Ok(())
+            ValidationResult::success(())
         } else {
-            Err(ValidationError::new(
-                ErrorCode::ValidationFailed,
+            ValidationResult::failure(vec![ValidationError::new(
+                ErrorCode::CrossFieldValidationFailed,
                 format!("Field is forbidden when field '{}' equals {:?}", 
                     self.other_field, self.expected_value)
             ).with_actual_value(value.clone())
-             .with_expected_value(self.expected_value.clone()))
+             .with_expected_value(self.expected_value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "forbidden_if",
-            description: Some(&format!("Field is forbidden when field '{}' equals {:?}", 
-                self.other_field, self.expected_value)),
-            category: crate::ValidatorCategory::CrossField,
-            tags: vec!["cross_field", "conditional"],
-        }
+        crate::ValidatorMetadata::new(
+            format!("forbidden_if_{}", self.other_field),
+            "forbidden_if",
+            crate::ValidatorCategory::CrossField,
+        )
+        .with_description(format!("Field is forbidden when field '{}' equals {:?}", 
+            self.other_field, self.expected_value))
+        .with_tags(vec!["cross_field".to_string(), "conditional".to_string()])
     }
 }
 
@@ -283,7 +289,7 @@ impl Validatable for ConditionalRequired {
         // This validator would typically be used with a ValidationContext
         // For now, we'll just validate that the value is not null if conditions are met
         if !value.is_null() {
-            Ok(())
+            ValidationResult::success(())
         } else {
             let condition_desc = match self.operator {
                 ConditionOperator::Any => "any of the conditions",
@@ -291,20 +297,21 @@ impl Validatable for ConditionalRequired {
                 ConditionOperator::None => "none of the conditions",
             };
             
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::RequiredFieldMissing,
                 format!("Field is required when {} are met", condition_desc)
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "conditional_required",
-            description: Some("Field is required based on complex conditions"),
-            category: crate::ValidatorCategory::CrossField,
-            tags: vec!["cross_field", "conditional", "complex"],
-        }
+        crate::ValidatorMetadata::new(
+            "conditional_required",
+            "conditional_required",
+            crate::ValidatorCategory::CrossField,
+        )
+        .with_description("Field is required based on complex conditions")
+        .with_tags(vec!["cross_field".to_string(), "conditional".to_string(), "complex".to_string()])
     }
 }
 
@@ -359,22 +366,23 @@ impl Validatable for FieldDependency {
         // This validator would typically be used with a ValidationContext
         // For now, we'll just validate that the value is not null
         if !value.is_null() {
-            Ok(())
+            ValidationResult::success(())
         } else {
-            Err(ValidationError::new(
-                ErrorCode::ValidationFailed,
+            ValidationResult::failure(vec![ValidationError::new(
+                ErrorCode::CrossFieldValidationFailed,
                 "Field has dependency rules that must be satisfied"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "field_dependency",
-            description: Some("Field depends on the presence/absence of other fields"),
-            category: crate::ValidatorCategory::CrossField,
-            tags: vec!["cross_field", "dependency"],
-        }
+        crate::ValidatorMetadata::new(
+            "field_dependency",
+            "field_dependency",
+            crate::ValidatorCategory::CrossField,
+        )
+        .with_description("Field depends on the presence/absence of other fields")
+        .with_tags(vec!["cross_field".to_string(), "dependency".to_string()])
     }
 }
 
@@ -399,22 +407,23 @@ impl Validatable for SumEquals {
         // This validator would typically be used with a ValidationContext
         // For now, we'll just validate that the value is numeric
         if let Some(_) = value.as_f64() {
-            Ok(())
+            ValidationResult::success(())
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected numeric value for sum validation"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "sum_equals",
-            description: Some(&format!("Sum of fields {:?} must equal {}", self.fields, self.expected_sum)),
-            category: crate::ValidatorCategory::CrossField,
-            tags: vec!["cross_field", "sum"],
-        }
+        crate::ValidatorMetadata::new(
+            "sum_equals",
+            "sum_equals",
+            crate::ValidatorCategory::CrossField,
+        )
+        .with_description(format!("Sum of fields {:?} must equal {}", self.fields, self.expected_sum))
+        .with_tags(vec!["cross_field".to_string(), "sum".to_string()])
     }
 }
 
@@ -435,22 +444,23 @@ impl Validatable for UniqueTogether {
         // This validator would typically be used with a ValidationContext
         // For now, we'll just validate that the value is not null
         if !value.is_null() {
-            Ok(())
+            ValidationResult::success(())
         } else {
-            Err(ValidationError::new(
-                ErrorCode::ValidationFailed,
+            ValidationResult::failure(vec![ValidationError::new(
+                ErrorCode::CrossFieldValidationFailed,
                 format!("Combination of fields {:?} must be unique", self.fields)
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "unique_together",
-            description: Some(&format!("Combination of fields {:?} must be unique", self.fields)),
-            category: crate::ValidatorCategory::CrossField,
-            tags: vec!["cross_field", "uniqueness"],
-        }
+        crate::ValidatorMetadata::new(
+            "unique_together",
+            "unique_together",
+            crate::ValidatorCategory::CrossField,
+        )
+        .with_description(format!("Combination of fields {:?} must be unique", self.fields))
+        .with_tags(vec!["cross_field".to_string(), "uniqueness".to_string()])
     }
 }
 
@@ -503,22 +513,23 @@ impl Validatable for CrossFieldRange {
         // This validator would typically be used with a ValidationContext
         // For now, we'll just validate that the value is numeric
         if let Some(_) = value.as_f64() {
-            Ok(())
+            ValidationResult::success(())
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected numeric value for range validation"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "cross_field_range",
-            description: Some("Field value must be within range of other fields"),
-            category: crate::ValidatorCategory::CrossField,
-            tags: vec!["cross_field", "range"],
-        }
+        crate::ValidatorMetadata::new(
+            "cross_field_range",
+            "cross_field_range",
+            crate::ValidatorCategory::CrossField,
+        )
+        .with_description("Field value must be within range of other fields")
+        .with_tags(vec!["cross_field".to_string(), "range".to_string()])
     }
 }
 
@@ -557,8 +568,8 @@ mod tests {
         assert_eq!(dependency.dependencies.len(), 4);
         
         // Test that it can validate
-        assert!(dependency.validate(&json!("test")).await.is_ok());
-        assert!(dependency.validate(&json!(null)).await.is_err());
+        assert!(dependency.validate(&json!("test")).await.is_success());
+        assert!(dependency.validate(&json!(null)).await.is_failure());
     }
 
     #[tokio::test]

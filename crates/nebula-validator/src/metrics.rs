@@ -380,9 +380,10 @@ impl HistogramData {
 impl SummaryData {
     /// Create new summary with quantiles
     pub fn new(quantiles: Vec<f64>) -> Self {
+        let len = quantiles.len();
         Self {
             quantiles,
-            quantile_values: vec![0.0; quantiles.len()],
+            quantile_values: vec![0.0; len],
             sum: 0.0,
             count: 0,
         }

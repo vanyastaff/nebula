@@ -40,19 +40,19 @@ impl Validatable for Date {
             };
             
             if result.is_ok() {
-                Ok(())
+                ValidationResult::success(())
             } else {
                 let expected_format = self.format.as_deref().unwrap_or("ISO 8601 (YYYY-MM-DD)");
-                Err(ValidationError::new(
-                    ErrorCode::PatternMismatch,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::Custom("invalid_date".to_string()),
                     format!("'{}' is not a valid date in format: {}", s, expected_format)
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
@@ -63,12 +63,13 @@ impl Validatable for Date {
             "String must be a valid date in ISO 8601 format".to_string()
         };
         
-        crate::ValidatorMetadata {
-            name: "date",
-            description: Some(&description),
-            category: crate::ValidatorCategory::Format,
-            tags: vec!["format", "date"],
-        }
+        crate::ValidatorMetadata::new(
+            "date",
+            "date",
+            crate::ValidatorCategory::Format,
+        )
+        .with_description(description)
+        .with_tags(vec!["format".to_string(), "date".to_string()])
     }
 }
 
@@ -108,19 +109,19 @@ impl Validatable for DateTime {
             };
             
             if result.is_ok() {
-                Ok(())
+                ValidationResult::success(())
             } else {
                 let expected_format = self.format.as_deref().unwrap_or("ISO 8601 (YYYY-MM-DDTHH:MM:SS)");
-                Err(ValidationError::new(
-                    ErrorCode::PatternMismatch,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::Custom("invalid_datetime".to_string()),
                     format!("'{}' is not a valid datetime in format: {}", s, expected_format)
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
@@ -131,12 +132,13 @@ impl Validatable for DateTime {
             "String must be a valid datetime in ISO 8601 format".to_string()
         };
         
-        crate::ValidatorMetadata {
-            name: "datetime",
-            description: Some(&description),
-            category: crate::ValidatorCategory::Format,
-            tags: vec!["format", "datetime"],
-        }
+        crate::ValidatorMetadata::new(
+            "datetime",
+            "datetime",
+            crate::ValidatorCategory::Format,
+        )
+        .with_description(description)
+        .with_tags(vec!["format".to_string(), "datetime".to_string()])
     }
 }
 
@@ -176,19 +178,19 @@ impl Validatable for Time {
             };
             
             if result.is_ok() {
-                Ok(())
+                ValidationResult::success(())
             } else {
                 let expected_format = self.format.as_deref().unwrap_or("HH:MM:SS");
-                Err(ValidationError::new(
-                    ErrorCode::PatternMismatch,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::Custom("invalid_time".to_string()),
                     format!("'{}' is not a valid time in format: {}", s, expected_format)
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
@@ -199,12 +201,13 @@ impl Validatable for Time {
             "String must be a valid time in HH:MM:SS format".to_string()
         };
         
-        crate::ValidatorMetadata {
-            name: "time",
-            description: Some(&description),
-            category: crate::ValidatorCategory::Format,
-            tags: vec!["format", "time"],
-        }
+        crate::ValidatorMetadata::new(
+            "time",
+            "time",
+            crate::ValidatorCategory::Format,
+        )
+        .with_description(description)
+        .with_tags(vec!["format".to_string(), "time".to_string()])
     }
 }
 
@@ -217,28 +220,33 @@ impl Validatable for Base64 {
         if let Some(s) = value.as_str() {
             // Check if string is valid base64
             if base64::decode(s).is_ok() {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::PatternMismatch,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::Custom("invalid_base64".to_string()),
                     "'{}' is not valid base64"
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "base64",
-            description: Some("String must be valid base64"),
-            category: crate::ValidatorCategory::Format,
-            tags: vec!["format", "base64"],
-        }
+        crate::ValidatorMetadata::new(
+            "base64",
+            "base64",
+            crate::ValidatorCategory::Format,
+        )
+        .with_description("String must be valid base64")
+        .with_tags(vec!["format".to_string(), "base64".to_string()])
+    }
+    
+    fn complexity(&self) -> crate::ValidationComplexity {
+        crate::ValidationComplexity::Simple
     }
 }
 
@@ -251,28 +259,33 @@ impl Validatable for Hex {
         if let Some(s) = value.as_str() {
             // Check if string contains only valid hex characters
             if s.chars().all(|c| c.is_ascii_hexdigit()) {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::PatternMismatch,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::Custom("invalid_hex".to_string()),
                     "'{}' is not valid hexadecimal"
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "hex",
-            description: Some("String must be valid hexadecimal"),
-            category: crate::ValidatorCategory::Format,
-            tags: vec!["format", "hex"],
-        }
+        crate::ValidatorMetadata::new(
+            "hex",
+            "hex",
+            crate::ValidatorCategory::Format,
+        )
+        .with_description("String must be valid hexadecimal")
+        .with_tags(vec!["format".to_string(), "hex".to_string()])
+    }
+    
+    fn complexity(&self) -> crate::ValidationComplexity {
+        crate::ValidationComplexity::Simple
     }
 }
 
@@ -285,28 +298,29 @@ impl Validatable for Json {
         if let Some(s) = value.as_str() {
             // Check if string can be parsed as JSON
             if serde_json::from_str::<Value>(s).is_ok() {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::PatternMismatch,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::Custom("invalid_json".to_string()),
                     "'{}' is not valid JSON"
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "json",
-            description: Some("String must be valid JSON"),
-            category: crate::ValidatorCategory::Format,
-            tags: vec!["format", "json"],
-        }
+        crate::ValidatorMetadata::new(
+            "json",
+            "json",
+            crate::ValidatorCategory::Format,
+        )
+        .with_description("String must be valid JSON")
+        .with_tags(vec!["format".to_string(), "json".to_string()])
     }
 }
 
@@ -320,28 +334,29 @@ impl Validatable for Xml {
             // Basic XML validation - check for opening and closing tags
             if s.trim().starts_with('<') && s.trim().ends_with('>') {
                 // This is a very basic check. In production, you might want to use a proper XML parser
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::PatternMismatch,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::Custom("invalid_xml".to_string()),
                     "'{}' is not valid XML"
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "xml",
-            description: Some("String must be valid XML"),
-            category: crate::ValidatorCategory::Format,
-            tags: vec!["format", "xml"],
-        }
+        crate::ValidatorMetadata::new(
+            "xml",
+            "xml",
+            crate::ValidatorCategory::Format,
+        )
+        .with_description("String must be valid XML")
+        .with_tags(vec!["format".to_string(), "xml".to_string()])
     }
 }
 
@@ -374,34 +389,35 @@ impl Validatable for CreditCard {
                     .sum();
                 
                 if sum % 10 == 0 {
-                    Ok(())
+                    ValidationResult::success(())
                 } else {
-                    Err(ValidationError::new(
-                        ErrorCode::PatternMismatch,
+                    ValidationResult::failure(vec![ValidationError::new(
+                        ErrorCode::Custom("invalid_credit_card".to_string()),
                         "'{}' is not a valid credit card number (checksum failed)"
-                    ).with_actual_value(value.clone()))
+                    ).with_actual_value(value.clone())])
                 }
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::PatternMismatch,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::Custom("invalid_credit_card".to_string()),
                     "'{}' is not a valid credit card number"
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "credit_card",
-            description: Some("String must be a valid credit card number"),
-            category: crate::ValidatorCategory::Format,
-            tags: vec!["format", "credit_card"],
-        }
+        crate::ValidatorMetadata::new(
+            "credit_card",
+            "credit_card",
+            crate::ValidatorCategory::Format,
+        )
+        .with_description("String must be a valid credit card number")
+        .with_tags(vec!["format".to_string(), "credit_card".to_string()])
     }
 }
 
@@ -417,27 +433,28 @@ impl Validatable for PhoneNumber {
             
             // Check if it's all digits and has reasonable length
             if cleaned.chars().all(|c| c.is_ascii_digit()) && (7..=15).contains(&cleaned.len()) {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::PatternMismatch,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::Custom("invalid_phone_number".to_string()),
                     "'{}' is not a valid phone number"
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "phone_number",
-            description: Some("String must be a valid phone number"),
-            category: crate::ValidatorCategory::Format,
-            tags: vec!["format", "phone_number"],
-        }
+        crate::ValidatorMetadata::new(
+            "phone_number",
+            "phone_number",
+            crate::ValidatorCategory::Format,
+        )
+        .with_description("String must be a valid phone number")
+        .with_tags(vec!["format".to_string(), "phone_number".to_string()])
     }
 }

@@ -43,14 +43,14 @@ regex = "1.10"
 # UUID validation
 uuid = { workspace = true, features = ["v4", "serde"] }
 
-# Email validation
-email-validator = "0.2"
+# Email validation - using regex for now
+# email-validator = "0.2"
 
 # URL validation
 url = "2.4"
 
-# IP address validation
-std-net = "0.1"
+# IP address validation - using std for now
+# std-net = "0.1"
 
 # Base64 validation
 base64 = "0.21"

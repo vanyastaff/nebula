@@ -1,10 +1,10 @@
-//! Conditional validation using existing combinators
+//! Conditional validation logic
 //! 
-//! This module provides conditional validation by leveraging the existing
-//! When combinator and other validation components.
+//! This module provides validators that implement conditional logic,
+//! such as required_if and forbidden_if patterns.
 
-use async_trait::async_trait;
 use serde_json::Value;
+use async_trait::async_trait;
 use crate::types::{ValidationResult, ValidationError, ValidatorMetadata, ValidationComplexity, ErrorCode};
 use crate::traits::Validatable;
 use crate::validators::combinators::When;
@@ -27,8 +27,8 @@ pub struct RequiredIf<V, C> {
 
 impl<V, C> RequiredIf<V, C>
 where
-    V: Validatable + Send + Sync + Clone,
-    C: Validatable + Send + Sync + Clone,
+    V: Validatable + Send + Sync + Clone + std::fmt::Debug,
+    C: Validatable + Send + Sync + Clone + std::fmt::Debug,
 {
     /// Create new required_if validator
     pub fn new(field_name: impl Into<String>, condition_field: impl Into<String>, condition: C, validator: V) -> Self {
@@ -56,12 +56,18 @@ where
 #[async_trait]
 impl<V, C> Validatable for RequiredIf<V, C>
 where
-    V: Validatable + Send + Sync + Clone,
-    C: Validatable + Send + Sync + Clone,
+    V: Validatable + Send + Sync + Clone + std::fmt::Debug,
+    C: Validatable + Send + Sync + Clone + std::fmt::Debug,
 {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         // Get the parent object to access other fields
-        let parent = self.get_parent_object(value)?;
+        let parent = match self.get_parent_object(value) {
+            ValidationResult { is_valid: true, value: Some(v), .. } => v,
+            _ => return ValidationResult::failure(vec![ValidationError::new(
+                ErrorCode::Custom("parent_object_not_found".to_string()),
+                "Could not access parent object"
+            )]),
+        };
         
         // Check if condition is met by validating the condition field
         let condition_met = self.condition.validate(parent.get(&self.condition_field).unwrap_or(&Value::Null)).await.is_ok();
@@ -71,14 +77,14 @@ where
             if let Some(field_value) = parent.get(&self.field_name) {
                 self.validator.validate(field_value).await
             } else {
-                Err(ValidationError::new(
+                ValidationResult::failure(vec![ValidationError::new(
                     ErrorCode::Custom("field_required".to_string()),
                     format!("Field '{}' is required when condition is met", self.field_name)
-                ))
+                )])
             }
         } else {
             // Field is not required, skip validation
-            Ok(())
+            ValidationResult::success(())
         }
     }
     
@@ -113,8 +119,8 @@ pub struct ForbiddenIf<V, C> {
 
 impl<V, C> ForbiddenIf<V, C>
 where
-    V: Validatable + Send + Sync + Clone,
-    C: Validatable + Send + Sync + Clone,
+    V: Validatable + Send + Sync + Clone + std::fmt::Debug,
+    C: Validatable + Send + Sync + Clone + std::fmt::Debug,
 {
     /// Create new forbidden_if validator
     pub fn new(field_name: impl Into<String>, condition_field: impl Into<String>, condition: C, validator: V) -> Self {
@@ -143,26 +149,32 @@ where
 #[async_trait]
 impl<V, C> Validatable for ForbiddenIf<V, C>
 where
-    V: Validatable + Send + Sync + Clone,
-    C: Validatable + Send + Sync + Clone,
+    V: Validatable + Send + Sync + Clone + std::fmt::Debug,
+    C: Validatable + Send + Sync + Clone + std::fmt::Debug,
 {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         // Get the parent object to access other fields
-        let parent = self.get_parent_object(value)?;
+        let parent = match self.get_parent_object(value) {
+            ValidationResult { is_valid: true, value: Some(v), .. } => v,
+            _ => return ValidationResult::failure(vec![ValidationError::new(
+                ErrorCode::Custom("parent_object_not_found".to_string()),
+                "Could not access parent object"
+            )]),
+        };
         
         // Check if condition is met by validating the condition field
         let condition_met = self.condition.validate(parent.get(&self.condition_field).unwrap_or(&Value::Null)).await.is_ok();
         
         if condition_met {
             // Field is forbidden, check if it's present
-            if let Some(field_value) = parent.get(&self.field_name) {
-                Err(ValidationError::new(
+            if let Some(_field_value) = parent.get(&self.field_name) {
+                ValidationResult::failure(vec![ValidationError::new(
                     ErrorCode::Custom("field_forbidden".to_string()),
                     format!("Field '{}' is forbidden when condition is met", self.field_name)
-                ))
+                )])
             } else {
                 // Field is not present, which is good
-                Ok(())
+                ValidationResult::success(())
             }
         } else {
             // Field is not forbidden, validate it if present
@@ -170,7 +182,7 @@ where
                 self.validator.validate(field_value).await
             } else {
                 // Field is not present, which is fine
-                Ok(())
+                ValidationResult::success(())
             }
         }
     }
@@ -202,7 +214,7 @@ pub struct Equals<V> {
 
 impl<V> Equals<V>
 where
-    V: PartialEq + Send + Sync + Clone,
+    V: PartialEq + Send + Sync + Clone + 'static + std::fmt::Debug,
 {
     /// Create new equals validator
     pub fn new(expected_value: V) -> Self {
@@ -222,15 +234,15 @@ where
 #[async_trait]
 impl<V> Validatable for Equals<V>
 where
-    V: PartialEq + Send + Sync + Clone + 'static,
+    V: PartialEq + Send + Sync + Clone + 'static + std::fmt::Debug,
 {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
+    async fn validate(&self, _value: &Value) -> ValidationResult<()> {
         // This is a simplified implementation
         // In practice, you'd need proper Value to V conversion
-        Err(ValidationError::new(
+        ValidationResult::failure(vec![ValidationError::new(
             ErrorCode::Custom("equals_not_implemented".to_string()),
             "Equals validator requires proper Value to T conversion"
-        ))
+        )])
     }
     
     fn metadata(&self) -> ValidatorMetadata {
@@ -247,7 +259,7 @@ where
     }
 }
 
-/// Validator that checks if a field value is in a set of allowed values
+/// Validator that checks if a field is one of the allowed values
 /// 
 /// This can be used as a condition in RequiredIf/ForbiddenIf validators.
 #[derive(Debug, Clone)]
@@ -258,7 +270,7 @@ pub struct In<V> {
 
 impl<V> In<V>
 where
-    V: PartialEq + Send + Sync + Clone,
+    V: PartialEq + Send + Sync + Clone + 'static + std::fmt::Debug,
 {
     /// Create new in validator
     pub fn new(allowed_values: Vec<V>) -> Self {
@@ -278,15 +290,15 @@ where
 #[async_trait]
 impl<V> Validatable for In<V>
 where
-    V: PartialEq + Send + Sync + Clone + 'static,
+    V: PartialEq + Send + Sync + Clone + 'static + std::fmt::Debug,
 {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
+    async fn validate(&self, _value: &Value) -> ValidationResult<()> {
         // This is a simplified implementation
         // In practice, you'd need proper Value to V conversion
-        Err(ValidationError::new(
+        ValidationResult::failure(vec![ValidationError::new(
             ErrorCode::Custom("in_not_implemented".to_string()),
             "In validator requires proper Value to T conversion"
-        ))
+        )])
     }
     
     fn metadata(&self) -> ValidatorMetadata {
@@ -308,8 +320,8 @@ where
 /// Create a required_if validator using When combinator
 pub fn required_if<V, C>(field_name: impl Into<String>, condition_field: impl Into<String>, condition: C, validator: V) -> RequiredIf<V, C>
 where
-    V: Validatable + Send + Sync + Clone,
-    C: Validatable + Send + Sync + Clone,
+    V: Validatable + Send + Sync + Clone + std::fmt::Debug,
+    C: Validatable + Send + Sync + Clone + std::fmt::Debug,
 {
     RequiredIf::new(field_name, condition_field, condition, validator)
 }
@@ -317,8 +329,8 @@ where
 /// Create a forbidden_if validator using When combinator
 pub fn forbidden_if<V, C>(field_name: impl Into<String>, condition_field: impl Into<String>, condition: C, validator: V) -> ForbiddenIf<V, C>
 where
-    V: Validatable + Send + Sync + Clone,
-    C: Validatable + Send + Sync + Clone,
+    V: Validatable + Send + Sync + Clone + std::fmt::Debug,
+    C: Validatable + Send + Sync + Clone + std::fmt::Debug,
 {
     ForbiddenIf::new(field_name, condition_field, condition, validator)
 }
@@ -326,7 +338,7 @@ where
 /// Create an equals condition validator
 pub fn eq<V>(expected_value: V) -> Equals<V>
 where
-    V: PartialEq + Send + Sync + Clone,
+    V: PartialEq + Send + Sync + Clone + std::fmt::Debug + 'static,
 {
     Equals::new(expected_value)
 }
@@ -334,7 +346,7 @@ where
 /// Create an in condition validator
 pub fn in_values<V>(allowed_values: Vec<V>) -> In<V>
 where
-    V: PartialEq + Send + Sync + Clone,
+    V: PartialEq + Send + Sync + Clone + std::fmt::Debug + 'static,
 {
     In::new(allowed_values)
 }
@@ -343,31 +355,24 @@ where
 
 impl<V, C> RequiredIf<V, C>
 where
-    V: Validatable + Send + Sync + Clone,
-    C: Validatable + Send + Sync + Clone,
+    V: Validatable + Send + Sync + Clone + std::fmt::Debug,
+    C: Validatable + Send + Sync + Clone + std::fmt::Debug,
 {
-    fn get_parent_object(&self, value: &Value) -> ValidationResult<&Value> {
+    fn get_parent_object<'a>(&self, value: &'a Value) -> ValidationResult<&'a Value> {
         // This is a simplified implementation
         // In practice, you'd need to traverse up the object hierarchy
         // or pass the parent object context
-        Ok(value)
+        ValidationResult::success(value)
     }
 }
 
 impl<V, C> ForbiddenIf<V, C>
 where
-    V: Validatable + Send + Sync + Clone,
-    C: Validatable + Send + Sync + Clone,
+    V: Validatable + Send + Sync + Clone + std::fmt::Debug,
+    C: Validatable + Send + Sync + Clone + std::fmt::Debug,
 {
-    fn get_parent_object(&self, value: &Value) -> ValidationResult<&Value> {
+    fn get_parent_object<'a>(&self, value: &'a Value) -> ValidationResult<&'a Value> {
         // Same as RequiredIf
-        Ok(value)
+        ValidationResult::success(value)
     }
 }
-
-// ==================== Re-exports ====================
-
-pub use RequiredIf as RequiredIf;
-pub use ForbiddenIf as ForbiddenIf;
-pub use Equals as Equals;
-pub use In as In;

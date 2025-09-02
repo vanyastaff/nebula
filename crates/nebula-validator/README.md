@@ -16,6 +16,9 @@ The Nebula Validator is a high-performance, extensible validation framework desi
 - **Async Support**: Full async/await support for I/O-bound validations
 - **Rich Error Reporting**: Detailed error information with suggestions
 - **Metrics & Monitoring**: Comprehensive performance metrics and observability
+- **🚀 Fluent Builder API**: Type-safe, fluent interface for building validators
+- **📝 Derive Macros**: Automatic validator generation from struct definitions
+- **🔧 Type Safety**: Compile-time guarantees with phantom types
 
 ## Architecture
 
@@ -39,33 +42,177 @@ The framework is organized into several well-defined layers:
 
 ## Quick Start
 
+### Using the Fluent Builder API
+
 ```rust
-use nebula_validator::{Validator, ValidationBuilder, ValidationPresets};
+use nebula_validator::{string, numeric, collection, Validatable};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create a simple validator
-    let validator = ValidationBuilder::new()
-        .string()
+    // Create a string validator with fluent builder
+    let username_validator = string()
         .min_length(3)
         .max_length(20)
         .pattern(r"^[a-zA-Z0-9_]+$")
-        .build()?;
+        .required()
+        .build();
     
-    // Validate a value
-    let value = json!("john_doe123");
-    let result = validator.validate(&value).await?;
+    // Create a numeric validator
+    let age_validator = numeric()
+        .min(18.0)
+        .max(120.0)
+        .required()
+        .build();
     
-    if result.is_success() {
-        println!("Validation passed!");
-    } else {
-        println!("Validation failed: {:?}", result.errors);
-    }
+    // Create a collection validator
+    let tags_validator = collection()
+        .min_length(1)
+        .max_length(10)
+        .required()
+        .build();
+    
+    // Validate values
+    let username = json!("john_doe");
+    let age = json!(25);
+    let tags = json!(["rust", "async"]);
+    
+    let results = tokio::join!(
+        username_validator.validate(&username),
+        age_validator.validate(&age),
+        tags_validator.validate(&tags)
+    );
+    
+    println!("Username: {:?}", results.0);
+    println!("Age: {:?}", results.1);
+    println!("Tags: {:?}", results.2);
     
     Ok(())
 }
 ```
+
+### Using Derive Macros
+
+```rust
+use nebula_validator_derive::Validate;
+use nebula_validator::Validatable;
+
+#[derive(Validate)]
+struct User {
+    #[validate(length(min = 3, max = 20))]
+    #[validate(pattern = r"^[a-zA-Z0-9_]+$")]
+    username: String,
+    
+    #[validate(email)]
+    email: String,
+    
+    #[validate(range(min = 18, max = 120))]
+    age: u8,
+    
+    #[validate(required = true)]
+    password: String,
+}
+
+#[tokio::main]
+async fn main() {
+    let user = User {
+        username: "john_doe".to_string(),
+        email: "john@example.com".to_string(),
+        age: 25,
+        password: "secret123".to_string(),
+    };
+    
+    // Automatic validation
+    match user.validate().await {
+        Ok(()) => println!("✅ User is valid!"),
+        Err(errors) => {
+            println!("❌ Validation failed:");
+            for error in errors {
+                println!("  - {}: {}", error.path.unwrap_or_default(), error.message);
+            }
+        }
+    }
+}
+```
+
+## 🚀 New Features
+
+### Fluent Builder API
+
+The new Fluent Builder API provides a type-safe, intuitive way to create validators:
+
+```rust
+use nebula_validator::{string, numeric, collection};
+
+// String validation with type safety
+let username_validator = string()
+    .min_length(3)
+    .max_length(20)
+    .pattern(r"^[a-zA-Z0-9_]+$")
+    .email()  // Compile-time error if used on numeric validator
+    .required()
+    .build();
+
+// Numeric validation
+let age_validator = numeric()
+    .min(18.0)
+    .max(120.0)
+    .required()
+    .build();
+
+// Collection validation
+let tags_validator = collection()
+    .min_length(1)
+    .max_length(10)
+    .required()
+    .build();
+```
+
+**Key Benefits:**
+- **Type Safety**: Phantom types prevent invalid method calls
+- **Intuitive API**: Fluent interface that reads like natural language
+- **Compile-time Guarantees**: Builder state is enforced at compile time
+- **Composability**: Easy to combine and reuse validators
+
+### Derive Macros
+
+Automatically generate validators from struct definitions:
+
+```rust
+use nebula_validator_derive::Validate;
+
+#[derive(Validate)]
+struct Product {
+    #[validate(length(min = 1, max = 100))]
+    name: String,
+    
+    #[validate(range(min = 0.01, max = 999999.99))]
+    price: f64,
+    
+    #[validate(pattern = r"^[A-Z]{2,3}-[0-9]{6}$")]
+    sku: String,
+    
+    #[validate(custom = "validate_product_category")]
+    category: String,
+}
+
+fn validate_product_category(category: &str) -> Result<(), String> {
+    let valid_categories = ["electronics", "clothing", "books"];
+    if valid_categories.contains(&category) {
+        Ok(())
+    } else {
+        Err("Invalid product category".to_string())
+    }
+}
+```
+
+**Supported Attributes:**
+- `#[validate(length(min = X, max = Y))]` - String/collection length
+- `#[validate(range(min = X, max = Y))]` - Numeric range
+- `#[validate(pattern = "regex")]` - Regular expression
+- `#[validate(email)]`, `#[validate(url)]`, `#[validate(uuid)]` - Format validation
+- `#[validate(required = true)]` - Required field
+- `#[validate(custom = "function_name")]` - Custom validation function
 
 ## Core Types
 

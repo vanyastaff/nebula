@@ -16,6 +16,12 @@ pub mod combinators;
 pub mod async_validators;
 pub mod range;
 
+// Enhanced validators
+pub mod advanced_basic;
+pub mod enhanced_conditional;
+pub mod enhanced_logical;
+pub mod composition;
+
 // Re-export all validators for easy access
 pub use basic::*;
 pub use string::*;
@@ -30,3 +36,9 @@ pub use custom::*;
 pub use combinators::*;
 pub use async_validators::*;
 pub use range::*;
+
+// Re-export enhanced validators
+pub use advanced_basic::*;
+pub use enhanced_conditional::*;
+pub use enhanced_logical::*;
+pub use composition::*;

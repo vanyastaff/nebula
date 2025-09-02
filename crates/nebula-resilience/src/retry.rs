@@ -1,6 +1,7 @@
 //! Retry strategies for resilient operations
 
 use std::time::Duration;
+use std::convert::TryInto;
 use futures::Future;
 use tokio::time::sleep;
 use tracing::{debug, warn};
@@ -23,6 +24,16 @@ impl<T> Retryable for Result<T, ResilienceError> {
     
     fn is_terminal(&self) -> bool {
         self.as_ref().err().map_or(false, |e| e.is_terminal())
+    }
+}
+
+impl Retryable for ResilienceError {
+    fn is_retryable(&self) -> bool {
+        self.is_retryable()
+    }
+    
+    fn is_terminal(&self) -> bool {
+        self.is_terminal()
     }
 }
 
@@ -99,7 +110,7 @@ impl RetryStrategy {
         if self.jitter_factor > 0.0 {
             let jitter_range = (delay.as_millis() as f64 * self.jitter_factor) as u64;
             let jitter = fastrand::u64(0..=jitter_range);
-            delay = Duration::from_millis(delay.as_millis() + jitter);
+            delay = Duration::from_millis((delay.as_millis() + jitter as u128).try_into().unwrap_or(u64::MAX));
         }
 
         // Cap at maximum delay

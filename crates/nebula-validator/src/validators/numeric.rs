@@ -12,28 +12,25 @@ impl Validatable for Positive {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if let Some(n) = value.as_f64() {
             if n > 0.0 {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::NumberTooSmall,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     format!("Value {} must be positive", n)
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected numeric value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "positive",
-            description: Some("Number must be positive"),
-            category: crate::ValidatorCategory::Basic,
-            tags: vec!["numeric", "positive"],
-        }
+        crate::ValidatorMetadata::new("positive", "positive", crate::ValidatorCategory::Basic)
+            .with_description("Number must be positive")
+            .with_tags(vec!["numeric".to_string(), "positive".to_string()])
     }
 }
 
@@ -45,28 +42,25 @@ impl Validatable for Negative {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if let Some(n) = value.as_f64() {
             if n < 0.0 {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::ValidationFailed,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     format!("Value {} must be negative", n)
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected numeric value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "negative",
-            description: Some("Number must be negative"),
-            category: crate::ValidatorCategory::Basic,
-            tags: vec!["numeric", "negative"],
-        }
+        crate::ValidatorMetadata::new("negative", "negative", crate::ValidatorCategory::Basic)
+            .with_description("Number must be negative")
+            .with_tags(vec!["numeric".to_string(), "negative".to_string()])
     }
 }
 
@@ -78,28 +72,25 @@ impl Validatable for Zero {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if let Some(n) = value.as_f64() {
             if n == 0.0 {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::ValidationFailed,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     format!("Value {} must be zero", n)
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected numeric value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "zero",
-            description: Some("Number must be zero"),
-            category: crate::ValidatorCategory::Basic,
-            tags: vec!["numeric", "zero"],
-        }
+        crate::ValidatorMetadata::new("zero", "zero", crate::ValidatorCategory::Basic)
+            .with_description("Number must be zero")
+            .with_tags(vec!["numeric".to_string(), "zero".to_string()])
     }
 }
 
@@ -111,28 +102,25 @@ impl Validatable for NonZero {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if let Some(n) = value.as_f64() {
             if n != 0.0 {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::ValidationFailed,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     "Value must not be zero"
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected numeric value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "non_zero",
-            description: Some("Number must not be zero"),
-            category: crate::ValidatorCategory::Basic,
-            tags: vec!["numeric", "non_zero"],
-        }
+        crate::ValidatorMetadata::new("non_zero", "non_zero", crate::ValidatorCategory::Basic)
+            .with_description("Number must not be zero")
+            .with_tags(vec!["numeric".to_string(), "non_zero".to_string()])
     }
 }
 
@@ -143,31 +131,28 @@ pub struct Integer;
 impl Validatable for Integer {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if value.is_i64() {
-            Ok(())
+            ValidationResult::success(())
         } else if let Some(n) = value.as_f64() {
             if n.fract() == 0.0 {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::ValidationFailed,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     format!("Value {} is not an integer", n)
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected numeric value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "integer",
-            description: Some("Number must be an integer"),
-            category: crate::ValidatorCategory::Basic,
-            tags: vec!["numeric", "integer"],
-        }
+        crate::ValidatorMetadata::new("integer", "integer", crate::ValidatorCategory::Basic)
+            .with_description("Number must be an integer")
+            .with_tags(vec!["numeric".to_string(), "integer".to_string()])
     }
 }
 
@@ -179,28 +164,25 @@ impl Validatable for Even {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if let Some(n) = value.as_f64() {
             if n.fract() == 0.0 && (n as i64) % 2 == 0 {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::ValidationFailed,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     format!("Value {} is not even", n)
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected numeric value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "even",
-            description: Some("Number must be even"),
-            category: crate::ValidatorCategory::Basic,
-            tags: vec!["numeric", "even"],
-        }
+        crate::ValidatorMetadata::new("even", "even", crate::ValidatorCategory::Basic)
+            .with_description("Number must be even")
+            .with_tags(vec!["numeric".to_string(), "even".to_string()])
     }
 }
 
@@ -212,28 +194,25 @@ impl Validatable for Odd {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if let Some(n) = value.as_f64() {
             if n.fract() == 0.0 && (n as i64) % 2 != 0 {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::ValidationFailed,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     format!("Value {} is not odd", n)
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected numeric value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "odd",
-            description: Some("Number must be odd"),
-            category: crate::ValidatorCategory::Basic,
-            tags: vec!["numeric", "odd"],
-        }
+        crate::ValidatorMetadata::new("odd", "odd", crate::ValidatorCategory::Basic)
+            .with_description("Number must be odd")
+            .with_tags(vec!["numeric".to_string(), "odd".to_string()])
     }
 }
 
@@ -253,35 +232,32 @@ impl Validatable for DivisibleBy {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if let Some(n) = value.as_f64() {
             if self.divisor == 0.0 {
-                return Err(ValidationError::new(
-                    ErrorCode::ValidationFailed,
+                return ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     "Divisor cannot be zero"
-                ));
+                )]);
             }
             
             if n % self.divisor == 0.0 {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::ValidationFailed,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     format!("Value {} is not divisible by {}", n, self.divisor)
                 ).with_actual_value(value.clone())
-                 .with_expected_value(Value::Number(serde_json::Number::from_f64(self.divisor).unwrap())))
+                 .with_expected_value(Value::Number(serde_json::Number::from_f64(self.divisor).unwrap()))])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected numeric value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "divisible_by",
-            description: Some(&format!("Number must be divisible by {}", self.divisor)),
-            category: crate::ValidatorCategory::Basic,
-            tags: vec!["numeric", "divisible"],
-        }
+        crate::ValidatorMetadata::new("divisible_by", "divisible_by", crate::ValidatorCategory::Basic)
+            .with_description(format!("Number must be divisible by {}", self.divisor))
+            .with_tags(vec!["numeric".to_string(), "divisible".to_string()])
     }
 }

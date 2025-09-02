@@ -95,35 +95,50 @@ impl ResiliencePolicy {
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = ResilienceResult<T>>,
+        T: Clone,
     {
-        let mut operation = operation;
+        // Apply timeout if configured
+        if let Some(timeout_duration) = self.timeout {
+            timeout(timeout_duration, self.execute_inner(operation)).await?
+        } else {
+            self.execute_inner(operation).await
+        }
+    }
 
-        // Apply bulkhead if configured
-        if let Some(max_concurrency) = self.bulkhead {
-            let bulkhead = Bulkhead::new(max_concurrency);
-            operation = || bulkhead.execute(operation);
+    /// Internal execution logic without timeout
+    async fn execute_inner<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ResilienceResult<T>>,
+        T: Clone,
+    {
+        let result = operation().await;
+
+        // Apply retry if configured
+        if let Some(retry_strategy) = &self.retry {
+            let strategy = retry_strategy.clone();
+            // Convert ResilienceResult<T> to Result<T, ResilienceError> for retry
+            return crate::retry::retry(strategy.clone(), || async { 
+                match &result {
+                    Ok(value) => Ok(value.clone()),
+                    Err(e) => Err(e.clone()),
+                }
+            }).await;
         }
 
         // Apply circuit breaker if configured
         if let Some(config) = &self.circuit_breaker {
             let circuit_breaker = CircuitBreaker::with_config(config.clone());
-            operation = || circuit_breaker.execute(operation);
+            return circuit_breaker.execute(|| async { result.clone() }).await;
         }
 
-        // Apply retry if configured
-        if let Some(retry_strategy) = &self.retry {
-            let strategy = retry_strategy.clone();
-            operation = || {
-                crate::retry::retry(strategy.clone(), operation)
-            };
+        // Apply bulkhead if configured
+        if let Some(max_concurrency) = self.bulkhead {
+            let bulkhead = Bulkhead::new(max_concurrency);
+            return bulkhead.execute(|| async { result.clone() }).await;
         }
 
-        // Apply timeout if configured
-        if let Some(timeout_duration) = self.timeout {
-            timeout(timeout_duration, operation()).await
-        } else {
-            operation().await
-        }
+        result
     }
 
     /// Execute an operation with timeout only
@@ -136,7 +151,7 @@ impl ResiliencePolicy {
         Fut: Future<Output = ResilienceResult<T>>,
     {
         if let Some(timeout_duration) = self.timeout {
-            timeout(timeout_duration, operation()).await
+            timeout(timeout_duration, operation()).await?
         } else {
             operation().await
         }
@@ -145,7 +160,7 @@ impl ResiliencePolicy {
     /// Execute an operation with retry only
     pub async fn execute_with_retry<T, F, Fut>(
         &self,
-        operation: F,
+        mut operation: F,
     ) -> ResilienceResult<T>
     where
         F: FnMut() -> Fut,

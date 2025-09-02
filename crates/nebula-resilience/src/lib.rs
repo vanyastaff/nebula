@@ -45,7 +45,7 @@ pub mod error;
 // Re-export main types
 pub use timeout::timeout;
 pub use retry::{RetryStrategy, Retryable};
-pub use circuit_breaker::{CircuitBreaker, CircuitState};
+pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
 pub use bulkhead::Bulkhead;
 pub use policy::{ResiliencePolicy, ResilienceBuilder};
 pub use error::ResilienceError;

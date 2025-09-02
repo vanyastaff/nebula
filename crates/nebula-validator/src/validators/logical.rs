@@ -20,21 +20,28 @@ impl<L, R> And<L, R> {
 impl<L: Validatable, R: Validatable> Validatable for And<L, R> {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         // Validate left first
-        self.left.validate(value).await?;
+        let left_result = self.left.validate(value).await;
+        if left_result.is_failure() {
+            return left_result;
+        }
         
         // Validate right
-        self.right.validate(value).await?;
+        let right_result = self.right.validate(value).await;
+        if right_result.is_failure() {
+            return right_result;
+        }
         
-        Ok(())
+        ValidationResult::success(())
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "and",
-            description: Some("All validators must pass"),
-            category: crate::ValidatorCategory::Logical,
-            tags: vec!["logical", "combinator"],
-        }
+        crate::ValidatorMetadata::new(
+            "and",
+            "and",
+            crate::ValidatorCategory::Logical,
+        )
+        .with_description("All validators must pass")
+        .with_tags(vec!["logical".to_string(), "combinator".to_string()])
     }
     
     fn complexity(&self) -> crate::ValidationComplexity {
@@ -60,28 +67,26 @@ impl<L: Validatable, R: Validatable> Validatable for Or<L, R> {
         let left_result = self.left.validate(value).await;
         let right_result = self.right.validate(value).await;
         
-        if left_result.is_ok() || right_result.is_ok() {
-            Ok(())
+        if left_result.is_success() || right_result.is_success() {
+            ValidationResult::success(())
         } else {
             // Combine error messages for better debugging
-            let left_error = left_result.unwrap_err();
-            let right_error = right_result.unwrap_err();
+            let mut all_errors = Vec::new();
+            all_errors.extend(left_result.errors);
+            all_errors.extend(right_result.errors);
             
-            Err(ValidationError::new(
-                ErrorCode::ValidationFailed,
-                format!("Neither validator passed. Left: {}, Right: {}", 
-                    left_error.message, right_error.message)
-            ))
+            ValidationResult::failure(all_errors)
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "or",
-            description: Some("At least one validator must pass"),
-            category: crate::ValidatorCategory::Logical,
-            tags: vec!["logical", "combinator"],
-        }
+        crate::ValidatorMetadata::new(
+            "or",
+            "or",
+            crate::ValidatorCategory::Logical,
+        )
+        .with_description("At least one validator must pass")
+        .with_tags(vec!["logical".to_string(), "combinator".to_string()])
     }
     
     fn complexity(&self) -> crate::ValidationComplexity {
@@ -107,30 +112,31 @@ impl<L: Validatable, R: Validatable> Validatable for Xor<L, R> {
         let left_result = self.left.validate(value).await;
         let right_result = self.right.validate(value).await;
         
-        let left_ok = left_result.is_ok();
-        let right_ok = right_result.is_ok();
+        let left_ok = left_result.is_success();
+        let right_ok = right_result.is_success();
         
         match (left_ok, right_ok) {
-            (true, false) => Ok(()),
-            (false, true) => Ok(()),
-            (true, true) => Err(ValidationError::new(
-                ErrorCode::ValidationFailed,
+            (true, false) => ValidationResult::success(()),
+            (false, true) => ValidationResult::success(()),
+            (true, true) => ValidationResult::failure(vec![ValidationError::new(
+                ErrorCode::XorValidationFailed,
                 "Both validators passed, but exactly one was expected"
-            )),
-            (false, false) => Err(ValidationError::new(
-                ErrorCode::ValidationFailed,
+            )]),
+            (false, false) => ValidationResult::failure(vec![ValidationError::new(
+                ErrorCode::XorValidationFailed,
                 "Neither validator passed, but exactly one was expected"
-            )),
+            )]),
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "xor",
-            description: Some("Exactly one validator must pass"),
-            category: crate::ValidatorCategory::Logical,
-            tags: vec!["logical", "combinator"],
-        }
+        crate::ValidatorMetadata::new(
+            "xor",
+            "xor",
+            crate::ValidatorCategory::Logical,
+        )
+        .with_description("Exactly one validator must pass")
+        .with_tags(vec!["logical".to_string(), "combinator".to_string()])
     }
     
     fn complexity(&self) -> crate::ValidationComplexity {
@@ -153,21 +159,22 @@ impl<V> Not<V> {
 impl<V: Validatable> Validatable for Not<V> {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         match self.validator.validate(value).await {
-            Ok(_) => Err(ValidationError::new(
-                ErrorCode::ValidationFailed,
+            result if result.is_success() => ValidationResult::failure(vec![ValidationError::new(
+                ErrorCode::XorValidationFailed,
                 "Validator passed, but was expected to fail"
-            )),
-            Err(_) => Ok(()),
+            )]),
+            _ => ValidationResult::success(()),
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "not",
-            description: Some("Validator must fail"),
-            category: crate::ValidatorCategory::Logical,
-            tags: vec!["logical", "combinator"],
-        }
+        crate::ValidatorMetadata::new(
+            "not",
+            "not",
+            crate::ValidatorCategory::Logical,
+        )
+        .with_description("Validator must fail")
+        .with_tags(vec!["logical".to_string(), "combinator".to_string()])
     }
     
     fn complexity(&self) -> crate::ValidationComplexity {
@@ -197,28 +204,27 @@ impl<V: Validatable> Validatable for All<V> {
         let mut errors = Vec::new();
         
         for validator in &self.validators {
-            if let Err(error) = validator.validate(value).await {
-                errors.push(error);
+            let result = validator.validate(value).await;
+            if result.is_failure() {
+                errors.extend(result.errors);
             }
         }
         
         if errors.is_empty() {
-            Ok(())
+            ValidationResult::success(())
         } else {
-            Err(ValidationError::new(
-                ErrorCode::ValidationFailed,
-                format!("{} validators failed", errors.len())
-            ).with_details(errors))
+            ValidationResult::failure(errors)
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "all",
-            description: Some("All validators must pass"),
-            category: crate::ValidatorCategory::Array,
-            tags: vec!["array", "combinator"],
-        }
+        crate::ValidatorMetadata::new(
+            "all",
+            "all",
+            crate::ValidatorCategory::Array,
+        )
+        .with_description("All validators must pass")
+        .with_tags(vec!["array".to_string(), "combinator".to_string()])
     }
     
     fn complexity(&self) -> crate::ValidationComplexity {
@@ -261,26 +267,25 @@ impl<V: Validatable> Validatable for Any<V> {
         let mut errors = Vec::new();
         
         for validator in &self.validators {
-            if validator.validate(value).await.is_ok() {
-                return Ok(());
-            } else if let Err(error) = validator.validate(value).await {
-                errors.push(error);
+            let result = validator.validate(value).await;
+            if result.is_success() {
+                return ValidationResult::success(());
+            } else {
+                errors.extend(result.errors);
             }
         }
         
-        Err(ValidationError::new(
-            ErrorCode::ValidationFailed,
-            "No validators passed"
-        ).with_details(errors))
+        ValidationResult::failure(errors)
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "any",
-            description: Some("At least one validator must pass"),
-            category: crate::ValidatorCategory::Array,
-            tags: vec!["array", "combinator"],
-        }
+        crate::ValidatorMetadata::new(
+            "any",
+            "any",
+            crate::ValidatorCategory::Array,
+        )
+        .with_description("At least one validator must pass")
+        .with_tags(vec!["array".to_string(), "combinator".to_string()])
     }
     
     fn complexity(&self) -> crate::ValidationComplexity {
@@ -321,24 +326,26 @@ impl<V> None<V> {
 impl<V: Validatable> Validatable for None<V> {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         for validator in &self.validators {
-            if validator.validate(value).await.is_ok() {
-                return Err(ValidationError::new(
-                    ErrorCode::ValidationFailed,
+            let result = validator.validate(value).await;
+            if result.is_success() {
+                return ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::XorValidationFailed,
                     "A validator passed, but none were expected to pass"
-                ));
+                )]);
             }
         }
         
-        Ok(())
+        ValidationResult::success(())
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "none",
-            description: Some("No validators should pass"),
-            category: crate::ValidatorCategory::Array,
-            tags: vec!["array", "combinator"],
-        }
+        crate::ValidatorMetadata::new(
+            "none",
+            "none",
+            crate::ValidatorCategory::Array,
+        )
+        .with_description("No validators should pass")
+        .with_tags(vec!["array".to_string(), "combinator".to_string()])
     }
     
     fn complexity(&self) -> crate::ValidationComplexity {

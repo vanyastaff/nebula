@@ -43,12 +43,12 @@ impl Default for NotNull {
 impl Validatable for NotNull {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if value.is_null() {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::Custom("null_value".to_string()),
                 "Value cannot be null"
-            ))
+            )])
         } else {
-            Ok(())
+            ValidationResult::success(())
         }
     }
     
@@ -75,5 +75,5 @@ pub fn not_null() -> NotNull {
 
 // ==================== Re-exports ====================
 
-pub use NotNull as NotNull;
+// NotNull is already defined above
 

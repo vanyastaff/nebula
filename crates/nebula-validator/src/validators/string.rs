@@ -20,28 +20,29 @@ impl Validatable for MinLength {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if let Some(s) = value.as_str() {
             if s.len() >= self.min_length {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::StringTooShort,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     format!("String length {} is less than minimum {}", s.len(), self.min_length)
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "min_length",
-            description: Some(&format!("String minimum length: {}", self.min_length)),
-            category: crate::ValidatorCategory::Basic,
-            tags: vec!["string", "length"],
-        }
+        crate::ValidatorMetadata::new("min_length", "min_length", crate::ValidatorCategory::Basic)
+            .with_description(format!("String minimum length: {}", self.min_length))
+            .with_tags(vec!["string".to_string(), "length".to_string()])
+    }
+    
+    fn complexity(&self) -> crate::ValidationComplexity {
+        crate::ValidationComplexity::Simple
     }
 }
 
@@ -61,28 +62,29 @@ impl Validatable for MaxLength {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if let Some(s) = value.as_str() {
             if s.len() <= self.max_length {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::StringTooLong,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     format!("String length {} is greater than maximum {}", s.len(), self.max_length)
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "max_length",
-            description: Some(&format!("String maximum length: {}", self.max_length)),
-            category: crate::ValidatorCategory::Basic,
-            tags: vec!["string", "length"],
-        }
+        crate::ValidatorMetadata::new("max_length", "max_length", crate::ValidatorCategory::Basic)
+            .with_description(format!("String maximum length: {}", self.max_length))
+            .with_tags(vec!["string".to_string(), "length".to_string()])
+    }
+    
+    fn complexity(&self) -> crate::ValidationComplexity {
+        crate::ValidationComplexity::Simple
     }
 }
 
@@ -102,29 +104,30 @@ impl Validatable for Contains {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if let Some(s) = value.as_str() {
             if s.contains(&self.substring) {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::ValidationFailed,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     format!("String does not contain '{}'", self.substring)
                 ).with_actual_value(value.clone())
-                 .with_expected_value(Value::String(self.substring.clone())))
+                 .with_expected_value(Value::String(self.substring.clone()))])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "contains",
-            description: Some(&format!("String must contain '{}'", self.substring)),
-            category: crate::ValidatorCategory::Basic,
-            tags: vec!["string", "contains"],
-        }
+        crate::ValidatorMetadata::new("contains", "contains", crate::ValidatorCategory::Basic)
+            .with_description(format!("String must contain '{}'", self.substring))
+            .with_tags(vec!["string".to_string(), "contains".to_string()])
+    }
+    
+    fn complexity(&self) -> crate::ValidationComplexity {
+        crate::ValidationComplexity::Simple
     }
 }
 
@@ -144,29 +147,30 @@ impl Validatable for StartsWith {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if let Some(s) = value.as_str() {
             if s.starts_with(&self.prefix) {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::ValidationFailed,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     format!("String does not start with '{}'", self.prefix)
                 ).with_actual_value(value.clone())
-                 .with_expected_value(Value::String(self.prefix.clone())))
+                 .with_expected_value(Value::String(self.prefix.clone()))])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "starts_with",
-            description: Some(&format!("String must start with '{}'", self.prefix)),
-            category: crate::ValidatorCategory::Basic,
-            tags: vec!["string", "starts_with"],
-        }
+        crate::ValidatorMetadata::new("starts_with", "starts_with", crate::ValidatorCategory::Basic)
+            .with_description(format!("String must start with '{}'", self.prefix))
+            .with_tags(vec!["string".to_string(), "starts_with".to_string()])
+    }
+    
+    fn complexity(&self) -> crate::ValidationComplexity {
+        crate::ValidationComplexity::Simple
     }
 }
 
@@ -186,29 +190,30 @@ impl Validatable for EndsWith {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if let Some(s) = value.as_str() {
             if s.ends_with(&self.suffix) {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::ValidationFailed,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     format!("String does not end with '{}'", self.suffix)
                 ).with_actual_value(value.clone())
-                 .with_expected_value(Value::String(self.suffix.clone())))
+                 .with_expected_value(Value::String(self.suffix.clone()))])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "ends_with",
-            description: Some(&format!("String must end with '{}'", self.suffix)),
-            category: crate::ValidatorCategory::Basic,
-            tags: vec!["string", "ends_with"],
-        }
+        crate::ValidatorMetadata::new("ends_with", "ends_with", crate::ValidatorCategory::Basic)
+            .with_description(format!("String must end with '{}'", self.suffix))
+            .with_tags(vec!["string".to_string(), "ends_with".to_string()])
+    }
+    
+    fn complexity(&self) -> crate::ValidationComplexity {
+        crate::ValidationComplexity::Simple
     }
 }
 
@@ -220,28 +225,29 @@ impl Validatable for NonEmpty {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if let Some(s) = value.as_str() {
             if !s.trim().is_empty() {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::StringEmpty,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     "String cannot be empty or whitespace-only"
-                ).with_actual_value(value.clone()))
+                ).with_actual_value(value.clone())])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "non_empty",
-            description: Some("Non-empty string validation"),
-            category: crate::ValidatorCategory::Basic,
-            tags: vec!["string", "empty"],
-        }
+        crate::ValidatorMetadata::new("non_empty", "non_empty", crate::ValidatorCategory::Basic)
+            .with_description("Non-empty string validation")
+            .with_tags(vec!["string".to_string(), "length".to_string()])
+    }
+    
+    fn complexity(&self) -> crate::ValidationComplexity {
+        crate::ValidationComplexity::Simple
     }
 }
 
@@ -261,28 +267,29 @@ impl Validatable for StringLength {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         if let Some(s) = value.as_str() {
             if s.len() == self.length {
-                Ok(())
+                ValidationResult::success(())
             } else {
-                Err(ValidationError::new(
-                    ErrorCode::ValidationFailed,
+                ValidationResult::failure(vec![ValidationError::new(
+                    ErrorCode::ValueOutOfRange,
                     format!("String length {} does not equal expected length {}", s.len(), self.length)
                 ).with_actual_value(value.clone())
-                 .with_expected_value(Value::Number(serde_json::Number::from(self.length))))
+                 .with_expected_value(Value::Number(serde_json::Number::from(self.length)))])
             }
         } else {
-            Err(ValidationError::new(
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::TypeMismatch,
                 "Expected string value"
-            ).with_actual_value(value.clone()))
+            ).with_actual_value(value.clone())])
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "string_length",
-            description: Some(&format!("String exact length: {}", self.length)),
-            category: crate::ValidatorCategory::Basic,
-            tags: vec!["string", "length"],
-        }
+        crate::ValidatorMetadata::new("string_length", "string_length", crate::ValidatorCategory::Basic)
+            .with_description(format!("String exact length: {}", self.length))
+            .with_tags(vec!["string".to_string(), "length".to_string()])
+    }
+    
+    fn complexity(&self) -> crate::ValidationComplexity {
+        crate::ValidationComplexity::Simple
     }
 }

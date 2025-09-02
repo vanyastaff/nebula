@@ -80,7 +80,7 @@ impl CircuitBreaker {
 
     /// Get the current circuit state
     pub async fn state(&self) -> CircuitState {
-        *self.state.read().await
+        self.state.read().await.clone()
     }
 
     /// Check if the circuit is closed (operations allowed)

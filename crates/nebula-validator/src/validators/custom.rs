@@ -41,12 +41,13 @@ where
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: &self.name,
-            description: self.description.as_deref(),
-            category: crate::ValidatorCategory::Custom,
-            tags: vec!["custom"],
-        }
+        crate::ValidatorMetadata::new(
+            &self.name,
+            &self.name,
+            crate::ValidatorCategory::Custom,
+        )
+        .with_description(self.description.as_deref().unwrap_or(""))
+        .with_tags(vec!["custom".to_string()])
     }
 }
 
@@ -87,12 +88,13 @@ where
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: &self.name,
-            description: self.description.as_deref(),
-            category: crate::ValidatorCategory::Custom,
-            tags: vec!["custom", "async"],
-        }
+        crate::ValidatorMetadata::new(
+            &self.name,
+            &self.name,
+            crate::ValidatorCategory::Custom,
+        )
+        .with_description(self.description.as_deref().unwrap_or(""))
+        .with_tags(vec!["custom".to_string(), "async".to_string()])
     }
 }
 
@@ -134,12 +136,13 @@ where
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: &self.name,
-            description: self.description.as_deref(),
-            category: crate::ValidatorCategory::Custom,
-            tags: vec!["custom", "lazy"],
-        }
+        crate::ValidatorMetadata::new(
+            &self.name,
+            &self.name,
+            crate::ValidatorCategory::Custom,
+        )
+        .with_description(self.description.as_deref().unwrap_or(""))
+        .with_tags(vec!["custom".to_string(), "lazy".to_string()])
     }
 }
 
@@ -192,12 +195,13 @@ impl<V: Validatable + Send + Sync> Validatable for Cached<V> {
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "cached",
-            description: Some("Caches validation results for performance"),
-            category: crate::ValidatorCategory::Custom,
-            tags: vec!["custom", "cached"],
-        }
+        crate::ValidatorMetadata::new(
+            "cached",
+            "cached",
+            crate::ValidatorCategory::Custom,
+        )
+        .with_description("Caches validation results for performance")
+        .with_tags(vec!["custom".to_string(), "cached".to_string()])
     }
 }
 
@@ -231,39 +235,44 @@ impl<V> Retry<V> {
 #[async_trait]
 impl<V: Validatable + Send + Sync> Validatable for Retry<V> {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        let mut last_error = None;
+        let mut last_error = Vec::new();
         
         for attempt in 1..=self.max_attempts {
-            match self.validator.validate(value).await {
-                Ok(()) => return Ok(()),
-                Err(error) => {
-                    last_error = Some(error);
-                    
-                    if attempt < self.max_attempts {
-                        // Wait before retrying
-                        tokio::time::sleep(tokio::time::Duration::from_millis(self.delay_ms)).await;
-                    }
+            let result = self.validator.validate(value).await;
+            if result.is_ok() {
+                return result;
+            } else {
+                if let Some(errors) = result.err() {
+                    last_error = errors;
+                }
+                
+                if attempt < self.max_attempts {
+                    // Wait before retrying
+                    tokio::time::sleep(tokio::time::Duration::from_millis(self.delay_ms)).await;
                 }
             }
         }
         
         // All attempts failed
-        Err(last_error.unwrap_or_else(|| {
-            ValidationError::new(
+        if last_error.is_empty() {
+            ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::InternalError,
                 "Validation failed after all retry attempts"
-            )
-        }))
+            )])
+        } else {
+            ValidationResult::failure(last_error)
+        }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "retry",
-            description: Some(&format!("Retries validation up to {} times with {}ms delay", 
-                self.max_attempts, self.delay_ms)),
-            category: crate::ValidatorCategory::Custom,
-            tags: vec!["custom", "retry"],
-        }
+        crate::ValidatorMetadata::new(
+            "retry",
+            "retry",
+            crate::ValidatorCategory::Custom,
+        )
+        .with_description(format!("Retries validation up to {} times with {}ms delay", 
+            self.max_attempts, self.delay_ms))
+        .with_tags(vec!["custom".to_string(), "retry".to_string()])
     }
 }
 
@@ -289,20 +298,21 @@ impl<V: Validatable + Send + Sync> Validatable for Timeout<V> {
         
         match tokio::time::timeout(timeout_duration, self.validator.validate(value)).await {
             Ok(result) => result,
-            Err(_) =>                 Err(ValidationError::new(
+            Err(_) => ValidationResult::failure(vec![ValidationError::new(
                     ErrorCode::InternalError,
                     format!("Validation timed out after {}ms", self.timeout_ms)
-                )),
+                )]),
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "timeout",
-            description: Some(&format!("Validation must complete within {}ms", self.timeout_ms)),
-            category: crate::ValidatorCategory::Custom,
-            tags: vec!["custom", "timeout"],
-        }
+        crate::ValidatorMetadata::new(
+            "timeout",
+            "timeout",
+            crate::ValidatorCategory::Custom,
+        )
+        .with_description(format!("Validation must complete within {}ms", self.timeout_ms))
+        .with_tags(vec!["custom".to_string(), "timeout".to_string()])
     }
 }
 
@@ -321,22 +331,23 @@ impl<V, F> Fallback<V, F> {
 #[async_trait]
 impl<V: Validatable + Send + Sync, F: Validatable + Send + Sync> Validatable for Fallback<V, F> {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        match self.primary.validate(value).await {
-            Ok(()) => Ok(()),
-            Err(_) => {
-                // Primary validation failed, try fallback
-                self.fallback.validate(value).await
-            }
+        let result = self.primary.validate(value).await;
+        if result.is_ok() {
+            result
+        } else {
+            // Primary validation failed, try fallback
+            self.fallback.validate(value).await
         }
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "fallback",
-            description: Some("Uses fallback validator if primary fails"),
-            category: crate::ValidatorCategory::Custom,
-            tags: vec!["custom", "fallback"],
-        }
+        crate::ValidatorMetadata::new(
+            "fallback",
+            "fallback",
+            crate::ValidatorCategory::Custom,
+        )
+        .with_description("Uses fallback validator if primary fails")
+        .with_tags(vec!["custom".to_string(), "fallback".to_string()])
     }
 }
 
@@ -363,12 +374,13 @@ where
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "transform",
-            description: Some("Transforms value before validation"),
-            category: crate::ValidatorCategory::Custom,
-            tags: vec!["custom", "transform"],
-        }
+        crate::ValidatorMetadata::new(
+            "transform",
+            "transform",
+            crate::ValidatorCategory::Custom,
+        )
+        .with_description("Transforms value before validation")
+        .with_tags(vec!["custom".to_string(), "transform".to_string()])
     }
 }
 
@@ -395,11 +407,12 @@ where
     }
     
     fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata {
-            name: "async_transform",
-            description: Some("Async transforms value before validation"),
-            category: crate::ValidatorCategory::Custom,
-            tags: vec!["custom", "async_transform"],
-        }
+        crate::ValidatorMetadata::new(
+            "async_transform",
+            "async_transform",
+            crate::ValidatorCategory::Custom,
+        )
+        .with_description("Async transforms value before validation")
+        .with_tags(vec!["custom".to_string(), "async_transform".to_string()])
     }
 }

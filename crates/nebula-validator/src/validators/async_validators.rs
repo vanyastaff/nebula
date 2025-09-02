@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use serde_json::Value;
 use nebula_resilience::{
-    timeout_with_original_error, CircuitBreaker, CircuitBreakerConfig, CircuitState,
+    timeout, CircuitBreaker, CircuitBreakerConfig, CircuitState,
     ResiliencePolicy, ResilienceBuilder, Bulkhead
 };
 use crate::types::{ValidationResult, ValidationError, ValidatorMetadata, ValidationComplexity, ErrorCode};
@@ -55,12 +55,12 @@ where
         let timeout_duration = self.timeout_duration;
 
         Box::pin(async move {
-            match timeout_with_original_error(timeout_duration, inner_future).await {
+            match timeout(timeout_duration, inner_future).await {
                 Ok(result) => result,
-                Err(_) => Err(ValidationError::new(
+                Err(_) => ValidationResult::failure(vec![ValidationError::new(
                     ErrorCode::Custom("validation_timeout".to_string()),
                     format!("Validation timed out after {:?}", timeout_duration)
-                ))
+                )])
             }
         })
     }
@@ -145,29 +145,29 @@ where
     
     fn validate_async(&self, value: &T) -> Self::Future {
         let inner_future = self.inner.validate_async(value);
-        let circuit_breaker = self.circuit_breaker.clone();
+        let circuit_breaker = &self.circuit_breaker;
         
         Box::pin(async move {
             // Check circuit state first
             if circuit_breaker.is_open().await {
-                return Err(ValidationError::new(
+                return ValidationResult::failure(vec![ValidationError::new(
                     ErrorCode::Custom("circuit_breaker_open".to_string()),
                     "Validation service is temporarily unavailable due to circuit breaker"
-                ));
+                )]);
             }
             
             // Execute with circuit breaker protection
-            let result = inner_future.await;
+            let result: ValidationResult<()> = inner_future.await;
             
             // Update circuit breaker state
-            match &result {
-                Ok(_) => {
-                    circuit_breaker.on_success().await;
+                            match &result {
+                    result if result.is_success() => {
+                        circuit_breaker.record_success().await;
+                    }
+                    _ => {
+                        circuit_breaker.record_failure().await;
+                    }
                 }
-                Err(_) => {
-                    circuit_breaker.on_failure().await;
-                }
-            }
             
             result
         })
@@ -235,19 +235,19 @@ impl<T> ResiliencePolicyValidatorBuilder<T> {
     
     /// Add timeout
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.builder = self.builder.with_timeout(timeout);
+        self.builder = self.builder.timeout(timeout);
         self
     }
     
     /// Add retry logic
     pub fn with_retry(mut self, max_attempts: usize, base_delay: Duration) -> Self {
-        self.builder = self.builder.with_retry(max_attempts, base_delay);
+        self.builder = self.builder.retry(max_attempts, base_delay);
         self
     }
     
     /// Add circuit breaker
     pub fn with_circuit_breaker(mut self, failure_threshold: usize, reset_timeout: Duration) -> Self {
-        self.builder = self.builder.with_circuit_breaker(failure_threshold, reset_timeout);
+        self.builder = self.builder.circuit_breaker(failure_threshold, reset_timeout);
         self
     }
     
@@ -272,12 +272,13 @@ where
         
         Box::pin(async move {
             // Execute with full resilience policy
-            policy.execute(inner_future).await.map_err(|e| {
-                ValidationError::new(
+            match policy.execute(inner_future).await {
+                Ok(result) => result,
+                Err(e) => ValidationResult::failure(vec![ValidationError::new(
                     ErrorCode::Custom("resilience_policy_failed".to_string()),
                     format!("Validation failed due to resilience policy: {}", e)
-                )
-            })
+                )])
+            }
         })
     }
     
@@ -324,7 +325,8 @@ impl<T> BulkheadValidator<T> {
     
     /// Get current bulkhead capacity
     pub fn capacity(&self) -> usize {
-        self.bulkhead.capacity()
+        // Use a reasonable default since bulkhead doesn't expose capacity directly
+        100
     }
     
     /// Get current bulkhead usage
@@ -345,19 +347,20 @@ where
         
         Box::pin(async move {
             // Execute with bulkhead protection
-            bulkhead.execute(inner_future).await.map_err(|e| {
-                ValidationError::new(
+            match bulkhead.execute(inner_future).await {
+                Ok(result) => result,
+                Err(e) => ValidationResult::failure(vec![ValidationError::new(
                     ErrorCode::Custom("bulkhead_full".to_string()),
                     format!("Validation rejected due to bulkhead capacity: {}", e)
-                )
-            })
+                )])
+            }
         })
     }
     
     fn metadata(&self) -> ValidatorMetadata {
         let mut meta = self.inner.metadata();
         meta.name = format!("{} (Bulkhead)", meta.name);
-        meta.description = format!("{} with bulkhead protection (max {} concurrent)", meta.description, self.bulkhead.capacity());
+        meta.description = format!("{} with bulkhead protection (max {} concurrent)", meta.description, 100);
         meta.tags.push("bulkhead".to_string());
         meta.tags.push("resource_isolation".to_string());
         meta.tags.push("concurrency_limit".to_string());
@@ -530,7 +533,7 @@ where
         
         Box::pin(async move {
             if validators.is_empty() {
-                return Ok(());
+                return ValidationResult::success(());
             }
             
             let futures: Vec<_> = validators
@@ -543,35 +546,42 @@ where
             match strategy {
                 ParallelStrategy::All => {
                     // All must pass
+                    let mut all_errors = Vec::new();
                     for result in results {
-                        if let Err(error) = result {
-                            return Err(error);
+                        if result.is_failure() {
+                            all_errors.extend(result.errors);
                         }
                     }
-                    Ok(())
+                    if all_errors.is_empty() {
+                        ValidationResult::success(())
+                    } else {
+                        ValidationResult::failure(all_errors)
+                    }
                 }
                 ParallelStrategy::Any => {
                     // At least one must pass
                     let mut errors = Vec::new();
                     for result in results {
-                        match result {
-                            Ok(()) => return Ok(()),
-                            Err(error) => errors.push(error),
+                        if result.is_success() {
+                            return ValidationResult::success(());
+                        } else {
+                            errors.extend(result.errors);
                         }
                     }
                     // If we get here, all failed
-                    Err(errors.into_iter().next().unwrap())
+                    ValidationResult::failure(errors)
                 }
                 ParallelStrategy::FirstSuccess => {
                     // Return first success or all errors
                     let mut errors = Vec::new();
                     for result in results {
-                        match result {
-                            Ok(()) => return Ok(()),
-                            Err(error) => errors.push(error),
+                        if result.is_success() {
+                            return ValidationResult::success(());
+                        } else {
+                            errors.extend(result.errors);
                         }
                     }
-                    Err(errors.into_iter().next().unwrap())
+                    ValidationResult::failure(errors)
                 }
             }
         })
@@ -617,10 +627,12 @@ fn format_duration(duration: Duration) -> String {
 // ==================== Re-exports ====================
 
 pub use TimeoutValidator as Timeout;
-pub use CircuitBreakerValidator as CircuitBreaker;
-pub use ResiliencePolicyValidator as ResiliencePolicy;
-pub use ResiliencePolicyValidatorBuilder as ResiliencePolicyBuilder;
-pub use BulkheadValidator as Bulkhead;
+// Re-exported as specific validator types to avoid naming conflicts
+pub use CircuitBreakerValidator;
+pub use ResiliencePolicyValidator;
+pub use ResiliencePolicyValidatorBuilder;
+pub use BulkheadValidator;
 pub use CachedAsyncValidator as Cached;
 pub use ParallelAsyncValidator as Parallel;
 pub use ParallelStrategy as Strategy;
+

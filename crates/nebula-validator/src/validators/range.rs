@@ -17,18 +17,15 @@ use crate::traits::Validatable;
 /// This validator checks if a numeric value falls within a specified range.
 /// Supports inclusive and exclusive bounds, and can be configured for different numeric types.
 #[derive(Debug, Clone)]
-pub struct NumericRange<T> {
-    min: Option<T>,
-    max: Option<T>,
+pub struct NumericRange {
+    min: Option<f64>,
+    max: Option<f64>,
     min_inclusive: bool,
     max_inclusive: bool,
     name: String,
 }
 
-impl<T> NumericRange<T>
-where
-    T: PartialOrd + PartialEq + Display + Send + Sync + Clone,
-{
+impl NumericRange {
     /// Create a new numeric range validator
     pub fn new() -> Self {
         Self {
@@ -41,33 +38,33 @@ where
     }
     
     /// Set minimum value (inclusive)
-    pub fn min(mut self, min: T) -> Self {
+    pub fn min(mut self, min: f64) -> Self {
         self.min = Some(min);
         self
     }
     
     /// Set maximum value (inclusive)
-    pub fn max(mut self, max: T) -> Self {
+    pub fn max(mut self, max: f64) -> Self {
         self.max = Some(max);
         self
     }
     
     /// Set minimum value (exclusive)
-    pub fn min_exclusive(mut self, min: T) -> Self {
+    pub fn min_exclusive(mut self, min: f64) -> Self {
         self.min = Some(min);
         self.min_inclusive = false;
         self
     }
     
     /// Set maximum value (exclusive)
-    pub fn max_exclusive(mut self, max: T) -> Self {
+    pub fn max_exclusive(mut self, max: f64) -> Self {
         self.max = Some(max);
         self.max_inclusive = false;
         self
     }
     
     /// Set both min and max values
-    pub fn range(mut self, min: T, max: T) -> Self {
+    pub fn range(mut self, min: f64, max: f64) -> Self {
         self.min = Some(min);
         self.max = Some(max);
         self
@@ -80,68 +77,65 @@ where
     }
     
     /// Validate a numeric value
-    fn validate_numeric(&self, value: &T) -> ValidationResult<()> {
+    fn validate_numeric(&self, value: f64) -> ValidationResult<()> {
         // Check minimum bound
         if let Some(min) = &self.min {
             let is_valid = if self.min_inclusive {
-                *value >= *min
+                value >= *min
             } else {
-                *value > *min
+                value > *min
             };
             
             if !is_valid {
                 let op = if self.min_inclusive { ">=" } else { ">" };
-                return Err(ValidationError::new(
+                return ValidationResult::failure(vec![ValidationError::new(
                     ErrorCode::Custom("value_too_small".to_string()),
                     format!("Value {} must be {} {}", value, op, min)
-                ));
+                )]);
             }
         }
         
         // Check maximum bound
         if let Some(max) = &self.max {
             let is_valid = if self.max_inclusive {
-                *value <= *max
+                value <= *max
             } else {
-                *value < *max
+                value < *max
             };
             
             if !is_valid {
                 let op = if self.max_inclusive { "<=" } else { "<" };
-                return Err(ValidationError::new(
+                return ValidationResult::failure(vec![ValidationError::new(
                     ErrorCode::Custom("value_too_large".to_string()),
                     format!("Value {} must be {} {}", value, op, max)
-                ));
+                )]);
             }
         }
         
-        Ok(())
+        ValidationResult::success(())
     }
 }
 
 #[async_trait]
-impl<T> Validatable for NumericRange<T>
-where
-    T: PartialOrd + PartialEq + Display + Send + Sync + Clone,
-{
+impl Validatable for NumericRange {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         match value {
             Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
-                    self.validate_numeric(&i)
+                    self.validate_numeric(i as f64)
                 } else if let Some(f) = n.as_f64() {
-                    self.validate_numeric(&f)
+                    self.validate_numeric(f)
                 } else {
-                    Err(ValidationError::new(
+                    ValidationResult::failure(vec![ValidationError::new(
                         ErrorCode::Custom("invalid_numeric".to_string()),
                         "Value is not a valid number"
-                    ))
+                    )])
                 }
             }
-            _ => Err(ValidationError::new(
+            _ => ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::Custom("type_mismatch".to_string()),
                 "Expected numeric value"
-            ))
+            )])
         }
     }
     
@@ -232,10 +226,10 @@ impl Validatable for StringLengthRange {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         let string_value = match value {
             Value::String(s) => s,
-            _ => return Err(ValidationError::new(
+            _ => return ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::Custom("type_mismatch".to_string()),
                 "Expected string value"
-            ))
+            )])
         };
         
         let length = string_value.len();
@@ -243,24 +237,24 @@ impl Validatable for StringLengthRange {
         // Check minimum length
         if let Some(min_len) = self.min_length {
             if length < min_len {
-                return Err(ValidationError::new(
+                return ValidationResult::failure(vec![ValidationError::new(
                     ErrorCode::Custom("string_too_short".to_string()),
                     format!("String length {} is less than minimum {}", length, min_len)
-                ));
+                )]);
             }
         }
         
         // Check maximum length
         if let Some(max_len) = self.max_length {
             if length > max_len {
-                return Err(ValidationError::new(
+                return ValidationResult::failure(vec![ValidationError::new(
                     ErrorCode::Custom("string_too_long".to_string()),
                     format!("String length {} exceeds maximum {}", length, max_len)
-                ));
+                )]);
             }
         }
         
-        Ok(())
+        ValidationResult::success(())
     }
     
     fn metadata(&self) -> ValidatorMetadata {
@@ -348,10 +342,10 @@ impl Validatable for ArrayLengthRange {
     async fn validate(&self, value: &Value) -> ValidationResult<()> {
         let array_value = match value {
             Value::Array(arr) => arr,
-            _ => return Err(ValidationError::new(
+            _ => return ValidationResult::failure(vec![ValidationError::new(
                 ErrorCode::Custom("type_mismatch".to_string()),
                 "Expected array value"
-            ))
+            )])
         };
         
         let length = array_value.len();
@@ -359,24 +353,24 @@ impl Validatable for ArrayLengthRange {
         // Check minimum length
         if let Some(min_len) = self.min_length {
             if length < min_len {
-                return Err(ValidationError::new(
+                return ValidationResult::failure(vec![ValidationError::new(
                     ErrorCode::Custom("array_too_short".to_string()),
                     format!("Array length {} is less than minimum {}", length, min_len)
-                ));
+                )]);
             }
         }
         
         // Check maximum length
         if let Some(max_len) = self.max_length {
             if length > max_len {
-                return Err(ValidationError::new(
+                return ValidationResult::failure(vec![ValidationError::new(
                     ErrorCode::Custom("array_too_long".to_string()),
                     format!("Array length {} exceeds maximum {}", length, max_len)
-                ));
+                )]);
             }
         }
         
-        Ok(())
+        ValidationResult::success(())
     }
     
     fn metadata(&self) -> ValidatorMetadata {
@@ -447,15 +441,15 @@ where
 impl<T, F> Validatable for CustomRange<T, F>
 where
     F: Fn(&T) -> ValidationResult<()> + Send + Sync + Clone,
-    T: 'static,
+    T: 'static + std::marker::Sync,
 {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
+    async fn validate(&self, _value: &Value) -> ValidationResult<()> {
         // This is a simplified implementation - in practice you'd need
         // to implement proper deserialization from Value to T
-        Err(ValidationError::new(
+        ValidationResult::failure(vec![ValidationError::new(
             ErrorCode::Custom("custom_range_not_implemented".to_string()),
             "Custom range validation requires proper Value to T conversion"
-        ))
+        )])
     }
     
     fn metadata(&self) -> ValidatorMetadata {
@@ -495,10 +489,7 @@ impl RangeBuilder {
     }
     
     /// Build a numeric range validator
-    pub fn numeric<T>(self) -> NumericRange<T>
-    where
-        T: PartialOrd + PartialEq + Display + Send + Sync + Clone,
-    {
+    pub fn numeric(self) -> NumericRange {
         let mut validator = NumericRange::new();
         if let Some(name) = self.name {
             validator = validator.with_name(name);
@@ -534,10 +525,7 @@ impl Default for RangeBuilder {
 // ==================== Convenience Functions ====================
 
 /// Create a numeric range validator
-pub fn numeric_range<T>() -> NumericRange<T>
-where
-    T: PartialOrd + PartialEq + Display + Send + Sync + Clone,
-{
+pub fn numeric_range() -> NumericRange {
     NumericRange::new()
 }
 
