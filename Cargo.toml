@@ -12,8 +12,8 @@ resolver = "2"  # Исправлено с "3"
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"  # Исправлено с "2024"
-rust-version = "1.87"
+edition = "2024"
+rust-version = "1.89"
 keywords = ["workflow", "integrations", "no-code", "low-code", "automation"]
 authors = ["Vanya Stafford <vanya.john.stafford@gmail.com>"]
 description = "Workflow automation toolkit"

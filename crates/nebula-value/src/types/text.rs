@@ -28,7 +28,11 @@ pub enum TextError {
     InvalidRange { start: usize, end: usize },
 
     #[error("Substring indices out of bounds: start={start}, end={end}, length={len}")]
-    OutOfBounds { start: usize, end: usize, len: usize },
+    OutOfBounds {
+        start: usize,
+        end: usize,
+        len: usize,
+    },
 
     #[error("Character index {index} out of bounds for string of length {len}")]
     CharIndexOutOfBounds { index: usize, len: usize },
@@ -67,7 +71,10 @@ impl Text {
     /// Creates a new Text from an owned String
     #[inline]
     pub fn new(value: String) -> Self {
-        Self { inner: value.into(), char_count_cache: std::sync::OnceLock::new() }
+        Self {
+            inner: value.into(),
+            char_count_cache: std::sync::OnceLock::new(),
+        }
     }
 
     /// Creates a new Text from anything convertible to String
@@ -79,7 +86,10 @@ impl Text {
     /// Creates an empty Text (const-friendly)
     #[inline]
     pub fn empty() -> Self {
-        Self { inner: Arc::from(""), char_count_cache: std::sync::OnceLock::new() }
+        Self {
+            inner: Arc::from(""),
+            char_count_cache: std::sync::OnceLock::new(),
+        }
     }
 
     /// Creates a Text with specified capacity
@@ -92,7 +102,10 @@ impl Text {
     #[inline]
     #[must_use]
     pub fn from_static(s: &'static str) -> Self {
-        Self { inner: Arc::from(s), char_count_cache: std::sync::OnceLock::new() }
+        Self {
+            inner: Arc::from(s),
+            char_count_cache: std::sync::OnceLock::new(),
+        }
     }
 
     /// Creates a Text from Bytes
@@ -100,14 +113,18 @@ impl Text {
         let vec = bytes.to_vec();
         String::from_utf8(vec)
             .map(Self::new)
-            .map_err(|e| TextError::InvalidUtf8 { index: e.utf8_error().valid_up_to() })
+            .map_err(|e| TextError::InvalidUtf8 {
+                index: e.utf8_error().valid_up_to(),
+            })
     }
 
     /// Creates a Text from a byte slice
     pub fn from_utf8(bytes: &[u8]) -> TextResult<Self> {
         std::str::from_utf8(bytes)
-            .map(|s| Self::from(s))
-            .map_err(|e| TextError::InvalidUtf8 { index: e.valid_up_to() })
+            .map(Self::from)
+            .map_err(|e| TextError::InvalidUtf8 {
+                index: e.valid_up_to(),
+            })
     }
 
     // ==================== Basic Properties ====================
@@ -127,7 +144,9 @@ impl Text {
     /// Returns the number of characters (cached for performance)
     #[inline]
     pub fn char_count(&self) -> usize {
-        *self.char_count_cache.get_or_init(|| self.inner.chars().count())
+        *self
+            .char_count_cache
+            .get_or_init(|| self.inner.chars().count())
     }
 
     /// Returns the text as a string slice
@@ -201,7 +220,7 @@ impl Text {
                 result.extend(first.to_uppercase());
                 result.push_str(&chars.as_str().to_lowercase());
                 Self::new(result)
-            },
+            }
         }
     }
 
@@ -362,7 +381,11 @@ impl Text {
 
         let char_count = self.char_count();
         if start > char_count || end > char_count {
-            return Err(TextError::OutOfBounds { start, end, len: char_count });
+            return Err(TextError::OutOfBounds {
+                start,
+                end,
+                len: char_count,
+            });
         }
 
         if start == end {
@@ -380,13 +403,19 @@ impl Text {
         let start_byte = if start == 0 {
             0
         } else {
-            char_indices.nth(start - 1).map(|(i, c)| i + c.len_utf8()).unwrap_or(0)
+            char_indices
+                .nth(start - 1)
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(0)
         };
 
         let end_byte = if end == start {
             start_byte
         } else {
-            char_indices.nth(end - start - 1).map(|(i, c)| i + c.len_utf8()).unwrap_or(self.len())
+            char_indices
+                .nth(end - start - 1)
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(self.len())
         };
 
         Ok(Self::from(&self.inner[start_byte..end_byte]))
@@ -417,7 +446,8 @@ impl Text {
             return Self::empty();
         }
 
-        self.substring(n, char_count).unwrap_or_else(|_| Self::empty())
+        self.substring(n, char_count)
+            .unwrap_or_else(|_| Self::empty())
     }
 
     /// Takes last n characters
@@ -434,7 +464,10 @@ impl Text {
         self.inner
             .chars()
             .nth(index)
-            .ok_or_else(|| TextError::CharIndexOutOfBounds { index, len: self.char_count() })
+            .ok_or_else(|| TextError::CharIndexOutOfBounds {
+                index,
+                len: self.char_count(),
+            })
     }
 
     /// Gets a slice of characters
@@ -450,10 +483,13 @@ impl Text {
         T: FromStr,
         T::Err: fmt::Display,
     {
-        self.inner.trim().parse::<T>().map_err(|e| TextError::ParseError {
-            ty: std::any::type_name::<T>(),
-            msg: e.to_string(),
-        })
+        self.inner
+            .trim()
+            .parse::<T>()
+            .map_err(|e| TextError::ParseError {
+                ty: std::any::type_name::<T>(),
+                msg: e.to_string(),
+            })
     }
 
     /// Checks if text represents a valid number
@@ -493,11 +529,10 @@ impl Text {
         }
 
         let mut chars = self.inner.chars();
-        if let Some(first) = chars.next() {
-            if !first.is_alphabetic() && first != '_' {
+        if let Some(first) = chars.next()
+            && !first.is_alphabetic() && first != '_' {
                 return false;
             }
-        }
 
         chars.all(|c| c.is_alphanumeric() || c == '_')
     }
@@ -675,7 +710,11 @@ impl Text {
             }
         }
 
-        boundaries.windows(2).par_bridge().map(|w| self.inner[w[0]..w[1]].chars().count()).sum()
+        boundaries
+            .windows(2)
+            .par_bridge()
+            .map(|w| self.inner[w[0]..w[1]].chars().count())
+            .sum()
     }
 
     #[cfg(feature = "rayon")]
@@ -685,7 +724,10 @@ impl Text {
             return self.split_whitespace().len();
         }
 
-        self.lines().par_iter().map(|line| line.split_whitespace().len()).sum()
+        self.lines()
+            .par_iter()
+            .map(|line| line.split_whitespace().len())
+            .sum()
     }
 
     // ==================== Base64 Operations ====================
@@ -693,18 +735,21 @@ impl Text {
     /// Encodes text as base64
     #[cfg(feature = "base64")]
     pub fn to_base64(&self) -> Text {
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
         Self::new(STANDARD.encode(self.as_bytes()))
     }
 
     /// Decodes from base64
     #[cfg(feature = "base64")]
     pub fn from_base64(encoded: &str) -> TextResult<Text> {
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
 
         STANDARD
             .decode(encoded)
-            .map_err(|e| TextError::ParseError { ty: "base64", msg: e.to_string() })
+            .map_err(|e| TextError::ParseError {
+                ty: "base64",
+                msg: e.to_string(),
+            })
             .and_then(|bytes| Self::from_utf8(&bytes))
     }
 }
@@ -780,14 +825,20 @@ impl From<&String> for Text {
 impl From<Box<str>> for Text {
     #[inline]
     fn from(s: Box<str>) -> Self {
-        Self { inner: Arc::from(s), char_count_cache: std::sync::OnceLock::new() }
+        Self {
+            inner: Arc::from(s),
+            char_count_cache: std::sync::OnceLock::new(),
+        }
     }
 }
 
 impl From<Arc<str>> for Text {
     #[inline]
     fn from(s: Arc<str>) -> Self {
-        Self { inner: s, char_count_cache: std::sync::OnceLock::new() }
+        Self {
+            inner: s,
+            char_count_cache: std::sync::OnceLock::new(),
+        }
     }
 }
 

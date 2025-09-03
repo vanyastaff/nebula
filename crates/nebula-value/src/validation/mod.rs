@@ -30,10 +30,19 @@ pub mod validators {
         max_length: Option<usize>,
     }
 
+    impl Default for TextLength {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl TextLength {
         /// Create a new text length validator
         pub fn new() -> Self {
-            Self { min_length: None, max_length: None }
+            Self {
+                min_length: None,
+                max_length: None,
+            }
         }
 
         /// Set minimum length
@@ -54,23 +63,21 @@ pub mod validators {
             if let Value::String(text) = value {
                 let len = text.len();
 
-                if let Some(min_len) = self.min_length {
-                    if len < min_len {
+                if let Some(min_len) = self.min_length
+                    && len < min_len {
                         return Err(ValueError::Validation(ValidationError::InvalidLength {
                             actual: len,
                             constraint: format!(">= {}", min_len),
                         }));
                     }
-                }
 
-                if let Some(max_len) = self.max_length {
-                    if len > max_len {
+                if let Some(max_len) = self.max_length
+                    && len > max_len {
                         return Err(ValueError::Validation(ValidationError::InvalidLength {
                             actual: len,
                             constraint: format!("<= {}", max_len),
                         }));
                     }
-                }
 
                 Ok(())
             } else {
@@ -94,10 +101,20 @@ pub mod validators {
         integer_only: bool,
     }
 
+    impl Default for NumberRange {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl NumberRange {
         /// Create a new number range validator
         pub fn new() -> Self {
-            Self { min_value: None, max_value: None, integer_only: false }
+            Self {
+                min_value: None,
+                max_value: None,
+                integer_only: false,
+            }
         }
 
         /// Set minimum value
@@ -121,30 +138,27 @@ pub mod validators {
 
     impl ValueValidator for NumberRange {
         fn validate(&self, value: &Value) -> ValueResult<()> {
-            if self.integer_only {
-                if matches!(value, Value::Float(_)) {
+            if self.integer_only
+                && matches!(value, Value::Float(_)) {
                     return Err(ValueError::type_mismatch("integer", "float"));
                 }
-            }
             let val = value
                 .as_float()
                 .ok_or_else(|| ValueError::type_mismatch("number", value.type_name()))?;
-            if let Some(min_val) = self.min_value {
-                if val < min_val {
+            if let Some(min_val) = self.min_value
+                && val < min_val {
                     return Err(ValueError::Validation(ValidationError::failed(format!(
                         "Value {} is less than minimum {}",
                         val, min_val
                     ))));
                 }
-            }
-            if let Some(max_val) = self.max_value {
-                if val > max_val {
+            if let Some(max_val) = self.max_value
+                && val > max_val {
                     return Err(ValueError::Validation(ValidationError::failed(format!(
                         "Value {} is greater than maximum {}",
                         val, max_val
                     ))));
                 }
-            }
             Ok(())
         }
 
@@ -184,10 +198,19 @@ pub mod validators {
         max_length: Option<usize>,
     }
 
+    impl Default for ArrayLength {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl ArrayLength {
         /// Create a new array length validator
         pub fn new() -> Self {
-            Self { min_length: None, max_length: None }
+            Self {
+                min_length: None,
+                max_length: None,
+            }
         }
 
         /// Set minimum length
@@ -208,23 +231,21 @@ pub mod validators {
             if let Value::Array(array) = value {
                 let len = array.len();
 
-                if let Some(min_len) = self.min_length {
-                    if len < min_len {
+                if let Some(min_len) = self.min_length
+                    && len < min_len {
                         return Err(ValueError::Validation(ValidationError::InvalidLength {
                             actual: len,
                             constraint: format!(">= {}", min_len),
                         }));
                     }
-                }
 
-                if let Some(max_len) = self.max_length {
-                    if len > max_len {
+                if let Some(max_len) = self.max_length
+                    && len > max_len {
                         return Err(ValueError::Validation(ValidationError::InvalidLength {
                             actual: len,
                             constraint: format!("<= {}", max_len),
                         }));
                     }
-                }
 
                 Ok(())
             } else {

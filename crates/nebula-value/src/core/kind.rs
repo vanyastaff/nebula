@@ -219,7 +219,7 @@ impl TypeCompatibility {
             // Numeric promotions
             (ValueKind::Integer, ValueKind::Float) | (ValueKind::Float, ValueKind::Integer) => {
                 Some(ValueKind::Float)
-            },
+            }
 
             // String concatenation
             (ValueKind::String, _) | (_, ValueKind::String) => Some(ValueKind::String),
@@ -251,12 +251,30 @@ mod tests {
 
     #[test]
     fn test_type_compatibility() {
-        assert!(TypeCompatibility::can_convert(ValueKind::Integer, ValueKind::Float));
-        assert!(TypeCompatibility::can_convert(ValueKind::Null, ValueKind::String));
-        assert!(!TypeCompatibility::can_convert(ValueKind::Array, ValueKind::Integer));
+        assert!(TypeCompatibility::can_convert(
+            ValueKind::Integer,
+            ValueKind::Float
+        ));
+        assert!(TypeCompatibility::can_convert(
+            ValueKind::Null,
+            ValueKind::String
+        ));
+        assert!(!TypeCompatibility::can_convert(
+            ValueKind::Array,
+            ValueKind::Integer
+        ));
 
-        assert!(TypeCompatibility::can_compare(ValueKind::Integer, ValueKind::Float));
-        assert!(TypeCompatibility::can_compare(ValueKind::String, ValueKind::String));
-        assert!(!TypeCompatibility::can_compare(ValueKind::Array, ValueKind::Integer));
+        assert!(TypeCompatibility::can_compare(
+            ValueKind::Integer,
+            ValueKind::Float
+        ));
+        assert!(TypeCompatibility::can_compare(
+            ValueKind::String,
+            ValueKind::String
+        ));
+        assert!(!TypeCompatibility::can_compare(
+            ValueKind::Array,
+            ValueKind::Integer
+        ));
     }
 }

@@ -2,7 +2,7 @@
 
 use futures::Future;
 use std::time::Duration;
-use tokio::time::{timeout as tokio_timeout, Timeout};
+use tokio::time::{Timeout, timeout as tokio_timeout};
 
 use crate::error::{ResilienceError, ResilienceResult};
 
@@ -40,7 +40,9 @@ pub async fn timeout<T, F>(duration: Duration, future: F) -> ResilienceResult<T>
 where
     F: Future<Output = T>,
 {
-    tokio_timeout(duration, future).await.map_err(|_| ResilienceError::timeout(duration))
+    tokio_timeout(duration, future)
+        .await
+        .map_err(|_| ResilienceError::timeout(duration))
 }
 
 /// Create a timeout-aware future without executing it
@@ -65,7 +67,7 @@ where
 
 /// Execute a future with a timeout, returning the original error type
 ///
-/// This variant preserves the original error type instead of converting to ResilienceError.
+/// This variant preserves the original error type instead of converting to `ResilienceError`.
 /// Useful when you want to handle the original error but still enforce timeouts.
 ///
 /// # Arguments
@@ -117,7 +119,7 @@ mod tests {
         match result.unwrap_err() {
             ResilienceError::Timeout { duration } => {
                 assert_eq!(duration, Duration::from_millis(10));
-            },
+            }
             _ => panic!("Expected timeout error"),
         }
     }
@@ -145,7 +147,7 @@ mod tests {
             ResilienceError::Timeout { .. } => {
                 // This should timeout because the future completes immediately with an error
                 // but the timeout wrapper doesn't distinguish between success and failure
-            },
+            }
             _ => panic!("Expected timeout error"),
         }
     }

@@ -100,22 +100,32 @@ impl CredentialError {
 
     /// Create a new "refresh not supported" error
     pub fn refresh_not_supported(credential_type: impl Into<String>) -> Self {
-        Self::RefreshNotSupported { credential_type: credential_type.into() }
+        Self::RefreshNotSupported {
+            credential_type: credential_type.into(),
+        }
     }
 
     /// Create a new "authentication failed" error
     pub fn auth_failed(reason: impl Into<String>) -> Self {
-        Self::AuthenticationFailed { reason: reason.into() }
+        Self::AuthenticationFailed {
+            reason: reason.into(),
+        }
     }
 
     /// Create a new "storage failed" error
     pub fn storage_failed(operation: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::StorageFailed { operation: operation.into(), reason: reason.into() }
+        Self::StorageFailed {
+            operation: operation.into(),
+            reason: reason.into(),
+        }
     }
 
     /// Create a new "invalid input" error
     pub fn invalid_input(field: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::InvalidInput { field: field.into(), reason: reason.into() }
+        Self::InvalidInput {
+            field: field.into(),
+            reason: reason.into(),
+        }
     }
 
     /// Create a new "internal" error
@@ -125,7 +135,10 @@ impl CredentialError {
 
     /// Check if this error indicates the credential needs refresh
     pub fn needs_refresh(&self) -> bool {
-        matches!(self, Self::Expired { .. } | Self::AuthenticationFailed { .. })
+        matches!(
+            self,
+            Self::Expired { .. } | Self::AuthenticationFailed { .. }
+        )
     }
 
     /// Get the error category for logging/metrics
@@ -171,7 +184,7 @@ impl CredentialError {
 /// Result type alias for credential operations
 pub type Result<T> = std::result::Result<T, CredentialError>;
 
-/// Convert from serde_json errors
+/// Convert from `serde_json` errors
 impl From<serde_json::Error> for CredentialError {
     fn from(error: serde_json::Error) -> Self {
         if error.is_syntax() || error.is_data() {

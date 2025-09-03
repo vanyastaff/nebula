@@ -46,7 +46,9 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = T>,
 {
-    tokio::time::timeout(duration, f()).await.expect("Test timed out")
+    tokio::time::timeout(duration, f())
+        .await
+        .expect("Test timed out")
 }
 
 /// Create test credential and return its ID

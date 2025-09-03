@@ -260,11 +260,7 @@ impl Boolean {
     #[inline]
     #[must_use]
     pub const fn select<T: Copy>(&self, if_true: T, if_false: T) -> T {
-        if self.0 {
-            if_true
-        } else {
-            if_false
-        }
+        if self.0 { if_true } else { if_false }
     }
 
     /// Returns Some(value) if self is true
@@ -291,121 +287,77 @@ impl Boolean {
     #[inline]
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
-        if self.0 {
-            "true"
-        } else {
-            "false"
-        }
+        if self.0 { "true" } else { "false" }
     }
 
     /// Uppercase representation
     #[inline]
     #[must_use]
     pub const fn as_upper(&self) -> &'static str {
-        if self.0 {
-            "TRUE"
-        } else {
-            "FALSE"
-        }
+        if self.0 { "TRUE" } else { "FALSE" }
     }
 
     /// Title case representation
     #[inline]
     #[must_use]
     pub const fn as_title(&self) -> &'static str {
-        if self.0 {
-            "True"
-        } else {
-            "False"
-        }
+        if self.0 { "True" } else { "False" }
     }
 
     /// Short form (T/F)
     #[inline]
     #[must_use]
     pub const fn as_short(&self) -> &'static str {
-        if self.0 {
-            "T"
-        } else {
-            "F"
-        }
+        if self.0 { "T" } else { "F" }
     }
 
     /// Numeric string (1/0)
     #[inline]
     #[must_use]
     pub const fn as_numeric_str(&self) -> &'static str {
-        if self.0 {
-            "1"
-        } else {
-            "0"
-        }
+        if self.0 { "1" } else { "0" }
     }
 
     /// Yes/No representation
     #[inline]
     #[must_use]
     pub const fn as_yes_no(&self) -> &'static str {
-        if self.0 {
-            "yes"
-        } else {
-            "no"
-        }
+        if self.0 { "yes" } else { "no" }
     }
 
     /// On/Off representation
     #[inline]
     #[must_use]
     pub const fn as_on_off(&self) -> &'static str {
-        if self.0 {
-            "on"
-        } else {
-            "off"
-        }
+        if self.0 { "on" } else { "off" }
     }
 
     /// Enabled/Disabled representation
     #[inline]
     #[must_use]
     pub const fn as_enabled(&self) -> &'static str {
-        if self.0 {
-            "enabled"
-        } else {
-            "disabled"
-        }
+        if self.0 { "enabled" } else { "disabled" }
     }
 
     /// Active/Inactive representation
     #[inline]
     #[must_use]
     pub const fn as_active(&self) -> &'static str {
-        if self.0 {
-            "active"
-        } else {
-            "inactive"
-        }
+        if self.0 { "active" } else { "inactive" }
     }
 
     /// Pass/Fail representation
     #[inline]
     #[must_use]
     pub const fn as_pass_fail(&self) -> &'static str {
-        if self.0 {
-            "pass"
-        } else {
-            "fail"
-        }
+        if self.0 { "pass" } else { "fail" }
     }
 
     /// Success/Failure representation
     #[inline]
     #[must_use]
     pub const fn as_success(&self) -> &'static str {
-        if self.0 {
-            "success"
-        } else {
-            "failure"
-        }
+        if self.0 { "success" } else { "failure" }
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -418,13 +370,15 @@ impl Boolean {
         match s {
             "true" | "1" => return Ok(Self::TRUE),
             "false" | "0" => return Ok(Self::FALSE),
-            _ => {},
+            _ => {}
         }
 
         // Case-insensitive parsing
         let trimmed = s.trim();
         if trimmed.is_empty() {
-            return Err(BooleanError::ParseError { input: s.to_string() });
+            return Err(BooleanError::ParseError {
+                input: s.to_string(),
+            });
         }
 
         // Use a static lookup table for efficiency
@@ -494,7 +448,9 @@ impl Boolean {
         } else if FALSE_VALUES.iter().any(|&v| lower == v) {
             Ok(Self::FALSE)
         } else {
-            Err(BooleanError::ParseError { input: s.to_string() })
+            Err(BooleanError::ParseError {
+                input: s.to_string(),
+            })
         }
     }
 
@@ -503,7 +459,9 @@ impl Boolean {
         match s {
             "true" => Ok(Self::TRUE),
             "false" => Ok(Self::FALSE),
-            _ => Err(BooleanError::ParseError { input: s.to_string() }),
+            _ => Err(BooleanError::ParseError {
+                input: s.to_string(),
+            }),
         }
     }
 
@@ -521,110 +479,70 @@ impl Boolean {
     #[inline]
     #[must_use]
     pub const fn as_i8(&self) -> i8 {
-        if self.0 {
-            1
-        } else {
-            0
-        }
+        if self.0 { 1 } else { 0 }
     }
 
     /// Convert to u8
     #[inline]
     #[must_use]
     pub const fn as_u8(&self) -> u8 {
-        if self.0 {
-            1
-        } else {
-            0
-        }
+        if self.0 { 1 } else { 0 }
     }
 
     /// Convert to i32
     #[inline]
     #[must_use]
     pub const fn as_i32(&self) -> i32 {
-        if self.0 {
-            1
-        } else {
-            0
-        }
+        if self.0 { 1 } else { 0 }
     }
 
     /// Convert to u32
     #[inline]
     #[must_use]
     pub const fn as_u32(&self) -> u32 {
-        if self.0 {
-            1
-        } else {
-            0
-        }
+        if self.0 { 1 } else { 0 }
     }
 
     /// Convert to i64
     #[inline]
     #[must_use]
     pub const fn as_i64(&self) -> i64 {
-        if self.0 {
-            1
-        } else {
-            0
-        }
+        if self.0 { 1 } else { 0 }
     }
 
     /// Convert to u64
     #[inline]
     #[must_use]
     pub const fn as_u64(&self) -> u64 {
-        if self.0 {
-            1
-        } else {
-            0
-        }
+        if self.0 { 1 } else { 0 }
     }
 
     /// Convert to isize
     #[inline]
     #[must_use]
     pub const fn as_isize(&self) -> isize {
-        if self.0 {
-            1
-        } else {
-            0
-        }
+        if self.0 { 1 } else { 0 }
     }
 
     /// Convert to usize
     #[inline]
     #[must_use]
     pub const fn as_usize(&self) -> usize {
-        if self.0 {
-            1
-        } else {
-            0
-        }
+        if self.0 { 1 } else { 0 }
     }
 
     /// Convert to f32
     #[inline]
     #[must_use]
     pub const fn as_f32(&self) -> f32 {
-        if self.0 {
-            1.0
-        } else {
-            0.0
-        }
+        if self.0 { 1.0 } else { 0.0 }
     }
 
     /// Convert to f64
     #[inline]
     #[must_use]
     pub const fn as_f64(&self) -> f64 {
-        if self.0 {
-            1.0
-        } else {
-            0.0
-        }
+        if self.0 { 1.0 } else { 0.0 }
     }
 
     /// Create from integer (loose: non-zero = true)
@@ -857,11 +775,7 @@ impl Boolean {
     #[inline]
     #[must_use]
     pub fn as_probability(&self) -> f64 {
-        if self.0 {
-            1.0
-        } else {
-            0.0
-        }
+        if self.0 { 1.0 } else { 0.0 }
     }
 
     /// Create from probability (>= 0.5 is true)
@@ -1078,7 +992,9 @@ macro_rules! impl_from_int {
     };
 }
 
-impl_from_int!(i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize);
+impl_from_int!(
+    i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize
+);
 
 impl From<f32> for Boolean {
     #[inline]
@@ -1179,7 +1095,7 @@ impl TryFrom<serde_json::Value> for Boolean {
                 } else {
                     Err(BooleanError::JsonTypeMismatch { found: "number" })
                 }
-            },
+            }
             serde_json::Value::String(s) => Self::parse(&s),
             serde_json::Value::Null => Ok(Self::FALSE),
             serde_json::Value::Array(_) => Err(BooleanError::JsonTypeMismatch { found: "array" }),

@@ -12,7 +12,7 @@ impl ClientAuthenticator for HttpBearer {
 
     async fn authenticate(
         &self,
-        mut builder: Self::Target,
+        builder: Self::Target,
         token: &AccessToken,
     ) -> Result<Self::Output, CredentialError> {
         if !matches!(token.token_type, TokenType::Bearer) {
@@ -21,7 +21,7 @@ impl ClientAuthenticator for HttpBearer {
             });
         }
 
-        let auth_value = token.token.with_exposed(|s| format!("Bearer {}", s));
+        let auth_value = token.token.with_exposed(|s| format!("Bearer {s}"));
 
         Ok(builder.header("Authorization", auth_value))
     }
@@ -36,7 +36,9 @@ pub struct ApiKeyHeader {
 impl ApiKeyHeader {
     /// Create new API key authenticator
     pub fn new(header_name: impl Into<String>) -> Self {
-        Self { header_name: header_name.into() }
+        Self {
+            header_name: header_name.into(),
+        }
     }
 }
 
@@ -47,7 +49,7 @@ impl ClientAuthenticator for ApiKeyHeader {
 
     async fn authenticate(
         &self,
-        mut builder: Self::Target,
+        builder: Self::Target,
         token: &AccessToken,
     ) -> Result<Self::Output, CredentialError> {
         if !matches!(token.token_type, TokenType::ApiKey) {
@@ -56,7 +58,7 @@ impl ClientAuthenticator for ApiKeyHeader {
             });
         }
 
-        let key_value = token.token.with_exposed(|s| s.to_string());
+        let key_value = token.token.with_exposed(ToString::to_string);
 
         Ok(builder.header(&self.header_name, key_value))
     }

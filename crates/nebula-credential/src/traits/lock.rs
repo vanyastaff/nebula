@@ -33,5 +33,5 @@ pub trait DistributedLock: Send + Sync {
 
     /// Try to acquire lock without blocking
     async fn try_acquire(&self, key: &str, ttl: Duration)
-        -> Result<Option<Self::Guard>, LockError>;
+    -> Result<Option<Self::Guard>, LockError>;
 }

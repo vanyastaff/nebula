@@ -9,7 +9,10 @@ pub type Result<T> = std::result::Result<T, MemoryError>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemoryError {
     /// Out of memory
-    OutOfMemory { requested: usize, available: Option<usize> },
+    OutOfMemory {
+        requested: usize,
+        available: Option<usize>,
+    },
 
     /// Invalid alignment
     InvalidAlignment { value: usize, required: usize },
@@ -39,41 +42,58 @@ pub enum MemoryError {
 impl fmt::Display for MemoryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::OutOfMemory { requested, available } => {
+            Self::OutOfMemory {
+                requested,
+                available,
+            } => {
                 if let Some(available) = available {
                     write!(
                         f,
-                        "Out of memory: requested {} bytes, {} available",
-                        requested, available
+                        "Out of memory: requested {requested} bytes, {available} available"
                     )
                 } else {
-                    write!(f, "Out of memory: requested {} bytes", requested)
+                    write!(f, "Out of memory: requested {requested} bytes")
                 }
-            },
+            }
             Self::InvalidAlignment { value, required } => {
-                write!(f, "Invalid alignment: {} is not aligned to {}", value, required)
-            },
+                write!(
+                    f,
+                    "Invalid alignment: {value} is not aligned to {required}"
+                )
+            }
             Self::InvalidSize { size, reason } => {
-                write!(f, "Invalid size {}: {}", size, reason)
-            },
-            Self::PoolExhausted { pool_name, capacity } => {
-                write!(f, "Pool '{}' exhausted (capacity: {})", pool_name, capacity)
-            },
-            Self::ArenaFull { arena_size, requested } => {
-                write!(f, "Arena full: size {}, requested {}", arena_size, requested)
-            },
+                write!(f, "Invalid size {size}: {reason}")
+            }
+            Self::PoolExhausted {
+                pool_name,
+                capacity,
+            } => {
+                write!(f, "Pool '{pool_name}' exhausted (capacity: {capacity})")
+            }
+            Self::ArenaFull {
+                arena_size,
+                requested,
+            } => {
+                write!(
+                    f,
+                    "Arena full: size {arena_size}, requested {requested}"
+                )
+            }
             Self::CacheMiss { key } => {
-                write!(f, "Cache miss for key '{}'", key)
-            },
+                write!(f, "Cache miss for key '{key}'")
+            }
             Self::BudgetExceeded { limit, attempted } => {
-                write!(f, "Memory budget exceeded: limit {}, attempted {}", limit, attempted)
-            },
+                write!(
+                    f,
+                    "Memory budget exceeded: limit {limit}, attempted {attempted}"
+                )
+            }
             Self::ConfigError { message } => {
                 write!(f, "Configuration error: {message}")
-            },
+            }
             Self::SystemError { message } => {
                 write!(f, "System error: {message}")
-            },
+            }
         }
     }
 }
@@ -83,12 +103,18 @@ impl std::error::Error for MemoryError {}
 impl MemoryError {
     /// Create an out of memory error
     pub fn out_of_memory(requested: usize) -> Self {
-        Self::OutOfMemory { requested, available: None }
+        Self::OutOfMemory {
+            requested,
+            available: None,
+        }
     }
 
     /// Create an out of memory error with available memory info
     pub fn out_of_memory_with_available(requested: usize, available: usize) -> Self {
-        Self::OutOfMemory { requested, available: Some(available) }
+        Self::OutOfMemory {
+            requested,
+            available: Some(available),
+        }
     }
 
     /// Create an invalid alignment error
@@ -98,17 +124,26 @@ impl MemoryError {
 
     /// Create an invalid size error
     pub fn invalid_size(size: usize, reason: impl Into<String>) -> Self {
-        Self::InvalidSize { size, reason: reason.into() }
+        Self::InvalidSize {
+            size,
+            reason: reason.into(),
+        }
     }
 
     /// Create a pool exhausted error
     pub fn pool_exhausted(pool_name: impl Into<String>, capacity: usize) -> Self {
-        Self::PoolExhausted { pool_name: pool_name.into(), capacity }
+        Self::PoolExhausted {
+            pool_name: pool_name.into(),
+            capacity,
+        }
     }
 
     /// Create an arena full error
     pub fn arena_full(arena_size: usize, requested: usize) -> Self {
-        Self::ArenaFull { arena_size, requested }
+        Self::ArenaFull {
+            arena_size,
+            requested,
+        }
     }
 
     /// Create a cache miss error
@@ -123,17 +158,23 @@ impl MemoryError {
 
     /// Create a configuration error
     pub fn config_error(message: impl Into<String>) -> Self {
-        Self::ConfigError { message: message.into() }
+        Self::ConfigError {
+            message: message.into(),
+        }
     }
 
     /// Create a system error
     pub fn system_error(message: impl Into<String>) -> Self {
-        Self::SystemError { message: message.into() }
+        Self::SystemError {
+            message: message.into(),
+        }
     }
 }
 
 impl From<nebula_system::SystemError> for MemoryError {
     fn from(err: nebula_system::SystemError) -> Self {
-        MemoryError::SystemError { message: err.to_string() }
+        MemoryError::SystemError {
+            message: err.to_string(),
+        }
     }
 }

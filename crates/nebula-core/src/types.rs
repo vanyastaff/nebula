@@ -30,7 +30,13 @@ pub struct Version {
 impl Version {
     /// Create a new version
     pub fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self { major, minor, patch, pre: None, build: None }
+        Self {
+            major,
+            minor,
+            patch,
+            pre: None,
+            build: None,
+        }
     }
 
     /// Create a version with pre-release identifier
@@ -159,11 +165,13 @@ impl std::fmt::Display for Status {
 
 /// Priority level for operations
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum Priority {
     /// Lowest priority
     Low = 1,
 
     /// Normal priority
+    #[default]
     Normal = 2,
 
     /// High priority
@@ -190,7 +198,10 @@ impl Priority {
 
     /// Check if this priority is urgent
     pub fn is_urgent(&self) -> bool {
-        matches!(self, Priority::High | Priority::Critical | Priority::Emergency)
+        matches!(
+            self,
+            Priority::High | Priority::Critical | Priority::Emergency
+        )
     }
 
     /// Check if this priority is critical
@@ -199,11 +210,6 @@ impl Priority {
     }
 }
 
-impl Default for Priority {
-    fn default() -> Self {
-        Priority::Normal
-    }
-}
 
 impl std::fmt::Display for Priority {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -432,16 +438,21 @@ pub mod utils {
             return Err("Version must have at least major.minor.patch".to_string());
         }
 
-        let major = parts[0].parse::<u32>().map_err(|_| "Invalid major version")?;
-        let minor = parts[1].parse::<u32>().map_err(|_| "Invalid minor version")?;
-        let patch = parts[2].parse::<u32>().map_err(|_| "Invalid patch version")?;
+        let major = parts[0]
+            .parse::<u32>()
+            .map_err(|_| "Invalid major version")?;
+        let minor = parts[1]
+            .parse::<u32>()
+            .map_err(|_| "Invalid minor version")?;
+        let patch = parts[2]
+            .parse::<u32>()
+            .map_err(|_| "Invalid patch version")?;
 
         let mut version = Version::new(major, minor, patch);
 
         // Handle pre-release and build metadata
         if let Some(pre_build_str) = pre_build {
-            if pre_build_str.starts_with('-') {
-                let pre = &pre_build_str[1..];
+            if let Some(pre) = pre_build_str.strip_prefix('-') {
                 if let Some(build_idx) = pre.find('+') {
                     let (pre_part, build_part) = pre.split_at(build_idx);
                     version = version.with_pre(pre_part);

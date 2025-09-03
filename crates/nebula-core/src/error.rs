@@ -13,23 +13,40 @@ use super::id::{ExecutionId, NodeId, TenantId, UserId, WorkflowId};
 pub enum CoreError {
     /// Validation error
     #[error("Validation error: {message}")]
-    Validation { message: String, field: Option<String>, value: Option<String> },
+    Validation {
+        message: String,
+        field: Option<String>,
+        value: Option<String>,
+    },
 
     /// Not found error
     #[error("Resource not found: {resource_type} '{resource_id}'")]
-    NotFound { resource_type: String, resource_id: String },
+    NotFound {
+        resource_type: String,
+        resource_id: String,
+    },
 
     /// Already exists error
     #[error("Resource already exists: {resource_type} '{resource_id}'")]
-    AlreadyExists { resource_type: String, resource_id: String },
+    AlreadyExists {
+        resource_type: String,
+        resource_id: String,
+    },
 
     /// Permission denied error
     #[error("Permission denied: {operation} on {resource}")]
-    PermissionDenied { operation: String, resource: String, reason: Option<String> },
+    PermissionDenied {
+        operation: String,
+        resource: String,
+        reason: Option<String>,
+    },
 
     /// Authentication error
     #[error("Authentication failed: {reason}")]
-    Authentication { reason: String, user_id: Option<UserId> },
+    Authentication {
+        reason: String,
+        user_id: Option<UserId>,
+    },
 
     /// Authorization error
     #[error("Authorization failed: {operation} on {resource}")]
@@ -42,19 +59,33 @@ pub enum CoreError {
 
     /// Invalid input error
     #[error("Invalid input: {message}")]
-    InvalidInput { message: String, field: Option<String>, value: Option<String> },
+    InvalidInput {
+        message: String,
+        field: Option<String>,
+        value: Option<String>,
+    },
 
     /// Serialization error
     #[error("Serialization failed: {message}")]
-    Serialization { message: String, format: Option<String> },
+    Serialization {
+        message: String,
+        format: Option<String>,
+    },
 
     /// Deserialization error
     #[error("Deserialization failed: {message}")]
-    Deserialization { message: String, format: Option<String>, data: Option<String> },
+    Deserialization {
+        message: String,
+        format: Option<String>,
+        data: Option<String>,
+    },
 
     /// Timeout error
     #[error("Operation timed out after {duration:?}: {operation}")]
-    Timeout { operation: String, duration: std::time::Duration },
+    Timeout {
+        operation: String,
+        duration: std::time::Duration,
+    },
 
     /// Rate limit exceeded error
     #[error("Rate limit exceeded: {limit} requests per {period:?}")]
@@ -66,35 +97,66 @@ pub enum CoreError {
 
     /// Resource exhausted error
     #[error("Resource exhausted: {resource} (limit: {limit})")]
-    ResourceExhausted { resource: String, limit: String, current: Option<String> },
+    ResourceExhausted {
+        resource: String,
+        limit: String,
+        current: Option<String>,
+    },
 
     /// Internal error
     #[error("Internal error: {message}")]
-    Internal { message: String, code: Option<String> },
+    Internal {
+        message: String,
+        code: Option<String>,
+    },
 
     /// Service unavailable error
     #[error("Service unavailable: {service} - {reason}")]
-    ServiceUnavailable { service: String, reason: String, retry_after: Option<std::time::Duration> },
+    ServiceUnavailable {
+        service: String,
+        reason: String,
+        retry_after: Option<std::time::Duration>,
+    },
 
     /// Configuration error
     #[error("Configuration error: {message}")]
-    Configuration { message: String, file: Option<String>, line: Option<u32> },
+    Configuration {
+        message: String,
+        file: Option<String>,
+        line: Option<u32>,
+    },
 
     /// State error
     #[error("Invalid state: {current_state} for operation {operation}")]
-    InvalidState { current_state: String, expected_state: Option<String>, operation: String },
+    InvalidState {
+        current_state: String,
+        expected_state: Option<String>,
+        operation: String,
+    },
 
     /// Dependency error
     #[error("Dependency error: {dependency} - {reason}")]
-    Dependency { dependency: String, reason: String, operation: Option<String> },
+    Dependency {
+        dependency: String,
+        reason: String,
+        operation: Option<String>,
+    },
 
     /// Network error
     #[error("Network error: {operation} - {reason}")]
-    Network { operation: String, reason: String, retryable: bool },
+    Network {
+        operation: String,
+        reason: String,
+        retryable: bool,
+    },
 
     /// Storage error
     #[error("Storage error: {operation} - {reason}")]
-    Storage { operation: String, reason: String, backend: Option<String> },
+    Storage {
+        operation: String,
+        reason: String,
+        backend: Option<String>,
+    },
 
     /// Workflow execution error
     #[error("Workflow execution error: {workflow_id} - {reason}")]
@@ -116,19 +178,35 @@ pub enum CoreError {
 
     /// Expression evaluation error
     #[error("Expression evaluation error: {expression} - {reason}")]
-    ExpressionEvaluation { expression: String, reason: String, context: Option<String> },
+    ExpressionEvaluation {
+        expression: String,
+        reason: String,
+        context: Option<String>,
+    },
 
     /// Resource management error
     #[error("Resource management error: {operation} - {reason}")]
-    ResourceManagement { operation: String, resource_type: String, reason: String },
+    ResourceManagement {
+        operation: String,
+        resource_type: String,
+        reason: String,
+    },
 
     /// Cluster error
     #[error("Cluster error: {operation} - {reason}")]
-    Cluster { operation: String, reason: String, node_id: Option<String> },
+    Cluster {
+        operation: String,
+        reason: String,
+        node_id: Option<String>,
+    },
 
     /// Tenant error
     #[error("Tenant error: {tenant_id} - {reason}")]
-    Tenant { tenant_id: TenantId, reason: String, operation: Option<String> },
+    Tenant {
+        tenant_id: TenantId,
+        reason: String,
+        operation: Option<String>,
+    },
 }
 
 impl CoreError {
@@ -139,9 +217,15 @@ impl CoreError {
             CoreError::Timeout { .. }
                 | CoreError::RateLimitExceeded { .. }
                 | CoreError::ServiceUnavailable { .. }
-                | CoreError::Network { retryable: true, .. }
+                | CoreError::Network {
+                    retryable: true,
+                    ..
+                }
                 | CoreError::Storage { .. }
-                | CoreError::NodeExecution { retryable: true, .. }
+                | CoreError::NodeExecution {
+                    retryable: true,
+                    ..
+                }
         )
     }
 
@@ -211,64 +295,96 @@ impl CoreError {
     pub fn user_message(&self) -> String {
         match self {
             CoreError::Validation { message, .. } => format!("Invalid input: {}", message),
-            CoreError::NotFound { resource_type, resource_id, .. } => {
+            CoreError::NotFound {
+                resource_type,
+                resource_id,
+                ..
+            } => {
                 format!("{} '{}' not found", resource_type, resource_id)
-            },
-            CoreError::AlreadyExists { resource_type, resource_id, .. } => {
+            }
+            CoreError::AlreadyExists {
+                resource_type,
+                resource_id,
+                ..
+            } => {
                 format!("{} '{}' already exists", resource_type, resource_id)
-            },
-            CoreError::PermissionDenied { operation, resource, .. } => {
+            }
+            CoreError::PermissionDenied {
+                operation,
+                resource,
+                ..
+            } => {
                 format!("You don't have permission to {} {}", operation, resource)
-            },
+            }
             CoreError::Authentication { reason, .. } => {
                 format!("Authentication failed: {}", reason)
-            },
-            CoreError::Authorization { operation, resource, .. } => {
+            }
+            CoreError::Authorization {
+                operation,
+                resource,
+                ..
+            } => {
                 format!("You don't have permission to {} {}", operation, resource)
-            },
+            }
             CoreError::InvalidInput { message, .. } => format!("Invalid input: {}", message),
             CoreError::Serialization { .. } => "Failed to process data".to_string(),
             CoreError::Deserialization { .. } => "Failed to process data".to_string(),
             CoreError::Timeout { operation, .. } => format!("{} timed out", operation),
             CoreError::RateLimitExceeded { .. } => {
                 "Too many requests. Please try again later.".to_string()
-            },
+            }
             CoreError::ResourceExhausted { resource, .. } => format!("{} limit reached", resource),
             CoreError::Internal { .. } => {
                 "An internal error occurred. Please try again later.".to_string()
-            },
+            }
             CoreError::ServiceUnavailable { service, .. } => {
                 format!("{} is temporarily unavailable", service)
-            },
+            }
             CoreError::Configuration { message, .. } => format!("Configuration error: {}", message),
-            CoreError::InvalidState { current_state, operation, .. } => {
+            CoreError::InvalidState {
+                current_state,
+                operation,
+                ..
+            } => {
                 format!("Cannot {} in current state: {}", operation, current_state)
-            },
+            }
             CoreError::Dependency { dependency, .. } => format!("{} is not available", dependency),
             CoreError::Network { operation, .. } => format!("Network error during {}", operation),
             CoreError::Storage { operation, .. } => format!("Storage error during {}", operation),
-            CoreError::WorkflowExecution { workflow_id, reason, .. } => {
+            CoreError::WorkflowExecution {
+                workflow_id,
+                reason,
+                ..
+            } => {
                 format!("Workflow '{}' execution failed: {}", workflow_id, reason)
-            },
-            CoreError::NodeExecution { node_id, reason, .. } => {
+            }
+            CoreError::NodeExecution {
+                node_id, reason, ..
+            } => {
                 format!("Node '{}' execution failed: {}", node_id, reason)
-            },
+            }
             CoreError::ExpressionEvaluation { .. } => "Expression evaluation failed".to_string(),
             CoreError::ResourceManagement { operation, .. } => {
                 format!("Resource operation failed: {}", operation)
-            },
+            }
             CoreError::Cluster { operation, .. } => {
                 format!("Cluster operation failed: {}", operation)
-            },
-            CoreError::Tenant { tenant_id, reason, .. } => {
+            }
+            CoreError::Tenant {
+                tenant_id, reason, ..
+            } => {
                 format!("Tenant '{}' operation failed: {}", tenant_id, reason)
-            },
+            }
         }
     }
 
     /// Create a validation error
     pub fn validation(message: impl Into<String>) -> Self {
-        CoreError::Validation { message: message.into(), field: None, value: None }
+        CoreError::Validation {
+            message: message.into(),
+            field: None,
+            value: None,
+        }
     }
 
     /// Create a validation error with field and value
@@ -286,7 +402,10 @@ impl CoreError {
 
     /// Create a not found error
     pub fn not_found(resource_type: impl Into<String>, resource_id: impl Into<String>) -> Self {
-        CoreError::NotFound { resource_type: resource_type.into(), resource_id: resource_id.into() }
+        CoreError::NotFound {
+            resource_type: resource_type.into(),
+            resource_id: resource_id.into(),
+        }
     }
 
     /// Create an already exists error
@@ -315,7 +434,10 @@ impl CoreError {
 
     /// Create an authentication error
     pub fn authentication(reason: impl Into<String>, user_id: Option<UserId>) -> Self {
-        CoreError::Authentication { reason: reason.into(), user_id }
+        CoreError::Authentication {
+            reason: reason.into(),
+            user_id,
+        }
     }
 
     /// Create an authorization error
@@ -335,12 +457,19 @@ impl CoreError {
 
     /// Create an invalid input error
     pub fn invalid_input(message: impl Into<String>) -> Self {
-        CoreError::InvalidInput { message: message.into(), field: None, value: None }
+        CoreError::InvalidInput {
+            message: message.into(),
+            field: None,
+            value: None,
+        }
     }
 
     /// Create a timeout error
     pub fn timeout(operation: impl Into<String>, duration: std::time::Duration) -> Self {
-        CoreError::Timeout { operation: operation.into(), duration }
+        CoreError::Timeout {
+            operation: operation.into(),
+            duration,
+        }
     }
 
     /// Create a rate limit exceeded error
@@ -349,12 +478,19 @@ impl CoreError {
         period: std::time::Duration,
         retry_after: Option<std::time::Duration>,
     ) -> Self {
-        CoreError::RateLimitExceeded { limit, period, retry_after }
+        CoreError::RateLimitExceeded {
+            limit,
+            period,
+            retry_after,
+        }
     }
 
     /// Create an internal error
     pub fn internal(message: impl Into<String>) -> Self {
-        CoreError::Internal { message: message.into(), code: None }
+        CoreError::Internal {
+            message: message.into(),
+            code: None,
+        }
     }
 
     /// Create a service unavailable error
@@ -389,11 +525,7 @@ impl<T> ErrorContext<T> for CoreResult<T> {
     where
         C: fmt::Display + Send + Sync + 'static,
     {
-        self.map_err(|e| {
-            // For now, we'll just return the original error
-            // In the future, we could enhance this to include context
-            e
-        })
+        self
     }
 }
 
@@ -480,13 +612,19 @@ mod tests {
     #[test]
     fn test_user_messages() {
         let validation_error = CoreError::validation("Field is required");
-        assert_eq!(validation_error.user_message(), "Invalid input: Field is required");
+        assert_eq!(
+            validation_error.user_message(),
+            "Invalid input: Field is required"
+        );
 
         let not_found_error = CoreError::not_found("User", "123");
         assert_eq!(not_found_error.user_message(), "User '123' not found");
 
         let permission_error = CoreError::permission_denied("read", "document", None::<String>);
-        assert_eq!(permission_error.user_message(), "You don't have permission to read document");
+        assert_eq!(
+            permission_error.user_message(),
+            "You don't have permission to read document"
+        );
     }
 
     #[test]

@@ -2,13 +2,12 @@
 
 use futures::Future;
 use std::time::Duration;
-use tracing::{debug, info};
 
 use crate::{
     bulkhead::Bulkhead,
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
-    error::{ResilienceError, ResilienceResult},
-    retry::{RetryStrategy, Retryable},
+    error::ResilienceResult,
+    retry::RetryStrategy,
     timeout::timeout,
 };
 
@@ -38,54 +37,54 @@ impl Default for ResiliencePolicy {
 
 impl ResiliencePolicy {
     /// Create a new resilience policy
-    pub fn new() -> Self {
+    #[must_use] pub fn new() -> Self {
         Self::default()
     }
 
     /// Set timeout
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+    #[must_use] pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
 
     /// Set retry strategy
-    pub fn with_retry(mut self, retry: RetryStrategy) -> Self {
+    #[must_use] pub fn with_retry(mut self, retry: RetryStrategy) -> Self {
         self.retry = Some(retry);
         self
     }
 
     /// Set circuit breaker configuration
-    pub fn with_circuit_breaker(mut self, config: CircuitBreakerConfig) -> Self {
+    #[must_use] pub fn with_circuit_breaker(mut self, config: CircuitBreakerConfig) -> Self {
         self.circuit_breaker = Some(config);
         self
     }
 
     /// Set bulkhead concurrency limit
-    pub fn with_bulkhead(mut self, max_concurrency: usize) -> Self {
+    #[must_use] pub fn with_bulkhead(mut self, max_concurrency: usize) -> Self {
         self.bulkhead = Some(max_concurrency);
         self
     }
 
     /// Remove timeout
-    pub fn without_timeout(mut self) -> Self {
+    #[must_use] pub fn without_timeout(mut self) -> Self {
         self.timeout = None;
         self
     }
 
     /// Remove retry
-    pub fn without_retry(mut self) -> Self {
+    #[must_use] pub fn without_retry(mut self) -> Self {
         self.retry = None;
         self
     }
 
     /// Remove circuit breaker
-    pub fn without_circuit_breaker(mut self) -> Self {
+    #[must_use] pub fn without_circuit_breaker(mut self) -> Self {
         self.circuit_breaker = None;
         self
     }
 
     /// Remove bulkhead
-    pub fn without_bulkhead(mut self) -> Self {
+    #[must_use] pub fn without_bulkhead(mut self) -> Self {
         self.bulkhead = None;
         self
     }
@@ -204,25 +203,27 @@ pub struct ResilienceBuilder {
 
 impl ResilienceBuilder {
     /// Create a new resilience builder
-    pub fn new() -> Self {
-        Self { policy: ResiliencePolicy::new() }
+    #[must_use] pub fn new() -> Self {
+        Self {
+            policy: ResiliencePolicy::new(),
+        }
     }
 
     /// Set timeout
-    pub fn timeout(mut self, timeout: Duration) -> Self {
+    #[must_use] pub fn timeout(mut self, timeout: Duration) -> Self {
         self.policy = self.policy.with_timeout(timeout);
         self
     }
 
     /// Set retry configuration
-    pub fn retry(mut self, max_attempts: usize, base_delay: Duration) -> Self {
+    #[must_use] pub fn retry(mut self, max_attempts: usize, base_delay: Duration) -> Self {
         let retry_strategy = RetryStrategy::new(max_attempts, base_delay);
         self.policy = self.policy.with_retry(retry_strategy);
         self
     }
 
     /// Set circuit breaker configuration
-    pub fn circuit_breaker(mut self, failure_threshold: usize, reset_timeout: Duration) -> Self {
+    #[must_use] pub fn circuit_breaker(mut self, failure_threshold: usize, reset_timeout: Duration) -> Self {
         let config = CircuitBreakerConfig {
             failure_threshold,
             reset_timeout,
@@ -234,13 +235,13 @@ impl ResilienceBuilder {
     }
 
     /// Set bulkhead concurrency limit
-    pub fn bulkhead(mut self, max_concurrency: usize) -> Self {
+    #[must_use] pub fn bulkhead(mut self, max_concurrency: usize) -> Self {
         self.policy = self.policy.with_bulkhead(max_concurrency);
         self
     }
 
     /// Build the resilience policy
-    pub fn build(self) -> ResiliencePolicy {
+    #[must_use] pub fn build(self) -> ResiliencePolicy {
         self.policy
     }
 }
@@ -253,10 +254,10 @@ impl Default for ResilienceBuilder {
 
 /// Predefined resilience policies for common scenarios
 pub mod policies {
-    use super::*;
+    use super::{ResiliencePolicy, ResilienceBuilder, Duration};
 
     /// Policy for database operations
-    pub fn database() -> ResiliencePolicy {
+    #[must_use] pub fn database() -> ResiliencePolicy {
         ResilienceBuilder::new()
             .timeout(Duration::from_secs(5))
             .retry(3, Duration::from_millis(100))
@@ -266,7 +267,7 @@ pub mod policies {
     }
 
     /// Policy for HTTP API calls
-    pub fn http_api() -> ResiliencePolicy {
+    #[must_use] pub fn http_api() -> ResiliencePolicy {
         ResilienceBuilder::new()
             .timeout(Duration::from_secs(10))
             .retry(3, Duration::from_secs(1))
@@ -276,7 +277,7 @@ pub mod policies {
     }
 
     /// Policy for file operations
-    pub fn file_operations() -> ResiliencePolicy {
+    #[must_use] pub fn file_operations() -> ResiliencePolicy {
         ResilienceBuilder::new()
             .timeout(Duration::from_secs(30))
             .retry(2, Duration::from_secs(1))
@@ -285,7 +286,7 @@ pub mod policies {
     }
 
     /// Policy for long-running operations
-    pub fn long_running() -> ResiliencePolicy {
+    #[must_use] pub fn long_running() -> ResiliencePolicy {
         ResilienceBuilder::new()
             .timeout(Duration::from_secs(300))
             .retry(1, Duration::from_secs(5))
@@ -294,7 +295,7 @@ pub mod policies {
     }
 
     /// Policy for critical operations (minimal resilience)
-    pub fn critical() -> ResiliencePolicy {
+    #[must_use] pub fn critical() -> ResiliencePolicy {
         ResilienceBuilder::new()
             .timeout(Duration::from_secs(60))
             .retry(1, Duration::from_secs(1))
@@ -337,7 +338,9 @@ mod tests {
             .with_timeout(Duration::from_millis(100))
             .with_retry(RetryStrategy::new(2, Duration::from_millis(10)));
 
-        let result = policy.execute(|| async { Ok::<&str, ResilienceError>("success") }).await;
+        let result = policy
+            .execute(|| async { Ok::<&str, ResilienceError>("success") })
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "success");
@@ -356,7 +359,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            ResilienceError::Timeout { .. } => {},
+            ResilienceError::Timeout { .. } => {}
             _ => panic!("Expected timeout error"),
         }
     }

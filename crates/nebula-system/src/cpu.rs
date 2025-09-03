@@ -135,24 +135,34 @@ pub fn usage() -> CpuUsage {
         let mut sys = SYSINFO_SYSTEM.write();
         sys.refresh_cpu_usage();
 
-        let per_core: Vec<f32> = sys.cpus().iter().map(|cpu| cpu.cpu_usage()).collect();
+        let per_core: Vec<f32> = sys.cpus().iter().map(sysinfo::Cpu::cpu_usage).collect();
 
-        let average = if !per_core.is_empty() {
-            per_core.iter().sum::<f32>() / per_core.len() as f32
-        } else {
+        let average = if per_core.is_empty() {
             0.0
+        } else {
+            per_core.iter().sum::<f32>() / per_core.len() as f32
         };
 
-        let peak = per_core.iter().cloned().fold(0.0, f32::max);
+        let peak = per_core.iter().copied().fold(0.0, f32::max);
 
         let cores_under_pressure = per_core.iter().filter(|&&usage| usage > 80.0).count();
 
-        CpuUsage { per_core, average, peak, cores_under_pressure }
+        CpuUsage {
+            per_core,
+            average,
+            peak,
+            cores_under_pressure,
+        }
     }
 
     #[cfg(not(feature = "sysinfo"))]
     {
-        CpuUsage { per_core: vec![], average: 0.0, peak: 0.0, cores_under_pressure: 0 }
+        CpuUsage {
+            per_core: vec![],
+            average: 0.0,
+            peak: 0.0,
+            cores_under_pressure: 0,
+        }
     }
 }
 
@@ -231,7 +241,10 @@ fn read_cache_size(path: &str) -> Option<usize> {
         if s.ends_with('K') {
             s[..s.len() - 1].parse::<usize>().ok().map(|v| v * 1024)
         } else if s.ends_with('M') {
-            s[..s.len() - 1].parse::<usize>().ok().map(|v| v * 1024 * 1024)
+            s[..s.len() - 1]
+                .parse::<usize>()
+                .ok()
+                .map(|v| v * 1024 * 1024)
         } else {
             s.parse().ok()
         }
@@ -297,7 +310,11 @@ fn detect_numa_nodes() -> Vec<NumaNode> {
 
     // Default single node
     let info = SystemInfo::get();
-    vec![NumaNode { id: 0, cpus: (0..info.cpu.threads).collect(), memory: info.memory.total }]
+    vec![NumaNode {
+        id: 0,
+        cpus: (0..info.cpu.threads).collect(),
+        memory: info.memory.total,
+    }]
 }
 
 #[cfg(target_os = "linux")]
@@ -344,7 +361,7 @@ pub mod affinity {
     /// Set CPU affinity for current thread
     #[cfg(target_os = "linux")]
     pub fn set_current_thread(cpus: &[usize]) -> Result<()> {
-        use libc::{cpu_set_t, sched_setaffinity, CPU_SET, CPU_ZERO};
+        use libc::{CPU_SET, CPU_ZERO, cpu_set_t, sched_setaffinity};
         use std::mem;
 
         unsafe {

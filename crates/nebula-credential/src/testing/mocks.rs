@@ -3,8 +3,8 @@ use crate::manager::*;
 use crate::traits::*;
 use async_trait::async_trait;
 use dashmap::DashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
 
@@ -76,7 +76,10 @@ impl StateStore for MockStateStore {
             return Err(CredentialError::storage_failed("load", "mock failure"));
         }
 
-        self.data.get(id).map(|entry| entry.clone()).ok_or_else(|| CredentialError::not_found(id))
+        self.data
+            .get(id)
+            .map(|entry| entry.clone())
+            .ok_or_else(|| CredentialError::not_found(id))
     }
 
     async fn save(
@@ -98,12 +101,13 @@ impl StateStore for MockStateStore {
         let new_version = StateVersion(version.0 + 1);
 
         if let Some(mut entry) = self.data.get_mut(id) {
-            if entry.1 .0 != version.0 {
+            if entry.1.0 != version.0 {
                 return Err(CredentialError::CasConflict);
             }
             *entry = (state.clone(), new_version);
         } else if version.0 == 0 {
-            self.data.insert(id.to_string(), (state.clone(), new_version));
+            self.data
+                .insert(id.to_string(), (state.clone(), new_version));
         } else {
             return Err(CredentialError::CasConflict);
         }
@@ -203,7 +207,10 @@ impl DistributedLock for MockLock {
         let deadline = SystemTime::now() + ttl;
         self.locks.insert(key.to_string(), deadline);
 
-        Ok(MockLockGuard { key: key.to_string(), locks: self.locks.clone() })
+        Ok(MockLockGuard {
+            key: key.to_string(),
+            locks: self.locks.clone(),
+        })
     }
 
     async fn try_acquire(
@@ -220,7 +227,10 @@ impl DistributedLock for MockLock {
         let deadline = SystemTime::now() + ttl;
         self.locks.insert(key.to_string(), deadline);
 
-        Ok(Some(MockLockGuard { key: key.to_string(), locks: self.locks.clone() }))
+        Ok(Some(MockLockGuard {
+            key: key.to_string(),
+            locks: self.locks.clone(),
+        }))
     }
 }
 
@@ -245,11 +255,7 @@ impl MockTokenCache {
     pub fn hit_rate(&self) -> f32 {
         let hits = self.hit_count.load(Ordering::SeqCst) as f32;
         let total = hits + self.miss_count.load(Ordering::SeqCst) as f32;
-        if total > 0.0 {
-            hits / total
-        } else {
-            0.0
-        }
+        if total > 0.0 { hits / total } else { 0.0 }
     }
 
     pub fn stats(&self) -> CacheStats {
@@ -287,7 +293,8 @@ impl TokenCache for MockTokenCache {
     async fn put(&self, key: &str, token: &AccessToken, ttl: Duration) -> Result<()> {
         self.put_count.fetch_add(1, Ordering::SeqCst);
         let expires_at = SystemTime::now() + ttl;
-        self.cache.insert(key.to_string(), (token.clone(), expires_at));
+        self.cache
+            .insert(key.to_string(), (token.clone(), expires_at));
         Ok(())
     }
 

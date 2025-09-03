@@ -1,6 +1,6 @@
+use crate::Value;
 use crate::error::ValueError;
 use crate::types::Object;
-use crate::Value;
 use std::fmt;
 
 /// Represents a segment in a value path
@@ -33,7 +33,7 @@ impl PathSegment {
                 } else {
                     Ok(Self::Key(s.to_string()))
                 }
-            },
+            }
         }
     }
 }
@@ -58,7 +58,9 @@ pub struct ValuePath {
 impl ValuePath {
     /// Create an empty path
     pub fn new() -> Self {
-        Self { segments: Vec::new() }
+        Self {
+            segments: Vec::new(),
+        }
     }
 
     /// Create a path from segments
@@ -72,7 +74,10 @@ impl ValuePath {
             return Ok(Self::new());
         }
 
-        let segments = path.split('.').map(PathSegment::parse).collect::<Result<Vec<_>, _>>()?;
+        let segments = path
+            .split('.')
+            .map(PathSegment::parse)
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self { segments })
     }
@@ -95,7 +100,7 @@ impl ValuePath {
                         current.clear();
                     }
                     in_bracket = true;
-                },
+                }
                 ']' => {
                     if in_bracket {
                         segments.push(PathSegment::parse(&current)?);
@@ -104,7 +109,7 @@ impl ValuePath {
                     } else {
                         return Err(ValueError::invalid_format("path", path));
                     }
-                },
+                }
                 '.' => {
                     if !in_bracket {
                         if !current.is_empty() {
@@ -114,7 +119,7 @@ impl ValuePath {
                     } else {
                         current.push(ch);
                     }
-                },
+                }
                 _ => current.push(ch),
             }
         }
@@ -172,24 +177,24 @@ impl ValuePath {
                 } else {
                     None
                 }
-            },
+            }
             PathSegment::Index(idx) => {
                 if let Value::Array(arr) = value {
                     arr.get(*idx).and_then(|v| self.get_from(v, index + 1))
                 } else {
                     None
                 }
-            },
+            }
             PathSegment::Wildcard => {
                 // Return None for wildcard in simple get
                 // Use get_all for wildcard support
                 None
-            },
+            }
             PathSegment::Recursive => {
                 // Return None for recursive in simple get
                 // Use get_all for recursive support
                 None
-            },
+            }
         }
     }
 
@@ -208,31 +213,29 @@ impl ValuePath {
 
         match &self.segments[index] {
             PathSegment::Key(key) => {
-                if let Value::Object(obj) = value {
-                    if let Some(v) = obj.get(key) {
+                if let Value::Object(obj) = value
+                    && let Some(v) = obj.get(key) {
                         self.get_all_from(v, index + 1, results);
                     }
-                }
-            },
+            }
             PathSegment::Index(idx) => {
-                if let Value::Array(arr) = value {
-                    if let Some(v) = arr.get(*idx) {
+                if let Value::Array(arr) = value
+                    && let Some(v) = arr.get(*idx) {
                         self.get_all_from(v, index + 1, results);
                     }
-                }
-            },
+            }
             PathSegment::Wildcard => match value {
                 Value::Array(arr) => {
                     for item in arr.iter() {
                         self.get_all_from(item, index + 1, results);
                     }
-                },
+                }
                 Value::Object(obj) => {
                     for (_, val) in obj.iter() {
                         self.get_all_from(val, index + 1, results);
                     }
-                },
-                _ => {},
+                }
+                _ => {}
             },
             PathSegment::Recursive => {
                 // Add current value
@@ -244,15 +247,15 @@ impl ValuePath {
                         for item in arr.iter() {
                             self.get_all_from(item, index, results);
                         }
-                    },
+                    }
                     Value::Object(obj) => {
                         for (_, val) in obj.iter() {
                             self.get_all_from(val, index, results);
                         }
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
-            },
+            }
         }
     }
 
@@ -282,7 +285,7 @@ impl ValuePath {
                     } else {
                         Err(ValueError::type_mismatch("object", value.type_name()))
                     }
-                },
+                }
                 PathSegment::Index(idx) => {
                     if let Value::Array(arr) = value {
                         if *idx >= arr.len() {
@@ -296,16 +299,21 @@ impl ValuePath {
                     } else {
                         Err(ValueError::type_mismatch("array", value.type_name()))
                     }
-                },
-                _ => Err(ValueError::unsupported_operation("set with wildcard", "path")),
+                }
+                _ => Err(ValueError::unsupported_operation(
+                    "set with wildcard",
+                    "path",
+                )),
             }
         } else {
             // Navigate deeper
             match &self.segments[index] {
                 PathSegment::Key(key) => {
                     if let Value::Object(obj) = value {
-                        let mut next_val =
-                            obj.get(key).cloned().unwrap_or(Value::Object(Object::new()));
+                        let mut next_val = obj
+                            .get(key)
+                            .cloned()
+                            .unwrap_or(Value::Object(Object::new()));
                         self.set_from(&mut next_val, new_value, index + 1)?;
                         let new_obj = obj.insert(key.clone(), next_val);
                         *obj = new_obj;
@@ -313,7 +321,7 @@ impl ValuePath {
                     } else {
                         Err(ValueError::type_mismatch("object", value.type_name()))
                     }
-                },
+                }
                 PathSegment::Index(idx) => {
                     if let Value::Array(arr) = value {
                         if *idx >= arr.len() {
@@ -332,8 +340,11 @@ impl ValuePath {
                     } else {
                         Err(ValueError::type_mismatch("array", value.type_name()))
                     }
-                },
-                _ => Err(ValueError::unsupported_operation("set with wildcard", "path")),
+                }
+                _ => Err(ValueError::unsupported_operation(
+                    "set with wildcard",
+                    "path",
+                )),
             }
         }
     }
@@ -351,7 +362,9 @@ impl ValuePath {
             value
         } else {
             let parent_path = Self::from_segments(path.to_vec());
-            parent_path.get_mut(value).ok_or_else(|| ValueError::custom("Parent path not found"))?
+            parent_path
+                .get_mut(value)
+                .ok_or_else(|| ValueError::custom("Parent path not found"))?
         };
 
         // Delete from parent
@@ -362,13 +375,13 @@ impl ValuePath {
                         Ok((new_obj, _)) => {
                             *obj = new_obj;
                             Ok(true)
-                        },
+                        }
                         Err(_) => Ok(false),
                     }
                 } else {
                     Err(ValueError::type_mismatch("object", parent.type_name()))
                 }
-            },
+            }
             PathSegment::Index(idx) => {
                 if let Value::Array(arr) = parent {
                     if *idx < arr.len() {
@@ -384,8 +397,11 @@ impl ValuePath {
                 } else {
                     Err(ValueError::type_mismatch("array", parent.type_name()))
                 }
-            },
-            _ => Err(ValueError::unsupported_operation("delete with wildcard", "path")),
+            }
+            _ => Err(ValueError::unsupported_operation(
+                "delete with wildcard",
+                "path",
+            )),
         }
     }
 

@@ -38,15 +38,15 @@ impl IntoNebulaError for std::io::Error {
             std::io::ErrorKind::PermissionDenied => NebulaError::permission_denied("read", "file"),
             std::io::ErrorKind::TimedOut => {
                 NebulaError::timeout("I/O operation", std::time::Duration::from_secs(30))
-            },
+            }
             std::io::ErrorKind::ConnectionRefused => {
                 NebulaError::service_unavailable("network", "connection refused", None)
-            },
+            }
             std::io::ErrorKind::ConnectionReset => NebulaError::network("connection reset"),
             std::io::ErrorKind::BrokenPipe => NebulaError::network("broken pipe"),
             std::io::ErrorKind::WouldBlock => {
                 NebulaError::timeout("I/O operation", std::time::Duration::from_millis(100))
-            },
+            }
             _ => NebulaError::internal(format!("I/O error: {}", self)),
         }
     }
@@ -54,7 +54,8 @@ impl IntoNebulaError for std::io::Error {
 
 impl IntoNebulaErrorWithContext for std::io::Error {
     fn into_nebula_error_with_context(self, context: impl Into<String>) -> NebulaError {
-        self.into_nebula_error().with_context(super::context::ErrorContext::new(context))
+        self.into_nebula_error()
+            .with_context(super::context::ErrorContext::new(context))
     }
 }
 
@@ -66,7 +67,8 @@ impl IntoNebulaError for std::fmt::Error {
 
 impl IntoNebulaErrorWithContext for std::fmt::Error {
     fn into_nebula_error_with_context(self, context: impl Into<String>) -> NebulaError {
-        self.into_nebula_error().with_context(super::context::ErrorContext::new(context))
+        self.into_nebula_error()
+            .with_context(super::context::ErrorContext::new(context))
     }
 }
 
@@ -79,14 +81,15 @@ impl IntoNebulaError for serde_json::Error {
             serde_json::error::Category::Data => NebulaError::validation("Invalid JSON data"),
             serde_json::error::Category::Eof => {
                 NebulaError::validation("Unexpected end of JSON input")
-            },
+            }
         }
     }
 }
 
 impl IntoNebulaErrorWithContext for serde_json::Error {
     fn into_nebula_error_with_context(self, context: impl Into<String>) -> NebulaError {
-        self.into_nebula_error().with_context(super::context::ErrorContext::new(context))
+        self.into_nebula_error()
+            .with_context(super::context::ErrorContext::new(context))
     }
 }
 
@@ -99,7 +102,8 @@ impl IntoNebulaError for bincode::Error {
 
 impl IntoNebulaErrorWithContext for bincode::Error {
     fn into_nebula_error_with_context(self, context: impl Into<String>) -> NebulaError {
-        self.into_nebula_error().with_context(super::context::ErrorContext::new(context))
+        self.into_nebula_error()
+            .with_context(super::context::ErrorContext::new(context))
     }
 }
 
@@ -112,7 +116,8 @@ impl IntoNebulaError for uuid::Error {
 
 impl IntoNebulaErrorWithContext for uuid::Error {
     fn into_nebula_error_with_context(self, context: impl Into<String>) -> NebulaError {
-        self.into_nebula_error().with_context(super::context::ErrorContext::new(context))
+        self.into_nebula_error()
+            .with_context(super::context::ErrorContext::new(context))
     }
 }
 
@@ -125,7 +130,8 @@ impl IntoNebulaError for chrono::ParseError {
 
 impl IntoNebulaErrorWithContext for chrono::ParseError {
     fn into_nebula_error_with_context(self, context: impl Into<String>) -> NebulaError {
-        self.into_nebula_error().with_context(super::context::ErrorContext::new(context))
+        self.into_nebula_error()
+            .with_context(super::context::ErrorContext::new(context))
     }
 }
 
@@ -138,7 +144,8 @@ impl IntoNebulaError for anyhow::Error {
 
 impl IntoNebulaErrorWithContext for anyhow::Error {
     fn into_nebula_error_with_context(self, context: impl Into<String>) -> NebulaError {
-        self.into_nebula_error().with_context(super::context::ErrorContext::new(context))
+        self.into_nebula_error()
+            .with_context(super::context::ErrorContext::new(context))
     }
 }
 
@@ -151,7 +158,8 @@ impl IntoNebulaError for tokio::time::error::Elapsed {
 
 impl IntoNebulaErrorWithContext for tokio::time::error::Elapsed {
     fn into_nebula_error_with_context(self, context: impl Into<String>) -> NebulaError {
-        self.into_nebula_error().with_context(super::context::ErrorContext::new(context))
+        self.into_nebula_error()
+            .with_context(super::context::ErrorContext::new(context))
     }
 }
 
@@ -164,7 +172,8 @@ impl IntoNebulaError for serde::de::value::Error {
 
 impl IntoNebulaErrorWithContext for serde::de::value::Error {
     fn into_nebula_error_with_context(self, context: impl Into<String>) -> NebulaError {
-        self.into_nebula_error().with_context(super::context::ErrorContext::new(context))
+        self.into_nebula_error()
+            .with_context(super::context::ErrorContext::new(context))
     }
 }
 
@@ -177,7 +186,8 @@ impl IntoNebulaError for std::num::ParseIntError {
 
 impl IntoNebulaErrorWithContext for std::num::ParseIntError {
     fn into_nebula_error_with_context(self, context: impl Into<String>) -> NebulaError {
-        self.into_nebula_error().with_context(super::context::ErrorContext::new(context))
+        self.into_nebula_error()
+            .with_context(super::context::ErrorContext::new(context))
     }
 }
 
@@ -189,7 +199,8 @@ impl IntoNebulaError for std::num::ParseFloatError {
 
 impl IntoNebulaErrorWithContext for std::num::ParseFloatError {
     fn into_nebula_error_with_context(self, context: impl Into<String>) -> NebulaError {
-        self.into_nebula_error().with_context(super::context::ErrorContext::new(context))
+        self.into_nebula_error()
+            .with_context(super::context::ErrorContext::new(context))
     }
 }
 
@@ -202,7 +213,8 @@ impl IntoNebulaError for std::str::Utf8Error {
 
 impl IntoNebulaErrorWithContext for std::str::Utf8Error {
     fn into_nebula_error_with_context(self, context: impl Into<String>) -> NebulaError {
-        self.into_nebula_error().with_context(super::context::ErrorContext::new(context))
+        self.into_nebula_error()
+            .with_context(super::context::ErrorContext::new(context))
     }
 }
 
@@ -215,7 +227,8 @@ impl IntoNebulaError for std::string::FromUtf8Error {
 
 impl IntoNebulaErrorWithContext for std::string::FromUtf8Error {
     fn into_nebula_error_with_context(self, context: impl Into<String>) -> NebulaError {
-        self.into_nebula_error().with_context(super::context::ErrorContext::new(context))
+        self.into_nebula_error()
+            .with_context(super::context::ErrorContext::new(context))
     }
 }
 
@@ -255,7 +268,10 @@ mod tests {
         let io_error = io::Error::new(io::ErrorKind::NotFound, "file not found");
         let nebula_error = io_error.into_nebula_error();
 
-        assert!(matches!(nebula_error.kind, super::super::error::ErrorKind::NotFound { .. }));
+        assert!(matches!(
+            nebula_error.kind,
+            super::super::error::ErrorKind::NotFound { .. }
+        ));
     }
 
     #[test]
@@ -276,7 +292,10 @@ mod tests {
         let json_error = serde_json::from_str::<serde_json::Value>(json_str).unwrap_err();
         let nebula_error = json_error.into_nebula_error();
 
-        assert!(matches!(nebula_error.kind, super::super::error::ErrorKind::Validation { .. }));
+        assert!(matches!(
+            nebula_error.kind,
+            super::super::error::ErrorKind::Validation { .. }
+        ));
     }
 
     #[test]
@@ -295,7 +314,10 @@ mod tests {
         let error = "custom error message";
         let nebula_error = from_display_error(error);
 
-        assert!(matches!(nebula_error.kind, super::super::error::ErrorKind::Internal { .. }));
+        assert!(matches!(
+            nebula_error.kind,
+            super::super::error::ErrorKind::Internal { .. }
+        ));
         assert!(nebula_error.message.contains("custom error message"));
     }
 
@@ -304,6 +326,9 @@ mod tests {
         let error = io::Error::new(io::ErrorKind::Other, "other error");
         let nebula_error = from_std_error(error);
 
-        assert!(matches!(nebula_error.kind, super::super::error::ErrorKind::Internal { .. }));
+        assert!(matches!(
+            nebula_error.kind,
+            super::super::error::ErrorKind::Internal { .. }
+        ));
     }
 }

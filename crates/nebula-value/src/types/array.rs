@@ -28,7 +28,11 @@ pub enum ArrayError {
     InvalidRange { start: usize, end: usize },
 
     #[error("Range out of bounds: start={start}, end={end}, length={len}")]
-    RangeOutOfBounds { start: usize, end: usize, len: usize },
+    RangeOutOfBounds {
+        start: usize,
+        end: usize,
+        len: usize,
+    },
 
     #[error("Empty array for operation that requires at least one element")]
     EmptyArray,
@@ -63,13 +67,19 @@ impl Array {
     /// Creates a new Array from a Vec
     #[inline]
     pub fn new(values: Vec<Value>) -> Self {
-        Self { inner: values.into(), hash_cache: std::sync::OnceLock::new() }
+        Self {
+            inner: values.into(),
+            hash_cache: std::sync::OnceLock::new(),
+        }
     }
 
     /// Creates an empty Array
     #[inline]
     pub fn empty() -> Self {
-        Self { inner: Arc::from([]), hash_cache: std::sync::OnceLock::new() }
+        Self {
+            inner: Arc::from([]),
+            hash_cache: std::sync::OnceLock::new(),
+        }
     }
 
     /// Creates an Array with specified capacity
@@ -102,7 +112,9 @@ impl Array {
     /// Creates an Array from a range of integers
     pub fn range(start: i64, end: i64, step: i64) -> ArrayResult<Self> {
         if step == 0 {
-            return Err(ArrayError::InvalidOperation { msg: "Step cannot be zero".into() });
+            return Err(ArrayError::InvalidOperation {
+                msg: "Step cannot be zero".into(),
+            });
         }
 
         let mut values = Vec::new();
@@ -161,7 +173,10 @@ impl Array {
     /// Gets element at index with bounds checking
     #[inline]
     pub fn try_get(&self, index: usize) -> ArrayResult<&Value> {
-        self.get(index).ok_or_else(|| ArrayError::IndexOutOfBounds { index, len: self.len() })
+        self.get(index).ok_or_else(|| ArrayError::IndexOutOfBounds {
+            index,
+            len: self.len(),
+        })
     }
 
     /// Gets first element
@@ -213,7 +228,10 @@ impl Array {
     /// Returns a new array with element inserted at index
     pub fn insert(&self, index: usize, value: Value) -> ArrayResult<Self> {
         if index > self.len() {
-            return Err(ArrayError::IndexOutOfBounds { index, len: self.len() });
+            return Err(ArrayError::IndexOutOfBounds {
+                index,
+                len: self.len(),
+            });
         }
         let mut vec = self.to_vec();
         vec.insert(index, value);
@@ -223,7 +241,10 @@ impl Array {
     /// Returns a new array with element at index removed
     pub fn remove(&self, index: usize) -> ArrayResult<(Self, Value)> {
         if index >= self.len() {
-            return Err(ArrayError::IndexOutOfBounds { index, len: self.len() });
+            return Err(ArrayError::IndexOutOfBounds {
+                index,
+                len: self.len(),
+            });
         }
         let mut vec = self.to_vec();
         let removed = vec.remove(index);
@@ -233,7 +254,10 @@ impl Array {
     /// Returns a new array with element replaced at index
     pub fn set(&self, index: usize, value: Value) -> ArrayResult<Self> {
         if index >= self.len() {
-            return Err(ArrayError::IndexOutOfBounds { index, len: self.len() });
+            return Err(ArrayError::IndexOutOfBounds {
+                index,
+                len: self.len(),
+            });
         }
         let mut vec = self.to_vec();
         vec[index] = value;
@@ -248,7 +272,11 @@ impl Array {
             return Err(ArrayError::InvalidRange { start, end });
         }
         if end > self.len() {
-            return Err(ArrayError::RangeOutOfBounds { start, end, len: self.len() });
+            return Err(ArrayError::RangeOutOfBounds {
+                start,
+                end,
+                len: self.len(),
+            });
         }
         Ok(Self::from_slice(&self.inner[start..end]))
     }
@@ -349,17 +377,22 @@ impl Array {
     where
         P: FnMut(&Value) -> bool,
     {
-        let result: Vec<Value> = self.inner.iter().filter(|v| predicate(v)).cloned().collect();
+        let result: Vec<Value> = self
+            .inner
+            .iter()
+            .filter(|v| predicate(v))
+            .cloned()
+            .collect();
         Self::new(result)
     }
 
     /// Filter and map in one operation
     #[must_use]
-    pub fn filter_map<F>(&self, mut f: F) -> Self
+    pub fn filter_map<F>(&self, f: F) -> Self
     where
         F: FnMut(&Value) -> Option<Value>,
     {
-        let result: Vec<Value> = self.inner.iter().filter_map(|v| f(v)).collect();
+        let result: Vec<Value> = self.inner.iter().filter_map(f).collect();
         Self::new(result)
     }
 
@@ -377,7 +410,7 @@ impl Array {
                     acc = f(acc, value)?;
                 }
                 Ok(Some(acc))
-            },
+            }
         }
     }
 
@@ -521,7 +554,10 @@ impl Array {
         indexed.sort_by(|a, b| a.1.cmp(&b.1));
 
         // Build result in sorted order
-        let result: Vec<Value> = indexed.into_iter().map(|(i, _)| self.inner[i].clone()).collect();
+        let result: Vec<Value> = indexed
+            .into_iter()
+            .map(|(i, _)| self.inner[i].clone())
+            .collect();
 
         Ok(Self::new(result))
     }
@@ -583,7 +619,11 @@ impl Array {
 
     /// Joins array elements into a string
     pub fn join(&self, separator: &str) -> String {
-        self.inner.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(separator)
+        self.inner
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(separator)
     }
 
     /// Flattens nested arrays by one level
@@ -654,11 +694,16 @@ impl Array {
     /// Creates chunks of specified size
     pub fn chunks(&self, size: usize) -> ArrayResult<Vec<Self>> {
         if size == 0 {
-            return Err(ArrayError::InvalidOperation { msg: "Chunk size cannot be zero".into() });
+            return Err(ArrayError::InvalidOperation {
+                msg: "Chunk size cannot be zero".into(),
+            });
         }
 
-        let chunks: Vec<Self> =
-            self.inner.chunks(size).map(|chunk| Self::from_slice(chunk)).collect();
+        let chunks: Vec<Self> = self
+            .inner
+            .chunks(size)
+            .map(Self::from_slice)
+            .collect();
 
         Ok(chunks)
     }
@@ -666,15 +711,20 @@ impl Array {
     /// Creates sliding windows of specified size
     pub fn windows(&self, size: usize) -> ArrayResult<Vec<Self>> {
         if size == 0 {
-            return Err(ArrayError::InvalidOperation { msg: "Window size cannot be zero".into() });
+            return Err(ArrayError::InvalidOperation {
+                msg: "Window size cannot be zero".into(),
+            });
         }
 
         if size > self.len() {
             return Ok(vec![]);
         }
 
-        let windows: Vec<Self> =
-            self.inner.windows(size).map(|window| Self::from_slice(window)).collect();
+        let windows: Vec<Self> = self
+            .inner
+            .windows(size)
+            .map(Self::from_slice)
+            .collect();
 
         Ok(windows)
     }
@@ -745,7 +795,12 @@ impl Array {
             return self.filter(predicate);
         }
 
-        let result: Vec<Value> = self.inner.par_iter().filter(|v| predicate(v)).cloned().collect();
+        let result: Vec<Value> = self
+            .inner
+            .par_iter()
+            .filter(|v| predicate(v))
+            .cloned()
+            .collect();
 
         Self::new(result)
     }
@@ -769,7 +824,7 @@ impl Array {
 
     /// Calculates sum of numeric values
     pub fn sum(&self) -> ArrayResult<f64> {
-        let mut sum = 0.0;
+        let sum = 0.0;
         for _value in self.inner.iter() {
             // TODO: Implement when Value has numeric conversion methods
             // sum += value.as_number().ok_or_else(|| ArrayError::ValueError {
@@ -789,12 +844,16 @@ impl Array {
 
     /// Finds minimum value
     pub fn min(&self) -> Option<&Value> {
-        self.inner.iter().min_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+        self.inner
+            .iter()
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal))
     }
 
     /// Finds maximum value
     pub fn max(&self) -> Option<&Value> {
-        self.inner.iter().max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+        self.inner
+            .iter()
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal))
     }
 
     // ==================== Iterator Support ====================
@@ -928,14 +987,20 @@ impl From<&[Value]> for Array {
 impl From<Box<[Value]>> for Array {
     #[inline]
     fn from(boxed: Box<[Value]>) -> Self {
-        Self { inner: Arc::from(boxed), hash_cache: std::sync::OnceLock::new() }
+        Self {
+            inner: Arc::from(boxed),
+            hash_cache: std::sync::OnceLock::new(),
+        }
     }
 }
 
 impl From<Arc<[Value]>> for Array {
     #[inline]
     fn from(arc: Arc<[Value]>) -> Self {
-        Self { inner: arc, hash_cache: std::sync::OnceLock::new() }
+        Self {
+            inner: arc,
+            hash_cache: std::sync::OnceLock::new(),
+        }
     }
 }
 
@@ -993,11 +1058,10 @@ impl Ord for Array {
             return len_cmp;
         }
         for (a, b) in self.inner.iter().zip(other.inner.iter()) {
-            if let Some(ord) = a.partial_cmp(b) {
-                if ord != Ordering::Equal {
+            if let Some(ord) = a.partial_cmp(b)
+                && ord != Ordering::Equal {
                     return ord;
                 }
-            }
         }
         Ordering::Equal
     }
@@ -1117,7 +1181,11 @@ impl<'a> IntoIterator for &'a Array {
 impl From<Array> for serde_json::Value {
     fn from(array: Array) -> Self {
         serde_json::Value::Array(
-            array.into_vec().into_iter().map(|v| serde_json::Value::from(v)).collect(),
+            array
+                .into_vec()
+                .into_iter()
+                .map(|v| serde_json::Value::from(v))
+                .collect(),
         )
     }
 }
@@ -1133,9 +1201,11 @@ impl TryFrom<serde_json::Value> for Array {
                     .into_iter()
                     .map(|v| Value::try_from(v))
                     .collect::<Result<_, _>>()
-                    .map_err(|_| ArrayError::JsonTypeMismatch { found: "invalid element" })?;
+                    .map_err(|_| ArrayError::JsonTypeMismatch {
+                        found: "invalid element",
+                    })?;
                 Ok(Array::new(values))
-            },
+            }
             serde_json::Value::Null => Ok(Array::empty()),
             serde_json::Value::Bool(_) => Err(ArrayError::JsonTypeMismatch { found: "bool" }),
             serde_json::Value::Number(_) => Err(ArrayError::JsonTypeMismatch { found: "number" }),
@@ -1191,7 +1261,9 @@ mod tests {
     fn test_functional_operations() {
         let arr = Array::new(vec![Value::from(1), Value::from(2), Value::from(3)]);
 
-        let doubled = arr.map(|v| Ok(Value::from(v.as_i64().unwrap() * 2))).unwrap();
+        let doubled = arr
+            .map(|v| Ok(Value::from(v.as_i64().unwrap() * 2)))
+            .unwrap();
         assert_eq!(doubled.len(), 3);
 
         let filtered = arr.filter(|v| v.as_i64().unwrap() > 1);
@@ -1262,7 +1334,9 @@ mod tests {
     fn test_parallel_operations() {
         let large_arr = Array::new((0..10000).map(|i| Value::from(i)).collect());
 
-        let par_mapped = large_arr.par_map(|v| Ok(Value::from(v.as_i64().unwrap() * 2))).unwrap();
+        let par_mapped = large_arr
+            .par_map(|v| Ok(Value::from(v.as_i64().unwrap() * 2)))
+            .unwrap();
         assert_eq!(par_mapped.len(), 10000);
 
         let par_filtered = large_arr.par_filter(|v| v.as_i64().unwrap() % 2 == 0);

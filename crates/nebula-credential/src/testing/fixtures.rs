@@ -67,7 +67,10 @@ pub struct TestCredential {
 
 impl Default for TestCredential {
     fn default() -> Self {
-        Self { fail_on_refresh: false, refresh_delay: None }
+        Self {
+            fail_on_refresh: false,
+            refresh_delay: None,
+        }
     }
 }
 
@@ -92,7 +95,10 @@ impl Credential for TestCredential {
         _ctx: &mut CredentialContext,
     ) -> Result<(Self::State, Option<AccessToken>)> {
         if input.should_fail {
-            return Err(CredentialError::invalid_input("value", "configured to fail"));
+            return Err(CredentialError::invalid_input(
+                "value",
+                "configured to fail",
+            ));
         }
 
         let state = TestCredentialState {

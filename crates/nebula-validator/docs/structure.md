@@ -334,7 +334,7 @@ pub use custom::*;
 [package]
 name = "nebula-validator"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Your Name <email@example.com>"]
 description = "Production-ready validation framework for Nebula"
 repository = "https://github.com/yourusername/nebula"
@@ -422,7 +422,7 @@ name = "form_validation"
 
 ### `rustfmt.toml`
 ```toml
-edition = "2021"
+edition = "2024"
 max_width = 100
 use_small_heuristics = "Max"
 imports_granularity = "Crate"

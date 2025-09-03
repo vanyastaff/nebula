@@ -35,7 +35,9 @@ fn main() -> sys::Result<()> {
 
     #[cfg(not(feature = "process"))]
     {
-        println!("This example requires feature 'process'. Run with:\n  cargo run -p nebula-system --example process --features \"process\"");
+        println!(
+            "This example requires feature 'process'. Run with:\n  cargo run -p nebula-system --example process --features \"process\""
+        );
     }
 
     Ok(())

@@ -37,7 +37,9 @@ fn main() -> sys::Result<()> {
 
     #[cfg(not(feature = "disk"))]
     {
-        println!("This example requires feature 'disk'. Run with:\n  cargo run -p nebula-system --example disk --features \"disk\"");
+        println!(
+            "This example requires feature 'disk'. Run with:\n  cargo run -p nebula-system --example disk --features \"disk\""
+        );
     }
 
     Ok(())

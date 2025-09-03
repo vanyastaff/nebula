@@ -67,15 +67,24 @@ impl TimeInner {
     pub fn new(hour: u32, minute: u32, second: u32, nanos: u32) -> TimeResult<Self> {
         // Validate components
         if hour >= 24 {
-            return Err(TimeError::InvalidComponent { component: "hour", value: hour as u64 });
+            return Err(TimeError::InvalidComponent {
+                component: "hour",
+                value: hour as u64,
+            });
         }
 
         if minute >= 60 {
-            return Err(TimeError::InvalidComponent { component: "minute", value: minute as u64 });
+            return Err(TimeError::InvalidComponent {
+                component: "minute",
+                value: minute as u64,
+            });
         }
 
         if second >= 60 {
-            return Err(TimeError::InvalidComponent { component: "second", value: second as u64 });
+            return Err(TimeError::InvalidComponent {
+                component: "second",
+                value: second as u64,
+            });
         }
 
         if nanos >= Self::NANOS_PER_SECOND as u32 {
@@ -238,7 +247,9 @@ impl Time {
     /// Creates Time at end of day (23:59:59.999999999)
     pub fn end_of_day() -> Self {
         Self {
-            inner: Arc::new(TimeInner { nanos: TimeInner::MAX_NANOS }),
+            inner: Arc::new(TimeInner {
+                nanos: TimeInner::MAX_NANOS,
+            }),
             iso_string_cache: std::sync::OnceLock::new(),
             format_12h_cache: std::sync::OnceLock::new(),
         }
@@ -261,7 +272,9 @@ impl Time {
     /// Creates from seconds since midnight
     pub fn from_seconds(seconds: u32) -> TimeResult<Self> {
         if seconds >= 86400 {
-            return Err(TimeError::OutOfRange { msg: format!("Seconds {} >= 86400", seconds) });
+            return Err(TimeError::OutOfRange {
+                msg: format!("Seconds {} >= 86400", seconds),
+            });
         }
 
         let hours = seconds / 3600;
@@ -330,16 +343,18 @@ impl Time {
         // Parse HH:MM:SS
         let parts: Vec<&str> = time_part.split(':').collect();
         if parts.len() < 2 || parts.len() > 3 {
-            return Err(TimeError::ParseError { msg: format!("Invalid time format: {}", s) });
+            return Err(TimeError::ParseError {
+                msg: format!("Invalid time format: {}", s),
+            });
         }
 
-        let hour = parts[0]
-            .parse::<u32>()
-            .map_err(|_| TimeError::ParseError { msg: format!("Invalid hour: {}", parts[0]) })?;
+        let hour = parts[0].parse::<u32>().map_err(|_| TimeError::ParseError {
+            msg: format!("Invalid hour: {}", parts[0]),
+        })?;
 
-        let minute = parts[1]
-            .parse::<u32>()
-            .map_err(|_| TimeError::ParseError { msg: format!("Invalid minute: {}", parts[1]) })?;
+        let minute = parts[1].parse::<u32>().map_err(|_| TimeError::ParseError {
+            msg: format!("Invalid minute: {}", parts[1]),
+        })?;
 
         let second = if parts.len() == 3 {
             parts[2].parse::<u32>().map_err(|_| TimeError::ParseError {
@@ -362,18 +377,22 @@ impl Time {
         } else if s.to_uppercase().ends_with(" PM") {
             (&s[..s.len() - 3], true)
         } else {
-            return Err(TimeError::ParseError { msg: "Missing AM/PM indicator".to_string() });
+            return Err(TimeError::ParseError {
+                msg: "Missing AM/PM indicator".to_string(),
+            });
         };
 
         // Parse the time part
         let parts: Vec<&str> = time_part.trim().split(':').collect();
         if parts.is_empty() || parts.len() > 3 {
-            return Err(TimeError::ParseError { msg: format!("Invalid 12-hour format: {}", s) });
+            return Err(TimeError::ParseError {
+                msg: format!("Invalid 12-hour format: {}", s),
+            });
         }
 
-        let hour12 = parts[0]
-            .parse::<u32>()
-            .map_err(|_| TimeError::ParseError { msg: format!("Invalid hour: {}", parts[0]) })?;
+        let hour12 = parts[0].parse::<u32>().map_err(|_| TimeError::ParseError {
+            msg: format!("Invalid hour: {}", parts[0]),
+        })?;
 
         if hour12 == 0 || hour12 > 12 {
             return Err(TimeError::InvalidComponent {
@@ -400,18 +419,8 @@ impl Time {
 
         // Convert to 24-hour format
         let hour24 = if hour12 == 12 {
-            if is_pm {
-                12
-            } else {
-                0
-            }
-        } else {
-            if is_pm {
-                hour12 + 12
-            } else {
-                hour12
-            }
-        };
+            if is_pm { 12 } else { 0 }
+        } else if is_pm { hour12 + 12 } else { hour12 };
 
         Self::new(hour24, minute, second)
     }
@@ -505,11 +514,7 @@ impl Time {
     /// Returns AM/PM string
     #[inline]
     pub fn am_pm(&self) -> &'static str {
-        if self.is_am() {
-            "AM"
-        } else {
-            "PM"
-        }
+        if self.is_am() { "AM" } else { "PM" }
     }
 
     /// Gets the internal representation
@@ -590,7 +595,11 @@ impl Time {
     /// Rounds to the nearest hour
     pub fn round_to_hour(&self) -> Self {
         if self.minute() >= 30 {
-            self.add_hours(1).with_minute(0).unwrap().with_second(0).unwrap()
+            self.add_hours(1)
+                .with_minute(0)
+                .unwrap()
+                .with_second(0)
+                .unwrap()
         } else {
             self.with_minute(0).unwrap().with_second(0).unwrap()
         }
@@ -657,11 +666,22 @@ impl Time {
     pub fn to_iso_string(&self) -> &str {
         self.iso_string_cache.get_or_init(|| {
             if self.nanosecond() == 0 {
-                format!("{:02}:{:02}:{:02}", self.hour(), self.minute(), self.second())
+                format!(
+                    "{:02}:{:02}:{:02}",
+                    self.hour(),
+                    self.minute(),
+                    self.second()
+                )
             } else {
                 let nanos = format!("{:09}", self.nanosecond());
                 let trimmed = nanos.trim_end_matches('0');
-                format!("{:02}:{:02}:{:02}.{}", self.hour(), self.minute(), self.second(), trimmed)
+                format!(
+                    "{:02}:{:02}:{:02}.{}",
+                    self.hour(),
+                    self.minute(),
+                    self.second(),
+                    trimmed
+                )
             }
         })
     }
@@ -669,7 +689,13 @@ impl Time {
     /// Returns 12-hour format string (e.g., "3:30:00 PM")
     pub fn to_12h_string(&self) -> &str {
         self.format_12h_cache.get_or_init(|| {
-            format!("{}:{:02}:{:02} {}", self.hour_12(), self.minute(), self.second(), self.am_pm())
+            format!(
+                "{}:{:02}:{:02} {}",
+                self.hour_12(),
+                self.minute(),
+                self.second(),
+                self.am_pm()
+            )
         })
     }
 
@@ -694,7 +720,11 @@ impl Time {
             // Helper to ensure single-letter tokens A/a are not inside words
             let at_word_boundary = |idx: usize| -> bool {
                 let prev = if idx == 0 { None } else { Some(chars[idx - 1]) };
-                let next = if idx + 1 >= chars.len() { None } else { Some(chars[idx + 1]) };
+                let next = if idx + 1 >= chars.len() {
+                    None
+                } else {
+                    Some(chars[idx + 1])
+                };
                 let is_alpha =
                     |c: Option<char>| c.map(|ch| ch.is_ascii_alphabetic()).unwrap_or(false);
                 !is_alpha(prev) && !is_alpha(next)

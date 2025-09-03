@@ -1,7 +1,7 @@
 //! OpenTelemetry integration
 
 #[cfg(feature = "telemetry")]
-use crate::{config::TelemetryConfig, Result};
+use crate::{Result, config::TelemetryConfig};
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_sdk::{

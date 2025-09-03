@@ -89,17 +89,17 @@ impl ScopeLevel {
                 // Note: This is a simplified check. In practice, we'd need to
                 // verify that the execution belongs to the workflow
                 true
-            },
+            }
             (ScopeLevel::Action(_exec_id, _), ScopeLevel::Workflow(_)) => {
                 // Note: This is a simplified check. In practice, we'd need to
                 // verify that the execution belongs to the workflow
                 true
-            },
+            }
 
             // Execution scope contains action scopes for that execution
             (ScopeLevel::Action(exec_id, _), ScopeLevel::Execution(other_exec_id)) => {
                 exec_id == other_exec_id
-            },
+            }
 
             // Otherwise, no containment
             _ => false,
@@ -121,13 +121,13 @@ impl ScopeLevel {
         match (self, child_type) {
             (ScopeLevel::Global, ChildScopeType::Workflow(workflow_id)) => {
                 Some(ScopeLevel::Workflow(workflow_id))
-            },
+            }
             (ScopeLevel::Workflow(_), ChildScopeType::Execution(exec_id)) => {
                 Some(ScopeLevel::Execution(exec_id))
-            },
+            }
             (ScopeLevel::Execution(exec_id), ChildScopeType::Action(node_id)) => {
                 Some(ScopeLevel::Action(exec_id.clone(), node_id))
-            },
+            }
             _ => None,
         }
     }
@@ -141,7 +141,7 @@ impl fmt::Display for ScopeLevel {
             ScopeLevel::Execution(id) => write!(f, "execution:{}", id),
             ScopeLevel::Action(exec_id, node_id) => {
                 write!(f, "action:{}:{}", exec_id, node_id)
-            },
+            }
         }
     }
 }
@@ -167,7 +167,10 @@ pub struct ScopedId {
 impl ScopedId {
     /// Create a new scoped ID
     pub fn new(scope: ScopeLevel, id: impl Into<String>) -> Self {
-        Self { scope, id: id.into() }
+        Self {
+            scope,
+            id: id.into(),
+        }
     }
 
     /// Create a global scoped ID
@@ -258,8 +261,14 @@ mod tests {
 
         assert_eq!(global_id.scope, ScopeLevel::Global);
         assert_eq!(workflow_id_scoped.scope, ScopeLevel::Workflow(workflow_id));
-        assert_eq!(execution_id_scoped.scope, ScopeLevel::Execution(execution_id.clone()));
-        assert_eq!(action_id_scoped.scope, ScopeLevel::Action(execution_id, node_id));
+        assert_eq!(
+            execution_id_scoped.scope,
+            ScopeLevel::Execution(execution_id.clone())
+        );
+        assert_eq!(
+            action_id_scoped.scope,
+            ScopeLevel::Action(execution_id, node_id)
+        );
     }
 
     #[test]

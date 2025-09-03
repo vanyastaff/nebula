@@ -3,8 +3,8 @@
 //! This module provides high-performance utilities for memory management
 //! with safe abstractions over platform-specific operations.
 
-use core::sync::atomic::{compiler_fence, fence, AtomicU64, AtomicUsize, Ordering};
-use core::{hint, mem, ptr};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering, compiler_fence, fence};
+use core::{hint, ptr};
 
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
@@ -17,6 +17,12 @@ use std::time::{Duration, Instant};
 
 pub struct PrefetchManager {
     _private: (),
+}
+
+impl Default for PrefetchManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PrefetchManager {
@@ -43,8 +49,8 @@ impl PrefetchManager {
         }
 
         let ptr = slice.as_ptr();
-        let len = slice.len() * mem::size_of::<T>();
-        unsafe { self.prefetch_range_read_raw(ptr as *const u8, len) }
+        let len = size_of_val(slice);
+        unsafe { self.prefetch_range_read_raw(ptr.cast::<u8>(), len) }
     }
 
     #[inline]
@@ -54,16 +60,16 @@ impl PrefetchManager {
         }
 
         let ptr = slice.as_mut_ptr();
-        let len = slice.len() * mem::size_of::<T>();
-        unsafe { self.prefetch_range_write_raw(ptr as *mut u8, len) }
+        let len = size_of_val(slice);
+        unsafe { self.prefetch_range_write_raw(ptr.cast::<u8>(), len) }
     }
 
     #[inline(always)]
     unsafe fn prefetch_read_raw<T>(&self, ptr: *const T) {
         #[cfg(target_arch = "x86_64")]
         {
-            use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
-            unsafe { _mm_prefetch::<_MM_HINT_T0>(ptr as *const i8) }
+            use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+            unsafe { _mm_prefetch::<_MM_HINT_T0>(ptr.cast::<i8>()) }
         }
 
         #[cfg(target_arch = "aarch64")]
@@ -86,7 +92,7 @@ impl PrefetchManager {
     unsafe fn prefetch_write_raw<T>(&self, ptr: *mut T) {
         #[cfg(target_arch = "x86_64")]
         {
-            use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+            use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
             unsafe { _mm_prefetch::<_MM_HINT_T0>(ptr as *const i8) }
         }
 
@@ -136,7 +142,7 @@ impl PrefetchManager {
 }
 
 #[cfg(feature = "std")]
-pub static PREFETCH: LazyLock<PrefetchManager> = LazyLock::new(|| PrefetchManager::new());
+pub static PREFETCH: LazyLock<PrefetchManager> = LazyLock::new(PrefetchManager::new);
 
 // ============================================================================
 // Safe Memory Operations
@@ -144,6 +150,12 @@ pub static PREFETCH: LazyLock<PrefetchManager> = LazyLock::new(|| PrefetchManage
 
 pub struct MemoryOps {
     _private: (),
+}
+
+impl Default for MemoryOps {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MemoryOps {
@@ -251,7 +263,7 @@ pub enum CopyError {
 }
 
 #[cfg(feature = "std")]
-pub static MEMORY: LazyLock<MemoryOps> = LazyLock::new(|| MemoryOps::new());
+pub static MEMORY: LazyLock<MemoryOps> = LazyLock::new(MemoryOps::new);
 
 // ============================================================================
 // Memory Barriers - Safe Abstraction
@@ -337,6 +349,12 @@ pub struct AtomicStats {
     pub min: AtomicUsize,
 }
 
+impl Default for AtomicStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AtomicStats {
     pub const fn new() -> Self {
         Self {
@@ -386,10 +404,19 @@ pub struct Backoff {
     max_spin: u32,
 }
 
+impl Default for Backoff {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Backoff {
     #[inline]
     pub const fn new() -> Self {
-        Self { step: 0, max_spin: 6 }
+        Self {
+            step: 0,
+            max_spin: 6,
+        }
     }
 
     #[inline]
@@ -490,19 +517,19 @@ impl AlignmentOps {
 
     #[inline(always)]
     pub fn align_ref_up<T>(&self, reference: &T, alignment: usize) -> usize {
-        let addr = reference as *const T as usize;
+        let addr = ptr::from_ref::<T>(reference) as usize;
         self.align_up(addr, alignment)
     }
 
     #[inline(always)]
     pub fn align_ref_down<T>(&self, reference: &T, alignment: usize) -> usize {
-        let addr = reference as *const T as usize;
+        let addr = ptr::from_ref::<T>(reference) as usize;
         self.align_down(addr, alignment)
     }
 
     #[inline(always)]
     pub const fn alignment_for_type<T>(&self) -> usize {
-        mem::align_of::<T>()
+        align_of::<T>()
     }
 
     #[inline(always)]
@@ -567,12 +594,12 @@ pub fn align_ptr_down<T>(ptr: *const T, alignment: usize) -> *const T {
 
 #[inline(always)]
 pub fn align_ptr_up_mut<T>(ptr: *mut T, alignment: usize) -> *mut T {
-    align_ptr_up(ptr as *const T, alignment) as *mut T
+    align_ptr_up(ptr.cast_const(), alignment).cast_mut()
 }
 
 #[inline(always)]
 pub const fn alignment_for_type<T>() -> usize {
-    mem::align_of::<T>()
+    align_of::<T>()
 }
 
 #[inline(always)]
@@ -594,7 +621,7 @@ pub const fn next_power_of_two(value: usize) -> usize {
 
 #[inline(always)]
 pub const fn is_power_of_two(value: usize) -> bool {
-    value != 0 && (value & (value - 1)) == 0
+    value != 0 && value.is_power_of_two()
 }
 
 #[inline(always)]
@@ -621,7 +648,7 @@ pub struct PlatformInfo {
 impl PlatformInfo {
     #[cfg(feature = "std")]
     pub fn current() -> &'static Self {
-        static PLATFORM_INFO: LazyLock<PlatformInfo> = LazyLock::new(|| PlatformInfo::detect());
+        static PLATFORM_INFO: LazyLock<PlatformInfo> = LazyLock::new(PlatformInfo::detect);
         &PLATFORM_INFO
     }
 
@@ -643,7 +670,7 @@ impl PlatformInfo {
         Self {
             page_size: page_size(),
             cache_line_size: cache_line_size(),
-            pointer_width: mem::size_of::<usize>() * 8,
+            pointer_width: usize::BITS as usize,
             huge_page_size: detect_huge_page_size(),
             numa_nodes: detect_numa_nodes(),
             cpu_count: num_cpus(),
@@ -671,7 +698,7 @@ pub const fn page_size() -> usize {
 
 #[cfg(feature = "std")]
 pub fn cache_line_size() -> usize {
-    static CACHE_LINE_SIZE: LazyLock<usize> = LazyLock::new(|| detect_cache_line_size());
+    static CACHE_LINE_SIZE: LazyLock<usize> = LazyLock::new(detect_cache_line_size);
     *CACHE_LINE_SIZE
 }
 
@@ -717,7 +744,9 @@ fn detect_cache_line_size() -> usize {
 
 #[cfg(feature = "std")]
 fn num_cpus() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+    std::thread::available_parallelism()
+        .map(std::num::NonZero::get)
+        .unwrap_or(1)
 }
 
 #[cfg(all(feature = "std", target_os = "linux"))]
@@ -772,7 +801,12 @@ fn detect_numa_nodes() -> usize {
     if let Ok(entries) = std::fs::read_dir("/sys/devices/system/node/") {
         let count = entries
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_str().map(|s| s.starts_with("node")).unwrap_or(false))
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .map(|s| s.starts_with("node"))
+                    .unwrap_or(false)
+            })
             .count();
 
         if count > 0 {
@@ -844,9 +878,9 @@ pub fn format_duration(duration: Duration) -> String {
     let nanos = duration.as_nanos();
 
     if nanos == 0 {
-        return "0ns".to_string();
+        "0ns".to_string()
     } else if nanos < 1_000 {
-        format!("{}ns", nanos)
+        format!("{nanos}ns")
     } else if nanos < 1_000_000 {
         format!("{:.2}μs", nanos as f64 / 1_000.0)
     } else if nanos < 1_000_000_000 {
@@ -859,25 +893,25 @@ pub fn format_duration(duration: Duration) -> String {
             let mins = secs / 60;
             let secs = secs % 60;
             if secs > 0 {
-                format!("{}m {}s", mins, secs)
+                format!("{mins}m {secs}s")
             } else {
-                format!("{}m", mins)
+                format!("{mins}m")
             }
         } else if secs < 86400 {
             let hours = secs / 3600;
             let mins = (secs % 3600) / 60;
             if mins > 0 {
-                format!("{}h {}m", hours, mins)
+                format!("{hours}h {mins}m")
             } else {
-                format!("{}h", hours)
+                format!("{hours}h")
             }
         } else {
             let days = secs / 86400;
             let hours = (secs % 86400) / 3600;
             if hours > 0 {
-                format!("{}d {}h", days, hours)
+                format!("{days}d {hours}h")
             } else {
-                format!("{}d", days)
+                format!("{days}d")
             }
         }
     }
@@ -902,17 +936,32 @@ pub mod perf {
     impl Timer {
         #[inline]
         pub fn new(name: &'static str) -> Self {
-            Self { start: Instant::now(), name, auto_print: true, operations: None }
+            Self {
+                start: Instant::now(),
+                name,
+                auto_print: true,
+                operations: None,
+            }
         }
 
         #[inline]
         pub fn silent(name: &'static str) -> Self {
-            Self { start: Instant::now(), name, auto_print: false, operations: None }
+            Self {
+                start: Instant::now(),
+                name,
+                auto_print: false,
+                operations: None,
+            }
         }
 
         #[inline]
         pub fn with_operations(name: &'static str, operations: u64) -> Self {
-            Self { start: Instant::now(), name, auto_print: true, operations: Some(operations) }
+            Self {
+                start: Instant::now(),
+                name,
+                auto_print: true,
+                operations: Some(operations),
+            }
         }
 
         #[inline]
@@ -929,14 +978,14 @@ pub mod perf {
                     println!(
                         "{}: {} ({} ops, {})",
                         self.name,
-                        super::format_duration(elapsed),
+                        format_duration(elapsed),
                         ops,
                         format_throughput(throughput)
                     );
-                },
+                }
                 None => {
-                    println!("{}: {}", self.name, super::format_duration(elapsed));
-                },
+                    println!("{}: {}", self.name, format_duration(elapsed));
+                }
             }
         }
     }
@@ -974,9 +1023,9 @@ pub mod perf {
         if ops_per_sec == f64::INFINITY {
             "∞ ops/s".to_string()
         } else if ops_per_sec < 1.0 {
-            format!("{:.3} ops/s", ops_per_sec)
+            format!("{ops_per_sec:.3} ops/s")
         } else if ops_per_sec < 1_000.0 {
-            format!("{:.2} ops/s", ops_per_sec)
+            format!("{ops_per_sec:.2} ops/s")
         } else if ops_per_sec < 1_000_000.0 {
             format!("{:.2}K ops/s", ops_per_sec / 1_000.0)
         } else if ops_per_sec < 1_000_000_000.0 {
@@ -994,11 +1043,11 @@ pub mod perf {
 #[inline(always)]
 pub fn debug_assert_aligned<T>(ptr: *const T) {
     debug_assert!(
-        is_aligned_ptr(ptr, mem::align_of::<T>()),
+        is_aligned_ptr(ptr, align_of::<T>()),
         "Pointer {:p} is not aligned for type {} (requires {} byte alignment)",
         ptr,
         core::any::type_name::<T>(),
-        mem::align_of::<T>()
+        align_of::<T>()
     );
 }
 
@@ -1022,7 +1071,7 @@ pub fn hexdump(data: &[u8], offset: usize) -> String {
             if j == 8 {
                 result.push(' ');
             }
-            let _ = write!(&mut result, "{:02x} ", byte);
+            let _ = write!(&mut result, "{byte:02x} ");
         }
 
         if chunk.len() < 16 {

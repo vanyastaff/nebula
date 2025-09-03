@@ -63,12 +63,12 @@ pub struct CircuitBreaker {
 
 impl CircuitBreaker {
     /// Create a new circuit breaker with default configuration
-    pub fn new() -> Self {
+    #[must_use] pub fn new() -> Self {
         Self::with_config(CircuitBreakerConfig::default())
     }
 
     /// Create a new circuit breaker with custom configuration
-    pub fn with_config(config: CircuitBreakerConfig) -> Self {
+    #[must_use] pub fn with_config(config: CircuitBreakerConfig) -> Self {
         Self {
             config,
             state: Arc::new(RwLock::new(CircuitState::Closed)),
@@ -109,18 +109,18 @@ impl CircuitBreaker {
                 // Reset failure count on success
                 *failure_count = 0;
                 debug!("Circuit closed - success recorded, failure count reset");
-            },
+            }
             CircuitState::HalfOpen => {
                 // Success in half-open state, close the circuit
                 *state = CircuitState::Closed;
                 *failure_count = 0;
                 *half_open_operations = 0;
                 info!("Circuit closed after successful operation in half-open state");
-            },
+            }
             CircuitState::Open => {
                 // Circuit is open, no state change
                 debug!("Circuit open - success recorded but circuit remains open");
-            },
+            }
         }
     }
 
@@ -147,20 +147,20 @@ impl CircuitBreaker {
                         *failure_count, self.config.failure_threshold
                     );
                 }
-            },
+            }
             CircuitState::HalfOpen => {
                 // Failure in half-open state, open the circuit
                 *state = CircuitState::Open;
                 *failure_count += 1;
                 *last_failure_time = Some(Instant::now());
                 warn!("Circuit opened after failure in half-open state");
-            },
+            }
             CircuitState::Open => {
                 // Circuit is already open, just update failure count
                 *failure_count += 1;
                 *last_failure_time = Some(Instant::now());
                 debug!("Circuit open - failure recorded");
-            },
+            }
         }
     }
 
@@ -173,7 +173,7 @@ impl CircuitBreaker {
             CircuitState::Closed => {
                 // Operations are always allowed in closed state
                 Ok(())
-            },
+            }
             CircuitState::Open => {
                 // Check if reset timeout has elapsed
                 let last_failure_time = *self.last_failure_time.read().await;
@@ -190,7 +190,7 @@ impl CircuitBreaker {
                 } else {
                     Err(ResilienceError::circuit_breaker_open("open"))
                 }
-            },
+            }
             CircuitState::HalfOpen => {
                 // Check if we can allow more operations
                 if *half_open_operations < self.config.half_open_max_operations {
@@ -201,9 +201,11 @@ impl CircuitBreaker {
                     );
                     Ok(())
                 } else {
-                    Err(ResilienceError::circuit_breaker_open("half-open limit reached"))
+                    Err(ResilienceError::circuit_breaker_open(
+                        "half-open limit reached",
+                    ))
                 }
-            },
+            }
         }
     }
 
@@ -211,7 +213,7 @@ impl CircuitBreaker {
     pub async fn execute<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = ResilienceResult<T>>,
+        Fut: Future<Output = ResilienceResult<T>>,
     {
         // Check if we can execute
         self.can_execute().await?;
@@ -223,12 +225,12 @@ impl CircuitBreaker {
         match &result {
             Ok(_) => {
                 self.record_success().await;
-            },
+            }
             Err(error) => {
                 if self.config.count_timeouts || !matches!(error, ResilienceError::Timeout { .. }) {
                     self.record_failure().await;
                 }
-            },
+            }
         }
 
         result
@@ -361,7 +363,9 @@ mod tests {
         let cb = CircuitBreaker::new();
 
         // Should execute successfully in closed state
-        let result = cb.execute(|| async { Ok::<&str, ResilienceError>("success") }).await;
+        let result = cb
+            .execute(|| async { Ok::<&str, ResilienceError>("success") })
+            .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "success");
 

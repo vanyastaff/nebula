@@ -43,7 +43,9 @@ fn main() -> sys::Result<()> {
 
     #[cfg(not(feature = "network"))]
     {
-        println!("This example requires feature 'network'. Run with:\n  cargo run -p nebula-system --example network --features \"network\"");
+        println!(
+            "This example requires feature 'network'. Run with:\n  cargo run -p nebula-system --example network --features \"network\""
+        );
     }
 
     Ok(())

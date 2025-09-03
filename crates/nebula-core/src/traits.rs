@@ -400,7 +400,9 @@ mod tests {
     #[test]
     fn test_scoped_trait() {
         let execution_id = ExecutionId::new();
-        let entity = TestScopedEntity { scope: ScopeLevel::Execution(execution_id.clone()) };
+        let entity = TestScopedEntity {
+            scope: ScopeLevel::Execution(execution_id.clone()),
+        };
 
         assert!(entity.is_execution());
         assert!(!entity.is_global());
@@ -447,8 +449,10 @@ mod tests {
 
     #[test]
     fn test_entity_metadata() {
-        let mut metadata =
-            EntityMetadata::new().with_tag("test").with_tag("example").with_custom("key", "value");
+        let mut metadata = EntityMetadata::new()
+            .with_tag("test")
+            .with_tag("example")
+            .with_custom("key", "value");
 
         assert!(metadata.has_tag("test"));
         assert!(metadata.has_tag("example"));

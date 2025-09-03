@@ -18,11 +18,11 @@ pub trait Retryable {
 
 impl<T> Retryable for Result<T, ResilienceError> {
     fn is_retryable(&self) -> bool {
-        self.as_ref().err().map_or(false, |e| e.is_retryable())
+        self.as_ref().err().is_some_and(ResilienceError::is_retryable)
     }
 
     fn is_terminal(&self) -> bool {
-        self.as_ref().err().map_or(false, |e| e.is_terminal())
+        self.as_ref().err().is_some_and(ResilienceError::is_terminal)
     }
 }
 
@@ -65,7 +65,7 @@ impl Default for RetryStrategy {
 
 impl RetryStrategy {
     /// Create a new retry strategy
-    pub fn new(max_attempts: usize, base_delay: Duration) -> Self {
+    #[must_use] pub fn new(max_attempts: usize, base_delay: Duration) -> Self {
         Self {
             max_attempts,
             base_delay,
@@ -76,19 +76,19 @@ impl RetryStrategy {
     }
 
     /// Set the maximum delay cap
-    pub fn with_max_delay(mut self, max_delay: Duration) -> Self {
+    #[must_use] pub fn with_max_delay(mut self, max_delay: Duration) -> Self {
         self.max_delay = max_delay;
         self
     }
 
     /// Set the jitter factor
-    pub fn with_jitter(mut self, jitter_factor: f64) -> Self {
+    #[must_use] pub fn with_jitter(mut self, jitter_factor: f64) -> Self {
         self.jitter_factor = jitter_factor.clamp(0.0, 1.0);
         self
     }
 
     /// Disable exponential backoff
-    pub fn without_exponential(mut self) -> Self {
+    #[must_use] pub fn without_exponential(mut self) -> Self {
         self.exponential = false;
         self
     }
@@ -145,7 +145,7 @@ where
                     debug!("Operation succeeded after {} retry attempts", attempt);
                 }
                 return Ok(value);
-            },
+            }
             Err(error) => {
                 if attempt < strategy.max_attempts {
                     let delay = strategy.calculate_delay(attempt + 1);
@@ -158,7 +158,7 @@ where
                     );
                     sleep(delay).await;
                 }
-            },
+            }
         }
     }
 
@@ -225,7 +225,7 @@ mod tests {
         match result.unwrap_err() {
             ResilienceError::RetryLimitExceeded { attempts } => {
                 assert_eq!(attempts, 2);
-            },
+            }
             _ => panic!("Expected retry limit exceeded error"),
         }
         assert_eq!(counter.load(Ordering::SeqCst), 3); // Initial + 2 retries

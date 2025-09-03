@@ -171,7 +171,9 @@ pub struct ErrorContextBuilder {
 impl ErrorContextBuilder {
     /// Create a new builder
     pub fn new(description: impl Into<String>) -> Self {
-        Self { context: ErrorContext::new(description) }
+        Self {
+            context: ErrorContext::new(description),
+        }
     }
 
     /// Add metadata
@@ -255,7 +257,10 @@ mod tests {
         assert_eq!(context.operation, Some("create_user".to_string()));
         assert_eq!(context.user_id, Some("user123".to_string()));
         assert_eq!(context.tenant_id, Some("tenant456".to_string()));
-        assert_eq!(context.get_metadata("endpoint"), Some(&"/api/users".to_string()));
+        assert_eq!(
+            context.get_metadata("endpoint"),
+            Some(&"/api/users".to_string())
+        );
         assert_eq!(context.get_metadata("method"), Some(&"POST".to_string()));
     }
 

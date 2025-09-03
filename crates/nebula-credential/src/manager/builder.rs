@@ -5,7 +5,7 @@ use crate::traits::{DistributedLock, StateStore, TokenCache};
 use dashmap::DashMap;
 use std::sync::Arc;
 
-/// Builder for CredentialManager
+/// Builder for `CredentialManager`
 pub struct ManagerBuilder {
     store: Option<Arc<dyn StateStore>>,
     lock: Option<AnyLock>,
@@ -58,11 +58,24 @@ impl ManagerBuilder {
 
     /// Build the manager
     pub fn build(self) -> Result<CredentialManager, anyhow::Error> {
-        let store = self.store.ok_or_else(|| anyhow::anyhow!("StateStore is required"))?;
-        let lock = self.lock.ok_or_else(|| anyhow::anyhow!("DistributedLock is required"))?;
-        let registry = self.registry.unwrap_or_else(|| Arc::new(CredentialRegistry::new()));
+        let store = self
+            .store
+            .ok_or_else(|| anyhow::anyhow!("StateStore is required"))?;
+        let lock = self
+            .lock
+            .ok_or_else(|| anyhow::anyhow!("DistributedLock is required"))?;
+        let registry = self
+            .registry
+            .unwrap_or_else(|| Arc::new(CredentialRegistry::new()));
         let negative_cache = Arc::new(DashMap::new());
-        Ok(CredentialManager::new(store, lock, self.cache, self.policy, registry, negative_cache))
+        Ok(CredentialManager::new(
+            store,
+            lock,
+            self.cache,
+            self.policy,
+            registry,
+            negative_cache,
+        ))
     }
 }
 

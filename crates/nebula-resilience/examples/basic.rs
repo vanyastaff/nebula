@@ -1,7 +1,7 @@
 //! Basic example demonstrating nebula-resilience usage
 
 use nebula_resilience::{
-    bulkhead, circuit_breaker, policies, retry, timeout, ResilienceBuilder, ResiliencePolicy,
+    ResilienceBuilder, ResiliencePolicy, bulkhead, circuit_breaker, policies, retry, timeout,
 };
 use std::time::Duration;
 
@@ -43,7 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let result = circuit_breaker
             .execute(|| async {
                 if i < 5 {
-                    Err(nebula_resilience::ResilienceError::timeout(Duration::from_secs(1)))
+                    Err(nebula_resilience::ResilienceError::timeout(
+                        Duration::from_secs(1),
+                    ))
                 } else {
                     Ok("circuit breaker test")
                 }
@@ -97,7 +99,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("6. Predefined Policies Example");
     println!("   Database policy: {:?}", policies::database());
     println!("   HTTP API policy: {:?}", policies::http_api());
-    println!("   File operations policy: {:?}", policies::file_operations());
+    println!(
+        "   File operations policy: {:?}",
+        policies::file_operations()
+    );
     println!("   Long running policy: {:?}", policies::long_running());
     println!("   Critical policy: {:?}", policies::critical());
 

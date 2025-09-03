@@ -1,6 +1,6 @@
 //! Writer implementations
 
-use crate::{config::WriterConfig, Result, Rolling};
+use crate::{Result, config::WriterConfig};
 use std::io::{self, Write};
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
@@ -25,23 +25,27 @@ pub fn make_writer(config: &WriterConfig) -> Result<(BoxMakeWriter, WriterGuards
         WriterConfig::Stdout => BoxMakeWriter::new(io::stdout),
 
         #[cfg(feature = "file")]
-        WriterConfig::File { path, rolling, non_blocking } => {
+        WriterConfig::File {
+            path,
+            rolling,
+            non_blocking,
+        } => {
             let appender = match rolling {
                 Some(Rolling::Hourly) => {
                     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
                     let prefix = path.file_name().unwrap();
                     tracing_appender::rolling::hourly(dir, prefix)
-                },
+                }
                 Some(Rolling::Daily) => {
                     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
                     let prefix = path.file_name().unwrap();
                     tracing_appender::rolling::daily(dir, prefix)
-                },
+                }
                 Some(Rolling::Size(_)) => {
                     return Err(anyhow::anyhow!(
                         "Size-based rolling is not yet implemented. Use Daily or Hourly."
                     ));
-                },
+                }
                 _ => tracing_appender::rolling::never(".", path),
             };
 
@@ -52,7 +56,7 @@ pub fn make_writer(config: &WriterConfig) -> Result<(BoxMakeWriter, WriterGuards
             } else {
                 BoxMakeWriter::new(appender)
             }
-        },
+        }
 
         WriterConfig::Multi(writers) => {
             // For now, use the first writer
@@ -61,7 +65,7 @@ pub fn make_writer(config: &WriterConfig) -> Result<(BoxMakeWriter, WriterGuards
                 return Err(anyhow::anyhow!("Multi writer needs at least one writer"));
             }
             return make_writer(&writers[0]);
-        },
+        }
     };
 
     Ok((writer, guards))

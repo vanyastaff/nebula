@@ -37,22 +37,30 @@ pub enum DurationError {
 impl DurationError {
     /// Create a negative duration error
     pub fn negative_duration<S: Into<String>>(value: S) -> Self {
-        Self::NegativeDuration { value: value.into() }
+        Self::NegativeDuration {
+            value: value.into(),
+        }
     }
 
     /// Create an invalid value error
     pub fn invalid_value<S: Into<String>>(value: S) -> Self {
-        Self::InvalidValue { value: value.into() }
+        Self::InvalidValue {
+            value: value.into(),
+        }
     }
 
     /// Create a parse error
     pub fn parse_error<S: Into<String>>(input: S) -> Self {
-        Self::ParseError { input: input.into() }
+        Self::ParseError {
+            input: input.into(),
+        }
     }
 
     /// Create a not finite error
     pub fn not_finite<S: Into<String>>(value: S) -> Self {
-        Self::NotFinite { value: value.into() }
+        Self::NotFinite {
+            value: value.into(),
+        }
     }
 }
 
@@ -284,21 +292,13 @@ impl Duration {
     /// Get minimum of two durations
     #[inline]
     pub fn min(self, other: Self) -> Self {
-        if self <= other {
-            self
-        } else {
-            other
-        }
+        if self <= other { self } else { other }
     }
 
     /// Get maximum of two durations
     #[inline]
     pub fn max(self, other: Self) -> Self {
-        if self >= other {
-            self
-        } else {
-            other
-        }
+        if self >= other { self } else { other }
     }
 
     /// Clamp duration to range
@@ -360,27 +360,43 @@ impl Duration {
         // Days
         let days = secs / 86400;
         if days > 0 {
-            parts.push(format!("{} {}", days, if days == 1 { "day" } else { "days" }));
+            parts.push(format!(
+                "{} {}",
+                days,
+                if days == 1 { "day" } else { "days" }
+            ));
             secs %= 86400;
         }
 
         // Hours
         let hours = secs / 3600;
         if hours > 0 {
-            parts.push(format!("{} {}", hours, if hours == 1 { "hour" } else { "hours" }));
+            parts.push(format!(
+                "{} {}",
+                hours,
+                if hours == 1 { "hour" } else { "hours" }
+            ));
             secs %= 3600;
         }
 
         // Minutes
         let minutes = secs / 60;
         if minutes > 0 {
-            parts.push(format!("{} {}", minutes, if minutes == 1 { "minute" } else { "minutes" }));
+            parts.push(format!(
+                "{} {}",
+                minutes,
+                if minutes == 1 { "minute" } else { "minutes" }
+            ));
             secs %= 60;
         }
 
         // Seconds
         if secs > 0 || parts.is_empty() {
-            parts.push(format!("{} {}", secs, if secs == 1 { "second" } else { "seconds" }));
+            parts.push(format!(
+                "{} {}",
+                secs,
+                if secs == 1 { "second" } else { "seconds" }
+            ));
         }
 
         // Milliseconds if no other parts and we have them
@@ -566,7 +582,9 @@ impl<'de> serde::Deserialize<'de> for Duration {
             {
                 // Parse strings like "5s", "100ms", "2h", "1d"
                 let (num_str, unit) = value.split_at(
-                    value.rfind(|c: char| c.is_ascii_digit() || c == '.').map_or(0, |i| i + 1),
+                    value
+                        .rfind(|c: char| c.is_ascii_digit() || c == '.')
+                        .map_or(0, |i| i + 1),
                 );
 
                 let num: f64 = num_str
@@ -616,8 +634,14 @@ mod tests {
         assert_eq!(Duration::from_hours(25).to_compact_string(), "1.0d");
 
         assert_eq!(Duration::from_secs(1).to_human_string(), "1 second");
-        assert_eq!(Duration::from_secs(61).to_human_string(), "1 minute 1 second");
-        assert_eq!(Duration::from_secs(3661).to_human_string(), "1 hour 1 minute 1 second");
+        assert_eq!(
+            Duration::from_secs(61).to_human_string(),
+            "1 minute 1 second"
+        );
+        assert_eq!(
+            Duration::from_secs(3661).to_human_string(),
+            "1 hour 1 minute 1 second"
+        );
     }
 
     #[test]

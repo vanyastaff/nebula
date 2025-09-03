@@ -48,38 +48,42 @@ pub enum ResilienceError {
 
 impl ResilienceError {
     /// Check if the error is retryable
-    pub fn is_retryable(&self) -> bool {
+    #[must_use] pub fn is_retryable(&self) -> bool {
         matches!(self, Self::Timeout { .. } | Self::CircuitBreakerOpen { .. })
     }
 
     /// Check if the error is terminal (should not be retried)
-    pub fn is_terminal(&self) -> bool {
+    #[must_use] pub fn is_terminal(&self) -> bool {
         matches!(self, Self::BulkheadFull { .. } | Self::InvalidConfig { .. })
     }
 
     /// Create a timeout error
-    pub fn timeout(duration: Duration) -> Self {
+    #[must_use] pub fn timeout(duration: Duration) -> Self {
         Self::Timeout { duration }
     }
 
     /// Create a circuit breaker open error
     pub fn circuit_breaker_open(state: impl Into<String>) -> Self {
-        Self::CircuitBreakerOpen { state: state.into() }
+        Self::CircuitBreakerOpen {
+            state: state.into(),
+        }
     }
 
     /// Create a bulkhead full error
-    pub fn bulkhead_full(max_concurrency: usize) -> Self {
+    #[must_use] pub fn bulkhead_full(max_concurrency: usize) -> Self {
         Self::BulkheadFull { max_concurrency }
     }
 
     /// Create a retry limit exceeded error
-    pub fn retry_limit_exceeded(attempts: usize) -> Self {
+    #[must_use] pub fn retry_limit_exceeded(attempts: usize) -> Self {
         Self::RetryLimitExceeded { attempts }
     }
 
     /// Create an invalid config error
     pub fn invalid_config(message: impl Into<String>) -> Self {
-        Self::InvalidConfig { message: message.into() }
+        Self::InvalidConfig {
+            message: message.into(),
+        }
     }
 }
 

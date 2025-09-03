@@ -72,7 +72,10 @@ impl DateTimeInner {
     /// Creates from chrono NaiveDateTime
     #[cfg(feature = "chrono")]
     pub fn from_naive(dt: NaiveDateTime) -> Self {
-        Self { date: DateInner::from_naive(dt.date()), time: TimeInner::from_naive(dt.time()) }
+        Self {
+            date: DateInner::from_naive(dt.date()),
+            time: TimeInner::from_naive(dt.time()),
+        }
     }
 }
 
@@ -126,7 +129,7 @@ impl DateTime {
 
     /// Creates from Date and Time
     pub fn from_date_time(date: Date, time: Time) -> Self {
-        let inner = DateTimeInner::new(date.as_inner().clone(), time.as_inner().clone());
+        let inner = DateTimeInner::new(date.as_inner().clone(), *time.as_inner());
 
         Self {
             inner: Arc::new(inner),
@@ -191,7 +194,7 @@ impl DateTime {
 
             // Julian Day Number for 1970-01-01 is 2440588
             let epoch_jd: i64 = 2_440_588;
-            let jd = epoch_jd + days as i64;
+            let jd = epoch_jd + days;
             if jd > i32::MAX as i64 || jd < i32::MIN as i64 {
                 return Err(DateTimeError::OutOfRange {
                     msg: format!("Invalid timestamp: {} nanos", nanos),
@@ -301,8 +304,12 @@ impl DateTime {
 
     /// Returns the date component
     pub fn date(&self) -> Date {
-        Date::new(self.inner.date.year, self.inner.date.month as u32, self.inner.date.day as u32)
-            .unwrap()
+        Date::new(
+            self.inner.date.year,
+            self.inner.date.month as u32,
+            self.inner.date.day as u32,
+        )
+        .unwrap()
     }
 
     /// Returns the time component
@@ -551,19 +558,29 @@ impl DateTime {
     /// Returns ISO 8601 datetime string
     pub fn to_iso_string(&self) -> &str {
         self.iso_string_cache.get_or_init(|| {
-            format!("{}T{}", self.date().to_iso_string(), self.time().to_iso_string())
+            format!(
+                "{}T{}",
+                self.date().to_iso_string(),
+                self.time().to_iso_string()
+            )
         })
     }
 
     /// Returns RFC 3339 string
     pub fn to_rfc3339(&self) -> String {
-        format!("{}T{}Z", self.date().to_iso_string(), self.time().to_iso_string())
+        format!(
+            "{}T{}Z",
+            self.date().to_iso_string(),
+            self.time().to_iso_string()
+        )
     }
 
     /// Returns RFC 2822 string
     #[cfg(feature = "chrono")]
     pub fn to_rfc2822(&self) -> String {
-        let dt = Utc.timestamp_opt(self.timestamp(), self.nanosecond()).unwrap();
+        let dt = Utc
+            .timestamp_opt(self.timestamp(), self.nanosecond())
+            .unwrap();
         dt.to_rfc2822()
     }
 
@@ -586,7 +603,11 @@ impl DateTime {
 
     /// Returns a human-readable string
     pub fn to_human_string(&self) -> String {
-        format!("{} at {}", self.date().to_human_string(), self.time().to_human_string())
+        format!(
+            "{} at {}",
+            self.date().to_human_string(),
+            self.time().to_human_string()
+        )
     }
 
     /// Returns relative datetime string
@@ -924,7 +945,10 @@ mod tests {
         assert_eq!(dt.to_rfc3339(), "2024-12-25T14:30:45Z");
 
         assert_eq!(dt.format("YYYY-MM-DD HH:mm:ss"), "2024-12-25 14:30:45");
-        assert_eq!(dt.format("MMM D, YYYY at h:mm A"), "Dec 25, 2024 at 2:30 PM");
+        assert_eq!(
+            dt.format("MMM D, YYYY at h:mm A"),
+            "Dec 25, 2024 at 2:30 PM"
+        );
     }
 
     #[test]

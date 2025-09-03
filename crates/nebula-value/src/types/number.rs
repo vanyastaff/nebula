@@ -47,7 +47,10 @@ pub enum NumberError {
     ParseError { input: String, ty: &'static str },
 
     #[error("Loss of precision converting from {from} to {to}")]
-    PrecisionLoss { from: &'static str, to: &'static str },
+    PrecisionLoss {
+        from: &'static str,
+        to: &'static str,
+    },
 
     #[error("Cannot convert NaN to integer")]
     NaNConversion,
@@ -694,7 +697,7 @@ impl Float {
         let a_bits = self.0.to_bits() as i64;
         let b_bits = other.0.to_bits() as i64;
 
-        (a_bits - b_bits).abs() as u64 <= max_ulps
+        (a_bits - b_bits).unsigned_abs() <= max_ulps
     }
 
     /// Combined absolute and relative tolerance
@@ -835,7 +838,10 @@ impl Number {
                 if !v.is_finite() {
                     Err(NumberError::NotFinite)
                 } else if v.fract() != 0.0 {
-                    Err(NumberError::PrecisionLoss { from: "float", to: "i64" })
+                    Err(NumberError::PrecisionLoss {
+                        from: "float",
+                        to: "i64",
+                    })
                 } else if v < i64::MIN as f64 || v > i64::MAX as f64 {
                     Err(NumberError::OutOfRange {
                         value: v.to_string(),
@@ -845,7 +851,7 @@ impl Number {
                 } else {
                     Ok(v as i64)
                 }
-            },
+            }
             #[cfg(feature = "decimal")]
             Self::Decimal(d) => d.to_i64(),
         }
@@ -913,7 +919,7 @@ impl Number {
                 let mn = min.to_f64();
                 let mx = max.to_f64();
                 Self::Float(Float::new(v.clamp(mn, mx)))
-            },
+            }
         }
     }
 
@@ -924,7 +930,7 @@ impl Number {
                 if exp.is_positive() && exp.get() <= u32::MAX as i64 =>
             {
                 base.checked_pow(exp.get() as u32).map(Self::Int)
-            },
+            }
             _ => {
                 let result = self.to_f64().powf(exp.to_f64());
                 if result.is_finite() {
@@ -932,7 +938,7 @@ impl Number {
                 } else {
                     Err(NumberError::NotFinite)
                 }
-            },
+            }
         }
     }
 
@@ -994,7 +1000,10 @@ impl FromStr for Integer {
         s.trim()
             .parse::<i64>()
             .map(Self::new)
-            .map_err(|_| NumberError::ParseError { input: s.to_string(), ty: "Integer" })
+            .map_err(|_| NumberError::ParseError {
+                input: s.to_string(),
+                ty: "Integer",
+            })
     }
 }
 
@@ -1186,7 +1195,10 @@ impl FromStr for Float {
         s.trim()
             .parse::<f64>()
             .map(Self::new)
-            .map_err(|_| NumberError::ParseError { input: s.to_string(), ty: "Float" })
+            .map_err(|_| NumberError::ParseError {
+                input: s.to_string(),
+                ty: "Float",
+            })
     }
 }
 
@@ -1398,17 +1410,19 @@ impl FromStr for Number {
         let trimmed = s.trim();
 
         // Try integer first if no decimal point
-        if !trimmed.contains('.') && !trimmed.contains('e') && !trimmed.contains('E') {
-            if let Ok(i) = trimmed.parse::<i64>() {
+        if !trimmed.contains('.') && !trimmed.contains('e') && !trimmed.contains('E')
+            && let Ok(i) = trimmed.parse::<i64>() {
                 return Ok(Self::Int(Integer::new(i)));
             }
-        }
 
         // Try float
         if let Ok(f) = trimmed.parse::<f64>() {
             Ok(Self::Float(Float::new(f)))
         } else {
-            Err(NumberError::ParseError { input: s.to_string(), ty: "Number" })
+            Err(NumberError::ParseError {
+                input: s.to_string(),
+                ty: "Number",
+            })
         }
     }
 }
@@ -1592,7 +1606,7 @@ impl PartialEq for Number {
                 let a = self.to_f64();
                 let b = other.to_f64();
                 (a - b).abs() < f64::EPSILON * 10.0
-            },
+            }
         }
     }
 }
@@ -1613,16 +1627,16 @@ impl Hash for Number {
             Self::Int(i) => {
                 0u8.hash(state); // discriminant
                 i.hash(state);
-            },
+            }
             Self::Float(f) => {
                 1u8.hash(state); // discriminant
                 f.get().to_bits().hash(state);
-            },
+            }
             #[cfg(feature = "decimal")]
             Self::Decimal(d) => {
                 2u8.hash(state); // discriminant
                 d.hash(state);
-            },
+            }
         }
     }
 }
@@ -1643,9 +1657,12 @@ impl TryFrom<serde_json::Value> for Number {
                 } else if let Some(f) = n.as_f64() {
                     Ok(Self::Float(Float::new(f)))
                 } else {
-                    Err(NumberError::ParseError { input: n.to_string(), ty: "Number" })
+                    Err(NumberError::ParseError {
+                        input: n.to_string(),
+                        ty: "Number",
+                    })
                 }
-            },
+            }
             serde_json::Value::String(s) => s.parse(),
             serde_json::Value::Bool(b) => Ok(Self::Int(Integer::new(if b { 1 } else { 0 }))),
             serde_json::Value::Null => Ok(Self::Int(Integer::ZERO)),
@@ -1749,9 +1766,15 @@ mod tests {
     #[test]
     fn test_number_parsing() {
         assert_eq!("42".parse::<Number>().unwrap(), Number::from_i64(42));
-        assert_eq!("3.14".parse::<Number>().unwrap(), Number::Float(Float::new(3.14)));
+        assert_eq!(
+            "3.14".parse::<Number>().unwrap(),
+            Number::Float(Float::new(3.14))
+        );
         assert_eq!("-100".parse::<Number>().unwrap(), Number::from_i64(-100));
-        assert_eq!("1.5e2".parse::<Number>().unwrap(), Number::Float(Float::new(150.0)));
+        assert_eq!(
+            "1.5e2".parse::<Number>().unwrap(),
+            Number::Float(Float::new(150.0))
+        );
     }
 
     #[test]

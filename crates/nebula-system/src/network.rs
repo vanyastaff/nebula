@@ -246,7 +246,10 @@ pub fn connections() -> Vec<Connection> {
 
 /// Get connections for a specific process
 pub fn connections_for_process(pid: u32) -> Vec<Connection> {
-    connections().into_iter().filter(|conn| conn.pid == Some(pid)).collect()
+    connections()
+        .into_iter()
+        .filter(|conn| conn.pid == Some(pid))
+        .collect()
 }
 
 /// Network configuration
@@ -311,7 +314,10 @@ fn detect_gateway() -> Option<String> {
         use std::process::Command;
 
         // Try to get default gateway using ip command
-        if let Ok(output) = Command::new("ip").args(&["route", "show", "default"]).output() {
+        if let Ok(output) = Command::new("ip")
+            .args(&["route", "show", "default"])
+            .output()
+        {
             if let Ok(stdout) = String::from_utf8(output.stdout) {
                 // Parse: "default via 192.168.1.1 dev eth0"
                 for line in stdout.lines() {
@@ -332,22 +338,26 @@ fn detect_gateway() -> Option<String> {
 /// Check network connectivity
 pub fn is_online() -> bool {
     // Simple check: see if we have any non-loopback interfaces with IP addresses
-    interfaces().iter().any(|iface| !iface.is_loopback && iface.is_up)
+    interfaces()
+        .iter()
+        .any(|iface| !iface.is_loopback && iface.is_up)
 }
 
 /// Get total network statistics across all interfaces
 pub fn total_stats() -> NetworkStats {
     let interfaces = interfaces();
 
-    interfaces.iter().fold(NetworkStats::default(), |mut acc, iface| {
-        acc.rx_bytes += iface.stats.rx_bytes;
-        acc.tx_bytes += iface.stats.tx_bytes;
-        acc.rx_packets += iface.stats.rx_packets;
-        acc.tx_packets += iface.stats.tx_packets;
-        acc.rx_errors += iface.stats.rx_errors;
-        acc.tx_errors += iface.stats.tx_errors;
-        acc.rx_dropped += iface.stats.rx_dropped;
-        acc.tx_dropped += iface.stats.tx_dropped;
-        acc
-    })
+    interfaces
+        .iter()
+        .fold(NetworkStats::default(), |mut acc, iface| {
+            acc.rx_bytes += iface.stats.rx_bytes;
+            acc.tx_bytes += iface.stats.tx_bytes;
+            acc.rx_packets += iface.stats.rx_packets;
+            acc.tx_packets += iface.stats.tx_packets;
+            acc.rx_errors += iface.stats.rx_errors;
+            acc.tx_errors += iface.stats.tx_errors;
+            acc.rx_dropped += iface.stats.rx_dropped;
+            acc.tx_dropped += iface.stats.tx_dropped;
+            acc
+        })
 }

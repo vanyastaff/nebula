@@ -101,8 +101,11 @@ pub fn list() -> Vec<DiskInfo> {
                 let total = disk.total_space();
                 let available = disk.available_space();
                 let used = total.saturating_sub(available);
-                let usage_percent =
-                    if total > 0 { (used as f64 / total as f64 * 100.0) as f32 } else { 0.0 };
+                let usage_percent = if total > 0 {
+                    (used as f64 / total as f64 * 100.0) as f32
+                } else {
+                    0.0
+                };
 
                 let disk_type = detect_disk_type(disk.kind());
 
@@ -137,7 +140,9 @@ fn detect_disk_type(disk_type: sysinfo::DiskKind) -> DiskType {
 
 /// Get specific disk by mount point
 pub fn get_disk(mount_point: &str) -> Option<DiskInfo> {
-    list().into_iter().find(|disk| disk.mount_point == mount_point)
+    list()
+        .into_iter()
+        .find(|disk| disk.mount_point == mount_point)
 }
 
 /// Get total disk usage across all disks
@@ -152,7 +157,11 @@ pub fn total_usage() -> DiskUsage {
         total_space: total,
         used_space: used,
         available_space: available,
-        usage_percent: if total > 0 { (used as f64 / total as f64 * 100.0) as f32 } else { 0.0 },
+        usage_percent: if total > 0 {
+            (used as f64 / total as f64 * 100.0) as f32
+        } else {
+            0.0
+        },
     }
 }
 
@@ -173,7 +182,9 @@ pub struct DiskUsage {
 /// Check if running on SSD
 pub fn is_ssd(mount_point: Option<&str>) -> bool {
     if let Some(mp) = mount_point {
-        get_disk(mp).map(|d| d.disk_type == DiskType::SSD).unwrap_or(false)
+        get_disk(mp)
+            .map(|d| d.disk_type == DiskType::SSD)
+            .unwrap_or(false)
     } else {
         // Check root/system disk
         #[cfg(unix)]
@@ -181,7 +192,9 @@ pub fn is_ssd(mount_point: Option<&str>) -> bool {
         #[cfg(windows)]
         let system_mount = "C:\\";
 
-        get_disk(system_mount).map(|d| d.disk_type == DiskType::SSD).unwrap_or(false)
+        get_disk(system_mount)
+            .map(|d| d.disk_type == DiskType::SSD)
+            .unwrap_or(false)
     }
 }
 
@@ -252,7 +265,9 @@ impl DiskPressure {
 /// Get disk pressure for a specific mount point
 pub fn pressure(mount_point: Option<&str>) -> DiskPressure {
     if let Some(mp) = mount_point {
-        get_disk(mp).map(|d| DiskPressure::from_usage(d.usage_percent)).unwrap_or(DiskPressure::Low)
+        get_disk(mp)
+            .map(|d| DiskPressure::from_usage(d.usage_percent))
+            .unwrap_or(DiskPressure::Low)
     } else {
         // Check overall disk usage
         DiskPressure::from_usage(total_usage().usage_percent)
@@ -316,7 +331,9 @@ pub fn has_enough_space(path: &str, required_bytes: u64) -> bool {
         }
     }
 
-    best_match.map(|disk| disk.available_space >= required_bytes).unwrap_or(false)
+    best_match
+        .map(|disk| disk.available_space >= required_bytes)
+        .unwrap_or(false)
 }
 
 /// Get filesystem information for a path

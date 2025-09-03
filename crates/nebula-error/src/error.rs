@@ -31,7 +31,9 @@ impl NebulaError {
     pub fn validation(message: impl Into<String>) -> Self {
         let message_str = message.into();
         Self {
-            kind: ErrorKind::Validation { message: message_str.clone() },
+            kind: ErrorKind::Validation {
+                message: message_str.clone(),
+            },
             context: None,
             retryable: false,
             retry_after: None,
@@ -63,7 +65,10 @@ impl NebulaError {
     pub fn timeout(operation: impl Into<String>, duration: Duration) -> Self {
         let operation = operation.into();
         Self {
-            kind: ErrorKind::Timeout { operation: operation.clone(), duration },
+            kind: ErrorKind::Timeout {
+                operation: operation.clone(),
+                duration,
+            },
             context: None,
             retryable: true,
             retry_after: Some(duration),
@@ -94,7 +99,9 @@ impl NebulaError {
     pub fn internal(message: impl Into<String>) -> Self {
         let message_str = message.into();
         Self {
-            kind: ErrorKind::Internal { message: message_str.clone() },
+            kind: ErrorKind::Internal {
+                message: message_str.clone(),
+            },
             context: None,
             retryable: false,
             retry_after: None,
@@ -148,7 +155,9 @@ impl NebulaError {
     pub fn network(message: impl Into<String>) -> Self {
         let message_str = message.into();
         Self {
-            kind: ErrorKind::Network { message: message_str.clone() },
+            kind: ErrorKind::Network {
+                message: message_str.clone(),
+            },
             context: None,
             retryable: true,
             retry_after: None,
@@ -241,7 +250,10 @@ pub enum ErrorKind {
 
     /// Resource not found
     #[error("Resource not found: {resource_type} '{resource_id}'")]
-    NotFound { resource_type: String, resource_id: String },
+    NotFound {
+        resource_type: String,
+        resource_id: String,
+    },
 
     /// Invalid input
     #[error("Invalid input: {message}")]
@@ -269,7 +281,10 @@ pub enum ErrorKind {
 
     /// Timeout error
     #[error("Operation timed out: {operation} after {duration:?}")]
-    Timeout { operation: String, duration: Duration },
+    Timeout {
+        operation: String,
+        duration: Duration,
+    },
 
     /// Rate limit exceeded
     #[error("Rate limit exceeded: {limit} requests per {period:?}")]
@@ -330,7 +345,7 @@ impl From<std::io::Error> for NebulaError {
             std::io::ErrorKind::PermissionDenied => NebulaError::permission_denied("read", "file"),
             std::io::ErrorKind::TimedOut => {
                 NebulaError::timeout("I/O operation", Duration::from_secs(30))
-            },
+            }
             _ => NebulaError::internal(format!("I/O error: {}", err)),
         }
     }
@@ -428,7 +443,9 @@ impl NebulaError {
     pub fn deserialization(message: impl Into<String>) -> Self {
         let message_str = message.into();
         Self {
-            kind: ErrorKind::Deserialization { message: message_str.clone() },
+            kind: ErrorKind::Deserialization {
+                message: message_str.clone(),
+            },
             context: None,
             retryable: false,
             retry_after: None,

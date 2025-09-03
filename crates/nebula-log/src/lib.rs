@@ -40,11 +40,11 @@ pub use timing::{Timed, Timer, TimerGuard};
 /// Prelude for common imports
 pub mod prelude {
     pub use crate::{
-        auto_init, debug, error, info, init, init_with, instrument, span, trace, warn, Level,
-        Result, Timed, Timer,
+        Level, Result, Timed, Timer, auto_init, debug, error, info, init, init_with, instrument,
+        span, trace, warn,
     };
 
-    pub use tracing::{field, Span};
+    pub use tracing::{Span, field};
 }
 
 // Re-export tracing macros

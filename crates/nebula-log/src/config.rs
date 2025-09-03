@@ -215,7 +215,11 @@ impl Config {
         Self {
             level: "debug".to_string(),
             format: Format::Pretty,
-            display: DisplayConfig { colors: true, source: true, ..DisplayConfig::default() },
+            display: DisplayConfig {
+                colors: true,
+                source: true,
+                ..DisplayConfig::default()
+            },
             ..Self::default()
         }
     }
@@ -241,7 +245,11 @@ impl Config {
         Self {
             level: "trace".to_string(),
             format: Format::Compact,
-            display: DisplayConfig { colors: false, time: false, ..DisplayConfig::default() },
+            display: DisplayConfig {
+                colors: false,
+                time: false,
+                ..DisplayConfig::default()
+            },
             ..Self::default()
         }
     }

@@ -25,12 +25,18 @@ pub struct MigrationRegistry {
 impl MigrationRegistry {
     /// Create new registry
     pub fn new() -> Self {
-        Self { migrators: DashMap::new() }
+        Self {
+            migrators: DashMap::new(),
+        }
     }
 
     /// Register a migrator
     pub fn register(&self, migrator: Box<dyn StateMigrator>) {
-        let key = (migrator.kind().to_string(), migrator.from_version(), migrator.to_version());
+        let key = (
+            migrator.kind().to_string(),
+            migrator.from_version(),
+            migrator.to_version(),
+        );
         self.migrators.insert(key, migrator);
     }
 
@@ -69,7 +75,10 @@ impl MigrationRegistry {
         let mut current = from;
         while current < to {
             let next = current + 1;
-            if !self.migrators.contains_key(&(kind.to_string(), current, next)) {
+            if !self
+                .migrators
+                .contains_key(&(kind.to_string(), current, next))
+            {
                 return false;
             }
             current = next;

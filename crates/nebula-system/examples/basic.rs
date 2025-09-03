@@ -10,7 +10,10 @@ fn main() -> sys::Result<()> {
     println!("=== Nebula System: Basic Info ===");
     println!("Summary:\n{}", sys::summary());
 
-    println!("\nOS: {} {} (kernel {})", info.os.name, info.os.version, info.os.kernel_version);
+    println!(
+        "\nOS: {} {} (kernel {})",
+        info.os.name, info.os.version, info.os.kernel_version
+    );
     println!("Arch: {}", info.os.arch);
 
     println!(

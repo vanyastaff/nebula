@@ -7,7 +7,10 @@ use std::env;
 async fn main() -> nebula_log::Result<()> {
     // Set Sentry DSN for testing
     unsafe {
-        env::set_var("SENTRY_DSN", "https://2c82298d59b7fa61a293e1305d5aaaa2@o1200386.ingest.us.sentry.io/4509795981787136");
+        env::set_var(
+            "SENTRY_DSN",
+            "https://2c82298d59b7fa61a293e1305d5aaaa2@o1200386.ingest.us.sentry.io/4509795981787136",
+        );
         env::set_var("SENTRY_ENV", "test");
         env::set_var("SENTRY_TRACES_SAMPLE_RATE", "1.0"); // 100% sampling for testing
     }
@@ -20,8 +23,16 @@ async fn main() -> nebula_log::Result<()> {
     // Test different log levels
     trace!("This is a trace message");
     debug!(user_id = "test-123", "Debug message with user context");
-    info!(request_id = "req-456", endpoint = "/api/test", "Processing test request");
-    warn!(retry_count = 3, error_type = "timeout", "Operation failed, retrying");
+    info!(
+        request_id = "req-456",
+        endpoint = "/api/test",
+        "Processing test request"
+    );
+    warn!(
+        retry_count = 3,
+        error_type = "timeout",
+        "Operation failed, retrying"
+    );
 
     // Test error logging - this should definitely appear in Sentry
     error!(

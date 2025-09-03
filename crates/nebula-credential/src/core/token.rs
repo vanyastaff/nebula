@@ -7,13 +7,13 @@ use std::time::{Duration, SystemTime};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TokenType {
-    /// OAuth2 Bearer token
+    /// `OAuth2` Bearer token
     Bearer,
     /// API Key
     ApiKey,
     /// Basic authentication
     Basic,
-    /// AWS SigV4
+    /// AWS `SigV4`
     AwsSigV4,
     /// Custom type
     Custom,
@@ -34,7 +34,7 @@ pub struct AccessToken {
     /// When the token expires (if applicable)
     pub expires_at: Option<SystemTime>,
 
-    /// OAuth2 scopes
+    /// `OAuth2` scopes
     pub scopes: Option<Vec<String>>,
 
     /// Additional claims/metadata
@@ -44,12 +44,14 @@ pub struct AccessToken {
 impl AccessToken {
     /// Calculate TTL for the token
     pub fn ttl(&self) -> Option<Duration> {
-        self.expires_at.and_then(|exp| exp.duration_since(SystemTime::now()).ok())
+        self.expires_at
+            .and_then(|exp| exp.duration_since(SystemTime::now()).ok())
     }
 
     /// Check if token is expired
     pub fn is_expired(&self) -> bool {
-        self.expires_at.map(|exp| exp <= SystemTime::now()).unwrap_or(false)
+        self.expires_at
+            .is_some_and(|exp| exp <= SystemTime::now())
     }
 }
 

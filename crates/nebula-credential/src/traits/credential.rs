@@ -2,7 +2,7 @@ use crate::core::{
     AccessToken, CredentialContext, CredentialError, CredentialMetadata, CredentialState,
 };
 use async_trait::async_trait;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
 /// Main trait for credential implementations
 #[async_trait]
@@ -32,7 +32,9 @@ pub trait Credential: Send + Sync + 'static {
         state: &mut Self::State,
         ctx: &mut CredentialContext,
     ) -> Result<AccessToken, CredentialError> {
-        Err(CredentialError::refresh_not_supported(Self::TYPE_NAME.to_string()))
+        Err(CredentialError::refresh_not_supported(
+            Self::TYPE_NAME.to_string(),
+        ))
     }
 
     /// Revoke the credential (optional)

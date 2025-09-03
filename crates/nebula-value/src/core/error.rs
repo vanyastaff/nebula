@@ -68,7 +68,11 @@ pub enum ConversionError {
 
     /// Failed to convert with value details
     #[error("Cannot convert {from} '{value}' to {to}")]
-    CannotConvertValue { from: String, to: String, value: String },
+    CannotConvertValue {
+        from: String,
+        to: String,
+        value: String,
+    },
 
     /// Loss of precision
     #[error("Conversion would lose precision: {details}")]
@@ -116,7 +120,11 @@ pub enum ValidationError {
 
     /// Value is out of range
     #[error("Value {value} is out of range [{min}, {max}]")]
-    OutOfRange { value: String, min: String, max: String },
+    OutOfRange {
+        value: String,
+        min: String,
+        max: String,
+    },
 
     /// Invalid length
     #[error("Invalid length {actual}, expected {constraint}")]
@@ -176,7 +184,10 @@ pub enum OperationError {
 
     /// Operation not supported
     #[error("Operation '{operation}' not supported for {value_type}")]
-    NotSupported { operation: String, value_type: String },
+    NotSupported {
+        operation: String,
+        value_type: String,
+    },
 
     /// Invalid operands
     #[error("Invalid operands for {operation}: {details}")]
@@ -212,7 +223,10 @@ impl TypeError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::Mismatch { expected: expected.into(), actual: actual.into() }
+        Self::Mismatch {
+            expected: expected.into(),
+            actual: actual.into(),
+        }
     }
 
     /// Create an incompatible types error
@@ -221,7 +235,10 @@ impl TypeError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::Incompatible { left: left.into(), right: right.into() }
+        Self::Incompatible {
+            left: left.into(),
+            right: right.into(),
+        }
     }
 
     /// Create an invalid type for operation error
@@ -230,7 +247,10 @@ impl TypeError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::InvalidForOperation { ty: ty.into(), operation: operation.into() }
+        Self::InvalidForOperation {
+            ty: ty.into(),
+            operation: operation.into(),
+        }
     }
 }
 
@@ -241,7 +261,10 @@ impl ConversionError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::CannotConvert { from: from.into(), to: to.into() }
+        Self::CannotConvert {
+            from: from.into(),
+            to: to.into(),
+        }
     }
 
     /// Create a cannot convert with value error
@@ -251,7 +274,11 @@ impl ConversionError {
         S2: Into<String>,
         S3: Into<String>,
     {
-        Self::CannotConvertValue { from: from.into(), to: to.into(), value: value.into() }
+        Self::CannotConvertValue {
+            from: from.into(),
+            to: to.into(),
+            value: value.into(),
+        }
     }
 
     /// Create an overflow error
@@ -260,7 +287,10 @@ impl ConversionError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::Overflow { value: value.into(), target_type: target_type.into() }
+        Self::Overflow {
+            value: value.into(),
+            target_type: target_type.into(),
+        }
     }
 }
 
@@ -289,7 +319,9 @@ impl AccessError {
 impl ValidationError {
     /// Create a required field error
     pub fn required<S: Into<String>>(field: S) -> Self {
-        Self::Required { field: field.into() }
+        Self::Required {
+            field: field.into(),
+        }
     }
 
     /// Create an out of range error
@@ -299,7 +331,11 @@ impl ValidationError {
         S2: Into<String>,
         S3: Into<String>,
     {
-        Self::OutOfRange { value: value.into(), min: min.into(), max: max.into() }
+        Self::OutOfRange {
+            value: value.into(),
+            min: min.into(),
+            max: max.into(),
+        }
     }
 
     /// Create a pattern mismatch error
@@ -308,29 +344,40 @@ impl ValidationError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::PatternMismatch { value: value.into(), pattern: pattern.into() }
+        Self::PatternMismatch {
+            value: value.into(),
+            pattern: pattern.into(),
+        }
     }
 
     /// Create a validation failed error
     pub fn failed<S: Into<String>>(reason: S) -> Self {
-        Self::Failed { reason: reason.into() }
+        Self::Failed {
+            reason: reason.into(),
+        }
     }
 }
 
 impl ParseError {
     /// Create an invalid integer error
     pub fn invalid_integer<S: Into<String>>(input: S) -> Self {
-        Self::InvalidInteger { input: input.into() }
+        Self::InvalidInteger {
+            input: input.into(),
+        }
     }
 
     /// Create an invalid float error
     pub fn invalid_float<S: Into<String>>(input: S) -> Self {
-        Self::InvalidFloat { input: input.into() }
+        Self::InvalidFloat {
+            input: input.into(),
+        }
     }
 
     /// Create an invalid boolean error
     pub fn invalid_boolean<S: Into<String>>(input: S) -> Self {
-        Self::InvalidBoolean { input: input.into() }
+        Self::InvalidBoolean {
+            input: input.into(),
+        }
     }
 
     /// Create an invalid format error
@@ -339,7 +386,10 @@ impl ParseError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::InvalidFormat { format_type: format_type.into(), input: input.into() }
+        Self::InvalidFormat {
+            format_type: format_type.into(),
+            input: input.into(),
+        }
     }
 }
 
@@ -350,7 +400,10 @@ impl OperationError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::NotSupported { operation: operation.into(), value_type: value_type.into() }
+        Self::NotSupported {
+            operation: operation.into(),
+            value_type: value_type.into(),
+        }
     }
 
     /// Create an invalid operands error
@@ -359,12 +412,17 @@ impl OperationError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::InvalidOperands { operation: operation.into(), details: details.into() }
+        Self::InvalidOperands {
+            operation: operation.into(),
+            details: details.into(),
+        }
     }
 
     /// Create an arithmetic overflow error
     pub fn arithmetic_overflow<S: Into<String>>(operation: S) -> Self {
-        Self::ArithmeticOverflow { operation: operation.into() }
+        Self::ArithmeticOverflow {
+            operation: operation.into(),
+        }
     }
 }
 
@@ -499,16 +557,25 @@ mod tests {
         assert!(matches!(err, ValueError::Type(TypeError::Mismatch { .. })));
 
         let err = ValueError::index_out_of_bounds(5, 3);
-        assert!(matches!(err, ValueError::Access(AccessError::IndexOutOfBounds { .. })));
+        assert!(matches!(
+            err,
+            ValueError::Access(AccessError::IndexOutOfBounds { .. })
+        ));
 
         let err = ValueError::division_by_zero();
-        assert!(matches!(err, ValueError::Operation(OperationError::DivisionByZero)));
+        assert!(matches!(
+            err,
+            ValueError::Operation(OperationError::DivisionByZero)
+        ));
     }
 
     #[test]
     fn test_error_display() {
         let err = TypeError::mismatch("string", "integer");
-        assert_eq!(err.to_string(), "Type mismatch: expected string, got integer");
+        assert_eq!(
+            err.to_string(),
+            "Type mismatch: expected string, got integer"
+        );
 
         let err = AccessError::key_not_found("name");
         assert_eq!(err.to_string(), "Key 'name' not found");
@@ -521,6 +588,10 @@ mod tests {
     fn test_error_context() {
         let err = ValueError::type_mismatch("string", "integer");
         let err_with_context = err.context("Processing user data");
-        assert!(err_with_context.to_string().contains("Processing user data"));
+        assert!(
+            err_with_context
+                .to_string()
+                .contains("Processing user data")
+        );
     }
 }

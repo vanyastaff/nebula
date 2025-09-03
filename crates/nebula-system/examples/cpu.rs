@@ -36,7 +36,10 @@ fn main() -> sys::Result<()> {
     }
 
     println!("\nPressure level: {:?}", sys::cpu::pressure());
-    println!("Suggested worker threads: {}", sys::cpu::optimal_thread_count());
+    println!(
+        "Suggested worker threads: {}",
+        sys::cpu::optimal_thread_count()
+    );
 
     Ok(())
 }

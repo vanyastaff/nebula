@@ -48,11 +48,10 @@ impl Timer {
     pub fn complete(self) -> Duration {
         let elapsed = self.elapsed();
 
-        if let Some(threshold) = self.threshold {
-            if elapsed < threshold {
+        if let Some(threshold) = self.threshold
+            && elapsed < threshold {
                 return elapsed;
             }
-        }
 
         let ms = elapsed.as_millis();
         match self.level {
@@ -75,7 +74,9 @@ pub struct TimerGuard {
 impl TimerGuard {
     /// Create a new timer guard
     pub fn new(name: impl Into<String>) -> Self {
-        Self { timer: Some(Timer::new(name)) }
+        Self {
+            timer: Some(Timer::new(name)),
+        }
     }
 }
 
@@ -91,7 +92,10 @@ impl Drop for TimerGuard {
 pub trait Timed: Sized {
     /// Time the execution of this future
     fn timed(self, name: impl Into<String>) -> TimedFuture<Self> {
-        TimedFuture { inner: self, timer: Timer::new(name) }
+        TimedFuture {
+            inner: self,
+            timer: Timer::new(name),
+        }
     }
 }
 

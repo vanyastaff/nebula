@@ -1,5 +1,5 @@
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use subtle::ConstantTimeEq;
@@ -51,7 +51,9 @@ impl<'de> Deserialize<'de> for SecureString {
         D: Deserializer<'de>,
     {
         let encoded = String::deserialize(deserializer)?;
-        let decoded = B64.decode(encoded.as_bytes()).map_err(serde::de::Error::custom)?;
+        let decoded = B64
+            .decode(encoded.as_bytes())
+            .map_err(serde::de::Error::custom)?;
         let s = String::from_utf8(decoded).map_err(serde::de::Error::custom)?;
         Ok(SecureString::new(s))
     }

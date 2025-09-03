@@ -86,7 +86,9 @@ pub fn current() -> Result<ProcessInfo> {
 
     #[cfg(not(feature = "process"))]
     {
-        Err(SystemError::NotSupported("Process feature not enabled".to_string()))
+        Err(SystemError::NotSupported(
+            "Process feature not enabled".to_string(),
+        ))
     }
 }
 
@@ -134,7 +136,9 @@ pub fn get_process(pid: u32) -> Result<ProcessInfo> {
 
     #[cfg(not(feature = "process"))]
     {
-        Err(SystemError::NotSupported("Process feature not enabled".to_string()))
+        Err(SystemError::NotSupported(
+            "Process feature not enabled".to_string(),
+        ))
     }
 }
 
@@ -206,25 +210,40 @@ pub fn stats() -> ProcessStats {
             match process.status() {
                 sysinfo::ProcessStatus::Run => running += 1,
                 sysinfo::ProcessStatus::Sleep => sleeping += 1,
-                _ => {},
+                _ => {}
             }
 
             total_memory += process.memory() as usize;
             total_cpu += process.cpu_usage();
         }
 
-        ProcessStats { total, running, sleeping, total_memory, total_cpu }
+        ProcessStats {
+            total,
+            running,
+            sleeping,
+            total_memory,
+            total_cpu,
+        }
     }
 
     #[cfg(not(feature = "process"))]
     {
-        ProcessStats { total: 0, running: 0, sleeping: 0, total_memory: 0, total_cpu: 0.0 }
+        ProcessStats {
+            total: 0,
+            running: 0,
+            sleeping: 0,
+            total_memory: 0,
+            total_cpu: 0.0,
+        }
     }
 }
 
 /// Find processes by name
 pub fn find_by_name(name: &str) -> Vec<ProcessInfo> {
-    list().into_iter().filter(|p| p.name.contains(name)).collect()
+    list()
+        .into_iter()
+        .filter(|p| p.name.contains(name))
+        .collect()
 }
 
 /// Kill a process
@@ -247,13 +266,18 @@ pub fn kill(pid: u32) -> Result<()> {
                 })
             }
         } else {
-            Err(SystemError::NotFound(format!("Process {} not found", pid.as_u32())))
+            Err(SystemError::NotFound(format!(
+                "Process {} not found",
+                pid.as_u32()
+            )))
         }
     }
 
     #[cfg(not(feature = "process"))]
     {
-        Err(SystemError::NotSupported("Process feature not enabled".to_string()))
+        Err(SystemError::NotSupported(
+            "Process feature not enabled".to_string(),
+        ))
     }
 }
 
@@ -279,7 +303,7 @@ pub enum Priority {
 pub fn set_priority(pid: u32, priority: Priority) -> Result<()> {
     #[cfg(all(feature = "process", unix))]
     {
-        use libc::{setpriority, PRIO_PROCESS};
+        use libc::{PRIO_PROCESS, setpriority};
 
         let nice_value = match priority {
             Priority::Idle => 19,
@@ -312,7 +336,10 @@ pub fn set_priority(pid: u32, priority: Priority) -> Result<()> {
 
 /// Get child processes of a parent
 pub fn children(parent_pid: u32) -> Vec<ProcessInfo> {
-    list().into_iter().filter(|p| p.parent_pid == Some(parent_pid)).collect()
+    list()
+        .into_iter()
+        .filter(|p| p.parent_pid == Some(parent_pid))
+        .collect()
 }
 
 /// Process tree node
@@ -334,7 +361,10 @@ pub fn tree() -> Vec<ProcessTree> {
     // Group processes by parent
     for process in processes {
         if let Some(parent_pid) = process.parent_pid {
-            children_map.entry(parent_pid).or_insert_with(Vec::new).push(process);
+            children_map
+                .entry(parent_pid)
+                .or_insert_with(Vec::new)
+                .push(process);
         } else {
             // Root process (no parent)
             roots.push(process);
@@ -349,12 +379,18 @@ pub fn tree() -> Vec<ProcessTree> {
         let children = children_map
             .get(&process.pid)
             .map(|children| {
-                children.iter().map(|child| build_tree(child.clone(), children_map)).collect()
+                children
+                    .iter()
+                    .map(|child| build_tree(child.clone(), children_map))
+                    .collect()
             })
             .unwrap_or_default();
 
         ProcessTree { process, children }
     }
 
-    roots.into_iter().map(|root| build_tree(root, &children_map)).collect()
+    roots
+        .into_iter()
+        .map(|root| build_tree(root, &children_map))
+        .collect()
 }

@@ -1,4 +1,4 @@
-use domain_key::{static_key, Key, KeyDomain, KeyParseError};
+use domain_key::{Key, KeyDomain};
 
 /// Domain marker for credential keys
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

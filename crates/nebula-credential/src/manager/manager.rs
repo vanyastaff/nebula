@@ -14,7 +14,9 @@ pub struct AnyLock {
 impl AnyLock {
     /// Create from a concrete lock implementation
     pub fn new<L: DistributedLock + 'static>(lock: L) -> Self {
-        Self { inner: Arc::new(lock) }
+        Self {
+            inner: Arc::new(lock),
+        }
     }
 
     /// Acquire the lock
@@ -71,7 +73,14 @@ impl CredentialManager {
         registry: Arc<CredentialRegistry>,
         negative_cache: Arc<DashMap<String, NegativeCache>>,
     ) -> Self {
-        Self { store, lock, cache, registry, policy, negative_cache }
+        Self {
+            store,
+            lock,
+            cache,
+            registry,
+            policy,
+            negative_cache,
+        }
     }
     /// Create new manager with builder
     pub fn builder() -> super::ManagerBuilder {
@@ -97,29 +106,29 @@ impl CredentialManager {
             match cache.get(credential_id.as_str()).await {
                 Ok(Some(token)) if !self.should_refresh(&token) => {
                     return Ok(token);
-                },
-                _ => {},
+                }
+                _ => {}
             }
         }
 
         // Acquire lock and refresh
-        let lock_key = format!("credential:{}", credential_id);
+        let lock_key = format!("credential:{credential_id}");
 
-        let _guard = self.lock.acquire(&lock_key, Duration::from_secs(30)).await.map_err(|e| {
-            CredentialError::LockFailed {
-                resource: format!("credential:{}", credential_id),
+        let _guard = self
+            .lock
+            .acquire(&lock_key, Duration::from_secs(30))
+            .await
+            .map_err(|e| CredentialError::LockFailed {
+                resource: format!("credential:{credential_id}"),
                 reason: e.to_string(),
-            }
-        })?;
+            })?;
 
         // Re-check cache inside lock
-        if let Some(cache) = &self.cache {
-            if let Ok(Some(token)) = cache.get(credential_id.as_str()).await {
-                if !self.should_refresh(&token) {
+        if let Some(cache) = &self.cache
+            && let Ok(Some(token)) = cache.get(credential_id.as_str()).await
+                && !self.should_refresh(&token) {
                     return Ok(token);
                 }
-            }
-        }
 
         // Refresh the token
         self.refresh_internal(credential_id).await
@@ -133,7 +142,9 @@ impl CredentialManager {
     ) -> Result<CredentialId, CredentialError> {
         // Get factory from registry
         let factory = self.registry.get(credential_type).ok_or_else(|| {
-            CredentialError::TypeNotRegistered { credential_type: credential_type.to_string() }
+            CredentialError::TypeNotRegistered {
+                credential_type: credential_type.to_string(),
+            }
         })?;
 
         // Create and initialize
@@ -150,18 +161,22 @@ impl CredentialManager {
         let mut state_with_meta = state_json;
         if let Some(obj) = state_with_meta.as_object_mut() {
             obj.insert("_type".to_string(), serde_json::json!(credential_type));
-            obj.insert("_created_at".to_string(), serde_json::json!(crate::core::unix_now()));
+            obj.insert(
+                "_created_at".to_string(),
+                serde_json::json!(crate::core::unix_now()),
+            );
         }
 
-        self.store.save(credential_id.as_str(), StateVersion(0), &state_with_meta).await?;
+        self.store
+            .save(credential_id.as_str(), StateVersion(0), &state_with_meta)
+            .await?;
 
         // Cache initial token if provided
-        if let Some(token) = token {
-            if let Some(cache) = &self.cache {
+        if let Some(token) = token
+            && let Some(cache) = &self.cache {
                 let ttl = token.ttl().unwrap_or(Duration::from_secs(300));
                 let _ = cache.put(credential_id.as_str(), &token, ttl).await;
             }
-        }
 
         Ok(credential_id)
     }
@@ -208,7 +223,9 @@ impl CredentialManager {
 
             // Get factory
             let factory = self.registry.get(&credential_type).ok_or_else(|| {
-                CredentialError::TypeNotRegistered { credential_type: credential_type.clone() }
+                CredentialError::TypeNotRegistered {
+                    credential_type: credential_type.clone(),
+                }
             })?;
 
             // Clean metadata before refresh
@@ -235,7 +252,11 @@ impl CredentialManager {
                         );
                     }
 
-                    match self.store.save(credential_id.as_str(), version, &new_state_json).await {
+                    match self
+                        .store
+                        .save(credential_id.as_str(), version, &new_state_json)
+                        .await
+                    {
                         Ok(_) => {
                             // Cache the new token
                             if let Some(cache) = &self.cache {
@@ -247,23 +268,23 @@ impl CredentialManager {
                             self.negative_cache.remove(credential_id.as_str());
 
                             return Ok(token);
-                        },
+                        }
                         Err(CredentialError::CasConflict) => {
                             // Retry with fresh state
                             continue;
-                        },
+                        }
                         Err(e) => return Err(e),
                     }
-                },
+                }
                 Err(e) if e.is_retryable() && attempt < self.policy.max_retries - 1 => {
                     last_error = Some(e);
 
                     // Calculate backoff
-                    let backoff = self.calculate_backoff(attempt as u32);
+                    let backoff = self.calculate_backoff(attempt);
 
                     #[cfg(feature = "runtime")]
                     tokio::time::sleep(backoff).await;
-                },
+                }
                 Err(e) => {
                     // Add to negative cache
                     self.negative_cache.insert(
@@ -274,7 +295,7 @@ impl CredentialManager {
                         },
                     );
                     return Err(e);
-                },
+                }
             }
         }
 
@@ -313,14 +334,18 @@ impl CredentialManager {
     fn should_refresh(&self, token: &AccessToken) -> bool {
         if let Some(expires_at) = token.expires_at {
             let now = SystemTime::now();
-            let ttl = expires_at.duration_since(token.issued_at).unwrap_or_default();
+            let ttl = expires_at
+                .duration_since(token.issued_at)
+                .unwrap_or_default();
             let age = now.duration_since(token.issued_at).unwrap_or_default();
 
-            age.as_secs_f64() / ttl.as_secs_f64() >= self.policy.threshold as f64
+            age.as_secs_f64() / ttl.as_secs_f64() >= f64::from(self.policy.threshold)
                 || expires_at <= now + self.policy.skew
         } else if let Some(max_age) = self.policy.max_age {
             // For eternal tokens, check max age
-            let age = SystemTime::now().duration_since(token.issued_at).unwrap_or_default();
+            let age = SystemTime::now()
+                .duration_since(token.issued_at)
+                .unwrap_or_default();
             age >= max_age
         } else {
             false

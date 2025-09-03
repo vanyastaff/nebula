@@ -178,11 +178,10 @@ pub trait Retryable {
 
         for attempt in 0..strategy.max_attempts {
             // Check timeout
-            if let Some(timeout) = strategy.timeout {
-                if start_time.elapsed() >= timeout {
+            if let Some(timeout) = strategy.timeout
+                && start_time.elapsed() >= timeout {
                     return Err(NebulaError::timeout("retry operation", timeout));
                 }
-            }
 
             // Execute the operation
             match self.execute().await {
@@ -191,7 +190,7 @@ pub trait Retryable {
                     last_error = Some(error);
 
                     // Check if we should retry
-                    if !self.is_retryable_error(&last_error.as_ref().unwrap()) {
+                    if !self.is_retryable_error(last_error.as_ref().unwrap()) {
                         break;
                     }
 
@@ -203,7 +202,7 @@ pub trait Retryable {
                     // Calculate and apply delay
                     let delay = strategy.calculate_delay(attempt);
                     sleep(delay).await;
-                },
+                }
             }
         }
 
@@ -225,11 +224,10 @@ where
 
     for attempt in 0..strategy.max_attempts {
         // Check timeout
-        if let Some(timeout) = strategy.timeout {
-            if start_time.elapsed() >= timeout {
+        if let Some(timeout) = strategy.timeout
+            && start_time.elapsed() >= timeout {
                 return Err(NebulaError::timeout("retry operation", timeout));
             }
-        }
 
         // Execute the function
         match f().await {
@@ -245,7 +243,7 @@ where
                 // Calculate and apply delay
                 let delay = strategy.calculate_delay(attempt);
                 sleep(delay).await;
-            },
+            }
         }
     }
 
@@ -289,7 +287,12 @@ pub struct ErrorRetryConfig {
 impl ErrorRetryConfig {
     /// Create a new error retry configuration
     pub fn new(error_code: impl Into<String>, retryable: bool) -> Self {
-        Self { error_code: error_code.into(), retryable, strategy: None, max_attempts: None }
+        Self {
+            error_code: error_code.into(),
+            retryable,
+            strategy: None,
+            max_attempts: None,
+        }
     }
 
     /// Set custom retry strategy

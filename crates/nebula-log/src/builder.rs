@@ -1,9 +1,9 @@
 //! Logger builder implementation
 
-use crate::{config::*, layer, writer, Error, Result};
+use crate::{Error, Result, config::*, layer, writer};
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
+use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Logger builder
 pub struct LoggerBuilder {
@@ -86,7 +86,9 @@ impl LoggerBuilder {
             inner._root_span_guard = Some(root.entered());
         }
 
-        Ok(LoggerGuard { inner: Some(Arc::new(inner)) })
+        Ok(LoggerGuard {
+            inner: Some(Arc::new(inner)),
+        })
     }
 
     // Reloadable variants
