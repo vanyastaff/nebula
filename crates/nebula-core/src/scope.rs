@@ -1,5 +1,5 @@
 //! Scope system for resource lifecycle management
-//! 
+//!
 //! Resources in Nebula have different lifecycle scopes:
 //! - Global: Application lifetime
 //! - Workflow: Per workflow execution
@@ -9,20 +9,20 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-use super::id::{ExecutionId, WorkflowId, NodeId};
+use super::id::{ExecutionId, NodeId, WorkflowId};
 
 /// Defines the scope level for a resource
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ScopeLevel {
     /// Resource lives for the entire application lifetime
     Global,
-    
+
     /// Resource lives for the duration of a workflow execution
     Workflow(WorkflowId),
-    
+
     /// Resource lives for the duration of a single execution
     Execution(ExecutionId),
-    
+
     /// Resource lives for the duration of a single action invocation
     Action(ExecutionId, NodeId),
 }
@@ -83,24 +83,24 @@ impl ScopeLevel {
         match (self, other) {
             // Global scope contains everything
             (_, ScopeLevel::Global) => true,
-            
+
             // Workflow scope contains execution and action scopes for that workflow
             (ScopeLevel::Execution(_exec_id), ScopeLevel::Workflow(_)) => {
                 // Note: This is a simplified check. In practice, we'd need to
                 // verify that the execution belongs to the workflow
                 true
-            }
+            },
             (ScopeLevel::Action(_exec_id, _), ScopeLevel::Workflow(_)) => {
                 // Note: This is a simplified check. In practice, we'd need to
                 // verify that the execution belongs to the workflow
                 true
-            }
-            
+            },
+
             // Execution scope contains action scopes for that execution
             (ScopeLevel::Action(exec_id, _), ScopeLevel::Execution(other_exec_id)) => {
                 exec_id == other_exec_id
-            }
-            
+            },
+
             // Otherwise, no containment
             _ => false,
         }
@@ -121,13 +121,13 @@ impl ScopeLevel {
         match (self, child_type) {
             (ScopeLevel::Global, ChildScopeType::Workflow(workflow_id)) => {
                 Some(ScopeLevel::Workflow(workflow_id))
-            }
+            },
             (ScopeLevel::Workflow(_), ChildScopeType::Execution(exec_id)) => {
                 Some(ScopeLevel::Execution(exec_id))
-            }
+            },
             (ScopeLevel::Execution(exec_id), ChildScopeType::Action(node_id)) => {
                 Some(ScopeLevel::Action(exec_id.clone(), node_id))
-            }
+            },
             _ => None,
         }
     }
@@ -141,7 +141,7 @@ impl fmt::Display for ScopeLevel {
             ScopeLevel::Execution(id) => write!(f, "execution:{}", id),
             ScopeLevel::Action(exec_id, node_id) => {
                 write!(f, "action:{}:{}", exec_id, node_id)
-            }
+            },
         }
     }
 }
@@ -159,7 +159,7 @@ pub enum ChildScopeType {
 pub struct ScopedId {
     /// The scope level for this resource
     pub scope: ScopeLevel,
-    
+
     /// The resource identifier within the scope
     pub id: String,
 }
@@ -167,10 +167,7 @@ pub struct ScopedId {
 impl ScopedId {
     /// Create a new scoped ID
     pub fn new(scope: ScopeLevel, id: impl Into<String>) -> Self {
-        Self {
-            scope,
-            id: id.into(),
-        }
+        Self { scope, id: id.into() }
     }
 
     /// Create a global scoped ID
@@ -196,11 +193,6 @@ impl ScopedId {
     /// Check if this ID is in the given scope
     pub fn is_in_scope(&self, scope: &ScopeLevel) -> bool {
         self.scope.is_contained_in(scope)
-    }
-
-    /// Get the full string representation
-    pub fn to_string(&self) -> String {
-        format!("{}:{}", self.scope, self.id)
     }
 }
 
@@ -261,7 +253,8 @@ mod tests {
         let global_id = ScopedId::global("global-resource");
         let workflow_id_scoped = ScopedId::workflow(workflow_id.clone(), "workflow-resource");
         let execution_id_scoped = ScopedId::execution(execution_id.clone(), "execution-resource");
-        let action_id_scoped = ScopedId::action(execution_id.clone(), node_id.clone(), "action-resource");
+        let action_id_scoped =
+            ScopedId::action(execution_id.clone(), node_id.clone(), "action-resource");
 
         assert_eq!(global_id.scope, ScopeLevel::Global);
         assert_eq!(workflow_id_scoped.scope, ScopeLevel::Workflow(workflow_id));

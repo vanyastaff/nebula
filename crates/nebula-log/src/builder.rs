@@ -1,14 +1,9 @@
 //! Logger builder implementation
 
-use crate::{config::*, layer, writer, Result, Error};
+use crate::{config::*, layer, writer, Error, Result};
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tracing_subscriber::{
-    fmt,
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-    EnvFilter, Registry,
-};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
 
 /// Logger builder
 pub struct LoggerBuilder {
@@ -55,17 +50,17 @@ impl LoggerBuilder {
         };
 
         // Create the filter
-        let filter = EnvFilter::try_new(&self.config.level)
-            .map_err(|e| Error::Filter(e.to_string()))?;
+        let filter =
+            EnvFilter::try_new(&self.config.level).map_err(|e| Error::Filter(e.to_string()))?;
 
         // Get writer for the format layer
         let (writer, _guards) = writer::make_writer(&self.config.writer)?;
-        
+
         #[cfg(feature = "file")]
         {
             inner.file_guards.extend(_guards);
         }
-        
+
         // Build the subscriber based on reloadable flag and format
         match (self.config.reloadable, self.config.format) {
             (true, Format::Pretty) => self.build_reloadable_pretty(filter, writer, &mut inner)?,
@@ -91,13 +86,11 @@ impl LoggerBuilder {
             inner._root_span_guard = Some(root.entered());
         }
 
-        Ok(LoggerGuard {
-            inner: Some(Arc::new(inner)),
-        })
+        Ok(LoggerGuard { inner: Some(Arc::new(inner)) })
     }
-    
+
     // Reloadable variants
-    
+
     fn build_reloadable_pretty(
         &self,
         filter: EnvFilter,
@@ -111,19 +104,21 @@ impl LoggerBuilder {
             current_filter: Arc::new(Mutex::new(self.config.level.clone())),
         };
         inner.reload_handle = Some(reload.clone());
-        
+
         // Build the subscriber
         let subscriber = Registry::default()
             .with(layer)
-            .with(fmt::layer()
-                .pretty()
-                .with_writer(writer)
-                .with_ansi(self.config.display.colors)
-                .with_target(self.config.display.target)
-                .with_file(self.config.display.source)
-                .with_line_number(self.config.display.source)
-                .with_thread_ids(self.config.display.thread_ids)
-                .with_thread_names(self.config.display.thread_names))
+            .with(
+                fmt::layer()
+                    .pretty()
+                    .with_writer(writer)
+                    .with_ansi(self.config.display.colors)
+                    .with_target(self.config.display.target)
+                    .with_file(self.config.display.source)
+                    .with_line_number(self.config.display.source)
+                    .with_thread_ids(self.config.display.thread_ids)
+                    .with_thread_names(self.config.display.thread_names),
+            )
             .with(layer::fields::FieldsLayer::new(self.config.fields.clone()));
 
         #[cfg(feature = "sentry")]
@@ -134,16 +129,14 @@ impl LoggerBuilder {
         // Initialize the subscriber (attach Sentry layer if enabled)
         #[cfg(feature = "sentry")]
         {
-            let subscriber = subscriber.with(
-                sentry_tracing::layer().event_filter(|md| {
-                    use sentry_tracing::EventFilter;
-                    match *md.level() {
-                        tracing::Level::ERROR => EventFilter::Event,
-                        tracing::Level::WARN => EventFilter::Breadcrumb,
-                        _ => EventFilter::Ignore,
-                    }
-                }),
-            );
+            let subscriber = subscriber.with(sentry_tracing::layer().event_filter(|md| {
+                use sentry_tracing::EventFilter;
+                match *md.level() {
+                    tracing::Level::ERROR => EventFilter::Event,
+                    tracing::Level::WARN => EventFilter::Breadcrumb,
+                    _ => EventFilter::Ignore,
+                }
+            }));
             subscriber.init();
         }
         #[cfg(not(feature = "sentry"))]
@@ -156,10 +149,10 @@ impl LoggerBuilder {
         {
             let _ = tracing_log::LogTracer::init();
         }
-        
+
         Ok(())
     }
-    
+
     fn build_reloadable_compact(
         &self,
         filter: EnvFilter,
@@ -173,7 +166,7 @@ impl LoggerBuilder {
             current_filter: Arc::new(Mutex::new(self.config.level.clone())),
         };
         inner.reload_handle = Some(reload.clone());
-        
+
         // Build the format layer
         let mut fmt_layer = fmt::layer()
             .compact()
@@ -185,13 +178,11 @@ impl LoggerBuilder {
             .with_thread_ids(self.config.display.thread_ids)
             .with_thread_names(self.config.display.thread_names);
 
-        fmt_layer = fmt_layer.with_timer(crate::format::make_timer(
-            if self.config.display.time {
-                self.config.display.time_format.as_deref()
-            } else {
-                None
-            }
-        ));
+        fmt_layer = fmt_layer.with_timer(crate::format::make_timer(if self.config.display.time {
+            self.config.display.time_format.as_deref()
+        } else {
+            None
+        }));
 
         let subscriber = Registry::default()
             .with(layer)
@@ -206,16 +197,14 @@ impl LoggerBuilder {
         // Initialize the subscriber (attach Sentry layer if enabled)
         #[cfg(feature = "sentry")]
         {
-            let subscriber = subscriber.with(
-                sentry_tracing::layer().event_filter(|md| {
-                    use sentry_tracing::EventFilter;
-                    match *md.level() {
-                        tracing::Level::ERROR => EventFilter::Event,
-                        tracing::Level::WARN => EventFilter::Breadcrumb,
-                        _ => EventFilter::Ignore,
-                    }
-                }),
-            );
+            let subscriber = subscriber.with(sentry_tracing::layer().event_filter(|md| {
+                use sentry_tracing::EventFilter;
+                match *md.level() {
+                    tracing::Level::ERROR => EventFilter::Event,
+                    tracing::Level::WARN => EventFilter::Breadcrumb,
+                    _ => EventFilter::Ignore,
+                }
+            }));
             subscriber.init();
         }
         #[cfg(not(feature = "sentry"))]
@@ -228,10 +217,10 @@ impl LoggerBuilder {
         {
             let _ = tracing_log::LogTracer::init();
         }
-        
+
         Ok(())
     }
-    
+
     fn build_reloadable_json(
         &self,
         filter: EnvFilter,
@@ -245,7 +234,7 @@ impl LoggerBuilder {
             current_filter: Arc::new(Mutex::new(self.config.level.clone())),
         };
         inner.reload_handle = Some(reload.clone());
-        
+
         // Build the format layer
         let mut fmt_layer = fmt::layer()
             .json()
@@ -260,13 +249,11 @@ impl LoggerBuilder {
             .with_thread_ids(self.config.display.thread_ids)
             .with_thread_names(self.config.display.thread_names);
 
-        fmt_layer = fmt_layer.with_timer(crate::format::make_timer(
-            if self.config.display.time {
-                self.config.display.time_format.as_deref()
-            } else {
-                None
-            }
-        ));
+        fmt_layer = fmt_layer.with_timer(crate::format::make_timer(if self.config.display.time {
+            self.config.display.time_format.as_deref()
+        } else {
+            None
+        }));
 
         let subscriber = Registry::default()
             .with(layer)
@@ -281,16 +268,14 @@ impl LoggerBuilder {
         // Initialize the subscriber (attach Sentry layer if enabled)
         #[cfg(feature = "sentry")]
         {
-            let subscriber = subscriber.with(
-                sentry_tracing::layer().event_filter(|md| {
-                    use sentry_tracing::EventFilter;
-                    match *md.level() {
-                        tracing::Level::ERROR => EventFilter::Event,
-                        tracing::Level::WARN => EventFilter::Breadcrumb,
-                        _ => EventFilter::Ignore,
-                    }
-                }),
-            );
+            let subscriber = subscriber.with(sentry_tracing::layer().event_filter(|md| {
+                use sentry_tracing::EventFilter;
+                match *md.level() {
+                    tracing::Level::ERROR => EventFilter::Event,
+                    tracing::Level::WARN => EventFilter::Breadcrumb,
+                    _ => EventFilter::Ignore,
+                }
+            }));
             subscriber.init();
         }
         #[cfg(not(feature = "sentry"))]
@@ -303,12 +288,12 @@ impl LoggerBuilder {
         {
             let _ = tracing_log::LogTracer::init();
         }
-        
+
         Ok(())
     }
-    
+
     // Static (non-reloadable) variants
-    
+
     fn build_static_pretty(
         &self,
         filter: EnvFilter,
@@ -326,14 +311,12 @@ impl LoggerBuilder {
             .with_thread_ids(self.config.display.thread_ids)
             .with_thread_names(self.config.display.thread_names);
 
-        fmt_layer = fmt_layer.with_timer(crate::format::make_timer(
-            if self.config.display.time {
-                self.config.display.time_format.as_deref()
-            } else {
-                None
-            }
-        ));
-            
+        fmt_layer = fmt_layer.with_timer(crate::format::make_timer(if self.config.display.time {
+            self.config.display.time_format.as_deref()
+        } else {
+            None
+        }));
+
         let subscriber = Registry::default()
             .with(filter)
             .with(fmt_layer)
@@ -347,16 +330,14 @@ impl LoggerBuilder {
         // Initialize the subscriber (attach Sentry layer if enabled)
         #[cfg(feature = "sentry")]
         {
-            let subscriber = subscriber.with(
-                sentry_tracing::layer().event_filter(|md| {
-                    use sentry_tracing::EventFilter;
-                    match *md.level() {
-                        tracing::Level::ERROR => EventFilter::Event,
-                        tracing::Level::WARN => EventFilter::Breadcrumb,
-                        _ => EventFilter::Ignore,
-                    }
-                }),
-            );
+            let subscriber = subscriber.with(sentry_tracing::layer().event_filter(|md| {
+                use sentry_tracing::EventFilter;
+                match *md.level() {
+                    tracing::Level::ERROR => EventFilter::Event,
+                    tracing::Level::WARN => EventFilter::Breadcrumb,
+                    _ => EventFilter::Ignore,
+                }
+            }));
             subscriber.init();
         }
         #[cfg(not(feature = "sentry"))]
@@ -369,10 +350,10 @@ impl LoggerBuilder {
         {
             let _ = tracing_log::LogTracer::init();
         }
-        
+
         Ok(())
     }
-    
+
     fn build_static_compact(
         &self,
         filter: EnvFilter,
@@ -390,14 +371,12 @@ impl LoggerBuilder {
             .with_thread_ids(self.config.display.thread_ids)
             .with_thread_names(self.config.display.thread_names);
 
-        fmt_layer = fmt_layer.with_timer(crate::format::make_timer(
-            if self.config.display.time {
-                self.config.display.time_format.as_deref()
-            } else {
-                None
-            }
-        ));
-            
+        fmt_layer = fmt_layer.with_timer(crate::format::make_timer(if self.config.display.time {
+            self.config.display.time_format.as_deref()
+        } else {
+            None
+        }));
+
         let subscriber = Registry::default()
             .with(filter)
             .with(fmt_layer)
@@ -411,16 +390,14 @@ impl LoggerBuilder {
         // Initialize the subscriber (attach Sentry layer if enabled)
         #[cfg(feature = "sentry")]
         {
-            let subscriber = subscriber.with(
-                sentry_tracing::layer().event_filter(|md| {
-                    use sentry_tracing::EventFilter;
-                    match *md.level() {
-                        tracing::Level::ERROR => EventFilter::Event,
-                        tracing::Level::WARN => EventFilter::Breadcrumb,
-                        _ => EventFilter::Ignore,
-                    }
-                }),
-            );
+            let subscriber = subscriber.with(sentry_tracing::layer().event_filter(|md| {
+                use sentry_tracing::EventFilter;
+                match *md.level() {
+                    tracing::Level::ERROR => EventFilter::Event,
+                    tracing::Level::WARN => EventFilter::Breadcrumb,
+                    _ => EventFilter::Ignore,
+                }
+            }));
             subscriber.init();
         }
         #[cfg(not(feature = "sentry"))]
@@ -433,10 +410,10 @@ impl LoggerBuilder {
         {
             let _ = tracing_log::LogTracer::init();
         }
-        
+
         Ok(())
     }
-    
+
     fn build_static_json(
         &self,
         filter: EnvFilter,
@@ -457,14 +434,12 @@ impl LoggerBuilder {
             .with_thread_ids(self.config.display.thread_ids)
             .with_thread_names(self.config.display.thread_names);
 
-        fmt_layer = fmt_layer.with_timer(crate::format::make_timer(
-            if self.config.display.time {
-                self.config.display.time_format.as_deref()
-            } else {
-                None
-            }
-        ));
-            
+        fmt_layer = fmt_layer.with_timer(crate::format::make_timer(if self.config.display.time {
+            self.config.display.time_format.as_deref()
+        } else {
+            None
+        }));
+
         let subscriber = Registry::default()
             .with(filter)
             .with(fmt_layer)
@@ -483,7 +458,7 @@ impl LoggerBuilder {
         {
             let _ = tracing_log::LogTracer::init();
         }
-        
+
         Ok(())
     }
 }
@@ -491,8 +466,7 @@ impl LoggerBuilder {
 impl ReloadHandle {
     /// Reload the log filter
     pub fn reload(&self, filter: &str) -> Result<()> {
-        let new_filter = EnvFilter::try_new(filter)
-            .map_err(|e| Error::Filter(e.to_string()))?;
+        let new_filter = EnvFilter::try_new(filter).map_err(|e| Error::Filter(e.to_string()))?;
         self.filter.reload(new_filter)?;
         *self.current_filter.lock() = filter.to_string();
         Ok(())

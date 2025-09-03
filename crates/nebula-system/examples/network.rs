@@ -1,5 +1,5 @@
-use std::time::Duration;
 use nebula_system::{self as sys};
+use std::time::Duration;
 
 fn main() -> sys::Result<()> {
     sys::init()?;
@@ -28,7 +28,10 @@ fn main() -> sys::Result<()> {
         for _ in 0..3 {
             let usage = sys::network::usage();
             for u in &usage {
-                println!("{}: rx_rate={:.0} B/s, tx_rate={:.0} B/s", u.interface, u.rx_rate, u.tx_rate);
+                println!(
+                    "{}: rx_rate={:.0} B/s, tx_rate={:.0} B/s",
+                    u.interface, u.rx_rate, u.tx_rate
+                );
             }
             std::thread::sleep(Duration::from_secs(1));
         }

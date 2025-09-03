@@ -16,6 +16,7 @@ use crate::context::ValidationContext;
 // ==================== Weighted OR Validator ====================
 
 /// Advanced OR validator with weights and priorities
+#[derive(Debug, Clone)]
 pub struct WeightedOr {
     validators: Vec<WeightedValidator>,
     min_weight: f64,
@@ -129,6 +130,7 @@ impl Default for WeightedOr {
 // ==================== Parallel AND Validator ====================
 
 /// Enhanced AND validator with parallel execution
+#[derive(Debug, Clone)]
 pub struct ParallelAnd {
     validators: Vec<Box<dyn Validatable>>,
     max_concurrency: usize,
@@ -243,6 +245,7 @@ impl Default for ParallelAnd {
 // ==================== XOR Validator ====================
 
 /// XOR validator - exactly one must pass
+#[derive(Debug, Clone)]
 pub struct Xor {
     validators: Vec<Box<dyn Validatable>>,
     expected_count: XorExpectation,
@@ -336,6 +339,7 @@ impl Default for Xor {
 // ==================== Enhanced All Validator ====================
 
 /// Enhanced All validator with parallel execution option
+#[derive(Debug, Clone)]
 pub struct EnhancedAll {
     validators: Vec<Box<dyn Validatable>>,
     parallel: bool,
@@ -460,6 +464,7 @@ impl Default for EnhancedAll {
 // ==================== Enhanced Any Validator ====================
 
 /// Enhanced Any validator with weights and priorities
+#[derive(Debug, Clone)]
 pub struct EnhancedAny {
     validators: Vec<WeightedValidator>,
     min_weight: f64,

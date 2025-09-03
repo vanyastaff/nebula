@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::ops::{Add, AddAssign, Sub, SubAssign};
+use std::ops::{Add, Sub};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "chrono")]
-use chrono::{Datelike, NaiveDate, Weekday, Duration, Local, Utc};
+use chrono::{Datelike, Duration, Local, NaiveDate, Utc, Weekday};
 
 use thiserror::Error;
 
@@ -41,6 +41,7 @@ pub enum DateError {
 
 /// Internal date storage
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct DateInner {
     pub(crate) year: i32,
     pub(crate) month: u8,
@@ -52,10 +53,7 @@ impl DateInner {
     pub fn new(year: i32, month: u32, day: u32) -> DateResult<Self> {
         // Validate month
         if month == 0 || month > 12 {
-            return Err(DateError::InvalidComponent {
-                component: "month",
-                value: month as i64,
-            });
+            return Err(DateError::InvalidComponent { component: "month", value: month as i64 });
         }
 
         // Validate day
@@ -64,11 +62,7 @@ impl DateInner {
             return Err(DateError::InvalidDate { year, month, day });
         }
 
-        Ok(Self {
-            year,
-            month: month as u8,
-            day: day as u8,
-        })
+        Ok(Self { year, month: month as u8, day: day as u8 })
     }
 
     /// Returns the number of days in a month
@@ -82,7 +76,7 @@ impl DateInner {
                 } else {
                     28
                 }
-            }
+            },
             _ => 0,
         }
     }
@@ -95,18 +89,13 @@ impl DateInner {
     /// Converts to chrono NaiveDate
     #[cfg(feature = "chrono")]
     pub fn to_naive(&self) -> NaiveDate {
-        NaiveDate::from_ymd_opt(self.year, self.month as u32, self.day as u32)
-            .expect("Valid date")
+        NaiveDate::from_ymd_opt(self.year, self.month as u32, self.day as u32).expect("Valid date")
     }
 
     /// Creates from chrono NaiveDate
     #[cfg(feature = "chrono")]
     pub fn from_naive(date: NaiveDate) -> Self {
-        Self {
-            year: date.year(),
-            month: date.month() as u8,
-            day: date.day() as u8,
-        }
+        Self { year: date.year(), month: date.month() as u8, day: date.day() as u8 }
     }
 
     /// Calculates day of year (1-366)
@@ -148,7 +137,8 @@ impl DateInner {
             let k = year % 100;
             let j = year / 100;
 
-            let h = (self.day as i32 + ((13 * (month + 1)) / 5) + k + (k / 4) + (j / 4) - (2 * j)) % 7;
+            let h =
+                (self.day as i32 + ((13 * (month + 1)) / 5) + k + (k / 4) + (j / 4) - (2 * j)) % 7;
 
             // Convert to Monday = 0, Sunday = 6
             ((h + 5) % 7) as u8
@@ -205,9 +195,7 @@ impl Date {
         {
             NaiveDate::from_num_days_from_ce_opt(jd - 1721425)
                 .map(|d| Self::from_naive_date(d))
-                .ok_or_else(|| DateError::OutOfRange {
-                    msg: format!("Invalid Julian day: {}", jd),
-                })
+                .ok_or_else(|| DateError::OutOfRange { msg: format!("Invalid Julian day: {}", jd) })
         }
 
         #[cfg(not(feature = "chrono"))]
@@ -254,10 +242,7 @@ impl Date {
             remaining -= days_in_month;
         }
 
-        Err(DateError::InvalidComponent {
-            component: "day_of_year",
-            value: day_of_year as i64,
-        })
+        Err(DateError::InvalidComponent { component: "day_of_year", value: day_of_year as i64 })
     }
 
     /// Creates from ISO week date (year, week, day)
@@ -301,25 +286,20 @@ impl Date {
     pub fn parse_iso(s: &str) -> DateResult<Self> {
         let parts: Vec<&str> = s.split('-').collect();
         if parts.len() != 3 {
-            return Err(DateError::ParseError {
-                msg: format!("Invalid ISO date format: {}", s),
-            });
+            return Err(DateError::ParseError { msg: format!("Invalid ISO date format: {}", s) });
         }
 
-        let year = parts[0].parse::<i32>()
-            .map_err(|_| DateError::ParseError {
-                msg: format!("Invalid year: {}", parts[0]),
-            })?;
+        let year = parts[0]
+            .parse::<i32>()
+            .map_err(|_| DateError::ParseError { msg: format!("Invalid year: {}", parts[0]) })?;
 
-        let month = parts[1].parse::<u32>()
-            .map_err(|_| DateError::ParseError {
-                msg: format!("Invalid month: {}", parts[1]),
-            })?;
+        let month = parts[1]
+            .parse::<u32>()
+            .map_err(|_| DateError::ParseError { msg: format!("Invalid month: {}", parts[1]) })?;
 
-        let day = parts[2].parse::<u32>()
-            .map_err(|_| DateError::ParseError {
-                msg: format!("Invalid day: {}", parts[2]),
-            })?;
+        let day = parts[2]
+            .parse::<u32>()
+            .map_err(|_| DateError::ParseError { msg: format!("Invalid day: {}", parts[2]) })?;
 
         Self::new(year, month, day)
     }
@@ -489,7 +469,8 @@ impl Date {
         let new_year = self.year() + years;
 
         // Handle leap year edge case for Feb 29
-        let new_day = if self.month() == 2 && self.day() == 29 && !DateInner::is_leap_year(new_year) {
+        let new_day = if self.month() == 2 && self.day() == 29 && !DateInner::is_leap_year(new_year)
+        {
             28
         } else {
             self.day()
@@ -552,9 +533,8 @@ impl Date {
 
     /// Returns ISO 8601 date string (YYYY-MM-DD)
     pub fn to_iso_string(&self) -> &str {
-        self.iso_string_cache.get_or_init(|| {
-            format!("{:04}-{:02}-{:02}", self.year(), self.month(), self.day())
-        })
+        self.iso_string_cache
+            .get_or_init(|| format!("{:04}-{:02}-{:02}", self.year(), self.month(), self.day()))
     }
 
     /// Formats the date using a custom format string
@@ -566,9 +546,13 @@ impl Date {
             // Helper to check a token at current position
             let starts_with = |tok: &str| -> bool {
                 let tchars: Vec<char> = tok.chars().collect();
-                if i + tchars.len() > chars.len() { return false; }
+                if i + tchars.len() > chars.len() {
+                    return false;
+                }
                 for (k, ch) in tchars.iter().enumerate() {
-                    if chars[i + k] != *ch { return false; }
+                    if chars[i + k] != *ch {
+                        return false;
+                    }
                 }
                 true
             };
@@ -641,7 +625,7 @@ impl Date {
                 } else {
                     format!("in {} years", -years)
                 }
-            }
+            },
         }
     }
 

@@ -7,8 +7,7 @@ members = [ "crates/nebula-config",
     "crates/nebula-resilience",
     "crates/nebula-system",
     "crates/nebula-value",
-    "crates/nebula-validator"
-]
+    "crates/nebula-resource"]
 resolver = "2"  # Исправлено с "3"
 
 [workspace.package]

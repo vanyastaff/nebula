@@ -17,20 +17,21 @@ pub enum LockError {
 
 /// Lock guard that releases the lock when dropped
 #[async_trait]
-pub trait LockGuard: Send {
+pub trait LockGuard: Send + 'static {
     /// Release the lock explicitly
-    async fn release(self) -> Result<(), LockError>;
+    async fn release(self: Box<Self>) -> Result<(), LockError>;
 }
 
 /// Trait for distributed locking
 #[async_trait]
 pub trait DistributedLock: Send + Sync {
     /// Type of guard returned when lock is acquired
-    type Guard: LockGuard;
+    type Guard: LockGuard + 'static;
 
     /// Try to acquire lock with timeout
     async fn acquire(&self, key: &str, ttl: Duration) -> Result<Self::Guard, LockError>;
 
     /// Try to acquire lock without blocking
-    async fn try_acquire(&self, key: &str, ttl: Duration) -> Result<Option<Self::Guard>, LockError>;
+    async fn try_acquire(&self, key: &str, ttl: Duration)
+        -> Result<Option<Self::Guard>, LockError>;
 }

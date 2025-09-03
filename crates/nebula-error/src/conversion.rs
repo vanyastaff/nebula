@@ -1,7 +1,7 @@
 //! Error conversion utilities for Nebula
 
-use std::fmt;
 use super::error::NebulaError;
+use std::fmt;
 
 /// Trait for converting external errors to NebulaError
 pub trait IntoNebulaError {
@@ -36,11 +36,17 @@ impl IntoNebulaError for std::io::Error {
         match self.kind() {
             std::io::ErrorKind::NotFound => NebulaError::not_found("File", "unknown"),
             std::io::ErrorKind::PermissionDenied => NebulaError::permission_denied("read", "file"),
-            std::io::ErrorKind::TimedOut => NebulaError::timeout("I/O operation", std::time::Duration::from_secs(30)),
-            std::io::ErrorKind::ConnectionRefused => NebulaError::service_unavailable("network", "connection refused", None),
+            std::io::ErrorKind::TimedOut => {
+                NebulaError::timeout("I/O operation", std::time::Duration::from_secs(30))
+            },
+            std::io::ErrorKind::ConnectionRefused => {
+                NebulaError::service_unavailable("network", "connection refused", None)
+            },
             std::io::ErrorKind::ConnectionReset => NebulaError::network("connection reset"),
             std::io::ErrorKind::BrokenPipe => NebulaError::network("broken pipe"),
-            std::io::ErrorKind::WouldBlock => NebulaError::timeout("I/O operation", std::time::Duration::from_millis(100)),
+            std::io::ErrorKind::WouldBlock => {
+                NebulaError::timeout("I/O operation", std::time::Duration::from_millis(100))
+            },
             _ => NebulaError::internal(format!("I/O error: {}", self)),
         }
     }
@@ -71,7 +77,9 @@ impl IntoNebulaError for serde_json::Error {
             serde_json::error::Category::Io => NebulaError::internal("JSON I/O error"),
             serde_json::error::Category::Syntax => NebulaError::validation("Invalid JSON syntax"),
             serde_json::error::Category::Data => NebulaError::validation("Invalid JSON data"),
-            serde_json::error::Category::Eof => NebulaError::validation("Unexpected end of JSON input"),
+            serde_json::error::Category::Eof => {
+                NebulaError::validation("Unexpected end of JSON input")
+            },
         }
     }
 }
@@ -217,7 +225,10 @@ pub fn from_display_error<E: fmt::Display>(error: E) -> NebulaError {
 }
 
 // Helper function to convert any error that implements Display with context
-pub fn from_display_error_with_context<E: fmt::Display>(error: E, context: impl Into<String>) -> NebulaError {
+pub fn from_display_error_with_context<E: fmt::Display>(
+    error: E,
+    context: impl Into<String>,
+) -> NebulaError {
     from_display_error(error).with_context(super::context::ErrorContext::new(context))
 }
 
@@ -227,7 +238,10 @@ pub fn from_std_error<E: std::error::Error>(error: E) -> NebulaError {
 }
 
 // Helper function to convert any error that implements std::error::Error with context
-pub fn from_std_error_with_context<E: std::error::Error>(error: E, context: impl Into<String>) -> NebulaError {
+pub fn from_std_error_with_context<E: std::error::Error>(
+    error: E,
+    context: impl Into<String>,
+) -> NebulaError {
     from_std_error(error).with_context(super::context::ErrorContext::new(context))
 }
 
@@ -240,7 +254,7 @@ mod tests {
     fn test_io_error_conversion() {
         let io_error = io::Error::new(io::ErrorKind::NotFound, "file not found");
         let nebula_error = io_error.into_nebula_error();
-        
+
         assert!(matches!(nebula_error.kind, super::super::error::ErrorKind::NotFound { .. }));
     }
 
@@ -248,8 +262,11 @@ mod tests {
     fn test_io_error_conversion_with_context() {
         let io_error = io::Error::new(io::ErrorKind::PermissionDenied, "permission denied");
         let nebula_error = io_error.into_nebula_error_with_context("file operation");
-        
-        assert!(matches!(nebula_error.kind, super::super::error::ErrorKind::PermissionDenied { .. }));
+
+        assert!(matches!(
+            nebula_error.kind,
+            super::super::error::ErrorKind::PermissionDenied { .. }
+        ));
         assert!(nebula_error.context.is_some());
     }
 
@@ -258,15 +275,16 @@ mod tests {
         let json_str = "invalid json";
         let json_error = serde_json::from_str::<serde_json::Value>(json_str).unwrap_err();
         let nebula_error = json_error.into_nebula_error();
-        
+
         assert!(matches!(nebula_error.kind, super::super::error::ErrorKind::Validation { .. }));
     }
 
     #[test]
     fn test_result_context_extension() {
-        let result: Result<(), io::Error> = Err(io::Error::new(io::ErrorKind::NotFound, "not found"));
+        let result: Result<(), io::Error> =
+            Err(io::Error::new(io::ErrorKind::NotFound, "not found"));
         let result_with_context = result.with_context("file operation");
-        
+
         assert!(result_with_context.is_err());
         let error = result_with_context.unwrap_err();
         assert!(error.context.is_some());
@@ -276,7 +294,7 @@ mod tests {
     fn test_display_error_conversion() {
         let error = "custom error message";
         let nebula_error = from_display_error(error);
-        
+
         assert!(matches!(nebula_error.kind, super::super::error::ErrorKind::Internal { .. }));
         assert!(nebula_error.message.contains("custom error message"));
     }
@@ -285,7 +303,7 @@ mod tests {
     fn test_std_error_conversion() {
         let error = io::Error::new(io::ErrorKind::Other, "other error");
         let nebula_error = from_std_error(error);
-        
+
         assert!(matches!(nebula_error.kind, super::super::error::ErrorKind::Internal { .. }));
     }
 }

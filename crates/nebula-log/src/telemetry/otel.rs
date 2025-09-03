@@ -43,10 +43,8 @@ pub fn build_layer(
 
     // Create a simple tracer provider with just the sampler
     // This is a minimal implementation that works with OpenTelemetry 0.30.0
-    let provider = SdkTracerProvider::builder()
-        .with_sampler(sampler)
-        .build();
-    
+    let provider = SdkTracerProvider::builder().with_sampler(sampler).build();
+
     // Get a tracer from the provider directly (not using global registry)
     // This ensures we get an SdkTracer which implements PreSampledTracer
     let tracer = provider.tracer("nebula-log");

@@ -20,10 +20,8 @@ pub fn init() -> Option<ClientInitGuard> {
         .ok()
         .or_else(|| option_env!("CARGO_PKG_VERSION").map(String::from));
 
-    let sample_rate = std::env::var("SENTRY_TRACES_SAMPLE_RATE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0.1);
+    let sample_rate =
+        std::env::var("SENTRY_TRACES_SAMPLE_RATE").ok().and_then(|s| s.parse().ok()).unwrap_or(0.1);
 
     let guard = sentry::init(sentry::ClientOptions {
         dsn: Some(dsn.parse().ok()?),

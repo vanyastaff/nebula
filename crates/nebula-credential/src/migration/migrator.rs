@@ -19,20 +19,18 @@ pub trait StateMigrator: Send + Sync {
 
 /// Migration registry
 pub struct MigrationRegistry {
-    migrators: DashMap<(&'static str, u16, u16), Box<dyn StateMigrator>>,
+    migrators: DashMap<(String, u16, u16), Box<dyn StateMigrator>>,
 }
 
 impl MigrationRegistry {
     /// Create new registry
     pub fn new() -> Self {
-        Self {
-            migrators: DashMap::new(),
-        }
+        Self { migrators: DashMap::new() }
     }
 
     /// Register a migrator
     pub fn register(&self, migrator: Box<dyn StateMigrator>) {
-        let key = (migrator.kind(), migrator.from_version(), migrator.to_version());
+        let key = (migrator.kind().to_string(), migrator.from_version(), migrator.to_version());
         self.migrators.insert(key, migrator);
     }
 
@@ -48,13 +46,16 @@ impl MigrationRegistry {
 
         while current_version < to_version {
             let next_version = current_version + 1;
-            let key = (kind, current_version, next_version);
+            let key = (kind.to_string(), current_version, next_version);
 
-            let migrator = self.migrators.get(&key)
-                .ok_or_else(|| anyhow::anyhow!(
+            let migrator = self.migrators.get(&key).ok_or_else(|| {
+                anyhow::anyhow!(
                     "No migration from {} v{} to v{}",
-                    kind, current_version, next_version
-                ))?;
+                    kind,
+                    current_version,
+                    next_version
+                )
+            })?;
 
             state = migrator.migrate(state)?;
             current_version = next_version;
@@ -68,7 +69,7 @@ impl MigrationRegistry {
         let mut current = from;
         while current < to {
             let next = current + 1;
-            if !self.migrators.contains_key(&(kind, current, next)) {
+            if !self.migrators.contains_key(&(kind.to_string(), current, next)) {
                 return false;
             }
             current = next;

@@ -1,8 +1,8 @@
-use base64::Engine;
-use secrecy::{SecretString, ExposeSecret};
-use subtle::ConstantTimeEq;
-use serde::{Serialize, Deserialize, Serializer, Deserializer};
 use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
+use secrecy::{ExposeSecret, SecretString};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use subtle::ConstantTimeEq;
 
 /// Secure string that zeros memory on drop
 #[derive(Clone)]
@@ -21,7 +21,9 @@ impl SecureString {
 
     /// Execute function with exposed secret
     pub fn with_exposed<F, R>(&self, f: F) -> R
-    where F: FnOnce(&str) -> R {
+    where
+        F: FnOnce(&str) -> R,
+    {
         f(self.0.expose_secret())
     }
 
@@ -35,7 +37,9 @@ impl SecureString {
 
 impl Serialize for SecureString {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: Serializer {
+    where
+        S: Serializer,
+    {
         let encoded = B64.encode(self.0.expose_secret().as_bytes());
         serializer.serialize_str(&encoded)
     }
@@ -43,12 +47,12 @@ impl Serialize for SecureString {
 
 impl<'de> Deserialize<'de> for SecureString {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: Deserializer<'de> {
+    where
+        D: Deserializer<'de>,
+    {
         let encoded = String::deserialize(deserializer)?;
-        let decoded = B64.decode(encoded.as_bytes())
-            .map_err(serde::de::Error::custom)?;
-        let s = String::from_utf8(decoded)
-            .map_err(serde::de::Error::custom)?;
+        let decoded = B64.decode(encoded.as_bytes()).map_err(serde::de::Error::custom)?;
+        let s = String::from_utf8(decoded).map_err(serde::de::Error::custom)?;
         Ok(SecureString::new(s))
     }
 }

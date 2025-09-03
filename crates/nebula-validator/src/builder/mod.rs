@@ -4,27 +4,16 @@
 //! with a clean, chainable API.
 
 mod validator_builder;
-mod string_builder;
-mod numeric_builder;
-mod object_builder;
-mod array_builder;
 
-// Re-export all builders
-pub use validator_builder::{ValidatorBuilder, BuilderResult};
-pub use string_builder::{StringValidatorBuilder, StringValidation};
-pub use numeric_builder::{NumericValidatorBuilder, NumericValidation};
-pub use object_builder::{ObjectValidatorBuilder, ObjectValidation, FieldBuilder};
-pub use array_builder::{ArrayValidatorBuilder, ArrayValidation};
+// Note: string/numeric/object/array builders are not present in this repo snapshot.
+// Keep only the validator_builder exports to avoid missing module errors.
+
+// Re-export available builders
+pub use validator_builder::ValidatorBuilder;
 
 // Prelude for convenient imports
 pub mod prelude {
-    pub use super::{
-        ValidatorBuilder,
-        StringValidatorBuilder,
-        NumericValidatorBuilder,
-        ObjectValidatorBuilder,
-        ArrayValidatorBuilder,
-    };
+    pub use super::ValidatorBuilder;
 }
 
 /// Common builder traits

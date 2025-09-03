@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use tokio::sync::Semaphore;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::error::{ResilienceError, ResilienceResult};
 
@@ -19,11 +19,7 @@ pub struct BulkheadConfig {
 
 impl Default for BulkheadConfig {
     fn default() -> Self {
-        Self {
-            max_concurrency: 10,
-            max_queue_size: 100,
-            reject_when_full: true,
-        }
+        Self { max_concurrency: 10, max_queue_size: 100, reject_when_full: true }
     }
 }
 
@@ -38,10 +34,7 @@ pub struct Bulkhead {
 impl Bulkhead {
     /// Create a new bulkhead with default configuration
     pub fn new(max_concurrency: usize) -> Self {
-        Self::with_config(BulkheadConfig {
-            max_concurrency,
-            ..Default::default()
-        })
+        Self::with_config(BulkheadConfig { max_concurrency, ..Default::default() })
     }
 
     /// Create a new bulkhead with custom configuration
@@ -74,26 +67,20 @@ impl Bulkhead {
     }
 
     /// Try to acquire a permit without waiting
-    pub fn try_acquire(&self) -> Option<BulkheadPermit> {
+    pub fn try_acquire(&self) -> Option<BulkheadPermit<'_>> {
         let permit = self.semaphore.try_acquire().ok()?;
-        Some(BulkheadPermit {
-            permit,
-            active_operations: Arc::clone(&self.active_operations),
-        })
+        Some(BulkheadPermit { permit, active_operations: Arc::clone(&self.active_operations) })
     }
 
     /// Acquire a permit, waiting if necessary
-    pub async fn acquire(&self) -> Result<BulkheadPermit, ResilienceError> {
+    pub async fn acquire(&self) -> Result<BulkheadPermit<'_>, ResilienceError> {
         let permit = self
             .semaphore
             .acquire()
             .await
             .map_err(|_| ResilienceError::bulkhead_full(self.config.max_concurrency))?;
 
-        Ok(BulkheadPermit {
-            permit,
-            active_operations: Arc::clone(&self.active_operations),
-        })
+        Ok(BulkheadPermit { permit, active_operations: Arc::clone(&self.active_operations) })
     }
 
     /// Execute an operation with bulkhead protection
@@ -103,7 +90,7 @@ impl Bulkhead {
         Fut: std::future::Future<Output = ResilienceResult<T>>,
     {
         let _permit = self.acquire().await?;
-        
+
         // Increment active operations counter
         {
             let mut active = self.active_operations.write().await;
@@ -143,7 +130,7 @@ impl Bulkhead {
         use tokio::time::timeout as tokio_timeout;
 
         let _permit = self.acquire().await?;
-        
+
         // Increment active operations counter
         {
             let mut active = self.active_operations.write().await;
@@ -230,12 +217,7 @@ pub struct BulkheadBuilder {
 impl BulkheadBuilder {
     /// Create a new bulkhead builder
     pub fn new(max_concurrency: usize) -> Self {
-        Self {
-            config: BulkheadConfig {
-                max_concurrency,
-                ..Default::default()
-            },
-        }
+        Self { config: BulkheadConfig { max_concurrency, ..Default::default() } }
     }
 
     /// Set the maximum queue size
@@ -275,9 +257,7 @@ mod tests {
         let bulkhead = Bulkhead::new(2);
 
         // Should execute successfully
-        let result = bulkhead
-            .execute(|| async { Ok::<&str, ResilienceError>("success") })
-            .await;
+        let result = bulkhead.execute(|| async { Ok::<&str, ResilienceError>("success") }).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "success");
     }
@@ -333,15 +313,14 @@ mod tests {
 
         // Try to execute with timeout - should timeout
         let result = bulkhead
-            .execute_with_timeout(
-                Duration::from_millis(100),
-                || async { Ok::<&str, ResilienceError>("should timeout") },
-            )
+            .execute_with_timeout(Duration::from_millis(100), || async {
+                Ok::<&str, ResilienceError>("should timeout")
+            })
             .await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            ResilienceError::Timeout { .. } => {}
+            ResilienceError::Timeout { .. } => {},
             _ => panic!("Expected timeout error"),
         }
 
@@ -351,10 +330,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_bulkhead_builder() {
-        let bulkhead = BulkheadBuilder::new(5)
-            .with_max_queue_size(50)
-            .with_reject_when_full(false)
-            .build();
+        let bulkhead =
+            BulkheadBuilder::new(5).with_max_queue_size(50).with_reject_when_full(false).build();
 
         assert_eq!(bulkhead.max_concurrency(), 5);
         assert_eq!(bulkhead.active_operations().await, 0);

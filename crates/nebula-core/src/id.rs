@@ -1,5 +1,5 @@
 //! Identifier types for Nebula entities
-//! 
+//!
 //! All identifiers are newtype wrappers around UUIDs or strings,
 //! providing type safety and preventing mixing different ID types.
 
@@ -49,11 +49,6 @@ impl ExecutionId {
     /// Get the underlying UUID
     pub fn as_uuid(&self) -> &Uuid {
         &self.0
-    }
-
-    /// Convert to string representation
-    pub fn to_string(&self) -> String {
-        self.0.to_string()
     }
 }
 

@@ -1,24 +1,18 @@
 //! Example showing context propagation across async boundaries
 
 use nebula_log::prelude::*;
-use nebula_log::{Context, with_context};
+use nebula_log::{with_context, Context};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     nebula_log::auto_init()?;
 
     // Set global context
-    let _ctx = with_context!(
-        service = "api-gateway",
-        environment = "staging"
-    );
+    let _ctx = with_context!(service = "api-gateway", environment = "staging");
 
     // Simulate handling multiple requests concurrently
-    let handles = (0..3).map(|i| {
-        tokio::spawn(async move {
-            handle_user_request(format!("user-{}", i)).await
-        })
-    });
+    let handles = (0..3)
+        .map(|i| tokio::spawn(async move { handle_user_request(format!("user-{}", i)).await }));
 
     for handle in handles {
         handle.await??;

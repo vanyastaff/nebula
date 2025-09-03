@@ -11,13 +11,12 @@ use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "chrono")]
-use chrono::{Datelike, Timelike, NaiveDateTime, Local, Utc, TimeZone, FixedOffset};
+use chrono::{Datelike, FixedOffset, Local, NaiveDateTime, TimeZone, Timelike, Utc};
 
 use thiserror::Error;
 
-
-use super::date::{Date, DateInner, DateError};
-use super::time::{Time, TimeInner, TimeError};
+use super::date::{Date, DateError, DateInner};
+use super::time::{Time, TimeError, TimeInner};
 
 /// Result type alias for DateTime operations
 pub type DateTimeResult<T> = Result<T, DateTimeError>;
@@ -52,6 +51,7 @@ pub enum DateTimeError {
 
 /// Internal datetime storage
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct DateTimeInner {
     pub date: DateInner,
     pub time: TimeInner,
@@ -72,10 +72,7 @@ impl DateTimeInner {
     /// Creates from chrono NaiveDateTime
     #[cfg(feature = "chrono")]
     pub fn from_naive(dt: NaiveDateTime) -> Self {
-        Self {
-            date: DateInner::from_naive(dt.date()),
-            time: TimeInner::from_naive(dt.time()),
-        }
+        Self { date: DateInner::from_naive(dt.date()), time: TimeInner::from_naive(dt.time()) }
     }
 }
 
@@ -129,10 +126,7 @@ impl DateTime {
 
     /// Creates from Date and Time
     pub fn from_date_time(date: Date, time: Time) -> Self {
-        let inner = DateTimeInner::new(
-            date.as_inner().clone(),
-            time.as_inner().clone(),
-        );
+        let inner = DateTimeInner::new(date.as_inner().clone(), time.as_inner().clone());
 
         Self {
             inner: Arc::new(inner),
@@ -199,14 +193,17 @@ impl DateTime {
             let epoch_jd: i64 = 2_440_588;
             let jd = epoch_jd + days as i64;
             if jd > i32::MAX as i64 || jd < i32::MIN as i64 {
-                return Err(DateTimeError::OutOfRange { msg: format!("Invalid timestamp: {} nanos", nanos) });
+                return Err(DateTimeError::OutOfRange {
+                    msg: format!("Invalid timestamp: {} nanos", nanos),
+                });
             }
             let date = Date::from_julian_day(jd as i32).map_err(DateTimeError::DateError)?;
 
             let hour = (secs_of_day / 3600) as u32;
             let minute = ((secs_of_day % 3600) / 60) as u32;
             let second = (secs_of_day % 60) as u32;
-            let time = Time::with_nanos(hour, minute, second, nano_part).map_err(DateTimeError::TimeError)?;
+            let time = Time::with_nanos(hour, minute, second, nano_part)
+                .map_err(DateTimeError::TimeError)?;
 
             Ok(Self::from_date_time(date, time))
         }
@@ -214,10 +211,9 @@ impl DateTime {
 
     /// Creates from SystemTime
     pub fn from_system_time(st: SystemTime) -> DateTimeResult<Self> {
-        let duration = st.duration_since(UNIX_EPOCH)
-            .map_err(|e| DateTimeError::SystemTimeError {
-                msg: e.to_string(),
-            })?;
+        let duration = st
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| DateTimeError::SystemTimeError { msg: e.to_string() })?;
 
         let nanos = duration.as_nanos();
         if nanos > i64::MAX as u128 {
@@ -282,9 +278,7 @@ impl DateTime {
     pub fn parse_rfc3339(s: &str) -> DateTimeResult<Self> {
         chrono::DateTime::parse_from_rfc3339(s)
             .map(|dt| Self::from_naive_datetime(dt.naive_utc()))
-            .map_err(|e| DateTimeError::ParseError {
-                msg: e.to_string(),
-            })
+            .map_err(|e| DateTimeError::ParseError { msg: e.to_string() })
     }
 
     /// Parses from RFC 2822 string
@@ -292,9 +286,7 @@ impl DateTime {
     pub fn parse_rfc2822(s: &str) -> DateTimeResult<Self> {
         chrono::DateTime::parse_from_rfc2822(s)
             .map(|dt| Self::from_naive_datetime(dt.naive_utc()))
-            .map_err(|e| DateTimeError::ParseError {
-                msg: e.to_string(),
-            })
+            .map_err(|e| DateTimeError::ParseError { msg: e.to_string() })
     }
 
     /// Parses with custom format
@@ -302,20 +294,15 @@ impl DateTime {
     pub fn parse_from_str(s: &str, fmt: &str) -> DateTimeResult<Self> {
         NaiveDateTime::parse_from_str(s, fmt)
             .map(|dt| Self::from_naive_datetime(dt))
-            .map_err(|e| DateTimeError::ParseError {
-                msg: e.to_string(),
-            })
+            .map_err(|e| DateTimeError::ParseError { msg: e.to_string() })
     }
 
     // ==================== Basic Properties ====================
 
     /// Returns the date component
     pub fn date(&self) -> Date {
-        Date::new(
-            self.inner.date.year,
-            self.inner.date.month as u32,
-            self.inner.date.day as u32,
-        ).unwrap()
+        Date::new(self.inner.date.year, self.inner.date.month as u32, self.inner.date.day as u32)
+            .unwrap()
     }
 
     /// Returns the time component
@@ -619,7 +606,11 @@ impl DateTime {
 
         let (amount, unit) = if days > 0 {
             if days == 1 {
-                return if diff_seconds > 0 { "tomorrow".to_string() } else { "yesterday".to_string() };
+                return if diff_seconds > 0 {
+                    "tomorrow".to_string()
+                } else {
+                    "yesterday".to_string()
+                };
             }
             (days, "day")
         } else if hours > 0 {

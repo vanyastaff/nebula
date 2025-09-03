@@ -1,11 +1,11 @@
 //! Base traits for Nebula entities
-//! 
+//!
 //! These traits provide common functionality that can be implemented
 //! by various types throughout the system.
 
 use std::fmt;
 
-use super::id::{ExecutionId, WorkflowId, NodeId, UserId, TenantId};
+use super::id::{ExecutionId, NodeId, TenantId, UserId, WorkflowId};
 use super::scope::ScopeLevel;
 
 /// Trait for entities that have a scope
@@ -265,13 +265,13 @@ pub trait HasMetadata {
 pub struct EntityMetadata {
     /// When the entity was created
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
-    
+
     /// When the entity was last modified
     pub modified_at: Option<chrono::DateTime<chrono::Utc>>,
-    
+
     /// Tags associated with the entity
     pub tags: Vec<String>,
-    
+
     /// Additional custom metadata
     pub custom: std::collections::HashMap<String, String>,
 }
@@ -325,8 +325,8 @@ impl HasMetadata for EntityMetadata {
 
 #[cfg(test)]
 mod tests {
+    use super::super::id::{ExecutionId, NodeId, WorkflowId};
     use super::*;
-    use super::super::id::{ExecutionId, WorkflowId, NodeId};
 
     // Test implementation of Scoped
     #[derive(Debug)]
@@ -400,9 +400,7 @@ mod tests {
     #[test]
     fn test_scoped_trait() {
         let execution_id = ExecutionId::new();
-        let entity = TestScopedEntity {
-            scope: ScopeLevel::Execution(execution_id.clone()),
-        };
+        let entity = TestScopedEntity { scope: ScopeLevel::Execution(execution_id.clone()) };
 
         assert!(entity.is_execution());
         assert!(!entity.is_global());
@@ -449,10 +447,8 @@ mod tests {
 
     #[test]
     fn test_entity_metadata() {
-        let mut metadata = EntityMetadata::new()
-            .with_tag("test")
-            .with_tag("example")
-            .with_custom("key", "value");
+        let mut metadata =
+            EntityMetadata::new().with_tag("test").with_tag("example").with_custom("key", "value");
 
         assert!(metadata.has_tag("test"));
         assert!(metadata.has_tag("example"));

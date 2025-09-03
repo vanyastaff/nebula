@@ -7,11 +7,9 @@ use crate::types::{
     ValidationConfig, ValidatorId,
 };
 use crate::context::ValidationContext;
-use std::fmt::Debug;
-
 /// Main trait for validators that work with `serde_json::Value`
 #[async_trait]
-pub trait Validatable: Send + Sync + Debug {
+pub trait Validatable: Send + Sync {
     /// Validate a JSON value
     async fn validate(&self, value: &Value) -> ValidationResult<()>;
     

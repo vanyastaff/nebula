@@ -58,7 +58,7 @@ macro_rules! measure {
             let result = $future.await;
             result
         }.instrument(span);
-        
+
         let result = instrumented_future.await;
         let elapsed = __start.elapsed().as_millis();
         tracing::info!(name = %$name, elapsed_ms = elapsed, "Operation completed");

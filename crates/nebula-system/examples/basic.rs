@@ -20,8 +20,8 @@ fn main() -> sys::Result<()> {
 
     println!(
         "Memory: total={:.2} GB, available={:.2} GB, page_size={} B",
-        info.memory.total as f64 / (1024.0*1024.0*1024.0),
-        info.memory.available as f64 / (1024.0*1024.0*1024.0),
+        info.memory.total as f64 / (1024.0 * 1024.0 * 1024.0),
+        info.memory.available as f64 / (1024.0 * 1024.0 * 1024.0),
         info.memory.page_size
     );
 

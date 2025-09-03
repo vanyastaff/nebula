@@ -6,7 +6,7 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 
 #[cfg(feature = "serde")]
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Complete system information
 #[derive(Debug, Clone)]
@@ -142,13 +142,10 @@ impl SystemInfo {
 }
 
 // Global cached instances
-static SYSTEM_INFO: Lazy<Arc<SystemInfo>> = Lazy::new(|| {
-    Arc::new(detect_system_info())
-});
+static SYSTEM_INFO: Lazy<Arc<SystemInfo>> = Lazy::new(|| Arc::new(detect_system_info()));
 
-static SYSTEM_INFO_CACHE: Lazy<RwLock<Arc<SystemInfo>>> = Lazy::new(|| {
-    RwLock::new(SYSTEM_INFO.clone())
-});
+static SYSTEM_INFO_CACHE: Lazy<RwLock<Arc<SystemInfo>>> =
+    Lazy::new(|| RwLock::new(SYSTEM_INFO.clone()));
 
 #[cfg(feature = "sysinfo")]
 pub(crate) static SYSINFO_SYSTEM: Lazy<RwLock<sysinfo::System>> = Lazy::new(|| {
@@ -176,15 +173,15 @@ fn detect_system_info() -> SystemInfo {
         let cpu = {
             let cpus = sys.cpus();
             CpuInfo {
-                brand: cpus.first()
+                brand: cpus
+                    .first()
                     .map(|c| c.brand().to_string())
                     .unwrap_or_else(|| "Unknown".to_string()),
                 cores: System::physical_core_count().unwrap_or(cpus.len()),
                 threads: cpus.len(),
-                frequency_mhz: cpus.first()
-                    .map(|c| c.frequency())
-                    .unwrap_or(0),
-                vendor: cpus.first()
+                frequency_mhz: cpus.first().map(|c| c.frequency()).unwrap_or(0),
+                vendor: cpus
+                    .first()
                     .map(|c| c.vendor_id().to_string())
                     .unwrap_or_else(|| "Unknown".to_string()),
             }
@@ -222,12 +219,8 @@ fn detect_system_info() -> SystemInfo {
             },
             cpu: CpuInfo {
                 brand: "Unknown".to_string(),
-                cores: std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(1),
-                threads: std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(1),
+                cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+                threads: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
                 frequency_mhz: 0,
                 vendor: "Unknown".to_string(),
             },

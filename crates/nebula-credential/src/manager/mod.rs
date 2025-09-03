@@ -1,9 +1,9 @@
-mod manager;
 mod builder;
-mod policy;
+mod manager;
 mod negative_cache;
+mod policy;
 
-pub use manager::CredentialManager;
 pub use builder::ManagerBuilder;
-pub use policy::RefreshPolicy;
+pub use manager::CredentialManager;
 use negative_cache::NegativeCache;
+pub use policy::RefreshPolicy;

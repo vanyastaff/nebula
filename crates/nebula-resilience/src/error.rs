@@ -1,7 +1,7 @@
 //! Error types for resilience operations
 
-use thiserror::Error;
 use std::time::Duration;
+use thiserror::Error;
 
 /// Errors that can occur during resilience operations
 #[derive(Error, Debug, Clone)]
@@ -49,18 +49,12 @@ pub enum ResilienceError {
 impl ResilienceError {
     /// Check if the error is retryable
     pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            Self::Timeout { .. } | Self::CircuitBreakerOpen { .. }
-        )
+        matches!(self, Self::Timeout { .. } | Self::CircuitBreakerOpen { .. })
     }
 
     /// Check if the error is terminal (should not be retried)
     pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::BulkheadFull { .. } | Self::InvalidConfig { .. }
-        )
+        matches!(self, Self::BulkheadFull { .. } | Self::InvalidConfig { .. })
     }
 
     /// Create a timeout error
@@ -70,9 +64,7 @@ impl ResilienceError {
 
     /// Create a circuit breaker open error
     pub fn circuit_breaker_open(state: impl Into<String>) -> Self {
-        Self::CircuitBreakerOpen {
-            state: state.into(),
-        }
+        Self::CircuitBreakerOpen { state: state.into() }
     }
 
     /// Create a bulkhead full error
@@ -87,9 +79,7 @@ impl ResilienceError {
 
     /// Create an invalid config error
     pub fn invalid_config(message: impl Into<String>) -> Self {
-        Self::InvalidConfig {
-            message: message.into(),
-        }
+        Self::InvalidConfig { message: message.into() }
     }
 }
 

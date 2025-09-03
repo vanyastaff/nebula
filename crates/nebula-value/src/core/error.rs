@@ -44,24 +44,15 @@ pub enum ValueError {
 pub enum TypeError {
     /// Type mismatch
     #[error("Type mismatch: expected {expected}, got {actual}")]
-    Mismatch {
-        expected: String,
-        actual: String,
-    },
+    Mismatch { expected: String, actual: String },
 
     /// Incompatible types for operation
     #[error("Incompatible types: {left} and {right}")]
-    Incompatible {
-        left: String,
-        right: String,
-    },
+    Incompatible { left: String, right: String },
 
     /// Invalid type for operation
     #[error("Invalid type '{ty}' for operation '{operation}'")]
-    InvalidForOperation {
-        ty: String,
-        operation: String,
-    },
+    InvalidForOperation { ty: String, operation: String },
 
     /// Unknown type
     #[error("Unknown type: {0}")]
@@ -73,31 +64,19 @@ pub enum TypeError {
 pub enum ConversionError {
     /// Failed to convert between types
     #[error("Cannot convert from {from} to {to}")]
-    CannotConvert {
-        from: String,
-        to: String,
-    },
+    CannotConvert { from: String, to: String },
 
     /// Failed to convert with value details
     #[error("Cannot convert {from} '{value}' to {to}")]
-    CannotConvertValue {
-        from: String,
-        to: String,
-        value: String,
-    },
+    CannotConvertValue { from: String, to: String, value: String },
 
     /// Loss of precision
     #[error("Conversion would lose precision: {details}")]
-    PrecisionLoss {
-        details: String,
-    },
+    PrecisionLoss { details: String },
 
     /// Overflow during conversion
     #[error("Overflow converting {value} to {target_type}")]
-    Overflow {
-        value: String,
-        target_type: String,
-    },
+    Overflow { value: String, target_type: String },
 }
 
 /// Access errors (index, key, path)
@@ -105,41 +84,27 @@ pub enum ConversionError {
 pub enum AccessError {
     /// Array index out of bounds
     #[error("Index {index} out of bounds (length: {length})")]
-    IndexOutOfBounds {
-        index: usize,
-        length: usize,
-    },
+    IndexOutOfBounds { index: usize, length: usize },
 
     /// Key not found in object
     #[error("Key '{key}' not found")]
-    KeyNotFound {
-        key: String,
-    },
+    KeyNotFound { key: String },
 
     /// Invalid path
     #[error("Invalid path: {path}")]
-    InvalidPath {
-        path: String,
-    },
+    InvalidPath { path: String },
 
     /// Path not found
     #[error("Path '{path}' not found")]
-    PathNotFound {
-        path: String,
-    },
+    PathNotFound { path: String },
 
     /// Cannot access field on non-object
     #[error("Cannot access field '{field}' on {value_type}")]
-    FieldAccessOnNonObject {
-        field: String,
-        value_type: String,
-    },
+    FieldAccessOnNonObject { field: String, value_type: String },
 
     /// Cannot index non-array
     #[error("Cannot index {value_type} (not an array)")]
-    IndexOnNonArray {
-        value_type: String,
-    },
+    IndexOnNonArray { value_type: String },
 }
 
 /// Validation errors
@@ -147,37 +112,23 @@ pub enum AccessError {
 pub enum ValidationError {
     /// Required value is missing
     #[error("Required value is missing: {field}")]
-    Required {
-        field: String,
-    },
+    Required { field: String },
 
     /// Value is out of range
     #[error("Value {value} is out of range [{min}, {max}]")]
-    OutOfRange {
-        value: String,
-        min: String,
-        max: String,
-    },
+    OutOfRange { value: String, min: String, max: String },
 
     /// Invalid length
     #[error("Invalid length {actual}, expected {constraint}")]
-    InvalidLength {
-        actual: usize,
-        constraint: String,
-    },
+    InvalidLength { actual: usize, constraint: String },
 
     /// Pattern mismatch
     #[error("Value '{value}' doesn't match pattern '{pattern}'")]
-    PatternMismatch {
-        value: String,
-        pattern: String,
-    },
+    PatternMismatch { value: String, pattern: String },
 
     /// Custom validation failure
     #[error("Validation failed: {reason}")]
-    Failed {
-        reason: String,
-    },
+    Failed { reason: String },
 }
 
 /// Parse errors
@@ -185,41 +136,27 @@ pub enum ValidationError {
 pub enum ParseError {
     /// Invalid integer format
     #[error("Invalid integer: {input}")]
-    InvalidInteger {
-        input: String,
-    },
+    InvalidInteger { input: String },
 
     /// Invalid float format
     #[error("Invalid float: {input}")]
-    InvalidFloat {
-        input: String,
-    },
+    InvalidFloat { input: String },
 
     /// Invalid boolean format
     #[error("Invalid boolean: {input}")]
-    InvalidBoolean {
-        input: String,
-    },
+    InvalidBoolean { input: String },
 
     /// Invalid date/time format
     #[error("Invalid {format_type}: {input}")]
-    InvalidDateTime {
-        format_type: String,
-        input: String,
-    },
+    InvalidDateTime { format_type: String, input: String },
 
     /// Invalid JSON
     #[error("Invalid JSON: {details}")]
-    InvalidJson {
-        details: String,
-    },
+    InvalidJson { details: String },
 
     /// Invalid format
     #[error("Invalid {format_type} format: {input}")]
-    InvalidFormat {
-        format_type: String,
-        input: String,
-    },
+    InvalidFormat { format_type: String, input: String },
 
     /// Unexpected end of input
     #[error("Unexpected end of input")]
@@ -227,10 +164,7 @@ pub enum ParseError {
 
     /// Unexpected character
     #[error("Unexpected character '{ch}' at position {pos}")]
-    UnexpectedChar {
-        ch: char,
-        pos: usize,
-    },
+    UnexpectedChar { ch: char, pos: usize },
 }
 
 /// Operation errors
@@ -242,23 +176,15 @@ pub enum OperationError {
 
     /// Operation not supported
     #[error("Operation '{operation}' not supported for {value_type}")]
-    NotSupported {
-        operation: String,
-        value_type: String,
-    },
+    NotSupported { operation: String, value_type: String },
 
     /// Invalid operands
     #[error("Invalid operands for {operation}: {details}")]
-    InvalidOperands {
-        operation: String,
-        details: String,
-    },
+    InvalidOperands { operation: String, details: String },
 
     /// Overflow in arithmetic
     #[error("Arithmetic overflow in {operation}")]
-    ArithmeticOverflow {
-        operation: String,
-    },
+    ArithmeticOverflow { operation: String },
 
     /// Not a finite number
     #[error("Result is not a finite number")]
@@ -286,10 +212,7 @@ impl TypeError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::Mismatch {
-            expected: expected.into(),
-            actual: actual.into(),
-        }
+        Self::Mismatch { expected: expected.into(), actual: actual.into() }
     }
 
     /// Create an incompatible types error
@@ -298,10 +221,7 @@ impl TypeError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::Incompatible {
-            left: left.into(),
-            right: right.into(),
-        }
+        Self::Incompatible { left: left.into(), right: right.into() }
     }
 
     /// Create an invalid type for operation error
@@ -310,10 +230,7 @@ impl TypeError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::InvalidForOperation {
-            ty: ty.into(),
-            operation: operation.into(),
-        }
+        Self::InvalidForOperation { ty: ty.into(), operation: operation.into() }
     }
 }
 
@@ -324,10 +241,7 @@ impl ConversionError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::CannotConvert {
-            from: from.into(),
-            to: to.into(),
-        }
+        Self::CannotConvert { from: from.into(), to: to.into() }
     }
 
     /// Create a cannot convert with value error
@@ -337,11 +251,7 @@ impl ConversionError {
         S2: Into<String>,
         S3: Into<String>,
     {
-        Self::CannotConvertValue {
-            from: from.into(),
-            to: to.into(),
-            value: value.into(),
-        }
+        Self::CannotConvertValue { from: from.into(), to: to.into(), value: value.into() }
     }
 
     /// Create an overflow error
@@ -350,10 +260,7 @@ impl ConversionError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::Overflow {
-            value: value.into(),
-            target_type: target_type.into(),
-        }
+        Self::Overflow { value: value.into(), target_type: target_type.into() }
     }
 }
 
@@ -392,11 +299,7 @@ impl ValidationError {
         S2: Into<String>,
         S3: Into<String>,
     {
-        Self::OutOfRange {
-            value: value.into(),
-            min: min.into(),
-            max: max.into(),
-        }
+        Self::OutOfRange { value: value.into(), min: min.into(), max: max.into() }
     }
 
     /// Create a pattern mismatch error
@@ -405,10 +308,7 @@ impl ValidationError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::PatternMismatch {
-            value: value.into(),
-            pattern: pattern.into(),
-        }
+        Self::PatternMismatch { value: value.into(), pattern: pattern.into() }
     }
 
     /// Create a validation failed error
@@ -439,10 +339,7 @@ impl ParseError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::InvalidFormat {
-            format_type: format_type.into(),
-            input: input.into(),
-        }
+        Self::InvalidFormat { format_type: format_type.into(), input: input.into() }
     }
 }
 
@@ -453,10 +350,7 @@ impl OperationError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::NotSupported {
-            operation: operation.into(),
-            value_type: value_type.into(),
-        }
+        Self::NotSupported { operation: operation.into(), value_type: value_type.into() }
     }
 
     /// Create an invalid operands error
@@ -465,17 +359,12 @@ impl OperationError {
         S1: Into<String>,
         S2: Into<String>,
     {
-        Self::InvalidOperands {
-            operation: operation.into(),
-            details: details.into(),
-        }
+        Self::InvalidOperands { operation: operation.into(), details: details.into() }
     }
 
     /// Create an arithmetic overflow error
     pub fn arithmetic_overflow<S: Into<String>>(operation: S) -> Self {
-        Self::ArithmeticOverflow {
-            operation: operation.into(),
-        }
+        Self::ArithmeticOverflow { operation: operation.into() }
     }
 }
 

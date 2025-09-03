@@ -9,9 +9,7 @@ pub fn generate_request_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     static PREFIX: OnceLock<String> = OnceLock::new();
 
-    let prefix = PREFIX.get_or_init(|| {
-        format!("{:x}", std::process::id())
-    });
+    let prefix = PREFIX.get_or_init(|| format!("{:x}", std::process::id()));
 
     let count = COUNTER.fetch_add(1, Ordering::SeqCst);
     let timestamp = std::time::SystemTime::now()

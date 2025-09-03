@@ -9,7 +9,10 @@ fn main() -> sys::Result<()> {
     {
         // Current process
         match sys::process::current() {
-            Ok(p) => println!("Current PID={} name={} cpu={:.1}% mem={} KiB", p.pid, p.name, p.cpu_usage, p.memory),
+            Ok(p) => println!(
+                "Current PID={} name={} cpu={:.1}% mem={} KiB",
+                p.pid, p.name, p.cpu_usage, p.memory
+            ),
             Err(e) => println!("Failed to get current process: {}", e),
         }
 
@@ -17,7 +20,10 @@ fn main() -> sys::Result<()> {
         let mut list = sys::process::list();
         list.sort_by_key(|p| p.pid);
         for p in list.into_iter().take(10) {
-            println!("PID={} name={} status={:?} cpu={:.1}% mem={} KiB", p.pid, p.name, p.status, p.cpu_usage, p.memory);
+            println!(
+                "PID={} name={} status={:?} cpu={:.1}% mem={} KiB",
+                p.pid, p.name, p.status, p.cpu_usage, p.memory
+            );
         }
 
         let stats = sys::process::stats();

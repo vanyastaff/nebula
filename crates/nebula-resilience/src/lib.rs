@@ -48,45 +48,18 @@
 #![allow(clippy::module_name_repetitions)]
 
 // Core modules
-pub mod circuit_breaker;
-pub mod config;
-pub mod error;
-pub mod manager;
-pub mod prelude;
-pub mod retry;
-
-// Pattern modules
-pub mod backpressure;
 pub mod bulkhead;
-pub mod cache;
-pub mod fallback;
-pub mod rate_limiting;
-pub mod throttling;
+pub mod circuit_breaker;
+pub mod error;
+pub mod policy;
+pub mod retry;
 pub mod timeout;
 
-// Advanced modules
-pub mod degradation;
-pub mod health;
-pub mod load_balancing;
-pub mod state;
-
-// Infrastructure modules
-pub mod observability;
-
-// Optional modules
-#[cfg(feature = "chaos")]
-pub mod chaos;
-
-#[cfg(feature = "distributed")]
-pub mod distributed;
-
-#[cfg(any(test, feature = "testing"))]
-pub mod testing;
-
 // Re-exports for convenience
-pub use config::Config;
-pub use error::{Error, Result};
-pub use manager::ResilienceManager;
+pub use crate::timeout::timeout;
+pub use error::{ResilienceError, ResilienceResult};
+pub use policy::policies;
+pub use policy::{ResilienceBuilder, ResiliencePolicy};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

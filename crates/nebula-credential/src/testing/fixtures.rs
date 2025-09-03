@@ -1,9 +1,9 @@
 //! Test fixtures and data generators
 
 use crate::core::*;
-use std::time::{Duration, SystemTime};
-use async_trait::async_trait;
 use crate::prelude::Credential;
+use async_trait::async_trait;
+use std::time::{Duration, SystemTime};
 
 /// Create a test access token
 pub fn test_token() -> AccessToken {
@@ -67,10 +67,7 @@ pub struct TestCredential {
 
 impl Default for TestCredential {
     fn default() -> Self {
-        Self {
-            fail_on_refresh: false,
-            refresh_delay: None,
-        }
+        Self { fail_on_refresh: false, refresh_delay: None }
     }
 }
 

@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Trait for credential state types
 pub trait CredentialState: Serialize + for<'de> Deserialize<'de> + Send + Sync + Clone {

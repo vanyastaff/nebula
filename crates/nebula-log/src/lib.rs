@@ -23,10 +23,10 @@ mod builder;
 mod config;
 mod format;
 mod layer;
-mod writer;
-mod timing;
 mod macros;
+mod timing;
 mod utils;
+mod writer;
 
 #[cfg(any(feature = "telemetry", feature = "sentry"))]
 mod telemetry;
@@ -34,24 +34,21 @@ mod telemetry;
 // Public API
 pub use builder::{LoggerBuilder, LoggerGuard};
 pub use config::{Config, Format, Level, Rolling, WriterConfig};
-pub use timing::{Timer, TimerGuard, Timed};
 pub use layer::context::{Context, ContextGuard, Fields};
+pub use timing::{Timed, Timer, TimerGuard};
 
 /// Prelude for common imports
 pub mod prelude {
     pub use crate::{
-        auto_init, init, init_with,
-        debug, error, info, trace, warn,
-        span, instrument, Level,
-        Timer, Timed,
-        Result,
+        auto_init, debug, error, info, init, init_with, instrument, span, trace, warn, Level,
+        Result, Timed, Timer,
     };
 
     pub use tracing::{field, Span};
 }
 
 // Re-export tracing macros
-pub use tracing::{debug, error, info, trace, warn, span, instrument};
+pub use tracing::{debug, error, info, instrument, span, trace, warn};
 
 /// Result type for logger operations
 pub type Result<T> = anyhow::Result<T>;

@@ -3,9 +3,10 @@
 use crate::core::*;
 use crate::manager::*;
 use crate::registry::*;
+use crate::testing::{MockLock, MockStateStore, MockTokenCache};
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use crate::testing::{MockLock, MockStateStore, MockTokenCache};
 
 /// Create a test manager with mock components
 pub async fn test_manager() -> CredentialManager {
@@ -14,8 +15,7 @@ pub async fn test_manager() -> CredentialManager {
     let cache = Arc::new(MockTokenCache::new());
     let registry = Arc::new(CredentialRegistry::new());
 
-    // Register test credential
-    register_credential!(registry, TestCredential);
+    // Register test credential (disabled: no macro available)
 
     CredentialManager::builder()
         .with_store(store)
@@ -32,8 +32,6 @@ pub async fn test_manager_no_cache() -> CredentialManager {
     let lock = MockLock::new();
     let registry = Arc::new(CredentialRegistry::new());
 
-    register_credential!(registry, TestCredential);
-
     CredentialManager::builder()
         .with_store(store)
         .with_lock(lock)
@@ -48,9 +46,7 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = T>,
 {
-    tokio::time::timeout(duration, f())
-        .await
-        .expect("Test timed out")
+    tokio::time::timeout(duration, f()).await.expect("Test timed out")
 }
 
 /// Create test credential and return its ID

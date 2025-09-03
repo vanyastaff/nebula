@@ -1,10 +1,10 @@
 use crate::core::*;
-use crate::traits::*;
 use crate::manager::*;
+use crate::traits::*;
 use async_trait::async_trait;
 use dashmap::DashMap;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
 
@@ -76,10 +76,7 @@ impl StateStore for MockStateStore {
             return Err(CredentialError::storage_failed("load", "mock failure"));
         }
 
-        self.data
-            .get(id)
-            .map(|entry| entry.clone())
-            .ok_or_else(|| CredentialError::not_found(id))
+        self.data.get(id).map(|entry| entry.clone()).ok_or_else(|| CredentialError::not_found(id))
     }
 
     async fn save(
@@ -170,7 +167,7 @@ pub struct MockLockGuard {
 
 #[async_trait]
 impl LockGuard for MockLockGuard {
-    async fn release(self) -> std::result::Result<(), LockError> {
+    async fn release(self: Box<Self>) -> std::result::Result<(), LockError> {
         self.locks.remove(&self.key);
         Ok(())
     }
@@ -186,7 +183,11 @@ impl Drop for MockLockGuard {
 impl DistributedLock for MockLock {
     type Guard = MockLockGuard;
 
-    async fn acquire(&self, key: &str, ttl: Duration) -> std::result::Result<Self::Guard, LockError> {
+    async fn acquire(
+        &self,
+        key: &str,
+        ttl: Duration,
+    ) -> std::result::Result<Self::Guard, LockError> {
         self.acquire_count.fetch_add(1, Ordering::SeqCst);
 
         if self.fail_on_acquire.swap(false, Ordering::SeqCst) {
@@ -202,13 +203,14 @@ impl DistributedLock for MockLock {
         let deadline = SystemTime::now() + ttl;
         self.locks.insert(key.to_string(), deadline);
 
-        Ok(MockLockGuard {
-            key: key.to_string(),
-            locks: self.locks.clone(),
-        })
+        Ok(MockLockGuard { key: key.to_string(), locks: self.locks.clone() })
     }
 
-    async fn try_acquire(&self, key: &str, ttl: Duration) -> std::result::Result<Option<Self::Guard>, LockError> {
+    async fn try_acquire(
+        &self,
+        key: &str,
+        ttl: Duration,
+    ) -> std::result::Result<Option<Self::Guard>, LockError> {
         if let Some(existing) = self.locks.get(key) {
             if *existing > SystemTime::now() {
                 return Ok(None);
@@ -218,10 +220,7 @@ impl DistributedLock for MockLock {
         let deadline = SystemTime::now() + ttl;
         self.locks.insert(key.to_string(), deadline);
 
-        Ok(Some(MockLockGuard {
-            key: key.to_string(),
-            locks: self.locks.clone(),
-        }))
+        Ok(Some(MockLockGuard { key: key.to_string(), locks: self.locks.clone() }))
     }
 }
 
@@ -246,7 +245,11 @@ impl MockTokenCache {
     pub fn hit_rate(&self) -> f32 {
         let hits = self.hit_count.load(Ordering::SeqCst) as f32;
         let total = hits + self.miss_count.load(Ordering::SeqCst) as f32;
-        if total > 0.0 { hits / total } else { 0.0 }
+        if total > 0.0 {
+            hits / total
+        } else {
+            0.0
+        }
     }
 
     pub fn stats(&self) -> CacheStats {

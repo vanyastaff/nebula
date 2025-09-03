@@ -1,4 +1,4 @@
-use domain_key::{Key, KeyDomain, KeyParseError, static_key};
+use domain_key::{static_key, Key, KeyDomain, KeyParseError};
 
 /// Domain marker for credential keys
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -21,5 +21,3 @@ macro_rules! credential_key {
         static_key!(CredentialKey, $param_name)
     };
 }
-
-

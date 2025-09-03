@@ -1,13 +1,14 @@
-use crate::traits::{StateStore, DistributedLock, TokenCache};
+use crate::manager::manager::AnyLock;
 use crate::manager::{CredentialManager, RefreshPolicy};
 use crate::registry::CredentialRegistry;
+use crate::traits::{DistributedLock, StateStore, TokenCache};
 use dashmap::DashMap;
 use std::sync::Arc;
 
 /// Builder for CredentialManager
 pub struct ManagerBuilder {
     store: Option<Arc<dyn StateStore>>,
-    lock: Option<Arc<dyn DistributedLock>>,
+    lock: Option<AnyLock>,
     cache: Option<Arc<dyn TokenCache>>,
     policy: RefreshPolicy,
     registry: Option<Arc<CredentialRegistry>>,
@@ -32,8 +33,8 @@ impl ManagerBuilder {
     }
 
     /// Set distributed lock
-    pub fn with_lock(mut self, lock: Arc<dyn DistributedLock>) -> Self {
-        self.lock = Some(lock);
+    pub fn with_lock<L: DistributedLock + 'static>(mut self, lock: L) -> Self {
+        self.lock = Some(AnyLock::new(lock));
         self
     }
 
@@ -57,17 +58,11 @@ impl ManagerBuilder {
 
     /// Build the manager
     pub fn build(self) -> Result<CredentialManager, anyhow::Error> {
-        Ok(CredentialManager {
-            store: self.store
-                .ok_or_else(|| anyhow::anyhow!("StateStore is required"))?,
-            lock: self.lock
-                .ok_or_else(|| anyhow::anyhow!("DistributedLock is required"))?,
-            cache: self.cache,
-            policy: self.policy,
-            registry: self.registry
-                .unwrap_or_else(|| Arc::new(CredentialRegistry::new())),
-            negative_cache: Arc::new(DashMap::new()),
-        })
+        let store = self.store.ok_or_else(|| anyhow::anyhow!("StateStore is required"))?;
+        let lock = self.lock.ok_or_else(|| anyhow::anyhow!("DistributedLock is required"))?;
+        let registry = self.registry.unwrap_or_else(|| Arc::new(CredentialRegistry::new()));
+        let negative_cache = Arc::new(DashMap::new());
+        Ok(CredentialManager::new(store, lock, self.cache, self.policy, registry, negative_cache))
     }
 }
 

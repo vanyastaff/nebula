@@ -1,5 +1,5 @@
 [package]
-name = "nebula-resilience"
+name = "nebula-resource"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,15 +12,6 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-thiserror = "2.0.16"
-reqwest = "0.12.23"
-tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "time"] }
-futures = "0.3.31"
-tracing = "0.1.41"
-anyhow = "1.0.99"
-
-[dev-dependencies]
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [lints]
 workspace = true

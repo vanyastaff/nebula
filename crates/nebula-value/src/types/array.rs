@@ -565,7 +565,7 @@ impl Array {
     pub fn shuffled(&self) -> Self {
         use rand::seq::SliceRandom;
         let mut vec = self.to_vec();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         vec.shuffle(&mut rng);
         Self::new(vec)
     }
@@ -754,14 +754,14 @@ impl Array {
     /// Parallel sort operation for large arrays
     pub fn par_sorted(&self) -> Self
     where
-        Value: Send + Sync + Ord,
+        Value: Send + Sync + PartialOrd,
     {
         if self.len() < 1000 {
             return self.sorted();
         }
 
         let mut vec = self.to_vec();
-        vec.par_sort();
+        vec.par_sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
         Self::new(vec)
     }
 

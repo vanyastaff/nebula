@@ -6,10 +6,7 @@ async fn main() -> Result<()> {
     nebula_log::auto_init()?;
 
     // Set context for this scope
-    let _ctx = with_context!(
-        request_id = "req-123",
-        user_id = "user-456"
-    );
+    let _ctx = with_context!(request_id = "req-123", user_id = "user-456");
 
     // Time an async operation
     let result = async_timed!("database_query", {

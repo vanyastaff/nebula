@@ -1,9 +1,12 @@
+use crate::error::ValueError;
+use crate::types::*;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
-use crate::types::*;
-use crate::error::ValueError;
 
 #[derive(Debug, Clone, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[non_exhaustive]
 pub enum Value {
     Null,
@@ -242,7 +245,7 @@ impl Value {
                 } else {
                     next.get_path_segments(rest)
                 }
-            }
+            },
             Value::Array(arr) => {
                 let index = first.parse::<usize>().ok()?;
                 let next = arr.get(index)?;
@@ -251,7 +254,7 @@ impl Value {
                 } else {
                     next.get_path_segments(rest)
                 }
-            }
+            },
             _ => None,
         }
     }
@@ -269,8 +272,8 @@ impl Value {
             return Ok(());
         }
 
-        let (first, rest) = segments.split_first()
-            .ok_or_else(|| ValueError::custom("Empty path segments"))?;
+        let (first, rest) =
+            segments.split_first().ok_or_else(|| ValueError::custom("Empty path segments"))?;
 
         if rest.is_empty() {
             // Last segment - set the value
@@ -279,44 +282,52 @@ impl Value {
                     let new_obj = obj.insert(first.to_string(), value);
                     *obj = new_obj;
                     Ok(())
-                }
+                },
                 Value::Array(arr) => {
-                    let index = first.parse::<usize>()
+                    let index = first
+                        .parse::<usize>()
                         .map_err(|_| ValueError::invalid_format("array index", *first))?;
                     if index >= arr.len() {
                         return Err(ValueError::index_out_of_bounds(index, arr.len()));
                     }
-                    let new_arr = arr.set(index, value)
+                    let new_arr = arr
+                        .set(index, value)
                         .map_err(|e| ValueError::custom(format!("array set error: {:?}", e)))?;
                     *arr = new_arr;
                     Ok(())
-                }
-                _ => Err(ValueError::unsupported_operation("set_path", self.type_name()))
+                },
+                _ => Err(ValueError::unsupported_operation("set_path", self.type_name())),
             }
         } else {
             // Navigate deeper
             match self {
                 Value::Object(obj) => {
-                    let mut next_val = obj.get(*first).cloned().unwrap_or(Value::Object(Object::new()));
+                    let mut next_val =
+                        obj.get(*first).cloned().unwrap_or(Value::Object(Object::new()));
                     next_val.set_path_segments(rest, value)?;
                     let new_obj = obj.insert(first.to_string(), next_val);
                     *obj = new_obj;
                     Ok(())
-                }
+                },
                 Value::Array(arr) => {
-                    let index = first.parse::<usize>()
+                    let index = first
+                        .parse::<usize>()
                         .map_err(|_| ValueError::invalid_format("array index", *first))?;
                     if index >= arr.len() {
                         return Err(ValueError::index_out_of_bounds(index, arr.len()));
                     }
-                    let mut elem = arr.get(index).cloned().ok_or_else(|| ValueError::index_out_of_bounds(index, arr.len()))?;
+                    let mut elem = arr
+                        .get(index)
+                        .cloned()
+                        .ok_or_else(|| ValueError::index_out_of_bounds(index, arr.len()))?;
                     elem.set_path_segments(rest, value)?;
-                    let new_arr = arr.set(index, elem)
+                    let new_arr = arr
+                        .set(index, elem)
                         .map_err(|e| ValueError::custom(format!("array set error: {:?}", e)))?;
                     *arr = new_arr;
                     Ok(())
-                }
-                _ => Err(ValueError::unsupported_operation("set_path", self.type_name()))
+                },
+                _ => Err(ValueError::unsupported_operation("set_path", self.type_name())),
             }
         }
     }
@@ -398,13 +409,13 @@ impl Value {
                 let merged = o1.merge(&o2);
                 *o1 = merged;
                 Ok(())
-            }
+            },
             (Value::Array(a1), Value::Array(a2)) => {
                 let concatenated = a1.concat(&a2);
                 *a1 = concatenated;
                 Ok(())
-            }
-            (s, o) => Err(ValueError::incompatible_types(s.type_name(), o.type_name()))
+            },
+            (s, o) => Err(ValueError::incompatible_types(s.type_name(), o.type_name())),
         }
     }
 
@@ -433,7 +444,7 @@ impl fmt::Display for Value {
                     write!(f, "{}", item)?;
                 }
                 write!(f, "]")
-            }
+            },
             Value::Object(o) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in o.iter().enumerate() {
@@ -443,7 +454,7 @@ impl fmt::Display for Value {
                     write!(f, "\"{}\": {}", k, v)?;
                 }
                 write!(f, "}}")
-            }
+            },
             Value::Bytes(b) => write!(f, "<{} bytes>", b.len()),
             #[cfg(feature = "decimal")]
             Value::Decimal(d) => write!(f, "{}", d),
@@ -560,5 +571,71 @@ where
 impl From<Option<Value>> for Value {
     fn from(v: Option<Value>) -> Self {
         v.unwrap_or(Value::Null)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<serde_json::Value> for Value {
+    fn from(v: serde_json::Value) -> Self {
+        match v {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::bool(b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::int(i)
+                } else if let Some(f) = n.as_f64() {
+                    Value::float(f)
+                } else {
+                    Value::Null
+                }
+            },
+            serde_json::Value::String(s) => Value::string(s),
+            serde_json::Value::Array(arr) => {
+                let items = arr.into_iter().map(Value::from).collect::<Vec<_>>();
+                Value::Array(Array::new(items))
+            },
+            serde_json::Value::Object(obj) => {
+                let mut map = std::collections::HashMap::with_capacity(obj.len());
+                for (k, v) in obj {
+                    map.insert(k, Value::from(v));
+                }
+                Value::object(map)
+            },
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<Value> for serde_json::Value {
+    fn from(v: Value) -> Self {
+        match v {
+            Value::Null => serde_json::Value::Null,
+            Value::Bool(b) => serde_json::Value::Bool(b.value()),
+            Value::Int(i) => serde_json::Value::Number(serde_json::Number::from(i.value())),
+            Value::Float(f) => serde_json::Number::from_f64(f.value())
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
+            Value::String(s) => serde_json::Value::String(s.to_string()),
+            Value::Array(a) => {
+                let vec = a.iter().cloned().map(serde_json::Value::from).collect::<Vec<_>>();
+                serde_json::Value::Array(vec)
+            },
+            Value::Object(o) => {
+                let mut map = serde_json::Map::with_capacity(o.len());
+                for (k, v) in o.iter() {
+                    map.insert(k.clone(), serde_json::Value::from(v.clone()));
+                }
+                serde_json::Value::Object(map)
+            },
+            Value::Bytes(b) => serde_json::Value::String(format!("<{} bytes>", b.len())),
+            #[cfg(feature = "decimal")]
+            Value::Decimal(d) => serde_json::Number::from_f64(d.to_f64())
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
+            Value::Date(d) => serde_json::Value::String(d.to_string()),
+            Value::Time(t) => serde_json::Value::String(t.to_string()),
+            Value::DateTime(dt) => serde_json::Value::String(dt.to_string()),
+            Value::Duration(dur) => serde_json::Value::String(dur.to_string()),
+        }
     }
 }

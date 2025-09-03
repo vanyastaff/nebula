@@ -1,15 +1,15 @@
 //! Unified resilience policy combining multiple resilience patterns
 
-use std::time::Duration;
 use futures::Future;
+use std::time::Duration;
 use tracing::{debug, info};
 
 use crate::{
-    error::{ResilienceError, ResilienceResult},
-    timeout::timeout,
-    retry::{RetryStrategy, Retryable},
-    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
     bulkhead::Bulkhead,
+    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
+    error::{ResilienceError, ResilienceResult},
+    retry::{RetryStrategy, Retryable},
+    timeout::timeout,
 };
 
 /// Resilience policy configuration
@@ -118,12 +118,13 @@ impl ResiliencePolicy {
         if let Some(retry_strategy) = &self.retry {
             let strategy = retry_strategy.clone();
             // Convert ResilienceResult<T> to Result<T, ResilienceError> for retry
-            return crate::retry::retry(strategy.clone(), || async { 
+            return crate::retry::retry(strategy.clone(), || async {
                 match &result {
                     Ok(value) => Ok(value.clone()),
                     Err(e) => Err(e.clone()),
                 }
-            }).await;
+            })
+            .await;
         }
 
         // Apply circuit breaker if configured
@@ -142,10 +143,7 @@ impl ResiliencePolicy {
     }
 
     /// Execute an operation with timeout only
-    pub async fn execute_with_timeout<T, F, Fut>(
-        &self,
-        operation: F,
-    ) -> ResilienceResult<T>
+    pub async fn execute_with_timeout<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = ResilienceResult<T>>,
@@ -158,10 +156,7 @@ impl ResiliencePolicy {
     }
 
     /// Execute an operation with retry only
-    pub async fn execute_with_retry<T, F, Fut>(
-        &self,
-        mut operation: F,
-    ) -> ResilienceResult<T>
+    pub async fn execute_with_retry<T, F, Fut>(&self, mut operation: F) -> ResilienceResult<T>
     where
         F: FnMut() -> Fut,
         Fut: Future<Output = ResilienceResult<T>>,
@@ -174,10 +169,7 @@ impl ResiliencePolicy {
     }
 
     /// Execute an operation with circuit breaker only
-    pub async fn execute_with_circuit_breaker<T, F, Fut>(
-        &self,
-        operation: F,
-    ) -> ResilienceResult<T>
+    pub async fn execute_with_circuit_breaker<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = ResilienceResult<T>>,
@@ -191,10 +183,7 @@ impl ResiliencePolicy {
     }
 
     /// Execute an operation with bulkhead only
-    pub async fn execute_with_bulkhead<T, F, Fut>(
-        &self,
-        operation: F,
-    ) -> ResilienceResult<T>
+    pub async fn execute_with_bulkhead<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = ResilienceResult<T>>,
@@ -216,9 +205,7 @@ pub struct ResilienceBuilder {
 impl ResilienceBuilder {
     /// Create a new resilience builder
     pub fn new() -> Self {
-        Self {
-            policy: ResiliencePolicy::new(),
-        }
+        Self { policy: ResiliencePolicy::new() }
     }
 
     /// Set timeout
@@ -235,11 +222,7 @@ impl ResilienceBuilder {
     }
 
     /// Set circuit breaker configuration
-    pub fn circuit_breaker(
-        mut self,
-        failure_threshold: usize,
-        reset_timeout: Duration,
-    ) -> Self {
+    pub fn circuit_breaker(mut self, failure_threshold: usize, reset_timeout: Duration) -> Self {
         let config = CircuitBreakerConfig {
             failure_threshold,
             reset_timeout,
@@ -354,9 +337,7 @@ mod tests {
             .with_timeout(Duration::from_millis(100))
             .with_retry(RetryStrategy::new(2, Duration::from_millis(10)));
 
-        let result = policy
-            .execute(|| async { Ok::<&str, ResilienceError>("success") })
-            .await;
+        let result = policy.execute(|| async { Ok::<&str, ResilienceError>("success") }).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "success");
@@ -364,8 +345,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resilience_policy_timeout() {
-        let policy = ResiliencePolicy::new()
-            .with_timeout(Duration::from_millis(10));
+        let policy = ResiliencePolicy::new().with_timeout(Duration::from_millis(10));
 
         let result = policy
             .execute(|| async {
@@ -376,7 +356,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            ResilienceError::Timeout { .. } => {}
+            ResilienceError::Timeout { .. } => {},
             _ => panic!("Expected timeout error"),
         }
     }

@@ -1,11 +1,11 @@
 //! Network information and monitoring
 
-use std::collections::HashMap;
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 
 #[cfg(feature = "serde")]
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Network interface information
 #[derive(Debug, Clone)]
@@ -156,7 +156,7 @@ pub fn interfaces() -> Vec<NetworkInterface> {
                     name: name.clone(),
                     mac_address: Some(network.mac_address().to_string()),
                     ip_addresses: vec![], // Would need additional platform-specific code
-                    is_up: true, // Assume up if in the list
+                    is_up: true,          // Assume up if in the list
                     is_loopback: name == "lo" || name == "lo0",
                     mtu: None,
                     speed: None,
@@ -174,9 +174,7 @@ pub fn interfaces() -> Vec<NetworkInterface> {
 
 /// Get specific network interface
 pub fn get_interface(name: &str) -> Option<NetworkInterface> {
-    interfaces()
-        .into_iter()
-        .find(|iface| iface.name == name)
+    interfaces().into_iter().find(|iface| iface.name == name)
 }
 
 /// Get network usage statistics
@@ -248,10 +246,7 @@ pub fn connections() -> Vec<Connection> {
 
 /// Get connections for a specific process
 pub fn connections_for_process(pid: u32) -> Vec<Connection> {
-    connections()
-        .into_iter()
-        .filter(|conn| conn.pid == Some(pid))
-        .collect()
+    connections().into_iter().filter(|conn| conn.pid == Some(pid)).collect()
 }
 
 /// Network configuration
@@ -316,10 +311,7 @@ fn detect_gateway() -> Option<String> {
         use std::process::Command;
 
         // Try to get default gateway using ip command
-        if let Ok(output) = Command::new("ip")
-            .args(&["route", "show", "default"])
-            .output()
-        {
+        if let Ok(output) = Command::new("ip").args(&["route", "show", "default"]).output() {
             if let Ok(stdout) = String::from_utf8(output.stdout) {
                 // Parse: "default via 192.168.1.1 dev eth0"
                 for line in stdout.lines() {
@@ -340,9 +332,7 @@ fn detect_gateway() -> Option<String> {
 /// Check network connectivity
 pub fn is_online() -> bool {
     // Simple check: see if we have any non-loopback interfaces with IP addresses
-    interfaces()
-        .iter()
-        .any(|iface| !iface.is_loopback && iface.is_up)
+    interfaces().iter().any(|iface| !iface.is_loopback && iface.is_up)
 }
 
 /// Get total network statistics across all interfaces

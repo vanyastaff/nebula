@@ -57,19 +57,13 @@ pub type Result<T> = std::result::Result<T, SystemError>;
 
 impl SystemError {
     /// Create a platform error from OS error
-    pub fn from_os_error(err: std::io::Error) -> Self {
-        Self::PlatformError {
-            message: err.to_string(),
-            code: err.raw_os_error(),
-        }
+    pub fn from_os_error(err: &std::io::Error) -> Self {
+        Self::PlatformError { message: err.to_string(), code: err.raw_os_error() }
     }
 
     /// Check if error is recoverable
     pub fn is_recoverable(&self) -> bool {
-        matches!(
-            self,
-            Self::Timeout | Self::NotFound(_) | Self::Custom(_)
-        )
+        matches!(self, Self::Timeout | Self::NotFound(_) | Self::Custom(_))
     }
 }
 

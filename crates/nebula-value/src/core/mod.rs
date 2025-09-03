@@ -6,7 +6,7 @@ pub mod value;
 
 // Re-exports for convenience
 pub use error::{ValueError, ValueResult};
-pub use kind::{ValueKind, TypeCompatibility};
+pub use kind::{TypeCompatibility, ValueKind};
 pub use path::{PathSegment, ValuePath};
 pub use value::Value;
 
@@ -15,14 +15,7 @@ pub type DynResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 // Prelude module for easy imports
 pub mod prelude {
-    pub use super::{
-        Value,
-        ValueError,
-        ValueResult,
-        ValueKind,
-        ValuePath,
-        PathSegment,
-    };
+    pub use super::{PathSegment, Value, ValueError, ValueKind, ValuePath, ValueResult};
 
     // Re-export types from types module
     pub use crate::types::*;

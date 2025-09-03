@@ -4,7 +4,7 @@ use crate::error::{Result, SystemError};
 use crate::info::SystemInfo;
 
 #[cfg(feature = "serde")]
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 // Re-export from region for convenience
 #[cfg(feature = "memory")]
@@ -56,11 +56,8 @@ pub struct MemoryInfo {
 pub fn current() -> MemoryInfo {
     let sys_memory = SystemInfo::current_memory();
     let used = sys_memory.total.saturating_sub(sys_memory.available);
-    let usage_percent = if sys_memory.total > 0 {
-        (used as f64 / sys_memory.total as f64) * 100.0
-    } else {
-        0.0
-    };
+    let usage_percent =
+        if sys_memory.total > 0 { (used as f64 / sys_memory.total as f64) * 100.0 } else { 0.0 };
 
     let pressure = if usage_percent > 85.0 {
         MemoryPressure::Critical
@@ -138,7 +135,10 @@ pub mod management {
 
     /// Free allocated memory
     pub unsafe fn free(_ptr: *mut u8, _size: usize) -> Result<()> {
-        Err(SystemError::NotSupported("Manual free is not supported for region allocations; use RAII handle instead".to_string()))
+        Err(SystemError::NotSupported(
+            "Manual free is not supported for region allocations; use RAII handle instead"
+                .to_string(),
+        ))
     }
 
     /// Change memory protection
@@ -156,14 +156,13 @@ pub mod management {
 
     /// Unlock memory pages
     pub unsafe fn unlock(ptr: *mut u8, size: usize) -> Result<()> {
-        region::unlock(ptr, size)
-            .map_err(|e| SystemError::Memory(format!("Unlock failed: {}", e)))
+        region::unlock(ptr, size).map_err(|e| SystemError::Memory(format!("Unlock failed: {}", e)))
     }
 
     /// Query memory region information
     pub unsafe fn query(ptr: *const u8) -> Result<MemoryRegion> {
-        let region = region::query(ptr)
-            .map_err(|e| SystemError::Memory(format!("Query failed: {}", e)))?;
+        let region =
+            region::query(ptr).map_err(|e| SystemError::Memory(format!("Query failed: {}", e)))?;
 
         Ok(MemoryRegion {
             // Base address is approximated by the queried pointer since region base may be inaccessible here

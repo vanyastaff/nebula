@@ -1,28 +1,28 @@
 //! Common types and utilities for Nebula
-//! 
+//!
 //! This module provides shared types, constants, and utility functions
 //! that are used across different parts of the system.
 
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
-use super::id::{ExecutionId, WorkflowId, NodeId, UserId, TenantId};
+use super::id::{ExecutionId, NodeId, TenantId, UserId, WorkflowId};
 
 /// Version information for Nebula components
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Version {
     /// Major version number
     pub major: u32,
-    
+
     /// Minor version number
     pub minor: u32,
-    
+
     /// Patch version number
     pub patch: u32,
-    
+
     /// Pre-release identifier (e.g., "alpha", "beta", "rc.1")
     pub pre: Option<String>,
-    
+
     /// Build metadata
     pub build: Option<String>,
 }
@@ -30,13 +30,7 @@ pub struct Version {
 impl Version {
     /// Create a new version
     pub fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self {
-            major,
-            minor,
-            patch,
-            pre: None,
-            build: None,
-        }
+        Self { major, minor, patch, pre: None, build: None }
     }
 
     /// Create a version with pre-release identifier
@@ -65,15 +59,15 @@ impl Version {
 impl std::fmt::Display for Version {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
-        
+
         if let Some(pre) = &self.pre {
             write!(f, "-{}", pre)?;
         }
-        
+
         if let Some(build) = &self.build {
             write!(f, "+{}", build)?;
         }
-        
+
         Ok(())
     }
 }
@@ -86,7 +80,8 @@ impl PartialOrd for Version {
 
 impl Ord for Version {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.major.cmp(&other.major)
+        self.major
+            .cmp(&other.major)
             .then(self.minor.cmp(&other.minor))
             .then(self.patch.cmp(&other.patch))
             .then(self.pre.cmp(&other.pre))
@@ -98,28 +93,28 @@ impl Ord for Version {
 pub enum Status {
     /// Entity is active and ready
     Active,
-    
+
     /// Entity is inactive or disabled
     Inactive,
-    
+
     /// Entity is in progress
     InProgress,
-    
+
     /// Entity has completed successfully
     Completed,
-    
+
     /// Entity has failed
     Failed,
-    
+
     /// Entity is pending
     Pending,
-    
+
     /// Entity is cancelled
     Cancelled,
-    
+
     /// Entity is suspended
     Suspended,
-    
+
     /// Entity is in error state
     Error,
 }
@@ -167,16 +162,16 @@ impl std::fmt::Display for Status {
 pub enum Priority {
     /// Lowest priority
     Low = 1,
-    
+
     /// Normal priority
     Normal = 2,
-    
+
     /// High priority
     High = 3,
-    
+
     /// Critical priority
     Critical = 4,
-    
+
     /// Emergency priority
     Emergency = 5,
 }
@@ -227,16 +222,16 @@ impl std::fmt::Display for Priority {
 pub struct OperationResult<T> {
     /// Status of the operation
     pub status: Status,
-    
+
     /// Optional data returned by the operation
     pub data: Option<T>,
-    
+
     /// Optional error message
     pub error: Option<String>,
-    
+
     /// Timestamp when the operation completed
     pub completed_at: chrono::DateTime<chrono::Utc>,
-    
+
     /// Duration of the operation
     pub duration: std::time::Duration,
 }
@@ -290,28 +285,28 @@ impl<T> OperationResult<T> {
 pub struct OperationContext {
     /// Unique identifier for the operation
     pub operation_id: String,
-    
+
     /// Execution ID if applicable
     pub execution_id: Option<ExecutionId>,
-    
+
     /// Workflow ID if applicable
     pub workflow_id: Option<WorkflowId>,
-    
+
     /// Node ID if applicable
     pub node_id: Option<NodeId>,
-    
+
     /// User ID if applicable
     pub user_id: Option<UserId>,
-    
+
     /// Tenant ID if applicable
     pub tenant_id: Option<TenantId>,
-    
+
     /// Priority of the operation
     pub priority: Priority,
-    
+
     /// Additional metadata
     pub metadata: HashMap<String, String>,
-    
+
     /// Timestamp when the context was created
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -409,7 +404,7 @@ pub mod utils {
     pub fn format_duration(duration: std::time::Duration) -> String {
         let secs = duration.as_secs();
         let millis = duration.subsec_millis();
-        
+
         if secs > 0 {
             format!("{}.{:03}s", secs, millis)
         } else {
@@ -429,20 +424,20 @@ pub mod utils {
         } else {
             (version_str, None)
         };
-        
+
         // Parse major.minor.patch
         let parts: Vec<&str> = version_part.split('.').collect();
-        
+
         if parts.len() < 3 {
             return Err("Version must have at least major.minor.patch".to_string());
         }
-        
+
         let major = parts[0].parse::<u32>().map_err(|_| "Invalid major version")?;
         let minor = parts[1].parse::<u32>().map_err(|_| "Invalid minor version")?;
         let patch = parts[2].parse::<u32>().map_err(|_| "Invalid patch version")?;
-        
+
         let mut version = Version::new(major, minor, patch);
-        
+
         // Handle pre-release and build metadata
         if let Some(pre_build_str) = pre_build {
             if pre_build_str.starts_with('-') {
@@ -458,7 +453,7 @@ pub mod utils {
                 version = version.with_build(&pre_build_str[1..]);
             }
         }
-        
+
         Ok(version)
     }
 
@@ -467,15 +462,15 @@ pub mod utils {
         if s.is_empty() {
             return false;
         }
-        
+
         let mut chars = s.chars();
         let first = chars.next().unwrap();
-        
+
         // First character must be alphabetic or underscore
         if !first.is_alphabetic() && first != '_' {
             return false;
         }
-        
+
         // Remaining characters must be alphanumeric, underscore, or hyphen
         chars.all(|c| c.is_alphanumeric() || c == '_' || c == '-')
     }
@@ -504,7 +499,7 @@ mod tests {
         let v1 = Version::new(1, 2, 0);
         let v2 = Version::new(1, 2, 1);
         assert!(v1.is_compatible_with(&v2));
-        
+
         let v3 = Version::new(1, 3, 0);
         assert!(!v1.is_compatible_with(&v3));
     }
@@ -528,11 +523,11 @@ mod tests {
     fn test_operation_result() {
         let data = "test data";
         let duration = std::time::Duration::from_millis(100);
-        
+
         let success = OperationResult::success(data, duration);
         assert!(success.is_success());
         assert_eq!(success.data(), Some(&data));
-        
+
         let failure: OperationResult<&str> = OperationResult::failure("test error", duration);
         assert!(failure.is_failure());
         assert_eq!(failure.error(), Some("test error"));
@@ -544,7 +539,7 @@ mod tests {
             .with_execution_id(ExecutionId::new())
             .with_priority(Priority::High)
             .with_metadata("key", "value");
-        
+
         assert!(context.has_execution_context());
         assert_eq!(context.priority, Priority::High);
         assert_eq!(context.metadata.get("key"), Some(&"value".to_string()));
@@ -554,10 +549,10 @@ mod tests {
     fn test_utils() {
         let operation_id = utils::generate_operation_id();
         assert!(operation_id.starts_with("op_"));
-        
+
         let duration = std::time::Duration::from_millis(1500);
         assert_eq!(utils::format_duration(duration), "1.500s");
-        
+
         assert!(utils::is_valid_identifier("test_identifier"));
         assert!(utils::is_valid_identifier("test-identifier"));
         assert!(!utils::is_valid_identifier("123identifier"));
@@ -570,10 +565,10 @@ mod tests {
         assert_eq!(version.major, 1);
         assert_eq!(version.minor, 2);
         assert_eq!(version.patch, 3);
-        
+
         let version_with_pre = utils::parse_version("1.0.0-alpha").unwrap();
         assert_eq!(version_with_pre.pre, Some("alpha".to_string()));
-        
+
         let version_with_build = utils::parse_version("1.0.0+build.123").unwrap();
         assert_eq!(version_with_build.build, Some("build.123".to_string()));
     }

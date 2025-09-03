@@ -1,5 +1,5 @@
 //! Constants and configuration values for Nebula
-//! 
+//!
 //! This module defines system-wide constants that are used
 //! throughout the Nebula workflow engine.
 
@@ -178,7 +178,7 @@ pub mod magic {
 /// Performance thresholds
 pub mod performance {
     use super::*;
-    
+
     pub const MAX_WORKFLOW_STARTUP_TIME: Duration = Duration::from_millis(100);
     pub const MAX_NODE_EXECUTION_TIME: Duration = Duration::from_millis(10);
     pub const MAX_EXPRESSION_EVALUATION_TIME: Duration = Duration::from_millis(1);
@@ -189,7 +189,7 @@ pub mod performance {
 /// Security constants
 pub mod security {
     use super::*;
-    
+
     pub const MIN_PASSWORD_ENTROPY: f64 = 3.0;
     pub const MAX_SESSION_DURATION: Duration = Duration::from_secs(86400 * 30); // 30 days
     pub const MIN_SESSION_DURATION: Duration = Duration::from_secs(300); // 5 minutes

@@ -363,29 +363,7 @@ impl<V> Logged<V> {
 
 /// Additional extension trait for advanced combinators
 pub trait CombinatorExt: ValidatableExt {
-    /// Create XOR combination
-    fn xor<V>(self, other: V) -> Xor<Self, V>
-    where
-        V: Validatable,
-    {
-        Xor::new(self, other)
-    }
     
-    /// Create implication (if self then other)
-    fn implies<V>(self, other: V) -> Implies<Self, V>
-    where
-        V: Validatable,
-    {
-        Implies::new(self, other)
-    }
-    
-    /// Create if-and-only-if
-    fn iff<V>(self, other: V) -> Iff<Self, V>
-    where
-        V: Validatable,
-    {
-        Iff::new(self, other)
-    }
 }
 
 impl<T> CombinatorExt for T where T: ValidatableExt {}

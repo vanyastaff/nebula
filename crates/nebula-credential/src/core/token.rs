@@ -44,16 +44,12 @@ pub struct AccessToken {
 impl AccessToken {
     /// Calculate TTL for the token
     pub fn ttl(&self) -> Option<Duration> {
-        self.expires_at.and_then(|exp| {
-            exp.duration_since(SystemTime::now()).ok()
-        })
+        self.expires_at.and_then(|exp| exp.duration_since(SystemTime::now()).ok())
     }
 
     /// Check if token is expired
     pub fn is_expired(&self) -> bool {
-        self.expires_at
-            .map(|exp| exp <= SystemTime::now())
-            .unwrap_or(false)
+        self.expires_at.map(|exp| exp <= SystemTime::now()).unwrap_or(false)
     }
 }
 

@@ -109,7 +109,7 @@ impl ErrorContext {
 impl fmt::Display for ErrorContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.description)?;
-        
+
         if !self.metadata.is_empty() {
             write!(f, " [")?;
             let mut first = true;
@@ -122,27 +122,27 @@ impl fmt::Display for ErrorContext {
             }
             write!(f, "]")?;
         }
-        
+
         if let Some(ref component) = self.component {
             write!(f, " (Component: {})", component)?;
         }
-        
+
         if let Some(ref operation) = self.operation {
             write!(f, " (Operation: {})", operation)?;
         }
-        
+
         if let Some(ref user_id) = self.user_id {
             write!(f, " (User: {})", user_id)?;
         }
-        
+
         if let Some(ref tenant_id) = self.tenant_id {
             write!(f, " (Tenant: {})", tenant_id)?;
         }
-        
+
         if let Some(ref request_id) = self.request_id {
             write!(f, " (Request: {})", request_id)?;
         }
-        
+
         Ok(())
     }
 }
@@ -171,9 +171,7 @@ pub struct ErrorContextBuilder {
 impl ErrorContextBuilder {
     /// Create a new builder
     pub fn new(description: impl Into<String>) -> Self {
-        Self {
-            context: ErrorContext::new(description),
-        }
+        Self { context: ErrorContext::new(description) }
     }
 
     /// Add metadata

@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use thiserror::Error;
 
+#[cfg(feature = "decimal")]
+use super::Decimal;
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Error Types
 // ══════════════════════════════════════════════════════════════════════════════
@@ -35,9 +38,9 @@ pub enum NumberError {
 
     #[error("Value {value} is out of range [{min}, {max}]")]
     OutOfRange {
-        value: String,  // Using String to handle both i128 and f64
+        value: String, // Using String to handle both i128 and f64
         min: String,
-        max: String
+        max: String,
     },
 
     #[error("Failed to parse '{input}' as {ty}")]
@@ -832,10 +835,7 @@ impl Number {
                 if !v.is_finite() {
                     Err(NumberError::NotFinite)
                 } else if v.fract() != 0.0 {
-                    Err(NumberError::PrecisionLoss {
-                        from: "float",
-                        to: "i64",
-                    })
+                    Err(NumberError::PrecisionLoss { from: "float", to: "i64" })
                 } else if v < i64::MIN as f64 || v > i64::MAX as f64 {
                     Err(NumberError::OutOfRange {
                         value: v.to_string(),
@@ -845,7 +845,7 @@ impl Number {
                 } else {
                     Ok(v as i64)
                 }
-            }
+            },
             #[cfg(feature = "decimal")]
             Self::Decimal(d) => d.to_i64(),
         }
@@ -907,24 +907,24 @@ impl Number {
     /// Clamp to range
     pub fn clamp(&self, min: Self, max: Self) -> Self {
         match (self, min, max) {
-            (Self::Int(v), Self::Int(mn), Self::Int(mx)) => {
-                Self::Int(*v.clamp(&mn, &mx))
-            }
+            (Self::Int(v), Self::Int(mn), Self::Int(mx)) => Self::Int(*v.clamp(&mn, &mx)),
             _ => {
                 let v = self.to_f64();
                 let mn = min.to_f64();
                 let mx = max.to_f64();
                 Self::Float(Float::new(v.clamp(mn, mx)))
-            }
+            },
         }
     }
 
     /// Power function
     pub fn pow(&self, exp: Self) -> NumberResult<Self> {
         match (self, exp) {
-            (Self::Int(base), Self::Int(exp)) if exp.is_positive() && exp.get() <= u32::MAX as i64 => {
+            (Self::Int(base), Self::Int(exp))
+                if exp.is_positive() && exp.get() <= u32::MAX as i64 =>
+            {
                 base.checked_pow(exp.get() as u32).map(Self::Int)
-            }
+            },
             _ => {
                 let result = self.to_f64().powf(exp.to_f64());
                 if result.is_finite() {
@@ -932,7 +932,7 @@ impl Number {
                 } else {
                     Err(NumberError::NotFinite)
                 }
-            }
+            },
         }
     }
 
@@ -994,21 +994,53 @@ impl FromStr for Integer {
         s.trim()
             .parse::<i64>()
             .map(Self::new)
-            .map_err(|_| NumberError::ParseError {
-                input: s.to_string(),
-                ty: "Integer",
-            })
+            .map_err(|_| NumberError::ParseError { input: s.to_string(), ty: "Integer" })
     }
 }
 
 // Conversions
-impl From<i8> for Integer { #[inline] fn from(v: i8) -> Self { Self(v as i64) } }
-impl From<i16> for Integer { #[inline] fn from(v: i16) -> Self { Self(v as i64) } }
-impl From<i32> for Integer { #[inline] fn from(v: i32) -> Self { Self(v as i64) } }
-impl From<i64> for Integer { #[inline] fn from(v: i64) -> Self { Self(v) } }
-impl From<u8> for Integer { #[inline] fn from(v: u8) -> Self { Self(v as i64) } }
-impl From<u16> for Integer { #[inline] fn from(v: u16) -> Self { Self(v as i64) } }
-impl From<u32> for Integer { #[inline] fn from(v: u32) -> Self { Self(v as i64) } }
+impl From<i8> for Integer {
+    #[inline]
+    fn from(v: i8) -> Self {
+        Self(v as i64)
+    }
+}
+impl From<i16> for Integer {
+    #[inline]
+    fn from(v: i16) -> Self {
+        Self(v as i64)
+    }
+}
+impl From<i32> for Integer {
+    #[inline]
+    fn from(v: i32) -> Self {
+        Self(v as i64)
+    }
+}
+impl From<i64> for Integer {
+    #[inline]
+    fn from(v: i64) -> Self {
+        Self(v)
+    }
+}
+impl From<u8> for Integer {
+    #[inline]
+    fn from(v: u8) -> Self {
+        Self(v as i64)
+    }
+}
+impl From<u16> for Integer {
+    #[inline]
+    fn from(v: u16) -> Self {
+        Self(v as i64)
+    }
+}
+impl From<u32> for Integer {
+    #[inline]
+    fn from(v: u32) -> Self {
+        Self(v as i64)
+    }
+}
 
 impl TryFrom<u64> for Integer {
     type Error = NumberError;
@@ -1094,11 +1126,36 @@ impl Neg for Integer {
 }
 
 // Assignment operators
-impl AddAssign for Integer { #[inline] fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; } }
-impl SubAssign for Integer { #[inline] fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; } }
-impl MulAssign for Integer { #[inline] fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; } }
-impl DivAssign for Integer { #[inline] fn div_assign(&mut self, rhs: Self) { *self = *self / rhs; } }
-impl RemAssign for Integer { #[inline] fn rem_assign(&mut self, rhs: Self) { *self = *self % rhs; } }
+impl AddAssign for Integer {
+    #[inline]
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+impl SubAssign for Integer {
+    #[inline]
+    fn sub_assign(&mut self, rhs: Self) {
+        *self = *self - rhs;
+    }
+}
+impl MulAssign for Integer {
+    #[inline]
+    fn mul_assign(&mut self, rhs: Self) {
+        *self = *self * rhs;
+    }
+}
+impl DivAssign for Integer {
+    #[inline]
+    fn div_assign(&mut self, rhs: Self) {
+        *self = *self / rhs;
+    }
+}
+impl RemAssign for Integer {
+    #[inline]
+    fn rem_assign(&mut self, rhs: Self) {
+        *self = *self % rhs;
+    }
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Trait Implementations for Float
@@ -1129,24 +1186,71 @@ impl FromStr for Float {
         s.trim()
             .parse::<f64>()
             .map(Self::new)
-            .map_err(|_| NumberError::ParseError {
-                input: s.to_string(),
-                ty: "Float",
-            })
+            .map_err(|_| NumberError::ParseError { input: s.to_string(), ty: "Float" })
     }
 }
 
 // Conversions
-impl From<f32> for Float { #[inline] fn from(v: f32) -> Self { Self(v as f64) } }
-impl From<f64> for Float { #[inline] fn from(v: f64) -> Self { Self(v) } }
-impl From<i8> for Float { #[inline] fn from(v: i8) -> Self { Self(v as f64) } }
-impl From<i16> for Float { #[inline] fn from(v: i16) -> Self { Self(v as f64) } }
-impl From<i32> for Float { #[inline] fn from(v: i32) -> Self { Self(v as f64) } }
-impl From<i64> for Float { #[inline] fn from(v: i64) -> Self { Self(v as f64) } }
-impl From<u8> for Float { #[inline] fn from(v: u8) -> Self { Self(v as f64) } }
-impl From<u16> for Float { #[inline] fn from(v: u16) -> Self { Self(v as f64) } }
-impl From<u32> for Float { #[inline] fn from(v: u32) -> Self { Self(v as f64) } }
-impl From<u64> for Float { #[inline] fn from(v: u64) -> Self { Self(v as f64) } }
+impl From<f32> for Float {
+    #[inline]
+    fn from(v: f32) -> Self {
+        Self(v as f64)
+    }
+}
+impl From<f64> for Float {
+    #[inline]
+    fn from(v: f64) -> Self {
+        Self(v)
+    }
+}
+impl From<i8> for Float {
+    #[inline]
+    fn from(v: i8) -> Self {
+        Self(v as f64)
+    }
+}
+impl From<i16> for Float {
+    #[inline]
+    fn from(v: i16) -> Self {
+        Self(v as f64)
+    }
+}
+impl From<i32> for Float {
+    #[inline]
+    fn from(v: i32) -> Self {
+        Self(v as f64)
+    }
+}
+impl From<i64> for Float {
+    #[inline]
+    fn from(v: i64) -> Self {
+        Self(v as f64)
+    }
+}
+impl From<u8> for Float {
+    #[inline]
+    fn from(v: u8) -> Self {
+        Self(v as f64)
+    }
+}
+impl From<u16> for Float {
+    #[inline]
+    fn from(v: u16) -> Self {
+        Self(v as f64)
+    }
+}
+impl From<u32> for Float {
+    #[inline]
+    fn from(v: u32) -> Self {
+        Self(v as f64)
+    }
+}
+impl From<u64> for Float {
+    #[inline]
+    fn from(v: u64) -> Self {
+        Self(v as f64)
+    }
+}
 
 impl From<Integer> for Float {
     #[inline]
@@ -1219,11 +1323,36 @@ impl Neg for Float {
 }
 
 // Assignment operators
-impl AddAssign for Float { #[inline] fn add_assign(&mut self, rhs: Self) { self.0 += rhs.0; } }
-impl SubAssign for Float { #[inline] fn sub_assign(&mut self, rhs: Self) { self.0 -= rhs.0; } }
-impl MulAssign for Float { #[inline] fn mul_assign(&mut self, rhs: Self) { self.0 *= rhs.0; } }
-impl DivAssign for Float { #[inline] fn div_assign(&mut self, rhs: Self) { self.0 /= rhs.0; } }
-impl RemAssign for Float { #[inline] fn rem_assign(&mut self, rhs: Self) { self.0 %= rhs.0; } }
+impl AddAssign for Float {
+    #[inline]
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.0;
+    }
+}
+impl SubAssign for Float {
+    #[inline]
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 -= rhs.0;
+    }
+}
+impl MulAssign for Float {
+    #[inline]
+    fn mul_assign(&mut self, rhs: Self) {
+        self.0 *= rhs.0;
+    }
+}
+impl DivAssign for Float {
+    #[inline]
+    fn div_assign(&mut self, rhs: Self) {
+        self.0 /= rhs.0;
+    }
+}
+impl RemAssign for Float {
+    #[inline]
+    fn rem_assign(&mut self, rhs: Self) {
+        self.0 %= rhs.0;
+    }
+}
 
 // Comparison
 impl PartialEq for Float {
@@ -1279,28 +1408,80 @@ impl FromStr for Number {
         if let Ok(f) = trimmed.parse::<f64>() {
             Ok(Self::Float(Float::new(f)))
         } else {
-            Err(NumberError::ParseError {
-                input: s.to_string(),
-                ty: "Number",
-            })
+            Err(NumberError::ParseError { input: s.to_string(), ty: "Number" })
         }
     }
 }
 
 // Conversions
-impl From<i8> for Number { #[inline] fn from(v: i8) -> Self { Self::Int(Integer::from(v)) } }
-impl From<i16> for Number { #[inline] fn from(v: i16) -> Self { Self::Int(Integer::from(v)) } }
-impl From<i32> for Number { #[inline] fn from(v: i32) -> Self { Self::Int(Integer::from(v)) } }
-impl From<i64> for Number { #[inline] fn from(v: i64) -> Self { Self::Int(Integer::from(v)) } }
-impl From<u8> for Number { #[inline] fn from(v: u8) -> Self { Self::Int(Integer::from(v)) } }
-impl From<u16> for Number { #[inline] fn from(v: u16) -> Self { Self::Int(Integer::from(v)) } }
-impl From<u32> for Number { #[inline] fn from(v: u32) -> Self { Self::Int(Integer::from(v)) } }
+impl From<i8> for Number {
+    #[inline]
+    fn from(v: i8) -> Self {
+        Self::Int(Integer::from(v))
+    }
+}
+impl From<i16> for Number {
+    #[inline]
+    fn from(v: i16) -> Self {
+        Self::Int(Integer::from(v))
+    }
+}
+impl From<i32> for Number {
+    #[inline]
+    fn from(v: i32) -> Self {
+        Self::Int(Integer::from(v))
+    }
+}
+impl From<i64> for Number {
+    #[inline]
+    fn from(v: i64) -> Self {
+        Self::Int(Integer::from(v))
+    }
+}
+impl From<u8> for Number {
+    #[inline]
+    fn from(v: u8) -> Self {
+        Self::Int(Integer::from(v))
+    }
+}
+impl From<u16> for Number {
+    #[inline]
+    fn from(v: u16) -> Self {
+        Self::Int(Integer::from(v))
+    }
+}
+impl From<u32> for Number {
+    #[inline]
+    fn from(v: u32) -> Self {
+        Self::Int(Integer::from(v))
+    }
+}
 
-impl From<f32> for Number { #[inline] fn from(v: f32) -> Self { Self::Float(Float::from(v)) } }
-impl From<f64> for Number { #[inline] fn from(v: f64) -> Self { Self::Float(Float::from(v)) } }
+impl From<f32> for Number {
+    #[inline]
+    fn from(v: f32) -> Self {
+        Self::Float(Float::from(v))
+    }
+}
+impl From<f64> for Number {
+    #[inline]
+    fn from(v: f64) -> Self {
+        Self::Float(Float::from(v))
+    }
+}
 
-impl From<Integer> for Number { #[inline] fn from(v: Integer) -> Self { Self::Int(v) } }
-impl From<Float> for Number { #[inline] fn from(v: Float) -> Self { Self::Float(v) } }
+impl From<Integer> for Number {
+    #[inline]
+    fn from(v: Integer) -> Self {
+        Self::Int(v)
+    }
+}
+impl From<Float> for Number {
+    #[inline]
+    fn from(v: Float) -> Self {
+        Self::Float(v)
+    }
+}
 
 // Arithmetic operators
 impl Add for Number {
@@ -1370,11 +1551,36 @@ impl Neg for Number {
 }
 
 // Assignment operators
-impl AddAssign for Number { #[inline] fn add_assign(&mut self, rhs: Self) { *self = *self + rhs; } }
-impl SubAssign for Number { #[inline] fn sub_assign(&mut self, rhs: Self) { *self = *self - rhs; } }
-impl MulAssign for Number { #[inline] fn mul_assign(&mut self, rhs: Self) { *self = *self * rhs; } }
-impl DivAssign for Number { #[inline] fn div_assign(&mut self, rhs: Self) { *self = *self / rhs; } }
-impl RemAssign for Number { #[inline] fn rem_assign(&mut self, rhs: Self) { *self = *self % rhs; } }
+impl AddAssign for Number {
+    #[inline]
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+impl SubAssign for Number {
+    #[inline]
+    fn sub_assign(&mut self, rhs: Self) {
+        *self = *self - rhs;
+    }
+}
+impl MulAssign for Number {
+    #[inline]
+    fn mul_assign(&mut self, rhs: Self) {
+        *self = *self * rhs;
+    }
+}
+impl DivAssign for Number {
+    #[inline]
+    fn div_assign(&mut self, rhs: Self) {
+        *self = *self / rhs;
+    }
+}
+impl RemAssign for Number {
+    #[inline]
+    fn rem_assign(&mut self, rhs: Self) {
+        *self = *self % rhs;
+    }
+}
 
 // Comparison
 impl PartialEq for Number {
@@ -1386,7 +1592,7 @@ impl PartialEq for Number {
                 let a = self.to_f64();
                 let b = other.to_f64();
                 (a - b).abs() < f64::EPSILON * 10.0
-            }
+            },
         }
     }
 }
@@ -1407,16 +1613,16 @@ impl Hash for Number {
             Self::Int(i) => {
                 0u8.hash(state); // discriminant
                 i.hash(state);
-            }
+            },
             Self::Float(f) => {
                 1u8.hash(state); // discriminant
                 f.get().to_bits().hash(state);
-            }
+            },
             #[cfg(feature = "decimal")]
             Self::Decimal(d) => {
                 2u8.hash(state); // discriminant
                 d.hash(state);
-            }
+            },
         }
     }
 }
@@ -1437,12 +1643,9 @@ impl TryFrom<serde_json::Value> for Number {
                 } else if let Some(f) = n.as_f64() {
                     Ok(Self::Float(Float::new(f)))
                 } else {
-                    Err(NumberError::ParseError {
-                        input: n.to_string(),
-                        ty: "Number",
-                    })
+                    Err(NumberError::ParseError { input: n.to_string(), ty: "Number" })
                 }
-            }
+            },
             serde_json::Value::String(s) => s.parse(),
             serde_json::Value::Bool(b) => Ok(Self::Int(Integer::new(if b { 1 } else { 0 }))),
             serde_json::Value::Null => Ok(Self::Int(Integer::ZERO)),
@@ -1462,11 +1665,9 @@ impl From<Number> for serde_json::Value {
     fn from(num: Number) -> Self {
         match num {
             Number::Int(i) => serde_json::Value::Number(i.get().into()),
-            Number::Float(f) => {
-                serde_json::Number::from_f64(f.get())
-                    .map(serde_json::Value::Number)
-                    .unwrap_or(serde_json::Value::Null)
-            }
+            Number::Float(f) => serde_json::Number::from_f64(f.get())
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
             #[cfg(feature = "decimal")]
             Number::Decimal(d) => serde_json::Value::String(d.to_string()),
         }

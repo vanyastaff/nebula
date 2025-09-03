@@ -81,6 +81,10 @@ pub enum CredentialError {
     /// Custom error from credential implementation
     #[error("Credential error: {message}")]
     Custom { message: String },
+
+    /// Compare-and-swap conflict
+    #[error("Compare-and-swap conflict during credential update")]
+    CasConflict,
 }
 
 impl CredentialError {
@@ -96,50 +100,27 @@ impl CredentialError {
 
     /// Create a new "refresh not supported" error
     pub fn refresh_not_supported(credential_type: impl Into<String>) -> Self {
-        Self::RefreshNotSupported {
-            credential_type: credential_type.into(),
-        }
+        Self::RefreshNotSupported { credential_type: credential_type.into() }
     }
 
     /// Create a new "authentication failed" error
     pub fn auth_failed(reason: impl Into<String>) -> Self {
-        Self::AuthenticationFailed {
-            reason: reason.into(),
-        }
+        Self::AuthenticationFailed { reason: reason.into() }
     }
 
     /// Create a new "storage failed" error
     pub fn storage_failed(operation: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::StorageFailed {
-            operation: operation.into(),
-            reason: reason.into(),
-        }
+        Self::StorageFailed { operation: operation.into(), reason: reason.into() }
     }
 
     /// Create a new "invalid input" error
     pub fn invalid_input(field: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::InvalidInput {
-            field: field.into(),
-            reason: reason.into(),
-        }
+        Self::InvalidInput { field: field.into(), reason: reason.into() }
     }
 
     /// Create a new "internal" error
     pub fn internal(message: impl Into<String>) -> Self {
         Self::Internal(message.into())
-    }
-
-    /// Check if this error is retryable
-    pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            Self::NetworkFailed(_)
-                | Self::Timeout { .. }
-                | Self::StorageFailed { .. }
-                | Self::CacheFailed { .. }
-                | Self::LockFailed { .. }
-                | Self::Internal(_)
-        )
     }
 
     /// Check if this error indicates the credential needs refresh
@@ -155,8 +136,8 @@ impl CredentialError {
             Self::InvalidKey(_) => "invalid_key",
             Self::RefreshNotSupported { .. } => "refresh_not_supported",
             Self::RefreshFailed { .. } => "refresh_failed",
-            Self::AuthenticationFailed { .. } => "auth_failed",
-            Self::InvalidConfiguration { .. } => "invalid_config",
+            Self::AuthenticationFailed { .. } => "authentication_failed",
+            Self::InvalidConfiguration { .. } => "invalid_configuration",
             Self::StorageFailed { .. } => "storage_failed",
             Self::CacheFailed { .. } => "cache_failed",
             Self::LockFailed { .. } => "lock_failed",
@@ -170,7 +151,20 @@ impl CredentialError {
             Self::PermissionDenied { .. } => "permission_denied",
             Self::Internal(_) => "internal",
             Self::Custom { .. } => "custom",
+            Self::CasConflict => "cas_conflict",
         }
+    }
+
+    /// Check if this error is retryable
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::NetworkFailed(_)
+                | Self::Timeout { .. }
+                | Self::StorageFailed { .. }
+                | Self::CacheFailed { .. }
+                | Self::LockFailed { .. }
+        )
     }
 }
 

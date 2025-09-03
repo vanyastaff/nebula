@@ -62,7 +62,7 @@ impl PrefetchManager {
     unsafe fn prefetch_read_raw<T>(&self, ptr: *const T) {
         #[cfg(target_arch = "x86_64")]
         {
-            use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+            use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
             unsafe { _mm_prefetch::<_MM_HINT_T0>(ptr as *const i8) }
         }
 
@@ -86,7 +86,7 @@ impl PrefetchManager {
     unsafe fn prefetch_write_raw<T>(&self, ptr: *mut T) {
         #[cfg(target_arch = "x86_64")]
         {
-            use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+            use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
             unsafe { _mm_prefetch::<_MM_HINT_T0>(ptr as *const i8) }
         }
 
@@ -180,9 +180,7 @@ impl MemoryOps {
             return Ok(());
         }
 
-        unsafe {
-            self.fast_copy_raw(src.as_ptr(), dst.as_mut_ptr(), src.len())
-        }
+        unsafe { self.fast_copy_raw(src.as_ptr(), dst.as_mut_ptr(), src.len()) }
 
         Ok(())
     }
@@ -196,9 +194,7 @@ impl MemoryOps {
             return Ok(());
         }
 
-        unsafe {
-            self.fast_move_raw(src.as_ptr(), dst.as_mut_ptr(), src.len())
-        }
+        unsafe { self.fast_move_raw(src.as_ptr(), dst.as_mut_ptr(), src.len()) }
 
         Ok(())
     }
@@ -393,10 +389,7 @@ pub struct Backoff {
 impl Backoff {
     #[inline]
     pub const fn new() -> Self {
-        Self {
-            step: 0,
-            max_spin: 6,
-        }
+        Self { step: 0, max_spin: 6 }
     }
 
     #[inline]
@@ -691,7 +684,9 @@ pub const fn cache_line_size() -> usize {
 fn detect_cache_line_size() -> usize {
     #[cfg(all(target_os = "linux"))]
     {
-        if let Ok(size) = std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cache/index0/coherency_line_size") {
+        if let Ok(size) =
+            std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cache/index0/coherency_line_size")
+        {
             if let Ok(size) = size.trim().parse::<usize>() {
                 return size;
             }
@@ -709,7 +704,7 @@ fn detect_cache_line_size() -> usize {
                 &mut size as *mut _ as *mut _,
                 &mut len,
                 ptr::null_mut(),
-                0
+                0,
             );
             if res == 0 && size > 0 {
                 return size;
@@ -722,9 +717,7 @@ fn detect_cache_line_size() -> usize {
 
 #[cfg(feature = "std")]
 fn num_cpus() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
 }
 
 #[cfg(all(feature = "std", target_os = "linux"))]
@@ -779,12 +772,7 @@ fn detect_numa_nodes() -> usize {
     if let Ok(entries) = std::fs::read_dir("/sys/devices/system/node/") {
         let count = entries
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_str()
-                    .map(|s| s.starts_with("node"))
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.file_name().to_str().map(|s| s.starts_with("node")).unwrap_or(false))
             .count();
 
         if count > 0 {
@@ -914,32 +902,17 @@ pub mod perf {
     impl Timer {
         #[inline]
         pub fn new(name: &'static str) -> Self {
-            Self {
-                start: Instant::now(),
-                name,
-                auto_print: true,
-                operations: None,
-            }
+            Self { start: Instant::now(), name, auto_print: true, operations: None }
         }
 
         #[inline]
         pub fn silent(name: &'static str) -> Self {
-            Self {
-                start: Instant::now(),
-                name,
-                auto_print: false,
-                operations: None,
-            }
+            Self { start: Instant::now(), name, auto_print: false, operations: None }
         }
 
         #[inline]
         pub fn with_operations(name: &'static str, operations: u64) -> Self {
-            Self {
-                start: Instant::now(),
-                name,
-                auto_print: true,
-                operations: Some(operations),
-            }
+            Self { start: Instant::now(), name, auto_print: true, operations: Some(operations) }
         }
 
         #[inline]
@@ -960,10 +933,10 @@ pub mod perf {
                         ops,
                         format_throughput(throughput)
                     );
-                }
+                },
                 None => {
                     println!("{}: {}", self.name, super::format_duration(elapsed));
-                }
+                },
             }
         }
     }

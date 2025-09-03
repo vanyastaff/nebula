@@ -1,5 +1,5 @@
-use crate::core::{AccessToken, CredentialError, TokenType};
 use super::ClientAuthenticator;
+use crate::core::{AccessToken, CredentialError, TokenType};
 use async_trait::async_trait;
 
 /// HTTP Bearer token authenticator
@@ -16,7 +16,9 @@ impl ClientAuthenticator for HttpBearer {
         token: &AccessToken,
     ) -> Result<Self::Output, CredentialError> {
         if !matches!(token.token_type, TokenType::Bearer) {
-            return Err(CredentialError::invalid_config("HttpBearer requires a Bearer token"));
+            return Err(CredentialError::InvalidConfiguration {
+                reason: "HttpBearer requires a Bearer token".to_string(),
+            });
         }
 
         let auth_value = token.token.with_exposed(|s| format!("Bearer {}", s));
@@ -34,9 +36,7 @@ pub struct ApiKeyHeader {
 impl ApiKeyHeader {
     /// Create new API key authenticator
     pub fn new(header_name: impl Into<String>) -> Self {
-        Self {
-            header_name: header_name.into(),
-        }
+        Self { header_name: header_name.into() }
     }
 }
 
@@ -51,7 +51,9 @@ impl ClientAuthenticator for ApiKeyHeader {
         token: &AccessToken,
     ) -> Result<Self::Output, CredentialError> {
         if !matches!(token.token_type, TokenType::ApiKey) {
-            return Err(CredentialError::invalid_config("ApiKeyHeader requires an API key"));
+            return Err(CredentialError::InvalidConfiguration {
+                reason: "ApiKeyHeader requires an API key".to_string(),
+            });
         }
 
         let key_value = token.token.with_exposed(|s| s.to_string());

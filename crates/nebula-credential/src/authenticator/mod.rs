@@ -1,7 +1,7 @@
-mod traits;
 mod chain;
 mod common;
+mod traits;
 
-pub use traits::ClientAuthenticator;
 pub use chain::ChainAuthenticator;
-pub use common::{HttpBearer, ApiKeyHeader};
+pub use common::{ApiKeyHeader, HttpBearer};
+pub use traits::ClientAuthenticator;

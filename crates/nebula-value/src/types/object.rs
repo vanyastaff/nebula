@@ -121,10 +121,7 @@ impl Object {
         K: Into<String>,
         V: Into<Value>,
     {
-        let map: InternalMap = iter
-            .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect();
+        let map: InternalMap = iter.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
         Self::from_map(map)
     }
 
@@ -187,10 +184,7 @@ impl Object {
 
     /// Returns all key-value pairs
     pub fn entries(&self) -> Vec<(String, Value)> {
-        self.inner
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
+        self.inner.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
     /// Returns an iterator over keys
@@ -222,9 +216,7 @@ impl Object {
     /// Gets a value by key with error handling
     #[inline]
     pub fn try_get(&self, key: &str) -> ObjectResult<&Value> {
-        self.get(key).ok_or_else(|| ObjectError::KeyNotFound {
-            key: key.to_string(),
-        })
+        self.get(key).ok_or_else(|| ObjectError::KeyNotFound { key: key.to_string() })
     }
 
     /// Gets a value by key, or returns a default
@@ -237,9 +229,7 @@ impl Object {
     pub fn get_path(&self, path: &str) -> ObjectResult<&Value> {
         let parts: Vec<&str> = path.split('.').collect();
         if parts.is_empty() {
-            return Err(ObjectError::PathNotFound {
-                path: path.to_string(),
-            });
+            return Err(ObjectError::PathNotFound { path: path.to_string() });
         }
 
         let mut current = self.try_get(parts[0])?;
@@ -299,9 +289,7 @@ impl Object {
     #[must_use]
     pub fn remove(&self, key: &str) -> ObjectResult<(Self, Value)> {
         if !self.has_key(key) {
-            return Err(ObjectError::KeyNotFound {
-                key: key.to_string(),
-            });
+            return Err(ObjectError::KeyNotFound { key: key.to_string() });
         }
 
         let mut map = (*self.inner).clone();
@@ -392,11 +380,7 @@ impl Object {
     where
         F: FnMut(&String, &Value) -> Option<(String, Value)>,
     {
-        let map: InternalMap = self
-            .inner
-            .iter()
-            .filter_map(|(k, v)| f(k, v))
-            .collect();
+        let map: InternalMap = self.inner.iter().filter_map(|(k, v)| f(k, v)).collect();
         Self::from_map(map)
     }
 
@@ -460,10 +444,10 @@ impl Object {
                     // } else {
                     map.insert(key.clone(), other_value.clone());
                     // }
-                }
+                },
                 None => {
                     map.insert(key.clone(), other_value.clone());
-                }
+                },
             }
         }
 
@@ -473,7 +457,7 @@ impl Object {
     /// Merges multiple objects
     pub fn merge_all<I>(objects: I) -> Self
     where
-        I: IntoIterator<Item =Object>,
+        I: IntoIterator<Item = Object>,
     {
         let mut result = Self::new();
         for obj in objects {
@@ -512,18 +496,12 @@ impl Object {
 
     /// Returns keys that exist in both objects
     pub fn intersection_keys(&self, other: &Object) -> Vec<String> {
-        self.keys_iter()
-            .filter(|k| other.has_key(k))
-            .cloned()
-            .collect()
+        self.keys_iter().filter(|k| other.has_key(k)).cloned().collect()
     }
 
     /// Returns keys that exist in self but not in other
     pub fn difference_keys(&self, other: &Object) -> Vec<String> {
-        self.keys_iter()
-            .filter(|k| !other.has_key(k))
-            .cloned()
-            .collect()
+        self.keys_iter().filter(|k| !other.has_key(k)).cloned().collect()
     }
 
     /// Returns keys that exist in either object but not both
@@ -587,10 +565,7 @@ impl Object {
 
         for (k, v) in self.inner.iter() {
             let group_key = key_fn(k, v)?;
-            groups
-                .entry(group_key)
-                .or_insert_with(Vec::new)
-                .push((k.clone(), v.clone()));
+            groups.entry(group_key).or_insert_with(Vec::new).push((k.clone(), v.clone()));
         }
 
         Ok(groups)
@@ -605,11 +580,8 @@ impl Object {
 
     fn flatten_recursive(&self, result: &mut InternalMap, prefix: String) {
         for (key, value) in self.inner.iter() {
-            let new_key = if prefix.is_empty() {
-                key.clone()
-            } else {
-                format!("{}.{}", prefix, key)
-            };
+            let new_key =
+                if prefix.is_empty() { key.clone() } else { format!("{}.{}", prefix, key) };
 
             // If value is an object, recurse
             // if let Some(obj) = value.as_object() {
@@ -645,9 +617,7 @@ impl Object {
         // Check required keys
         for key in required {
             if !self.has_key(key) {
-                return Err(ObjectError::KeyNotFound {
-                    key: key.to_string(),
-                });
+                return Err(ObjectError::KeyNotFound { key: key.to_string() });
             }
         }
 
@@ -674,9 +644,7 @@ impl Object {
 
     /// Checks if this object is a subset of another
     pub fn is_subset_of(&self, other: &Object) -> bool {
-        self.inner.iter().all(|(k, v)| {
-            other.get(k).map_or(false, |other_v| v == other_v)
-        })
+        self.inner.iter().all(|(k, v)| other.get(k).map_or(false, |other_v| v == other_v))
     }
 
     /// Checks if this object is a superset of another
@@ -693,12 +661,12 @@ impl Object {
             match other.get(key) {
                 Some(other_value) if value != other_value => {
                     diff.insert(key.clone(), other_value.clone());
-                }
+                },
                 None => {
                     // Key was removed
                     diff.insert(key.clone(), Value::from("null")); // Or use a special marker
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
 
@@ -727,7 +695,8 @@ impl Object {
 
         let results: Result<Vec<_>, _> = self
             .inner
-            .par_iter()
+            .iter()
+            .par_bridge()
             .map(|(k, v)| f(k, v).map(|new_v| (k.clone(), new_v)))
             .collect();
 
@@ -745,14 +714,15 @@ impl Object {
             return self.filter(predicate);
         }
 
-        let map: InternalMap = self
+        let pairs: Vec<(String, Value)> = self
             .inner
-            .par_iter()
+            .iter()
+            .par_bridge()
             .filter(|(k, v)| predicate(k, v))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        Self::from_map(map)
+        Self::from_map(pairs.into_iter().collect())
     }
 
     // ==================== Utility Operations ====================
@@ -760,11 +730,8 @@ impl Object {
     /// Creates a formatted string representation
     pub fn to_json_string(&self) -> String {
         // Simple JSON-like formatting
-        let entries: Vec<String> = self
-            .inner
-            .iter()
-            .map(|(k, v)| format!("  \"{}\": {}", k, v))
-            .collect();
+        let entries: Vec<String> =
+            self.inner.iter().map(|(k, v)| format!("  \"{}\": {}", k, v)).collect();
 
         if entries.is_empty() {
             "{}".to_string()
@@ -908,11 +875,7 @@ impl<const N: usize> From<[(String, Value); N]> for Object {
 
 impl<'a, const N: usize> From<[(&'a str, Value); N]> for Object {
     fn from(arr: [(&'a str, Value); N]) -> Self {
-        Self::from_map(
-            arr.into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect()
-        )
+        Self::from_map(arr.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
     }
 }
 
@@ -980,7 +943,7 @@ impl Ord for Object {
                 }
 
                 Ordering::Equal
-            }
+            },
             ord => ord,
         }
     }
@@ -1022,31 +985,19 @@ impl FromIterator<(String, Value)> for Object {
 
 impl<'a> FromIterator<(&'a str, Value)> for Object {
     fn from_iter<T: IntoIterator<Item = (&'a str, Value)>>(iter: T) -> Self {
-        Self::from_map(
-            iter.into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect()
-        )
+        Self::from_map(iter.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
     }
 }
 
 impl<'a> FromIterator<(String, &'a Value)> for Object {
     fn from_iter<T: IntoIterator<Item = (String, &'a Value)>>(iter: T) -> Self {
-        Self::from_map(
-            iter.into_iter()
-                .map(|(k, v)| (k, v.clone()))
-                .collect()
-        )
+        Self::from_map(iter.into_iter().map(|(k, v)| (k, v.clone())).collect())
     }
 }
 
 impl<'a> FromIterator<(&'a str, &'a Value)> for Object {
     fn from_iter<T: IntoIterator<Item = (&'a str, &'a Value)>>(iter: T) -> Self {
-        Self::from_map(
-            iter.into_iter()
-                .map(|(k, v)| (k.to_string(), v.clone()))
-                .collect()
-        )
+        Self::from_map(iter.into_iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
     }
 }
 
@@ -1059,10 +1010,7 @@ impl Extend<(String, Value)> for Object {
 
 impl<'a> Extend<(&'a str, Value)> for Object {
     fn extend<T: IntoIterator<Item = (&'a str, Value)>>(&mut self, iter: T) {
-        let additional: InternalMap = iter
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect();
+        let additional: InternalMap = iter.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
         *self = self.merge(&Self::from_map(additional));
     }
 }
@@ -1076,19 +1024,21 @@ impl IntoIterator for Object {
     }
 }
 
+#[cfg(not(feature = "indexmap"))]
 impl<'a> IntoIterator for &'a Object {
     type Item = (&'a String, &'a Value);
     type IntoIter = std::collections::btree_map::Iter<'a, String, Value>;
 
-    #[cfg(not(feature = "indexmap"))]
     fn into_iter(self) -> Self::IntoIter {
         self.inner.iter()
     }
+}
 
-    #[cfg(feature = "indexmap")]
+#[cfg(feature = "indexmap")]
+impl<'a> IntoIterator for &'a Object {
+    type Item = (&'a String, &'a Value);
     type IntoIter = indexmap::map::Iter<'a, String, Value>;
 
-    #[cfg(feature = "indexmap")]
     fn into_iter(self) -> Self::IntoIter {
         self.inner.iter()
     }
@@ -1120,13 +1070,11 @@ impl TryFrom<serde_json::Value> for Object {
                     .map(|(k, v)| {
                         Value::try_from(v)
                             .map(|val| (k, val))
-                            .map_err(|_| ObjectError::JsonTypeMismatch {
-                                found: "invalid value",
-                            })
+                            .map_err(|_| ObjectError::JsonTypeMismatch { found: "invalid value" })
                     })
                     .collect();
                 Ok(Object::from_map(entries?))
-            }
+            },
             serde_json::Value::Null => Ok(Object::new()),
             serde_json::Value::Bool(_) => Err(ObjectError::JsonTypeMismatch { found: "bool" }),
             serde_json::Value::Number(_) => Err(ObjectError::JsonTypeMismatch { found: "number" }),
@@ -1151,9 +1099,7 @@ pub struct ObjectBuilder {
 impl ObjectBuilder {
     /// Creates a new builder
     pub fn new() -> Self {
-        Self {
-            map: InternalMap::new(),
-        }
+        Self { map: InternalMap::new() }
     }
 
     /// Adds a key-value pair
@@ -1220,18 +1166,15 @@ mod tests {
         let obj1 = Object::new();
         assert!(obj1.is_empty());
 
-        let obj2 = Object::from_pairs(vec![
-            ("key1", Value::from("value1")),
-            ("key2", Value::from(42)),
-        ]);
+        let obj2 =
+            Object::from_pairs(vec![("key1", Value::from("value1")), ("key2", Value::from(42))]);
         assert_eq!(obj2.len(), 2);
     }
 
     #[test]
     fn test_immutable_operations() {
-        let obj = Object::new()
-            .insert("key1", Value::from("value1"))
-            .insert("key2", Value::from(42));
+        let obj =
+            Object::new().insert("key1", Value::from("value1")).insert("key2", Value::from(42));
 
         assert_eq!(obj.len(), 2);
         assert!(obj.has_key("key1"));
@@ -1249,28 +1192,18 @@ mod tests {
             ("c", Value::from(3)),
         ]);
 
-        let filtered = obj.filter(|_k, v| {
-            v.as_i64().map_or(false, |n| n > 1)
-        });
+        let filtered = obj.filter(|_k, v| v.as_i64().map_or(false, |n| n > 1));
         assert_eq!(filtered.len(), 2);
 
-        let mapped = obj.map_values(|_k, v| {
-            Ok(Value::from(v.as_i64().unwrap_or(0) * 2))
-        }).unwrap();
+        let mapped = obj.map_values(|_k, v| Ok(Value::from(v.as_i64().unwrap_or(0) * 2))).unwrap();
         assert_eq!(mapped.get("a"), Some(&Value::from(2)));
     }
 
     #[test]
     fn test_merge() {
-        let obj1 = Object::from_pairs(vec![
-            ("a", Value::from(1)),
-            ("b", Value::from(2)),
-        ]);
+        let obj1 = Object::from_pairs(vec![("a", Value::from(1)), ("b", Value::from(2))]);
 
-        let obj2 = Object::from_pairs(vec![
-            ("b", Value::from(20)),
-            ("c", Value::from(3)),
-        ]);
+        let obj2 = Object::from_pairs(vec![("b", Value::from(20)), ("c", Value::from(3))]);
 
         let merged = obj1.merge(&obj2);
         assert_eq!(merged.len(), 3);
@@ -1336,15 +1269,12 @@ mod tests {
         }
         let large_obj = Object::from_pairs(entries);
 
-        let par_mapped = large_obj.par_map_values(|_k, v| {
-            Ok(Value::from(v.as_i64().unwrap_or(0) * 2))
-        }).unwrap();
+        let par_mapped =
+            large_obj.par_map_values(|_k, v| Ok(Value::from(v.as_i64().unwrap_or(0) * 2))).unwrap();
 
         assert_eq!(par_mapped.len(), 1000);
 
-        let par_filtered = large_obj.par_filter(|_k, v| {
-            v.as_i64().map_or(false, |n| n % 2 == 0)
-        });
+        let par_filtered = large_obj.par_filter(|_k, v| v.as_i64().map_or(false, |n| n % 2 == 0));
 
         assert_eq!(par_filtered.len(), 500);
     }

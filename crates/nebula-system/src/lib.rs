@@ -68,16 +68,12 @@ pub mod network;
 #[cfg_attr(docsrs, doc(cfg(feature = "disk")))]
 pub mod disk;
 
-#[cfg(feature = "metrics")]
-#[cfg_attr(docsrs, doc(cfg(feature = "metrics")))]
-pub mod metrics;
-
 // Re-exports
-pub use error::{SystemError, Result};
+pub use error::{Result, SystemError};
 pub use info::SystemInfo;
 
 #[cfg(feature = "memory")]
-pub use memory::{MemoryPressure, MemoryInfo};
+pub use memory::{MemoryInfo, MemoryPressure};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

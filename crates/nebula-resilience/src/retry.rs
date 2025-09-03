@@ -1,18 +1,17 @@
 //! Retry strategies for resilient operations
 
-use std::time::Duration;
-use std::convert::TryInto;
 use futures::Future;
+use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
-use crate::error::{ResilienceError, ResilienceResult};
+use crate::error::ResilienceError;
 
 /// Trait for determining if an error is retryable
 pub trait Retryable {
     /// Check if the error should trigger a retry
     fn is_retryable(&self) -> bool;
-    
+
     /// Check if the error is terminal (should not be retried)
     fn is_terminal(&self) -> bool;
 }
@@ -21,7 +20,7 @@ impl<T> Retryable for Result<T, ResilienceError> {
     fn is_retryable(&self) -> bool {
         self.as_ref().err().map_or(false, |e| e.is_retryable())
     }
-    
+
     fn is_terminal(&self) -> bool {
         self.as_ref().err().map_or(false, |e| e.is_terminal())
     }
@@ -31,7 +30,7 @@ impl Retryable for ResilienceError {
     fn is_retryable(&self) -> bool {
         self.is_retryable()
     }
-    
+
     fn is_terminal(&self) -> bool {
         self.is_terminal()
     }
@@ -106,11 +105,11 @@ impl RetryStrategy {
             self.base_delay
         };
 
-        // Apply jitter
+        // Apply jitter (deterministic based on attempt to avoid external deps)
         if self.jitter_factor > 0.0 {
             let jitter_range = (delay.as_millis() as f64 * self.jitter_factor) as u64;
-            let jitter = fastrand::u64(0..=jitter_range);
-            delay = Duration::from_millis((delay.as_millis() + jitter as u128).try_into().unwrap_or(u64::MAX));
+            let jitter = (attempt as u64) % (jitter_range + 1);
+            delay = Duration::from_millis(delay.as_millis() as u64 + jitter);
         }
 
         // Cap at maximum delay
@@ -119,14 +118,14 @@ impl RetryStrategy {
 }
 
 /// Execute an operation with retry logic
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `strategy` - Retry strategy configuration
 /// * `operation` - The async operation to retry
-/// 
+///
 /// # Returns
-/// 
+///
 /// * `Ok(T)` - Operation completed successfully
 /// * `Err(ResilienceError::RetryLimitExceeded)` - All retry attempts failed
 /// * `Err(E)` - Terminal error from the operation
@@ -137,33 +136,17 @@ pub async fn retry<T, E, F, Fut>(
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>>,
-    E: Retryable + std::fmt::Debug,
+    E: std::fmt::Debug,
 {
-    let mut last_error = None;
-    
     for attempt in 0..=strategy.max_attempts {
-        let result = operation().await;
-        
-        match result {
+        match operation().await {
             Ok(value) => {
                 if attempt > 0 {
                     debug!("Operation succeeded after {} retry attempts", attempt);
                 }
                 return Ok(value);
-            }
+            },
             Err(error) => {
-                if error.is_terminal() {
-                    debug!("Terminal error encountered, not retrying: {:?}", error);
-                    return Err(ResilienceError::timeout(Duration::ZERO)); // Placeholder error
-                }
-                
-                if !error.is_retryable() {
-                    debug!("Non-retryable error encountered: {:?}", error);
-                    return Err(ResilienceError::timeout(Duration::ZERO)); // Placeholder error
-                }
-                
-                last_error = Some(error);
-                
                 if attempt < strategy.max_attempts {
                     let delay = strategy.calculate_delay(attempt + 1);
                     warn!(
@@ -171,26 +154,23 @@ where
                         attempt + 1,
                         strategy.max_attempts,
                         delay,
-                        last_error.as_ref().unwrap()
+                        error
                     );
-                    
                     sleep(delay).await;
                 }
-            }
+            },
         }
     }
-    
+
     Err(ResilienceError::retry_limit_exceeded(strategy.max_attempts))
 }
 
 /// Execute an operation with default retry strategy
-pub async fn retry_default<T, E, F, Fut>(
-    operation: F,
-) -> Result<T, ResilienceError>
+pub async fn retry_default<T, E, F, Fut>(operation: F) -> Result<T, ResilienceError>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>>,
-    E: Retryable + std::fmt::Debug,
+    E: std::fmt::Debug,
 {
     retry(RetryStrategy::default(), operation).await
 }
@@ -203,14 +183,12 @@ mod tests {
     #[tokio::test]
     async fn test_retry_success_on_first_attempt() {
         let counter = AtomicUsize::new(0);
-        let result = retry(
-            RetryStrategy::new(3, Duration::from_millis(10)),
-            || async {
-                counter.fetch_add(1, Ordering::SeqCst);
-                Ok::<&str, &str>("success")
-            }
-        ).await;
-        
+        let result = retry(RetryStrategy::new(3, Duration::from_millis(10)), || async {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok::<&str, &str>("success")
+        })
+        .await;
+
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "success");
         assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -219,18 +197,16 @@ mod tests {
     #[tokio::test]
     async fn test_retry_success_after_failures() {
         let counter = AtomicUsize::new(0);
-        let result = retry(
-            RetryStrategy::new(3, Duration::from_millis(10)),
-            || async {
-                let attempt = counter.fetch_add(1, Ordering::SeqCst);
-                if attempt < 2 {
-                    Err::<&str, &str>("temporary failure")
-                } else {
-                    Ok("success")
-                }
+        let result = retry(RetryStrategy::new(3, Duration::from_millis(10)), || async {
+            let attempt = counter.fetch_add(1, Ordering::SeqCst);
+            if attempt < 2 {
+                Err::<&str, &str>("temporary failure")
+            } else {
+                Ok("success")
             }
-        ).await;
-        
+        })
+        .await;
+
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "success");
         assert_eq!(counter.load(Ordering::SeqCst), 3);
@@ -239,19 +215,17 @@ mod tests {
     #[tokio::test]
     async fn test_retry_limit_exceeded() {
         let counter = AtomicUsize::new(0);
-        let result = retry(
-            RetryStrategy::new(2, Duration::from_millis(10)),
-            || async {
-                counter.fetch_add(1, Ordering::SeqCst);
-                Err::<&str, &str>("persistent failure")
-            }
-        ).await;
-        
+        let result = retry(RetryStrategy::new(2, Duration::from_millis(10)), || async {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Err::<&str, &str>("persistent failure")
+        })
+        .await;
+
         assert!(result.is_err());
         match result.unwrap_err() {
             ResilienceError::RetryLimitExceeded { attempts } => {
                 assert_eq!(attempts, 2);
-            }
+            },
             _ => panic!("Expected retry limit exceeded error"),
         }
         assert_eq!(counter.load(Ordering::SeqCst), 3); // Initial + 2 retries
@@ -273,7 +247,7 @@ mod tests {
             .with_max_delay(Duration::from_secs(30))
             .with_jitter(0.5)
             .without_exponential();
-        
+
         assert_eq!(strategy.max_attempts, 5);
         assert_eq!(strategy.base_delay, Duration::from_secs(2));
         assert_eq!(strategy.max_delay, Duration::from_secs(30));
@@ -284,13 +258,13 @@ mod tests {
     #[test]
     fn test_calculate_delay() {
         let strategy = RetryStrategy::new(3, Duration::from_secs(1));
-        
+
         // First attempt (no delay)
         assert_eq!(strategy.calculate_delay(0), Duration::ZERO);
-        
+
         // Second attempt (1s base)
         assert_eq!(strategy.calculate_delay(1), Duration::from_secs(1));
-        
+
         // Third attempt (2s exponential)
         assert_eq!(strategy.calculate_delay(2), Duration::from_secs(2));
     }

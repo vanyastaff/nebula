@@ -1,6 +1,8 @@
-use crate::core::{AccessToken, CredentialContext, CredentialError, CredentialMetadata, CredentialState};
+use crate::core::{
+    AccessToken, CredentialContext, CredentialError, CredentialMetadata, CredentialState,
+};
 use async_trait::async_trait;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 
 /// Main trait for credential implementations
 #[async_trait]

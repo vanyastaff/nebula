@@ -17,27 +17,29 @@
 #![deny(unsafe_code)]
 #![forbid(unsafe_code)]
 
-pub mod core;
-pub mod traits;
 pub mod authenticator;
+pub mod core;
 pub mod manager;
-pub mod registry;
 pub mod migration;
+pub mod registry;
 mod testing;
+pub mod traits;
 
 /// Commonly used types and traits
 pub mod prelude {
+    pub use crate::authenticator::{ChainAuthenticator, ClientAuthenticator};
     pub use crate::core::{
-        AccessToken, CredentialError, CredentialContext, CredentialMetadata,
-        SecureString, CredentialState, Ephemeral,
+        AccessToken, CredentialContext, CredentialError, CredentialMetadata, CredentialState,
+        Ephemeral, SecureString,
     };
-    pub use crate::traits::{Credential, StateStore, TokenCache, DistributedLock, LockGuard, LockError};
-    pub use crate::authenticator::{ClientAuthenticator, ChainAuthenticator};
     pub use crate::manager::{CredentialManager, ManagerBuilder, RefreshPolicy};
+    pub use crate::traits::{
+        Credential, DistributedLock, LockError, LockGuard, StateStore, TokenCache,
+    };
     pub use async_trait::async_trait;
-    pub use serde::{Serialize, Deserialize};
-}так 
+    pub use serde::{Deserialize, Serialize};
+}
 
 // Re-export commonly used external types
-pub use uuid::Uuid;
 pub use chrono::{DateTime, Utc};
+pub use uuid::Uuid;

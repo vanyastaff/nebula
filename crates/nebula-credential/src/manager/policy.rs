@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use serde::{Serialize, Deserialize};
 
 /// Token refresh policy
 #[derive(Debug, Clone, Serialize, Deserialize)]

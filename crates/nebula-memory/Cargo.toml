@@ -54,18 +54,6 @@ criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1.6"
 rand = "0.8"
 
-[[bench]]
-name = "memory_benchmarks"
-harness = false
-required-features = ["std"]
-
-[[example]]
-name = "system_info"
-required-features = ["std"]
-
-[[example]]
-name = "memory_pressure"
-required-features = ["std"]
 
 [package.metadata.docs.rs]
 all-features = true

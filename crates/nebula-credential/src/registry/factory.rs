@@ -33,9 +33,7 @@ pub struct CredentialRegistry {
 impl CredentialRegistry {
     /// Create new registry
     pub fn new() -> Self {
-        Self {
-            factories: DashMap::new(),
-        }
+        Self { factories: DashMap::new() }
     }
 
     /// Register a credential factory

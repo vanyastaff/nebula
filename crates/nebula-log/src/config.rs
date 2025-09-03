@@ -215,11 +215,7 @@ impl Config {
         Self {
             level: "debug".to_string(),
             format: Format::Pretty,
-            display: DisplayConfig {
-                colors: true,
-                source: true,
-                ..DisplayConfig::default()
-            },
+            display: DisplayConfig { colors: true, source: true, ..DisplayConfig::default() },
             ..Self::default()
         }
     }
@@ -245,11 +241,7 @@ impl Config {
         Self {
             level: "trace".to_string(),
             format: Format::Compact,
-            display: DisplayConfig {
-                colors: false,
-                time: false,
-                ..DisplayConfig::default()
-            },
+            display: DisplayConfig { colors: false, time: false, ..DisplayConfig::default() },
             ..Self::default()
         }
     }
@@ -291,7 +283,8 @@ impl Fields {
         Self {
             service: std::env::var("NEBULA_SERVICE").ok(),
             env: std::env::var("NEBULA_ENV").ok(),
-            version: std::env::var("NEBULA_VERSION").ok()
+            version: std::env::var("NEBULA_VERSION")
+                .ok()
                 .or_else(|| option_env!("CARGO_PKG_VERSION").map(String::from)),
             instance: std::env::var("NEBULA_INSTANCE").ok(),
             region: std::env::var("NEBULA_REGION").ok(),

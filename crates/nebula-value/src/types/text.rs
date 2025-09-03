@@ -67,10 +67,7 @@ impl Text {
     /// Creates a new Text from an owned String
     #[inline]
     pub fn new(value: String) -> Self {
-        Self {
-            inner: value.into(),
-            char_count_cache: std::sync::OnceLock::new(),
-        }
+        Self { inner: value.into(), char_count_cache: std::sync::OnceLock::new() }
     }
 
     /// Creates a new Text from anything convertible to String
@@ -82,10 +79,7 @@ impl Text {
     /// Creates an empty Text (const-friendly)
     #[inline]
     pub fn empty() -> Self {
-        Self {
-            inner: Arc::from(""),
-            char_count_cache: std::sync::OnceLock::new(),
-        }
+        Self { inner: Arc::from(""), char_count_cache: std::sync::OnceLock::new() }
     }
 
     /// Creates a Text with specified capacity
@@ -98,10 +92,7 @@ impl Text {
     #[inline]
     #[must_use]
     pub fn from_static(s: &'static str) -> Self {
-        Self {
-            inner: Arc::from(s),
-            char_count_cache: std::sync::OnceLock::new(),
-        }
+        Self { inner: Arc::from(s), char_count_cache: std::sync::OnceLock::new() }
     }
 
     /// Creates a Text from Bytes
@@ -210,7 +201,7 @@ impl Text {
                 result.extend(first.to_uppercase());
                 result.push_str(&chars.as_str().to_lowercase());
                 Self::new(result)
-            }
+            },
         }
     }
 
@@ -371,11 +362,7 @@ impl Text {
 
         let char_count = self.char_count();
         if start > char_count || end > char_count {
-            return Err(TextError::OutOfBounds {
-                start,
-                end,
-                len: char_count,
-            });
+            return Err(TextError::OutOfBounds { start, end, len: char_count });
         }
 
         if start == end {
@@ -444,12 +431,10 @@ impl Text {
 
     /// Gets character at index
     pub fn char_at(&self, index: usize) -> TextResult<char> {
-        self.inner.chars().nth(index).ok_or_else(|| {
-            TextError::CharIndexOutOfBounds {
-                index,
-                len: self.char_count(),
-            }
-        })
+        self.inner
+            .chars()
+            .nth(index)
+            .ok_or_else(|| TextError::CharIndexOutOfBounds { index, len: self.char_count() })
     }
 
     /// Gets a slice of characters
@@ -465,13 +450,10 @@ impl Text {
         T: FromStr,
         T::Err: fmt::Display,
     {
-        self.inner
-            .trim()
-            .parse::<T>()
-            .map_err(|e| TextError::ParseError {
-                ty: std::any::type_name::<T>(),
-                msg: e.to_string(),
-            })
+        self.inner.trim().parse::<T>().map_err(|e| TextError::ParseError {
+            ty: std::any::type_name::<T>(),
+            msg: e.to_string(),
+        })
     }
 
     /// Checks if text represents a valid number
@@ -693,10 +675,7 @@ impl Text {
             }
         }
 
-        boundaries.windows(2)
-            .par_bridge()
-            .map(|w| self.inner[w[0]..w[1]].chars().count())
-            .sum()
+        boundaries.windows(2).par_bridge().map(|w| self.inner[w[0]..w[1]].chars().count()).sum()
     }
 
     #[cfg(feature = "rayon")]
@@ -706,10 +685,7 @@ impl Text {
             return self.split_whitespace().len();
         }
 
-        self.lines()
-            .par_iter()
-            .map(|line| line.split_whitespace().len())
-            .sum()
+        self.lines().par_iter().map(|line| line.split_whitespace().len()).sum()
     }
 
     // ==================== Base64 Operations ====================
@@ -717,20 +693,18 @@ impl Text {
     /// Encodes text as base64
     #[cfg(feature = "base64")]
     pub fn to_base64(&self) -> Text {
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
         Self::new(STANDARD.encode(self.as_bytes()))
     }
 
     /// Decodes from base64
     #[cfg(feature = "base64")]
     pub fn from_base64(encoded: &str) -> TextResult<Text> {
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
 
-        STANDARD.decode(encoded)
-            .map_err(|e| TextError::ParseError {
-                ty: "base64",
-                msg: e.to_string(),
-            })
+        STANDARD
+            .decode(encoded)
+            .map_err(|e| TextError::ParseError { ty: "base64", msg: e.to_string() })
             .and_then(|bytes| Self::from_utf8(&bytes))
     }
 }
@@ -806,20 +780,14 @@ impl From<&String> for Text {
 impl From<Box<str>> for Text {
     #[inline]
     fn from(s: Box<str>) -> Self {
-        Self {
-            inner: Arc::from(s),
-            char_count_cache: std::sync::OnceLock::new(),
-        }
+        Self { inner: Arc::from(s), char_count_cache: std::sync::OnceLock::new() }
     }
 }
 
 impl From<Arc<str>> for Text {
     #[inline]
     fn from(s: Arc<str>) -> Self {
-        Self {
-            inner: s,
-            char_count_cache: std::sync::OnceLock::new(),
-        }
+        Self { inner: s, char_count_cache: std::sync::OnceLock::new() }
     }
 }
 

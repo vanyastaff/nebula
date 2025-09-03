@@ -1,7 +1,7 @@
+use super::{NegativeCache, RefreshPolicy};
 use crate::core::{AccessToken, CredentialContext, CredentialError, CredentialId};
 use crate::registry::CredentialRegistry;
-use crate::traits::{StateStore, StateVersion, TokenCache, DistributedLock, LockGuard};
-use super::{RefreshPolicy, NegativeCache};
+use crate::traits::{DistributedLock, LockGuard, StateStore, StateVersion, TokenCache};
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -14,13 +14,15 @@ pub struct AnyLock {
 impl AnyLock {
     /// Create from a concrete lock implementation
     pub fn new<L: DistributedLock + 'static>(lock: L) -> Self {
-        Self {
-            inner: Arc::new(lock),
-        }
+        Self { inner: Arc::new(lock) }
     }
 
     /// Acquire the lock
-    pub async fn acquire(&self, key: &str, ttl: Duration) -> Result<Box<dyn LockGuard>, crate::traits::LockError> {
+    pub async fn acquire(
+        &self,
+        key: &str,
+        ttl: Duration,
+    ) -> Result<Box<dyn LockGuard>, crate::traits::LockError> {
         self.inner.acquire_dyn(key, ttl).await
     }
 }
@@ -28,12 +30,23 @@ impl AnyLock {
 /// Internal trait for type erasure
 #[async_trait::async_trait]
 trait AnyDistributedLock: Send + Sync {
-    async fn acquire_dyn(&self, key: &str, ttl: Duration) -> Result<Box<dyn LockGuard>, crate::traits::LockError>;
+    async fn acquire_dyn(
+        &self,
+        key: &str,
+        ttl: Duration,
+    ) -> Result<Box<dyn LockGuard>, crate::traits::LockError>;
 }
 
 #[async_trait::async_trait]
-impl<L: DistributedLock> AnyDistributedLock for L {
-    async fn acquire_dyn(&self, key: &str, ttl: Duration) -> Result<Box<dyn LockGuard>, crate::traits::LockError> {
+impl<L: DistributedLock> AnyDistributedLock for L
+where
+    <L as DistributedLock>::Guard: 'static,
+{
+    async fn acquire_dyn(
+        &self,
+        key: &str,
+        ttl: Duration,
+    ) -> Result<Box<dyn LockGuard>, crate::traits::LockError> {
         let guard = self.acquire(key, ttl).await?;
         Ok(Box::new(guard))
     }
@@ -50,13 +63,26 @@ pub struct CredentialManager {
 }
 
 impl CredentialManager {
+    pub(crate) fn new(
+        store: Arc<dyn StateStore>,
+        lock: AnyLock,
+        cache: Option<Arc<dyn TokenCache>>,
+        policy: RefreshPolicy,
+        registry: Arc<CredentialRegistry>,
+        negative_cache: Arc<DashMap<String, NegativeCache>>,
+    ) -> Self {
+        Self { store, lock, cache, registry, policy, negative_cache }
+    }
     /// Create new manager with builder
     pub fn builder() -> super::ManagerBuilder {
         super::ManagerBuilder::new()
     }
 
     /// Get token with automatic refresh
-    pub async fn get_token(&self, credential_id: &CredentialId) -> Result<AccessToken, CredentialError> {
+    pub async fn get_token(
+        &self,
+        credential_id: &CredentialId,
+    ) -> Result<AccessToken, CredentialError> {
         // Check negative cache first
         if let Some(neg) = self.negative_cache.get(credential_id.as_str()) {
             if neg.until > SystemTime::now() {
@@ -71,20 +97,20 @@ impl CredentialManager {
             match cache.get(credential_id.as_str()).await {
                 Ok(Some(token)) if !self.should_refresh(&token) => {
                     return Ok(token);
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
 
         // Acquire lock and refresh
         let lock_key = format!("credential:{}", credential_id);
 
-        let _guard = self.lock.acquire(&lock_key, Duration::from_secs(30))
-            .await
-            .map_err(|e| CredentialError::lock_failed(
-                format!("credential:{}", credential_id),
-                e.to_string()
-            ))?;
+        let _guard = self.lock.acquire(&lock_key, Duration::from_secs(30)).await.map_err(|e| {
+            CredentialError::LockFailed {
+                resource: format!("credential:{}", credential_id),
+                reason: e.to_string(),
+            }
+        })?;
 
         // Re-check cache inside lock
         if let Some(cache) = &self.cache {
@@ -106,8 +132,9 @@ impl CredentialManager {
         input: serde_json::Value,
     ) -> Result<CredentialId, CredentialError> {
         // Get factory from registry
-        let factory = self.registry.get(credential_type)
-            .ok_or_else(|| CredentialError::type_not_registered(credential_type))?;
+        let factory = self.registry.get(credential_type).ok_or_else(|| {
+            CredentialError::TypeNotRegistered { credential_type: credential_type.to_string() }
+        })?;
 
         // Create and initialize
         let mut ctx = CredentialContext::new();
@@ -126,11 +153,7 @@ impl CredentialManager {
             obj.insert("_created_at".to_string(), serde_json::json!(crate::core::unix_now()));
         }
 
-        self.store.save(
-            credential_id.as_str(),
-            StateVersion(0),
-            &state_with_meta,
-        ).await?;
+        self.store.save(credential_id.as_str(), StateVersion(0), &state_with_meta).await?;
 
         // Cache initial token if provided
         if let Some(token) = token {
@@ -144,7 +167,10 @@ impl CredentialManager {
     }
 
     /// Delete a credential
-    pub async fn delete_credential(&self, credential_id: &CredentialId) -> Result<(), CredentialError> {
+    pub async fn delete_credential(
+        &self,
+        credential_id: &CredentialId,
+    ) -> Result<(), CredentialError> {
         // Clear cache
         if let Some(cache) = &self.cache {
             let _ = cache.del(credential_id.as_str()).await;
@@ -163,7 +189,10 @@ impl CredentialManager {
     }
 
     /// Internal refresh implementation
-    async fn refresh_internal(&self, credential_id: &CredentialId) -> Result<AccessToken, CredentialError> {
+    async fn refresh_internal(
+        &self,
+        credential_id: &CredentialId,
+    ) -> Result<AccessToken, CredentialError> {
         let mut last_error = None;
 
         for attempt in 0..self.policy.max_retries {
@@ -171,13 +200,16 @@ impl CredentialManager {
             let (mut state_json, version) = self.store.load(credential_id.as_str()).await?;
 
             // Get credential type from state
-            let credential_type = state_json.get("_type")
+            let credential_type = state_json
+                .get("_type")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| CredentialError::invalid_input("state", "missing _type field"))?;
+                .ok_or_else(|| CredentialError::invalid_input("state", "missing _type field"))?
+                .to_string();
 
             // Get factory
-            let factory = self.registry.get(credential_type)
-                .ok_or_else(|| CredentialError::type_not_registered(credential_type))?;
+            let factory = self.registry.get(&credential_type).ok_or_else(|| {
+                CredentialError::TypeNotRegistered { credential_type: credential_type.clone() }
+            })?;
 
             // Clean metadata before refresh
             if let Some(obj) = state_json.as_object_mut() {
@@ -197,7 +229,10 @@ impl CredentialManager {
                     // Add metadata back
                     if let Some(obj) = new_state_json.as_object_mut() {
                         obj.insert("_type".to_string(), serde_json::json!(credential_type));
-                        obj.insert("_updated_at".to_string(), serde_json::json!(crate::core::unix_now()));
+                        obj.insert(
+                            "_updated_at".to_string(),
+                            serde_json::json!(crate::core::unix_now()),
+                        );
                     }
 
                     match self.store.save(credential_id.as_str(), version, &new_state_json).await {
@@ -212,14 +247,14 @@ impl CredentialManager {
                             self.negative_cache.remove(credential_id.as_str());
 
                             return Ok(token);
-                        }
+                        },
                         Err(CredentialError::CasConflict) => {
                             // Retry with fresh state
                             continue;
-                        }
+                        },
                         Err(e) => return Err(e),
                     }
-                }
+                },
                 Err(e) if e.is_retryable() && attempt < self.policy.max_retries - 1 => {
                     last_error = Some(e);
 
@@ -228,7 +263,7 @@ impl CredentialManager {
 
                     #[cfg(feature = "runtime")]
                     tokio::time::sleep(backoff).await;
-                }
+                },
                 Err(e) => {
                     // Add to negative cache
                     self.negative_cache.insert(
@@ -236,20 +271,21 @@ impl CredentialManager {
                         NegativeCache {
                             until: SystemTime::now() + self.policy.negative_cache_ttl,
                             error: e.clone(),
-                        }
+                        },
                     );
                     return Err(e);
-                }
+                },
             }
         }
 
-        let error = last_error.unwrap_or_else(|| CredentialError::internal("Refresh failed after max retries"));
+        let error = last_error
+            .unwrap_or_else(|| CredentialError::internal("Refresh failed after max retries"));
         self.negative_cache.insert(
             credential_id.to_string(),
             NegativeCache {
                 until: SystemTime::now() + self.policy.negative_cache_ttl,
                 error: error.clone(),
-            }
+            },
         );
         Err(error)
     }

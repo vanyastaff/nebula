@@ -1,9 +1,9 @@
 //! Core error types for Nebula
 
-use thiserror::Error;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::Duration;
+use thiserror::Error;
 
 use super::context::ErrorContext;
 
@@ -46,7 +46,10 @@ impl NebulaError {
         let resource_type = resource_type.into();
         let resource_id = resource_id.into();
         Self {
-            kind: ErrorKind::NotFound { resource_type: resource_type.clone(), resource_id: resource_id.clone() },
+            kind: ErrorKind::NotFound {
+                resource_type: resource_type.clone(),
+                resource_id: resource_id.clone(),
+            },
             context: None,
             retryable: false,
             retry_after: None,
@@ -71,7 +74,11 @@ impl NebulaError {
     }
 
     /// Create a new rate limit error
-    pub fn rate_limit_exceeded(limit: u32, period: Duration, retry_after: Option<Duration>) -> Self {
+    pub fn rate_limit_exceeded(
+        limit: u32,
+        period: Duration,
+        retry_after: Option<Duration>,
+    ) -> Self {
         Self {
             kind: ErrorKind::RateLimitExceeded { limit, period },
             context: None,
@@ -98,16 +105,41 @@ impl NebulaError {
     }
 
     /// Create a new service unavailable error
-    pub fn service_unavailable(service: impl Into<String>, reason: impl Into<String>, retry_after: Option<Duration>) -> Self {
+    pub fn service_unavailable(
+        service: impl Into<String>,
+        reason: impl Into<String>,
+        retry_after: Option<Duration>,
+    ) -> Self {
         let service = service.into();
         let reason = reason.into();
         Self {
-            kind: ErrorKind::ServiceUnavailable { service: service.clone(), reason: reason.clone() },
+            kind: ErrorKind::ServiceUnavailable {
+                service: service.clone(),
+                reason: reason.clone(),
+            },
             context: None,
             retryable: true,
             retry_after,
             code: "SERVICE_UNAVAILABLE_ERROR".to_string(),
             message: format!("Service '{}' unavailable: {}", service, reason),
+            details: None,
+        }
+    }
+
+    /// Create a new permission denied error
+    pub fn permission_denied(operation: impl Into<String>, resource: impl Into<String>) -> Self {
+        let operation = operation.into();
+        let resource = resource.into();
+        Self {
+            kind: ErrorKind::PermissionDenied {
+                operation: operation.clone(),
+                resource: resource.clone(),
+            },
+            context: None,
+            retryable: false,
+            retry_after: None,
+            code: "PERMISSION_DENIED_ERROR".to_string(),
+            message: format!("Permission denied: {} on {}", operation, resource),
             details: None,
         }
     }
@@ -145,20 +177,22 @@ impl NebulaError {
 
     /// Check if this is a client error (4xx)
     pub fn is_client_error(&self) -> bool {
-        matches!(self.kind, 
-            ErrorKind::Validation { .. } | 
-            ErrorKind::NotFound { .. } | 
-            ErrorKind::InvalidInput { .. } |
-            ErrorKind::PermissionDenied { .. }
+        matches!(
+            self.kind,
+            ErrorKind::Validation { .. }
+                | ErrorKind::NotFound { .. }
+                | ErrorKind::InvalidInput { .. }
+                | ErrorKind::PermissionDenied { .. }
         )
     }
 
     /// Check if this is a server error (5xx)
     pub fn is_server_error(&self) -> bool {
-        matches!(self.kind,
-            ErrorKind::Internal { .. } |
-            ErrorKind::ServiceUnavailable { .. } |
-            ErrorKind::Timeout { .. }
+        matches!(
+            self.kind,
+            ErrorKind::Internal { .. }
+                | ErrorKind::ServiceUnavailable { .. }
+                | ErrorKind::Timeout { .. }
         )
     }
 
@@ -181,19 +215,19 @@ impl NebulaError {
 impl fmt::Display for NebulaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.code, self.message)?;
-        
+
         if let Some(ref context) = self.context {
             write!(f, " (Context: {})", context)?;
         }
-        
+
         if let Some(ref details) = self.details {
             write!(f, " - {}", details)?;
         }
-        
+
         if self.retryable {
             write!(f, " [Retryable]")?;
         }
-        
+
         Ok(())
     }
 }
@@ -294,7 +328,9 @@ impl From<std::io::Error> for NebulaError {
         match err.kind() {
             std::io::ErrorKind::NotFound => NebulaError::not_found("File", "unknown"),
             std::io::ErrorKind::PermissionDenied => NebulaError::permission_denied("read", "file"),
-            std::io::ErrorKind::TimedOut => NebulaError::timeout("I/O operation", Duration::from_secs(30)),
+            std::io::ErrorKind::TimedOut => {
+                NebulaError::timeout("I/O operation", Duration::from_secs(30))
+            },
             _ => NebulaError::internal(format!("I/O error: {}", err)),
         }
     }
@@ -350,7 +386,10 @@ impl ErrorKind {
     }
 
     /// Create a not found error
-    pub fn not_found(resource_type: impl Into<String>, resource_id: impl Into<String>) -> NebulaError {
+    pub fn not_found(
+        resource_type: impl Into<String>,
+        resource_id: impl Into<String>,
+    ) -> NebulaError {
         NebulaError::not_found(resource_type, resource_id)
     }
 
@@ -360,7 +399,11 @@ impl ErrorKind {
     }
 
     /// Create a rate limit error
-    pub fn rate_limit_exceeded(limit: u32, period: Duration, retry_after: Option<Duration>) -> NebulaError {
+    pub fn rate_limit_exceeded(
+        limit: u32,
+        period: Duration,
+        retry_after: Option<Duration>,
+    ) -> NebulaError {
         NebulaError::rate_limit_exceeded(limit, period, retry_after)
     }
 
@@ -370,7 +413,11 @@ impl ErrorKind {
     }
 
     /// Create a service unavailable error
-    pub fn service_unavailable(service: impl Into<String>, reason: impl Into<String>, retry_after: Option<Duration>) -> NebulaError {
+    pub fn service_unavailable(
+        service: impl Into<String>,
+        reason: impl Into<String>,
+        retry_after: Option<Duration>,
+    ) -> NebulaError {
         NebulaError::service_unavailable(service, reason, retry_after)
     }
 }
@@ -387,21 +434,6 @@ impl NebulaError {
             retry_after: None,
             code: "DESERIALIZATION_ERROR".to_string(),
             message: message_str,
-            details: None,
-        }
-    }
-
-    /// Create a permission denied error
-    pub fn permission_denied(operation: impl Into<String>, resource: impl Into<String>) -> Self {
-        let operation = operation.into();
-        let resource = resource.into();
-        Self {
-            kind: ErrorKind::PermissionDenied { operation: operation.clone(), resource: resource.clone() },
-            context: None,
-            retryable: false,
-            retry_after: None,
-            code: "PERMISSION_DENIED_ERROR".to_string(),
-            message: format!("Permission denied: {} on {}", operation, resource),
             details: None,
         }
     }

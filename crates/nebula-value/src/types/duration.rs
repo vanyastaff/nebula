@@ -37,30 +37,22 @@ pub enum DurationError {
 impl DurationError {
     /// Create a negative duration error
     pub fn negative_duration<S: Into<String>>(value: S) -> Self {
-        Self::NegativeDuration {
-            value: value.into(),
-        }
+        Self::NegativeDuration { value: value.into() }
     }
 
     /// Create an invalid value error
     pub fn invalid_value<S: Into<String>>(value: S) -> Self {
-        Self::InvalidValue {
-            value: value.into(),
-        }
+        Self::InvalidValue { value: value.into() }
     }
 
     /// Create a parse error
     pub fn parse_error<S: Into<String>>(input: S) -> Self {
-        Self::ParseError {
-            input: input.into(),
-        }
+        Self::ParseError { input: input.into() }
     }
 
     /// Create a not finite error
     pub fn not_finite<S: Into<String>>(value: S) -> Self {
-        Self::NotFinite {
-            value: value.into(),
-        }
+        Self::NotFinite { value: value.into() }
     }
 }
 
@@ -292,13 +284,21 @@ impl Duration {
     /// Get minimum of two durations
     #[inline]
     pub fn min(self, other: Self) -> Self {
-        if self <= other { self } else { other }
+        if self <= other {
+            self
+        } else {
+            other
+        }
     }
 
     /// Get maximum of two durations
     #[inline]
     pub fn max(self, other: Self) -> Self {
-        if self >= other { self } else { other }
+        if self >= other {
+            self
+        } else {
+            other
+        }
     }
 
     /// Clamp duration to range
@@ -556,7 +556,7 @@ impl<'de> serde::Deserialize<'de> for Duration {
                 if value < 0.0 {
                     Err(E::custom("duration cannot be negative"))
                 } else {
-                    Ok(Duration::from_secs_f64(value / 1000.0))
+                    Duration::from_secs_f64(value / 1000.0).map_err(|e| E::custom(e.to_string()))
                 }
             }
 
@@ -566,22 +566,24 @@ impl<'de> serde::Deserialize<'de> for Duration {
             {
                 // Parse strings like "5s", "100ms", "2h", "1d"
                 let (num_str, unit) = value.split_at(
-                    value.rfind(|c: char| c.is_ascii_digit() || c == '.').map_or(0, |i| i + 1)
+                    value.rfind(|c: char| c.is_ascii_digit() || c == '.').map_or(0, |i| i + 1),
                 );
 
-                let num: f64 = num_str.parse()
+                let num: f64 = num_str
+                    .parse()
                     .map_err(|_| E::custom(format!("invalid number: {}", num_str)))?;
 
                 let duration = match unit {
-                    "ns" => Duration::from_nanos(num as u64),
-                    "μs" | "us" => Duration::from_micros(num as u64),
-                    "ms" => Duration::from_millis(num as u64),
+                    "ns" => Ok(Duration::from_nanos(num as u64)),
+                    "μs" | "us" => Ok(Duration::from_micros(num as u64)),
+                    "ms" => Ok(Duration::from_millis(num as u64)),
                     "s" | "" => Duration::from_secs_f64(num),
                     "m" => Duration::from_secs_f64(num * 60.0),
                     "h" => Duration::from_secs_f64(num * 3600.0),
                     "d" => Duration::from_secs_f64(num * 86400.0),
                     _ => return Err(E::custom(format!("unknown time unit: {}", unit))),
-                };
+                }
+                .map_err(|e| E::custom(e.to_string()))?;
 
                 Ok(duration)
             }

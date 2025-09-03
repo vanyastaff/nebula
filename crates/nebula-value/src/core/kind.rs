@@ -1,5 +1,5 @@
-use core::fmt::{Display, Formatter};
 use crate::Value;
+use core::fmt::{Display, Formatter};
 
 /// Represents the kind/type of a Value
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -86,7 +86,7 @@ impl ValueKind {
             "string" | "str" | "text" => Some(Self::String),
             "array" | "list" | "vec" => Some(Self::Array),
             "object" | "map" | "dict" => Some(Self::Object),
-            _ => None
+            _ => None,
         }
     }
 
@@ -217,8 +217,9 @@ impl TypeCompatibility {
 
         match (a, b) {
             // Numeric promotions
-            (ValueKind::Integer, ValueKind::Float) |
-            (ValueKind::Float, ValueKind::Integer) => Some(ValueKind::Float),
+            (ValueKind::Integer, ValueKind::Float) | (ValueKind::Float, ValueKind::Integer) => {
+                Some(ValueKind::Float)
+            },
 
             // String concatenation
             (ValueKind::String, _) | (_, ValueKind::String) => Some(ValueKind::String),

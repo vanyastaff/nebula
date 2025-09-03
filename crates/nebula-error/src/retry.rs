@@ -95,7 +95,7 @@ impl RetryStrategy {
         }
 
         let mut delay = self.base_delay.as_millis() as f64;
-        
+
         // Apply exponential backoff
         for _ in 0..attempt {
             delay *= self.backoff_multiplier;
@@ -169,7 +169,10 @@ pub trait Retryable {
     fn is_retryable_error(&self, error: &Self::Error) -> bool;
 
     /// Execute with retry logic
-    async fn execute_with_retry(&self, strategy: &RetryStrategy) -> Result<Self::Output, NebulaError> {
+    async fn execute_with_retry(
+        &self,
+        strategy: &RetryStrategy,
+    ) -> Result<Self::Output, NebulaError> {
         let start_time = std::time::Instant::now();
         let mut last_error = None;
 
@@ -186,7 +189,7 @@ pub trait Retryable {
                 Ok(result) => return Ok(result),
                 Err(error) => {
                     last_error = Some(error);
-                    
+
                     // Check if we should retry
                     if !self.is_retryable_error(&last_error.as_ref().unwrap()) {
                         break;
@@ -200,7 +203,7 @@ pub trait Retryable {
                     // Calculate and apply delay
                     let delay = strategy.calculate_delay(attempt);
                     sleep(delay).await;
-                }
+                },
             }
         }
 
@@ -210,10 +213,7 @@ pub trait Retryable {
 }
 
 /// Retry a function with the given strategy
-pub async fn retry<F, Fut, T, E>(
-    f: F,
-    strategy: &RetryStrategy,
-) -> Result<T, NebulaError>
+pub async fn retry<F, Fut, T, E>(f: F, strategy: &RetryStrategy) -> Result<T, NebulaError>
 where
     F: Fn() -> Fut + Send + Sync,
     Fut: std::future::Future<Output = Result<T, E>> + Send,
@@ -236,7 +236,7 @@ where
             Ok(result) => return Ok(result),
             Err(error) => {
                 last_error = Some(error);
-                
+
                 // If this is the last attempt, don't sleep
                 if attempt + 1 >= strategy.max_attempts {
                     break;
@@ -245,7 +245,7 @@ where
                 // Calculate and apply delay
                 let delay = strategy.calculate_delay(attempt);
                 sleep(delay).await;
-            }
+            },
         }
     }
 
@@ -266,7 +266,7 @@ where
     E: Into<NebulaError> + Send,
 {
     let retry_future = retry(f, strategy);
-    
+
     match timeout(operation_timeout, retry_future).await {
         Ok(result) => result,
         Err(_) => Err(NebulaError::timeout("retry operation", operation_timeout)),
@@ -289,12 +289,7 @@ pub struct ErrorRetryConfig {
 impl ErrorRetryConfig {
     /// Create a new error retry configuration
     pub fn new(error_code: impl Into<String>, retryable: bool) -> Self {
-        Self {
-            error_code: error_code.into(),
-            retryable,
-            strategy: None,
-            max_attempts: None,
-        }
+        Self { error_code: error_code.into(), retryable, strategy: None, max_attempts: None }
     }
 
     /// Set custom retry strategy

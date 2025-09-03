@@ -17,7 +17,7 @@ use thiserror::Error;
 pub type BooleanResult<T> = Result<T, BooleanError>;
 
 /// Rich, typed errors for BooleanValue operations
-#[derive(Error, Debug, Clone, PartialEq,)]
+#[derive(Error, Debug, Clone, PartialEq)]
 pub enum BooleanError {
     #[error("Failed to parse '{input}' as boolean")]
     ParseError { input: String },
@@ -291,77 +291,121 @@ impl Boolean {
     #[inline]
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
-        if self.0 { "true" } else { "false" }
+        if self.0 {
+            "true"
+        } else {
+            "false"
+        }
     }
 
     /// Uppercase representation
     #[inline]
     #[must_use]
     pub const fn as_upper(&self) -> &'static str {
-        if self.0 { "TRUE" } else { "FALSE" }
+        if self.0 {
+            "TRUE"
+        } else {
+            "FALSE"
+        }
     }
 
     /// Title case representation
     #[inline]
     #[must_use]
     pub const fn as_title(&self) -> &'static str {
-        if self.0 { "True" } else { "False" }
+        if self.0 {
+            "True"
+        } else {
+            "False"
+        }
     }
 
     /// Short form (T/F)
     #[inline]
     #[must_use]
     pub const fn as_short(&self) -> &'static str {
-        if self.0 { "T" } else { "F" }
+        if self.0 {
+            "T"
+        } else {
+            "F"
+        }
     }
 
     /// Numeric string (1/0)
     #[inline]
     #[must_use]
     pub const fn as_numeric_str(&self) -> &'static str {
-        if self.0 { "1" } else { "0" }
+        if self.0 {
+            "1"
+        } else {
+            "0"
+        }
     }
 
     /// Yes/No representation
     #[inline]
     #[must_use]
     pub const fn as_yes_no(&self) -> &'static str {
-        if self.0 { "yes" } else { "no" }
+        if self.0 {
+            "yes"
+        } else {
+            "no"
+        }
     }
 
     /// On/Off representation
     #[inline]
     #[must_use]
     pub const fn as_on_off(&self) -> &'static str {
-        if self.0 { "on" } else { "off" }
+        if self.0 {
+            "on"
+        } else {
+            "off"
+        }
     }
 
     /// Enabled/Disabled representation
     #[inline]
     #[must_use]
     pub const fn as_enabled(&self) -> &'static str {
-        if self.0 { "enabled" } else { "disabled" }
+        if self.0 {
+            "enabled"
+        } else {
+            "disabled"
+        }
     }
 
     /// Active/Inactive representation
     #[inline]
     #[must_use]
     pub const fn as_active(&self) -> &'static str {
-        if self.0 { "active" } else { "inactive" }
+        if self.0 {
+            "active"
+        } else {
+            "inactive"
+        }
     }
 
     /// Pass/Fail representation
     #[inline]
     #[must_use]
     pub const fn as_pass_fail(&self) -> &'static str {
-        if self.0 { "pass" } else { "fail" }
+        if self.0 {
+            "pass"
+        } else {
+            "fail"
+        }
     }
 
     /// Success/Failure representation
     #[inline]
     #[must_use]
     pub const fn as_success(&self) -> &'static str {
-        if self.0 { "success" } else { "failure" }
+        if self.0 {
+            "success"
+        } else {
+            "failure"
+        }
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -374,40 +418,73 @@ impl Boolean {
         match s {
             "true" | "1" => return Ok(Self::TRUE),
             "false" | "0" => return Ok(Self::FALSE),
-            _ => {}
+            _ => {},
         }
 
         // Case-insensitive parsing
         let trimmed = s.trim();
         if trimmed.is_empty() {
-            return Err(BooleanError::ParseError {
-                input: s.to_string(),
-            });
+            return Err(BooleanError::ParseError { input: s.to_string() });
         }
 
         // Use a static lookup table for efficiency
         static TRUE_VALUES: &[&str] = &[
-            "true", "t", "1",
-            "yes", "y",
-            "on", "enable", "enabled",
-            "active", "activated",
-            "positive", "pos", "+",
-            "ok", "okay", "accept", "accepted",
-            "pass", "passed", "success", "successful",
-            "high", "hi", "up",
-            "set", "valid", "correct",
+            "true",
+            "t",
+            "1",
+            "yes",
+            "y",
+            "on",
+            "enable",
+            "enabled",
+            "active",
+            "activated",
+            "positive",
+            "pos",
+            "+",
+            "ok",
+            "okay",
+            "accept",
+            "accepted",
+            "pass",
+            "passed",
+            "success",
+            "successful",
+            "high",
+            "hi",
+            "up",
+            "set",
+            "valid",
+            "correct",
         ];
 
         static FALSE_VALUES: &[&str] = &[
-            "false", "f", "0",
-            "no", "n",
-            "off", "disable", "disabled",
-            "inactive", "deactivated",
-            "negative", "neg", "-",
-            "cancel", "cancelled", "reject", "rejected",
-            "fail", "failed", "failure",
-            "low", "lo", "down",
-            "unset", "invalid", "incorrect",
+            "false",
+            "f",
+            "0",
+            "no",
+            "n",
+            "off",
+            "disable",
+            "disabled",
+            "inactive",
+            "deactivated",
+            "negative",
+            "neg",
+            "-",
+            "cancel",
+            "cancelled",
+            "reject",
+            "rejected",
+            "fail",
+            "failed",
+            "failure",
+            "low",
+            "lo",
+            "down",
+            "unset",
+            "invalid",
+            "incorrect",
         ];
 
         let lower = trimmed.to_lowercase();
@@ -417,9 +494,7 @@ impl Boolean {
         } else if FALSE_VALUES.iter().any(|&v| lower == v) {
             Ok(Self::FALSE)
         } else {
-            Err(BooleanError::ParseError {
-                input: s.to_string(),
-            })
+            Err(BooleanError::ParseError { input: s.to_string() })
         }
     }
 
@@ -428,9 +503,7 @@ impl Boolean {
         match s {
             "true" => Ok(Self::TRUE),
             "false" => Ok(Self::FALSE),
-            _ => Err(BooleanError::ParseError {
-                input: s.to_string(),
-            }),
+            _ => Err(BooleanError::ParseError { input: s.to_string() }),
         }
     }
 
@@ -448,70 +521,110 @@ impl Boolean {
     #[inline]
     #[must_use]
     pub const fn as_i8(&self) -> i8 {
-        if self.0 { 1 } else { 0 }
+        if self.0 {
+            1
+        } else {
+            0
+        }
     }
 
     /// Convert to u8
     #[inline]
     #[must_use]
     pub const fn as_u8(&self) -> u8 {
-        if self.0 { 1 } else { 0 }
+        if self.0 {
+            1
+        } else {
+            0
+        }
     }
 
     /// Convert to i32
     #[inline]
     #[must_use]
     pub const fn as_i32(&self) -> i32 {
-        if self.0 { 1 } else { 0 }
+        if self.0 {
+            1
+        } else {
+            0
+        }
     }
 
     /// Convert to u32
     #[inline]
     #[must_use]
     pub const fn as_u32(&self) -> u32 {
-        if self.0 { 1 } else { 0 }
+        if self.0 {
+            1
+        } else {
+            0
+        }
     }
 
     /// Convert to i64
     #[inline]
     #[must_use]
     pub const fn as_i64(&self) -> i64 {
-        if self.0 { 1 } else { 0 }
+        if self.0 {
+            1
+        } else {
+            0
+        }
     }
 
     /// Convert to u64
     #[inline]
     #[must_use]
     pub const fn as_u64(&self) -> u64 {
-        if self.0 { 1 } else { 0 }
+        if self.0 {
+            1
+        } else {
+            0
+        }
     }
 
     /// Convert to isize
     #[inline]
     #[must_use]
     pub const fn as_isize(&self) -> isize {
-        if self.0 { 1 } else { 0 }
+        if self.0 {
+            1
+        } else {
+            0
+        }
     }
 
     /// Convert to usize
     #[inline]
     #[must_use]
     pub const fn as_usize(&self) -> usize {
-        if self.0 { 1 } else { 0 }
+        if self.0 {
+            1
+        } else {
+            0
+        }
     }
 
     /// Convert to f32
     #[inline]
     #[must_use]
     pub const fn as_f32(&self) -> f32 {
-        if self.0 { 1.0 } else { 0.0 }
+        if self.0 {
+            1.0
+        } else {
+            0.0
+        }
     }
 
     /// Convert to f64
     #[inline]
     #[must_use]
     pub const fn as_f64(&self) -> f64 {
-        if self.0 { 1.0 } else { 0.0 }
+        if self.0 {
+            1.0
+        } else {
+            0.0
+        }
     }
 
     /// Create from integer (loose: non-zero = true)
@@ -563,14 +676,22 @@ impl Boolean {
     #[inline]
     #[must_use]
     pub const fn as_bit(&self) -> u8 {
-        if self.0 { Self::BIT_ONE } else { Self::BIT_ZERO }
+        if self.0 {
+            Self::BIT_ONE
+        } else {
+            Self::BIT_ZERO
+        }
     }
 
     /// Convert to bit mask (all 1s or all 0s)
     #[inline]
     #[must_use]
     pub const fn as_mask(&self) -> u8 {
-        if self.0 { Self::BIT_ALL } else { Self::BIT_ZERO }
+        if self.0 {
+            Self::BIT_ALL
+        } else {
+            Self::BIT_ZERO
+        }
     }
 
     /// Extract bit at position from byte
@@ -736,7 +857,11 @@ impl Boolean {
     #[inline]
     #[must_use]
     pub fn as_probability(&self) -> f64 {
-        if self.0 { 1.0 } else { 0.0 }
+        if self.0 {
+            1.0
+        } else {
+            0.0
+        }
     }
 
     /// Create from probability (>= 0.5 is true)
@@ -969,7 +1094,6 @@ impl From<f64> for Boolean {
     }
 }
 
-
 // Convert to numeric types
 impl From<Boolean> for i32 {
     #[inline]
@@ -1016,7 +1140,7 @@ impl PartialEq<Boolean> for bool {
 
 impl FromIterator<Boolean> for Boolean {
     /// Performs AND operation on all values
-    fn from_iter<T: IntoIterator<Item =Boolean>>(iter: T) -> Self {
+    fn from_iter<T: IntoIterator<Item = Boolean>>(iter: T) -> Self {
         Self(iter.into_iter().all(|b| b.0))
     }
 }
@@ -1027,7 +1151,6 @@ impl FromIterator<bool> for Boolean {
         Self(iter.into_iter().all(|b| b))
     }
 }
-
 
 // ══════════════════════════════════════════════════════════════════════════════
 // JSON Support
@@ -1056,7 +1179,7 @@ impl TryFrom<serde_json::Value> for Boolean {
                 } else {
                     Err(BooleanError::JsonTypeMismatch { found: "number" })
                 }
-            }
+            },
             serde_json::Value::String(s) => Self::parse(&s),
             serde_json::Value::Null => Ok(Self::FALSE),
             serde_json::Value::Array(_) => Err(BooleanError::JsonTypeMismatch { found: "array" }),
@@ -1188,12 +1311,7 @@ mod tests {
 
     #[test]
     fn test_collection_operations() {
-        let values = vec![
-            Boolean::TRUE,
-            Boolean::FALSE,
-            Boolean::TRUE,
-            Boolean::TRUE,
-        ];
+        let values = vec![Boolean::TRUE, Boolean::FALSE, Boolean::TRUE, Boolean::TRUE];
 
         assert_eq!(Boolean::all(&values), Boolean::FALSE);
         assert_eq!(Boolean::any(&values), Boolean::TRUE);

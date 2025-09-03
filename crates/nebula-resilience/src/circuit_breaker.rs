@@ -109,18 +109,18 @@ impl CircuitBreaker {
                 // Reset failure count on success
                 *failure_count = 0;
                 debug!("Circuit closed - success recorded, failure count reset");
-            }
+            },
             CircuitState::HalfOpen => {
                 // Success in half-open state, close the circuit
                 *state = CircuitState::Closed;
                 *failure_count = 0;
                 *half_open_operations = 0;
                 info!("Circuit closed after successful operation in half-open state");
-            }
+            },
             CircuitState::Open => {
                 // Circuit is open, no state change
                 debug!("Circuit open - success recorded but circuit remains open");
-            }
+            },
         }
     }
 
@@ -147,20 +147,20 @@ impl CircuitBreaker {
                         *failure_count, self.config.failure_threshold
                     );
                 }
-            }
+            },
             CircuitState::HalfOpen => {
                 // Failure in half-open state, open the circuit
                 *state = CircuitState::Open;
                 *failure_count += 1;
                 *last_failure_time = Some(Instant::now());
                 warn!("Circuit opened after failure in half-open state");
-            }
+            },
             CircuitState::Open => {
                 // Circuit is already open, just update failure count
                 *failure_count += 1;
                 *last_failure_time = Some(Instant::now());
                 debug!("Circuit open - failure recorded");
-            }
+            },
         }
     }
 
@@ -173,7 +173,7 @@ impl CircuitBreaker {
             CircuitState::Closed => {
                 // Operations are always allowed in closed state
                 Ok(())
-            }
+            },
             CircuitState::Open => {
                 // Check if reset timeout has elapsed
                 let last_failure_time = *self.last_failure_time.read().await;
@@ -190,7 +190,7 @@ impl CircuitBreaker {
                 } else {
                     Err(ResilienceError::circuit_breaker_open("open"))
                 }
-            }
+            },
             CircuitState::HalfOpen => {
                 // Check if we can allow more operations
                 if *half_open_operations < self.config.half_open_max_operations {
@@ -203,7 +203,7 @@ impl CircuitBreaker {
                 } else {
                     Err(ResilienceError::circuit_breaker_open("half-open limit reached"))
                 }
-            }
+            },
         }
     }
 
@@ -223,12 +223,12 @@ impl CircuitBreaker {
         match &result {
             Ok(_) => {
                 self.record_success().await;
-            }
+            },
             Err(error) => {
                 if self.config.count_timeouts || !matches!(error, ResilienceError::Timeout { .. }) {
                     self.record_failure().await;
                 }
-            }
+            },
         }
 
         result
@@ -366,7 +366,11 @@ mod tests {
         assert_eq!(result.unwrap(), "success");
 
         // Should execute and record failure
-        let result = cb.execute(|| async { Err::<&str, ResilienceError>(ResilienceError::timeout(Duration::from_secs(1))) }).await;
+        let result = cb
+            .execute(|| async {
+                Err::<&str, ResilienceError>(ResilienceError::timeout(Duration::from_secs(1)))
+            })
+            .await;
         assert!(result.is_err());
     }
 

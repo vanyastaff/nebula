@@ -15,6 +15,17 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-value/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-memory/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-memory/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-config/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-error/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-resilience/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-resilience/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-resource/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-system/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-system/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-validator/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-validator/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-validator/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

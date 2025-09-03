@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Metadata about a credential type
 #[derive(Debug, Clone, Serialize, Deserialize)]

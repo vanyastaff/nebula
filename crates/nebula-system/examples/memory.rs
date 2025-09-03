@@ -6,7 +6,9 @@ fn main() -> sys::Result<()> {
     let mem = sys::memory::current();
 
     // Helper to format bytes (usize) from memory module
-    fn fmt(b: usize) -> String { sys::memory::format_bytes(b) }
+    fn fmt(b: usize) -> String {
+        sys::memory::format_bytes(b)
+    }
 
     println!("=== Memory Info ===");
     println!("total      : {}", fmt(mem.total));

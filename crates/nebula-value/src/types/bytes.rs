@@ -63,7 +63,7 @@ pub enum BytesError {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Bytes {
-    #[cfg_attr(feature = "serde", serde(with = "serde_bytes"))]
+    // Use bytes crate's serde support; avoid serde_bytes to satisfy trait bounds
     inner: bytes::Bytes,
 }
 
@@ -73,9 +73,7 @@ impl Bytes {
     // ════════════════════════════════════════════════════════════════
 
     /// Empty bytes constant
-    pub const EMPTY: Self = Self {
-        inner: bytes::Bytes::new(),
-    };
+    pub const EMPTY: Self = Self { inner: bytes::Bytes::new() };
 
     // Common patterns
     pub const CRLF: &'static [u8] = b"\r\n";
@@ -91,9 +89,7 @@ impl Bytes {
     #[inline]
     #[must_use]
     pub fn new(data: impl Into<bytes::Bytes>) -> Self {
-        Self {
-            inner: data.into(),
-        }
+        Self { inner: data.into() }
     }
 
     /// Creates empty Bytes
@@ -107,34 +103,26 @@ impl Bytes {
     #[inline]
     #[must_use]
     pub fn from_static(data: &'static [u8]) -> Self {
-        Self {
-            inner: bytes::Bytes::from_static(data),
-        }
+        Self { inner: bytes::Bytes::from_static(data) }
     }
 
     /// Creates Bytes by copying a slice
     #[inline]
     #[must_use]
     pub fn copy_from_slice(data: &[u8]) -> Self {
-        Self {
-            inner: bytes::Bytes::copy_from_slice(data),
-        }
+        Self { inner: bytes::Bytes::copy_from_slice(data) }
     }
 
     /// Creates Bytes filled with zeros
     #[must_use]
     pub fn zeros(len: usize) -> Self {
-        Self {
-            inner: bytes::Bytes::from(vec![0u8; len]),
-        }
+        Self { inner: bytes::Bytes::from(vec![0u8; len]) }
     }
 
     /// Creates Bytes filled with a specific byte
     #[must_use]
     pub fn repeat(byte: u8, len: usize) -> Self {
-        Self {
-            inner: bytes::Bytes::from(vec![byte; len]),
-        }
+        Self { inner: bytes::Bytes::from(vec![byte; len]) }
     }
 
     /// Creates a builder for efficient construction
@@ -218,9 +206,7 @@ impl Bytes {
             Bound::Unbounded => self.len(),
         };
 
-        Self {
-            inner: self.inner.slice(start..end),
-        }
+        Self { inner: self.inner.slice(start..end) }
     }
 
     /// Returns first n bytes
@@ -249,19 +235,15 @@ impl Bytes {
     /// Splits off at index (consumes self)
     #[inline]
     pub fn split_off(&mut self, at: usize) -> Self {
-        Self {
-            inner: self.inner.split_off(at),
-        }
+        Self { inner: self.inner.split_off(at) }
     }
 
     /// Splits to chunks of specified size
     pub fn chunks(&self, chunk_size: usize) -> impl Iterator<Item = Self> + '_ {
-        (0..self.len())
-            .step_by(chunk_size)
-            .map(move |i| {
-                let end = (i + chunk_size).min(self.len());
-                self.slice(i..end)
-            })
+        (0..self.len()).step_by(chunk_size).map(move |i| {
+            let end = (i + chunk_size).min(self.len());
+            self.slice(i..end)
+        })
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -277,10 +259,7 @@ impl Bytes {
 
     /// Gets byte at index with bounds check
     pub fn try_get(&self, index: usize) -> BytesResult<u8> {
-        self.get(index).ok_or(BytesError::IndexOutOfBounds {
-            index,
-            len: self.len(),
-        })
+        self.get(index).ok_or(BytesError::IndexOutOfBounds { index, len: self.len() })
     }
 
     /// Returns first byte
@@ -321,9 +300,7 @@ impl Bytes {
         if needle.is_empty() {
             return Some(0);
         }
-        self.inner
-            .windows(needle.len())
-            .position(|window| window == needle)
+        self.inner.windows(needle.len()).position(|window| window == needle)
     }
 
     /// Finds last occurrence of pattern
@@ -332,9 +309,7 @@ impl Bytes {
         if needle.is_empty() {
             return Some(self.len());
         }
-        self.inner
-            .windows(needle.len())
-            .rposition(|window| window == needle)
+        self.inner.windows(needle.len()).rposition(|window| window == needle)
     }
 
     /// Checks if contains pattern
@@ -418,9 +393,8 @@ impl Bytes {
 
     /// Converts to UTF-8 string
     pub fn to_utf8(&self) -> BytesResult<String> {
-        String::from_utf8(self.to_vec()).map_err(|e| BytesError::InvalidUtf8 {
-            position: e.utf8_error().valid_up_to(),
-        })
+        String::from_utf8(self.to_vec())
+            .map_err(|e| BytesError::InvalidUtf8 { position: e.utf8_error().valid_up_to() })
     }
 
     /// Converts to UTF-8 string (lossy)
@@ -434,9 +408,7 @@ impl Bytes {
     #[inline]
     #[must_use]
     pub fn from_utf8(s: impl AsRef<str>) -> Self {
-        Self {
-            inner: bytes::Bytes::copy_from_slice(s.as_ref().as_bytes()),
-        }
+        Self { inner: bytes::Bytes::copy_from_slice(s.as_ref().as_bytes()) }
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -478,28 +450,23 @@ impl Bytes {
         let hex = hex.strip_prefix("0x").or_else(|| hex.strip_prefix("0X")).unwrap_or(hex);
 
         // Remove spaces and colons
-        let cleaned: String = hex.chars()
-            .filter(|c| !c.is_whitespace() && *c != ':' && *c != '-')
-            .collect();
+        let cleaned: String =
+            hex.chars().filter(|c| !c.is_whitespace() && *c != ':' && *c != '-').collect();
 
         if cleaned.len() % 2 != 0 {
-            return Err(BytesError::InvalidHex {
-                reason: "Odd number of hex digits".to_string(),
-            });
+            return Err(BytesError::InvalidHex { reason: "Odd number of hex digits".to_string() });
         }
 
         let mut bytes = Vec::with_capacity(cleaned.len() / 2);
         let chars: Vec<char> = cleaned.chars().collect();
 
         for chunk in chars.chunks(2) {
-            let high = hex_digit_value(chunk[0])
-                .ok_or_else(|| BytesError::InvalidHex {
-                    reason: format!("Invalid hex digit: '{}'", chunk[0]),
-                })?;
-            let low = hex_digit_value(chunk[1])
-                .ok_or_else(|| BytesError::InvalidHex {
-                    reason: format!("Invalid hex digit: '{}'", chunk[1]),
-                })?;
+            let high = hex_digit_value(chunk[0]).ok_or_else(|| BytesError::InvalidHex {
+                reason: format!("Invalid hex digit: '{}'", chunk[0]),
+            })?;
+            let low = hex_digit_value(chunk[1]).ok_or_else(|| BytesError::InvalidHex {
+                reason: format!("Invalid hex digit: '{}'", chunk[1]),
+            })?;
             bytes.push((high << 4) | low);
         }
 
@@ -514,7 +481,7 @@ impl Bytes {
     #[cfg(feature = "base64")]
     #[must_use]
     pub fn to_base64(&self) -> String {
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
         STANDARD.encode(&self.inner)
     }
 
@@ -522,34 +489,30 @@ impl Bytes {
     #[cfg(feature = "base64")]
     #[must_use]
     pub fn to_base64_url(&self) -> String {
-        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         URL_SAFE_NO_PAD.encode(&self.inner)
     }
 
     /// Creates from base64 string
     #[cfg(feature = "base64")]
     pub fn from_base64(encoded: impl AsRef<str>) -> BytesResult<Self> {
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
 
         STANDARD
             .decode(encoded.as_ref().trim())
             .map(Self::new)
-            .map_err(|e| BytesError::InvalidBase64 {
-                reason: e.to_string(),
-            })
+            .map_err(|e| BytesError::InvalidBase64 { reason: e.to_string() })
     }
 
     /// Creates from base64 string (URL-safe)
     #[cfg(feature = "base64")]
     pub fn from_base64_url(encoded: impl AsRef<str>) -> BytesResult<Self> {
-        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
         URL_SAFE_NO_PAD
             .decode(encoded.as_ref().trim())
             .map(Self::new)
-            .map_err(|e| BytesError::InvalidBase64 {
-                reason: e.to_string(),
-            })
+            .map_err(|e| BytesError::InvalidBase64 { reason: e.to_string() })
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -584,16 +547,11 @@ impl Bytes {
     /// XOR with another Bytes
     pub fn xor(&self, other: &Self) -> BytesResult<Self> {
         if self.len() != other.len() {
-            return Err(BytesError::InvalidByte {
-                value: self.len() as u16,
-            });
+            return Err(BytesError::InvalidByte { value: self.len() as u16 });
         }
 
-        let result: Vec<u8> = self.inner
-            .iter()
-            .zip(other.inner.iter())
-            .map(|(a, b)| a ^ b)
-            .collect();
+        let result: Vec<u8> =
+            self.inner.iter().zip(other.inner.iter()).map(|(a, b)| a ^ b).collect();
 
         Ok(Self::new(result))
     }
@@ -692,13 +650,11 @@ impl Bytes {
             [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, ..] => Some("png"),
             [b'G', b'I', b'F', b'8', ..] => Some("gif"),
             [b'B', b'M', ..] if self.len() >= 14 => Some("bmp"),
-            [b'R', b'I', b'F', b'F', ..] if self.len() >= 12 => {
-                match &bytes[8..12] {
-                    b"WEBP" => Some("webp"),
-                    b"WAVE" => Some("wav"),
-                    _ => None,
-                }
-            }
+            [b'R', b'I', b'F', b'F', ..] if self.len() >= 12 => match &bytes[8..12] {
+                b"WEBP" => Some("webp"),
+                b"WAVE" => Some("wav"),
+                _ => None,
+            },
 
             // Documents
             [0x25, b'P', b'D', b'F', ..] => Some("pdf"),
@@ -732,18 +688,14 @@ impl BytesBuilder {
     #[inline]
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            inner: BytesMut::new(),
-        }
+        Self { inner: BytesMut::new() }
     }
 
     /// Creates builder with capacity
     #[inline]
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            inner: BytesMut::with_capacity(capacity),
-        }
+        Self { inner: BytesMut::with_capacity(capacity) }
     }
 
     /// Returns current length
@@ -847,9 +799,7 @@ impl BytesBuilder {
     #[inline]
     #[must_use]
     pub fn build(self) -> Bytes {
-        Bytes {
-            inner: self.inner.freeze(),
-        }
+        Bytes { inner: self.inner.freeze() }
     }
 
     /// Builds and resets for reuse
@@ -904,9 +854,8 @@ impl FromStr for Bytes {
         }
 
         // Check if it looks like hex
-        let is_hex = s.chars().all(|c| {
-            c.is_ascii_hexdigit() || c.is_whitespace() || c == ':' || c == '-'
-        });
+        let is_hex =
+            s.chars().all(|c| c.is_ascii_hexdigit() || c.is_whitespace() || c == ':' || c == '-');
 
         if is_hex && !s.is_empty() {
             Self::from_hex(s)
@@ -1147,23 +1096,27 @@ impl TryFrom<serde_json::Value> for Bytes {
                 {
                     Self::from_hex(&s)
                 }
-            }
+            },
             serde_json::Value::Array(arr) => {
                 // Array of bytes
                 let mut bytes = Vec::with_capacity(arr.len());
                 for val in arr {
                     match val {
                         serde_json::Value::Number(n) => {
-                            let byte = n.as_u64()
-                                .and_then(|n| u8::try_from(n).ok())
-                                .ok_or(BytesError::InvalidByte { value: n.as_u64().unwrap_or(256) as u16 })?;
+                            let byte = n.as_u64().and_then(|n| u8::try_from(n).ok()).ok_or(
+                                BytesError::InvalidByte { value: n.as_u64().unwrap_or(256) as u16 },
+                            )?;
                             bytes.push(byte);
-                        }
-                        _ => return Err(BytesError::JsonTypeMismatch { found: "non-number in array" }),
+                        },
+                        _ => {
+                            return Err(BytesError::JsonTypeMismatch {
+                                found: "non-number in array",
+                            })
+                        },
                     }
                 }
                 Ok(Self::new(bytes))
-            }
+            },
             serde_json::Value::Null => Ok(Self::empty()),
             _ => Err(BytesError::JsonTypeMismatch {
                 found: match value {
@@ -1209,11 +1162,7 @@ mod tests {
     #[test]
     fn test_builder() {
         let mut builder = Bytes::builder();
-        builder
-            .extend(b"hello")
-            .push(b' ')
-            .extend(b"world")
-            .push_u16(0x1234);
+        builder.extend(b"hello").push(b' ').extend(b"world").push_u16(0x1234);
 
         let bytes = builder.build();
         assert_eq!(&bytes[0..11], b"hello world");
