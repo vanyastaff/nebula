@@ -1105,6 +1105,7 @@ pub fn hexdump(data: &[u8], offset: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::mem;
     use super::*;
 
     #[test]

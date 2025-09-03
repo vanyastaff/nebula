@@ -307,6 +307,7 @@ pub mod policies {
 mod tests {
     use super::*;
     use std::time::Duration;
+    use crate::ResilienceError;
 
     #[tokio::test]
     async fn test_resilience_policy_default() {
