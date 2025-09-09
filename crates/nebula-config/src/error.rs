@@ -1,8 +1,7 @@
 //! Configuration error types
-
-use thiserror::Error;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use nebula_error::Error;
 
 /// Configuration error type
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
@@ -25,7 +24,7 @@ pub enum ConfigError {
 
     /// Configuration source error
     #[error("Configuration source error: {message}")]
-    SourceError { message: String, source: String },
+    SourceError { message: String, origin: String },
 
     /// Environment variable not found
     #[error("Environment variable not found: {name}")]
@@ -99,10 +98,10 @@ impl ConfigError {
     }
 
     /// Create a source error
-    pub fn source_error(message: impl Into<String>, source: impl Into<String>) -> Self {
+    pub fn source_error(message: impl Into<String>, origin: impl Into<String>) -> Self {
         Self::SourceError { 
             message: message.into(), 
-            source: source.into() 
+            origin: origin.into() 
         }
     }
 

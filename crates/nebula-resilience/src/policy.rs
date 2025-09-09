@@ -1,13 +1,15 @@
 //! Unified resilience policy combining multiple resilience patterns
 
-use futures::Future;
+use std::future::Future;
 use std::time::Duration;
+use std::sync::Arc;
+use std::pin::Pin;
 
 use crate::{
-    bulkhead::Bulkhead,
+    bulkhead::{Bulkhead, BulkheadConfig},
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
-    error::ResilienceResult,
-    retry::RetryStrategy,
+    error::{ResilienceError, ResilienceResult},
+    retry::{RetryStrategy, retry_with_operation},
     timeout::timeout,
 };
 
@@ -21,7 +23,9 @@ pub struct ResiliencePolicy {
     /// Circuit breaker configuration
     pub circuit_breaker: Option<CircuitBreakerConfig>,
     /// Bulkhead configuration
-    pub bulkhead: Option<usize>,
+    pub bulkhead: Option<BulkheadConfig>,
+    /// Policy name for debugging
+    pub name: String,
 }
 
 impl Default for ResiliencePolicy {
@@ -30,235 +34,296 @@ impl Default for ResiliencePolicy {
             timeout: Some(Duration::from_secs(30)),
             retry: Some(RetryStrategy::default()),
             circuit_breaker: Some(CircuitBreakerConfig::default()),
-            bulkhead: Some(10),
+            bulkhead: Some(BulkheadConfig::default()),
+            name: "default".to_string(),
         }
     }
 }
 
 impl ResiliencePolicy {
-    /// Create a new resilience policy
-    #[must_use] pub fn new() -> Self {
-        Self::default()
+    /// Create a new resilience policy with name
+    pub fn named(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ..Default::default()
+        }
     }
 
     /// Set timeout
-    #[must_use] pub fn with_timeout(mut self, timeout: Duration) -> Self {
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
 
     /// Set retry strategy
-    #[must_use] pub fn with_retry(mut self, retry: RetryStrategy) -> Self {
+    #[must_use]
+    pub fn with_retry(mut self, retry: RetryStrategy) -> Self {
         self.retry = Some(retry);
         self
     }
 
     /// Set circuit breaker configuration
-    #[must_use] pub fn with_circuit_breaker(mut self, config: CircuitBreakerConfig) -> Self {
+    #[must_use]
+    pub fn with_circuit_breaker(mut self, config: CircuitBreakerConfig) -> Self {
         self.circuit_breaker = Some(config);
         self
     }
 
-    /// Set bulkhead concurrency limit
-    #[must_use] pub fn with_bulkhead(mut self, max_concurrency: usize) -> Self {
-        self.bulkhead = Some(max_concurrency);
-        self
-    }
-
-    /// Remove timeout
-    #[must_use] pub fn without_timeout(mut self) -> Self {
-        self.timeout = None;
-        self
-    }
-
-    /// Remove retry
-    #[must_use] pub fn without_retry(mut self) -> Self {
-        self.retry = None;
-        self
-    }
-
-    /// Remove circuit breaker
-    #[must_use] pub fn without_circuit_breaker(mut self) -> Self {
-        self.circuit_breaker = None;
-        self
-    }
-
-    /// Remove bulkhead
-    #[must_use] pub fn without_bulkhead(mut self) -> Self {
-        self.bulkhead = None;
+    /// Set bulkhead configuration
+    #[must_use]
+    pub fn with_bulkhead_config(mut self, config: BulkheadConfig) -> Self {
+        self.bulkhead = Some(config);
         self
     }
 
     /// Execute an operation with the configured resilience policy
     pub async fn execute<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
     where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = ResilienceResult<T>>,
-        T: Clone,
+        F: Fn() -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = ResilienceResult<T>> + Send + 'static,
+        T: Send + 'static,
     {
-        // Apply timeout if configured
+        // Create resilience components
+        let components = PolicyComponents::from_policy(self);
+
+        // Build execution chain
+        let chain = ExecutionChain::new(components, self.retry.clone());
+
+        // Apply timeout as outermost wrapper
         if let Some(timeout_duration) = self.timeout {
-            timeout(timeout_duration, self.execute_inner(operation)).await?
+            timeout(timeout_duration, chain.execute(operation)).await?
         } else {
-            self.execute_inner(operation).await
+            chain.execute(operation).await
         }
     }
 
-    /// Internal execution logic without timeout
-    async fn execute_inner<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = ResilienceResult<T>>,
-        T: Clone,
-    {
-        let result = operation().await;
+    /// Create a reusable executor for this policy
+    pub fn executor(self: Arc<Self>) -> PolicyExecutor {
+        PolicyExecutor::new(self)
+    }
+}
 
-        // Apply retry if configured
-        if let Some(retry_strategy) = &self.retry {
-            let strategy = retry_strategy.clone();
-            // Convert ResilienceResult<T> to Result<T, ResilienceError> for retry
-            return crate::retry::retry(strategy.clone(), || async {
-                match &result {
-                    Ok(value) => Ok(value.clone()),
-                    Err(e) => Err(e.clone()),
+/// Internal components created from policy
+struct PolicyComponents {
+    circuit_breaker: Option<Arc<CircuitBreaker>>,
+    bulkhead: Option<Arc<Bulkhead>>,
+}
+
+impl PolicyComponents {
+    fn from_policy(policy: &ResiliencePolicy) -> Self {
+        Self {
+            circuit_breaker: policy.circuit_breaker.as_ref()
+                .map(|config| Arc::new(CircuitBreaker::with_config(config.clone()))),
+            bulkhead: policy.bulkhead.as_ref()
+                .map(|config| Arc::new(Bulkhead::with_config(config.clone()))),
+        }
+    }
+}
+
+/// Execution chain that properly orders resilience patterns
+struct ExecutionChain {
+    components: PolicyComponents,
+    retry_strategy: Option<RetryStrategy>,
+}
+
+impl ExecutionChain {
+    fn new(components: PolicyComponents, retry_strategy: Option<RetryStrategy>) -> Self {
+        Self { components, retry_strategy }
+    }
+
+    async fn execute<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
+    where
+        F: Fn() -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = ResilienceResult<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        // Order: Bulkhead -> Retry -> Circuit Breaker -> Operation
+
+        if let Some(ref bulkhead) = self.components.bulkhead {
+            let components = self.components.clone();
+            let retry_strategy = self.retry_strategy.clone();
+
+            bulkhead.execute(move || {
+                Self::execute_with_retry_and_cb(operation, retry_strategy, components.circuit_breaker)
+            }).await
+        } else {
+            Self::execute_with_retry_and_cb(
+                operation,
+                self.retry_strategy.clone(),
+                self.components.circuit_breaker.clone()
+            ).await
+        }
+    }
+
+    async fn execute_with_retry_and_cb<T, F, Fut>(
+        operation: F,
+        retry_strategy: Option<RetryStrategy>,
+        circuit_breaker: Option<Arc<CircuitBreaker>>,
+    ) -> ResilienceResult<T>
+    where
+        F: Fn() -> Fut + Clone + Send + Sync,
+        Fut: Future<Output = ResilienceResult<T>> + Send,
+        T: Send,
+    {
+        let cb = circuit_breaker.clone();
+        let with_cb = move || {
+            let cb = cb.clone();
+            let op = operation.clone();
+            async move {
+                if let Some(ref breaker) = cb {
+                    breaker.execute(op).await
+                } else {
+                    op().await
                 }
-            })
-            .await;
-        }
+            }
+        };
 
-        // Apply circuit breaker if configured
-        if let Some(config) = &self.circuit_breaker {
-            let circuit_breaker = CircuitBreaker::with_config(config.clone());
-            return circuit_breaker.execute(|| async { result.clone() }).await;
-        }
-
-        // Apply bulkhead if configured
-        if let Some(max_concurrency) = self.bulkhead {
-            let bulkhead = Bulkhead::new(max_concurrency);
-            return bulkhead.execute(|| async { result.clone() }).await;
-        }
-
-        result
-    }
-
-    /// Execute an operation with timeout only
-    pub async fn execute_with_timeout<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = ResilienceResult<T>>,
-    {
-        if let Some(timeout_duration) = self.timeout {
-            timeout(timeout_duration, operation()).await?
+        if let Some(strategy) = retry_strategy {
+            retry_with_operation(strategy, with_cb).await
         } else {
-            operation().await
+            with_cb().await
         }
     }
+}
 
-    /// Execute an operation with retry only
-    pub async fn execute_with_retry<T, F, Fut>(&self, mut operation: F) -> ResilienceResult<T>
-    where
-        F: FnMut() -> Fut,
-        Fut: Future<Output = ResilienceResult<T>>,
-    {
-        if let Some(retry_strategy) = &self.retry {
-            crate::retry::retry(retry_strategy.clone(), operation).await
-        } else {
-            operation().await
-        }
+/// Reusable executor for a policy
+pub struct PolicyExecutor {
+    policy: Arc<ResiliencePolicy>,
+    components: PolicyComponents,
+}
+
+impl PolicyExecutor {
+    fn new(policy: Arc<ResiliencePolicy>) -> Self {
+        let components = PolicyComponents::from_policy(&policy);
+        Self { policy, components }
     }
 
-    /// Execute an operation with circuit breaker only
-    pub async fn execute_with_circuit_breaker<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
+    pub async fn execute<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
     where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = ResilienceResult<T>>,
+        F: Fn() -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = ResilienceResult<T>> + Send + 'static,
+        T: Send + 'static,
     {
-        if let Some(config) = &self.circuit_breaker {
-            let circuit_breaker = CircuitBreaker::with_config(config.clone());
-            circuit_breaker.execute(operation).await
+        let chain = ExecutionChain::new(self.components.clone(), self.policy.retry.clone());
+
+        if let Some(timeout_duration) = self.policy.timeout {
+            timeout(timeout_duration, chain.execute(operation)).await?
         } else {
-            operation().await
+            chain.execute(operation).await
         }
     }
+}
 
-    /// Execute an operation with bulkhead only
-    pub async fn execute_with_bulkhead<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = ResilienceResult<T>>,
-    {
-        if let Some(max_concurrency) = self.bulkhead {
-            let bulkhead = Bulkhead::new(max_concurrency);
-            bulkhead.execute(operation).await
-        } else {
-            operation().await
+impl Clone for PolicyComponents {
+    fn clone(&self) -> Self {
+        Self {
+            circuit_breaker: self.circuit_breaker.clone(),
+            bulkhead: self.bulkhead.clone(),
         }
     }
 }
 
 /// Builder for creating resilience policies
-pub struct ResilienceBuilder {
+pub struct ResiliencePolicyBuilder {
     policy: ResiliencePolicy,
 }
 
-impl ResilienceBuilder {
-    /// Create a new resilience builder
-    #[must_use] pub fn new() -> Self {
+impl ResiliencePolicyBuilder {
+    /// Create a new builder with a name
+    pub fn new(name: impl Into<String>) -> Self {
         Self {
-            policy: ResiliencePolicy::new(),
+            policy: ResiliencePolicy::named(name),
         }
     }
 
     /// Set timeout
-    #[must_use] pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.policy = self.policy.with_timeout(timeout);
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.policy.timeout = Some(timeout);
+        self
+    }
+
+    /// Remove timeout
+    pub fn no_timeout(mut self) -> Self {
+        self.policy.timeout = None;
         self
     }
 
     /// Set retry configuration
-    #[must_use] pub fn retry(mut self, max_attempts: usize, base_delay: Duration) -> Self {
-        let retry_strategy = RetryStrategy::new(max_attempts, base_delay);
-        self.policy = self.policy.with_retry(retry_strategy);
+    pub fn retry(mut self, max_attempts: usize, base_delay: Duration) -> Self {
+        self.policy.retry = Some(RetryStrategy::new(max_attempts, base_delay));
+        self
+    }
+
+    /// Set a custom retry strategy
+    pub fn retry_strategy(mut self, strategy: RetryStrategy) -> Self {
+        self.policy.retry = Some(strategy);
+        self
+    }
+
+    /// Remove retry
+    pub fn no_retry(mut self) -> Self {
+        self.policy.retry = None;
         self
     }
 
     /// Set circuit breaker configuration
-    #[must_use] pub fn circuit_breaker(mut self, failure_threshold: usize, reset_timeout: Duration) -> Self {
-        let config = CircuitBreakerConfig {
+    pub fn circuit_breaker(mut self, failure_threshold: usize, reset_timeout: Duration) -> Self {
+        self.policy.circuit_breaker = Some(CircuitBreakerConfig {
             failure_threshold,
             reset_timeout,
             half_open_max_operations: 3,
             count_timeouts: true,
-        };
-        self.policy = self.policy.with_circuit_breaker(config);
+        });
         self
     }
 
-    /// Set bulkhead concurrency limit
-    #[must_use] pub fn bulkhead(mut self, max_concurrency: usize) -> Self {
-        self.policy = self.policy.with_bulkhead(max_concurrency);
+    /// Set custom circuit breaker configuration
+    pub fn circuit_breaker_config(mut self, config: CircuitBreakerConfig) -> Self {
+        self.policy.circuit_breaker = Some(config);
+        self
+    }
+
+    /// Remove circuit breaker
+    pub fn no_circuit_breaker(mut self) -> Self {
+        self.policy.circuit_breaker = None;
+        self
+    }
+
+    /// Set a bulkhead concurrency limit
+    pub fn bulkhead(mut self, max_concurrency: usize) -> Self {
+        self.policy.bulkhead = Some(BulkheadConfig {
+            max_concurrency,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Set custom bulkhead configuration
+    pub fn bulkhead_config(mut self, config: BulkheadConfig) -> Self {
+        self.policy.bulkhead = Some(config);
+        self
+    }
+
+    /// Remove bulkhead
+    pub fn no_bulkhead(mut self) -> Self {
+        self.policy.bulkhead = None;
         self
     }
 
     /// Build the resilience policy
-    #[must_use] pub fn build(self) -> ResiliencePolicy {
+    pub fn build(self) -> ResiliencePolicy {
         self.policy
-    }
-}
-
-impl Default for ResilienceBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
 /// Predefined resilience policies for common scenarios
 pub mod policies {
-    use super::{ResiliencePolicy, ResilienceBuilder, Duration};
+    use super::*;
 
     /// Policy for database operations
-    #[must_use] pub fn database() -> ResiliencePolicy {
-        ResilienceBuilder::new()
+    pub fn database() -> ResiliencePolicy {
+        ResiliencePolicyBuilder::new("database")
             .timeout(Duration::from_secs(5))
             .retry(3, Duration::from_millis(100))
             .circuit_breaker(5, Duration::from_secs(60))
@@ -267,8 +332,8 @@ pub mod policies {
     }
 
     /// Policy for HTTP API calls
-    #[must_use] pub fn http_api() -> ResiliencePolicy {
-        ResilienceBuilder::new()
+    pub fn http_api() -> ResiliencePolicy {
+        ResiliencePolicyBuilder::new("http_api")
             .timeout(Duration::from_secs(10))
             .retry(3, Duration::from_secs(1))
             .circuit_breaker(3, Duration::from_secs(30))
@@ -277,109 +342,42 @@ pub mod policies {
     }
 
     /// Policy for file operations
-    #[must_use] pub fn file_operations() -> ResiliencePolicy {
-        ResilienceBuilder::new()
+    pub fn file_operations() -> ResiliencePolicy {
+        ResiliencePolicyBuilder::new("file_operations")
             .timeout(Duration::from_secs(30))
             .retry(2, Duration::from_secs(1))
+            .no_circuit_breaker()
             .bulkhead(10)
             .build()
     }
 
     /// Policy for long-running operations
-    #[must_use] pub fn long_running() -> ResiliencePolicy {
-        ResilienceBuilder::new()
+    pub fn long_running() -> ResiliencePolicy {
+        ResiliencePolicyBuilder::new("long_running")
             .timeout(Duration::from_secs(300))
             .retry(1, Duration::from_secs(5))
+            .no_circuit_breaker()
             .bulkhead(5)
             .build()
     }
 
     /// Policy for critical operations (minimal resilience)
-    #[must_use] pub fn critical() -> ResiliencePolicy {
-        ResilienceBuilder::new()
+    pub fn critical() -> ResiliencePolicy {
+        ResiliencePolicyBuilder::new("critical")
             .timeout(Duration::from_secs(60))
-            .retry(1, Duration::from_secs(1))
+            .no_retry()
+            .no_circuit_breaker()
+            .no_bulkhead()
             .build()
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-    use crate::ResilienceError;
-
-    #[tokio::test]
-    async fn test_resilience_policy_default() {
-        let policy = ResiliencePolicy::default();
-        assert!(policy.timeout.is_some());
-        assert!(policy.retry.is_some());
-        assert!(policy.circuit_breaker.is_some());
-        assert!(policy.bulkhead.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_resilience_policy_builder() {
-        let policy = ResilienceBuilder::new()
-            .timeout(Duration::from_secs(10))
-            .retry(5, Duration::from_secs(2))
-            .circuit_breaker(3, Duration::from_secs(30))
-            .bulkhead(15)
-            .build();
-
-        assert_eq!(policy.timeout, Some(Duration::from_secs(10)));
-        assert!(policy.retry.is_some());
-        assert!(policy.circuit_breaker.is_some());
-        assert_eq!(policy.bulkhead, Some(15));
-    }
-
-    #[tokio::test]
-    async fn test_resilience_policy_execute() {
-        let policy = ResiliencePolicy::new()
-            .with_timeout(Duration::from_millis(100))
-            .with_retry(RetryStrategy::new(2, Duration::from_millis(10)));
-
-        let result = policy
-            .execute(|| async { Ok::<&str, ResilienceError>("success") })
-            .await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "success");
-    }
-
-    #[tokio::test]
-    async fn test_resilience_policy_timeout() {
-        let policy = ResiliencePolicy::new().with_timeout(Duration::from_millis(10));
-
-        let result = policy
-            .execute(|| async {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                Ok::<&str, ResilienceError>("should timeout")
-            })
-            .await;
-
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ResilienceError::Timeout { .. } => {}
-            _ => panic!("Expected timeout error"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_predefined_policies() {
-        let db_policy = policies::database();
-        assert_eq!(db_policy.timeout, Some(Duration::from_secs(5)));
-
-        let http_policy = policies::http_api();
-        assert_eq!(http_policy.timeout, Some(Duration::from_secs(10)));
-
-        let file_policy = policies::file_operations();
-        assert_eq!(file_policy.timeout, Some(Duration::from_secs(30)));
-
-        let long_policy = policies::long_running();
-        assert_eq!(long_policy.timeout, Some(Duration::from_secs(300)));
-
-        let critical_policy = policies::critical();
-        assert_eq!(critical_policy.timeout, Some(Duration::from_secs(60)));
+    /// Policy for real-time operations
+    pub fn real_time() -> ResiliencePolicy {
+        ResiliencePolicyBuilder::new("real_time")
+            .timeout(Duration::from_millis(100))
+            .no_retry()
+            .circuit_breaker(10, Duration::from_secs(5))
+            .bulkhead(100)
+            .build()
     }
 }

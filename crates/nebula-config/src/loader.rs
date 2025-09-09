@@ -131,15 +131,15 @@ impl ConfigLoader for FileLoader {
         match source {
             ConfigSource::File(path) | ConfigSource::FileAuto(path) => {
                 let resolved_path = self.resolve_path(path);
-                
+
                 if !resolved_path.exists() {
                     return Err(ConfigError::file_not_found(&resolved_path));
                 }
-                
+
                 let content = tokio::fs::read_to_string(&resolved_path)
                     .await
                     .map_err(|e| ConfigError::file_read_error(&resolved_path, e.to_string()))?;
-                
+
                 let format = ConfigFormat::from_path(&resolved_path);
                 self.parse_content(&content, format)
             }
@@ -149,26 +149,26 @@ impl ConfigLoader for FileLoader {
             )),
         }
     }
-    
+
     fn supports(&self, source: &ConfigSource) -> bool {
         source.is_file_based()
     }
-    
+
     async fn metadata(&self, source: &ConfigSource) -> ConfigResult<SourceMetadata> {
         match source {
             ConfigSource::File(path) | ConfigSource::FileAuto(path) => {
                 let resolved_path = self.resolve_path(path);
-                
+
                 if !resolved_path.exists() {
                     return Err(ConfigError::file_not_found(&resolved_path));
                 }
-                
+
                 let metadata = tokio::fs::metadata(&resolved_path)
                     .await
                     .map_err(|e| ConfigError::file_read_error(&resolved_path, e.to_string()))?;
-                
+
                 let format = ConfigFormat::from_path(&resolved_path);
-                
+
                 Ok(SourceMetadata::new(source.clone())
                     .with_size(metadata.len())
                     .with_format(format)
@@ -194,10 +194,10 @@ impl ConfigLoader for FileLoader {
 pub struct EnvLoader {
     /// Environment variable prefix
     pub prefix: Option<String>,
-    
+
     /// Separator for nested keys
     pub separator: String,
-    
+
     /// Case sensitivity
     pub case_sensitive: bool,
 }
@@ -211,7 +211,7 @@ impl EnvLoader {
             case_sensitive: false,
         }
     }
-    
+
     /// Create a new environment loader with prefix
     pub fn with_prefix(prefix: impl Into<String>) -> Self {
         Self {
@@ -220,79 +220,79 @@ impl EnvLoader {
             case_sensitive: false,
         }
     }
-    
+
     /// Set separator for nested keys
     pub fn with_separator(mut self, separator: impl Into<String>) -> Self {
         self.separator = separator.into();
         self
     }
-    
+
     /// Set case sensitivity
     pub fn with_case_sensitive(mut self, case_sensitive: bool) -> Self {
         self.case_sensitive = case_sensitive;
         self
     }
-    
+
     /// Convert environment variables to nested JSON structure
     fn env_to_json(&self, vars: HashMap<String, String>) -> serde_json::Value {
         let mut result = serde_json::Map::new();
-        
+
         for (key, value) in vars {
             let parts: Vec<&str> = key.split(&self.separator).collect();
             self.insert_nested(&mut result, &parts, value);
         }
-        
+
         serde_json::Value::Object(result)
     }
-    
+
     /// Insert value into nested structure
     fn insert_nested(&self, obj: &mut serde_json::Map<String, serde_json::Value>, parts: &[&str], value: String) {
         if parts.is_empty() {
             return;
         }
-        
+
         if parts.len() == 1 {
             let parsed_value = self.parse_env_value(&value);
             obj.insert(parts[0].to_string(), parsed_value);
             return;
         }
-        
+
         let key = parts[0].to_string();
         let remaining = &parts[1..];
-        
+
         let nested = obj.entry(key).or_insert_with(|| {
             serde_json::Value::Object(serde_json::Map::new())
         });
-        
+
         if let serde_json::Value::Object(nested_obj) = nested {
             self.insert_nested(nested_obj, remaining, value);
         }
     }
-    
+
     /// Parse environment variable value
     fn parse_env_value(&self, value: &str) -> serde_json::Value {
         // Try to parse as different types
         if let Ok(bool_val) = value.parse::<bool>() {
             return serde_json::Value::Bool(bool_val);
         }
-        
+
         if let Ok(int_val) = value.parse::<i64>() {
             return serde_json::Value::Number(serde_json::Number::from(int_val));
         }
-        
+
         if let Ok(float_val) = value.parse::<f64>() {
             if let Some(num) = serde_json::Number::from_f64(float_val) {
                 return serde_json::Value::Number(num);
             }
         }
-        
+
         // Try to parse as JSON
         if value.starts_with('{') || value.starts_with('[') {
             if let Ok(json_val) = serde_json::from_str(value) {
                 return json_val;
             }
         }
-        
+
         // Default to string
         serde_json::Value::String(value.to_string())
     }
@@ -320,13 +320,13 @@ impl ConfigLoader for EnvLoader {
                         } else {
                             key.to_uppercase()
                         };
-                        
+
                         let prefix_to_check = if self.case_sensitive {
                             prefix.clone()
                         } else {
                             prefix.to_uppercase()
                         };
-                        
+
                         if key_to_check.starts_with(&prefix_to_check) {
                             let stripped_key = key_to_check.strip_prefix(&prefix_to_check)
                                 .unwrap_or(&key_to_check)
@@ -337,7 +337,7 @@ impl ConfigLoader for EnvLoader {
                         }
                     })
                     .collect();
-                
+
                 Ok(self.env_to_json(vars))
             }
             _ => Err(ConfigError::source_error(
@@ -346,11 +346,11 @@ impl ConfigLoader for EnvLoader {
             )),
         }
     }
-    
+
     fn supports(&self, source: &ConfigSource) -> bool {
         source.is_env_based()
     }
-    
+
     async fn metadata(&self, source: &ConfigSource) -> ConfigResult<SourceMetadata> {
         match source {
             ConfigSource::Env | ConfigSource::EnvWithPrefix(_) => {
@@ -387,13 +387,13 @@ impl CompositeLoader {
             loaders: Vec::new(),
         }
     }
-    
+
     /// Add a loader
     pub fn add_loader(mut self, loader: Box<dyn ConfigLoader>) -> Self {
         self.loaders.push(loader);
         self
     }
-    
+
     /// Create default composite loader with file and env loaders
     pub fn default_loaders() -> Self {
         Self::new()

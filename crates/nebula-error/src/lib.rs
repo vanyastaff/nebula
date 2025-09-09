@@ -49,4 +49,8 @@ pub use retry::{RetryStrategy, Retryable};
 /// Common prelude for error handling
 pub mod prelude {
     pub use super::{ErrorContext, ErrorKind, NebulaError, Result, RetryStrategy, Retryable};
+    pub use thiserror::Error as ThisError;
 }
+
+// Public re-export of thiserror::Error at the crate root for convenience
+pub use thiserror::Error;

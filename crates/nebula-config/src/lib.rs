@@ -1,14 +1,21 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Nebula Config - configuration management for Nebula
+#![deny(unused_must_use)]
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// Public modules
+pub mod error;
+pub mod source;
+pub mod loader;
+pub mod watcher;
+pub mod validator;
+pub mod builder;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+// Common result type for this crate
+pub type ConfigResult<T> = core::result::Result<T, error::ConfigError>;
+
+// Re-exports of main types for ergonomic usage
+pub use builder::{Config, ConfigBuilder};
+pub use error::ConfigError;
+pub use loader::{ConfigLoader, CompositeLoader, EnvLoader, FileLoader};
+pub use source::{ConfigFormat, ConfigSource, SourceMetadata};
+pub use validator::{CompositeValidator, ConfigValidator, NoOpValidator, SchemaValidator};
+pub use watcher::{ConfigWatchEvent, ConfigWatchEventType, ConfigWatcher, FileWatcher, PollingWatcher};

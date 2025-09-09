@@ -42,6 +42,7 @@ pub use types::*;
 pub use error::*;
 
 mod error;
+mod keys;
 
 /// Result type used throughout Nebula
 pub type Result<T> = std::result::Result<T, error::CoreError>;

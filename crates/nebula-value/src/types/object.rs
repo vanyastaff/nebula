@@ -812,7 +812,7 @@ impl Object {
     pub fn size_bytes(&self) -> usize {
         self.inner
             .iter()
-            .map(|(k, v)| {
+            .map(|(k, _v)| {
                 k.len() + std::mem::size_of::<Value>() // Simplified
             })
             .sum()

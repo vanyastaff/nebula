@@ -4,7 +4,7 @@
 //! utilities used throughout the Nebula system.
 
 use std::fmt;
-use thiserror::Error;
+use nebula_error::Error;
 
 use super::id::{ExecutionId, NodeId, TenantId, UserId, WorkflowId};
 

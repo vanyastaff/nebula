@@ -19,9 +19,7 @@ bincode = "1.3"
 
 # UUID generation
 uuid = { workspace = true, features = ["v4", "serde"] }
-
-# Error handling
-thiserror = { workspace = true }
+domain-key = {version = "0.1.1", features = ["serde"]}
 
 # Async traits
 async-trait = "0.1"
@@ -31,6 +29,10 @@ chrono = { workspace = true, features = ["serde"] }
 
 # Collections
 dashmap = "5.5"
+
+nebula-error = { path = "../nebula-error" }
+
+
 
 [dev-dependencies]
 # Testing

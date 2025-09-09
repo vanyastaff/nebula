@@ -16,9 +16,8 @@ description = "Value type system for Nebula workflow engine"
 [dependencies]
 # From workspace
 
-
-thiserror = { workspace = true }
-anyhow = { workspace = true }
+nebula-error = { path = "../nebula-error" }
+thiserror = "2"
 rayon = { workspace = true, optional = true }
 
 # For binary data handling

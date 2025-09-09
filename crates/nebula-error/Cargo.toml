@@ -13,11 +13,11 @@ documentation.workspace = true
 
 [dependencies]
 # Error handling
-thiserror = { workspace = true }
-anyhow = "1.0"
+thiserror = { version = "2.0.16" }
+anyhow = {version = "1.0.99", features = ["backtrace"]}
 
 # Serialization
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true }
 serde_json = "1.0"
 bincode = "1.3"
 
@@ -25,7 +25,7 @@ bincode = "1.3"
 uuid = { workspace = true, features = ["v4", "serde"] }
 
 # Async traits
-async-trait = "0.1"
+async-trait = {workspace = true}
 
 # Time handling
 chrono = { workspace = true, features = ["serde"] }
@@ -33,9 +33,6 @@ tokio = { workspace = true, features = ["time"] }
 
 # Random number generation
 rand = "0.8"
-
-# Collections
-dashmap = "5.5"
 
 [dev-dependencies]
 # Testing

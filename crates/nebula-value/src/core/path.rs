@@ -280,7 +280,7 @@ impl ValuePath {
             match &self.segments[index] {
                 PathSegment::Key(key) => {
                     if let Value::Object(obj) = value {
-                        obj.insert(key.clone(), new_value);
+                        let _ = obj.insert(key.clone(), new_value);
                         Ok(())
                     } else {
                         Err(ValueError::type_mismatch("object", value.type_name()))

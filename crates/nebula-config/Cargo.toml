@@ -13,20 +13,30 @@ documentation.workspace = true
 publish = false
 
 [dependencies]
-serde_json = { version = "1", optional = true }
-serde_yaml = { version = "0.9", optional = true }
-toml = { version = "0.9.5", optional = true }
-thiserror = {workspace = true }
+# Core serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# Format parsers
+yaml-rust = { version = "0.4.5" }
+toml = { version = "0.8" }
 
+# Async and concurrency
+tokio = { workspace = true }
+async-trait = {workspace = true}
+dashmap = "5"
+notify = "6"
+chrono = {workspace = true}
 
+# Error derive support via re-exported macro
+thiserror = "2"
+
+# Internal crates
+nebula-error = { path = "../nebula-error" }
+nebula-log = { path = "../nebula-log" }
 
 [features]
+# No optional features at the moment; all formats enabled by default via dependencies
 default = []
-yaml = ["dep:serde_yaml"]
-json = ["dep:serde_json"]
-toml = ["dep:toml"]
-
-
 
 [lints]
 workspace = true

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use nebula_log::{debug, info, warn};
 
 use crate::error::{ResilienceError, ResilienceResult};
 

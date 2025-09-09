@@ -4,7 +4,7 @@ use crate::{
     ConfigError, ConfigResult, ConfigSource, ConfigLoader, ConfigValidator, 
     ConfigWatcher, CompositeLoader, SourceMetadata
 };
-use async_trait::async_trait;
+
 use serde::{Deserialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,7 +12,6 @@ use dashmap::DashMap;
 use tokio::sync::RwLock;
 
 /// Main configuration container
-#[derive(Debug)]
 pub struct Config {
     /// Configuration data
     data: Arc<RwLock<serde_json::Value>>,
@@ -121,7 +120,7 @@ impl Config {
                     self.merge_values(&mut merged_data, data)?;
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to load from source {}: {}", source, e);
+                    nebula_log::warn!("Failed to load from source {}: {}", source, e);
                 }
             }
         }
@@ -171,7 +170,7 @@ impl Config {
     }
     
     /// Get nested value from JSON using dot notation
-    fn get_nested_value(&self, value: &serde_json::Value, path: &str) -> ConfigResult<&serde_json::Value> {
+    fn get_nested_value<'a>(&self, value: &'a serde_json::Value, path: &str) -> ConfigResult<&'a serde_json::Value> {
         let parts: Vec<&str> = path.split('.').collect();
         let mut current = value;
         
@@ -232,7 +231,6 @@ impl Config {
 }
 
 /// Configuration builder
-#[derive(Debug)]
 pub struct ConfigBuilder {
     /// Configuration sources
     sources: Vec<ConfigSource>,
@@ -371,7 +369,7 @@ impl ConfigBuilder {
                     config.merge_values(&mut merged_data, data)?;
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to load from source {}: {}", source, e);
+                    nebula_log::warn!("Failed to load from source {}: {}", source, e);
                 }
             }
         }
@@ -405,7 +403,7 @@ impl ConfigBuilder {
                     
                     if let Some(config) = config_weak.upgrade() {
                         if let Err(e) = config.reload().await {
-                            tracing::error!("Auto-reload failed: {}", e);
+                            nebula_log::error!("Auto-reload failed: {}", e);
                         }
                     } else {
                         break; // Config has been dropped

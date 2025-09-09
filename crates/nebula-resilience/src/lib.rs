@@ -11,32 +11,30 @@
 //! - **Bulkhead Isolation**: Resource isolation patterns
 //! - **Timeout Management**: Adaptive and hierarchical timeouts
 //! - **Fallback Strategies**: Graceful degradation
-//! - **Caching**: Multiple caching patterns
-//! - **Load Balancing**: Various load distribution strategies
-//! - **Observability**: Built-in metrics and tracing
+//! - **Hedge Requests**: Reduce tail latency
 //!
 //! ## Quick Start
 //!
 //! ```rust
 //! use nebula_resilience::prelude::*;
 //! use nebula_resilience::ResilienceManager;
+//! use std::time::Duration;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Create a resilience manager with default configuration
-//!     let manager = ResilienceManager::builder()
-//!         .with_circuit_breaker()
-//!         .with_retry(RetryConfig::default())
-//!         .with_rate_limiter(RateLimiterConfig::default())
-//!         .build()?;
+//!     // Create a resilience policy
+//!     let policy = ResiliencePolicy::builder("my-service")
+//!         .timeout(Duration::from_secs(30))
+//!         .retry(3, Duration::from_secs(1))
+//!         .circuit_breaker(5, Duration::from_secs(60))
+//!         .bulkhead(10)
+//!         .build();
 //!
-//!     // Execute a protected operation
-//!     let result = manager
-//!         .execute("my-service", async {
-//!             // Your potentially failing operation
-//!             Ok::<_, Error>("Success")
-//!         })
-//!         .await?;
+//!     // Execute with resilience
+//!     let result = policy.execute(|| async {
+//!         // Your potentially failing operation
+//!         Ok::<_, ResilienceError>("Success")
+//!     }).await?;
 //!
 //!     Ok(())
 //! }
@@ -47,19 +45,89 @@
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
-// Core modules
-pub mod bulkhead;
-pub mod circuit_breaker;
-pub mod error;
-pub mod policy;
-pub mod retry;
-pub mod timeout;
+// Core module with fundamental types
+pub mod core;
 
-// Re-exports for convenience
-pub use crate::timeout::timeout;
-pub use error::{ResilienceError, ResilienceResult};
-pub use policy::policies;
-pub use policy::{ResilienceBuilder, ResiliencePolicy};
+// Pattern implementations
+pub mod patterns;
+
+// Higher-level abstractions
+mod compose;
+mod policy;
+mod manager;
+
+// Re-export compose, policy, and manager at root level
+pub use compose::{ResilienceChain, ChainBuilder, ResilienceMiddleware};
+pub use policy::{ResiliencePolicy, ResiliencePolicyBuilder, PolicyExecutor};
+pub use manager::{ResilienceManager, ResilienceManagerBuilder};
+
+// Public API - core types
+pub use core::{
+    ResilienceError,
+    ResilienceResult,
+    ErrorClass,
+    ResiliencePattern,
+    Executable,
+};
+
+// Public API - patterns
+pub use patterns::{
+    // Circuit breaker
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CircuitState,
+
+    // Bulkhead
+    Bulkhead,
+    BulkheadConfig,
+
+    // Retry
+    retry,
+    retry_with_operation,
+    RetryStrategy,
+    RetryBuilder,
+
+    // Timeout
+    timeout,
+    timeout_with_original_error,
+
+    // Fallback
+    FallbackStrategy,
+    ValueFallback,
+
+    // Rate limiting
+    RateLimiter,
+    RateLimiterFactory,
+    TokenBucket,
+    LeakyBucket,
+    SlidingWindow,
+    AdaptiveRateLimiter,
+
+    // Hedge
+    HedgeExecutor,
+    HedgeConfig,
+};
+
+/// Prelude module for common imports
+pub mod prelude {
+    pub use crate::core::{ResilienceError, ResilienceResult};
+    pub use crate::patterns::{
+        Bulkhead,
+        CircuitBreaker,
+        RetryStrategy,
+        timeout,
+    };
+    pub use crate::{
+        ResiliencePolicy,
+        ResilienceManager,
+        ResilienceChain,
+    };
+}
+
+/// Predefined policies for common scenarios
+pub mod policies {
+    pub use crate::policy::policies::*;
+}
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

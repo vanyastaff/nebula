@@ -1,4 +1,4 @@
-use thiserror::Error;
+use nebula_error::Error;
 
 /// Type alias for Result with ValueError
 pub type ValueResult<T> = Result<T, ValueError>;

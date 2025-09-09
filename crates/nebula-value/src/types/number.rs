@@ -110,7 +110,7 @@ impl Integer {
         }
     }
 
-    /// Creates from u64 with bounds checking
+    /// Creates from u64 with bound checking
     pub const fn from_u64(value: u64) -> NumberResult<Self> {
         if value > i64::MAX as u64 {
             Err(NumberError::Overflow)

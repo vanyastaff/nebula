@@ -157,11 +157,11 @@ impl ConfigWatcher for FileWatcher {
                         path: event.paths.first().cloned(),
                         timestamp: chrono::Utc::now(),
                     }) {
-                        tracing::error!("Failed to send watch event: {}", e);
+                        nebula_log::error!("Failed to send watch event: {}", e);
                     }
                 }
                 Err(e) => {
-                    tracing::error!("Watch error: {}", e);
+                    nebula_log::error!("Watch error: {}", e);
                 }
             }
         }).map_err(|e| ConfigError::watch_error(e.to_string()))?;

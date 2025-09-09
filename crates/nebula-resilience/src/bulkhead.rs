@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use tokio::sync::Semaphore;
-use tracing::debug;
+use nebula_log::debug;
 
 use crate::error::{ResilienceError, ResilienceResult};
 
