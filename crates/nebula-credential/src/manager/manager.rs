@@ -126,9 +126,10 @@ impl CredentialManager {
         // Re-check cache inside lock
         if let Some(cache) = &self.cache
             && let Ok(Some(token)) = cache.get(credential_id.as_str()).await
-                && !self.should_refresh(&token) {
-                    return Ok(token);
-                }
+            && !self.should_refresh(&token)
+        {
+            return Ok(token);
+        }
 
         // Refresh the token
         self.refresh_internal(credential_id).await
@@ -173,10 +174,11 @@ impl CredentialManager {
 
         // Cache initial token if provided
         if let Some(token) = token
-            && let Some(cache) = &self.cache {
-                let ttl = token.ttl().unwrap_or(Duration::from_secs(300));
-                let _ = cache.put(credential_id.as_str(), &token, ttl).await;
-            }
+            && let Some(cache) = &self.cache
+        {
+            let ttl = token.ttl().unwrap_or(Duration::from_secs(300));
+            let _ = cache.put(credential_id.as_str(), &token, ttl).await;
+        }
 
         Ok(credential_id)
     }

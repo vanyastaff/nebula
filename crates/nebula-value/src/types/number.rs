@@ -1410,10 +1410,13 @@ impl FromStr for Number {
         let trimmed = s.trim();
 
         // Try integer first if no decimal point
-        if !trimmed.contains('.') && !trimmed.contains('e') && !trimmed.contains('E')
-            && let Ok(i) = trimmed.parse::<i64>() {
-                return Ok(Self::Int(Integer::new(i)));
-            }
+        if !trimmed.contains('.')
+            && !trimmed.contains('e')
+            && !trimmed.contains('E')
+            && let Ok(i) = trimmed.parse::<i64>()
+        {
+            return Ok(Self::Int(Integer::new(i)));
+        }
 
         // Try float
         if let Ok(f) = trimmed.parse::<f64>() {

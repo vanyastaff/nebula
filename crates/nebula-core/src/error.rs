@@ -3,8 +3,8 @@
 //! This module provides centralized error types and error handling
 //! utilities used throughout the Nebula system.
 
-use std::fmt;
 use nebula_error::Error;
+use std::fmt;
 
 use super::id::{ExecutionId, NodeId, TenantId, UserId, WorkflowId};
 

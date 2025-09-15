@@ -1,6 +1,6 @@
 //! Configuration loader implementation
 
-use crate::{ConfigError, ConfigResult, ConfigSource, ConfigFormat, SourceMetadata};
+use crate::{ConfigError, ConfigFormat, ConfigResult, ConfigSource, SourceMetadata};
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
@@ -11,10 +11,10 @@ use std::path::Path;
 pub trait ConfigLoader: Send + Sync {
     /// Load configuration from a source
     async fn load(&self, source: &ConfigSource) -> ConfigResult<serde_json::Value>;
-    
+
     /// Check if the loader supports the given source
     fn supports(&self, source: &ConfigSource) -> bool;
-    
+
     /// Get metadata for the source
     async fn metadata(&self, source: &ConfigSource) -> ConfigResult<SourceMetadata>;
 }
@@ -31,14 +31,14 @@ impl FileLoader {
     pub fn new() -> Self {
         Self { base_dir: None }
     }
-    
+
     /// Create a new file loader with base directory
     pub fn with_base_dir(base_dir: impl Into<std::path::PathBuf>) -> Self {
         Self {
             base_dir: Some(base_dir.into()),
         }
     }
-    
+
     /// Resolve path relative to base directory
     fn resolve_path(&self, path: &Path) -> std::path::PathBuf {
         if let Some(base_dir) = &self.base_dir {
@@ -51,13 +51,15 @@ impl FileLoader {
             path.to_path_buf()
         }
     }
-    
+
     /// Parse configuration content based on format
-    fn parse_content(&self, content: &str, format: ConfigFormat) -> ConfigResult<serde_json::Value> {
+    fn parse_content(
+        &self,
+        content: &str,
+        format: ConfigFormat,
+    ) -> ConfigResult<serde_json::Value> {
         match format {
-            ConfigFormat::Json => {
-                serde_json::from_str(content).map_err(ConfigError::from)
-            }
+            ConfigFormat::Json => serde_json::from_str(content).map_err(ConfigError::from),
             ConfigFormat::Toml => {
                 let value: toml::Value = toml::from_str(content)?;
                 Ok(serde_json::to_value(value)?)
@@ -75,7 +77,7 @@ impl FileLoader {
             _ => Err(ConfigError::format_not_supported(format.to_string())),
         }
     }
-    
+
     /// Convert YAML value to JSON value
     fn yaml_to_json(&self, yaml: &yaml_rust::Yaml) -> ConfigResult<serde_json::Value> {
         match yaml {
@@ -85,9 +87,7 @@ impl FileLoader {
             yaml_rust::Yaml::Integer(i) => {
                 Ok(serde_json::Value::Number(serde_json::Number::from(*i)))
             }
-            yaml_rust::Yaml::Boolean(b) => {
-                Ok(serde_json::Value::Bool(*b))
-            }
+            yaml_rust::Yaml::Boolean(b) => Ok(serde_json::Value::Bool(*b)),
             yaml_rust::Yaml::Array(arr) => {
                 let mut json_arr = Vec::new();
                 for item in arr {
@@ -101,10 +101,12 @@ impl FileLoader {
                     let key_str = match key {
                         yaml_rust::Yaml::String(s) => s.clone(),
                         yaml_rust::Yaml::Integer(i) => i.to_string(),
-                        _ => return Err(ConfigError::parse_error(
-                            std::path::PathBuf::from("yaml"),
-                            "Invalid key type in YAML hash"
-                        )),
+                        _ => {
+                            return Err(ConfigError::parse_error(
+                                std::path::PathBuf::from("yaml"),
+                                "Invalid key type in YAML hash",
+                            ));
+                        }
                     };
                     json_obj.insert(key_str, self.yaml_to_json(value)?);
                 }
@@ -113,7 +115,7 @@ impl FileLoader {
             yaml_rust::Yaml::Null => Ok(serde_json::Value::Null),
             _ => Err(ConfigError::parse_error(
                 std::path::PathBuf::from("yaml"),
-                "Unsupported YAML type"
+                "Unsupported YAML type",
             )),
         }
     }
@@ -145,7 +147,7 @@ impl ConfigLoader for FileLoader {
             }
             _ => Err(ConfigError::source_error(
                 "FileLoader does not support this source type",
-                source.name()
+                source.name(),
             )),
         }
     }
@@ -173,17 +175,21 @@ impl ConfigLoader for FileLoader {
                     .with_size(metadata.len())
                     .with_format(format)
                     .with_last_modified(
-                        metadata.modified()
+                        metadata
+                            .modified()
                             .ok()
-                            .and_then(|t| chrono::DateTime::from_timestamp(
-                                t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64, 0
-                            ))
-                            .unwrap_or_else(chrono::Utc::now)
+                            .and_then(|t| {
+                                chrono::DateTime::from_timestamp(
+                                    t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64,
+                                    0,
+                                )
+                            })
+                            .unwrap_or_else(chrono::Utc::now),
                     ))
             }
             _ => Err(ConfigError::source_error(
                 "FileLoader does not support this source type",
-                source.name()
+                source.name(),
             )),
         }
     }
@@ -246,7 +252,12 @@ impl EnvLoader {
     }
 
     /// Insert value into nested structure
-    fn insert_nested(&self, obj: &mut serde_json::Map<String, serde_json::Value>, parts: &[&str], value: String) {
+    fn insert_nested(
+        &self,
+        obj: &mut serde_json::Map<String, serde_json::Value>,
+        parts: &[&str],
+        value: String,
+    ) {
         if parts.is_empty() {
             return;
         }
@@ -260,9 +271,9 @@ impl EnvLoader {
         let key = parts[0].to_string();
         let remaining = &parts[1..];
 
-        let nested = obj.entry(key).or_insert_with(|| {
-            serde_json::Value::Object(serde_json::Map::new())
-        });
+        let nested = obj
+            .entry(key)
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
 
         if let serde_json::Value::Object(nested_obj) = nested {
             self.insert_nested(nested_obj, remaining, value);
@@ -328,7 +339,8 @@ impl ConfigLoader for EnvLoader {
                         };
 
                         if key_to_check.starts_with(&prefix_to_check) {
-                            let stripped_key = key_to_check.strip_prefix(&prefix_to_check)
+                            let stripped_key = key_to_check
+                                .strip_prefix(&prefix_to_check)
                                 .unwrap_or(&key_to_check)
                                 .trim_start_matches(&self.separator);
                             Some((stripped_key.to_string(), value))
@@ -342,7 +354,7 @@ impl ConfigLoader for EnvLoader {
             }
             _ => Err(ConfigError::source_error(
                 "EnvLoader does not support this source type",
-                source.name()
+                source.name(),
             )),
         }
     }
@@ -360,7 +372,7 @@ impl ConfigLoader for EnvLoader {
             }
             _ => Err(ConfigError::source_error(
                 "EnvLoader does not support this source type",
-                source.name()
+                source.name(),
             )),
         }
     }
@@ -416,27 +428,27 @@ impl ConfigLoader for CompositeLoader {
                 return loader.load(source).await;
             }
         }
-        
+
         Err(ConfigError::source_error(
             "No loader supports this source type",
-            source.name()
+            source.name(),
         ))
     }
-    
+
     fn supports(&self, source: &ConfigSource) -> bool {
         self.loaders.iter().any(|loader| loader.supports(source))
     }
-    
+
     async fn metadata(&self, source: &ConfigSource) -> ConfigResult<SourceMetadata> {
         for loader in &self.loaders {
             if loader.supports(source) {
                 return loader.metadata(source).await;
             }
         }
-        
+
         Err(ConfigError::source_error(
             "No loader supports this source type",
-            source.name()
+            source.name(),
         ))
     }
 }

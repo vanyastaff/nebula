@@ -1,4 +1,3 @@
-
 /// Wrapper for ephemeral data that should never be serialized
 #[derive(Debug, Clone, Default)]
 pub struct Ephemeral<T>(pub T);

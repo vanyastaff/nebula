@@ -179,9 +179,10 @@ pub trait Retryable {
         for attempt in 0..strategy.max_attempts {
             // Check timeout
             if let Some(timeout) = strategy.timeout
-                && start_time.elapsed() >= timeout {
-                    return Err(NebulaError::timeout("retry operation", timeout));
-                }
+                && start_time.elapsed() >= timeout
+            {
+                return Err(NebulaError::timeout("retry operation", timeout));
+            }
 
             // Execute the operation
             match self.execute().await {
@@ -225,9 +226,10 @@ where
     for attempt in 0..strategy.max_attempts {
         // Check timeout
         if let Some(timeout) = strategy.timeout
-            && start_time.elapsed() >= timeout {
-                return Err(NebulaError::timeout("retry operation", timeout));
-            }
+            && start_time.elapsed() >= timeout
+        {
+            return Err(NebulaError::timeout("retry operation", timeout));
+        }
 
         // Execute the function
         match f().await {

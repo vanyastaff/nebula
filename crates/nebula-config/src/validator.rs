@@ -9,7 +9,7 @@ use serde_json::Value;
 pub trait ConfigValidator: Send + Sync {
     /// Validate configuration data
     async fn validate(&self, data: &Value) -> ConfigResult<()>;
-    
+
     /// Get validation schema (if applicable)
     fn schema(&self) -> Option<Value> {
         None
@@ -39,7 +39,7 @@ impl SchemaValidator {
     pub fn new(schema: Value) -> Self {
         Self { schema }
     }
-    
+
     /// Create from JSON schema string
     pub fn from_json(schema_json: &str) -> ConfigResult<Self> {
         let schema = serde_json::from_str(schema_json)?;
@@ -53,7 +53,7 @@ impl ConfigValidator for SchemaValidator {
         // Basic validation - in a real implementation, you'd use a JSON schema library
         self.validate_recursive(data, &self.schema, "")
     }
-    
+
     fn schema(&self) -> Option<Value> {
         Some(self.schema.clone())
     }
@@ -70,12 +70,12 @@ impl SchemaValidator {
                         if !self.check_type(data, type_str) {
                             return Err(ConfigError::validation_error(
                                 format!("Expected type '{}' at path '{}'", type_str, path),
-                                Some(path.to_string())
+                                Some(path.to_string()),
                             ));
                         }
                     }
                 }
-                
+
                 // Check required fields
                 if let Some(required) = schema_obj.get("required") {
                     if let Some(required_array) = required.as_array() {
@@ -84,8 +84,11 @@ impl SchemaValidator {
                                 if let Some(field_name) = required_field.as_str() {
                                     if !data_obj.contains_key(field_name) {
                                         return Err(ConfigError::validation_error(
-                                            format!("Required field '{}' missing at path '{}'", field_name, path),
-                                            Some(format!("{}.{}", path, field_name))
+                                            format!(
+                                                "Required field '{}' missing at path '{}'",
+                                                field_name, path
+                                            ),
+                                            Some(format!("{}.{}", path, field_name)),
                                         ));
                                     }
                                 }
@@ -93,7 +96,7 @@ impl SchemaValidator {
                         }
                     }
                 }
-                
+
                 // Check properties
                 if let Some(properties) = schema_obj.get("properties") {
                     if let Some(properties_obj) = properties.as_object() {
@@ -111,51 +114,67 @@ impl SchemaValidator {
                         }
                     }
                 }
-                
+
                 // Check minimum/maximum for numbers
                 if data.is_number() {
                     if let Some(minimum) = schema_obj.get("minimum") {
                         if let (Some(data_num), Some(min_num)) = (data.as_f64(), minimum.as_f64()) {
                             if data_num < min_num {
                                 return Err(ConfigError::validation_error(
-                                    format!("Value {} is less than minimum {} at path '{}'", data_num, min_num, path),
-                                    Some(path.to_string())
+                                    format!(
+                                        "Value {} is less than minimum {} at path '{}'",
+                                        data_num, min_num, path
+                                    ),
+                                    Some(path.to_string()),
                                 ));
                             }
                         }
                     }
-                    
+
                     if let Some(maximum) = schema_obj.get("maximum") {
                         if let (Some(data_num), Some(max_num)) = (data.as_f64(), maximum.as_f64()) {
                             if data_num > max_num {
                                 return Err(ConfigError::validation_error(
-                                    format!("Value {} is greater than maximum {} at path '{}'", data_num, max_num, path),
-                                    Some(path.to_string())
+                                    format!(
+                                        "Value {} is greater than maximum {} at path '{}'",
+                                        data_num, max_num, path
+                                    ),
+                                    Some(path.to_string()),
                                 ));
                             }
                         }
                     }
                 }
-                
+
                 // Check string length
                 if let Some(data_str) = data.as_str() {
                     if let Some(min_length) = schema_obj.get("minLength") {
                         if let Some(min_len) = min_length.as_u64() {
                             if (data_str.len() as u64) < min_len {
                                 return Err(ConfigError::validation_error(
-                                    format!("String length {} is less than minimum {} at path '{}'", data_str.len(), min_len, path),
-                                    Some(path.to_string())
+                                    format!(
+                                        "String length {} is less than minimum {} at path '{}'",
+                                        data_str.len(),
+                                        min_len,
+                                        path
+                                    ),
+                                    Some(path.to_string()),
                                 ));
                             }
                         }
                     }
-                    
+
                     if let Some(max_length) = schema_obj.get("maxLength") {
                         if let Some(max_len) = max_length.as_u64() {
                             if (data_str.len() as u64) > max_len {
                                 return Err(ConfigError::validation_error(
-                                    format!("String length {} is greater than maximum {} at path '{}'", data_str.len(), max_len, path),
-                                    Some(path.to_string())
+                                    format!(
+                                        "String length {} is greater than maximum {} at path '{}'",
+                                        data_str.len(),
+                                        max_len,
+                                        path
+                                    ),
+                                    Some(path.to_string()),
                                 ));
                             }
                         }
@@ -166,14 +185,14 @@ impl SchemaValidator {
                 // Simple type validation
                 return Err(ConfigError::validation_error(
                     format!("Invalid schema format at path '{}'", path),
-                    Some(path.to_string())
+                    Some(path.to_string()),
                 ));
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Check if data matches the expected type
     fn check_type(&self, data: &Value, expected_type: &str) -> bool {
         match expected_type {
@@ -228,7 +247,10 @@ pub struct CompositeValidator {
 impl std::fmt::Debug for CompositeValidator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CompositeValidator")
-            .field("validators", &format!("{} validators", self.validators.len()))
+            .field(
+                "validators",
+                &format!("{} validators", self.validators.len()),
+            )
             .finish()
     }
 }
@@ -240,7 +262,7 @@ impl CompositeValidator {
             validators: Vec::new(),
         }
     }
-    
+
     /// Add a validator
     pub fn add_validator(mut self, validator: Box<dyn ConfigValidator>) -> Self {
         self.validators.push(validator);

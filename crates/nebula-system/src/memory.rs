@@ -145,10 +145,12 @@ pub mod management {
     }
 
     /// Change memory protection
-    pub unsafe fn protect(ptr: *mut u8, size: usize, protection: MemoryProtection) -> Result<()> { unsafe {
-        region::protect(ptr, size, protection)
-            .map_err(|e| SystemError::Memory(format!("Protect failed: {e}")))
-    }}
+    pub unsafe fn protect(ptr: *mut u8, size: usize, protection: MemoryProtection) -> Result<()> {
+        unsafe {
+            region::protect(ptr, size, protection)
+                .map_err(|e| SystemError::Memory(format!("Protect failed: {e}")))
+        }
+    }
 
     /// Lock memory pages (prevent swapping)
     pub unsafe fn lock(ptr: *mut u8, size: usize) -> Result<()> {

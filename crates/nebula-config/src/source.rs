@@ -8,41 +8,38 @@ use std::path::PathBuf;
 pub enum ConfigSource {
     /// Environment variables
     Env,
-    
+
     /// Environment variables with prefix
     EnvWithPrefix(String),
-    
+
     /// Configuration file
     File(PathBuf),
-    
+
     /// Configuration file with format detection
     FileAuto(PathBuf),
-    
+
     /// Configuration directory
     Directory(PathBuf),
-    
+
     /// Remote configuration (HTTP/HTTPS)
     Remote(String),
-    
+
     /// Database configuration
     Database {
         url: String,
         table: String,
         key: String,
     },
-    
+
     /// Key-value store
-    KeyValue {
-        url: String,
-        bucket: String,
-    },
-    
+    KeyValue { url: String, bucket: String },
+
     /// Default values
     Default,
-    
+
     /// Command line arguments
     CommandLine,
-    
+
     /// Inline configuration
     Inline(String),
 }
@@ -52,27 +49,27 @@ impl ConfigSource {
     pub fn is_file_based(&self) -> bool {
         matches!(self, ConfigSource::File(_) | ConfigSource::FileAuto(_))
     }
-    
+
     /// Check if this source is environment-based
     pub fn is_env_based(&self) -> bool {
         matches!(self, ConfigSource::Env | ConfigSource::EnvWithPrefix(_))
     }
-    
+
     /// Check if this source is remote
     pub fn is_remote(&self) -> bool {
         matches!(self, ConfigSource::Remote(_))
     }
-    
+
     /// Check if this source is database-based
     pub fn is_database(&self) -> bool {
         matches!(self, ConfigSource::Database { .. })
     }
-    
+
     /// Check if this source is key-value based
     pub fn is_key_value(&self) -> bool {
         matches!(self, ConfigSource::KeyValue { .. })
     }
-    
+
     /// Get the priority of this source (lower = higher priority)
     pub fn priority(&self) -> u8 {
         match self {
@@ -87,7 +84,7 @@ impl ConfigSource {
             ConfigSource::Inline(_) => 1,
         }
     }
-    
+
     /// Get the source name for display
     pub fn name(&self) -> &'static str {
         match self {
@@ -110,7 +107,9 @@ impl std::fmt::Display for ConfigSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConfigSource::Env => write!(f, "environment variables"),
-            ConfigSource::EnvWithPrefix(prefix) => write!(f, "environment variables (prefix: {})", prefix),
+            ConfigSource::EnvWithPrefix(prefix) => {
+                write!(f, "environment variables (prefix: {})", prefix)
+            }
             ConfigSource::File(path) => write!(f, "file: {}", path.display()),
             ConfigSource::FileAuto(path) => write!(f, "file (auto): {}", path.display()),
             ConfigSource::Directory(path) => write!(f, "directory: {}", path.display()),
@@ -133,31 +132,31 @@ impl std::fmt::Display for ConfigSource {
 pub struct SourceMetadata {
     /// Source identifier
     pub source: ConfigSource,
-    
+
     /// Last modified timestamp
     pub last_modified: Option<chrono::DateTime<chrono::Utc>>,
-    
+
     /// Source version/ETag
     pub version: Option<String>,
-    
+
     /// Source checksum
     pub checksum: Option<String>,
-    
+
     /// Source size in bytes
     pub size: Option<u64>,
-    
+
     /// Source format
     pub format: Option<ConfigFormat>,
-    
+
     /// Source encoding
     pub encoding: Option<String>,
-    
+
     /// Source compression
     pub compression: Option<String>,
-    
+
     /// Source encryption
     pub encryption: Option<String>,
-    
+
     /// Additional metadata
     pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
@@ -178,55 +177,55 @@ impl SourceMetadata {
             extra: std::collections::HashMap::new(),
         }
     }
-    
+
     /// Set last modified timestamp
     pub fn with_last_modified(mut self, timestamp: chrono::DateTime<chrono::Utc>) -> Self {
         self.last_modified = Some(timestamp);
         self
     }
-    
+
     /// Set version
     pub fn with_version(mut self, version: impl Into<String>) -> Self {
         self.version = Some(version.into());
         self
     }
-    
+
     /// Set checksum
     pub fn with_checksum(mut self, checksum: impl Into<String>) -> Self {
         self.checksum = Some(checksum.into());
         self
     }
-    
+
     /// Set size
     pub fn with_size(mut self, size: u64) -> Self {
         self.size = Some(size);
         self
     }
-    
+
     /// Set format
     pub fn with_format(mut self, format: ConfigFormat) -> Self {
         self.format = Some(format);
         self
     }
-    
+
     /// Set encoding
     pub fn with_encoding(mut self, encoding: impl Into<String>) -> Self {
         self.encoding = Some(encoding.into());
         self
     }
-    
+
     /// Set compression
     pub fn with_compression(mut self, compression: impl Into<String>) -> Self {
         self.compression = Some(compression.into());
         self
     }
-    
+
     /// Set encryption
     pub fn with_encryption(mut self, encryption: impl Into<String>) -> Self {
         self.encryption = Some(encryption.into());
         self
     }
-    
+
     /// Add extra metadata
     pub fn with_extra(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
         self.extra.insert(key.into(), value);
@@ -239,25 +238,25 @@ impl SourceMetadata {
 pub enum ConfigFormat {
     /// JSON format
     Json,
-    
+
     /// TOML format
     Toml,
-    
+
     /// YAML format
     Yaml,
-    
+
     /// INI format
     Ini,
-    
+
     /// HCL format
     Hcl,
-    
+
     /// Properties format
     Properties,
-    
+
     /// Environment format
     Env,
-    
+
     /// Unknown format
     Unknown(String),
 }
@@ -276,7 +275,7 @@ impl ConfigFormat {
             ConfigFormat::Unknown(_) => "unknown",
         }
     }
-    
+
     /// Get MIME type for this format
     pub fn mime_type(&self) -> &'static str {
         match self {
@@ -290,7 +289,7 @@ impl ConfigFormat {
             ConfigFormat::Unknown(_) => "application/octet-stream",
         }
     }
-    
+
     /// Detect format from file extension
     pub fn from_extension(ext: &str) -> Self {
         match ext.to_lowercase().as_str() {
@@ -304,7 +303,7 @@ impl ConfigFormat {
             _ => ConfigFormat::Unknown(ext.to_string()),
         }
     }
-    
+
     /// Detect format from file path
     pub fn from_path(path: &std::path::Path) -> Self {
         path.extension()

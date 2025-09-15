@@ -64,20 +64,22 @@ pub mod validators {
                 let len = text.len();
 
                 if let Some(min_len) = self.min_length
-                    && len < min_len {
-                        return Err(ValueError::Validation(ValidationError::InvalidLength {
-                            actual: len,
-                            constraint: format!(">= {}", min_len),
-                        }));
-                    }
+                    && len < min_len
+                {
+                    return Err(ValueError::Validation(ValidationError::InvalidLength {
+                        actual: len,
+                        constraint: format!(">= {}", min_len),
+                    }));
+                }
 
                 if let Some(max_len) = self.max_length
-                    && len > max_len {
-                        return Err(ValueError::Validation(ValidationError::InvalidLength {
-                            actual: len,
-                            constraint: format!("<= {}", max_len),
-                        }));
-                    }
+                    && len > max_len
+                {
+                    return Err(ValueError::Validation(ValidationError::InvalidLength {
+                        actual: len,
+                        constraint: format!("<= {}", max_len),
+                    }));
+                }
 
                 Ok(())
             } else {
@@ -138,27 +140,28 @@ pub mod validators {
 
     impl ValueValidator for NumberRange {
         fn validate(&self, value: &Value) -> ValueResult<()> {
-            if self.integer_only
-                && matches!(value, Value::Float(_)) {
-                    return Err(ValueError::type_mismatch("integer", "float"));
-                }
+            if self.integer_only && matches!(value, Value::Float(_)) {
+                return Err(ValueError::type_mismatch("integer", "float"));
+            }
             let val = value
                 .as_float()
                 .ok_or_else(|| ValueError::type_mismatch("number", value.type_name()))?;
             if let Some(min_val) = self.min_value
-                && val < min_val {
-                    return Err(ValueError::Validation(ValidationError::failed(format!(
-                        "Value {} is less than minimum {}",
-                        val, min_val
-                    ))));
-                }
+                && val < min_val
+            {
+                return Err(ValueError::Validation(ValidationError::failed(format!(
+                    "Value {} is less than minimum {}",
+                    val, min_val
+                ))));
+            }
             if let Some(max_val) = self.max_value
-                && val > max_val {
-                    return Err(ValueError::Validation(ValidationError::failed(format!(
-                        "Value {} is greater than maximum {}",
-                        val, max_val
-                    ))));
-                }
+                && val > max_val
+            {
+                return Err(ValueError::Validation(ValidationError::failed(format!(
+                    "Value {} is greater than maximum {}",
+                    val, max_val
+                ))));
+            }
             Ok(())
         }
 
@@ -232,20 +235,22 @@ pub mod validators {
                 let len = array.len();
 
                 if let Some(min_len) = self.min_length
-                    && len < min_len {
-                        return Err(ValueError::Validation(ValidationError::InvalidLength {
-                            actual: len,
-                            constraint: format!(">= {}", min_len),
-                        }));
-                    }
+                    && len < min_len
+                {
+                    return Err(ValueError::Validation(ValidationError::InvalidLength {
+                        actual: len,
+                        constraint: format!(">= {}", min_len),
+                    }));
+                }
 
                 if let Some(max_len) = self.max_length
-                    && len > max_len {
-                        return Err(ValueError::Validation(ValidationError::InvalidLength {
-                            actual: len,
-                            constraint: format!("<= {}", max_len),
-                        }));
-                    }
+                    && len > max_len
+                {
+                    return Err(ValueError::Validation(ValidationError::InvalidLength {
+                        actual: len,
+                        constraint: format!("<= {}", max_len),
+                    }));
+                }
 
                 Ok(())
             } else {

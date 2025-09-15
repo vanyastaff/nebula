@@ -699,11 +699,7 @@ impl Array {
             });
         }
 
-        let chunks: Vec<Self> = self
-            .inner
-            .chunks(size)
-            .map(Self::from_slice)
-            .collect();
+        let chunks: Vec<Self> = self.inner.chunks(size).map(Self::from_slice).collect();
 
         Ok(chunks)
     }
@@ -720,11 +716,7 @@ impl Array {
             return Ok(vec![]);
         }
 
-        let windows: Vec<Self> = self
-            .inner
-            .windows(size)
-            .map(Self::from_slice)
-            .collect();
+        let windows: Vec<Self> = self.inner.windows(size).map(Self::from_slice).collect();
 
         Ok(windows)
     }
@@ -1059,9 +1051,10 @@ impl Ord for Array {
         }
         for (a, b) in self.inner.iter().zip(other.inner.iter()) {
             if let Some(ord) = a.partial_cmp(b)
-                && ord != Ordering::Equal {
-                    return ord;
-                }
+                && ord != Ordering::Equal
+            {
+                return ord;
+            }
         }
         Ordering::Equal
     }

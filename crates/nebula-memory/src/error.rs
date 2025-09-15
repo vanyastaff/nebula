@@ -56,10 +56,7 @@ impl fmt::Display for MemoryError {
                 }
             }
             Self::InvalidAlignment { value, required } => {
-                write!(
-                    f,
-                    "Invalid alignment: {value} is not aligned to {required}"
-                )
+                write!(f, "Invalid alignment: {value} is not aligned to {required}")
             }
             Self::InvalidSize { size, reason } => {
                 write!(f, "Invalid size {size}: {reason}")
@@ -74,10 +71,7 @@ impl fmt::Display for MemoryError {
                 arena_size,
                 requested,
             } => {
-                write!(
-                    f,
-                    "Arena full: size {arena_size}, requested {requested}"
-                )
+                write!(f, "Arena full: size {arena_size}, requested {requested}")
             }
             Self::CacheMiss { key } => {
                 write!(f, "Cache miss for key '{key}'")

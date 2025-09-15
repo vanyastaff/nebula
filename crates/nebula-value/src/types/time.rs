@@ -420,7 +420,11 @@ impl Time {
         // Convert to 24-hour format
         let hour24 = if hour12 == 12 {
             if is_pm { 12 } else { 0 }
-        } else if is_pm { hour12 + 12 } else { hour12 };
+        } else if is_pm {
+            hour12 + 12
+        } else {
+            hour12
+        };
 
         Self::new(hour24, minute, second)
     }

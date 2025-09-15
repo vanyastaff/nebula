@@ -530,9 +530,11 @@ impl Text {
 
         let mut chars = self.inner.chars();
         if let Some(first) = chars.next()
-            && !first.is_alphabetic() && first != '_' {
-                return false;
-            }
+            && !first.is_alphabetic()
+            && first != '_'
+        {
+            return false;
+        }
 
         chars.all(|c| c.is_alphanumeric() || c == '_')
     }

@@ -214,15 +214,17 @@ impl ValuePath {
         match &self.segments[index] {
             PathSegment::Key(key) => {
                 if let Value::Object(obj) = value
-                    && let Some(v) = obj.get(key) {
-                        self.get_all_from(v, index + 1, results);
-                    }
+                    && let Some(v) = obj.get(key)
+                {
+                    self.get_all_from(v, index + 1, results);
+                }
             }
             PathSegment::Index(idx) => {
                 if let Value::Array(arr) = value
-                    && let Some(v) = arr.get(*idx) {
-                        self.get_all_from(v, index + 1, results);
-                    }
+                    && let Some(v) = arr.get(*idx)
+                {
+                    self.get_all_from(v, index + 1, results);
+                }
             }
             PathSegment::Wildcard => match value {
                 Value::Array(arr) => {

@@ -141,17 +141,19 @@ impl SystemInfo {
 }
 
 // Global cached instances
-static SYSTEM_INFO: std::sync::LazyLock<Arc<SystemInfo>> = std::sync::LazyLock::new(|| Arc::new(detect_system_info()));
+static SYSTEM_INFO: std::sync::LazyLock<Arc<SystemInfo>> =
+    std::sync::LazyLock::new(|| Arc::new(detect_system_info()));
 
 static SYSTEM_INFO_CACHE: std::sync::LazyLock<RwLock<Arc<SystemInfo>>> =
     std::sync::LazyLock::new(|| RwLock::new(SYSTEM_INFO.clone()));
 
 #[cfg(feature = "sysinfo")]
-pub(crate) static SYSINFO_SYSTEM: std::sync::LazyLock<RwLock<sysinfo::System>> = std::sync::LazyLock::new(|| {
-    let mut sys = sysinfo::System::new_all();
-    sys.refresh_all();
-    RwLock::new(sys)
-});
+pub(crate) static SYSINFO_SYSTEM: std::sync::LazyLock<RwLock<sysinfo::System>> =
+    std::sync::LazyLock::new(|| {
+        let mut sys = sysinfo::System::new_all();
+        sys.refresh_all();
+        RwLock::new(sys)
+    });
 
 fn detect_system_info() -> SystemInfo {
     #[cfg(feature = "sysinfo")]
@@ -173,12 +175,14 @@ fn detect_system_info() -> SystemInfo {
             let cpus = sys.cpus();
             CpuInfo {
                 brand: cpus
-                    .first().map_or_else(|| "Unknown".to_string(), |c| c.brand().to_string()),
+                    .first()
+                    .map_or_else(|| "Unknown".to_string(), |c| c.brand().to_string()),
                 cores: System::physical_core_count().unwrap_or(cpus.len()),
                 threads: cpus.len(),
                 frequency_mhz: cpus.first().map_or(0, sysinfo::Cpu::frequency),
                 vendor: cpus
-                    .first().map_or_else(|| "Unknown".to_string(), |c| c.vendor_id().to_string()),
+                    .first()
+                    .map_or_else(|| "Unknown".to_string(), |c| c.vendor_id().to_string()),
             }
         };
 

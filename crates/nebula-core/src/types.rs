@@ -164,8 +164,7 @@ impl std::fmt::Display for Status {
 }
 
 /// Priority level for operations
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 pub enum Priority {
     /// Lowest priority
     Low = 1,
@@ -209,7 +208,6 @@ impl Priority {
         matches!(self, Priority::Critical | Priority::Emergency)
     }
 }
-
 
 impl std::fmt::Display for Priority {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

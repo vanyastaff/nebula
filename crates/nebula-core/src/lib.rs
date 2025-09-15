@@ -31,12 +31,15 @@ pub mod scope;
 pub mod traits;
 pub mod types;
 
+
+
 // Re-export main types for convenience
 pub use constants::*;
 pub use id::*;
 pub use scope::*;
 pub use traits::*;
 pub use types::*;
+pub use keys::*;
 
 // Re-export common error types
 pub use error::*;
@@ -53,4 +56,6 @@ pub mod prelude {
         CoreError, ExecutionId, HasContext, Identifiable, NodeId, Result, ScopeLevel, Scoped,
         TenantId, UserId, WorkflowId,
     };
+
+    pub use crate::keys::*;
 }

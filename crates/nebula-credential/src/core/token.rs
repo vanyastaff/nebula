@@ -50,8 +50,7 @@ impl AccessToken {
 
     /// Check if token is expired
     pub fn is_expired(&self) -> bool {
-        self.expires_at
-            .is_some_and(|exp| exp <= SystemTime::now())
+        self.expires_at.is_some_and(|exp| exp <= SystemTime::now())
     }
 }
 

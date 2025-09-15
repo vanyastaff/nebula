@@ -49,9 +49,10 @@ impl Timer {
         let elapsed = self.elapsed();
 
         if let Some(threshold) = self.threshold
-            && elapsed < threshold {
-                return elapsed;
-            }
+            && elapsed < threshold
+        {
+            return elapsed;
+        }
 
         let ms = elapsed.as_millis();
         match self.level {

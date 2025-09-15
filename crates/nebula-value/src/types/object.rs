@@ -670,9 +670,7 @@ impl Object {
 
     /// Checks if this object is a subset of another
     pub fn is_subset_of(&self, other: &Object) -> bool {
-        self.inner
-            .iter()
-            .all(|(k, v)| other.get(k) == Some(v))
+        self.inner.iter().all(|(k, v)| other.get(k) == Some(v))
     }
 
     /// Checks if this object is a superset of another

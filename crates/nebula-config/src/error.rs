@@ -1,7 +1,7 @@
 //! Configuration error types
+use nebula_error::Error;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use nebula_error::Error;
 
 /// Configuration error type
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
@@ -20,7 +20,10 @@ pub enum ConfigError {
 
     /// Configuration validation error
     #[error("Configuration validation failed: {message}")]
-    ValidationError { message: String, field: Option<String> },
+    ValidationError {
+        message: String,
+        field: Option<String>,
+    },
 
     /// Configuration source error
     #[error("Configuration source error: {message}")]
@@ -48,7 +51,11 @@ pub enum ConfigError {
 
     /// Configuration type error
     #[error("Configuration type error: {message}")]
-    TypeError { message: String, expected: String, actual: String },
+    TypeError {
+        message: String,
+        expected: String,
+        actual: String,
+    },
 
     /// Configuration path error
     #[error("Configuration path error: {message}")]
@@ -75,33 +82,33 @@ impl ConfigError {
 
     /// Create a file read error
     pub fn file_read_error(path: impl Into<PathBuf>, message: impl Into<String>) -> Self {
-        Self::FileReadError { 
-            path: path.into(), 
-            message: message.into() 
+        Self::FileReadError {
+            path: path.into(),
+            message: message.into(),
         }
     }
 
     /// Create a parse error
     pub fn parse_error(path: impl Into<PathBuf>, message: impl Into<String>) -> Self {
-        Self::ParseError { 
-            path: path.into(), 
-            message: message.into() 
+        Self::ParseError {
+            path: path.into(),
+            message: message.into(),
         }
     }
 
     /// Create a validation error
     pub fn validation_error(message: impl Into<String>, field: Option<String>) -> Self {
-        Self::ValidationError { 
-            message: message.into(), 
-            field 
+        Self::ValidationError {
+            message: message.into(),
+            field,
         }
     }
 
     /// Create a source error
     pub fn source_error(message: impl Into<String>, origin: impl Into<String>) -> Self {
-        Self::SourceError { 
-            message: message.into(), 
-            origin: origin.into() 
+        Self::SourceError {
+            message: message.into(),
+            origin: origin.into(),
         }
     }
 
@@ -112,57 +119,73 @@ impl ConfigError {
 
     /// Create an environment variable parse error
     pub fn env_var_parse_error(name: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::EnvVarParseError { 
-            name: name.into(), 
-            value: value.into() 
+        Self::EnvVarParseError {
+            name: name.into(),
+            value: value.into(),
         }
     }
 
     /// Create a reload error
     pub fn reload_error(message: impl Into<String>) -> Self {
-        Self::ReloadError { message: message.into() }
+        Self::ReloadError {
+            message: message.into(),
+        }
     }
 
     /// Create a watch error
     pub fn watch_error(message: impl Into<String>) -> Self {
-        Self::WatchError { message: message.into() }
+        Self::WatchError {
+            message: message.into(),
+        }
     }
 
     /// Create a merge error
     pub fn merge_error(message: impl Into<String>) -> Self {
-        Self::MergeError { message: message.into() }
+        Self::MergeError {
+            message: message.into(),
+        }
     }
 
     /// Create a type error
-    pub fn type_error(message: impl Into<String>, expected: impl Into<String>, actual: impl Into<String>) -> Self {
-        Self::TypeError { 
-            message: message.into(), 
-            expected: expected.into(), 
-            actual: actual.into() 
+    pub fn type_error(
+        message: impl Into<String>,
+        expected: impl Into<String>,
+        actual: impl Into<String>,
+    ) -> Self {
+        Self::TypeError {
+            message: message.into(),
+            expected: expected.into(),
+            actual: actual.into(),
         }
     }
 
     /// Create a path error
     pub fn path_error(message: impl Into<String>, path: impl Into<String>) -> Self {
-        Self::PathError { 
-            message: message.into(), 
-            path: path.into() 
+        Self::PathError {
+            message: message.into(),
+            path: path.into(),
         }
     }
 
     /// Create a format not supported error
     pub fn format_not_supported(format: impl Into<String>) -> Self {
-        Self::FormatNotSupported { format: format.into() }
+        Self::FormatNotSupported {
+            format: format.into(),
+        }
     }
 
     /// Create an encryption error
     pub fn encryption_error(message: impl Into<String>) -> Self {
-        Self::EncryptionError { message: message.into() }
+        Self::EncryptionError {
+            message: message.into(),
+        }
     }
 
     /// Create a decryption error
     pub fn decryption_error(message: impl Into<String>) -> Self {
-        Self::DecryptionError { message: message.into() }
+        Self::DecryptionError {
+            message: message.into(),
+        }
     }
 }
 
@@ -172,37 +195,25 @@ pub type ConfigResult<T> = Result<T, ConfigError>;
 // Implement From for common error types
 impl From<std::io::Error> for ConfigError {
     fn from(err: std::io::Error) -> Self {
-        ConfigError::file_read_error(
-            PathBuf::from("unknown"), 
-            err.to_string()
-        )
+        ConfigError::file_read_error(PathBuf::from("unknown"), err.to_string())
     }
 }
 
 impl From<serde_json::Error> for ConfigError {
     fn from(err: serde_json::Error) -> Self {
-        ConfigError::parse_error(
-            PathBuf::from("unknown"), 
-            format!("JSON error: {}", err)
-        )
+        ConfigError::parse_error(PathBuf::from("unknown"), format!("JSON error: {}", err))
     }
 }
 
 impl From<toml::de::Error> for ConfigError {
     fn from(err: toml::de::Error) -> Self {
-        ConfigError::parse_error(
-            PathBuf::from("unknown"), 
-            format!("TOML error: {}", err)
-        )
+        ConfigError::parse_error(PathBuf::from("unknown"), format!("TOML error: {}", err))
     }
 }
 
 impl From<yaml_rust::ScanError> for ConfigError {
     fn from(err: yaml_rust::ScanError) -> Self {
-        ConfigError::parse_error(
-            PathBuf::from("unknown"), 
-            format!("YAML error: {}", err)
-        )
+        ConfigError::parse_error(PathBuf::from("unknown"), format!("YAML error: {}", err))
     }
 }
 

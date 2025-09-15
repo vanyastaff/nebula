@@ -31,6 +31,7 @@ chrono = { workspace = true, features = ["serde"] }
 dashmap = "5.5"
 
 nebula-error = { path = "../nebula-error" }
+thiserror = {workspace = true}
 
 
 
