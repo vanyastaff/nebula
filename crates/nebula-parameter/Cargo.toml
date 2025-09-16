@@ -1,0 +1,27 @@
+[package]
+name = "nebula-parameter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true}
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+bon = { workspace = true }
+
+
+nebula-derive = { path = "../nebula-derive" }
+nebula-error = { path = "../nebula-error" }
+nebula-core = { path = "../nebula-core" }
+
+[lints]
+workspace = true
