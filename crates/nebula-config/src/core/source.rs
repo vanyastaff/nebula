@@ -15,10 +15,10 @@ pub enum ConfigSource {
     /// Configuration file
     File(PathBuf),
 
-    /// Configuration file with format detection
+    /// Configuration file with format auto-detection
     FileAuto(PathBuf),
 
-    /// Configuration directory
+    /// Configuration directory (load all files)
     Directory(PathBuf),
 
     /// Remote configuration (HTTP/HTTPS)
@@ -32,7 +32,10 @@ pub enum ConfigSource {
     },
 
     /// Key-value store
-    KeyValue { url: String, bucket: String },
+    KeyValue {
+        url: String,
+        bucket: String
+    },
 
     /// Default values
     Default,
@@ -47,7 +50,10 @@ pub enum ConfigSource {
 impl ConfigSource {
     /// Check if this source is file-based
     pub fn is_file_based(&self) -> bool {
-        matches!(self, ConfigSource::File(_) | ConfigSource::FileAuto(_))
+        matches!(
+            self,
+            ConfigSource::File(_) | ConfigSource::FileAuto(_) | ConfigSource::Directory(_)
+        )
     }
 
     /// Check if this source is environment-based
@@ -68,6 +74,14 @@ impl ConfigSource {
     /// Check if this source is key-value based
     pub fn is_key_value(&self) -> bool {
         matches!(self, ConfigSource::KeyValue { .. })
+    }
+
+    /// Check if this source is optional (can fail without error)
+    pub fn is_optional(&self) -> bool {
+        matches!(
+            self,
+            ConfigSource::Env | ConfigSource::EnvWithPrefix(_) | ConfigSource::Default
+        )
     }
 
     /// Get the priority of this source (lower = higher priority)
@@ -122,7 +136,14 @@ impl std::fmt::Display for ConfigSource {
             }
             ConfigSource::Default => write!(f, "default values"),
             ConfigSource::CommandLine => write!(f, "command line arguments"),
-            ConfigSource::Inline(_) => write!(f, "inline configuration"),
+            ConfigSource::Inline(data) => {
+                let preview = if data.len() > 50 {
+                    format!("{}...", &data[..50])
+                } else {
+                    data.clone()
+                };
+                write!(f, "inline: {}", preview)
+            }
         }
     }
 }
@@ -248,7 +269,7 @@ pub enum ConfigFormat {
     /// INI format
     Ini,
 
-    /// HCL format
+    /// HCL format (HashiCorp Configuration Language)
     Hcl,
 
     /// Properties format
@@ -263,7 +284,7 @@ pub enum ConfigFormat {
 
 impl ConfigFormat {
     /// Get file extension for this format
-    pub fn extension(&self) -> &'static str {
+    pub fn extension(&self) -> &str {
         match self {
             ConfigFormat::Json => "json",
             ConfigFormat::Toml => "toml",
@@ -272,12 +293,12 @@ impl ConfigFormat {
             ConfigFormat::Hcl => "hcl",
             ConfigFormat::Properties => "properties",
             ConfigFormat::Env => "env",
-            ConfigFormat::Unknown(_) => "unknown",
+            ConfigFormat::Unknown(ext) => ext,
         }
     }
 
     /// Get MIME type for this format
-    pub fn mime_type(&self) -> &'static str {
+    pub fn mime_type(&self) -> &str {
         match self {
             ConfigFormat::Json => "application/json",
             ConfigFormat::Toml => "application/toml",
@@ -296,9 +317,9 @@ impl ConfigFormat {
             "json" => ConfigFormat::Json,
             "toml" => ConfigFormat::Toml,
             "yml" | "yaml" => ConfigFormat::Yaml,
-            "ini" => ConfigFormat::Ini,
-            "hcl" => ConfigFormat::Hcl,
-            "properties" => ConfigFormat::Properties,
+            "ini" | "cfg" => ConfigFormat::Ini,
+            "hcl" | "tf" => ConfigFormat::Hcl,
+            "properties" | "props" => ConfigFormat::Properties,
             "env" => ConfigFormat::Env,
             _ => ConfigFormat::Unknown(ext.to_string()),
         }

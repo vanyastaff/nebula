@@ -18,7 +18,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 # Format parsers
 yaml-rust = { version = "0.4.5" }
-toml = { version = "0.8" }
+toml = { version = "0.9.7" }
 
 # Async and concurrency
 tokio = { workspace = true }
@@ -33,6 +33,9 @@ thiserror = "2"
 # Internal crates
 nebula-error = { path = "../nebula-error" }
 nebula-log = { path = "../nebula-log" }
+regex = "1.11.1"
+uuid = "1.18.1"
+futures = "0.3.31"
 
 [features]
 # No optional features at the moment; all formats enabled by default via dependencies

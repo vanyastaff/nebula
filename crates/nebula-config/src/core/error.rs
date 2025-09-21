@@ -1,4 +1,5 @@
 //! Configuration error types
+
 use nebula_error::Error;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -187,33 +188,99 @@ impl ConfigError {
             message: message.into(),
         }
     }
+
+    /// Check if error is recoverable
+    pub fn is_recoverable(&self) -> bool {
+        matches!(
+            self,
+            ConfigError::FileNotFound { .. }
+                | ConfigError::EnvVarNotFound { .. }
+                | ConfigError::ValidationError { .. }
+        )
+    }
+
+    /// Check if error is due to missing source
+    pub fn is_missing_source(&self) -> bool {
+        matches!(
+            self,
+            ConfigError::FileNotFound { .. } | ConfigError::EnvVarNotFound { .. }
+        )
+    }
+
+    /// Get the error category
+    pub fn category(&self) -> ErrorCategory {
+        match self {
+            ConfigError::FileNotFound { .. } | ConfigError::EnvVarNotFound { .. } => {
+                ErrorCategory::NotFound
+            }
+            ConfigError::FileReadError { .. } | ConfigError::WatchError { .. } => {
+                ErrorCategory::Io
+            }
+            ConfigError::ParseError { .. }
+            | ConfigError::EnvVarParseError { .. }
+            | ConfigError::FormatNotSupported { .. } => ErrorCategory::Parse,
+            ConfigError::ValidationError { .. } | ConfigError::TypeError { .. } => {
+                ErrorCategory::Validation
+            }
+            ConfigError::SourceError { .. }
+            | ConfigError::ReloadError { .. }
+            | ConfigError::MergeError { .. }
+            | ConfigError::PathError { .. } => ErrorCategory::Operation,
+            ConfigError::EncryptionError { .. } | ConfigError::DecryptionError { .. } => {
+                ErrorCategory::Security
+            }
+        }
+    }
 }
 
-/// Result type for configuration operations
-pub type ConfigResult<T> = Result<T, ConfigError>;
+/// Error category for grouping errors
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCategory {
+    /// Resource not found
+    NotFound,
+    /// I/O error
+    Io,
+    /// Parse error
+    Parse,
+    /// Validation error
+    Validation,
+    /// Operation error
+    Operation,
+    /// Security error
+    Security,
+}
 
 // Implement From for common error types
 impl From<std::io::Error> for ConfigError {
     fn from(err: std::io::Error) -> Self {
-        ConfigError::file_read_error(PathBuf::from("unknown"), err.to_string())
+        use std::io::ErrorKind;
+
+        match err.kind() {
+            ErrorKind::NotFound => ConfigError::file_not_found(PathBuf::from("unknown")),
+            ErrorKind::PermissionDenied => ConfigError::file_read_error(
+                PathBuf::from("unknown"),
+                format!("Permission denied: {}", err),
+            ),
+            _ => ConfigError::file_read_error(PathBuf::from("unknown"), err.to_string()),
+        }
     }
 }
 
 impl From<serde_json::Error> for ConfigError {
     fn from(err: serde_json::Error) -> Self {
-        ConfigError::parse_error(PathBuf::from("unknown"), format!("JSON error: {}", err))
+        ConfigError::parse_error(PathBuf::from("json"), format!("JSON error: {}", err))
     }
 }
 
 impl From<toml::de::Error> for ConfigError {
     fn from(err: toml::de::Error) -> Self {
-        ConfigError::parse_error(PathBuf::from("unknown"), format!("TOML error: {}", err))
+        ConfigError::parse_error(PathBuf::from("toml"), format!("TOML error: {}", err))
     }
 }
 
 impl From<yaml_rust::ScanError> for ConfigError {
     fn from(err: yaml_rust::ScanError) -> Self {
-        ConfigError::parse_error(PathBuf::from("unknown"), format!("YAML error: {}", err))
+        ConfigError::parse_error(PathBuf::from("yaml"), format!("YAML error: {:?}", err))
     }
 }
 
