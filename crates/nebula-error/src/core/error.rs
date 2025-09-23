@@ -165,6 +165,203 @@ impl NebulaError {
     pub fn database(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::System(crate::kinds::SystemError::database(message)))
     }
+
+    // =============================================================================
+    // Workflow-Specific Constructor Methods
+    // =============================================================================
+
+    /// Create a workflow definition error
+    pub fn workflow_invalid_definition(reason: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Workflow(crate::kinds::WorkflowError::InvalidDefinition {
+            reason: reason.into(),
+        }))
+    }
+
+    /// Create a workflow circular dependency error
+    pub fn workflow_circular_dependency(path: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Workflow(crate::kinds::WorkflowError::CircularDependency {
+            path: path.into(),
+        }))
+    }
+
+    /// Create a workflow not found error
+    pub fn workflow_not_found(workflow_id: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Workflow(crate::kinds::WorkflowError::NotFound {
+            workflow_id: workflow_id.into(),
+        }))
+    }
+
+    /// Create a workflow disabled error
+    pub fn workflow_disabled(workflow_id: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Workflow(crate::kinds::WorkflowError::Disabled {
+            workflow_id: workflow_id.into(),
+        }))
+    }
+
+    /// Create a workflow missing parameter error
+    pub fn workflow_missing_parameter(workflow_id: impl Into<String>, parameter: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Workflow(crate::kinds::WorkflowError::MissingParameter {
+            workflow_id: workflow_id.into(),
+            parameter: parameter.into(),
+        }))
+    }
+
+    /// Create a node execution failed error
+    pub fn node_execution_failed(node_id: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Node(crate::kinds::NodeError::ExecutionFailed {
+            node_id: node_id.into(),
+            reason: reason.into(),
+        }))
+    }
+
+    /// Create a node invalid configuration error
+    pub fn node_invalid_configuration(node_id: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Node(crate::kinds::NodeError::InvalidConfiguration {
+            node_id: node_id.into(),
+            reason: reason.into(),
+        }))
+    }
+
+    /// Create a node timeout error
+    pub fn node_timeout(node_id: impl Into<String>, timeout: Duration) -> Self {
+        Self::new(ErrorKind::Node(crate::kinds::NodeError::Timeout {
+            node_id: node_id.into(),
+            timeout,
+        }))
+    }
+
+    /// Create a node unsupported type error
+    pub fn node_unsupported_type(node_id: impl Into<String>, node_type: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Node(crate::kinds::NodeError::UnsupportedType {
+            node_id: node_id.into(),
+            node_type: node_type.into(),
+        }))
+    }
+
+    /// Create a trigger registration failed error
+    pub fn trigger_registration_failed(trigger_id: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Trigger(crate::kinds::TriggerError::RegistrationFailed {
+            trigger_id: trigger_id.into(),
+            reason: reason.into(),
+        }))
+    }
+
+    /// Create a trigger invalid webhook config error
+    pub fn trigger_invalid_webhook_config(reason: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Trigger(crate::kinds::TriggerError::InvalidWebhookConfig {
+            reason: reason.into(),
+        }))
+    }
+
+    /// Create a trigger invalid cron expression error
+    pub fn trigger_invalid_cron_expression(expression: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Trigger(crate::kinds::TriggerError::InvalidCronExpression {
+            expression: expression.into(),
+            reason: reason.into(),
+        }))
+    }
+
+    /// Create a trigger not found error
+    pub fn trigger_not_found(trigger_id: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Trigger(crate::kinds::TriggerError::NotFound {
+            trigger_id: trigger_id.into(),
+        }))
+    }
+
+    /// Create a connector connection failed error
+    pub fn connector_connection_failed(service: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Connector(crate::kinds::ConnectorError::ConnectionFailed {
+            service: service.into(),
+            reason: reason.into(),
+        }))
+    }
+
+    /// Create a connector API call failed error
+    pub fn connector_api_call_failed(service: impl Into<String>, endpoint: impl Into<String>, status: u16) -> Self {
+        Self::new(ErrorKind::Connector(crate::kinds::ConnectorError::ApiCallFailed {
+            service: service.into(),
+            endpoint: endpoint.into(),
+            status,
+        }))
+    }
+
+    /// Create a connector service unavailable error
+    pub fn connector_service_unavailable(service: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Connector(crate::kinds::ConnectorError::ServiceUnavailable {
+            service: service.into(),
+            reason: reason.into(),
+        }))
+    }
+
+    /// Create a connector quota exceeded error
+    pub fn connector_quota_exceeded(service: impl Into<String>, quota_type: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Connector(crate::kinds::ConnectorError::QuotaExceeded {
+            service: service.into(),
+            quota_type: quota_type.into(),
+        }))
+    }
+
+    /// Create a credential not found error
+    pub fn credential_not_found(credential_id: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Credential(crate::kinds::CredentialError::NotFound {
+            credential_id: credential_id.into(),
+        }))
+    }
+
+    /// Create a credential invalid error
+    pub fn credential_invalid(service: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Credential(crate::kinds::CredentialError::InvalidCredentials {
+            service: service.into(),
+            reason: reason.into(),
+        }))
+    }
+
+    /// Create a credential OAuth failed error
+    pub fn credential_oauth_failed(service: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Credential(crate::kinds::CredentialError::OAuthFailed {
+            service: service.into(),
+            reason: reason.into(),
+        }))
+    }
+
+    /// Create an execution memory limit exceeded error
+    pub fn execution_memory_limit_exceeded(used_mb: u64, limit_mb: u64) -> Self {
+        Self::new(ErrorKind::Execution(crate::kinds::ExecutionError::MemoryLimitExceeded {
+            used_mb,
+            limit_mb,
+        }))
+    }
+
+    /// Create an execution CPU limit exceeded error
+    pub fn execution_cpu_limit_exceeded(used_ms: u64, limit_ms: u64) -> Self {
+        Self::new(ErrorKind::Execution(crate::kinds::ExecutionError::CpuLimitExceeded {
+            used_ms,
+            limit_ms,
+        }))
+    }
+
+    /// Create an execution cancelled error
+    pub fn execution_cancelled(reason: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Execution(crate::kinds::ExecutionError::Cancelled {
+            reason: reason.into(),
+        }))
+    }
+
+    /// Create an execution concurrency limit reached error
+    pub fn execution_concurrency_limit_reached(current: u32, limit: u32) -> Self {
+        Self::new(ErrorKind::Execution(crate::kinds::ExecutionError::ConcurrencyLimitReached {
+            current,
+            limit,
+        }))
+    }
+
+    /// Create an execution queue full error
+    pub fn execution_queue_full(queue_size: u32, max_size: u32) -> Self {
+        Self::new(ErrorKind::Execution(crate::kinds::ExecutionError::QueueFull {
+            queue_size,
+            max_size,
+        }))
+    }
 }
 
 impl std::error::Error for NebulaError {

@@ -2,13 +2,13 @@
 //!
 //! Centralized error handling system for the Nebula workflow engine.
 //! This crate provides a unified error type system with proper error classification,
-//! context propagation, and retry logic.
+//! context propagation, and retry logic for workflow orchestration.
 //!
 //! ## Architecture
 //!
 //! ### Core Components
 //! - [`core`] - Core error types and main `NebulaError` struct
-//! - [`kinds`] - Categorized error types by domain (client, server, system, etc.)
+//! - [`kinds`] - Categorized error types by domain (client, server, system, workflow)
 //! - [`context`] - Rich error context with metadata and tracing information
 //! - [`retry`] - Retry strategies and policies for transient failures
 //! - [`conversion`] - Conversion utilities from external error types
@@ -16,9 +16,10 @@
 //! ## Key Features
 //!
 //! - **Unified Error Type**: Single `NebulaError` with structured error kinds
-//! - **Error Classification**: Automatic categorization (client vs server vs system)
+//! - **Error Classification**: Automatic categorization (client vs server vs system vs workflow)
 //! - **Rich Context**: Structured error context with metadata and correlation IDs
 //! - **Retry Logic**: Built-in retry strategies with exponential backoff and jitter
+//! - **Workflow Support**: Specialized errors for nodes, triggers, connectors, and execution
 //! - **Seamless Conversion**: Automatic conversion from standard library and third-party errors
 //!
 //! ## Quick Start
@@ -62,6 +63,26 @@
 //! // Check retry eligibility
 //! assert!(!validation_err.is_retryable());
 //! assert!(service_err.is_retryable());
+//! ```
+//!
+//! ## Workflow-Specific Errors
+//!
+//! ```rust
+//! use nebula_error::NebulaError;
+//! use std::time::Duration;
+//!
+//! // Workflow orchestration errors
+//! let workflow_err = NebulaError::workflow_not_found("user-onboarding");
+//! let node_err = NebulaError::node_execution_failed("send-email", "SMTP timeout");
+//! let trigger_err = NebulaError::trigger_invalid_cron_expression("* * * * * *", "invalid format");
+//!
+//! // External service errors
+//! let connector_err = NebulaError::connector_api_call_failed("slack", "/api/chat.postMessage", 500);
+//! let credential_err = NebulaError::credential_not_found("slack-oauth-token");
+//!
+//! // Execution limit errors
+//! let memory_err = NebulaError::execution_memory_limit_exceeded(512, 256);
+//! let queue_err = NebulaError::execution_queue_full(1000, 1000);
 //! ```
 //!
 //! ## With Retry Logic

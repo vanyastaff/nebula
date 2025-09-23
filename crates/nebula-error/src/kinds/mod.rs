@@ -7,10 +7,12 @@
 //! - [`client`] - Client errors (4xx equivalent) - user errors, validation, etc.
 //! - [`server`] - Server errors (5xx equivalent) - internal errors, service issues
 //! - [`system`] - System errors - infrastructure, network, resource issues
+//! - [`workflow`] - Workflow-specific errors for the Nebula workflow engine
 
 pub mod client;
 pub mod server;
 pub mod system;
+pub mod workflow;
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -19,6 +21,7 @@ use thiserror::Error;
 pub use client::ClientError;
 pub use server::ServerError;
 pub use system::SystemError;
+pub use workflow::{WorkflowError, NodeError, TriggerError, ConnectorError, CredentialError, ExecutionError};
 
 use crate::core::traits::{ErrorClassification, ErrorCode, RetryableError};
 
@@ -36,6 +39,30 @@ pub enum ErrorKind {
     /// System-level errors (infrastructure, network, etc.)
     #[error(transparent)]
     System(#[from] SystemError),
+
+    /// Workflow definition and orchestration errors
+    #[error(transparent)]
+    Workflow(#[from] WorkflowError),
+
+    /// Individual workflow node execution errors
+    #[error(transparent)]
+    Node(#[from] NodeError),
+
+    /// Workflow trigger errors (webhook, cron, manual, event)
+    #[error(transparent)]
+    Trigger(#[from] TriggerError),
+
+    /// External service connector errors
+    #[error(transparent)]
+    Connector(#[from] ConnectorError),
+
+    /// Credential and authentication errors
+    #[error(transparent)]
+    Credential(#[from] CredentialError),
+
+    /// Runtime execution errors (limits, cancellation, etc.)
+    #[error(transparent)]
+    Execution(#[from] ExecutionError),
 }
 
 impl ErrorClassification for ErrorKind {
@@ -58,6 +85,12 @@ impl RetryableError for ErrorKind {
             ErrorKind::Client(e) => e.is_retryable(),
             ErrorKind::Server(e) => e.is_retryable(),
             ErrorKind::System(e) => e.is_retryable(),
+            ErrorKind::Workflow(e) => e.is_retryable(),
+            ErrorKind::Node(e) => e.is_retryable(),
+            ErrorKind::Trigger(e) => e.is_retryable(),
+            ErrorKind::Connector(e) => e.is_retryable(),
+            ErrorKind::Credential(e) => e.is_retryable(),
+            ErrorKind::Execution(e) => e.is_retryable(),
         }
     }
 
@@ -66,6 +99,12 @@ impl RetryableError for ErrorKind {
             ErrorKind::Client(e) => e.retry_delay(),
             ErrorKind::Server(e) => e.retry_delay(),
             ErrorKind::System(e) => e.retry_delay(),
+            ErrorKind::Workflow(_) => None,
+            ErrorKind::Node(_) => Some(Duration::from_secs(1)),
+            ErrorKind::Trigger(_) => Some(Duration::from_secs(5)),
+            ErrorKind::Connector(_) => Some(Duration::from_secs(2)),
+            ErrorKind::Credential(_) => Some(Duration::from_secs(10)),
+            ErrorKind::Execution(_) => Some(Duration::from_millis(500)),
         }
     }
 }
@@ -76,6 +115,12 @@ impl ErrorCode for ErrorKind {
             ErrorKind::Client(e) => e.error_code(),
             ErrorKind::Server(e) => e.error_code(),
             ErrorKind::System(e) => e.error_code(),
+            ErrorKind::Workflow(e) => e.error_code(),
+            ErrorKind::Node(e) => e.error_code(),
+            ErrorKind::Trigger(e) => e.error_code(),
+            ErrorKind::Connector(e) => e.error_code(),
+            ErrorKind::Credential(e) => e.error_code(),
+            ErrorKind::Execution(e) => e.error_code(),
         }
     }
 
@@ -84,6 +129,12 @@ impl ErrorCode for ErrorKind {
             ErrorKind::Client(_) => "CLIENT",
             ErrorKind::Server(_) => "SERVER",
             ErrorKind::System(_) => "SYSTEM",
+            ErrorKind::Workflow(_) => "WORKFLOW",
+            ErrorKind::Node(_) => "NODE",
+            ErrorKind::Trigger(_) => "TRIGGER",
+            ErrorKind::Connector(_) => "CONNECTOR",
+            ErrorKind::Credential(_) => "CREDENTIAL",
+            ErrorKind::Execution(_) => "EXECUTION",
         }
     }
 }

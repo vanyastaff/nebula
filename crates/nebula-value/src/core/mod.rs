@@ -39,17 +39,22 @@ pub mod path;
 pub mod value;
 
 /// Convenient re-exports of the most commonly used core types.
-pub use error::{ValueError, ValueResult};
+pub use error::{ValueResult, ValueError, ValueErrorExt}; // ValueError is kept for backwards compatibility but deprecated
 pub use kind::{TypeCompatibility, ValueKind};
 pub use path::{PathSegment, ValuePath};
 pub use value::Value;
+
+/// Re-export NebulaError for unified error handling
+pub use nebula_error::{NebulaError, Result as NebulaResult, ResultExt};
 
 /// A dynamic error result type alias for ad-hoc usage.
 pub type DynResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 /// A small prelude to import frequently used types in one go.
 pub mod prelude {
-    pub use super::{PathSegment, Value, ValueError, ValueKind, ValuePath, ValueResult};
+    pub use super::{NebulaError, NebulaResult, PathSegment, Value, ValueKind, ValuePath, ValueResult};
     /// Re-export commonly used types from the `types` module.
     pub use crate::types::*;
+    /// Re-export NebulaError context utilities
+    pub use nebula_error::{ResultExt, ErrorContext};
 }

@@ -1,9 +1,17 @@
-use nebula_error::Error;
+use nebula_error::{NebulaError, Result as NebulaResult};
+use thiserror::Error;
 
-/// Type alias for Result with ValueError
-pub type ValueResult<T> = Result<T, ValueError>;
+/// Type alias for Result with NebulaError for value operations
+pub type ValueResult<T> = NebulaResult<T>;
 
-/// Main error type for Value operations
+/// Legacy type alias for backwards compatibility
+#[deprecated(since = "0.2.0", note = "Use ValueResult<T> instead")]
+pub type LegacyValueResult<T> = Result<T, ValueError>;
+
+/// Legacy error type for Value operations (deprecated)
+///
+/// This type is kept for backwards compatibility but new code should use NebulaError directly.
+#[deprecated(since = "0.2.0", note = "Use NebulaError instead")]
 #[derive(Debug, Error, Clone)]
 pub enum ValueError {
     /// Type-related errors
@@ -518,11 +526,206 @@ impl ErrorContext for ValueError {
     }
 }
 
+// ==================== NebulaError Integration ====================
+
+/// Convert ValueError to NebulaError
+impl From<ValueError> for NebulaError {
+    fn from(error: ValueError) -> Self {
+        match error {
+            ValueError::Type(e) => match e {
+                TypeError::Mismatch { expected, actual } => {
+                    NebulaError::validation(format!("Type mismatch: expected {}, got {}", expected, actual))
+                }
+                TypeError::Incompatible { left, right } => {
+                    NebulaError::validation(format!("Incompatible types: {} and {}", left, right))
+                }
+                TypeError::InvalidForOperation { ty, operation } => {
+                    NebulaError::validation(format!("Invalid type '{}' for operation '{}'", ty, operation))
+                }
+                TypeError::Unknown(ty) => {
+                    NebulaError::validation(format!("Unknown type: {}", ty))
+                }
+            },
+            ValueError::Conversion(e) => match e {
+                ConversionError::CannotConvert { from, to } => {
+                    NebulaError::validation(format!("Cannot convert from {} to {}", from, to))
+                }
+                ConversionError::CannotConvertValue { from, to, value } => {
+                    NebulaError::validation(format!("Cannot convert {} '{}' to {}", from, value, to))
+                }
+                ConversionError::PrecisionLoss { details } => {
+                    NebulaError::validation(format!("Conversion would lose precision: {}", details))
+                }
+                ConversionError::Overflow { value, target_type } => {
+                    NebulaError::validation(format!("Overflow converting {} to {}", value, target_type))
+                }
+            },
+            ValueError::Access(e) => match e {
+                AccessError::IndexOutOfBounds { index, length } => {
+                    NebulaError::not_found("array_index", index.to_string())
+                        .with_details(format!("Index {} out of bounds (length: {})", index, length))
+                }
+                AccessError::KeyNotFound { key } => {
+                    NebulaError::not_found("object_key", key)
+                }
+                AccessError::InvalidPath { path } => {
+                    NebulaError::validation(format!("Invalid path: {}", path))
+                }
+                AccessError::PathNotFound { path } => {
+                    NebulaError::not_found("path", path)
+                }
+                AccessError::FieldAccessOnNonObject { field, value_type } => {
+                    NebulaError::validation(format!("Cannot access field '{}' on {}", field, value_type))
+                }
+                AccessError::IndexOnNonArray { value_type } => {
+                    NebulaError::validation(format!("Cannot index {} (not an array)", value_type))
+                }
+            },
+            ValueError::Validation(e) => match e {
+                ValidationError::Required { field } => {
+                    NebulaError::validation(format!("Required value is missing: {}", field))
+                }
+                ValidationError::OutOfRange { value, min, max } => {
+                    NebulaError::validation(format!("Value {} is out of range [{}, {}]", value, min, max))
+                }
+                ValidationError::InvalidLength { actual, constraint } => {
+                    NebulaError::validation(format!("Invalid length {}, expected {}", actual, constraint))
+                }
+                ValidationError::PatternMismatch { value, pattern } => {
+                    NebulaError::validation(format!("Value '{}' doesn't match pattern '{}'", value, pattern))
+                }
+                ValidationError::Failed { reason } => {
+                    NebulaError::validation(format!("Validation failed: {}", reason))
+                }
+            },
+            ValueError::Parse(e) => match e {
+                ParseError::InvalidInteger { input } => {
+                    NebulaError::validation(format!("Invalid integer: {}", input))
+                }
+                ParseError::InvalidFloat { input } => {
+                    NebulaError::validation(format!("Invalid float: {}", input))
+                }
+                ParseError::InvalidBoolean { input } => {
+                    NebulaError::validation(format!("Invalid boolean: {}", input))
+                }
+                ParseError::InvalidDateTime { format_type, input } => {
+                    NebulaError::validation(format!("Invalid {}: {}", format_type, input))
+                }
+                ParseError::InvalidJson { details } => {
+                    NebulaError::validation(format!("Invalid JSON: {}", details))
+                }
+                ParseError::InvalidFormat { format_type, input } => {
+                    NebulaError::validation(format!("Invalid {} format: {}", format_type, input))
+                }
+                ParseError::UnexpectedEnd => {
+                    NebulaError::validation("Unexpected end of input")
+                }
+                ParseError::UnexpectedChar { ch, pos } => {
+                    NebulaError::validation(format!("Unexpected character '{}' at position {}", ch, pos))
+                }
+            },
+            ValueError::Operation(e) => match e {
+                OperationError::DivisionByZero => {
+                    NebulaError::validation("Division by zero")
+                }
+                OperationError::NotSupported { operation, value_type } => {
+                    NebulaError::validation(format!("Operation '{}' not supported for {}", operation, value_type))
+                }
+                OperationError::InvalidOperands { operation, details } => {
+                    NebulaError::validation(format!("Invalid operands for {}: {}", operation, details))
+                }
+                OperationError::ArithmeticOverflow { operation } => {
+                    NebulaError::validation(format!("Arithmetic overflow in {}", operation))
+                }
+                OperationError::NotFinite => {
+                    NebulaError::validation("Result is not a finite number")
+                }
+            },
+            ValueError::Io(msg) => {
+                NebulaError::internal(format!("IO error: {}", msg))
+            }
+            ValueError::Custom(msg) => {
+                NebulaError::internal(msg)
+            }
+        }
+    }
+}
+
+/// Convert NebulaError to ValueError for backwards compatibility
+impl From<NebulaError> for ValueError {
+    fn from(error: NebulaError) -> Self {
+        // For backwards compatibility, convert NebulaError back to ValueError
+        ValueError::Custom(error.to_string())
+    }
+}
+
+// Convenience functions for creating value-specific NebulaErrors
+pub trait ValueErrorExt {
+    /// Create a value type mismatch error
+    fn value_type_mismatch(expected: impl Into<String>, actual: impl Into<String>) -> Self;
+
+    /// Create a value conversion error
+    fn value_conversion_error(from: impl Into<String>, to: impl Into<String>) -> Self;
+
+    /// Create a value index out of bounds error
+    fn value_index_out_of_bounds(index: usize, length: usize) -> Self;
+
+    /// Create a value key not found error
+    fn value_key_not_found(key: impl Into<String>) -> Self;
+
+    /// Create a value path not found error
+    fn value_path_not_found(path: impl Into<String>) -> Self;
+
+    /// Create a value parse error
+    fn value_parse_error(format_type: impl Into<String>, input: impl Into<String>) -> Self;
+
+    /// Create a value operation not supported error
+    fn value_operation_not_supported(operation: impl Into<String>, value_type: impl Into<String>) -> Self;
+}
+
+impl ValueErrorExt for NebulaError {
+    /// Create a value type mismatch error
+    fn value_type_mismatch(expected: impl Into<String>, actual: impl Into<String>) -> Self {
+        Self::validation(format!("Type mismatch: expected {}, got {}", expected.into(), actual.into()))
+    }
+
+    /// Create a value conversion error
+    fn value_conversion_error(from: impl Into<String>, to: impl Into<String>) -> Self {
+        Self::validation(format!("Cannot convert from {} to {}", from.into(), to.into()))
+    }
+
+    /// Create a value index out of bounds error
+    fn value_index_out_of_bounds(index: usize, length: usize) -> Self {
+        Self::not_found("array_index", index.to_string())
+            .with_details(format!("Index {} out of bounds (length: {})", index, length))
+    }
+
+    /// Create a value key not found error
+    fn value_key_not_found(key: impl Into<String>) -> Self {
+        Self::not_found("object_key", key)
+    }
+
+    /// Create a value path not found error
+    fn value_path_not_found(path: impl Into<String>) -> Self {
+        Self::not_found("path", path)
+    }
+
+    /// Create a value parse error
+    fn value_parse_error(format_type: impl Into<String>, input: impl Into<String>) -> Self {
+        Self::validation(format!("Invalid {} format: {}", format_type.into(), input.into()))
+    }
+
+    /// Create a value operation not supported error
+    fn value_operation_not_supported(operation: impl Into<String>, value_type: impl Into<String>) -> Self {
+        Self::validation(format!("Operation '{}' not supported for {}", operation.into(), value_type.into()))
+    }
+}
+
 // ==================== Result helpers ====================
 
-/// Extension trait for Result types
-pub trait ResultExt<T> {
-    /// Convert to ValueError with custom message
+/// Extension trait for Result types (value-specific)
+pub trait ValueResultExt<T> {
+    /// Convert to NebulaError with custom message
     fn or_error<S: Into<String>>(self, msg: S) -> ValueResult<T>;
 
     /// Add context to error
@@ -531,19 +734,19 @@ pub trait ResultExt<T> {
         F: FnOnce() -> S;
 }
 
-impl<T, E> ResultExt<T> for Result<T, E>
+impl<T, E> ValueResultExt<T> for Result<T, E>
 where
     E: std::error::Error,
 {
     fn or_error<S: Into<String>>(self, msg: S) -> ValueResult<T> {
-        self.map_err(|_| ValueError::custom(msg))
+        self.map_err(|_| NebulaError::internal(msg))
     }
 
     fn with_context<S: Into<String>, F>(self, f: F) -> ValueResult<T>
     where
         F: FnOnce() -> S,
     {
-        self.map_err(|e| ValueError::custom(format!("{}: {}", f().into(), e)))
+        self.map_err(|e| NebulaError::internal(format!("{}: {}", f().into(), e)))
     }
 }
 

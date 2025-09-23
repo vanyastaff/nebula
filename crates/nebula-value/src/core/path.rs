@@ -1,5 +1,6 @@
 use crate::Value;
-use crate::core::error::ValueError;
+use crate::core::error::{ValueError, ValueResult, ValueErrorExt};
+use crate::core::NebulaError;
 use crate::types::Object;
 use std::fmt;
 
@@ -18,9 +19,9 @@ pub enum PathSegment {
 
 impl PathSegment {
     /// Parse a segment from string
-    pub fn parse(s: &str) -> Result<Self, ValueError> {
+    pub fn parse(s: &str) -> ValueResult<Self> {
         if s.is_empty() {
-            return Err(ValueError::invalid_format("path segment", s));
+            return Err(NebulaError::validation(format!("Empty path segment")));
         }
 
         match s {
@@ -69,7 +70,7 @@ impl ValuePath {
     }
 
     /// Parse a path from string (e.g., "user.address.0.city")
-    pub fn parse(path: &str) -> Result<Self, ValueError> {
+    pub fn parse(path: &str) -> ValueResult<Self> {
         if path.is_empty() {
             return Ok(Self::new());
         }
@@ -83,7 +84,7 @@ impl ValuePath {
     }
 
     /// Parse with bracket notation support (e.g., "users[0].name")
-    pub fn parse_extended(path: &str) -> Result<Self, ValueError> {
+    pub fn parse_extended(path: &str) -> ValueResult<Self> {
         if path.is_empty() {
             return Ok(Self::new());
         }
@@ -107,7 +108,7 @@ impl ValuePath {
                         current.clear();
                         in_bracket = false;
                     } else {
-                        return Err(ValueError::invalid_format("path", path));
+                        return Err(NebulaError::validation(format!("Invalid path syntax: {}", path)));
                     }
                 }
                 '.' => {
@@ -125,7 +126,7 @@ impl ValuePath {
         }
 
         if in_bracket {
-            return Err(ValueError::invalid_format("path", path));
+            return Err(NebulaError::validation(format!("Unclosed bracket in path: {}", path)));
         }
 
         if !current.is_empty() {

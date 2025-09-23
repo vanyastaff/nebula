@@ -3,8 +3,8 @@
 //! ==================
 //!
 //! A lightweight, fast, and expressive value model used across the Nebula ecosystem.
-//! It provides a dynamically-typed [`Value`] with a precise [`ValueKind`], rich
-//! error types, and utilities for conversion, inspection and manipulation.
+//! It provides a dynamically typed [`Value`] with a precise [`ValueKind`], rich
+//! error types, and utilities for conversion, inspection, and manipulation.
 //! The crate is designed to be `no_std` friendly and integrates well with other
 //! Nebula crates.
 //!
@@ -21,7 +21,7 @@
 //!
 //! ## Quick start
 //! ```rust
-//! use nebula_value::{Value, ValueKind};
+//! use nebula_value::{Value, ValueKind, NebulaError, ValueResult};
 //!
 //! let v = Value::from(42);
 //! assert_eq!(ValueKind::from_value(&v), ValueKind::Integer);
@@ -29,6 +29,14 @@
 //! // Type-aware operations
 //! assert!(ValueKind::Integer.is_numeric());
 //! assert_eq!(ValueKind::Integer.code(), 'i');
+//!
+//! // Error handling with NebulaError
+//! fn parse_value(input: &str) -> ValueResult<Value> {
+//!     if input.is_empty() {
+//!         return Err(NebulaError::validation("Input cannot be empty"));
+//!     }
+//!     Ok(Value::from(input))
+//! }
 //! ```
 //!
 //! ## Working with collections
@@ -56,11 +64,18 @@ pub mod types;
 
 // Re-export core types
 pub use core::{
-    error::{ValueError, ValueResult},
+    error::{ValueResult, ValueError}, // ValueError is deprecated in favor of NebulaError
     kind::{TypeCompatibility, ValueKind},
     path::{PathSegment, ValuePath},
     value::Value,
+    NebulaError, NebulaResult, ResultExt, // Unified error handling
 };
 
 // Re-export type implementations
 pub use types::*;
+
+/// Prelude for common imports
+pub mod prelude {
+    pub use crate::core::prelude::*;
+    pub use crate::{Value, ValueKind, NebulaError, ValueResult};
+}
