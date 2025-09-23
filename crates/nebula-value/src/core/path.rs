@@ -1,5 +1,5 @@
 use crate::Value;
-use crate::core::error::{ValueError, ValueResult, ValueErrorExt};
+use crate::core::error::{ValueResult, ValueErrorExt};
 use crate::core::NebulaError;
 use crate::types::Object;
 use std::fmt;
@@ -263,7 +263,7 @@ impl ValuePath {
     }
 
     /// Set a value at this path
-    pub fn set(&self, value: &mut Value, new_value: Value) -> Result<(), ValueError> {
+    pub fn set(&self, value: &mut Value, new_value: Value) -> ValueResult<()> {
         self.set_from(value, new_value, 0)
     }
 
@@ -272,7 +272,7 @@ impl ValuePath {
         value: &mut Value,
         new_value: Value,
         index: usize,
-    ) -> Result<(), ValueError> {
+    ) -> ValueResult<()> {
         if index >= self.segments.len() {
             *value = new_value;
             return Ok(());
@@ -286,24 +286,24 @@ impl ValuePath {
                         let _ = obj.insert(key.clone(), new_value);
                         Ok(())
                     } else {
-                        Err(ValueError::type_mismatch("object", value.type_name()))
+                        Err(NebulaError::value_type_mismatch("object", value.type_name()))
                     }
                 }
                 PathSegment::Index(idx) => {
                     if let Value::Array(arr) = value {
                         if *idx >= arr.len() {
-                            return Err(ValueError::index_out_of_bounds(*idx, arr.len()));
+                            return Err(NebulaError::value_index_out_of_bounds(*idx, arr.len()));
                         }
                         let new_arr = arr
                             .set(*idx, new_value)
-                            .map_err(|e| ValueError::custom(format!("array set error: {:?}", e)))?;
+                            .map_err(|e| NebulaError::internal(format!("array set error: {:?}", e)))?;
                         *arr = new_arr;
                         Ok(())
                     } else {
-                        Err(ValueError::type_mismatch("array", value.type_name()))
+                        Err(NebulaError::value_type_mismatch("array", value.type_name()))
                     }
                 }
-                _ => Err(ValueError::unsupported_operation(
+                _ => Err(NebulaError::value_operation_not_supported(
                     "set with wildcard",
                     "path",
                 )),
@@ -322,29 +322,29 @@ impl ValuePath {
                         *obj = new_obj;
                         Ok(())
                     } else {
-                        Err(ValueError::type_mismatch("object", value.type_name()))
+                        Err(NebulaError::value_type_mismatch("object", value.type_name()))
                     }
                 }
                 PathSegment::Index(idx) => {
                     if let Value::Array(arr) = value {
                         if *idx >= arr.len() {
-                            return Err(ValueError::index_out_of_bounds(*idx, arr.len()));
+                            return Err(NebulaError::value_index_out_of_bounds(*idx, arr.len()));
                         }
                         let mut elem = arr
                             .get(*idx)
                             .cloned()
-                            .ok_or_else(|| ValueError::index_out_of_bounds(*idx, arr.len()))?;
+                            .ok_or_else(|| NebulaError::value_index_out_of_bounds(*idx, arr.len()))?;
                         self.set_from(&mut elem, new_value, index + 1)?;
                         let new_arr = arr
                             .set(*idx, elem)
-                            .map_err(|e| ValueError::custom(format!("array set error: {:?}", e)))?;
+                            .map_err(|e| NebulaError::internal(format!("array set error: {:?}", e)))?;
                         *arr = new_arr;
                         Ok(())
                     } else {
-                        Err(ValueError::type_mismatch("array", value.type_name()))
+                        Err(NebulaError::value_type_mismatch("array", value.type_name()))
                     }
                 }
-                _ => Err(ValueError::unsupported_operation(
+                _ => Err(NebulaError::value_operation_not_supported(
                     "set with wildcard",
                     "path",
                 )),
@@ -353,7 +353,7 @@ impl ValuePath {
     }
 
     /// Delete value at this path
-    pub fn delete(&self, value: &mut Value) -> Result<bool, ValueError> {
+    pub fn delete(&self, value: &mut Value) -> ValueResult<bool> {
         if self.segments.is_empty() {
             return Ok(false);
         }
@@ -367,7 +367,7 @@ impl ValuePath {
             let parent_path = Self::from_segments(path.to_vec());
             parent_path
                 .get_mut(value)
-                .ok_or_else(|| ValueError::custom("Parent path not found"))?
+                .ok_or_else(|| NebulaError::internal("Parent path not found"))?
         };
 
         // Delete from parent
@@ -382,7 +382,7 @@ impl ValuePath {
                         Err(_) => Ok(false),
                     }
                 } else {
-                    Err(ValueError::type_mismatch("object", parent.type_name()))
+                    Err(NebulaError::value_type_mismatch("object", parent.type_name()))
                 }
             }
             PathSegment::Index(idx) => {
@@ -398,10 +398,10 @@ impl ValuePath {
                         Ok(false)
                     }
                 } else {
-                    Err(ValueError::type_mismatch("array", parent.type_name()))
+                    Err(NebulaError::value_type_mismatch("array", parent.type_name()))
                 }
             }
-            _ => Err(ValueError::unsupported_operation(
+            _ => Err(NebulaError::value_operation_not_supported(
                 "delete with wildcard",
                 "path",
             )),

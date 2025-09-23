@@ -64,7 +64,7 @@ pub mod types;
 
 // Re-export core types
 pub use core::{
-    error::{ValueResult, ValueError}, // ValueError is deprecated in favor of NebulaError
+    error::{ValueResult, ValueErrorExt, ValueResultExt},
     kind::{TypeCompatibility, ValueKind},
     path::{PathSegment, ValuePath},
     value::Value,
@@ -77,5 +77,5 @@ pub use types::*;
 /// Prelude for common imports
 pub mod prelude {
     pub use crate::core::prelude::*;
-    pub use crate::{Value, ValueKind, NebulaError, ValueResult};
+    pub use crate::{Value, ValueKind, NebulaError, ValueResult, ValueErrorExt, ValueResultExt};
 }

@@ -1,4 +1,5 @@
-use crate::core::error::ValueError;
+use crate::core::error::{ValueResult, ValueErrorExt};
+use crate::core::NebulaError;
 use crate::types::*;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -262,13 +263,13 @@ impl Value {
     }
 
     /// Set value by path
-    pub fn set_path(&mut self, path: &str, value: Value) -> Result<(), ValueError> {
+    pub fn set_path(&mut self, path: &str, value: Value) -> ValueResult<()> {
         let parts: Vec<&str> = path.split('.').collect();
         self.set_path_segments(&parts, value)
     }
 
     /// Set value by path segments
-    pub fn set_path_segments(&mut self, segments: &[&str], value: Value) -> Result<(), ValueError> {
+    pub fn set_path_segments(&mut self, segments: &[&str], value: Value) -> ValueResult<()> {
         if segments.is_empty() {
             *self = value;
             return Ok(());
@@ -276,7 +277,7 @@ impl Value {
 
         let (first, rest) = segments
             .split_first()
-            .ok_or_else(|| ValueError::custom("Empty path segments"))?;
+            .ok_or_else(|| NebulaError::internal("Empty path segments"))?;
 
         if rest.is_empty() {
             // Last segment - set the value
@@ -289,17 +290,17 @@ impl Value {
                 Value::Array(arr) => {
                     let index = first
                         .parse::<usize>()
-                        .map_err(|_| ValueError::invalid_format("array index", *first))?;
+                        .map_err(|_| NebulaError::value_parse_error("array index", *first))?;
                     if index >= arr.len() {
-                        return Err(ValueError::index_out_of_bounds(index, arr.len()));
+                        return Err(NebulaError::value_index_out_of_bounds(index, arr.len()));
                     }
                     let new_arr = arr
                         .set(index, value)
-                        .map_err(|e| ValueError::custom(format!("array set error: {:?}", e)))?;
+                        .map_err(|e| NebulaError::internal(format!("array set error: {:?}", e)))?;
                     *arr = new_arr;
                     Ok(())
                 }
-                _ => Err(ValueError::unsupported_operation(
+                _ => Err(NebulaError::value_operation_not_supported(
                     "set_path",
                     self.type_name(),
                 )),
@@ -320,22 +321,22 @@ impl Value {
                 Value::Array(arr) => {
                     let index = first
                         .parse::<usize>()
-                        .map_err(|_| ValueError::invalid_format("array index", *first))?;
+                        .map_err(|_| NebulaError::value_parse_error("array index", *first))?;
                     if index >= arr.len() {
-                        return Err(ValueError::index_out_of_bounds(index, arr.len()));
+                        return Err(NebulaError::value_index_out_of_bounds(index, arr.len()));
                     }
                     let mut elem = arr
                         .get(index)
                         .cloned()
-                        .ok_or_else(|| ValueError::index_out_of_bounds(index, arr.len()))?;
+                        .ok_or_else(|| NebulaError::value_index_out_of_bounds(index, arr.len()))?;
                     elem.set_path_segments(rest, value)?;
                     let new_arr = arr
                         .set(index, elem)
-                        .map_err(|e| ValueError::custom(format!("array set error: {:?}", e)))?;
+                        .map_err(|e| NebulaError::internal(format!("array set error: {:?}", e)))?;
                     *arr = new_arr;
                     Ok(())
                 }
-                _ => Err(ValueError::unsupported_operation(
+                _ => Err(NebulaError::value_operation_not_supported(
                     "set_path",
                     self.type_name(),
                 )),
@@ -414,7 +415,7 @@ impl Value {
     }
 
     /// Merge two values (for objects, concatenate for arrays)
-    pub fn merge(&mut self, other: Value) -> Result<(), ValueError> {
+    pub fn merge(&mut self, other: Value) -> ValueResult<()> {
         match (self, other) {
             (Value::Object(o1), Value::Object(o2)) => {
                 let merged = o1.merge(&o2);
@@ -426,7 +427,7 @@ impl Value {
                 *a1 = concatenated;
                 Ok(())
             }
-            (s, o) => Err(ValueError::incompatible_types(s.type_name(), o.type_name())),
+            (s, o) => Err(NebulaError::value_type_mismatch(s.type_name(), o.type_name())),
         }
     }
 
