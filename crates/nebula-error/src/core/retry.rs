@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
 
-use super::error::NebulaError;
+use crate::core::NebulaError;
 
 /// Retry strategy configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -458,7 +458,7 @@ mod tests {
                         let mut count = attempts.lock().unwrap();
                         *count += 1;
                         if *count < 3 {
-                            Err("temporary error")
+                            Err(NebulaError::internal("temporary error"))
                         } else {
                             Ok("success")
                         }
