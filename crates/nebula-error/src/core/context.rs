@@ -1,8 +1,11 @@
 //! Error context for providing additional information
 
-use serde::{Deserialize, Serialize};
+// Standard library
 use std::collections::HashMap;
 use std::fmt;
+
+// External dependencies
+use serde::{Deserialize, Serialize};
 
 /// Additional context information for errors
 #[derive(Debug, Clone, Serialize, Deserialize)]

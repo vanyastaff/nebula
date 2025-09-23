@@ -1,12 +1,16 @@
 //! Main NebulaError struct and core error functionality
 
-use serde::{Deserialize, Serialize};
+// Standard library
 use std::fmt;
 use std::time::Duration;
 
+// External dependencies
+use serde::{Deserialize, Serialize};
+
+// Internal crates
 use crate::core::context::ErrorContext;
-use crate::kinds::ErrorKind;
 use crate::core::traits::{ErrorClassification, ErrorCode, RetryableError};
+use crate::kinds::ErrorKind;
 
 /// Main error type for Nebula
 ///
