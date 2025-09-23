@@ -422,39 +422,34 @@ impl Text {
     }
 
     /// Takes first n characters
-    pub fn take(&self, n: usize) -> Text {
+    pub fn take(&self, n: usize) -> TextResult<Text> {
         if n == 0 {
-            return Self::empty();
+            return Ok(Self::empty());
         }
-
         let char_count = self.char_count();
         if n >= char_count {
-            return self.clone();
+            return Ok(self.clone());
         }
-
-        self.substring(0, n).unwrap_or_else(|_| self.clone())
+        self.substring(0, n)
     }
 
     /// Skips first n characters
-    pub fn skip(&self, n: usize) -> Text {
+    pub fn skip(&self, n: usize) -> TextResult<Text> {
         if n == 0 {
-            return self.clone();
+            return Ok(self.clone());
         }
-
         let char_count = self.char_count();
         if n >= char_count {
-            return Self::empty();
+            return Ok(Self::empty());
         }
-
         self.substring(n, char_count)
-            .unwrap_or_else(|_| Self::empty())
     }
 
     /// Takes last n characters
-    pub fn take_last(&self, n: usize) -> Text {
+    pub fn take_last(&self, n: usize) -> TextResult<Text> {
         let char_count = self.char_count();
         if n >= char_count {
-            return self.clone();
+            return Ok(self.clone());
         }
         self.skip(char_count - n)
     }
@@ -611,14 +606,14 @@ impl Text {
         if char_count <= max_len {
             return self.clone();
         }
-
         if max_len <= 3 {
             return Self::from("...");
         }
-
         let truncate_at = max_len - 3;
-        let truncated = self.take(truncate_at);
-        Self::new(format!("{}...", truncated.as_str()))
+        match self.take(truncate_at) {
+            Ok(truncated) => Self::new(format!("{}...", truncated.as_str())),
+            Err(_) => Self::from("..."), // fallback if take fails
+        }
     }
 
     /// Wraps text at specified width
@@ -1173,9 +1168,9 @@ mod tests {
 
         assert_eq!(text.substring(0, 5).unwrap().as_str(), "Hello");
         assert_eq!(text.substring(7, 12).unwrap().as_str(), "World");
-        assert_eq!(text.take(5).as_str(), "Hello");
-        assert_eq!(text.skip(7).as_str(), "World!");
-        assert_eq!(text.take_last(6).as_str(), "World!");
+        assert_eq!(text.take(5).unwrap().as_str(), "Hello");
+        assert_eq!(text.skip(7).unwrap().as_str(), "World!");
+        assert_eq!(text.take_last(6).unwrap().as_str(), "World!");
     }
 
     #[test]

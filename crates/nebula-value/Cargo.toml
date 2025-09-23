@@ -14,51 +14,62 @@ categories = ["data-structures", "encoding"]
 description = "Value type system for Nebula workflow engine"
 
 [dependencies]
-# From workspace
-
-nebula-error = { path = "../nebula-error" }
-thiserror = "2"
+# Async and concurrency
+async-trait = { workspace = true }
 rayon = { workspace = true, optional = true }
+tokio = { workspace = true }
 
-# For binary data handling
-base64 = { version = "0.22.1", optional = true }
-bytes = {version = "1.10.1", features = ["serde"]}
-rand = {version = "0.9.2"}
+# Errors and logging
+thiserror = { workspace = true }
+tracing = { workspace = true }
 
 # Optional features
-chrono = { workspace = true,  optional = true }
-regex = { version = "1.11.1", optional = true}
-serde = { workspace = true, optional = true }
-serde_bytes = {version = "0.11.17", optional = true}
-serde_regex = {version = "1.1.0", optional = true }
-serde_json = { workspace = true, optional = true, features = [] }
+chrono = { workspace = true, optional = true }
 indexmap = { version = "2.10", features = ["serde"], optional = true }
+regex = { version = "1.11.1", optional = true }
+serde = { workspace = true, optional = true }
+serde_bytes = { version = "0.11.17", optional = true }
+serde_json = { workspace = true, optional = true, features = [] }
+serde_regex = { version = "1.1.0", optional = true }
 
+# Utilities and data
+base64 = { version = "0.22.1", optional = true }
+bytes = { version = "1.10.1", features = ["serde"] }
+rand = { version = "0.9.2" }
 
+# Internal crates
+nebula-error = { path = "../nebula-error" }
+nebula-log = { path = "../nebula-log" }
 
 [features]
-default = ["std"]
-std = []
-serde = ["dep:serde", "dep:serde_regex", "dep:serde_bytes", "dep:serde_json", "bytes/serde", "indexmap?/serde", "chrono?/serde"]
-rayon = ["dep:rayon"]
 base64 = ["dep:base64"]
+chrono = ["dep:chrono"]
+default = ["std"]
+decimal = []
 indexmap = ["dep:indexmap"]
 pattern = ["dep:regex"]
-chrono = ["dep:chrono"]
-validation = []
-decimal = []
+rayon = ["dep:rayon"]
+serde = [
+    "dep:serde",
+    "dep:serde_regex",
+    "dep:serde_bytes",
+    "dep:serde_json",
+    "bytes/serde",
+    "indexmap?/serde",
+    "chrono?/serde",
+]
+std = []
 
 [dev-dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }
-serde_bytes = {version = "0.11.17"}
-serde_regex = {version = "1.1.0"}
 indexmap = { version = "2.5", features = ["serde"] }
+serde = { workspace = true }
+serde_bytes = { version = "0.11.17" }
+serde_json = { workspace = true }
+serde_regex = { version = "1.1.0" }
 
 # For testing
 criterion = { version = "0.7", features = ["html_reports"] }
 proptest = "1.5"
-
 
 [package.metadata.docs.rs]
 all-features = true

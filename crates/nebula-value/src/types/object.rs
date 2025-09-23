@@ -864,8 +864,24 @@ impl fmt::Display for Object {
 impl Index<&str> for Object {
     type Output = Value;
 
+    /// Panics if the key is not found. Prefer using `get` for safe access.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the key does not exist in the object.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nebula_value::{Object, Value};
+    /// let obj = Object::from_iter(vec![("foo", Value::from(1))]);
+    /// assert_eq!(obj["foo"].as_i64(), Some(1));
+    /// ```
     fn index(&self, key: &str) -> &Self::Output {
-        self.get(key).expect("key not found")
+        match self.get(key) {
+            Some(val) => val,
+            None => panic!("Object index: key '{}' not found. Use `get` for safe access.", key),
+        }
     }
 }
 

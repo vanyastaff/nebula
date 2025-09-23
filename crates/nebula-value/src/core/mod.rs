@@ -1,13 +1,36 @@
-//!
 //! Core building blocks for the Nebula Value model.
 //!
-//! This module contains the fundamental types and utilities:
-//! - [`value`]: the [`Value`] enum and associated helpers.
-//! - [`kind`]: the [`ValueKind`] classification and type-compatibility logic.
-//! - [`error`]: strongly-typed error enums used by value operations.
-//! - [`path`]: helpers to navigate nested values using paths.
+//! This module contains the fundamental types and utilities that power the value system:
 //!
-//! Most users will interact with re-exported items directly from the crate root.
+//! ## Core Components
+//!
+//! ### [`value`] - The Value enum
+//! The central [`Value`] enum represents any data value in the Nebula ecosystem.
+//! It supports all primitive, collection, and temporal types with efficient
+//! Arc-based cloning for large data structures.
+//!
+//! ### [`kind`] - Type classification
+//! The [`ValueKind`] system provides:
+//! - Type classification and compatibility checking
+//! - Category-based operations (numeric, temporal, collection, etc.)
+//! - Type codes for serialization and debugging
+//!
+//! ### [`error`] - Comprehensive error handling
+//! Strongly-typed error enums that cover:
+//! - Type mismatches and conversion failures
+//! - Access errors (invalid keys, indices, paths)
+//! - Validation and parsing failures
+//! - Operation-specific errors with context
+//!
+//! ### [`path`] - Value navigation
+//! Path-based navigation for nested values:
+//! - Dot notation and array indexing
+//! - Safe traversal with error handling
+//! - Mutable and immutable access patterns
+//!
+//! ## Usage
+//! Most users interact with re-exported items from the crate root, but this
+//! module provides direct access for advanced use cases.
 
 // Core modules
 pub mod error;

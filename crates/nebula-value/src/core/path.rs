@@ -1,5 +1,5 @@
 use crate::Value;
-use crate::error::ValueError;
+use crate::core::error::ValueError;
 use crate::types::Object;
 use std::fmt;
 
@@ -375,7 +375,7 @@ impl ValuePath {
                 if let Value::Object(obj) = parent {
                     match obj.remove(key) {
                         Ok((new_obj, _)) => {
-                            *obj = new_obj;
+                            *parent = Value::Object(new_obj);
                             Ok(true)
                         }
                         Err(_) => Ok(false),
@@ -388,7 +388,7 @@ impl ValuePath {
                 if let Value::Array(arr) = parent {
                     if *idx < arr.len() {
                         if let Ok((new_arr, _)) = arr.remove(*idx) {
-                            *arr = new_arr;
+                            *parent = Value::Array(new_arr);
                             Ok(true)
                         } else {
                             Ok(false)
