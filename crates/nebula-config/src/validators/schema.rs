@@ -3,7 +3,6 @@
 use crate::core::{ConfigError, ConfigResult, ConfigValidator};
 use async_trait::async_trait;
 use serde_json::Value;
-use std::collections::HashMap;
 
 /// Schema-based validator
 #[derive(Debug, Clone)]
@@ -272,7 +271,7 @@ impl SchemaValidator {
     ) -> ConfigResult<()> {
         // Check items schema
         if let Some(items) = schema_obj.get("items") {
-            if let Some(items_schema) = items.as_object() {
+            if let Some(_items_schema) = items.as_object() {
                 for (i, item) in arr.iter().enumerate() {
                     let new_path = format!("{}[{}]", path, i);
                     self.validate_recursive(item, items, &new_path)?;

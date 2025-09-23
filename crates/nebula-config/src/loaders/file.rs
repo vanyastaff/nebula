@@ -1,8 +1,13 @@
 //! File-based configuration loader
 
-use crate::core::{ConfigError, ConfigFormat, ConfigResult, ConfigSource, SourceMetadata, ConfigLoader};
-use async_trait::async_trait;
+// Standard library
 use std::path::{Path, PathBuf};
+
+// External dependencies
+use async_trait::async_trait;
+
+// Internal crates
+use crate::core::{ConfigError, ConfigFormat, ConfigLoader, ConfigResult, ConfigSource, SourceMetadata};
 
 /// File-based configuration loader
 #[derive(Debug, Clone)]
@@ -79,7 +84,7 @@ impl FileLoader {
 
     /// Parse YAML content
     fn parse_yaml(&self, content: &str, path: &Path) -> ConfigResult<serde_json::Value> {
-        use yaml_rust::{YamlLoader, Yaml};
+        use yaml_rust::YamlLoader;
 
         let docs = YamlLoader::load_from_str(content)
             .map_err(|e| ConfigError::parse_error(path, format!("YAML parse error: {:?}", e)))?;
@@ -157,11 +162,15 @@ impl FileLoader {
             // Section header
             if line.starts_with('[') && line.ends_with(']') {
                 current_section = Some(line[1..line.len()-1].to_string());
-                if !result.contains_key(current_section.as_ref().unwrap()) {
-                    result.insert(
-                        current_section.clone().unwrap(),
-                        serde_json::Value::Object(serde_json::Map::new())
-                    );
+                if let Some(section) = &current_section {
+                    if !result.contains_key(section) {
+                        result.insert(
+                            section.clone(),
+                            serde_json::Value::Object(serde_json::Map::new())
+                        );
+                    }
+                } else {
+                    return Err(ConfigError::parse_error(path, "Section header missing name"));
                 }
                 continue;
             }
@@ -377,7 +386,7 @@ impl ConfigLoader for FileLoader {
                             .unwrap_or_else(chrono::Utc::now),
                     ))
             }
-            ConfigSource::Directory(path) => {
+            ConfigSource::Directory(_path) => {
                 Ok(SourceMetadata::new(source.clone())
                     .with_format(ConfigFormat::Unknown("directory".to_string()))
                     .with_last_modified(chrono::Utc::now()))

@@ -57,6 +57,7 @@ impl ConfigValidator for FunctionValidator {
 }
 
 /// Builder for creating complex function validators
+#[allow(dead_code)]
 pub struct FunctionValidatorBuilder {
     validators: Vec<Box<dyn Fn(&serde_json::Value) -> ConfigResult<()> + Send + Sync>>,
     schema: Option<serde_json::Value>,
@@ -64,6 +65,7 @@ pub struct FunctionValidatorBuilder {
 
 impl FunctionValidatorBuilder {
     /// Create a new builder
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             validators: Vec::new(),
@@ -72,6 +74,7 @@ impl FunctionValidatorBuilder {
     }
 
     /// Add a validation function
+    #[allow(dead_code)]
     pub fn add_validator<F>(mut self, f: F) -> Self
     where
         F: Fn(&serde_json::Value) -> ConfigResult<()> + Send + Sync + 'static,
@@ -81,6 +84,7 @@ impl FunctionValidatorBuilder {
     }
 
     /// Add a field validator
+    #[allow(dead_code)]
     pub fn validate_field<F>(self, field: &str, validator: F) -> Self
     where
         F: Fn(&serde_json::Value) -> ConfigResult<()> + Send + Sync + 'static,
@@ -96,6 +100,7 @@ impl FunctionValidatorBuilder {
     }
 
     /// Require a field to be present
+    #[allow(dead_code)]
     pub fn require_field(self, field: &str) -> Self {
         let field = field.to_string();
         self.add_validator(move |data| {
@@ -111,12 +116,14 @@ impl FunctionValidatorBuilder {
     }
 
     /// Set schema
+    #[allow(dead_code)]
     pub fn with_schema(mut self, schema: serde_json::Value) -> Self {
         self.schema = Some(schema);
         self
     }
 
     /// Build the validator
+    #[allow(dead_code)]
     pub fn build(self) -> FunctionValidator {
         let validators = self.validators;
         let combined_fn = move |data: &serde_json::Value| -> ConfigResult<()> {

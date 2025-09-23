@@ -5,7 +5,7 @@ use crate::watchers::{ConfigWatchEvent, ConfigWatchEventType};
 use async_trait::async_trait;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
@@ -68,6 +68,7 @@ impl FileWatcher {
     }
 
     /// Convert notify event to config watch event
+    #[allow(dead_code)]
     fn convert_event(&self, event: Event, source: &ConfigSource) -> Option<ConfigWatchEvent> {
         let event_type = match event.kind {
             EventKind::Create(_) => ConfigWatchEventType::Created,

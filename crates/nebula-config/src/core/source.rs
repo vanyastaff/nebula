@@ -26,14 +26,19 @@ pub enum ConfigSource {
 
     /// Database configuration
     Database {
+        /// Database connection URL
         url: String,
+        /// Table or collection name containing configuration
         table: String,
+        /// Key name to identify configuration record
         key: String,
     },
 
     /// Key-value store
     KeyValue {
+        /// Key-value store connection URL
         url: String,
+        /// Bucket or namespace for configuration data
         bucket: String
     },
 

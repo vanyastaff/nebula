@@ -104,6 +104,11 @@ pub mod prelude {
         ConfigResultExt,
     };
 
+    // Re-export nebula ecosystem types for convenience
+    pub use nebula_value::Value as NebulaValue;
+    pub use nebula_error::NebulaError;
+    pub use nebula_log::{debug, info, warn, error};
+
     // Traits
     pub use crate::core::{
         ConfigLoader,
@@ -140,10 +145,10 @@ pub mod prelude {
 pub mod builders {
     //! Builder utilities for configuration
 
-    use crate::core::{ConfigBuilder, ConfigResult, ConfigSource};
+    use crate::core::{ConfigBuilder, ConfigSource};
     use crate::loaders::{FileLoader, EnvLoader};
     use crate::validators::SchemaValidator;
-    use crate::watchers::{FileWatcher, PollingWatcher};
+    use crate::watchers::FileWatcher;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -233,9 +238,12 @@ pub mod utils {
         }
 
         let mut iter = values.into_iter();
-        let mut result = iter
-            .next()
-            .unwrap();
+        let mut result = if let Some(v) = iter.next() {
+            v
+        } else {
+            // Defensive fallback: should be unreachable due to the is_empty() guard above
+            serde_json::Value::Object(serde_json::Map::new())
+        };
         let temp_config = crate::Config::new(
             serde_json::Value::Object(serde_json::Map::new()),
             vec![],
@@ -348,8 +356,10 @@ pub mod utils {
                     }
                     if line.starts_with('[') && line.ends_with(']') {
                         current_section = Some(line[1..line.len()-1].to_string());
-                        result.entry(current_section.clone().unwrap())
-                            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                        if let Some(section) = &current_section {
+                            result.entry(section.clone())
+                                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                        }
                         continue;
                     }
                     if let Some(eq_pos) = line.find('=') {

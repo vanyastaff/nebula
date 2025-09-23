@@ -1,8 +1,13 @@
 //! Composite loader that combines multiple loaders
 
-use crate::core::{ConfigError, ConfigResult, ConfigSource, SourceMetadata, ConfigLoader};
-use async_trait::async_trait;
+// Standard library
 use std::sync::Arc;
+
+// External dependencies
+use async_trait::async_trait;
+
+// Internal crates
+use crate::core::{ConfigError, ConfigLoader, ConfigResult, ConfigSource, SourceMetadata};
 
 /// Composite configuration loader
 pub struct CompositeLoader {
@@ -84,7 +89,14 @@ impl CompositeLoader {
                     last_error = Some(e);
 
                     if self.fail_fast {
-                        return Err(last_error.unwrap());
+                        if let Some(err) = last_error {
+                            return Err(err);
+                        } else {
+                            return Err(ConfigError::source_error(
+                                "Loader failed without an error".to_string(),
+                                source.name(),
+                            ));
+                        }
                     }
                 }
             }

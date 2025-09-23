@@ -147,7 +147,11 @@ impl ConfigBuilder {
 
         // Add defaults first if present
         if let Some(defaults) = self.defaults {
-            nebula_log::debug!("Applying default configuration");
+            nebula_log::debug!(
+                action = "applying_defaults",
+                default_keys = defaults.as_object().map(|o| o.len()).unwrap_or(0),
+                "Applying default configuration"
+            );
             merged_data = defaults;
         }
 
@@ -159,10 +163,15 @@ impl ConfigBuilder {
 
             match loader.load(source).await {
                 Ok(data) => {
-                    nebula_log::debug!("Loaded configuration from source: {}", source);
+                    nebula_log::debug!(
+                        action = "source_loaded",
+                        source = %source,
+                        data_keys = data.as_object().map(|o| o.len()).unwrap_or(0),
+                        "Successfully loaded configuration from source"
+                    );
 
                     // Create temporary config for merging
-                    let mut temp_config = Config::new(
+                    let temp_config = Config::new(
                         serde_json::Value::Object(serde_json::Map::new()),
                         vec![],
                         Arc::clone(&loader),
@@ -177,7 +186,13 @@ impl ConfigBuilder {
                     if self.fail_on_missing || !source.is_optional() {
                         return Err(e);
                     }
-                    nebula_log::warn!("Failed to load optional source {}: {}", source, e);
+                    nebula_log::warn!(
+                        action = "source_load_failed",
+                        source = %source,
+                        error = %e,
+                        optional = source.is_optional(),
+                        "Failed to load optional configuration source"
+                    );
                 }
             }
         }

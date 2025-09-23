@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use nebula_value::Value as NebulaValue;
 
 /// Main configuration container
 #[derive(Clone)]
@@ -55,7 +56,7 @@ impl Config {
     }
 
     /// Get entire configuration as typed value
-    pub async fn get<T>(&self) -> ConfigResult<T>
+    pub async fn get_all<T>(&self) -> ConfigResult<T>
     where
         T: DeserializeOwned,
     {
@@ -70,7 +71,7 @@ impl Config {
     }
 
     /// Get configuration value by path
-    pub async fn get_path<T>(&self, path: &str) -> ConfigResult<T>
+    pub async fn get<T>(&self, path: &str) -> ConfigResult<T>
     where
         T: DeserializeOwned,
     {
@@ -86,34 +87,34 @@ impl Config {
     }
 
     /// Get configuration value by path with default
-    pub async fn get_path_or<T>(&self, path: &str, default: T) -> T
+    pub async fn get_or<T>(&self, path: &str, default: T) -> T
     where
         T: DeserializeOwned,
     {
-        self.get_path(path).await.unwrap_or(default)
+        self.get(path).await.unwrap_or(default)
     }
 
     /// Get configuration value by path or default
-    pub async fn get_path_or_else<T, F>(&self, path: &str, default_fn: F) -> T
+    pub async fn get_or_else<T, F>(&self, path: &str, default_fn: F) -> T
     where
         T: DeserializeOwned,
         F: FnOnce() -> T,
     {
-        self.get_path(path).await.unwrap_or_else(|_| default_fn())
+        self.get(path).await.unwrap_or_else(|_| default_fn())
     }
 
     /// Check if configuration has a path
-    pub async fn has_path(&self, path: &str) -> bool {
+    pub async fn has(&self, path: &str) -> bool {
         let data = self.data.read().await;
         self.get_nested_value(&data, path).is_ok()
     }
 
     /// Try to get configuration value by path, returning None on error
-    pub async fn get_opt_path<T>(&self, path: &str) -> Option<T>
+    pub async fn get_opt<T>(&self, path: &str) -> Option<T>
     where
         T: DeserializeOwned,
     {
-        self.get_path(path).await.ok()
+        self.get(path).await.ok()
     }
 
     /// Get all configuration keys at a path
@@ -308,6 +309,100 @@ impl Config {
         Ok(current)
     }
 
+    /// Set nested value in JSON using dot notation
+    fn set_nested_value(
+        &self,
+        value: &mut serde_json::Value,
+        path: &str,
+        new_value: serde_json::Value,
+    ) -> ConfigResult<()> {
+        if path.is_empty() {
+            *value = new_value;
+            return Ok(());
+        }
+
+        let parts: Vec<&str> = path.split('.').collect();
+        let mut current = value;
+
+        // Navigate to the parent of the target key
+        for part in &parts[..parts.len() - 1] {
+            match current {
+                serde_json::Value::Object(obj) => {
+                    current = obj.entry(part.to_string())
+                        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                }
+                serde_json::Value::Array(arr) => {
+                    let index: usize = part.parse().map_err(|_| {
+                        ConfigError::path_error(
+                            format!("Invalid array index '{}'", part),
+                            path.to_string(),
+                        )
+                    })?;
+
+                    // Extend array if necessary
+                    while arr.len() <= index {
+                        arr.push(serde_json::Value::Null);
+                    }
+
+                    current = &mut arr[index];
+                }
+                _ => {
+                    return Err(ConfigError::path_error(
+                        format!("Cannot navigate into {} type",
+                            match current {
+                                serde_json::Value::Null => "null",
+                                serde_json::Value::Bool(_) => "boolean",
+                                serde_json::Value::Number(_) => "number",
+                                serde_json::Value::String(_) => "string",
+                                _ => "value",
+                            }
+                        ),
+                        path.to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Set the final value
+        let final_key = parts[parts.len() - 1];
+        match current {
+            serde_json::Value::Object(obj) => {
+                obj.insert(final_key.to_string(), new_value);
+            }
+            serde_json::Value::Array(arr) => {
+                let index: usize = final_key.parse().map_err(|_| {
+                    ConfigError::path_error(
+                        format!("Invalid array index '{}'", final_key),
+                        path.to_string(),
+                    )
+                })?;
+
+                // Extend array if necessary
+                while arr.len() <= index {
+                    arr.push(serde_json::Value::Null);
+                }
+
+                arr[index] = new_value;
+            }
+            _ => {
+                return Err(ConfigError::path_error(
+                    format!("Cannot set value in {} type",
+                        match current {
+                            serde_json::Value::Null => "null",
+                            serde_json::Value::Bool(_) => "boolean",
+                            serde_json::Value::Number(_) => "number",
+                            serde_json::Value::String(_) => "string",
+                            _ => "value",
+                        }
+                    ),
+                    path.to_string(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Merge two JSON values
     pub(crate) fn merge_values(
         &self,
@@ -330,6 +425,173 @@ impl Config {
         }
         Ok(())
     }
+
+    // ==================== Dynamic Value Integration ====================
+
+    /// Get entire configuration as dynamic value
+    pub async fn as_value(&self) -> NebulaValue {
+        let data = self.data.read().await;
+        json_to_value(&data)
+    }
+
+    /// Get configuration value by path as dynamic value
+    pub async fn get_value(&self, path: &str) -> ConfigResult<NebulaValue> {
+        let data = self.data.read().await;
+        let json_value = self.get_nested_value(&data, path)?;
+        Ok(json_to_value(json_value))
+    }
+
+    /// Set configuration value from dynamic value
+    pub async fn set_value(&self, path: &str, value: NebulaValue) -> ConfigResult<()> {
+        let json_value = value_to_json(value)?;
+        self.set_json_path(path, json_value).await
+    }
+
+    /// Set configuration value by path with JSON value
+    pub async fn set_json_path(&self, path: &str, value: serde_json::Value) -> ConfigResult<()> {
+        let mut data = self.data.write().await;
+        self.set_nested_value(&mut data, path, value)?;
+        Ok(())
+    }
+
+    /// Get typed configuration with automatic deserialization
+    pub async fn get_typed<T>(&self, path: &str) -> ConfigResult<T>
+    where
+        T: DeserializeOwned,
+    {
+        let data = self.data.read().await;
+        let json_value = self.get_nested_value(&data, path)?;
+        serde_json::from_value(json_value.clone()).map_err(|e| {
+            ConfigError::type_error(
+                format!("Failed to deserialize: {}", e),
+                std::any::type_name::<T>(),
+                "JSON value",
+            )
+        })
+    }
+
+    /// Set typed configuration with automatic serialization
+    pub async fn set_typed<T>(&self, path: &str, value: T) -> ConfigResult<()>
+    where
+        T: serde::Serialize,
+    {
+        let json_value = serde_json::to_value(value).map_err(|e| {
+            ConfigError::type_error(
+                format!("Failed to serialize: {}", e),
+                "JSON value",
+                std::any::type_name::<T>(),
+            )
+        })?;
+        self.set_json_path(path, json_value).await
+    }
+
+    /// Get all configuration as flat key-value map
+    pub async fn flatten(&self) -> HashMap<String, NebulaValue> {
+        let value = self.as_value().await;
+        flatten_value("", &value)
+    }
+
+    /// Merge configuration from dynamic value
+    pub async fn merge(&self, value: NebulaValue) -> ConfigResult<()> {
+        let json_value = value_to_json(value)?;
+        let mut data = self.data.write().await;
+        self.merge_values(&mut data, json_value)
+    }
+}
+
+/// Convert serde_json::Value to NebulaValue
+fn json_to_value(json: &serde_json::Value) -> NebulaValue {
+    match json {
+        serde_json::Value::Null => NebulaValue::Null,
+        serde_json::Value::Bool(b) => NebulaValue::Bool(nebula_value::Boolean::new(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                NebulaValue::Int(nebula_value::Integer::new(i))
+            } else if let Some(f) = n.as_f64() {
+                NebulaValue::Float(nebula_value::Float::new(f))
+            } else {
+                NebulaValue::Null
+            }
+        }
+        serde_json::Value::String(s) => NebulaValue::String(nebula_value::Text::new(s.clone())),
+        serde_json::Value::Array(arr) => {
+            let items: Vec<NebulaValue> = arr.iter().map(json_to_value).collect();
+            NebulaValue::Array(nebula_value::Array::from(items))
+        }
+        serde_json::Value::Object(obj) => {
+            let map = nebula_value::Object::new();
+            for (k, v) in obj {
+                let _ = map.insert(k.clone(), json_to_value(v));
+            }
+            NebulaValue::Object(map)
+        }
+    }
+}
+
+/// Convert NebulaValue to serde_json::Value
+fn value_to_json(value: NebulaValue) -> ConfigResult<serde_json::Value> {
+    match value {
+        NebulaValue::Null => Ok(serde_json::Value::Null),
+        NebulaValue::Bool(b) => Ok(serde_json::Value::Bool(b.value())),
+        NebulaValue::Int(i) => Ok(serde_json::Value::Number(i.value().into())),
+        NebulaValue::Float(f) => {
+            serde_json::Number::from_f64(f.value())
+                .map(serde_json::Value::Number)
+                .ok_or_else(|| ConfigError::type_error("Invalid float value", "valid float", "NaN/Infinity"))
+        }
+        NebulaValue::String(s) => Ok(serde_json::Value::String(s.to_string())),
+        NebulaValue::Array(arr) => {
+            let items: Result<Vec<_>, _> = arr.iter()
+                .map(|v| value_to_json(v.clone()))
+                .collect();
+            Ok(serde_json::Value::Array(items?))
+        }
+        NebulaValue::Object(obj) => {
+            let mut map = serde_json::Map::new();
+            for (k, v) in obj.iter() {
+                map.insert(k.clone(), value_to_json(v.clone())?);
+            }
+            Ok(serde_json::Value::Object(map))
+        }
+        _ => Err(ConfigError::type_error("Unsupported NebulaValue type for JSON conversion", "basic types", "complex type")),
+    }
+}
+
+/// Flatten NebulaValue into a map with dot-notation keys
+fn flatten_value(prefix: &str, value: &NebulaValue) -> HashMap<String, NebulaValue> {
+    let mut map = HashMap::new();
+
+    match value {
+        NebulaValue::Object(obj) => {
+            for (key, val) in obj.iter() {
+                let full_key = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", prefix, key)
+                };
+
+                let nested = flatten_value(&full_key, val);
+                map.extend(nested);
+            }
+        }
+        NebulaValue::Array(arr) => {
+            for (index, val) in arr.iter().enumerate() {
+                let full_key = if prefix.is_empty() {
+                    index.to_string()
+                } else {
+                    format!("{}[{}]", prefix, index)
+                };
+
+                let nested = flatten_value(&full_key, val);
+                map.extend(nested);
+            }
+        }
+        _ => {
+            map.insert(prefix.to_string(), value.clone());
+        }
+    }
+
+    map
 }
 
 // Cleanup on drop

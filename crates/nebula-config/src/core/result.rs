@@ -1,9 +1,10 @@
 //! Result type and utilities for configuration operations
 
 use super::error::ConfigError;
+use std::future::Future;
 
 /// Standard result type for configuration operations
-pub type ConfigResult<T> = std::result::Result<T, ConfigError>;
+pub type ConfigResult<T> = Result<T, ConfigError>;
 
 /// Extension trait for Result types to add configuration-specific utilities
 pub trait ConfigResultExt<T> {
@@ -139,7 +140,10 @@ impl ConfigResultAggregator {
         if self.errors.is_empty() {
             Ok(())
         } else if self.errors.len() == 1 {
-            Err(self.errors.into_iter().next().unwrap())
+            match self.errors.into_iter().next() {
+                Some(err) => Err(err),
+                None => Ok(()),
+            }
         } else {
             let message = if let Some(ctx) = self.context {
                 format!(
@@ -184,7 +188,7 @@ impl Default for ConfigResultAggregator {
 pub async fn try_sources<F, T, Fut>(sources: &[super::ConfigSource], mut f: F) -> ConfigResult<T>
 where
     F: FnMut(&super::ConfigSource) -> Fut,
-    Fut: std::future::Future<Output = ConfigResult<T>>,
+    Fut: Future<Output = ConfigResult<T>>,
 {
     let mut last_error = None;
 

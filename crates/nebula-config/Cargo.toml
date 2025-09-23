@@ -13,33 +13,37 @@ documentation.workspace = true
 publish = false
 
 [dependencies]
-# Core serialization
+# Async and concurrency
+async-trait = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+
+# Errors and logging
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Format parsers
+ toml = { version = "0.9.7" }
+yaml-rust = { version = "0.4.5" }
+
+# Notifications
+notify = { version = "8.2.0" }
+
+# Serialization
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-# Format parsers
-yaml-rust = { version = "0.4.5" }
-toml = { version = "0.9.7" }
 
-# Async and concurrency
-tokio = { workspace = true }
-async-trait = {workspace = true}
-dashmap = "5"
-notify = "6"
-chrono = {workspace = true}
-
-# Error derive support via re-exported macro
-thiserror = "2"
-
-# Internal crates
-nebula-error = { path = "../nebula-error" }
-nebula-log = { path = "../nebula-log" }
+# Time and utilities
+chrono = { workspace = true }
 regex = "1.11.1"
 uuid = "1.18.1"
-futures = "0.3.31"
+dashmap = "6.1.0"
 
-[features]
-# No optional features at the moment; all formats enabled by default via dependencies
-default = []
+# Internal crates
+nebula-derive = { path = "../nebula-derive" }
+nebula-error = { path = "../nebula-error" }
+nebula-log = { path = "../nebula-log" }
+nebula-value = { path = "../nebula-value" }
 
 [lints]
 workspace = true

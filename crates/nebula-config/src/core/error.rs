@@ -1,78 +1,133 @@
 //! Configuration error types
 
-use nebula_error::Error;
+use thiserror::Error;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use nebula_error::NebulaError;
 
 /// Configuration error type
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum ConfigError {
     /// Configuration file not found
     #[error("Configuration file not found: {path}")]
-    FileNotFound { path: PathBuf },
+    FileNotFound {
+        /// Path to the configuration file
+        path: PathBuf
+    },
 
     /// Configuration file read error
     #[error("Failed to read configuration file {path}: {message}")]
-    FileReadError { path: PathBuf, message: String },
+    FileReadError {
+        /// Path to the configuration file
+        path: PathBuf,
+        /// Error message
+        message: String
+    },
 
     /// Configuration file parse error
     #[error("Failed to parse configuration file {path}: {message}")]
-    ParseError { path: PathBuf, message: String },
+    ParseError {
+        /// Path to the configuration file
+        path: PathBuf,
+        /// Error message describing the parse failure
+        message: String
+    },
 
     /// Configuration validation error
     #[error("Configuration validation failed: {message}")]
     ValidationError {
+        /// Error message describing the validation failure
         message: String,
+        /// Optional field name that failed validation
         field: Option<String>,
     },
 
     /// Configuration source error
     #[error("Configuration source error: {message}")]
-    SourceError { message: String, origin: String },
+    SourceError {
+        /// Error message describing the source error
+        message: String,
+        /// Origin of the configuration source
+        origin: String
+    },
 
     /// Environment variable not found
     #[error("Environment variable not found: {name}")]
-    EnvVarNotFound { name: String },
+    EnvVarNotFound {
+        /// Name of the environment variable
+        name: String
+    },
 
     /// Environment variable parse error
     #[error("Failed to parse environment variable {name}: {value}")]
-    EnvVarParseError { name: String, value: String },
+    EnvVarParseError {
+        /// Name of the environment variable
+        name: String,
+        /// Value that failed to parse
+        value: String
+    },
 
     /// Configuration reload error
     #[error("Failed to reload configuration: {message}")]
-    ReloadError { message: String },
+    ReloadError {
+        /// Error message describing the reload failure
+        message: String
+    },
 
     /// Configuration watch error
     #[error("Configuration watch error: {message}")]
-    WatchError { message: String },
+    WatchError {
+        /// Error message describing the watch failure
+        message: String
+    },
 
     /// Configuration merge error
     #[error("Failed to merge configurations: {message}")]
-    MergeError { message: String },
+    MergeError {
+        /// Error message describing the merge failure
+        message: String
+    },
 
     /// Configuration type error
     #[error("Configuration type error: {message}")]
     TypeError {
+        /// Error message describing the type mismatch
         message: String,
+        /// Expected type
         expected: String,
+        /// Actual type encountered
         actual: String,
     },
 
     /// Configuration path error
     #[error("Configuration path error: {message}")]
-    PathError { message: String, path: String },
+    PathError {
+        /// Error message describing the path issue
+        message: String,
+        /// Path that caused the error
+        path: String
+    },
 
     /// Configuration format not supported
     #[error("Configuration format not supported: {format}")]
-    FormatNotSupported { format: String },
+    FormatNotSupported {
+        /// Format that is not supported
+        format: String
+    },
 
     /// Configuration encryption error
     #[error("Configuration encryption error: {message}")]
-    EncryptionError { message: String },
+    EncryptionError {
+        /// Error message describing the encryption failure
+        message: String
+    },
 
     /// Configuration decryption error
     #[error("Configuration decryption error: {message}")]
-    DecryptionError { message: String },
+    DecryptionError {
+        /// Error message describing the decryption failure
+        message: String
+    },
 }
 
 impl ConfigError {
@@ -287,5 +342,111 @@ impl From<yaml_rust::ScanError> for ConfigError {
 impl From<notify::Error> for ConfigError {
     fn from(err: notify::Error) -> Self {
         ConfigError::watch_error(err.to_string())
+    }
+}
+
+// ==================== NebulaError Integration ====================
+
+impl From<ConfigError> for NebulaError {
+    fn from(err: ConfigError) -> Self {
+        match err {
+            ConfigError::FileNotFound { path } => {
+                NebulaError::not_found("config_file", path.to_string_lossy())
+            }
+            ConfigError::FileReadError { path, message } => {
+                NebulaError::internal(format!("Failed to read config file {}: {}", path.display(), message))
+            }
+            ConfigError::ParseError { path, message } => {
+                NebulaError::validation(format!("Failed to parse config file {}: {}", path.display(), message))
+            }
+            ConfigError::ValidationError { message, field } => {
+                let msg = match field {
+                    Some(field) => format!("Configuration validation failed for field '{}': {}", field, message),
+                    None => format!("Configuration validation failed: {}", message),
+                };
+                NebulaError::validation(msg)
+            }
+            ConfigError::SourceError { message, origin } => {
+                NebulaError::internal(format!("Configuration source error from '{}': {}", origin, message))
+            }
+            ConfigError::EnvVarNotFound { name } => {
+                NebulaError::not_found("environment_variable", name)
+            }
+            ConfigError::EnvVarParseError { name, value } => {
+                NebulaError::validation(format!("Failed to parse environment variable {}: '{}'", name, value))
+            }
+            ConfigError::ReloadError { message } => {
+                NebulaError::internal(format!("Configuration reload failed: {}", message))
+            }
+            ConfigError::WatchError { message } => {
+                NebulaError::internal(format!("Configuration watch error: {}", message))
+            }
+            ConfigError::MergeError { message } => {
+                NebulaError::internal(format!("Configuration merge failed: {}", message))
+            }
+            ConfigError::TypeError { message, expected, actual } => {
+                NebulaError::validation(format!("Type error: {} (expected {}, got {})", message, expected, actual))
+            }
+            ConfigError::PathError { message, path } => {
+                NebulaError::validation(format!("Path error for '{}': {}", path, message))
+            }
+            ConfigError::FormatNotSupported { format } => {
+                NebulaError::validation(format!("Configuration format not supported: {}", format))
+            }
+            ConfigError::EncryptionError { message } => {
+                NebulaError::internal(format!("Configuration encryption error: {}", message))
+            }
+            ConfigError::DecryptionError { message } => {
+                NebulaError::internal(format!("Configuration decryption error: {}", message))
+            }
+        }
+    }
+}
+
+impl From<NebulaError> for ConfigError {
+    fn from(err: NebulaError) -> Self {
+        if err.is_client_error() {
+            ConfigError::validation_error(err.user_message().to_string(), None)
+        } else {
+            ConfigError::source_error(err.user_message().to_string(), "nebula_error")
+        }
+    }
+}
+
+/// Helper functions for creating ConfigErrors with better integration
+impl ConfigError {
+    /// Create a simple validation error
+    pub fn validation(message: impl Into<String>) -> Self {
+        Self::ValidationError {
+            message: message.into(),
+            field: None,
+        }
+    }
+
+    /// Create a validation error with field
+    pub fn validation_with_field(message: impl Into<String>, field: impl Into<String>) -> Self {
+        Self::ValidationError {
+            message: message.into(),
+            field: Some(field.into()),
+        }
+    }
+
+    /// Create a not found error for a generic resource
+    pub fn not_found(resource_type: impl Into<String>, resource_id: impl Into<String>) -> Self {
+        let resource_type_str = resource_type.into();
+        let resource_id_str = resource_id.into();
+        match resource_type_str.as_str() {
+            "file" => Self::file_not_found(PathBuf::from(resource_id_str)),
+            "env" => Self::env_var_not_found(resource_id_str),
+            _ => Self::source_error(
+                format!("{} not found", resource_type_str),
+                resource_id_str
+            ),
+        }
+    }
+
+    /// Create an internal error
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::source_error(message, "internal")
     }
 }
