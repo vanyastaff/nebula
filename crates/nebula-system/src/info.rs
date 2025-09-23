@@ -1,6 +1,6 @@
 //! System information gathering
 
-use crate::error::Result;
+use crate::core::SystemResult;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
@@ -302,7 +302,7 @@ fn detect_huge_page_size() -> Option<usize> {
 }
 
 /// Initialize the system information subsystem
-pub fn init() -> Result<()> {
+pub fn init() -> SystemResult<()> {
     // Force lazy static initialization
     let _ = SystemInfo::get();
 

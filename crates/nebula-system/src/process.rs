@@ -1,6 +1,6 @@
 //! Process information and management
 
-use crate::error::{Result, SystemError};
+use crate::core::{SystemResult, SystemError, NebulaError};
 use std::collections::HashMap;
 
 #[cfg(feature = "serde")]

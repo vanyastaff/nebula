@@ -23,7 +23,7 @@
 //! ```no_run
 //! use nebula_system::{SystemInfo, MemoryPressure};
 //!
-//! fn main() -> nebula_system::Result<()> {
+//! fn main() -> nebula_system::SystemResult<()> {
 //!     // Initialize the system
 //!     nebula_system::init()?;
 //!
@@ -45,7 +45,7 @@
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-pub mod error;
+pub mod core;
 pub mod info;
 
 #[cfg(feature = "memory")]
@@ -69,7 +69,7 @@ pub mod network;
 pub mod disk;
 
 // Re-exports
-pub use error::{Result, SystemError};
+pub use core::{SystemError, SystemResult, SystemResultExt, NebulaError, NebulaResult, ResultExt};
 pub use info::SystemInfo;
 
 #[cfg(feature = "memory")]
@@ -82,7 +82,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// This should be called once at program startup to initialize
 /// caches and prepare the system information gathering.
-pub fn init() -> Result<()> {
+pub fn init() -> SystemResult<()> {
     info::init()
 }
 

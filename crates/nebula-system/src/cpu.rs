@@ -1,6 +1,6 @@
 //! CPU information and utilities
 
-use crate::error::Result;
+use crate::core::{SystemResult, SystemError, NebulaError};
 use crate::info::SystemInfo;
 
 #[cfg(feature = "serde")]
@@ -360,7 +360,7 @@ pub mod affinity {
 
     /// Set CPU affinity for current thread
     #[cfg(target_os = "linux")]
-    pub fn set_current_thread(cpus: &[usize]) -> Result<()> {
+    pub fn set_current_thread(cpus: &[usize]) -> SystemResult<()> {
         use libc::{CPU_SET, CPU_ZERO, cpu_set_t, sched_setaffinity};
         use std::mem;
 
@@ -385,9 +385,9 @@ pub mod affinity {
 
     #[cfg(not(target_os = "linux"))]
     /// Set CPU affinity for current thread (not supported on this platform)
-    pub fn set_current_thread(_cpus: &[usize]) -> Result<()> {
-        Err(crate::error::SystemError::NotSupported(
-            "CPU affinity not supported on this platform".to_string(),
+    pub fn set_current_thread(_cpus: &[usize]) -> SystemResult<()> {
+        Err(NebulaError::system_not_supported(
+            "CPU affinity not supported on this platform"
         ))
     }
 }
