@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use nebula_log::debug;
 
-use crate::error::{ResilienceError, ResilienceResult};
+use crate::core::error::{ResilienceError, ResilienceResult};
 
 /// Bulkhead configuration
 #[derive(Debug, Clone)]

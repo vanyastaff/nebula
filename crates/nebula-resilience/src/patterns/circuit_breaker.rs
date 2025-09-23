@@ -3,9 +3,11 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use nebula_log::{debug, info, warn};
+use nebula_log::{debug, info, warn, error};
 
-use crate::error::{ResilienceError, ResilienceResult};
+use crate::core::error::{ResilienceError, ResilienceResult};
+use crate::core::config::{ResilienceConfig, ConfigResult, ConfigError};
+use serde::{Deserialize, Serialize};
 
 /// Circuit breaker states
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +31,7 @@ impl std::fmt::Display for CircuitState {
 }
 
 /// Circuit breaker configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CircuitBreakerConfig {
     /// Number of failures before opening the circuit
     pub failure_threshold: usize,
@@ -49,6 +51,35 @@ impl Default for CircuitBreakerConfig {
             half_open_max_operations: 3,
             count_timeouts: true,
         }
+    }
+}
+
+impl ResilienceConfig for CircuitBreakerConfig {
+    fn validate(&self) -> ConfigResult<()> {
+        if self.failure_threshold == 0 {
+            return Err(ConfigError::validation("failure_threshold must be greater than 0"));
+        }
+
+        if self.reset_timeout.as_millis() == 0 {
+            return Err(ConfigError::validation("reset_timeout must be greater than 0"));
+        }
+
+        if self.half_open_max_operations == 0 {
+            return Err(ConfigError::validation("half_open_max_operations must be greater than 0"));
+        }
+
+        Ok(())
+    }
+
+    fn default_config() -> Self {
+        Self::default()
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.failure_threshold = other.failure_threshold;
+        self.reset_timeout = other.reset_timeout;
+        self.half_open_max_operations = other.half_open_max_operations;
+        self.count_timeouts = other.count_timeouts;
     }
 }
 
@@ -108,18 +139,33 @@ impl CircuitBreaker {
             CircuitState::Closed => {
                 // Reset failure count on success
                 *failure_count = 0;
-                debug!("Circuit closed - success recorded, failure count reset");
+                debug!(
+                    state = %CircuitState::Closed,
+                    action = "success_recorded",
+                    failure_count = 0,
+                    "Circuit breaker success in closed state"
+                );
             }
             CircuitState::HalfOpen => {
                 // Success in half-open state, close the circuit
                 *state = CircuitState::Closed;
                 *failure_count = 0;
                 *half_open_operations = 0;
-                info!("Circuit closed after successful operation in half-open state");
+                info!(
+                    state_transition = %format!("{} -> {}", CircuitState::HalfOpen, CircuitState::Closed),
+                    action = "circuit_closed",
+                    failure_count = 0,
+                    half_open_operations = 0,
+                    "Circuit breaker closed after successful half-open operation"
+                );
             }
             CircuitState::Open => {
                 // Circuit is open, no state change
-                debug!("Circuit open - success recorded but circuit remains open");
+                debug!(
+                    state = %CircuitState::Open,
+                    action = "success_ignored",
+                    "Circuit breaker success ignored in open state"
+                );
             }
         }
     }
@@ -138,13 +184,19 @@ impl CircuitBreaker {
                 if *failure_count >= self.config.failure_threshold {
                     *state = CircuitState::Open;
                     warn!(
-                        "Circuit opened after {} failures (threshold: {})",
-                        *failure_count, self.config.failure_threshold
+                        state_transition = %format!("{} -> {}", CircuitState::Closed, CircuitState::Open),
+                        action = "circuit_opened",
+                        failure_count = %failure_count,
+                        threshold = self.config.failure_threshold,
+                        "Circuit breaker opened due to failure threshold"
                     );
                 } else {
                     debug!(
-                        "Circuit closed - failure recorded (count: {}/{})",
-                        *failure_count, self.config.failure_threshold
+                        state = %CircuitState::Closed,
+                        action = "failure_recorded",
+                        failure_count = %failure_count,
+                        threshold = self.config.failure_threshold,
+                        "Circuit breaker failure recorded in closed state"
                     );
                 }
             }

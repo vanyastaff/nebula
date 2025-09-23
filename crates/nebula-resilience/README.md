@@ -1,5 +1,91 @@
 # Nebula Resilience
 
+Production-ready resilience patterns for Rust applications, fully integrated with the Nebula ecosystem.
+
+## Overview
+
+`nebula-resilience` provides comprehensive resilience patterns including circuit breakers, retries, timeouts, bulkheads, rate limiting, and more. It's designed to work seamlessly with other Nebula crates for configuration management, logging, and value handling.
+
+## Key Features
+
+### 🛡️ Resilience Patterns
+- **Circuit Breaker**: Automatic failure detection and recovery
+- **Retry**: Configurable retry strategies with backoff
+- **Timeout**: Operation timeouts with context
+- **Bulkhead**: Resource isolation and concurrency control
+- **Rate Limiting**: Multiple rate limiting algorithms
+- **Fallback**: Graceful degradation strategies
+- **Hedge**: Reduce tail latency with parallel requests
+
+### 🔧 Ecosystem Integration
+- **Configuration**: Built on `nebula-config` for flexible configuration management
+- **Logging**: Structured logging with `nebula-log`
+- **Dynamic Values**: Runtime configuration using `nebula-value`
+- **Error Handling**: Unified error handling with `nebula-error`
+
+### 📊 Advanced Features
+- **Policy Composition**: Combine multiple patterns
+- **Hot Configuration Reload**: Update settings without restarts
+- **Metrics Collection**: Built-in observability
+- **Async/Await Support**: First-class async support
+
+## Quick Start
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+nebula-resilience = "0.1.0"
+nebula-log = "0.1.0"  # For logging
+tokio = { version = "1.0", features = ["full"] }
+```
+
+## Basic Usage
+
+```rust
+use nebula_resilience::prelude::*;
+
+#[tokio::main]
+async fn main() -> ConfigResult<()> {
+    // Initialize logging
+    nebula_log::auto_init()?;
+
+    // Create a resilience policy
+    let policy = ResiliencePolicy::named("my-service")
+        .with_timeout(Duration::from_secs(10))
+        .with_retry(RetryStrategy::exponential(3, Duration::from_millis(100)))
+        .with_circuit_breaker(CircuitBreakerConfig::default());
+
+    // Execute operations with resilience
+    let result = policy.execute(|| async {
+        // Your operation here
+        Ok("Success!")
+    }).await?;
+
+    info!(result = %result, "Operation completed");
+    Ok(())
+}
+```
+
+## Best Practices
+
+1. **Use Presets**: Start with predefined configurations for common scenarios
+2. **Structured Logging**: Always initialize `nebula-log` for observability
+3. **Hot Reload**: Use `DynamicConfig` for runtime configuration updates
+4. **Error Classification**: Leverage automatic error classification for retry decisions
+5. **Policy Composition**: Combine patterns for comprehensive resilience
+6. **Metrics**: Enable metrics collection for monitoring and alerting
+
+## Examples
+
+See the `examples/` directory for complete examples:
+
+- `ecosystem_integration.rs` - Full ecosystem integration demo
+
+## License
+
+Licensed under either of Apache License, Version 2.0 or MIT license at your option.
+
 Resilience patterns for the Nebula workflow engine, providing robust error handling, retry mechanisms, circuit breakers, and bulkhead patterns.
 
 ## Features

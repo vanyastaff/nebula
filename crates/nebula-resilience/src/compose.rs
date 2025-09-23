@@ -6,13 +6,13 @@ use std::time::Duration;
 use std::pin::Pin;
 
 use crate::{
-    bulkhead::Bulkhead,
-    circuit_breaker::CircuitBreaker,
-    error::{ResilienceError, ResilienceResult},
-    fallback::FallbackStrategy,
-    rate_limiter::RateLimiter,
-    retry::RetryStrategy,
-    timeout::timeout,
+    patterns::bulkhead::Bulkhead,
+    patterns::circuit_breaker::CircuitBreaker,
+    core::error::{ResilienceError, ResilienceResult},
+    patterns::fallback::FallbackStrategy,
+    patterns::rate_limiter::RateLimiter,
+    patterns::retry::RetryStrategy,
+    patterns::timeout::timeout,
 };
 
 /// Trait for resilience middleware using native async

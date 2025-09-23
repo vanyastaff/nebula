@@ -6,11 +6,11 @@ use std::sync::Arc;
 use std::pin::Pin;
 
 use crate::{
-    bulkhead::{Bulkhead, BulkheadConfig},
-    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
-    error::{ResilienceError, ResilienceResult},
-    retry::{RetryStrategy, retry_with_operation},
-    timeout::timeout,
+    patterns::bulkhead::{Bulkhead, BulkheadConfig},
+    patterns::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
+    core::error::{ResilienceError, ResilienceResult},
+    patterns::retry::{RetryStrategy, retry_with_operation},
+    patterns::timeout::timeout,
 };
 
 /// Resilience policy configuration

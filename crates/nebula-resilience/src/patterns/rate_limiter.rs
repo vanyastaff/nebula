@@ -6,7 +6,7 @@ use tokio::sync::{Mutex, Semaphore, SemaphorePermit};
 use std::collections::VecDeque;
 use std::future::Future;
 
-use crate::error::{ResilienceError, ResilienceResult};
+use crate::core::error::{ResilienceError, ResilienceResult};
 
 /// Rate limiter trait
 pub trait RateLimiter: Send + Sync {

@@ -7,15 +7,15 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::{
-    bulkhead::Bulkhead,
-    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
-    error::{ResilienceError, ResilienceResult},
-    fallback::{FallbackStrategy, FallbackOperation},
-    hedge::{HedgeExecutor, HedgeConfig},
+    patterns::bulkhead::Bulkhead,
+    patterns::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
+    core::error::{ResilienceError, ResilienceResult},
+    patterns::fallback::{FallbackStrategy, FallbackOperation},
+    patterns::hedge::{HedgeExecutor, HedgeConfig},
     policy::ResiliencePolicy,
-    rate_limiter::{RateLimiter, TokenBucket, AdaptiveRateLimiter},
-    retry::{RetryStrategy, retry},
-    timeout::timeout,
+    patterns::rate_limiter::{RateLimiter, TokenBucket, AdaptiveRateLimiter},
+    patterns::retry::{RetryStrategy, retry},
+    patterns::timeout::timeout,
 };
 
 /// Resilience manager for managing multiple resilience patterns

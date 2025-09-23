@@ -7,7 +7,7 @@ use tokio::time::sleep;
 use futures::future::{select, Either};
 use futures::FutureExt;
 
-use crate::error::{ResilienceError, ResilienceResult};
+use crate::core::error::{ResilienceError, ResilienceResult};
 
 /// Hedge strategy configuration
 #[derive(Debug, Clone)]

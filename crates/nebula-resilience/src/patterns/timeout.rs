@@ -4,7 +4,7 @@ use futures::Future;
 use std::time::Duration;
 use tokio::time::{Timeout, timeout as tokio_timeout};
 
-use crate::error::{ResilienceError, ResilienceResult};
+use crate::core::error::{ResilienceError, ResilienceResult};
 
 /// Execute a future with a timeout
 ///

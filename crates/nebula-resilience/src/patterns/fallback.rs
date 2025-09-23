@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 
-use crate::error::{ResilienceError, ResilienceResult};
+use crate::core::error::{ResilienceError, ResilienceResult};
 
 /// Fallback strategy trait
 pub trait FallbackStrategy<T>: Send + Sync {

@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use nebula_log::{debug, warn};
 
-use crate::error::{ResilienceError, ResilienceResult, ErrorClass};
+use crate::core::error::{ResilienceError, ResilienceResult, ErrorClass};
 
 /// Retry strategy configuration
 #[derive(Debug, Clone)]

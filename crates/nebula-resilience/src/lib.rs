@@ -1,130 +1,83 @@
 //! # Nebula Resilience
-//!
-//! A comprehensive resilience library for Rust applications, providing patterns
-//! and tools for building fault-tolerant distributed systems.
-//!
-//! ## Features
-//!
-//! - **Circuit Breaker**: Prevent cascading failures
-//! - **Retry Mechanisms**: Configurable retry strategies with backoff
-//! - **Rate Limiting**: Multiple algorithms (token bucket, leaky bucket, sliding window)
-//! - **Bulkhead Isolation**: Resource isolation patterns
-//! - **Timeout Management**: Adaptive and hierarchical timeouts
-//! - **Fallback Strategies**: Graceful degradation
-//! - **Hedge Requests**: Reduce tail latency
-//!
-//! ## Quick Start
-//!
-//! ```rust
-//! use nebula_resilience::prelude::*;
-//! use nebula_resilience::ResilienceManager;
-//! use std::time::Duration;
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Create a resilience policy
-//!     let policy = ResiliencePolicy::builder("my-service")
-//!         .timeout(Duration::from_secs(30))
-//!         .retry(3, Duration::from_secs(1))
-//!         .circuit_breaker(5, Duration::from_secs(60))
-//!         .bulkhead(10)
-//!         .build();
-//!
-//!     // Execute with resilience
-//!     let result = policy.execute(|| async {
-//!         // Your potentially failing operation
-//!         Ok::<_, ResilienceError>("Success")
-//!     }).await?;
-//!
-//!     Ok(())
-//! }
-//! ```
 
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
-// Core module with fundamental types
+// Core module
 pub mod core;
 
-// Pattern implementations
+// Patterns module
 pub mod patterns;
 
-// Higher-level abstractions
+// High-level abstractions
 mod compose;
-mod policy;
 mod manager;
+mod policy;
 
-// Re-export compose, policy, and manager at root level
-pub use compose::{ResilienceChain, ChainBuilder, ResilienceMiddleware};
-pub use policy::{ResiliencePolicy, ResiliencePolicyBuilder, PolicyExecutor};
-pub use manager::{ResilienceManager, ResilienceManagerBuilder};
-
-// Public API - core types
+// Re-exports from core
 pub use core::{
     ResilienceError,
     ResilienceResult,
     ErrorClass,
     ResiliencePattern,
     Executable,
+    // Configuration types
+    ResilienceConfig,
+    ResilienceConfigManager,
+    DynamicConfig,
+    DynamicConfigurable,
+    ResiliencePresets,
+    ConfigResult,
+    ConfigError,
 };
 
-// Public API - patterns
+// Re-exports from patterns
 pub use patterns::{
-    // Circuit breaker
-    CircuitBreaker,
-    CircuitBreakerConfig,
-    CircuitState,
-
-    // Bulkhead
-    Bulkhead,
-    BulkheadConfig,
-
-    // Retry
-    retry,
-    retry_with_operation,
-    RetryStrategy,
-    RetryBuilder,
-
-    // Timeout
-    timeout,
-    timeout_with_original_error,
-
-    // Fallback
-    FallbackStrategy,
-    ValueFallback,
+    // Basic patterns
+    bulkhead::{Bulkhead, BulkheadConfig},
+    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState},
+    retry::{retry, retry_with_operation, RetryStrategy, RetryBuilder},
+    timeout::{timeout, timeout_with_original_error},
+    fallback::{FallbackStrategy, ValueFallback},
+    hedge::{HedgeExecutor, HedgeConfig},
 
     // Rate limiting
-    RateLimiter,
-    RateLimiterFactory,
+    rate_limiter::{RateLimiter, RateLimiterFactory},
     TokenBucket,
     LeakyBucket,
     SlidingWindow,
     AdaptiveRateLimiter,
-
-    // Hedge
-    HedgeExecutor,
-    HedgeConfig,
 };
 
-/// Prelude module for common imports
+// Re-export high-level abstractions
+pub use compose::{ResilienceChain, ChainBuilder, ResilienceMiddleware};
+pub use policy::{ResiliencePolicy, ResiliencePolicyBuilder};
+pub use manager::{ResilienceManager, ResilienceManagerBuilder};
+
+/// Prelude
 pub mod prelude {
     pub use crate::core::{ResilienceError, ResilienceResult};
-    pub use crate::patterns::{
-        Bulkhead,
-        CircuitBreaker,
-        RetryStrategy,
-        timeout,
-    };
+    pub use crate::patterns::{Bulkhead, CircuitBreaker, RetryStrategy, timeout};
     pub use crate::{
         ResiliencePolicy,
         ResilienceManager,
         ResilienceChain,
+        // Configuration
+        ResilienceConfig,
+        DynamicConfig,
+        ResiliencePresets,
+        ConfigResult,
     };
+
+    // Re-export nebula ecosystem for convenience
+    pub use nebula_log::{debug, info, warn, error};
+    pub use nebula_value::Value;
+    pub use nebula_config::ConfigSource;
 }
 
-/// Predefined policies for common scenarios
+/// Predefined policies
 pub mod policies {
     pub use crate::policy::policies::*;
 }
