@@ -28,6 +28,8 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-validator/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-action/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-derive/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-core/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-config/examples" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />
