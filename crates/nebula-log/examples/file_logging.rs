@@ -1,7 +1,7 @@
 #[cfg(feature = "file")]
 use nebula_log::{Config, Format, Rolling, WriterConfig};
 
-fn main() -> nebula_log::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "file")]
     {
         let mut config = Config::default();

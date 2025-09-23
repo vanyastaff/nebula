@@ -1,6 +1,6 @@
 use nebula_log::prelude::*;
 
-fn main() -> Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Auto-detect best configuration
     nebula_log::auto_init()?;
 

@@ -2,9 +2,10 @@
 
 use nebula_log::prelude::*;
 use std::env;
+use anyhow::Result;
 
 #[tokio::main]
-async fn main() -> nebula_log::Result<()> {
+async fn main() -> Result<()> {
     // Set Sentry DSN for testing
     unsafe {
         env::set_var(

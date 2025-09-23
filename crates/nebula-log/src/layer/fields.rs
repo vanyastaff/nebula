@@ -2,8 +2,10 @@
 
 // External dependencies
 use tracing::{Event, Subscriber};
-use tracing_subscriber::layer::{Context, Layer};
-use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::{
+    layer::{Context, Layer},
+    registry::LookupSpan,
+};
 
 // Internal crates
 use crate::config::Fields;

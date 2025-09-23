@@ -7,7 +7,8 @@ use std::io;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
 // Internal crates
-use crate::{config::WriterConfig, core::{LogResult}};
+use crate::config::WriterConfig;
+use crate::core::LogResult;
 
 // Define a type alias for the return type of make_writer
 // This allows us to handle the conditional compilation cleanly

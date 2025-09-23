@@ -8,7 +8,8 @@ use parking_lot::Mutex;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
 
 // Internal crates
-use crate::{config::*, layer, writer, core::{LogResult}};
+use crate::core::LogResult;
+use crate::{config::*, layer, writer};
 
 /// Logger builder
 pub struct LoggerBuilder {

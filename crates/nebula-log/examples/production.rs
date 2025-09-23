@@ -1,7 +1,7 @@
-use nebula_log::{Config, Format};
+use nebula_log::Config;
 use serde_json::json;
 
-fn main() -> nebula_log::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Production configuration with JSON output
     let mut config = Config::production();
 
