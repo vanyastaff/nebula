@@ -92,7 +92,7 @@ impl HedgeExecutor {
             }
 
             // Check if any hedge completed
-            for (i, hedge) in hedge_futures.iter_mut().enumerate() {
+            for (_i, hedge) in hedge_futures.iter_mut().enumerate() {
                 if let Some(result) = hedge.now_or_never() {
                     return result;
                 }
@@ -103,13 +103,14 @@ impl HedgeExecutor {
         tokio::select! {
             result = primary => result,
             result = async {
-                for mut hedge in hedge_futures {
+                for hedge in hedge_futures {
                     if let Some(result) = hedge.now_or_never() {
                         return result;
                     }
                 }
                 Err(ResilienceError::Timeout {
-                    duration: hedge_delay
+                    duration: hedge_delay,
+                    context: Some("Hedge timeout".to_string()),
                 })
             } => result,
         }
@@ -214,6 +215,7 @@ impl LatencyTracker {
 /// Bimodal hedge executor - uses different strategies for fast vs slow operations
 pub struct BimodalHedgeExecutor {
     fast_threshold: Duration,
+    #[allow(dead_code)]
     fast_config: HedgeConfig,
     slow_config: HedgeConfig,
 }
@@ -240,7 +242,7 @@ impl BimodalHedgeExecutor {
         T: Send,
     {
         // Sample operation to determine if it's fast or slow
-        let sample_start = std::time::Instant::now();
+        let _sample_start = std::time::Instant::now();
         let sample_future = operation();
 
         // Wait for fast threshold

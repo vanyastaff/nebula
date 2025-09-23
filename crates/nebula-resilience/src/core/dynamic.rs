@@ -1,20 +1,21 @@
 //! Dynamic configuration support using nebula-value
 
 use std::collections::HashMap;
-use std::time::Duration;
-use serde::{Deserialize, Serialize};
 
-use nebula_value::{Value, Object, from_value, to_value};
+
+use nebula_value::{Value, Object};
 use crate::core::config::{ResilienceConfig, ConfigResult, ConfigError};
 
 /// Dynamic configuration container that can hold any resilience configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct DynamicConfig {
     /// Configuration values stored as nebula-value
     values: Object,
     /// Configuration schema metadata
+    #[allow(dead_code)]
     schema_version: String,
     /// Last update timestamp
+    #[allow(dead_code)]
     last_updated: Option<String>,
 }
 
@@ -37,7 +38,8 @@ impl DynamicConfig {
     /// Set a configuration value by path
     pub fn set_value(&mut self, path: &str, value: Value) -> ConfigResult<()> {
         let path_parts: Vec<&str> = path.split('.').collect();
-        self.set_nested_value(&mut self.values, &path_parts, value)
+        self.values = self.set_nested_value(&self.values, &path_parts, value)?;
+        Ok(())
     }
 
     /// Get a configuration value by path
@@ -60,9 +62,7 @@ impl DynamicConfig {
 
     /// Merge with another dynamic configuration
     pub fn merge(&mut self, other: &DynamicConfig) -> ConfigResult<()> {
-        for (key, value) in &other.values {
-            self.values.insert(key.clone(), value.clone());
-        }
+        self.values = self.values.merge(&other.values);
         Ok(())
     }
 
@@ -73,26 +73,28 @@ impl DynamicConfig {
         map
     }
 
-    fn set_nested_value(&mut self, obj: &mut Object, path: &[&str], value: Value) -> ConfigResult<()> {
+    fn set_nested_value(&self, obj: &Object, path: &[&str], value: Value) -> ConfigResult<Object> {
         if path.is_empty() {
             return Err(ConfigError::validation("Empty path not allowed"));
         }
 
         if path.len() == 1 {
-            obj.insert(path[0].to_string(), value);
-            return Ok(());
-        }
-
-        let key = path[0];
-        let remaining = &path[1..];
-
-        let nested = obj.entry(key.to_string())
-            .or_insert_with(|| Value::Object(Object::new()));
-
-        if let Value::Object(nested_obj) = nested {
-            self.set_nested_value(nested_obj, remaining, value)
+            Ok(obj.insert(path[0].to_string(), value))
         } else {
-            Err(ConfigError::validation(format!("Path '{}' exists but is not an object", key)))
+            let key = path[0];
+            let remaining = &path[1..];
+
+            let nested = obj.get(key)
+                .cloned()
+                .unwrap_or(Value::Object(Object::new()));
+
+            match nested {
+                Value::Object(nested_obj) => {
+                    let updated_nested = self.set_nested_value(&nested_obj, remaining, value)?;
+                    Ok(obj.insert(key.to_string(), Value::Object(updated_nested)))
+                }
+                _ => Err(ConfigError::validation(format!("Path '{}' exists but is not an object", key)))
+            }
         }
     }
 

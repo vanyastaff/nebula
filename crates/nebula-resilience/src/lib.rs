@@ -38,7 +38,7 @@ pub use patterns::{
     // Basic patterns
     bulkhead::{Bulkhead, BulkheadConfig},
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState},
-    retry::{retry, retry_with_operation, RetryStrategy, RetryBuilder},
+    retry::{retry, RetryStrategy},
     timeout::{timeout, timeout_with_original_error},
     fallback::{FallbackStrategy, ValueFallback, AnyStringFallbackStrategy},
     hedge::{HedgeExecutor, HedgeConfig},
@@ -52,9 +52,9 @@ pub use patterns::{
 };
 
 // Re-export high-level abstractions
-pub use compose::{ResilienceChain, ChainBuilder, ResilienceMiddleware, AnyResilienceMiddleware};
-pub use policy::{ResiliencePolicy, ResiliencePolicyBuilder};
-pub use manager::{ResilienceManager, ResilienceManagerBuilder};
+pub use compose::{ResilienceChain, LayerBuilder, ResilienceLayer};
+pub use policy::{ResiliencePolicy, PolicyMetadata};
+pub use manager::{ResilienceManager, PolicyBuilder, RetryableOperation};
 
 /// Prelude
 pub mod prelude {
@@ -77,10 +77,6 @@ pub mod prelude {
     pub use nebula_config::ConfigSource;
 }
 
-/// Predefined policies
-pub mod policies {
-    pub use crate::policy::policies::*;
-}
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

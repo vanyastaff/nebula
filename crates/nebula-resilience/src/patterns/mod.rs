@@ -14,7 +14,7 @@ pub mod rate_limiter;
 // Re-exports
 pub use bulkhead::{Bulkhead, BulkheadConfig};
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
-pub use retry::{retry, retry_with_operation, RetryStrategy, RetryBuilder};
+pub use retry::{retry, RetryStrategy};
 pub use timeout::{timeout, timeout_with_original_error};
 pub use fallback::{FallbackStrategy, ValueFallback, FunctionFallback, CacheFallback, AnyStringFallbackStrategy};
 pub use hedge::{HedgeExecutor, HedgeConfig};

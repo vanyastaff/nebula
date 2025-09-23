@@ -1,7 +1,6 @@
 //! Configuration types and validation using nebula-config
 
 use std::time::Duration;
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 // Re-export nebula-config types for convenience
@@ -11,7 +10,6 @@ pub use nebula_config::{
     ConfigSource,
     ConfigResult,
     ConfigError,
-    prelude::*,
 };
 
 /// Base configuration trait for resilience patterns
@@ -27,12 +25,18 @@ pub trait ResilienceConfig: Send + Sync + Serialize + for<'de> Deserialize<'de> 
 
     /// Convert to nebula-value for dynamic configuration
     fn to_value(&self) -> nebula_value::Value {
-        nebula_value::to_value(self).unwrap_or_default()
+        // Use serde_json as intermediate format for now
+        match serde_json::to_value(self) {
+            Ok(json_val) => nebula_value::Value::from(json_val),
+            Err(_) => nebula_value::Value::default()
+        }
     }
 
     /// Create from nebula-value
     fn from_value(value: &nebula_value::Value) -> ConfigResult<Self> where Self: Sized {
-        nebula_value::from_value(value)
+        // Convert to serde_json::Value first, then deserialize
+        let json_val: serde_json::Value = value.clone().into();
+        serde_json::from_value(json_val)
             .map_err(|e| ConfigError::validation(format!("Failed to deserialize config: {}", e)))
     }
 }
@@ -75,10 +79,24 @@ impl ResilienceConfig for CommonConfig {
             if timeout.as_millis() == 0 {
                 return Err(ConfigError::validation("Timeout must be greater than 0"));
             }
+            // Security: prevent extremely long timeouts that could cause DoS
+            if timeout.as_secs() > 3600 {
+                return Err(ConfigError::validation("Timeout cannot exceed 1 hour"));
+            }
         }
 
         if self.service_name.is_empty() {
             return Err(ConfigError::validation("Service name cannot be empty"));
+        }
+
+        // Security: validate service name to prevent injection attacks
+        if self.service_name.len() > 256 {
+            return Err(ConfigError::validation("Service name too long (max 256 chars)"));
+        }
+
+        // Check for invalid characters in service name
+        if !self.service_name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.') {
+            return Err(ConfigError::validation("Service name contains invalid characters"));
         }
 
         Ok(())
@@ -101,12 +119,15 @@ impl ResilienceConfig for CommonConfig {
     }
 }
 
-/// Environment enumeration
+/// Environment enumeration for configuration context
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Environment {
+    /// Development environment with relaxed constraints
     Development,
+    /// Staging environment for testing
     Staging,
+    /// Production environment with strict settings
     Production,
 }
 
@@ -118,6 +139,7 @@ impl Default for Environment {
 
 /// Configurable trait for resilience patterns
 pub trait Configurable {
+    /// Configuration type for this pattern
     type Config: ResilienceConfig;
 
     /// Apply configuration
@@ -150,14 +172,14 @@ impl ResilienceConfigManager {
 
     /// Get configuration for a specific pattern
     pub async fn get_pattern_config<T: ResilienceConfig>(&self, path: &str) -> ConfigResult<T> {
-        let value = self.config.get_path(path).await?;
+        let value = self.config.get_value(path).await?;
         T::from_value(&value)
     }
 
     /// Update configuration for a pattern
     pub async fn update_pattern_config<T: ResilienceConfig>(&mut self, path: &str, config: &T) -> ConfigResult<()> {
         let value = config.to_value();
-        self.config.set_path(path, value).await
+        self.config.set_value(path, value).await
     }
 }
 

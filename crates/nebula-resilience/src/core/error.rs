@@ -207,6 +207,38 @@ pub enum ErrorClass {
 }
 
 impl ResilienceError {
+    /// Create a timeout error
+    pub fn timeout(duration: Duration) -> Self {
+        Self::Timeout {
+            duration,
+            context: Some("Operation timed out".to_string()),
+        }
+    }
+
+    /// Create a circuit breaker open error
+    pub fn circuit_breaker_open(state: impl Into<String>) -> Self {
+        Self::CircuitBreakerOpen {
+            state: state.into(),
+            retry_after: None,
+        }
+    }
+
+    /// Create a bulkhead full error
+    pub fn bulkhead_full(max_concurrency: usize) -> Self {
+        Self::BulkheadFull {
+            max_concurrency,
+            queued: 0, // Default
+        }
+    }
+
+    /// Create a retry limit exceeded error with cause
+    pub fn retry_limit_exceeded_with_cause(attempts: usize, last_error: Option<Box<Self>>) -> Self {
+        Self::RetryLimitExceeded {
+            attempts,
+            last_error,
+        }
+    }
+
     /// Classify the error for decision making
     pub fn classify(&self) -> ErrorClass {
         match self {
@@ -295,7 +327,7 @@ impl From<ResilienceError> for NebulaError {
                     Some(ctx) => format!("Operation timed out after {:?}: {}", duration, ctx),
                     None => format!("Operation timed out after {:?}", duration),
                 };
-                NebulaError::timeout("resilience-operation", duration).with_message(msg)
+                NebulaError::timeout("resilience-operation", duration).with_details(msg)
             }
             ResilienceError::CircuitBreakerOpen { state, retry_after } => {
                 let msg = match retry_after {
@@ -313,7 +345,7 @@ impl From<ResilienceError> for NebulaError {
                     )
                 )
             }
-            ResilienceError::RateLimitExceeded { limit, current, retry_after: _ } => {
+            ResilienceError::RateLimitExceeded { limit, current: _, retry_after: _ } => {
                 // Convert f64 limit to u32 for NebulaError API
                 let limit_u32 = limit as u32;
                 let period = Duration::from_secs(1); // Assume per-second limit
@@ -344,7 +376,7 @@ impl From<ResilienceError> for NebulaError {
                 NebulaError::validation(format!("Invalid resilience configuration: {}", message))
             }
             ResilienceError::Custom { message, retryable, source: _ } => {
-                if *retryable {
+                if retryable {
                     NebulaError::service_unavailable("resilience-custom", message)
                 } else {
                     NebulaError::internal(message)
@@ -357,22 +389,25 @@ impl From<ResilienceError> for NebulaError {
 impl From<NebulaError> for ResilienceError {
     fn from(err: NebulaError) -> Self {
         // Classify NebulaError into appropriate ResilienceError
-        if err.is_timeout() {
+        // Since specific is_* methods don't exist, we classify by error code or kind
+        let code = err.error_code();
+
+        if code.contains("timeout") {
             ResilienceError::Timeout {
-                duration: Duration::from_secs(30), // Default duration
+                duration: err.retry_after().unwrap_or(Duration::from_secs(30)),
                 context: Some(err.user_message().to_string()),
             }
-        } else if err.is_rate_limited() {
+        } else if code.contains("rate_limit") {
             ResilienceError::RateLimitExceeded {
-                retry_after: None,
+                retry_after: err.retry_after(),
                 limit: 100.0, // Default limit
                 current: 150.0, // Assumed over limit
             }
-        } else if err.is_validation_error() {
+        } else if err.is_client_error() {
             ResilienceError::InvalidConfig {
                 message: err.user_message().to_string(),
             }
-        } else if err.is_cancelled() {
+        } else if code.contains("cancel") {
             ResilienceError::Cancelled {
                 reason: Some(err.user_message().to_string()),
             }

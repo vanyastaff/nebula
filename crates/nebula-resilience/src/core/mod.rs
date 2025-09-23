@@ -7,7 +7,7 @@ mod error;
 mod result;
 mod traits;
 mod metrics;
-mod config;
+pub mod config;
 mod dynamic;
 
 // Re-export primary types

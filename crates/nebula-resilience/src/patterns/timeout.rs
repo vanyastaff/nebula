@@ -117,7 +117,7 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            ResilienceError::Timeout { duration } => {
+            ResilienceError::Timeout { duration, .. } => {
                 assert_eq!(duration, Duration::from_millis(10));
             }
             _ => panic!("Expected timeout error"),

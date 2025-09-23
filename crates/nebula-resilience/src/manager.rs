@@ -1,401 +1,463 @@
-//! Advanced resilience manager combining all patterns
+//! Resilience manager for centralized pattern orchestration
 
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
+
 use tokio::sync::RwLock;
 
 use crate::{
-    patterns::bulkhead::Bulkhead,
-    patterns::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
-    ResilienceError, ResilienceResult,
-    patterns::fallback::{FallbackStrategy, AnyStringFallbackStrategy},
-    patterns::hedge::{HedgeExecutor, HedgeConfig},
+    patterns::{
+        circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
+        bulkhead::{Bulkhead, BulkheadConfig},
+        retry::RetryStrategy,
+        timeout::timeout,
+    },
     policy::ResiliencePolicy,
-    patterns::rate_limiter::{RateLimiter, AnyRateLimiter},
-    patterns::retry::{RetryStrategy, retry},
-    patterns::timeout::timeout,
+    ResilienceError, ResilienceResult,
 };
 
-/// Resilience manager for managing multiple resilience patterns
-pub struct ResilienceManager {
-    /// Named policies
-    policies: Arc<RwLock<HashMap<String, Arc<ResiliencePolicy>>>>,
-    /// Circuit breakers by service
-    circuit_breakers: Arc<RwLock<HashMap<String, Arc<CircuitBreaker>>>>,
-    /// Rate limiters by service
-    rate_limiters: Arc<RwLock<HashMap<String, Arc<AnyRateLimiter>>>>,
-    /// Bulkheads by service
-    bulkheads: Arc<RwLock<HashMap<String, Arc<Bulkhead>>>>,
-    /// Fallback strategies
-    fallbacks: Arc<RwLock<HashMap<String, Arc<AnyStringFallbackStrategy>>>>,
-    /// Hedge executors
-    hedge_executors: Arc<RwLock<HashMap<String, Arc<HedgeExecutor>>>>,
-    /// Global configuration
-    config: ResilienceManagerConfig,
-    /// Metrics collector
-    metrics: Arc<ResilienceMetrics>,
+/// Service operations that can be retried
+///
+/// This trait allows operations to be called multiple times for retry scenarios
+/// while maintaining proper async semantics and error handling.
+#[async_trait::async_trait]
+pub trait RetryableOperation<T> {
+    /// Execute the operation
+    async fn execute(&self) -> ResilienceResult<T>;
 }
 
-/// Resilience manager configuration
-#[derive(Debug, Clone)]
-pub struct ResilienceManagerConfig {
-    /// Default timeout
-    pub default_timeout: Duration,
-    /// Enable adaptive rate limiting
-    pub adaptive_rate_limiting: bool,
-    /// Enable hedge requests
-    pub enable_hedging: bool,
-    /// Collect detailed metrics
-    pub collect_metrics: bool,
-    /// Circuit breaker config
-    pub default_circuit_breaker: CircuitBreakerConfig,
-    /// Default retry strategy
-    pub default_retry: RetryStrategy,
+/// Implement RetryableOperation for async closures that can be called multiple times
+#[async_trait::async_trait]
+impl<F, Fut, T> RetryableOperation<T> for F
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = ResilienceResult<T>> + Send,
+{
+    async fn execute(&self) -> ResilienceResult<T> {
+        self().await
+    }
 }
 
-impl Default for ResilienceManagerConfig {
-    fn default() -> Self {
-        Self {
-            default_timeout: Duration::from_secs(30),
-            adaptive_rate_limiting: true,
-            enable_hedging: false,
-            collect_metrics: true,
-            default_circuit_breaker: CircuitBreakerConfig::default(),
-            default_retry: RetryStrategy::default(),
+/// Builder for resilience policies
+#[derive(Debug, Clone, Default)]
+pub struct PolicyBuilder {
+    timeout: Option<Duration>,
+    retry: Option<RetryStrategy>,
+    circuit_breaker: Option<CircuitBreakerConfig>,
+    bulkhead: Option<BulkheadConfig>,
+}
+
+impl PolicyBuilder {
+    /// Create a new policy builder
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set timeout
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    /// Set retry strategy
+    pub fn with_retry(mut self, strategy: RetryStrategy) -> Self {
+        self.retry = Some(strategy);
+        self
+    }
+
+    /// Set circuit breaker configuration
+    pub fn with_circuit_breaker(mut self, config: CircuitBreakerConfig) -> Self {
+        self.circuit_breaker = Some(config);
+        self
+    }
+
+    /// Set bulkhead configuration
+    pub fn with_bulkhead(mut self, config: BulkheadConfig) -> Self {
+        self.bulkhead = Some(config);
+        self
+    }
+
+    /// Build the policy
+    pub fn build(self) -> ResiliencePolicy {
+        ResiliencePolicy {
+            timeout: self.timeout,
+            retry: self.retry,
+            circuit_breaker: self.circuit_breaker,
+            bulkhead: self.bulkhead,
+            metadata: crate::policy::PolicyMetadata::default(),
         }
     }
+}
+
+/// Execution context for resilience operations
+#[derive(Debug)]
+pub struct ExecutionContext {
+    pub service_name: String,
+    #[allow(dead_code)]
+    pub operation_name: String,
+    pub attempt: usize,
+    #[allow(dead_code)]
+    pub start_time: std::time::Instant,
+}
+
+impl ExecutionContext {
+    /// Create new execution context
+    pub fn new(service: impl Into<String>, operation: impl Into<String>) -> Self {
+        Self {
+            service_name: service.into(),
+            operation_name: operation.into(),
+            attempt: 1,
+            start_time: std::time::Instant::now(),
+        }
+    }
+
+    /// Increment attempt counter
+    #[allow(dead_code)]
+    pub fn next_attempt(&mut self) {
+        self.attempt += 1;
+    }
+
+    /// Get elapsed time since start
+    #[allow(dead_code)]
+    pub fn elapsed(&self) -> Duration {
+        self.start_time.elapsed()
+    }
+}
+
+/// Modern resilience manager with proper async semantics
+#[derive(Debug)]
+pub struct ResilienceManager {
+    /// Service policies
+    policies: Arc<RwLock<HashMap<String, Arc<ResiliencePolicy>>>>,
+    /// Circuit breakers per service
+    circuit_breakers: Arc<RwLock<HashMap<String, Arc<CircuitBreaker>>>>,
+    /// Bulkheads per service
+    bulkheads: Arc<RwLock<HashMap<String, Arc<Bulkhead>>>>,
+    /// Default policy for unregistered services
+    default_policy: ResiliencePolicy,
 }
 
 impl ResilienceManager {
-    /// Create new resilience manager
-    pub fn new(config: ResilienceManagerConfig) -> Self {
+    /// Create new resilience manager with default policy
+    pub fn new(default_policy: ResiliencePolicy) -> Self {
         Self {
             policies: Arc::new(RwLock::new(HashMap::new())),
             circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
-            rate_limiters: Arc::new(RwLock::new(HashMap::new())),
             bulkheads: Arc::new(RwLock::new(HashMap::new())),
-            fallbacks: Arc::new(RwLock::new(HashMap::new())),
-            hedge_executors: Arc::new(RwLock::new(HashMap::new())),
-            config,
-            metrics: Arc::new(ResilienceMetrics::new()),
+            default_policy,
         }
     }
 
-    /// Create builder for resilience manager
-    pub fn builder() -> ResilienceManagerBuilder {
-        ResilienceManagerBuilder::default()
+    /// Create manager with default settings
+    pub fn with_defaults() -> Self {
+        let default_policy = PolicyBuilder::new()
+            .with_timeout(Duration::from_secs(30))
+            .with_retry(RetryStrategy::exponential_backoff(3, Duration::from_millis(100)))
+            .build();
+        Self::new(default_policy)
     }
 
-    /// Register a service with resilience configuration
-    pub async fn register_service(&self, service: &str, policy: ResiliencePolicy) {
-        let mut policies = self.policies.write().await;
-        policies.insert(service.to_string(), Arc::new(policy));
+    /// Register a service with specific resilience policy
+    pub async fn register_service(&self, service: impl Into<String>, policy: ResiliencePolicy) {
+        let service_name = service.into();
 
-        // Initialize components based on policy
-        if let Some(cb_config) = &policy.circuit_breaker {
+        // Initialize circuit breaker if configured
+        if let Some(ref cb_config) = policy.circuit_breaker {
             let mut breakers = self.circuit_breakers.write().await;
             breakers.insert(
-                service.to_string(),
+                service_name.clone(),
                 Arc::new(CircuitBreaker::with_config(cb_config.clone())),
             );
         }
 
-        if let Some(max_concurrency) = policy.bulkhead {
+        // Initialize bulkhead if configured
+        if let Some(ref bulkhead_config) = policy.bulkhead {
             let mut bulkheads = self.bulkheads.write().await;
             bulkheads.insert(
-                service.to_string(),
-                Arc::new(Bulkhead::new(max_concurrency)),
+                service_name.clone(),
+                Arc::new(Bulkhead::new(bulkhead_config.max_concurrency)),
             );
         }
+
+        // Store policy
+        let mut policies = self.policies.write().await;
+        policies.insert(service_name, Arc::new(policy));
     }
 
-    /// Execute operation with resilience for a service
-    pub async fn execute<T, F, Fut>(
+    /// Execute operation with resilience patterns
+    pub async fn execute<T, Op>(
         &self,
         service: &str,
-        operation: F,
+        operation_name: &str,
+        operation: Op,
     ) -> ResilienceResult<T>
     where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = ResilienceResult<T>>,
-        T: Clone + Send + Sync + 'static,
+        Op: RetryableOperation<T> + Send + Sync,
+        T: Send,
     {
-        let start = std::time::Instant::now();
+        let mut context = ExecutionContext::new(service, operation_name);
+        let policy = self.get_policy(service).await;
 
-        // Get policy for service
-        let policy = {
-            let policies = self.policies.read().await;
-            policies.get(service).cloned()
-        };
-
-        let result = if let Some(policy) = policy {
-            self.execute_with_policy(service, operation, &policy).await
-        } else {
-            // Use default policy
-            self.execute_with_defaults(service, operation).await
-        };
-
-        // Record metrics
-        if self.config.collect_metrics {
-            self.metrics.record(service, start.elapsed(), result.is_ok()).await;
-        }
-
-        result
+        self.execute_with_policy(&mut context, &operation, &policy).await
     }
 
-    /// Execute with specific policy
-    async fn execute_with_policy<T, F, Fut>(
+    /// Execute with a specific policy override
+    pub async fn execute_with_override<T, Op>(
         &self,
         service: &str,
-        operation: F,
+        operation_name: &str,
+        operation: Op,
+        policy_override: ResiliencePolicy,
+    ) -> ResilienceResult<T>
+    where
+        Op: RetryableOperation<T> + Send + Sync,
+        T: Send,
+    {
+        let mut context = ExecutionContext::new(service, operation_name);
+        self.execute_with_policy(&mut context, &operation, &policy_override).await
+    }
+
+    /// Get policy for service (or default)
+    async fn get_policy(&self, service: &str) -> ResiliencePolicy {
+        let policies = self.policies.read().await;
+        policies
+            .get(service)
+            .map(|p| (**p).clone())
+            .unwrap_or_else(|| self.default_policy.clone())
+    }
+
+    /// Core execution logic with proper composition and optimized locking
+    async fn execute_with_policy<T, Op>(
+        &self,
+        context: &mut ExecutionContext,
+        operation: &Op,
         policy: &ResiliencePolicy,
     ) -> ResilienceResult<T>
     where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = ResilienceResult<T>>,
-        T: Clone + Send + Sync,
+        Op: RetryableOperation<T> + Send + Sync,
+        T: Send,
     {
-        // Apply rate limiting
-        if let Some(limiter) = self.rate_limiters.read().await.get(service) {
-            limiter.acquire().await?;
-        }
+        // Optimize: get all required components in one shot to avoid multiple locks
+        let (circuit_breaker, bulkhead) = {
+            let breakers = self.circuit_breakers.read().await;
+            let bulkheads = self.bulkheads.read().await;
+            (
+                breakers.get(&context.service_name).cloned(),
+                bulkheads.get(&context.service_name).cloned(),
+            )
+        };
 
-        // Apply bulkhead
-        if let Some(bulkhead) = self.bulkheads.read().await.get(service) {
-            return bulkhead.execute(|| async {
-                self.execute_core(service, operation, policy).await
-            }).await;
-        }
-
-        self.execute_core(service, operation, policy).await
-    }
-
-    /// Core execution with timeout, retry, and circuit breaker
-    async fn execute_core<T, F, Fut>(
-        &self,
-        service: &str,
-        operation: F,
-        policy: &ResiliencePolicy,
-    ) -> ResilienceResult<T>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = ResilienceResult<T>>,
-        T: Clone,
-    {
-        // Apply circuit breaker if configured
-        if let Some(breaker) = self.circuit_breakers.read().await.get(service) {
+        // Check circuit breaker first
+        if let Some(ref breaker) = circuit_breaker {
             breaker.can_execute().await?;
         }
 
-        // Execute with retry and timeout
-        let result = if let Some(retry_strategy) = &policy.retry {
-            retry(retry_strategy.clone(), || async {
-                if let Some(timeout_duration) = policy.timeout {
-                    timeout(timeout_duration, operation()).await?
-                } else {
-                    operation().await
-                }
-            }).await
-        } else if let Some(timeout_duration) = policy.timeout {
-            timeout(timeout_duration, operation()).await?
+        // Acquire bulkhead permit if configured
+        let _bulkhead_permit = if let Some(ref bulkhead) = bulkhead {
+            Some(bulkhead.acquire().await?)
         } else {
-            operation().await
+            None
         };
 
-        // Record result in circuit breaker
-        if let Some(breaker) = self.circuit_breakers.read().await.get(service) {
+        // Execute with retry if configured
+        let result = if let Some(ref retry_strategy) = policy.retry {
+            self.execute_with_retry(context, operation, retry_strategy, policy.timeout).await
+        } else {
+            // Single execution with optional timeout
+            self.execute_single(operation, policy.timeout).await
+        };
+
+        // Update circuit breaker based on result (avoid re-acquiring lock)
+        if let Some(breaker) = circuit_breaker {
             match &result {
                 Ok(_) => breaker.record_success().await,
-                Err(e) => {
-                    if !matches!(e, ResilienceError::Timeout { .. }) {
-                        breaker.record_failure().await;
-                    }
-                }
+                Err(_e) => breaker.record_failure().await,
             }
         }
 
         result
     }
 
-    /// Execute with default configuration
-    async fn execute_with_defaults<T, F, Fut>(
+    /// Execute with retry logic
+    async fn execute_with_retry<T, Op>(
         &self,
-        service: &str,
-        operation: F,
+        context: &mut ExecutionContext,
+        operation: &Op,
+        retry_strategy: &RetryStrategy,
+        timeout_duration: Option<Duration>,
     ) -> ResilienceResult<T>
     where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = ResilienceResult<T>>,
-        T: Clone,
+        Op: RetryableOperation<T> + Send + Sync,
+        T: Send,
     {
-        retry(self.config.default_retry.clone(), || async {
-            timeout(self.config.default_timeout, operation()).await?
-        }).await
+        let mut last_error = None;
+
+        for attempt in 1..=retry_strategy.max_attempts {
+            context.attempt = attempt;
+
+            let result = self.execute_single(operation, timeout_duration).await;
+
+            match result {
+                Ok(value) => return Ok(value),
+                Err(e) if attempt == retry_strategy.max_attempts => {
+                    last_error = Some(e);
+                    break;
+                }
+                Err(e) if retry_strategy.should_retry(&e) => {
+                    last_error = Some(e);
+
+                    // Calculate delay for next attempt
+                    if let Some(delay) = retry_strategy.delay_for_attempt(attempt) {
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+                Err(e) => {
+                    // Non-retryable error
+                    return Err(e);
+                }
+            }
+        }
+
+        // All retries exhausted
+        Err(ResilienceError::RetryLimitExceeded {
+            attempts: retry_strategy.max_attempts,
+            last_error: last_error.map(Box::new),
+        })
     }
 
-    /// Set rate limiter for a service
-    pub async fn set_rate_limiter(&self, service: &str, limiter: Arc<AnyRateLimiter>) {
-        let mut limiters = self.rate_limiters.write().await;
-        limiters.insert(service.to_string(), limiter);
-    }
-
-    /// Set fallback strategy for a service
-    pub async fn set_fallback(&self, service: &str, fallback: Arc<AnyStringFallbackStrategy>) {
-        let mut fallbacks = self.fallbacks.write().await;
-        fallbacks.insert(service.to_string(), fallback);
-    }
-
-    /// Enable hedging for a service
-    pub async fn enable_hedging(&self, service: &str, config: HedgeConfig) {
-        let mut executors = self.hedge_executors.write().await;
-        executors.insert(service.to_string(), Arc::new(HedgeExecutor::new(config)));
-    }
-
-    /// Get circuit breaker state for a service
-    pub async fn circuit_breaker_state(&self, service: &str) -> Option<String> {
-        let breakers = self.circuit_breakers.read().await;
-        if let Some(breaker) = breakers.get(service) {
-            let state = breaker.state().await;
-            Some(format!("{:?}", state))
+    /// Execute operation once with optional timeout
+    async fn execute_single<T, Op>(
+        &self,
+        operation: &Op,
+        timeout_duration: Option<Duration>,
+    ) -> ResilienceResult<T>
+    where
+        Op: RetryableOperation<T> + Send + Sync,
+        T: Send,
+    {
+        if let Some(duration) = timeout_duration {
+            match timeout(duration, operation.execute()).await {
+                Ok(result) => result,
+                Err(_timeout_err) => Err(ResilienceError::Timeout {
+                    duration,
+                    context: Some("Operation timed out".to_string()),
+                }),
+            }
         } else {
-            None
+            operation.execute().await
         }
     }
 
-    /// Reset circuit breaker for a service
-    pub async fn reset_circuit_breaker(&self, service: &str) -> ResilienceResult<()> {
-        let breakers = self.circuit_breakers.read().await;
-        if let Some(breaker) = breakers.get(service) {
-            breaker.reset().await;
-            Ok(())
-        } else {
-            Err(ResilienceError::InvalidConfig {
-                message: format!("No circuit breaker for service: {}", service),
-            })
-        }
+    /// Get resilience metrics for a service
+    pub async fn get_metrics(&self, service: &str) -> Option<ServiceMetrics> {
+        // TODO: Implement metrics collection once patterns support it
+        Some(ServiceMetrics {
+            service_name: service.to_string(),
+            circuit_breaker: None,
+            bulkhead: None,
+        })
     }
 
-    /// Get metrics for a service
-    pub async fn metrics(&self, service: &str) -> ServiceMetrics {
-        self.metrics.get(service).await
+    /// Remove service and cleanup resources
+    pub async fn unregister_service(&self, service: &str) {
+        let mut policies = self.policies.write().await;
+        policies.remove(service);
+
+        let mut breakers = self.circuit_breakers.write().await;
+        breakers.remove(service);
+
+        let mut bulkheads = self.bulkheads.write().await;
+        bulkheads.remove(service);
+    }
+
+    /// Get all registered services
+    pub async fn list_services(&self) -> Vec<String> {
+        let policies = self.policies.read().await;
+        policies.keys().cloned().collect()
     }
 }
 
-/// Resilience manager builder
-pub struct ResilienceManagerBuilder {
-    config: ResilienceManagerConfig,
-    services: Vec<(String, ResiliencePolicy)>,
-}
-
-impl Default for ResilienceManagerBuilder {
+impl Default for ResilienceManager {
     fn default() -> Self {
-        Self {
-            config: ResilienceManagerConfig::default(),
-            services: Vec::new(),
-        }
+        Self::with_defaults()
     }
 }
 
-impl ResilienceManagerBuilder {
-    /// Set default timeout
-    pub fn default_timeout(mut self, timeout: Duration) -> Self {
-        self.config.default_timeout = timeout;
-        self
-    }
-
-    /// Enable adaptive rate limiting
-    pub fn adaptive_rate_limiting(mut self, enabled: bool) -> Self {
-        self.config.adaptive_rate_limiting = enabled;
-        self
-    }
-
-    /// Enable hedging
-    pub fn enable_hedging(mut self, enabled: bool) -> Self {
-        self.config.enable_hedging = enabled;
-        self
-    }
-
-    /// Register a service
-    pub fn service(mut self, name: &str, policy: ResiliencePolicy) -> Self {
-        self.services.push((name.to_string(), policy));
-        self
-    }
-
-    /// Build the manager
-    pub async fn build(self) -> ResilienceManager {
-        let manager = ResilienceManager::new(self.config);
-
-        for (service, policy) in self.services {
-            manager.register_service(&service, policy).await;
-        }
-
-        manager
-    }
-}
-
-/// Resilience metrics
-struct ResilienceMetrics {
-    metrics: Arc<RwLock<HashMap<String, ServiceMetrics>>>,
-}
-
-impl ResilienceMetrics {
-    fn new() -> Self {
-        Self {
-            metrics: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
-    async fn record(&self, service: &str, latency: Duration, success: bool) {
-        let mut metrics = self.metrics.write().await;
-        let entry = metrics.entry(service.to_string()).or_default();
-
-        entry.total_requests += 1;
-        if success {
-            entry.successful_requests += 1;
-        } else {
-            entry.failed_requests += 1;
-        }
-
-        entry.total_latency += latency;
-        entry.min_latency = entry.min_latency.min(latency);
-        entry.max_latency = entry.max_latency.max(latency);
-    }
-
-    async fn get(&self, service: &str) -> ServiceMetrics {
-        let metrics = self.metrics.read().await;
-        metrics.get(service).cloned().unwrap_or_default()
-    }
-}
-
-/// Service metrics
-#[derive(Debug, Clone, Default)]
+/// Service metrics aggregation
+#[derive(Debug, Clone)]
 pub struct ServiceMetrics {
-    pub total_requests: u64,
-    pub successful_requests: u64,
-    pub failed_requests: u64,
-    pub total_latency: Duration,
-    pub min_latency: Duration,
-    pub max_latency: Duration,
+    pub service_name: String,
+    pub circuit_breaker: Option<()>, // TODO: Replace with actual metrics type
+    pub bulkhead: Option<()>, // TODO: Replace with actual metrics type
 }
 
-impl ServiceMetrics {
-    /// Calculate average latency
-    pub fn avg_latency(&self) -> Duration {
-        if self.total_requests > 0 {
-            self.total_latency / self.total_requests as u32
-        } else {
-            Duration::ZERO
-        }
+/// Convenience macro for creating retryable operations
+#[macro_export]
+macro_rules! retryable {
+    ($expr:expr) => {
+        move || async move { $expr }
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_basic_execution() {
+        let manager = ResilienceManager::with_defaults();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let operation = move || {
+            let counter = counter_clone.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok::<u32, ResilienceError>(42)
+            }
+        };
+
+        let result = manager.execute("test-service", "test-op", operation).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
-    /// Calculate success rate
-    pub fn success_rate(&self) -> f64 {
-        if self.total_requests > 0 {
-            self.successful_requests as f64 / self.total_requests as f64
-        } else {
-            0.0
-        }
+    #[tokio::test]
+    async fn test_retry_on_failure() {
+        let manager = ResilienceManager::with_defaults();
+        let policy = PolicyBuilder::new()
+            .with_retry(RetryStrategy::fixed_delay(3, Duration::from_millis(10)))
+            .build();
+
+        manager.register_service("retry-service", policy).await;
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let operation = move || {
+            let counter = counter_clone.clone();
+            async move {
+                let count = counter.fetch_add(1, Ordering::SeqCst);
+                if count < 2 {
+                    Err(ResilienceError::Custom {
+                        message: "Simulated failure".to_string(),
+                        retryable: true,
+                        source: None,
+                    })
+                } else {
+                    Ok::<u32, ResilienceError>(100)
+                }
+            }
+        };
+
+        let result = manager.execute("retry-service", "retry-op", operation).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 100);
+        assert_eq!(counter.load(Ordering::SeqCst), 3); // Failed twice, succeeded on third
     }
 }

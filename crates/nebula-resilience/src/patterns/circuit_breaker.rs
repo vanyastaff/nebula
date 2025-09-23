@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use nebula_log::{debug, info, warn, error};
+use nebula_log::{debug, info, warn};
 
 use crate::{ResilienceError, ResilienceResult, ResilienceConfig, ConfigResult, ConfigError};
 use serde::{Deserialize, Serialize};
@@ -59,12 +59,27 @@ impl ResilienceConfig for CircuitBreakerConfig {
             return Err(ConfigError::validation("failure_threshold must be greater than 0"));
         }
 
+        // Security: prevent extremely high thresholds that could mask problems
+        if self.failure_threshold > 10_000 {
+            return Err(ConfigError::validation("failure_threshold too high (max 10,000)"));
+        }
+
         if self.reset_timeout.as_millis() == 0 {
             return Err(ConfigError::validation("reset_timeout must be greater than 0"));
         }
 
+        // Security: prevent extremely long reset timeouts
+        if self.reset_timeout.as_secs() > 3600 {
+            return Err(ConfigError::validation("reset_timeout cannot exceed 1 hour"));
+        }
+
         if self.half_open_max_operations == 0 {
             return Err(ConfigError::validation("half_open_max_operations must be greater than 0"));
+        }
+
+        // Security: prevent resource exhaustion
+        if self.half_open_max_operations > 1000 {
+            return Err(ConfigError::validation("half_open_max_operations too high (max 1,000)"));
         }
 
         Ok(())
@@ -83,6 +98,7 @@ impl ResilienceConfig for CircuitBreakerConfig {
 }
 
 /// Circuit breaker implementation
+#[derive(Debug)]
 pub struct CircuitBreaker {
     config: CircuitBreakerConfig,
     state: Arc<RwLock<CircuitState>>,
@@ -215,8 +231,17 @@ impl CircuitBreaker {
         }
     }
 
-    /// Check if an operation should be allowed
+    /// Check if an operation should be allowed (optimized for performance)
     pub async fn can_execute(&self) -> ResilienceResult<()> {
+        // Fast path: check state without acquiring write lock
+        {
+            let state = self.state.read().await;
+            if matches!(*state, CircuitState::Closed) {
+                return Ok(());
+            }
+        }
+
+        // Slow path: need to potentially modify state
         let mut state = self.state.write().await;
         let mut half_open_operations = self.half_open_operations.write().await;
 
@@ -403,6 +428,10 @@ mod tests {
 
         // Wait for reset timeout
         tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // Transition to half-open state
+        assert!(cb.can_execute().await.is_ok());
+        assert!(cb.is_half_open().await);
 
         // Success in half-open should close the circuit
         cb.record_success().await;

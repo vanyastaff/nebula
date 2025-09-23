@@ -122,6 +122,7 @@ impl<T: Clone + Send + Sync> FallbackStrategy<T> for CacheFallback<T> {
         if !self.is_valid().await {
             return Err(ResilienceError::FallbackFailed {
                 reason: "Cache expired".to_string(),
+                original_error: None,
             });
         }
 
@@ -131,6 +132,7 @@ impl<T: Clone + Send + Sync> FallbackStrategy<T> for CacheFallback<T> {
             .clone()
             .ok_or_else(|| ResilienceError::FallbackFailed {
                 reason: "No cached value available".to_string(),
+                original_error: None,
             })
     }
 }
@@ -232,9 +234,13 @@ impl<T: Send + Sync> FallbackStrategy<T> for PriorityFallback<T> {
 /// Enum wrapper for dyn-compatible string fallback strategies
 #[derive(Clone)]
 pub enum AnyStringFallbackStrategy {
+    /// Simple value fallback
     Value(Arc<ValueFallback<String>>),
+    /// Cache-based fallback
     Cache(Arc<CacheFallback<String>>),
+    /// Chain of fallback strategies
     Chain(Arc<ChainFallback<String>>),
+    /// Priority-based fallback selection
     Priority(Arc<PriorityFallback<String>>),
 }
 

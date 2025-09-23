@@ -1,10 +1,16 @@
-//! Metrics collection and reporting
+//! High-performance metrics collection and reporting with security hardening
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
 use parking_lot::RwLock;
+
+/// Maximum number of unique metrics to prevent memory exhaustion attacks
+const MAX_METRICS_COUNT: usize = 10_000;
+
+/// Maximum metric name length to prevent DoS attacks
+const MAX_METRIC_NAME_LENGTH: usize = 256;
 
 /// Metrics collector
 pub struct MetricsCollector {
@@ -21,14 +27,30 @@ impl MetricsCollector {
         }
     }
 
-    /// Record a value
+    /// Record a value with security validation
     pub fn record(&self, name: impl Into<String>, value: f64) {
         if !self.enabled {
             return;
         }
 
         let name = name.into();
+
+        // Security validation: check name length
+        if name.len() > MAX_METRIC_NAME_LENGTH {
+            return; // Silently drop suspicious metrics
+        }
+
+        // Security validation: check for NaN/Infinite values
+        if !value.is_finite() {
+            return;
+        }
+
         let mut metrics = self.metrics.write();
+
+        // Security validation: prevent memory exhaustion
+        if metrics.len() >= MAX_METRICS_COUNT && !metrics.contains_key(&name) {
+            return; // Drop new metrics if at capacity
+        }
 
         metrics
             .entry(name)
@@ -141,13 +163,18 @@ impl Metric {
     }
 }
 
-/// Metric snapshot
+/// Metric snapshot containing aggregated statistics
 #[derive(Debug, Clone)]
 pub struct MetricSnapshot {
+    /// Number of recorded values
     pub count: u64,
+    /// Sum of all recorded values
     pub sum: f64,
+    /// Minimum recorded value
     pub min: f64,
+    /// Maximum recorded value
     pub max: f64,
+    /// Average of all recorded values
     pub avg: f64,
 }
 
@@ -155,6 +182,7 @@ pub struct MetricSnapshot {
 pub struct MetricTimer {
     name: String,
     start: Option<Instant>,
+    #[allow(dead_code)]
     enabled: bool,
 }
 
@@ -176,10 +204,12 @@ impl MetricTimer {
 }
 
 /// Global metrics instance
+#[allow(dead_code)]
 static GLOBAL_METRICS: once_cell::sync::Lazy<MetricsCollector> =
     once_cell::sync::Lazy::new(|| MetricsCollector::new(true));
 
 /// Get global metrics collector
+#[allow(dead_code)]
 pub fn global_metrics() -> &'static MetricsCollector {
     &GLOBAL_METRICS
 }
@@ -187,9 +217,13 @@ pub fn global_metrics() -> &'static MetricsCollector {
 /// Metric kinds for categorization
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MetricKind {
+    /// Counter metric that only increases
     Counter,
+    /// Gauge metric that can increase or decrease
     Gauge,
+    /// Histogram metric for distribution of values
     Histogram,
+    /// Timer metric for measuring durations
     Timer,
 }
 

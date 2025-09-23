@@ -1,432 +1,400 @@
-//! Composable resilience patterns
+//! Modern composable resilience patterns with proper async semantics
 
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use std::pin::Pin;
-use async_trait::async_trait;
 
 use crate::{
-    patterns::bulkhead::Bulkhead,
-    patterns::circuit_breaker::CircuitBreaker,
+    patterns::{
+        bulkhead::Bulkhead,
+        circuit_breaker::CircuitBreaker,
+        retry::RetryStrategy,
+        timeout::timeout,
+    },
     ResilienceError, ResilienceResult,
-    patterns::rate_limiter::{RateLimiter, AnyRateLimiter},
-    patterns::retry::RetryStrategy,
-    patterns::timeout::timeout,
+    manager::RetryableOperation,
 };
 
-/// Trait for resilience middleware using native async
-#[async_trait]
-pub trait ResilienceMiddleware: Send + Sync {
-    /// Apply middleware to an operation
-    async fn apply<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
-    where
-        F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = ResilienceResult<T>> + Send,
-        T: Send;
-
-    /// Middleware name for debugging
-    fn name(&self) -> &str;
-
-    /// Get middleware metrics
-    fn metrics(&self) -> MiddlewareMetrics {
-        MiddlewareMetrics::default()
-    }
+/// Operation wrapper that can be boxed
+pub struct BoxedOperation<T> {
+    operation: Arc<dyn RetryableOperation<T> + Send + Sync>,
 }
 
-/// Enum wrapper for dyn-compatible resilience middleware
-#[derive(Clone)]
-pub enum AnyResilienceMiddleware {
-    Timeout(Arc<TimeoutMiddleware>),
-    Retry(Arc<RetryMiddleware>),
-    CircuitBreaker(Arc<CircuitBreakerMiddleware>),
-    RateLimiter(Arc<RateLimiterMiddleware>),
-    Bulkhead(Arc<BulkheadMiddleware>),
-}
-
-#[async_trait]
-impl ResilienceMiddleware for AnyResilienceMiddleware {
-    async fn apply<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
+impl<T> BoxedOperation<T> {
+    pub fn new<Op>(operation: Op) -> Self
     where
-        F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = ResilienceResult<T>> + Send,
-        T: Send,
+        Op: RetryableOperation<T> + Send + Sync + 'static,
     {
-        match self {
-            Self::Timeout(middleware) => middleware.apply(operation).await,
-            Self::Retry(middleware) => middleware.apply(operation).await,
-            Self::CircuitBreaker(middleware) => middleware.apply(operation).await,
-            Self::RateLimiter(middleware) => middleware.apply(operation).await,
-            Self::Bulkhead(middleware) => middleware.apply(operation).await,
+        Self {
+            operation: Arc::new(operation),
         }
     }
 
-    fn name(&self) -> &str {
-        match self {
-            Self::Timeout(middleware) => middleware.name(),
-            Self::Retry(middleware) => middleware.name(),
-            Self::CircuitBreaker(middleware) => middleware.name(),
-            Self::RateLimiter(middleware) => middleware.name(),
-            Self::Bulkhead(middleware) => middleware.name(),
-        }
+    pub fn from_arc(operation: Arc<dyn RetryableOperation<T> + Send + Sync>) -> Self {
+        Self { operation }
     }
+}
 
-    fn metrics(&self) -> MiddlewareMetrics {
-        match self {
-            Self::Timeout(middleware) => middleware.metrics(),
-            Self::Retry(middleware) => middleware.metrics(),
-            Self::CircuitBreaker(middleware) => middleware.metrics(),
-            Self::RateLimiter(middleware) => middleware.metrics(),
-            Self::Bulkhead(middleware) => middleware.metrics(),
+#[async_trait::async_trait]
+impl<T> RetryableOperation<T> for BoxedOperation<T> {
+    async fn execute(&self) -> ResilienceResult<T> {
+        self.operation.execute().await
+    }
+}
+
+impl<T> Clone for BoxedOperation<T> {
+    fn clone(&self) -> Self {
+        Self {
+            operation: self.operation.clone(),
         }
     }
 }
 
-/// Metrics for middleware
-#[derive(Debug, Default, Clone)]
-pub struct MiddlewareMetrics {
-    pub total_calls: u64,
-    pub successful_calls: u64,
-    pub failed_calls: u64,
-    pub avg_latency_ms: f64,
+/// Middleware layer that can be applied to operations
+#[async_trait::async_trait]
+pub trait ResilienceLayer<T>: Send + Sync {
+    /// Apply this layer to an operation
+    async fn apply(
+        &self,
+        operation: BoxedOperation<T>,
+        next: Arc<dyn LayerStack<T> + Send + Sync>,
+    ) -> ResilienceResult<T>;
+
+    /// Get layer name for debugging
+    fn name(&self) -> &'static str;
 }
 
-/// Timeout middleware
-pub struct TimeoutMiddleware {
+/// Stack of layers that can be applied
+#[async_trait::async_trait]
+pub trait LayerStack<T>: Send + Sync {
+    /// Execute the operation with remaining layers
+    async fn execute(&self, operation: BoxedOperation<T>) -> ResilienceResult<T>;
+}
+
+/// Terminal layer that just executes the operation
+pub struct TerminalLayer;
+
+#[async_trait::async_trait]
+impl<T: Send + 'static> LayerStack<T> for TerminalLayer {
+    async fn execute(&self, operation: BoxedOperation<T>) -> ResilienceResult<T> {
+        operation.execute().await
+    }
+}
+
+/// A composed stack of resilience layers
+pub struct ComposedStack<T> {
+    layer: Arc<dyn ResilienceLayer<T> + Send + Sync>,
+    next: Arc<dyn LayerStack<T> + Send + Sync>,
+}
+
+#[async_trait::async_trait]
+impl<T: Send + 'static> LayerStack<T> for ComposedStack<T> {
+    async fn execute(&self, operation: BoxedOperation<T>) -> ResilienceResult<T> {
+        self.layer.apply(operation, self.next.clone()).await
+    }
+}
+
+/// Timeout layer
+pub struct TimeoutLayer {
     duration: Duration,
-    name: String,
 }
 
-impl TimeoutMiddleware {
+impl TimeoutLayer {
     pub fn new(duration: Duration) -> Self {
-        Self {
-            duration,
-            name: format!("timeout_{}ms", duration.as_millis()),
+        Self { duration }
+    }
+}
+
+#[async_trait::async_trait]
+impl<T: Send + 'static> ResilienceLayer<T> for TimeoutLayer {
+    async fn apply(
+        &self,
+        operation: BoxedOperation<T>,
+        next: Arc<dyn LayerStack<T> + Send + Sync>,
+    ) -> ResilienceResult<T> {
+        match timeout(self.duration, next.execute(operation)).await {
+            Ok(result) => result,
+            Err(_) => Err(ResilienceError::Timeout {
+                duration: self.duration,
+                context: Some("Layer timeout".to_string()),
+            }),
         }
     }
-}
 
-#[async_trait]
-impl ResilienceMiddleware for TimeoutMiddleware {
-    async fn apply<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
-    where
-        F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = ResilienceResult<T>> + Send,
-        T: Send,
-    {
-        timeout(self.duration, operation()).await.map_err(|e| e.into())
-    }
-
-    fn name(&self) -> &str {
-        &self.name
+    fn name(&self) -> &'static str {
+        "timeout"
     }
 }
 
-/// Retry middleware
-pub struct RetryMiddleware {
+/// Retry layer
+pub struct RetryLayer {
     strategy: RetryStrategy,
-    name: String,
 }
 
-impl RetryMiddleware {
+impl RetryLayer {
     pub fn new(strategy: RetryStrategy) -> Self {
-        Self {
-            name: format!("retry_{}x", strategy.max_attempts),
-            strategy,
-        }
+        Self { strategy }
     }
 }
 
-#[async_trait]
-impl ResilienceMiddleware for RetryMiddleware {
-    async fn apply<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
-    where
-        F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = ResilienceResult<T>> + Send,
-        T: Send,
-    {
-        // For middleware, we need to convert FnOnce to work with retry
-        let result = operation().await;
-        if result.is_err() && self.strategy.should_retry(result.as_ref().unwrap_err()) {
-            // In real implementation, we'd need a different approach
-            // This is simplified for illustration
-            result
-        } else {
-            result
-        }
-    }
+#[async_trait::async_trait]
+impl<T: Send + 'static> ResilienceLayer<T> for RetryLayer {
+    async fn apply(
+        &self,
+        operation: BoxedOperation<T>,
+        next: Arc<dyn LayerStack<T> + Send + Sync>,
+    ) -> ResilienceResult<T> {
+        let mut last_error = None;
 
-    fn name(&self) -> &str {
-        &self.name
-    }
-}
+        for attempt in 1..=self.strategy.max_attempts {
+            // Clone the operation for each attempt
+            let op_clone = operation.clone();
+            let result = next.execute(op_clone).await;
 
-/// Circuit breaker middleware
-pub struct CircuitBreakerMiddleware {
-    breaker: Arc<CircuitBreaker>,
-    name: String,
-}
+            match result {
+                Ok(value) => return Ok(value),
+                Err(e) if attempt == self.strategy.max_attempts => {
+                    last_error = Some(e);
+                    break;
+                }
+                Err(e) if self.strategy.should_retry(&e) => {
+                    last_error = Some(e);
 
-impl CircuitBreakerMiddleware {
-    pub fn new(breaker: Arc<CircuitBreaker>) -> Self {
-        Self {
-            name: "circuit_breaker".to_string(),
-            breaker,
-        }
-    }
-}
-
-#[async_trait]
-impl ResilienceMiddleware for CircuitBreakerMiddleware {
-    async fn apply<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
-    where
-        F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = ResilienceResult<T>> + Send,
-        T: Send,
-    {
-        self.breaker.execute(operation).await
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-}
-
-/// Rate limiter middleware
-pub struct RateLimiterMiddleware {
-    limiter: Arc<AnyRateLimiter>,
-    name: String,
-}
-
-impl RateLimiterMiddleware {
-    pub fn new(limiter: Arc<AnyRateLimiter>) -> Self {
-        Self {
-            name: "rate_limiter".to_string(),
-            limiter,
-        }
-    }
-}
-
-#[async_trait]
-impl ResilienceMiddleware for RateLimiterMiddleware {
-    async fn apply<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
-    where
-        F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = ResilienceResult<T>> + Send,
-        T: Send,
-    {
-        self.limiter.execute(operation).await
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-}
-
-/// Bulkhead middleware
-pub struct BulkheadMiddleware {
-    bulkhead: Arc<Bulkhead>,
-    name: String,
-}
-
-impl BulkheadMiddleware {
-    pub fn new(bulkhead: Arc<Bulkhead>) -> Self {
-        Self {
-            name: format!("bulkhead_{}", bulkhead.max_concurrency()),
-            bulkhead,
-        }
-    }
-}
-
-#[async_trait]
-impl ResilienceMiddleware for BulkheadMiddleware {
-    async fn apply<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
-    where
-        F: FnOnce() -> Fut + Send,
-        Fut: Future<Output = ResilienceResult<T>> + Send,
-        T: Send,
-    {
-        self.bulkhead.execute(operation).await
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-}
-
-/// Composable resilience chain with improved execution
-pub struct ResilienceChain {
-    middlewares: Vec<AnyResilienceMiddleware>,
-    name: String,
-}
-
-impl ResilienceChain {
-    /// Create new chain with name
-    pub fn named(name: impl Into<String>) -> Self {
-        Self {
-            middlewares: Vec::new(),
-            name: name.into(),
-        }
-    }
-
-    /// Create new empty chain
-    pub fn new() -> Self {
-        Self::named("chain")
-    }
-
-    /// Add middleware to chain
-    pub fn push(mut self, middleware: AnyResilienceMiddleware) -> Self {
-        self.middlewares.push(middleware);
-        self
-    }
-
-    /// Add timeout middleware
-    pub fn with_timeout(self, duration: Duration) -> Self {
-        self.push(AnyResilienceMiddleware::Timeout(Arc::new(TimeoutMiddleware::new(duration))))
-    }
-
-    /// Add retry middleware
-    pub fn with_retry(self, strategy: RetryStrategy) -> Self {
-        self.push(AnyResilienceMiddleware::Retry(Arc::new(RetryMiddleware::new(strategy))))
-    }
-
-    /// Add circuit breaker middleware
-    pub fn with_circuit_breaker(self, breaker: Arc<CircuitBreaker>) -> Self {
-        self.push(AnyResilienceMiddleware::CircuitBreaker(Arc::new(CircuitBreakerMiddleware::new(breaker))))
-    }
-
-    /// Add rate limiter middleware
-    pub fn with_rate_limiter(self, limiter: Arc<AnyRateLimiter>) -> Self {
-        self.push(AnyResilienceMiddleware::RateLimiter(Arc::new(RateLimiterMiddleware::new(limiter))))
-    }
-
-    /// Add bulkhead middleware
-    pub fn with_bulkhead(self, bulkhead: Arc<Bulkhead>) -> Self {
-        self.push(AnyResilienceMiddleware::Bulkhead(Arc::new(BulkheadMiddleware::new(bulkhead))))
-    }
-
-    /// Execute operation through the chain
-    pub async fn execute<T>(&self, operation: Pin<Box<dyn Future<Output = ResilienceResult<T>> + Send>>) -> ResilienceResult<T>
-    where
-        T: Send + 'static,
-    {
-        // Execute through middlewares in reverse order (last added = outermost)
-        let mut result = operation.await;
-
-        for middleware in self.middlewares.iter().rev() {
-            // This is simplified - in practice, we'd need proper chaining
-            if result.is_err() {
-                break;
+                    if let Some(delay) = self.strategy.delay_for_attempt(attempt) {
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+                Err(e) => {
+                    // Non-retryable error
+                    return Err(e);
+                }
             }
+        }
+
+        Err(ResilienceError::RetryLimitExceeded {
+            attempts: self.strategy.max_attempts,
+            last_error: last_error.map(Box::new),
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "retry"
+    }
+}
+
+/// Circuit breaker layer
+pub struct CircuitBreakerLayer {
+    circuit_breaker: Arc<CircuitBreaker>,
+}
+
+impl CircuitBreakerLayer {
+    pub fn new(circuit_breaker: Arc<CircuitBreaker>) -> Self {
+        Self { circuit_breaker }
+    }
+}
+
+#[async_trait::async_trait]
+impl<T: Send + 'static> ResilienceLayer<T> for CircuitBreakerLayer {
+    async fn apply(
+        &self,
+        operation: BoxedOperation<T>,
+        next: Arc<dyn LayerStack<T> + Send + Sync>,
+    ) -> ResilienceResult<T> {
+        // Check if circuit breaker allows execution
+        self.circuit_breaker.can_execute().await?;
+
+        // Execute operation
+        let result = next.execute(operation).await;
+
+        // Record result in circuit breaker
+        match &result {
+            Ok(_) => self.circuit_breaker.record_success().await,
+            Err(_e) => self.circuit_breaker.record_failure().await,
         }
 
         result
     }
 
-    /// Get all middleware names
-    pub fn middleware_names(&self) -> Vec<&str> {
-        self.middlewares.iter().map(|m| m.name()).collect()
-    }
-
-    /// Get chain metrics
-    pub fn metrics(&self) -> ChainMetrics {
-        ChainMetrics {
-            name: self.name.clone(),
-            middleware_count: self.middlewares.len(),
-            middleware_names: self.middleware_names(),
-        }
+    fn name(&self) -> &'static str {
+        "circuit_breaker"
     }
 }
 
-impl Default for ResilienceChain {
+/// Bulkhead layer
+pub struct BulkheadLayer {
+    bulkhead: Arc<Bulkhead>,
+}
+
+impl BulkheadLayer {
+    pub fn new(bulkhead: Arc<Bulkhead>) -> Self {
+        Self { bulkhead }
+    }
+}
+
+#[async_trait::async_trait]
+impl<T: Send + 'static> ResilienceLayer<T> for BulkheadLayer {
+    async fn apply(
+        &self,
+        operation: BoxedOperation<T>,
+        next: Arc<dyn LayerStack<T> + Send + Sync>,
+    ) -> ResilienceResult<T> {
+        // Acquire permit from bulkhead
+        let _permit = self.bulkhead.acquire().await?;
+
+        // Execute operation with permit held
+        next.execute(operation).await
+    }
+
+    fn name(&self) -> &'static str {
+        "bulkhead"
+    }
+}
+
+/// Builder for composing resilience layers
+pub struct LayerBuilder<T> {
+    layers: Vec<Arc<dyn ResilienceLayer<T> + Send + Sync>>,
+}
+
+impl<T: Send + 'static> Default for LayerBuilder<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Chain metrics
-#[derive(Debug, Clone)]
-pub struct ChainMetrics {
-    pub name: String,
-    pub middleware_count: usize,
-    pub middleware_names: Vec<&'static str>,
-}
-
-/// Builder for resilience chains
-pub struct ChainBuilder {
-    chain: ResilienceChain,
-}
-
-impl ChainBuilder {
+impl<T: Send + 'static> LayerBuilder<T> {
+    /// Create new layer builder
     pub fn new() -> Self {
         Self {
-            chain: ResilienceChain::new(),
+            layers: Vec::new(),
         }
     }
 
-    pub fn named(name: impl Into<String>) -> Self {
-        Self {
-            chain: ResilienceChain::named(name),
-        }
+    /// Add timeout layer
+    pub fn with_timeout(mut self, duration: Duration) -> Self {
+        self.layers.push(Arc::new(TimeoutLayer::new(duration)));
+        self
     }
 
-    pub fn timeout(self, duration: Duration) -> Self {
-        Self {
-            chain: self.chain.with_timeout(duration),
-        }
+    /// Add retry layer
+    pub fn with_retry(mut self, strategy: RetryStrategy) -> Self {
+        self.layers.push(Arc::new(RetryLayer::new(strategy)));
+        self
     }
 
-    pub fn retry(self, max_attempts: usize, base_delay: Duration) -> Self {
-        Self {
-            chain: self.chain.with_retry(RetryStrategy::new(max_attempts, base_delay)),
-        }
+    /// Add circuit breaker layer
+    pub fn with_circuit_breaker(mut self, circuit_breaker: Arc<CircuitBreaker>) -> Self {
+        self.layers.push(Arc::new(CircuitBreakerLayer::new(circuit_breaker)));
+        self
     }
 
-    pub fn circuit_breaker(self, breaker: Arc<CircuitBreaker>) -> Self {
-        Self {
-            chain: self.chain.with_circuit_breaker(breaker),
-        }
+    /// Add bulkhead layer
+    pub fn with_bulkhead(mut self, bulkhead: Arc<Bulkhead>) -> Self {
+        self.layers.push(Arc::new(BulkheadLayer::new(bulkhead)));
+        self
     }
 
-    pub fn rate_limiter(self, limiter: Arc<AnyRateLimiter>) -> Self {
-        Self {
-            chain: self.chain.with_rate_limiter(limiter),
-        }
+    /// Add custom layer
+    pub fn with_layer(mut self, layer: Arc<dyn ResilienceLayer<T> + Send + Sync>) -> Self {
+        self.layers.push(layer);
+        self
     }
 
-    pub fn bulkhead(self, bulkhead: Arc<Bulkhead>) -> Self {
-        Self {
-            chain: self.chain.with_bulkhead(bulkhead),
-        }
-    }
+    /// Build the composed stack
+    pub fn build(self) -> Arc<dyn LayerStack<T> + Send + Sync> {
+        // Build stack from outermost to innermost
+        let mut stack: Arc<dyn LayerStack<T> + Send + Sync> = Arc::new(TerminalLayer);
 
-    pub fn build(self) -> ResilienceChain {
-        self.chain
+        // Apply layers in reverse order (last added becomes outermost)
+        for layer in self.layers.into_iter().rev() {
+            stack = Arc::new(ComposedStack {
+                layer,
+                next: stack,
+            });
+        }
+
+        stack
     }
 }
 
-impl Default for ChainBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Convenience type for a complete resilience chain
+pub type ResilienceChain<T> = Arc<dyn LayerStack<T> + Send + Sync>;
+
+/// Create a chain from a builder
+#[allow(dead_code)]
+pub fn create_chain<T: Send + 'static>() -> LayerBuilder<T> {
+    LayerBuilder::new()
 }
 
-/// Macro for easy chain creation
-#[macro_export]
-macro_rules! resilience_chain {
-    ($name:expr => $($middleware:expr),+ $(,)?) => {{
-        let mut chain = $crate::compose::ResilienceChain::named($name);
-        $(
-            chain = chain.push($middleware);
-        )+
-        chain
-    }};
+/// Helper function to execute operation with a resilience chain
+#[allow(dead_code)]
+pub async fn execute_with_chain<T, Op>(
+    chain: ResilienceChain<T>,
+    operation: Op,
+) -> ResilienceResult<T>
+where
+    Op: RetryableOperation<T> + Send + Sync + 'static,
+{
+    let boxed_op = BoxedOperation::new(operation);
+    chain.execute(boxed_op).await
+}
 
-    ($($middleware:expr),+ $(,)?) => {{
-        let mut chain = $crate::compose::ResilienceChain::new();
-        $(
-            chain = chain.push($middleware);
-        )+
-        chain
-    }};
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_layer_composition() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let operation = move || {
+            let counter = counter_clone.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok::<u32, ResilienceError>(42)
+            }
+        };
+
+        let chain = create_chain()
+            .with_timeout(Duration::from_secs(5))
+            .with_retry(RetryStrategy::fixed_delay(2, Duration::from_millis(10)))
+            .build();
+
+        let result = execute_with_chain(chain, operation).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_retry_with_timeout() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let operation = move || {
+            let counter = counter_clone.clone();
+            async move {
+                let count = counter.fetch_add(1, Ordering::SeqCst);
+                if count < 2 {
+                    Err(ResilienceError::Custom {
+                        message: "Simulated failure".to_string(),
+                        retryable: true,
+                        source: None,
+                    })
+                } else {
+                    Ok::<u32, ResilienceError>(100)
+                }
+            }
+        };
+
+        let chain = create_chain()
+            .with_timeout(Duration::from_secs(5))
+            .with_retry(RetryStrategy::fixed_delay(5, Duration::from_millis(10)))
+            .build();
+
+        let result = execute_with_chain(chain, operation).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 100);
+        assert_eq!(counter.load(Ordering::SeqCst), 3); // Failed twice, succeeded on third
+    }
 }

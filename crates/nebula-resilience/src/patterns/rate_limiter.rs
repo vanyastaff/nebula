@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, Semaphore, SemaphorePermit};
+use tokio::sync::{Mutex, Semaphore};
 use std::collections::VecDeque;
 use std::future::Future;
 use async_trait::async_trait;
@@ -32,9 +32,13 @@ pub trait RateLimiter: Send + Sync {
 /// Enum wrapper for dyn-compatible rate limiters
 #[derive(Clone)]
 pub enum AnyRateLimiter {
+    /// Token bucket rate limiter
     TokenBucket(Arc<TokenBucket>),
+    /// Leaky bucket rate limiter
     LeakyBucket(Arc<LeakyBucket>),
+    /// Sliding window rate limiter
     SlidingWindow(Arc<SlidingWindow>),
+    /// Adaptive rate limiter
     Adaptive(Arc<AdaptiveRateLimiter>),
 }
 
@@ -97,14 +101,18 @@ pub struct TokenBucket {
 }
 
 impl TokenBucket {
-    /// Create new token bucket
+    /// Create new token bucket with validation
     pub fn new(capacity: usize, refill_rate: f64) -> Self {
+        // Security: prevent creating token buckets with invalid parameters
+        let safe_capacity = capacity.min(100_000); // Prevent memory exhaustion
+        let safe_refill_rate = refill_rate.clamp(0.001, 10_000.0); // Reasonable limits
+
         Self {
-            capacity,
-            tokens: Arc::new(Mutex::new(capacity as f64)),
-            refill_rate,
+            capacity: safe_capacity,
+            tokens: Arc::new(Mutex::new(safe_capacity as f64)),
+            refill_rate: safe_refill_rate,
             last_refill: Arc::new(Mutex::new(Instant::now())),
-            burst_size: capacity,
+            burst_size: safe_capacity,
         }
     }
 
@@ -140,6 +148,8 @@ impl RateLimiter for TokenBucket {
         } else {
             Err(ResilienceError::RateLimitExceeded {
                 retry_after: Some(Duration::from_secs_f64(1.0 / self.refill_rate)),
+                limit: self.refill_rate,
+                current: self.refill_rate + 1.0, // Over limit
             })
         }
     }
@@ -176,6 +186,7 @@ pub struct LeakyBucket {
     /// Last leak timestamp
     last_leak: Arc<Mutex<Instant>>,
     /// Semaphore for blocking
+    #[allow(dead_code)]
     semaphore: Arc<Semaphore>,
 }
 
@@ -217,6 +228,8 @@ impl RateLimiter for LeakyBucket {
         } else {
             Err(ResilienceError::RateLimitExceeded {
                 retry_after: Some(Duration::from_secs_f64(1.0 / self.leak_rate)),
+                limit: self.capacity as f64,
+                current: (self.capacity + 1) as f64, // Over capacity
             })
         }
     }
@@ -294,6 +307,8 @@ impl RateLimiter for SlidingWindow {
 
             Err(ResilienceError::RateLimitExceeded {
                 retry_after: Some(retry_after),
+                limit: self.max_requests as f64,
+                current: (self.max_requests + 1) as f64, // Over limit
             })
         }
     }

@@ -238,6 +238,7 @@ macro_rules! resilience_bail {
     };
 }
 
+/// Macro for adding context to resilience results
 #[macro_export]
 macro_rules! resilience_context {
     ($result:expr, $msg:literal) => {

@@ -1,319 +1,421 @@
-//! Retry strategies for resilient operations
+//! Modern retry strategies for resilient operations
 
-use std::future::Future;
 use std::time::Duration;
-use tokio::time::sleep;
-use nebula_log::{debug, warn};
+use std::future::Future;
+use serde::{Deserialize, Serialize};
 
-use crate::{ResilienceError, ResilienceResult, ErrorClass};
+use crate::ResilienceError;
+use crate::core::config::{ResilienceConfig, ConfigResult, ConfigError};
 
-/// Retry strategy configuration
-#[derive(Debug, Clone)]
+/// Modern retry strategy with flexible backoff policies
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryStrategy {
     /// Maximum number of retry attempts
     pub max_attempts: usize,
-    /// Base delay between retries
-    pub base_delay: Duration,
-    /// Maximum delay cap
-    pub max_delay: Duration,
-    /// Jitter factor (0.0 = no jitter, 1.0 = full jitter)
-    pub jitter_factor: f64,
-    /// Whether to use exponential backoff
-    pub exponential: bool,
-    /// Custom retry predicate
-    pub retry_predicate: Option<fn(&ResilienceError) -> bool>,
+    /// Backoff policy
+    pub backoff: BackoffPolicy,
+    /// Custom retry condition predicates
+    pub retry_condition: RetryCondition,
+}
+
+/// Backoff policies for retry delays
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BackoffPolicy {
+    /// Fixed delay between retries
+    Fixed {
+        /// Fixed delay duration
+        delay: Duration,
+    },
+    /// Linear backoff: delay = base_delay * attempt
+    Linear {
+        /// Base delay for calculations
+        base_delay: Duration,
+        /// Maximum delay cap
+        max_delay: Duration,
+    },
+    /// Exponential backoff: delay = base_delay * multiplier^attempt
+    Exponential {
+        /// Base delay for calculations
+        base_delay: Duration,
+        /// Exponential multiplier
+        multiplier: f64,
+        /// Maximum delay cap
+        max_delay: Duration,
+        /// Jitter policy to apply
+        jitter: JitterPolicy,
+    },
+    /// Custom backoff with specified delays per attempt
+    Custom {
+        /// List of delays for each attempt
+        delays: Vec<Duration>,
+    },
+}
+
+/// Jitter policies to avoid thundering herd
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum JitterPolicy {
+    /// No jitter
+    None,
+    /// Full jitter: random(0, calculated_delay)
+    Full,
+    /// Equal jitter: calculated_delay/2 + random(0, calculated_delay/2)
+    Equal,
+    /// Decorrelated jitter: random(base_delay, previous_delay * 3)
+    Decorrelated,
+}
+
+/// Conditions for when to retry an operation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryCondition {
+    /// Retry on timeout errors
+    pub on_timeout: bool,
+    /// Retry on rate limit errors
+    pub on_rate_limit: bool,
+    /// Retry on circuit breaker open errors
+    pub on_circuit_breaker_open: bool,
+    /// Retry on custom retryable errors
+    pub on_custom_retryable: bool,
+    /// Don't retry on these specific error types
+    pub exclude_errors: Vec<String>,
 }
 
 impl Default for RetryStrategy {
     fn default() -> Self {
-        Self {
-            max_attempts: 3,
-            base_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(60),
-            jitter_factor: 0.1,
-            exponential: true,
-            retry_predicate: None,
-        }
+        Self::exponential_backoff(3, Duration::from_millis(100))
     }
 }
 
 impl RetryStrategy {
-    /// Create a new retry strategy
-    pub fn new(max_attempts: usize, base_delay: Duration) -> Self {
+    /// Create a fixed delay retry strategy
+    pub fn fixed_delay(max_attempts: usize, delay: Duration) -> Self {
         Self {
             max_attempts,
-            base_delay,
-            max_delay: base_delay.saturating_mul(60),
-            jitter_factor: 0.1,
-            exponential: true,
-            retry_predicate: None,
+            backoff: BackoffPolicy::Fixed { delay },
+            retry_condition: RetryCondition::default(),
         }
     }
 
-    /// Set the maximum delay cap
-    pub fn with_max_delay(mut self, max_delay: Duration) -> Self {
-        self.max_delay = max_delay;
-        self
+    /// Create a linear backoff retry strategy
+    pub fn linear_backoff(max_attempts: usize, base_delay: Duration) -> Self {
+        Self {
+            max_attempts,
+            backoff: BackoffPolicy::Linear {
+                base_delay,
+                max_delay: Duration::from_secs(30),
+            },
+            retry_condition: RetryCondition::default(),
+        }
     }
 
-    /// Set the jitter factor
-    pub fn with_jitter(mut self, jitter_factor: f64) -> Self {
-        self.jitter_factor = jitter_factor.clamp(0.0, 1.0);
-        self
+    /// Create an exponential backoff retry strategy
+    pub fn exponential_backoff(max_attempts: usize, base_delay: Duration) -> Self {
+        Self {
+            max_attempts,
+            backoff: BackoffPolicy::Exponential {
+                base_delay,
+                multiplier: 2.0,
+                max_delay: Duration::from_secs(30),
+                jitter: JitterPolicy::Equal,
+            },
+            retry_condition: RetryCondition::default(),
+        }
     }
 
-    /// Disable exponential backoff
-    pub fn without_exponential(mut self) -> Self {
-        self.exponential = false;
-        self
+    /// Create a custom retry strategy with specific delays
+    pub fn custom_delays(delays: Vec<Duration>) -> Self {
+        let max_attempts = delays.len();
+        Self {
+            max_attempts,
+            backoff: BackoffPolicy::Custom { delays },
+            retry_condition: RetryCondition::default(),
+        }
     }
 
-    /// Set custom retry predicate
-    pub fn with_predicate(mut self, predicate: fn(&ResilienceError) -> bool) -> Self {
-        self.retry_predicate = Some(predicate);
+    /// Set custom retry condition
+    pub fn with_condition(mut self, condition: RetryCondition) -> Self {
+        self.retry_condition = condition;
         self
     }
 
     /// Check if an error should be retried
     pub fn should_retry(&self, error: &ResilienceError) -> bool {
-        if let Some(predicate) = self.retry_predicate {
-            predicate(error)
-        } else {
-            error.is_retryable()
+        match error {
+            ResilienceError::Timeout { .. } => self.retry_condition.on_timeout,
+            ResilienceError::RateLimitExceeded { .. } => self.retry_condition.on_rate_limit,
+            ResilienceError::CircuitBreakerOpen { .. } => self.retry_condition.on_circuit_breaker_open,
+            ResilienceError::Custom { retryable, .. } => {
+                *retryable && self.retry_condition.on_custom_retryable
+            }
+            ResilienceError::RetryLimitExceeded { .. } => false,
+            ResilienceError::Cancelled { .. } => false,
+            ResilienceError::InvalidConfig { .. } => false,
+            _ => false,
         }
     }
 
-    /// Calculate delay for a specific attempt
-    fn calculate_delay(&self, attempt: usize) -> Duration {
-        if attempt == 0 {
-            return Duration::ZERO;
+    /// Calculate delay for a specific attempt (1-indexed)
+    pub fn delay_for_attempt(&self, attempt: usize) -> Option<Duration> {
+        if attempt > self.max_attempts {
+            return None;
         }
 
-        let mut delay = if self.exponential {
-            self.base_delay.saturating_mul(2_u32.saturating_pow(attempt as u32 - 1))
-        } else {
-            self.base_delay
+        let base_delay = match &self.backoff {
+            BackoffPolicy::Fixed { delay } => *delay,
+            BackoffPolicy::Linear { base_delay, max_delay } => {
+                let calculated = Duration::from_millis(base_delay.as_millis() as u64 * attempt as u64);
+                std::cmp::min(calculated, *max_delay)
+            }
+            BackoffPolicy::Exponential {
+                base_delay,
+                multiplier,
+                max_delay,
+                jitter,
+            } => {
+                let calculated_ms = (base_delay.as_millis() as f64 * multiplier.powi(attempt as i32 - 1)) as u64;
+                let calculated = Duration::from_millis(calculated_ms);
+                let capped = std::cmp::min(calculated, *max_delay);
+
+                Self::apply_jitter(capped, jitter, *base_delay)
+            }
+            BackoffPolicy::Custom { delays } => {
+                if attempt > 0 && attempt <= delays.len() {
+                    delays[attempt - 1]
+                } else {
+                    return None;
+                }
+            }
         };
 
-        // Apply jitter
-        if self.jitter_factor > 0.0 {
-            use std::collections::hash_map::RandomState;
-            use std::hash::{BuildHasher, Hash, Hasher};
-
-            let mut hasher = RandomState::new().build_hasher();
-            attempt.hash(&mut hasher);
-            let hash = hasher.finish();
-
-            let jitter_range = (delay.as_millis() as f64 * self.jitter_factor) as u64;
-            let jitter = hash % (jitter_range + 1);
-            delay = delay.saturating_add(Duration::from_millis(jitter));
-        }
-
-        // Cap at maximum delay
-        delay.min(self.max_delay)
+        Some(base_delay)
     }
 
-    /// Create a fixed delay strategy
-    pub fn fixed(max_attempts: usize, delay: Duration) -> Self {
-        Self {
-            max_attempts,
-            base_delay: delay,
-            max_delay: delay,
-            jitter_factor: 0.0,
-            exponential: false,
-            retry_predicate: None,
-        }
-    }
+    /// Apply jitter to delay
+    fn apply_jitter(delay: Duration, jitter: &JitterPolicy, base_delay: Duration) -> Duration {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
 
-    /// Create a linear backoff strategy
-    pub fn linear(max_attempts: usize, base_delay: Duration, increment: Duration) -> Self {
-        Self {
-            max_attempts,
-            base_delay,
-            max_delay: base_delay.saturating_add(increment.saturating_mul(max_attempts as u32)),
-            jitter_factor: 0.1,
-            exponential: false,
-            retry_predicate: None,
+        match jitter {
+            JitterPolicy::None => delay,
+            JitterPolicy::Full => {
+                let jitter_ms = rng.gen_range(0..=delay.as_millis() as u64);
+                Duration::from_millis(jitter_ms)
+            }
+            JitterPolicy::Equal => {
+                let half = delay.as_millis() as u64 / 2;
+                let jitter_ms = half + rng.gen_range(0..=half);
+                Duration::from_millis(jitter_ms)
+            }
+            JitterPolicy::Decorrelated => {
+                let min = base_delay.as_millis() as u64;
+                let max = delay.as_millis() as u64 * 3;
+                let jitter_ms = rng.gen_range(min..=max);
+                Duration::from_millis(jitter_ms)
+            }
         }
     }
 }
 
-/// Execute an operation with retry logic (for Fn closures)
-pub async fn retry_with_operation<T, F, Fut>(
-    strategy: RetryStrategy,
-    operation: F,
-) -> ResilienceResult<T>
-where
-    F: Fn() -> Fut,
-    Fut: Future<Output = ResilienceResult<T>>,
-{
-    let mut last_error = None;
+impl Default for RetryCondition {
+    fn default() -> Self {
+        Self {
+            on_timeout: true,
+            on_rate_limit: true,
+            on_circuit_breaker_open: false, // Usually don't retry on circuit breaker
+            on_custom_retryable: true,
+            exclude_errors: Vec::new(),
+        }
+    }
+}
 
-    for attempt in 0..=strategy.max_attempts {
-        match operation().await {
-            Ok(value) => {
-                if attempt > 0 {
-                    debug!("Operation succeeded after {} retry attempts", attempt);
-                }
-                return Ok(value);
-            }
-            Err(error) => {
-                if !strategy.should_retry(&error) {
-                    warn!("Error is not retryable: {:?}", error);
-                    return Err(error);
-                }
-
-                if attempt < strategy.max_attempts {
-                    let delay = error.retry_after()
-                        .unwrap_or_else(|| strategy.calculate_delay(attempt + 1));
-
-                    warn!(
-                        "Operation failed (attempt {}/{}), retrying in {:?}: {:?}",
-                        attempt + 1,
-                        strategy.max_attempts,
-                        delay,
-                        error
-                    );
-
-                    sleep(delay).await;
-                    last_error = Some(error);
-                } else {
-                    last_error = Some(error);
-                }
-            }
+impl RetryCondition {
+    /// Create a permissive retry condition (retry most errors)
+    pub fn permissive() -> Self {
+        Self {
+            on_timeout: true,
+            on_rate_limit: true,
+            on_circuit_breaker_open: true,
+            on_custom_retryable: true,
+            exclude_errors: Vec::new(),
         }
     }
 
-    Err(ResilienceError::retry_limit_exceeded_with_cause(
-        strategy.max_attempts,
-        last_error.unwrap_or_else(|| ResilienceError::Custom {
-            message: "No error recorded".to_string(),
-            retryable: false,
-        }),
-    ))
+    /// Create a conservative retry condition (retry only safe errors)
+    pub fn conservative() -> Self {
+        Self {
+            on_timeout: true,
+            on_rate_limit: false,
+            on_circuit_breaker_open: false,
+            on_custom_retryable: false,
+            exclude_errors: Vec::new(),
+        }
+    }
+
+    /// Exclude specific error types from retry
+    pub fn exclude_error(mut self, error_type: impl Into<String>) -> Self {
+        self.exclude_errors.push(error_type.into());
+        self
+    }
 }
 
-/// Execute an operation with retry logic (for FnMut closures)
-pub async fn retry<T, F, Fut>(
+impl ResilienceConfig for RetryStrategy {
+    fn validate(&self) -> ConfigResult<()> {
+        if self.max_attempts == 0 {
+            return Err(ConfigError::validation("max_attempts must be greater than 0"));
+        }
+
+        match &self.backoff {
+            BackoffPolicy::Fixed { delay } => {
+                if delay.is_zero() {
+                    return Err(ConfigError::validation("Fixed delay cannot be zero"));
+                }
+            }
+            BackoffPolicy::Linear { base_delay, max_delay } => {
+                if base_delay.is_zero() {
+                    return Err(ConfigError::validation("Base delay cannot be zero"));
+                }
+                if max_delay < base_delay {
+                    return Err(ConfigError::validation("Max delay must be >= base delay"));
+                }
+            }
+            BackoffPolicy::Exponential { base_delay, multiplier, max_delay, .. } => {
+                if base_delay.is_zero() {
+                    return Err(ConfigError::validation("Base delay cannot be zero"));
+                }
+                if *multiplier <= 1.0 {
+                    return Err(ConfigError::validation("Exponential multiplier must be > 1.0"));
+                }
+                if max_delay < base_delay {
+                    return Err(ConfigError::validation("Max delay must be >= base delay"));
+                }
+            }
+            BackoffPolicy::Custom { delays } => {
+                if delays.is_empty() {
+                    return Err(ConfigError::validation("Custom delays cannot be empty"));
+                }
+                if delays.len() != self.max_attempts {
+                    return Err(ConfigError::validation("Custom delays length must match max_attempts"));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn default_config() -> Self {
+        Self::default()
+    }
+
+    fn merge(&mut self, other: Self) {
+        *self = other;
+    }
+}
+
+/// Legacy retry function for backward compatibility
+pub async fn retry<T, F, Fut, E>(
     strategy: RetryStrategy,
     mut operation: F,
-) -> ResilienceResult<T>
+) -> Result<T, ResilienceError>
 where
     F: FnMut() -> Fut,
-    Fut: Future<Output = ResilienceResult<T>>,
+    Fut: Future<Output = Result<T, E>>,
+    E: Into<ResilienceError>,
 {
     let mut last_error = None;
 
-    for attempt in 0..=strategy.max_attempts {
+    for attempt in 1..=strategy.max_attempts {
         match operation().await {
-            Ok(value) => {
-                if attempt > 0 {
-                    debug!("Operation succeeded after {} retry attempts", attempt);
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                let error = e.into();
+
+                if attempt == strategy.max_attempts {
+                    last_error = Some(error);
+                    break;
                 }
-                return Ok(value);
-            }
-            Err(error) => {
-                if !strategy.should_retry(&error) {
-                    warn!("Error is not retryable: {:?}", error);
+
+                if strategy.should_retry(&error) {
+                    last_error = Some(error);
+
+                    if let Some(delay) = strategy.delay_for_attempt(attempt) {
+                        tokio::time::sleep(delay).await;
+                    }
+                } else {
                     return Err(error);
                 }
-
-                if attempt < strategy.max_attempts {
-                    let delay = error.retry_after()
-                        .unwrap_or_else(|| strategy.calculate_delay(attempt + 1));
-
-                    warn!(
-                        "Operation failed (attempt {}/{}), retrying in {:?}: {:?}",
-                        attempt + 1,
-                        strategy.max_attempts,
-                        delay,
-                        error
-                    );
-
-                    sleep(delay).await;
-                    last_error = Some(error);
-                } else {
-                    last_error = Some(error);
-                }
             }
         }
     }
 
-    Err(ResilienceError::retry_limit_exceeded_with_cause(
-        strategy.max_attempts,
-        last_error.unwrap_or_else(|| ResilienceError::Custom {
-            message: "No error recorded".to_string(),
-            retryable: false,
-        }),
-    ))
+    Err(ResilienceError::RetryLimitExceeded {
+        attempts: strategy.max_attempts,
+        last_error: last_error.map(Box::new),
+    })
 }
 
-/// Retry builder for fluent API
-pub struct RetryBuilder {
-    strategy: RetryStrategy,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
 
-impl RetryBuilder {
-    pub fn new() -> Self {
-        Self {
-            strategy: RetryStrategy::default(),
-        }
+    #[tokio::test]
+    async fn test_fixed_delay_retry() {
+        let strategy = RetryStrategy::fixed_delay(3, Duration::from_millis(10));
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+
+        let result = retry(strategy, || {
+            let counter = counter_clone.clone();
+            async move {
+                let count = counter.fetch_add(1, Ordering::SeqCst);
+                if count < 2 {
+                    Err(ResilienceError::Custom {
+                        message: "Simulated failure".to_string(),
+                        retryable: true,
+                        source: None,
+                    })
+                } else {
+                    Ok::<u32, ResilienceError>(42)
+                }
+            }
+        }).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 
-    pub fn max_attempts(mut self, attempts: usize) -> Self {
-        self.strategy.max_attempts = attempts;
-        self
+    #[tokio::test]
+    async fn test_exponential_backoff() {
+        let strategy = RetryStrategy::exponential_backoff(3, Duration::from_millis(10));
+
+        // Test delay calculation
+        let delay1 = strategy.delay_for_attempt(1);
+        assert!(delay1.is_some(), "Delay for attempt 1 should not be None");
+        assert!(delay1.unwrap() >= Duration::from_millis(5));
+
+        let delay2 = strategy.delay_for_attempt(2);
+        assert!(delay2.is_some(), "Delay for attempt 2 should not be None");
+        assert!(delay2.unwrap() >= Duration::from_millis(10));
+
+        let delay3 = strategy.delay_for_attempt(3);
+        assert!(delay3.is_some(), "Delay for attempt 3 should not be None");
+        assert!(delay3.unwrap() >= Duration::from_millis(20));
     }
 
-    pub fn base_delay(mut self, delay: Duration) -> Self {
-        self.strategy.base_delay = delay;
-        self
-    }
+    #[test]
+    fn test_retry_conditions() {
+        let strategy = RetryStrategy::default();
 
-    pub fn max_delay(mut self, delay: Duration) -> Self {
-        self.strategy.max_delay = delay;
-        self
-    }
+        // Should retry
+        assert!(strategy.should_retry(&ResilienceError::Timeout {
+            duration: Duration::from_secs(1),
+            context: None,
+        }));
 
-    pub fn exponential(mut self) -> Self {
-        self.strategy.exponential = true;
-        self
-    }
-
-    pub fn linear(mut self) -> Self {
-        self.strategy.exponential = false;
-        self
-    }
-
-    pub fn jitter(mut self, factor: f64) -> Self {
-        self.strategy.jitter_factor = factor.clamp(0.0, 1.0);
-        self
-    }
-
-    pub fn when(mut self, predicate: fn(&ResilienceError) -> bool) -> Self {
-        self.strategy.retry_predicate = Some(predicate);
-        self
-    }
-
-    pub async fn execute<T, F, Fut>(self, operation: F) -> ResilienceResult<T>
-    where
-        F: FnMut() -> Fut,
-        Fut: Future<Output = ResilienceResult<T>>,
-    {
-        retry(self.strategy, operation).await
-    }
-
-    pub async fn execute_fn<T, F, Fut>(self, operation: F) -> ResilienceResult<T>
-    where
-        F: Fn() -> Fut,
-        Fut: Future<Output = ResilienceResult<T>>,
-    {
-        retry_with_operation(self.strategy, operation).await
-    }
-}
-
-impl Default for RetryBuilder {
-    fn default() -> Self {
-        Self::new()
+        // Should not retry
+        assert!(!strategy.should_retry(&ResilienceError::Cancelled {
+            reason: None,
+        }));
     }
 }
