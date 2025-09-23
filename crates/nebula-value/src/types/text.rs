@@ -1,3 +1,4 @@
+// Standard library
 use std::borrow::{Borrow, Cow};
 use std::cmp::Ordering;
 use std::fmt;
@@ -6,11 +7,12 @@ use std::ops::{Add, AddAssign, Deref, Index, Range, RangeFrom, RangeFull, RangeT
 use std::str::{Chars, FromStr};
 use std::sync::Arc;
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
+// External dependencies
 use bytes::Bytes;
 use thiserror::Error;
+
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "pattern")]
 use regex::Regex;

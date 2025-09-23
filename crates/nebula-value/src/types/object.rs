@@ -1150,12 +1150,14 @@ unsafe impl Sync for Object {}
 // ==================== Builder Pattern ====================
 
 /// Builder for creating Object instances
+#[allow(dead_code)]
 pub struct ObjectBuilder {
     map: InternalMap,
 }
 
 impl ObjectBuilder {
     /// Creates a new builder
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             map: InternalMap::new(),
@@ -1163,12 +1165,14 @@ impl ObjectBuilder {
     }
 
     /// Adds a key-value pair
+    #[allow(dead_code)]
     pub fn insert(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         self.map.insert(key.into(), value.into());
         self
     }
 
     /// Adds a key-value pair if the value is Some
+    #[allow(dead_code)]
     pub fn insert_if_some<T>(self, key: impl Into<String>, value: Option<T>) -> Self
     where
         T: Into<Value>,
@@ -1180,6 +1184,7 @@ impl ObjectBuilder {
     }
 
     /// Merges another object
+    #[allow(dead_code)]
     pub fn merge(mut self, other: &Object) -> Self {
         for (k, v) in other.inner.iter() {
             self.map.insert(k.clone(), v.clone());
@@ -1188,6 +1193,7 @@ impl ObjectBuilder {
     }
 
     /// Builds the Object
+    #[allow(dead_code)]
     pub fn build(self) -> Object {
         Object::from_map(self.map)
     }

@@ -413,6 +413,7 @@ impl ValuePath {
         None
     }
 
+    #[allow(dead_code)]
     fn get_mut_from<'a>(&self, _value: &'a mut Value, _index: usize) -> Option<&'a mut Value> {
         None
     }
