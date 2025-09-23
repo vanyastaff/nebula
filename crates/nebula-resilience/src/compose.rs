@@ -4,18 +4,19 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use std::pin::Pin;
+use async_trait::async_trait;
 
 use crate::{
     patterns::bulkhead::Bulkhead,
     patterns::circuit_breaker::CircuitBreaker,
-    core::error::{ResilienceError, ResilienceResult},
-    patterns::fallback::FallbackStrategy,
-    patterns::rate_limiter::RateLimiter,
+    ResilienceError, ResilienceResult,
+    patterns::rate_limiter::{RateLimiter, AnyRateLimiter},
     patterns::retry::RetryStrategy,
     patterns::timeout::timeout,
 };
 
 /// Trait for resilience middleware using native async
+#[async_trait]
 pub trait ResilienceMiddleware: Send + Sync {
     /// Apply middleware to an operation
     async fn apply<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
@@ -30,6 +31,54 @@ pub trait ResilienceMiddleware: Send + Sync {
     /// Get middleware metrics
     fn metrics(&self) -> MiddlewareMetrics {
         MiddlewareMetrics::default()
+    }
+}
+
+/// Enum wrapper for dyn-compatible resilience middleware
+#[derive(Clone)]
+pub enum AnyResilienceMiddleware {
+    Timeout(Arc<TimeoutMiddleware>),
+    Retry(Arc<RetryMiddleware>),
+    CircuitBreaker(Arc<CircuitBreakerMiddleware>),
+    RateLimiter(Arc<RateLimiterMiddleware>),
+    Bulkhead(Arc<BulkheadMiddleware>),
+}
+
+#[async_trait]
+impl ResilienceMiddleware for AnyResilienceMiddleware {
+    async fn apply<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = ResilienceResult<T>> + Send,
+        T: Send,
+    {
+        match self {
+            Self::Timeout(middleware) => middleware.apply(operation).await,
+            Self::Retry(middleware) => middleware.apply(operation).await,
+            Self::CircuitBreaker(middleware) => middleware.apply(operation).await,
+            Self::RateLimiter(middleware) => middleware.apply(operation).await,
+            Self::Bulkhead(middleware) => middleware.apply(operation).await,
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Self::Timeout(middleware) => middleware.name(),
+            Self::Retry(middleware) => middleware.name(),
+            Self::CircuitBreaker(middleware) => middleware.name(),
+            Self::RateLimiter(middleware) => middleware.name(),
+            Self::Bulkhead(middleware) => middleware.name(),
+        }
+    }
+
+    fn metrics(&self) -> MiddlewareMetrics {
+        match self {
+            Self::Timeout(middleware) => middleware.metrics(),
+            Self::Retry(middleware) => middleware.metrics(),
+            Self::CircuitBreaker(middleware) => middleware.metrics(),
+            Self::RateLimiter(middleware) => middleware.metrics(),
+            Self::Bulkhead(middleware) => middleware.metrics(),
+        }
     }
 }
 
@@ -57,6 +106,7 @@ impl TimeoutMiddleware {
     }
 }
 
+#[async_trait]
 impl ResilienceMiddleware for TimeoutMiddleware {
     async fn apply<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
     where
@@ -64,7 +114,7 @@ impl ResilienceMiddleware for TimeoutMiddleware {
         Fut: Future<Output = ResilienceResult<T>> + Send,
         T: Send,
     {
-        timeout(self.duration, operation()).await?
+        timeout(self.duration, operation()).await.map_err(|e| e.into())
     }
 
     fn name(&self) -> &str {
@@ -87,6 +137,7 @@ impl RetryMiddleware {
     }
 }
 
+#[async_trait]
 impl ResilienceMiddleware for RetryMiddleware {
     async fn apply<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
     where
@@ -125,6 +176,7 @@ impl CircuitBreakerMiddleware {
     }
 }
 
+#[async_trait]
 impl ResilienceMiddleware for CircuitBreakerMiddleware {
     async fn apply<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
     where
@@ -142,12 +194,12 @@ impl ResilienceMiddleware for CircuitBreakerMiddleware {
 
 /// Rate limiter middleware
 pub struct RateLimiterMiddleware {
-    limiter: Arc<dyn RateLimiter>,
+    limiter: Arc<AnyRateLimiter>,
     name: String,
 }
 
 impl RateLimiterMiddleware {
-    pub fn new(limiter: Arc<dyn RateLimiter>) -> Self {
+    pub fn new(limiter: Arc<AnyRateLimiter>) -> Self {
         Self {
             name: "rate_limiter".to_string(),
             limiter,
@@ -155,6 +207,7 @@ impl RateLimiterMiddleware {
     }
 }
 
+#[async_trait]
 impl ResilienceMiddleware for RateLimiterMiddleware {
     async fn apply<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
     where
@@ -185,6 +238,7 @@ impl BulkheadMiddleware {
     }
 }
 
+#[async_trait]
 impl ResilienceMiddleware for BulkheadMiddleware {
     async fn apply<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
     where
@@ -202,7 +256,7 @@ impl ResilienceMiddleware for BulkheadMiddleware {
 
 /// Composable resilience chain with improved execution
 pub struct ResilienceChain {
-    middlewares: Vec<Arc<dyn ResilienceMiddleware>>,
+    middlewares: Vec<AnyResilienceMiddleware>,
     name: String,
 }
 
@@ -221,34 +275,34 @@ impl ResilienceChain {
     }
 
     /// Add middleware to chain
-    pub fn push(mut self, middleware: Arc<dyn ResilienceMiddleware>) -> Self {
+    pub fn push(mut self, middleware: AnyResilienceMiddleware) -> Self {
         self.middlewares.push(middleware);
         self
     }
 
     /// Add timeout middleware
     pub fn with_timeout(self, duration: Duration) -> Self {
-        self.push(Arc::new(TimeoutMiddleware::new(duration)))
+        self.push(AnyResilienceMiddleware::Timeout(Arc::new(TimeoutMiddleware::new(duration))))
     }
 
     /// Add retry middleware
     pub fn with_retry(self, strategy: RetryStrategy) -> Self {
-        self.push(Arc::new(RetryMiddleware::new(strategy)))
+        self.push(AnyResilienceMiddleware::Retry(Arc::new(RetryMiddleware::new(strategy))))
     }
 
     /// Add circuit breaker middleware
     pub fn with_circuit_breaker(self, breaker: Arc<CircuitBreaker>) -> Self {
-        self.push(Arc::new(CircuitBreakerMiddleware::new(breaker)))
+        self.push(AnyResilienceMiddleware::CircuitBreaker(Arc::new(CircuitBreakerMiddleware::new(breaker))))
     }
 
     /// Add rate limiter middleware
-    pub fn with_rate_limiter(self, limiter: Arc<dyn RateLimiter>) -> Self {
-        self.push(Arc::new(RateLimiterMiddleware::new(limiter)))
+    pub fn with_rate_limiter(self, limiter: Arc<AnyRateLimiter>) -> Self {
+        self.push(AnyResilienceMiddleware::RateLimiter(Arc::new(RateLimiterMiddleware::new(limiter))))
     }
 
     /// Add bulkhead middleware
     pub fn with_bulkhead(self, bulkhead: Arc<Bulkhead>) -> Self {
-        self.push(Arc::new(BulkheadMiddleware::new(bulkhead)))
+        self.push(AnyResilienceMiddleware::Bulkhead(Arc::new(BulkheadMiddleware::new(bulkhead))))
     }
 
     /// Execute operation through the chain
@@ -334,7 +388,7 @@ impl ChainBuilder {
         }
     }
 
-    pub fn rate_limiter(self, limiter: Arc<dyn RateLimiter>) -> Self {
+    pub fn rate_limiter(self, limiter: Arc<AnyRateLimiter>) -> Self {
         Self {
             chain: self.chain.with_rate_limiter(limiter),
         }
@@ -363,7 +417,7 @@ macro_rules! resilience_chain {
     ($name:expr => $($middleware:expr),+ $(,)?) => {{
         let mut chain = $crate::compose::ResilienceChain::named($name);
         $(
-            chain = chain.push(::std::sync::Arc::new($middleware));
+            chain = chain.push($middleware);
         )+
         chain
     }};
@@ -371,7 +425,7 @@ macro_rules! resilience_chain {
     ($($middleware:expr),+ $(,)?) => {{
         let mut chain = $crate::compose::ResilienceChain::new();
         $(
-            chain = chain.push(::std::sync::Arc::new($middleware));
+            chain = chain.push($middleware);
         )+
         chain
     }};

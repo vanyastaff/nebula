@@ -5,10 +5,12 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Semaphore, SemaphorePermit};
 use std::collections::VecDeque;
 use std::future::Future;
+use async_trait::async_trait;
 
-use crate::core::error::{ResilienceError, ResilienceResult};
+use crate::{ResilienceError, ResilienceResult};
 
 /// Rate limiter trait
+#[async_trait]
 pub trait RateLimiter: Send + Sync {
     /// Try to acquire permission for an operation
     async fn acquire(&self) -> ResilienceResult<()>;
@@ -25,6 +27,59 @@ pub trait RateLimiter: Send + Sync {
 
     /// Reset the rate limiter
     async fn reset(&self);
+}
+
+/// Enum wrapper for dyn-compatible rate limiters
+#[derive(Clone)]
+pub enum AnyRateLimiter {
+    TokenBucket(Arc<TokenBucket>),
+    LeakyBucket(Arc<LeakyBucket>),
+    SlidingWindow(Arc<SlidingWindow>),
+    Adaptive(Arc<AdaptiveRateLimiter>),
+}
+
+#[async_trait]
+impl RateLimiter for AnyRateLimiter {
+    async fn acquire(&self) -> ResilienceResult<()> {
+        match self {
+            Self::TokenBucket(limiter) => limiter.acquire().await,
+            Self::LeakyBucket(limiter) => limiter.acquire().await,
+            Self::SlidingWindow(limiter) => limiter.acquire().await,
+            Self::Adaptive(limiter) => limiter.acquire().await,
+        }
+    }
+
+    async fn execute<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = ResilienceResult<T>> + Send,
+        T: Send,
+    {
+        match self {
+            Self::TokenBucket(limiter) => limiter.execute(operation).await,
+            Self::LeakyBucket(limiter) => limiter.execute(operation).await,
+            Self::SlidingWindow(limiter) => limiter.execute(operation).await,
+            Self::Adaptive(limiter) => limiter.execute(operation).await,
+        }
+    }
+
+    async fn current_rate(&self) -> f64 {
+        match self {
+            Self::TokenBucket(limiter) => limiter.current_rate().await,
+            Self::LeakyBucket(limiter) => limiter.current_rate().await,
+            Self::SlidingWindow(limiter) => limiter.current_rate().await,
+            Self::Adaptive(limiter) => limiter.current_rate().await,
+        }
+    }
+
+    async fn reset(&self) {
+        match self {
+            Self::TokenBucket(limiter) => limiter.reset().await,
+            Self::LeakyBucket(limiter) => limiter.reset().await,
+            Self::SlidingWindow(limiter) => limiter.reset().await,
+            Self::Adaptive(limiter) => limiter.reset().await,
+        }
+    }
 }
 
 /// Token bucket rate limiter
@@ -73,6 +128,7 @@ impl TokenBucket {
     }
 }
 
+#[async_trait]
 impl RateLimiter for TokenBucket {
     async fn acquire(&self) -> ResilienceResult<()> {
         self.refill().await;
@@ -149,6 +205,7 @@ impl LeakyBucket {
     }
 }
 
+#[async_trait]
 impl RateLimiter for LeakyBucket {
     async fn acquire(&self) -> ResilienceResult<()> {
         self.leak().await;
@@ -220,6 +277,7 @@ impl SlidingWindow {
     }
 }
 
+#[async_trait]
 impl RateLimiter for SlidingWindow {
     async fn acquire(&self) -> ResilienceResult<()> {
         self.clean_old_requests().await;
@@ -265,7 +323,7 @@ impl RateLimiter for SlidingWindow {
 /// Adaptive rate limiter that adjusts based on error rates
 pub struct AdaptiveRateLimiter {
     /// Current rate limiter
-    inner: Arc<Mutex<Box<dyn RateLimiter>>>,
+    inner: Arc<Mutex<AnyRateLimiter>>,
     /// Success count
     success_count: Arc<Mutex<usize>>,
     /// Error count
@@ -288,7 +346,7 @@ impl AdaptiveRateLimiter {
         let token_bucket = TokenBucket::new(initial_rate as usize, initial_rate);
 
         Self {
-            inner: Arc::new(Mutex::new(Box::new(token_bucket))),
+            inner: Arc::new(Mutex::new(AnyRateLimiter::TokenBucket(Arc::new(token_bucket)))),
             success_count: Arc::new(Mutex::new(0)),
             error_count: Arc::new(Mutex::new(0)),
             stats_window: Duration::from_secs(60),
@@ -323,7 +381,7 @@ impl AdaptiveRateLimiter {
 
                 // Update inner rate limiter
                 let new_limiter = TokenBucket::new(*current_rate as usize, *current_rate);
-                *self.inner.lock().await = Box::new(new_limiter);
+                *self.inner.lock().await = AnyRateLimiter::TokenBucket(Arc::new(new_limiter));
             }
 
             // Reset stats
@@ -346,6 +404,7 @@ impl AdaptiveRateLimiter {
     }
 }
 
+#[async_trait]
 impl RateLimiter for AdaptiveRateLimiter {
     async fn acquire(&self) -> ResilienceResult<()> {
         self.inner.lock().await.acquire().await

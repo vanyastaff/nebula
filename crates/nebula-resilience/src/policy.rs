@@ -8,7 +8,7 @@ use std::pin::Pin;
 use crate::{
     patterns::bulkhead::{Bulkhead, BulkheadConfig},
     patterns::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
-    core::error::{ResilienceError, ResilienceResult},
+    ResilienceError, ResilienceResult,
     patterns::retry::{RetryStrategy, retry_with_operation},
     patterns::timeout::timeout,
 };

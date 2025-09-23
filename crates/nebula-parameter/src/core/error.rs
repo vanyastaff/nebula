@@ -2,9 +2,6 @@ use nebula_error::Error;
 use nebula_core::{ParameterKey, KeyParseError};
 #[derive(Debug, Error)]
 pub enum ParameterError {
-    /// Build error (e.g., during configuration struct building).
-    #[error("Build error: {0}")]
-    BuildError(#[from] derive_builder::UninitializedFieldError),
 
     /// Invalid format or content for a parameter key string.
     #[error("Invalid key format: {0}")]
@@ -38,4 +35,12 @@ pub enum ParameterError {
     /// Includes the key of the parameter and the reason for failure.
     #[error("Validation failed for parameter '{key}': {reason}")]
     ValidationError { key: ParameterKey, reason: String },
+
+    /// Required parameter value is missing
+    #[error("Missing value for parameter '{key}'")]
+    MissingValue { key: ParameterKey },
+
+    /// Invalid value provided for parameter
+    #[error("Invalid value for parameter '{key}': {reason}")]
+    InvalidValue { key: ParameterKey, reason: String },
 }

@@ -12,31 +12,32 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-# Serialization
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-bincode = "1.3"
-
-# UUID generation
-uuid = { workspace = true, features = ["v4", "serde"] }
-domain-key = {version = "0.1.1", features = ["serde"]}
-
 # Async traits
 async-trait = "0.1"
-
-# Time handling
-chrono = { workspace = true, features = ["serde"] }
 
 # Collections
 dashmap = "5.5"
 
+# Errors
+thiserror = { workspace = true }
+
+# Serialization
+bincode = "1.3"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Time handling
+chrono = { workspace = true, features = ["serde"] }
+
+# UUID and keys
+domain-key = { version = "0.1.1", features = ["serde"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
+
+# Internal crates
 nebula-error = { path = "../nebula-error" }
-thiserror = {workspace = true}
-
-
 
 [dev-dependencies]
 # Testing
+pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = "0.4"
-pretty_assertions = { workspace = true }

@@ -4,10 +4,12 @@ use std::future::Future;
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
+use async_trait::async_trait;
 
-use crate::core::error::{ResilienceError, ResilienceResult};
+use crate::{ResilienceError, ResilienceResult};
 
 /// Fallback strategy trait
+#[async_trait]
 pub trait FallbackStrategy<T>: Send + Sync {
     /// Execute fallback logic
     async fn fallback(&self, error: ResilienceError) -> ResilienceResult<T>;
@@ -31,6 +33,7 @@ impl<T: Clone + Send + Sync> ValueFallback<T> {
     }
 }
 
+#[async_trait]
 impl<T: Clone + Send + Sync> FallbackStrategy<T> for ValueFallback<T> {
     async fn fallback(&self, _error: ResilienceError) -> ResilienceResult<T> {
         Ok(self.value.clone())
@@ -113,6 +116,7 @@ impl<T: Clone + Send + Sync> CacheFallback<T> {
     }
 }
 
+#[async_trait]
 impl<T: Clone + Send + Sync> FallbackStrategy<T> for CacheFallback<T> {
     async fn fallback(&self, _error: ResilienceError) -> ResilienceResult<T> {
         if !self.is_valid().await {
@@ -201,6 +205,7 @@ impl<T> PriorityFallback<T> {
     }
 }
 
+#[async_trait]
 impl<T: Send + Sync> FallbackStrategy<T> for PriorityFallback<T> {
     async fn fallback(&self, error: ResilienceError) -> ResilienceResult<T> {
         let error_type = match &error {
@@ -221,6 +226,36 @@ impl<T: Send + Sync> FallbackStrategy<T> for PriorityFallback<T> {
         }
 
         Err(error)
+    }
+}
+
+/// Enum wrapper for dyn-compatible string fallback strategies
+#[derive(Clone)]
+pub enum AnyStringFallbackStrategy {
+    Value(Arc<ValueFallback<String>>),
+    Cache(Arc<CacheFallback<String>>),
+    Chain(Arc<ChainFallback<String>>),
+    Priority(Arc<PriorityFallback<String>>),
+}
+
+#[async_trait]
+impl FallbackStrategy<String> for AnyStringFallbackStrategy {
+    async fn fallback(&self, error: ResilienceError) -> ResilienceResult<String> {
+        match self {
+            Self::Value(strategy) => strategy.fallback(error).await,
+            Self::Cache(strategy) => strategy.fallback(error).await,
+            Self::Chain(strategy) => strategy.fallback(error).await,
+            Self::Priority(strategy) => strategy.fallback(error).await,
+        }
+    }
+
+    fn should_fallback(&self, error: &ResilienceError) -> bool {
+        match self {
+            Self::Value(strategy) => strategy.should_fallback(error),
+            Self::Cache(strategy) => strategy.should_fallback(error),
+            Self::Chain(strategy) => strategy.should_fallback(error),
+            Self::Priority(strategy) => strategy.should_fallback(error),
+        }
     }
 }
 

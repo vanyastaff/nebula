@@ -9,10 +9,42 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# Async runtime
-tokio = { version = "1.0", features = ["time", "sync", "rt", "fs"] }
+# Async and concurrency
 async-trait = "0.1"
+arc-swap = "1.6"
+dashmap = "7.0.0-rc2"
 futures = "0.3"
+parking_lot = "0.12"
+tokio = { version = "1.0", features = ["time", "sync", "rt", "fs"] }
+tokio-util = "0.7"
+
+# Crypto and security
+aes-gcm = "0.10"
+argon2 = "0.5"
+base64 = "0.22.1"
+domain-key = { version = "0.1.1" }
+erased-serde = "0.4.6"
+secrecy = "0.10.3"
+sha2 = "0.10"
+subtle = "2.6.1"
+zeroize = { version = "1.8.1", features = ["zeroize_derive"] }
+
+# Errors
+anyhow = "1.0"
+thiserror = "1.0"
+
+# HTTP
+http = "1.3.1"
+
+# Logging
+nebula-log = { path = "../nebula-log" }
+
+# Randomness and IDs
+rand = "0.8"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# Regex
+regex = "1.11.1"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -21,41 +53,12 @@ serde_json = "1.0"
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }
 
-# Error handling
-thiserror = "1.0"
-anyhow = "1.0"
-
-# Security
-zeroize = { version = "1.8.1", features = ["zeroize_derive"] }
-uuid = { version = "1.0", features = ["v4", "serde"] }
-domain-key ={version = "0.1.1"}
-aes-gcm = "0.10"
-argon2 = "0.5"
-rand = "0.8"
-sha2 = "0.10"
-
-# Concurrency
-arc-swap = "1.6"
-parking_lot = "0.12"
-tokio-util = "0.7"
-
-# Logging
-nebula-log = { path = "../nebula-log" }
-regex = "1.11.1"
-base64 = "0.22.1"
-subtle = "2.6.1"
-secrecy = "0.10.3"
-http = "1.3.1"
-dashmap = "7.0.0-rc2"
-erased-serde = "0.4.6"
-
 [dev-dependencies]
 tokio-test = "0.4.4"
 
 [features]
 default = []
 testing = ["tokio/test-util"]
-
 
 [lints]
 workspace = true

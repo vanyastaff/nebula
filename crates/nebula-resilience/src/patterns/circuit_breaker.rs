@@ -5,8 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use nebula_log::{debug, info, warn, error};
 
-use crate::core::error::{ResilienceError, ResilienceResult};
-use crate::core::config::{ResilienceConfig, ConfigResult, ConfigError};
+use crate::{ResilienceError, ResilienceResult, ResilienceConfig, ConfigResult, ConfigError};
 use serde::{Deserialize, Serialize};
 
 /// Circuit breaker states

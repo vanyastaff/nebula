@@ -9,11 +9,11 @@ use tokio::sync::RwLock;
 use crate::{
     patterns::bulkhead::Bulkhead,
     patterns::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
-    core::error::{ResilienceError, ResilienceResult},
-    patterns::fallback::{FallbackStrategy, FallbackOperation},
+    ResilienceError, ResilienceResult,
+    patterns::fallback::{FallbackStrategy, AnyStringFallbackStrategy},
     patterns::hedge::{HedgeExecutor, HedgeConfig},
     policy::ResiliencePolicy,
-    patterns::rate_limiter::{RateLimiter, TokenBucket, AdaptiveRateLimiter},
+    patterns::rate_limiter::{RateLimiter, AnyRateLimiter},
     patterns::retry::{RetryStrategy, retry},
     patterns::timeout::timeout,
 };
@@ -25,11 +25,11 @@ pub struct ResilienceManager {
     /// Circuit breakers by service
     circuit_breakers: Arc<RwLock<HashMap<String, Arc<CircuitBreaker>>>>,
     /// Rate limiters by service
-    rate_limiters: Arc<RwLock<HashMap<String, Arc<dyn RateLimiter>>>>,
+    rate_limiters: Arc<RwLock<HashMap<String, Arc<AnyRateLimiter>>>>,
     /// Bulkheads by service
     bulkheads: Arc<RwLock<HashMap<String, Arc<Bulkhead>>>>,
     /// Fallback strategies
-    fallbacks: Arc<RwLock<HashMap<String, Arc<dyn FallbackStrategy<String>>>>>,
+    fallbacks: Arc<RwLock<HashMap<String, Arc<AnyStringFallbackStrategy>>>>,
     /// Hedge executors
     hedge_executors: Arc<RwLock<HashMap<String, Arc<HedgeExecutor>>>>,
     /// Global configuration
@@ -236,13 +236,13 @@ impl ResilienceManager {
     }
 
     /// Set rate limiter for a service
-    pub async fn set_rate_limiter(&self, service: &str, limiter: Arc<dyn RateLimiter>) {
+    pub async fn set_rate_limiter(&self, service: &str, limiter: Arc<AnyRateLimiter>) {
         let mut limiters = self.rate_limiters.write().await;
         limiters.insert(service.to_string(), limiter);
     }
 
     /// Set fallback strategy for a service
-    pub async fn set_fallback(&self, service: &str, fallback: Arc<dyn FallbackStrategy<String>>) {
+    pub async fn set_fallback(&self, service: &str, fallback: Arc<AnyStringFallbackStrategy>) {
         let mut fallbacks = self.fallbacks.write().await;
         fallbacks.insert(service.to_string(), fallback);
     }

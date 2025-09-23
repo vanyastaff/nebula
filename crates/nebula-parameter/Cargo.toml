@@ -12,16 +12,22 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-thiserror = { workspace = true }
-serde = { workspace = true}
-serde_json = { workspace = true }
+# Async and macros
 async-trait = { workspace = true }
 bon = { workspace = true }
 
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
 
+# Errors
+thiserror = { workspace = true }
+
+# Internal crates
+nebula-core = { path = "../nebula-core" }
 nebula-derive = { path = "../nebula-derive" }
 nebula-error = { path = "../nebula-error" }
-nebula-core = { path = "../nebula-core" }
 
 [lints]
 workspace = true

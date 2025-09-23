@@ -10,22 +10,14 @@ pub mod hedge;
 
 // Rate limiting
 pub mod rate_limiter;
-mod token_bucket;
-mod leaky_bucket;
-mod sliding_window;
-mod adaptive_limiter;
 
 // Re-exports
 pub use bulkhead::{Bulkhead, BulkheadConfig};
 pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState};
 pub use retry::{retry, retry_with_operation, RetryStrategy, RetryBuilder};
 pub use timeout::{timeout, timeout_with_original_error};
-pub use fallback::{FallbackStrategy, ValueFallback, FunctionFallback, CacheFallback};
-pub use hedge::{HedgeExecutor, HedgeConfig, AdaptiveHedgeExecutor};
+pub use fallback::{FallbackStrategy, ValueFallback, FunctionFallback, CacheFallback, AnyStringFallbackStrategy};
+pub use hedge::{HedgeExecutor, HedgeConfig};
 
 // Rate limiter exports
-pub use rate_limiter::{RateLimiter, RateLimiterFactory};
-pub use token_bucket::TokenBucket;
-pub use leaky_bucket::LeakyBucket;
-pub use sliding_window::SlidingWindow;
-pub use adaptive_limiter::AdaptiveRateLimiter;
+pub use rate_limiter::{RateLimiter, AnyRateLimiter, TokenBucket, LeakyBucket, SlidingWindow, AdaptiveRateLimiter};

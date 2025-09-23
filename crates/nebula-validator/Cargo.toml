@@ -12,62 +12,62 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-# Error handling
-thiserror = { workspace = true }
-anyhow = "1.0"
-
-# Serialization
-serde = { workspace = true, features = ["derive"] }
-serde_json = "1.0"
-
-# Async traits
+# Async and concurrency
 async-trait = "0.1"
-
-# Collections and concurrency
 dashmap = "5.5"
+futures = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
-futures = "0.3"
 
-# Resilience patterns
-nebula-resilience = { path = "../nebula-resilience" }
+# Data formats
+base64 = "0.22.1"
+regex = "1.11.1"
+url = "2.4"
 
-# Time handling
-chrono = { workspace = true, features = ["serde"] }
+# Errors
+anyhow = { workspace = true }
+thiserror = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
 
-# Regular expressions
-regex = "1.10"
+# Randomness
+rand = "0.8"
 
-# UUID validation
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Time and IDs
+chrono = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
+
+# Internal crates
+nebula-resilience = { path = "../nebula-resilience" }
 
 # Email validation - using regex for now
 # email-validator = "0.2"
 
-# URL validation
-url = "2.4"
-
 # IP address validation - using std for now
 # std-net = "0.1"
 
-# Base64 validation
-base64 = "0.21"
-
-# Random number generation (for cache eviction)
-rand = "0.8"
-
 [features]
+# Feature flags
+# default enables the full set for typical usage
 default = ["full"]
-full = ["async", "caching", "registry", "performance"]
+# Async support (currently just ensures tokio's full feature is active)
 async = ["tokio/full"]
+# Optional subsystems
 caching = []
-registry = []
 performance = []
+registry = []
+# Convenience umbrella
+full = ["async", "caching", "registry", "performance"]
 
 [dev-dependencies]
 # Testing
+pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = "0.4"
-pretty_assertions = "1.4"
+
+[lints]
+workspace = true

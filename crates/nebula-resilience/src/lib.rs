@@ -40,11 +40,11 @@ pub use patterns::{
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState},
     retry::{retry, retry_with_operation, RetryStrategy, RetryBuilder},
     timeout::{timeout, timeout_with_original_error},
-    fallback::{FallbackStrategy, ValueFallback},
+    fallback::{FallbackStrategy, ValueFallback, AnyStringFallbackStrategy},
     hedge::{HedgeExecutor, HedgeConfig},
 
     // Rate limiting
-    rate_limiter::{RateLimiter, RateLimiterFactory},
+    rate_limiter::{RateLimiter, AnyRateLimiter},
     TokenBucket,
     LeakyBucket,
     SlidingWindow,
@@ -52,7 +52,7 @@ pub use patterns::{
 };
 
 // Re-export high-level abstractions
-pub use compose::{ResilienceChain, ChainBuilder, ResilienceMiddleware};
+pub use compose::{ResilienceChain, ChainBuilder, ResilienceMiddleware, AnyResilienceMiddleware};
 pub use policy::{ResiliencePolicy, ResiliencePolicyBuilder};
 pub use manager::{ResilienceManager, ResilienceManagerBuilder};
 
