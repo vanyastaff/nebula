@@ -1,9 +1,14 @@
 //! Logger builder implementation
 
-use crate::{Error, Result, config::*, layer, writer};
-use parking_lot::Mutex;
+// Standard library
 use std::sync::Arc;
-use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+// External dependencies
+use parking_lot::Mutex;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
+
+// Internal crates
+use crate::{config::*, layer, writer, core::{LogResult}};
 
 /// Logger builder
 pub struct LoggerBuilder {
@@ -28,7 +33,9 @@ struct Inner {
 /// Handle for runtime configuration changes
 #[derive(Clone)]
 pub struct ReloadHandle {
+    #[allow(dead_code)]
     filter: tracing_subscriber::reload::Handle<EnvFilter, Registry>,
+    #[allow(dead_code)]
     current_filter: Arc<Mutex<String>>,
 }
 
@@ -39,7 +46,7 @@ impl LoggerBuilder {
     }
 
     /// Build and initialize the logger
-    pub fn build(self) -> Result<LoggerGuard> {
+    pub fn build(self) -> LogResult<LoggerGuard> {
         let mut inner = Inner {
             #[cfg(feature = "file")]
             file_guards: Vec::new(),
@@ -51,7 +58,10 @@ impl LoggerBuilder {
 
         // Create the filter
         let filter =
-            EnvFilter::try_new(&self.config.level).map_err(|e| Error::Filter(e.to_string()))?;
+            EnvFilter::try_new(&self.config.level).map_err(|e| {
+                use crate::core::LogError;
+                nebula_error::NebulaError::log_filter_error(&self.config.level, e.to_string())
+            })?;
 
         // Get writer for the format layer
         let (writer, _guards) = writer::make_writer(&self.config.writer)?;
@@ -98,7 +108,7 @@ impl LoggerBuilder {
         filter: EnvFilter,
         writer: tracing_subscriber::fmt::writer::BoxMakeWriter,
         inner: &mut Inner,
-    ) -> Result<()> {
+    ) -> LogResult<()> {
         // Create a reloadable filter layer
         let (layer, handle) = tracing_subscriber::reload::Layer::new(filter);
         let reload = ReloadHandle {
@@ -160,7 +170,7 @@ impl LoggerBuilder {
         filter: EnvFilter,
         writer: tracing_subscriber::fmt::writer::BoxMakeWriter,
         inner: &mut Inner,
-    ) -> Result<()> {
+    ) -> LogResult<()> {
         // Create a reloadable filter layer
         let (layer, handle) = tracing_subscriber::reload::Layer::new(filter);
         let reload = ReloadHandle {
@@ -228,7 +238,7 @@ impl LoggerBuilder {
         filter: EnvFilter,
         writer: tracing_subscriber::fmt::writer::BoxMakeWriter,
         inner: &mut Inner,
-    ) -> Result<()> {
+    ) -> LogResult<()> {
         // Create a reloadable filter layer
         let (layer, handle) = tracing_subscriber::reload::Layer::new(filter);
         let reload = ReloadHandle {
@@ -301,7 +311,7 @@ impl LoggerBuilder {
         filter: EnvFilter,
         writer: tracing_subscriber::fmt::writer::BoxMakeWriter,
         _inner: &mut Inner,
-    ) -> Result<()> {
+    ) -> LogResult<()> {
         // Build the format layer
         let mut fmt_layer = fmt::layer()
             .pretty()
@@ -361,7 +371,7 @@ impl LoggerBuilder {
         filter: EnvFilter,
         writer: tracing_subscriber::fmt::writer::BoxMakeWriter,
         _inner: &mut Inner,
-    ) -> Result<()> {
+    ) -> LogResult<()> {
         // Build the format layer
         let mut fmt_layer = fmt::layer()
             .compact()
@@ -421,7 +431,7 @@ impl LoggerBuilder {
         filter: EnvFilter,
         writer: tracing_subscriber::fmt::writer::BoxMakeWriter,
         _inner: &mut Inner,
-    ) -> Result<()> {
+    ) -> LogResult<()> {
         // Build the format layer
         let mut fmt_layer = fmt::layer()
             .json()
@@ -467,14 +477,17 @@ impl LoggerBuilder {
 
 impl ReloadHandle {
     /// Reload the log filter
-    pub fn reload(&self, filter: &str) -> Result<()> {
-        let new_filter = EnvFilter::try_new(filter).map_err(|e| Error::Filter(e.to_string()))?;
-        self.filter.reload(new_filter)?;
+    #[allow(dead_code)]
+    pub fn reload(&self, filter: &str) -> LogResult<()> {
+        use crate::core::LogError;
+        let new_filter = EnvFilter::try_new(filter).map_err(|e| nebula_error::NebulaError::log_filter_error(filter, e.to_string()))?;
+        self.filter.reload(new_filter).map_err(|e| nebula_error::NebulaError::log_config_error(format!("Failed to reload filter: {}", e)))?;
         *self.current_filter.lock() = filter.to_string();
         Ok(())
     }
 
     /// Get current filter string
+    #[allow(dead_code)]
     pub fn current_filter(&self) -> String {
         self.current_filter.lock().clone()
     }

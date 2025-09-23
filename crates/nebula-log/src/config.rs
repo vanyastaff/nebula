@@ -85,7 +85,7 @@ pub enum WriterConfig {
         path: std::path::PathBuf,
         #[serde(default)]
         rolling: Option<Rolling>,
-        #[serde(default = "default_true")]
+        #[serde(default = "default_non_blocking")]
         non_blocking: bool,
     },
     /// Write to multiple destinations
@@ -317,6 +317,8 @@ impl Default for WriterConfig {
     }
 }
 
-fn default_true() -> bool {
+#[allow(dead_code)]
+fn default_non_blocking() -> bool {
     true
 }
+

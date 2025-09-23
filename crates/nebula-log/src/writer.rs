@@ -1,8 +1,13 @@
 //! Writer implementations
 
-use crate::{Result, config::WriterConfig};
-use std::io::{self, Write};
+// Standard library
+use std::io;
+
+// External dependencies
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
+
+// Internal crates
+use crate::{config::WriterConfig, core::{LogResult}};
 
 // Define a type alias for the return type of make_writer
 // This allows us to handle the conditional compilation cleanly
@@ -13,7 +18,7 @@ type WriterGuards = Vec<tracing_appender::non_blocking::WorkerGuard>;
 type WriterGuards = Vec<()>;
 
 /// Create a writer from configuration
-pub fn make_writer(config: &WriterConfig) -> Result<(BoxMakeWriter, WriterGuards)> {
+pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGuards)> {
     #[cfg(feature = "file")]
     let mut guards = Vec::new();
 
@@ -42,7 +47,8 @@ pub fn make_writer(config: &WriterConfig) -> Result<(BoxMakeWriter, WriterGuards
                     tracing_appender::rolling::daily(dir, prefix)
                 }
                 Some(Rolling::Size(_)) => {
-                    return Err(anyhow::anyhow!(
+                    use crate::core::LogError;
+                    return Err(nebula_error::NebulaError::log_config_error(
                         "Size-based rolling is not yet implemented. Use Daily or Hourly."
                     ));
                 }
@@ -62,7 +68,8 @@ pub fn make_writer(config: &WriterConfig) -> Result<(BoxMakeWriter, WriterGuards
             // For now, use the first writer
             // TODO: Implement proper multi-writer
             if writers.is_empty() {
-                return Err(anyhow::anyhow!("Multi writer needs at least one writer"));
+                use crate::core::LogError;
+                return Err(nebula_error::NebulaError::log_config_error("Multi writer needs at least one writer"));
             }
             return make_writer(&writers[0]);
         }
@@ -71,27 +78,3 @@ pub fn make_writer(config: &WriterConfig) -> Result<(BoxMakeWriter, WriterGuards
     Ok((writer, guards))
 }
 
-/// Split writer that sends errors/warnings to stderr, rest to stdout
-pub struct SplitStdWriter;
-
-impl SplitStdWriter {
-    pub fn new() -> BoxMakeWriter {
-        BoxMakeWriter::new(Self)
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::writer::MakeWriter<'a> for SplitStdWriter {
-    type Writer = Box<dyn Write + Send + 'a>;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        Box::new(io::stderr())
-    }
-
-    fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> Self::Writer {
-        use tracing::Level;
-        match *meta.level() {
-            Level::ERROR | Level::WARN => Box::new(io::stderr()),
-            _ => Box::new(io::stdout()),
-        }
-    }
-}

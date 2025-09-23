@@ -1,9 +1,12 @@
 //! Context management for structured logging
 
-use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
+// Standard library
 use std::collections::HashMap;
 use std::sync::Arc;
+
+// External dependencies
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 
 /// Thread-local context for structured logging
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

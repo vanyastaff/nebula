@@ -9,8 +9,16 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# Core
+# Internal dependencies
+nebula-error = { path = "../nebula-error" }
+
+# Async runtime (optional)
+tokio = { version = "1", features = ["time", "sync"], optional = true }
+
+# Core tracing
 tracing = "0.1.41"
+tracing-appender = { version = "0.2.3", optional = true }
+tracing-log = { version = "0.2", optional = true }
 tracing-subscriber = { version = "0.3.19", features = [
     "env-filter",
     "fmt",
@@ -19,36 +27,31 @@ tracing-subscriber = { version = "0.3.19", features = [
     "registry",
     "std",
     "time",
-    "tracing-log"
+    "tracing-log",
 ] }
-tracing-appender = { version = "0.2.3", optional = true }
-tracing-log = { version = "0.2", optional = true }
-
-# Time
-time = { version = "0.3", features = ["macros", "formatting"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# Utilities
-once_cell = "1.20"
-parking_lot = "0.12"
-anyhow = "1.0"
-thiserror = "2.0"
-pin-project = "1.1"
-
-# Async runtime (optional)
-tokio = { version = "1", features = ["time", "sync"], optional = true }
-
 # Telemetry (optional)
+flate2 = { version = "1.1.2", optional = true }
 opentelemetry = { version = "0.30.0", optional = true }
-opentelemetry_sdk = { version = "0.30.0", features = ["rt-tokio"], optional = true }
 opentelemetry-otlp = { version = "0.30.0", optional = true }
-tracing-opentelemetry = { version = "0.31.0", optional = true }
+opentelemetry_sdk = { version = "0.30.0", features = ["rt-tokio"], optional = true }
 sentry = { version = "0.42.0", optional = true }
 sentry-tracing = { version = "0.42", optional = true }
-flate2 = { version = "1.1.2",optional = true }
+tracing-opentelemetry = { version = "0.31.0", optional = true }
+
+# Time
+time = { version = "0.3", features = ["macros", "formatting"] }
+
+# Utilities
+anyhow = "1.0"
+once_cell = "1.20"
+parking_lot = "0.12"
+pin-project = "1.1"
+thiserror = "2.0"
 
 [features]
 default = ["ansi", "async"]

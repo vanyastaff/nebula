@@ -19,13 +19,14 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, rust_2018_idioms)]
 
+pub mod core;
+
 mod builder;
 mod config;
 mod format;
 mod layer;
 mod macros;
 mod timing;
-mod utils;
 mod writer;
 
 #[cfg(any(feature = "telemetry", feature = "sentry"))]
@@ -37,11 +38,14 @@ pub use config::{Config, Format, Level, Rolling, WriterConfig};
 pub use layer::context::{Context, ContextGuard, Fields};
 pub use timing::{Timed, Timer, TimerGuard};
 
+// Re-export core types
+pub use core::{LogError, LogResult, LogResultExt, NebulaError, NebulaResult, ResultExt};
+
 /// Prelude for common imports
 pub mod prelude {
     pub use crate::{
-        Level, Result, Timed, Timer, auto_init, debug, error, info, init, init_with, instrument,
-        span, trace, warn,
+        Level, LogResult, LogError, LogResultExt, Timed, Timer, auto_init, debug, error, info, init, init_with, instrument,
+        span, trace, warn, NebulaError,
     };
 
     pub use tracing::{Span, field};
@@ -50,24 +54,6 @@ pub mod prelude {
 // Re-export tracing macros
 pub use tracing::{debug, error, info, instrument, span, trace, warn};
 
-/// Result type for logger operations
-pub type Result<T> = anyhow::Result<T>;
-
-/// Error type for logger operations
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// Configuration error
-    #[error("Configuration error: {0}")]
-    Config(String),
-
-    /// IO error
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-
-    /// Filter parsing error
-    #[error("Invalid filter: {0}")]
-    Filter(String),
-}
 
 // Test initialization guard
 #[cfg(test)]
@@ -78,7 +64,7 @@ static TEST_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 // ============================================================================
 
 /// Auto-detect and initialize the best logging configuration
-pub fn auto_init() -> Result<LoggerGuard> {
+pub fn auto_init() -> LogResult<LoggerGuard> {
     #[cfg(test)]
     {
         TEST_INIT.get_or_init(|| ());
@@ -97,18 +83,18 @@ pub fn auto_init() -> Result<LoggerGuard> {
 }
 
 /// Initialize with default configuration
-pub fn init() -> Result<LoggerGuard> {
+pub fn init() -> LogResult<LoggerGuard> {
     init_with(Config::default())
 }
 
 /// Initialize with custom configuration
-pub fn init_with(config: Config) -> Result<LoggerGuard> {
+pub fn init_with(config: Config) -> LogResult<LoggerGuard> {
     LoggerBuilder::from_config(config).build()
 }
 
 /// Initialize for tests (captures logs)
 #[cfg(test)]
-pub fn init_test() -> Result<LoggerGuard> {
+pub fn init_test() -> LogResult<LoggerGuard> {
     TEST_INIT.get_or_init(|| ());
     if tracing::dispatcher::has_been_set() {
         return Ok(LoggerGuard::noop());
