@@ -478,13 +478,11 @@ pub mod utils {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::prelude::*;
 
     #[test]
     fn test_prelude_imports() {
         // This test just ensures prelude can be imported
-        use crate::prelude::*;
-
         let _builder = ConfigBuilder::new();
         assert!(true);
     }

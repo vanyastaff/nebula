@@ -86,6 +86,14 @@ impl Config {
         })
     }
 
+    /// Get configuration value by path (alias for get)
+    pub async fn get_path<T>(&self, path: &str) -> ConfigResult<T>
+    where
+        T: DeserializeOwned,
+    {
+        self.get(path).await
+    }
+
     /// Get configuration value by path with default
     pub async fn get_or<T>(&self, path: &str, default: T) -> T
     where

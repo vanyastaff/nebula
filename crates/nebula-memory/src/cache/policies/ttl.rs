@@ -1,0 +1,278 @@
+//! TTL (Time To Live) cache eviction policy
+//!
+//! This module provides an implementation of the TTL cache eviction policy,
+//! which evicts entries that have expired based on their time-to-live.
+
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(feature = "std")]
+use std::{
+    collections::HashMap,
+    hash::Hash,
+    time::{Duration, Instant},
+};
+
+#[cfg(not(feature = "std"))]
+use {
+    alloc::vec::Vec,
+    core::{hash::Hash, time::Duration},
+    hashbrown::HashMap,
+};
+
+use super::{EvictionPolicy, VictimSelector};
+use crate::cache::compute::{CacheEntry, CacheKey};
+
+/// TTL (Time To Live) cache eviction policy
+pub struct TtlPolicy<K>
+where K: CacheKey
+{
+    /// Default TTL for entries
+    default_ttl: Duration,
+    /// Custom TTLs for specific keys
+    custom_ttls: HashMap<K, Duration>,
+    /// Insertion times for entries
+    #[cfg(feature = "std")]
+    insertion_times: HashMap<K, Instant>,
+    /// Fallback policy for when no entries have expired
+    fallback_policy: Box<dyn EvictionPolicy<K, CacheEntry<()>>>,
+}
+
+impl<K> TtlPolicy<K>
+where K: CacheKey
+{
+    /// Create a new TTL policy with the given default TTL
+    pub fn new(default_ttl: Duration) -> Self {
+        Self {
+            default_ttl,
+            custom_ttls: HashMap::new(),
+            #[cfg(feature = "std")]
+            insertion_times: HashMap::new(),
+            fallback_policy: Box::new(super::LruPolicy::new()),
+        }
+    }
+
+    /// Set a custom TTL for a specific key
+    pub fn set_ttl(&mut self, key: K, ttl: Duration) {
+        self.custom_ttls.insert(key, ttl);
+    }
+
+    /// Get the TTL for a key
+    pub fn get_ttl(&self, key: &K) -> Duration {
+        self.custom_ttls.get(key).cloned().unwrap_or(self.default_ttl)
+    }
+
+    /// Check if an entry has expired
+    #[cfg(feature = "std")]
+    fn is_expired(&self, key: &K) -> bool {
+        if let Some(insertion_time) = self.insertion_times.get(key) {
+            let ttl = self.get_ttl(key);
+            insertion_time.elapsed() > ttl
+        } else {
+            false
+        }
+    }
+
+    /// Record insertion time for a key
+    #[cfg(feature = "std")]
+    fn record_insertion_time(&mut self, key: &K) {
+        self.insertion_times.insert(key.clone(), Instant::now());
+    }
+}
+
+/// Реализация VictimSelector для TTL policy
+impl<K, V> VictimSelector<K, V> for TtlPolicy<K>
+where K: CacheKey + Send + Sync
+{
+    fn select_victim<'a>(&self, entries: &[EvictionEntry<'a, K, V>]) -> Option<K> {
+        if entries.is_empty() {
+            return None;
+        }
+
+        #[cfg(feature = "std")]
+        {
+            let now = Instant::now();
+            
+            // Сначала ищем просроченные записи
+            let mut oldest_key = None;
+            let mut oldest_time = now;
+            
+            for (key, _) in entries {
+                if let Some(insert_time) = self.insertion_times.get(*key) {
+                    let ttl = self.custom_ttls.get(*key).unwrap_or(&self.default_ttl);
+                    
+                    // Проверяем, истек ли срок действия
+                    if now.duration_since(*insert_time) >= *ttl {
+                        return Some((*key).clone());
+                    }
+                    
+                    // Запоминаем самую старую запись для возможного использования позже
+                    if *insert_time < oldest_time {
+                        oldest_time = *insert_time;
+                        oldest_key = Some((*key).clone());
+                    }
+                }
+            }
+            
+            // Если нашли хотя бы одну запись с временем вставки, возвращаем самую старую
+            if let Some(key) = oldest_key {
+                return Some(key);
+            }
+        }
+        
+        // Если нет просроченных записей или не поддерживается std,
+        // используем запасную политику
+        let fallback_entries: Vec<(&K, &CacheEntry<()>)> = entries
+            .iter()
+            .map(|(k, _)| (*k, &CacheEntry::new(())))
+            .collect();
+        
+        self.fallback_policy.as_victim_selector().select_victim(&fallback_entries)
+    }
+}
+
+impl<K, V> EvictionPolicy<K, V> for TtlPolicy<K>
+where K: CacheKey + Send + Sync
+{
+    fn record_access(&mut self, key: &K) {
+        // TTL policy doesn't change based on access
+        #[cfg(feature = "std")]
+        {
+            // Но передаем доступ запасной политике
+            self.fallback_policy.record_access(key);
+        }
+    }
+
+    fn record_insertion(&mut self, key: &K, _entry: &CacheEntry<V>) {
+        #[cfg(feature = "std")]
+        {
+            // Запоминаем время вставки
+            self.insertion_times.insert(key.clone(), Instant::now());
+            
+            // Передаем вставку запасной политике
+            let fallback_entry = CacheEntry::new(());
+            self.fallback_policy.record_insertion(key, &fallback_entry);
+        }
+    }
+
+    fn record_removal(&mut self, key: &K) {
+        #[cfg(feature = "std")]
+        {
+            // Удаляем информацию о времени вставки
+            self.insertion_times.remove(key);
+            
+            // Передаем удаление запасной политике
+            self.fallback_policy.record_removal(key);
+        }
+    }
+
+    fn as_victim_selector(&self) -> &dyn VictimSelector<K, V> {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "TTL"
+    }
+
+}
+
+#[cfg(test)]
+#[cfg(feature = "std")]
+mod tests {
+    use std::thread;
+
+    use super::*;
+
+    #[test]
+    fn test_ttl_policy() {
+        let mut policy = TtlPolicy::<String>::new(Duration::from_millis(100));
+
+        // Insert some keys
+        let entry = CacheEntry::new(42);
+        policy.record_insertion(&"key1".to_string(), &entry);
+        policy.record_insertion(&"key2".to_string(), &entry);
+
+        // Set a custom TTL for key2
+        policy.set_ttl("key2".to_string(), Duration::from_millis(200));
+
+        // Wait for key1 to expire
+        thread::sleep(Duration::from_millis(150));
+
+        // The expired key should be key1
+        let victim = policy.choose_victim(
+            vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)].into_iter(),
+        );
+
+        assert_eq!(victim, Some("key1".to_string()));
+
+        // Wait for key2 to expire as well
+        thread::sleep(Duration::from_millis(100));
+
+        // Now both keys are expired, but key1 is older
+        let victim = policy.choose_victim(
+            vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)].into_iter(),
+        );
+
+        assert_eq!(victim, Some("key1".to_string()));
+
+        // Remove key1
+        policy.record_removal(&"key1".to_string());
+
+        // Now only key2 is left and it's expired
+        let victim = policy.choose_victim(vec![(&"key2".to_string(), &entry)].into_iter());
+
+        assert_eq!(victim, Some("key2".to_string()));
+    }
+
+    #[test]
+    fn test_ttl_fallback() {
+        let mut policy = TtlPolicy::<String>::new(Duration::from_secs(1));
+
+        // Insert some keys
+        let entry = CacheEntry::new(42);
+        policy.record_insertion(&"key1".to_string(), &entry);
+        policy.record_insertion(&"key2".to_string(), &entry);
+
+        // Access key1 to make it more recently used
+        policy.record_access(&"key1".to_string());
+
+        // No keys have expired, so fallback to LRU
+        // The least recently used key should be key2
+        let victim = policy.choose_victim(
+            vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)].into_iter(),
+        );
+
+        assert_eq!(victim, Some("key2".to_string()));
+    }
+
+    #[test]
+    fn test_ttl_clear() {
+        let mut policy = TtlPolicy::<String>::new(Duration::from_millis(100));
+
+        // Insert some keys
+        let entry = CacheEntry::new(42);
+        policy.record_insertion(&"key1".to_string(), &entry);
+        policy.record_insertion(&"key2".to_string(), &entry);
+
+        // Set a custom TTL for key2
+        policy.set_ttl("key2".to_string(), Duration::from_millis(200));
+
+        // Clear the policy
+        policy.clear();
+
+        // Wait for what would have been the expiration time
+        thread::sleep(Duration::from_millis(150));
+
+        // No keys should be considered expired since we cleared the policy
+        let victim = policy.choose_victim(
+            vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)].into_iter(),
+        );
+
+        // Since insertion times are cleared, it will fall back to LRU
+        // But since LRU state is also cleared, it will choose based on the iterator
+        // order
+        assert_eq!(victim, Some("key1".to_string()));
+    }
+}
