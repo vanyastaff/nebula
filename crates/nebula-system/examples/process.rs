@@ -1,6 +1,6 @@
 use nebula_system::{self as sys};
 
-fn main() -> sys::Result<()> {
+fn main() -> nebula_system::SystemResult<()> {
     sys::init()?;
 
     println!("=== Processes ===");

@@ -1,6 +1,6 @@
 use nebula_system::{self as sys, SystemInfo};
 
-fn main() -> sys::Result<()> {
+fn main() -> nebula_system::SystemResult<()> {
     // Initialize caches/backends
     sys::init()?;
 

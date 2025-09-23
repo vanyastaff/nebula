@@ -1,7 +1,7 @@
 use nebula_system::{self as sys};
 use std::time::Duration;
 
-fn main() -> sys::Result<()> {
+fn main() -> nebula_system::SystemResult<()> {
     sys::init()?;
 
     println!("=== Network ===");

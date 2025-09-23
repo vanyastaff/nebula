@@ -1,10 +1,12 @@
 //! Memory management utilities
 
-use crate::core::{SystemResult, SystemError, NebulaError};
-use crate::info::SystemInfo;
-
+// External dependencies
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+
+// Internal crates
+use crate::core::{NebulaError, SystemError, SystemResult};
+use crate::info::SystemInfo;
 
 // Re-export from region for convenience
 #[cfg(feature = "memory")]
