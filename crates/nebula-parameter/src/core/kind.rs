@@ -38,6 +38,7 @@ pub enum ParameterKind {
     // Special Parameters
     Hidden,
     Notice,
+    Button,
     Expirable,
 }
 
@@ -83,6 +84,7 @@ impl ParameterKind {
             Self::Mode => "mode",
             Self::Hidden => "hidden",
             Self::Notice => "notice",
+            Self::Button => "button",
             Self::Expirable => "expirable",
         }
     }
@@ -129,6 +131,10 @@ impl ParameterKind {
 
             Self::Notice => {
                 &[Displayable]
+            }
+
+            Self::Button => {
+                &[Displayable, Interactive]
             }
 
             Self::Expirable => {
@@ -214,6 +220,7 @@ impl ParameterKind {
             Self::Mode => "Any",
             Self::Hidden => "Any",
             Self::Notice => "None",
+            Self::Button => "None",
             Self::Expirable => "Any",
         }
     }
@@ -244,6 +251,7 @@ impl ParameterKind {
             "mode" => Some(Self::Mode),
             "hidden" => Some(Self::Hidden),
             "notice" => Some(Self::Notice),
+            "button" => Some(Self::Button),
             "expirable" => Some(Self::Expirable),
             _ => None,
         }
@@ -257,7 +265,7 @@ impl ParameterKind {
             Self::Radio, Self::DateTime, Self::Date, Self::Time,
             Self::Code, Self::File, Self::Color, Self::Resource,
             Self::Group, Self::Object, Self::List, Self::Routing,
-            Self::Mode, Self::Hidden, Self::Notice, Self::Expirable,
+            Self::Mode, Self::Hidden, Self::Notice, Self::Button, Self::Expirable,
         ]
     }
 

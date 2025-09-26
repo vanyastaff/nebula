@@ -21,13 +21,18 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 
+# Date/Time
+chrono = { version = "0.4", features = ["serde"] }
+
 # Errors
 thiserror = { workspace = true }
+
 
 # Internal crates
 nebula-core = { path = "../nebula-core" }
 nebula-derive = { path = "../nebula-derive" }
 nebula-error = { path = "../nebula-error" }
+nebula-value = { path = "../nebula-value", features = ["serde"] }
 
 [lints]
 workspace = true

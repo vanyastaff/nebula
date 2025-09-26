@@ -1,7 +1,8 @@
-use bon::{bon, builder, Builder};
+use bon::bon;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
-use crate::{ParameterKey, ParameterError};
+use nebula_core::ParameterKey;
+use crate::core::ParameterError;
 
 
 #[skip_serializing_none]

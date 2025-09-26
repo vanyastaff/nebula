@@ -1,0 +1,534 @@
+use bon::Builder;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+use crate::core::{
+    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
+    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
+};
+
+/// Parameter for structured object data - acts as a container with named child parameters
+#[derive(Serialize)]
+pub struct ObjectParameter {
+    #[serde(flatten)]
+    pub metadata: ParameterMetadata,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<ObjectValue>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<ObjectValue>,
+
+    /// Named child parameters in this object
+    #[serde(skip)]
+    pub children: HashMap<String, Box<dyn ParameterType>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<ObjectParameterOptions>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display: Option<ParameterDisplay>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation: Option<ParameterValidation>,
+}
+
+/// Configuration options for object parameters
+#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+pub struct ObjectParameterOptions {
+    /// Layout style for the object fields
+    #[serde(default)]
+    pub layout: ObjectLayout,
+
+    /// Whether fields can be collapsed/expanded
+    #[serde(default)]
+    pub collapsible: bool,
+
+    /// Whether the object starts collapsed
+    #[serde(default)]
+    pub collapsed_by_default: bool,
+
+    /// Show field labels inline or above fields
+    #[serde(default)]
+    pub label_position: ObjectLabelPosition,
+
+    /// Whether to show field borders
+    #[serde(default = "default_show_borders")]
+    pub show_borders: bool,
+
+    /// Whether to allow additional properties beyond defined children
+    #[serde(default)]
+    pub allow_additional_properties: bool,
+
+    /// Custom CSS class for styling
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub css_class: Option<String>,
+}
+
+/// Layout options for object fields
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ObjectLayout {
+    /// Single column layout
+    #[default]
+    Vertical,
+    /// Two column layout
+    TwoColumn,
+    /// Three column layout
+    ThreeColumn,
+    /// Grid layout (auto-sizing)
+    Grid,
+    /// Horizontal layout (all fields in one row)
+    Horizontal,
+    /// Tabs layout (each field in a tab)
+    Tabs,
+}
+
+/// Label position options for object fields
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ObjectLabelPosition {
+    /// Labels above fields
+    #[default]
+    Top,
+    /// Labels to the left of fields
+    Left,
+    /// Labels inline with fields
+    Inline,
+    /// No labels (use placeholders)
+    None,
+}
+
+/// Value container for object parameter
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ObjectValue {
+    /// Field values as key-value pairs
+    pub values: HashMap<String, serde_json::Value>,
+}
+
+// Default functions
+fn default_show_borders() -> bool {
+    true
+}
+
+impl Default for ObjectParameterOptions {
+    fn default() -> Self {
+        Self {
+            layout: ObjectLayout::Vertical,
+            collapsible: false,
+            collapsed_by_default: false,
+            label_position: ObjectLabelPosition::Top,
+            show_borders: true,
+            allow_additional_properties: false,
+            css_class: None,
+        }
+    }
+}
+
+impl ObjectValue {
+    /// Create a new empty ObjectValue
+    pub fn new() -> Self {
+        Self {
+            values: HashMap::new(),
+        }
+    }
+
+    /// Set a field value
+    pub fn set_field(&mut self, key: impl Into<String>, value: serde_json::Value) {
+        self.values.insert(key.into(), value);
+    }
+
+    /// Get a field value
+    pub fn get_field(&self, key: &str) -> Option<&serde_json::Value> {
+        self.values.get(key)
+    }
+
+    /// Remove a field
+    pub fn remove_field(&mut self, key: &str) -> Option<serde_json::Value> {
+        self.values.remove(key)
+    }
+
+    /// Check if the object has any values
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// Get all field keys
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.values.keys()
+    }
+
+    /// Get all field values
+    pub fn values(&self) -> impl Iterator<Item = &serde_json::Value> {
+        self.values.values()
+    }
+
+    /// Check if field exists
+    pub fn contains_field(&self, key: &str) -> bool {
+        self.values.contains_key(key)
+    }
+
+    /// Get field count
+    pub fn field_count(&self) -> usize {
+        self.values.len()
+    }
+
+    /// Get all entries as (key, value) pairs
+    pub fn entries(&self) -> impl Iterator<Item = (&String, &serde_json::Value)> {
+        self.values.iter()
+    }
+}
+
+impl Default for ObjectValue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// Manual Debug implementation since we skip trait objects
+impl std::fmt::Debug for ObjectParameter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObjectParameter")
+            .field("metadata", &self.metadata)
+            .field("value", &self.value)
+            .field("default", &self.default)
+            .field("children", &format!("HashMap<String, Box<dyn ParameterType>> (len: {})", self.children.len()))
+            .field("options", &self.options)
+            .field("display", &self.display)
+            .field("validation", &self.validation)
+            .finish()
+    }
+}
+
+impl ParameterType for ObjectParameter {
+    fn kind(&self) -> ParameterKind {
+        ParameterKind::Object
+    }
+
+    fn metadata(&self) -> &ParameterMetadata {
+        &self.metadata
+    }
+}
+
+impl std::fmt::Display for ObjectParameter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ObjectParameter({})", self.metadata.name)
+    }
+}
+
+impl HasValue for ObjectParameter {
+    type Value = ObjectValue;
+
+    fn get_value(&self) -> Option<&Self::Value> {
+        self.value.as_ref()
+    }
+
+    fn get_value_mut(&mut self) -> Option<&mut Self::Value> {
+        self.value.as_mut()
+    }
+
+    fn set_value_unchecked(&mut self, value: Self::Value) -> Result<(), ParameterError> {
+        self.value = Some(value);
+        Ok(())
+    }
+
+    fn default_value(&self) -> Option<&Self::Value> {
+        self.default.as_ref()
+    }
+
+    fn clear_value(&mut self) {
+        self.value = None;
+    }
+
+    fn get_parameter_value(&self) -> Option<ParameterValue> {
+        self.value.as_ref().map(|obj_val| ParameterValue::Object(obj_val.clone()))
+    }
+
+    fn set_parameter_value(&mut self, value: ParameterValue) -> Result<(), ParameterError> {
+        match value {
+            ParameterValue::Object(obj_val) => {
+                if self.is_valid_object_value(&obj_val)? {
+                    self.value = Some(obj_val);
+                    Ok(())
+                } else {
+                    Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: "Object value validation failed".to_string(),
+                    })
+                }
+            },
+            ParameterValue::Value(nebula_value::Value::Object(obj)) => {
+                let mut object_value = ObjectValue::new();
+
+                for (key, val) in obj.iter() {
+                    let json_val = convert_nebula_value_to_json(val);
+                    object_value.set_field(key.to_string(), json_val);
+                }
+
+                if self.is_valid_object_value(&object_value)? {
+                    self.value = Some(object_value);
+                    Ok(())
+                } else {
+                    Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: "Object value validation failed".to_string(),
+                    })
+                }
+            },
+            ParameterValue::Expression(expr) => {
+                // For expressions, create an object with a single expression field
+                let mut object_value = ObjectValue::new();
+                object_value.set_field("_expression", serde_json::Value::String(expr));
+                self.value = Some(object_value);
+                Ok(())
+            },
+            _ => Err(ParameterError::InvalidValue {
+                key: self.metadata.key.clone(),
+                reason: "Expected object value for object parameter".to_string(),
+            }),
+        }
+    }
+}
+
+impl Validatable for ObjectParameter {
+    fn validation(&self) -> Option<&ParameterValidation> {
+        self.validation.as_ref()
+    }
+
+    fn value_to_json(&self, value: &Self::Value) -> serde_json::Value {
+        serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
+    }
+
+    fn is_empty_value(&self, value: &Self::Value) -> bool {
+        value.is_empty()
+    }
+}
+
+impl Displayable for ObjectParameter {
+    fn display(&self) -> Option<&ParameterDisplay> {
+        self.display.as_ref()
+    }
+
+    fn set_display(&mut self, display: Option<ParameterDisplay>) {
+        self.display = display;
+    }
+}
+
+impl ObjectParameter {
+    /// Create a new object parameter as a container
+    pub fn new(key: &str, name: &str, description: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            metadata: ParameterMetadata {
+                key: nebula_core::ParameterKey::new(key)?,
+                name: name.to_string(),
+                description: description.to_string(),
+                required: false,
+                placeholder: Some("Configure object fields...".to_string()),
+                hint: Some("Object container with child parameters".to_string()),
+            },
+            value: None,
+            default: None,
+            children: HashMap::new(),
+            options: Some(ObjectParameterOptions::default()),
+            display: None,
+            validation: None,
+        })
+    }
+
+    /// Validate if an object value is valid for this parameter
+    fn is_valid_object_value(&self, object_value: &ObjectValue) -> Result<bool, ParameterError> {
+        // Check for expression values
+        if let Some(serde_json::Value::String(expr)) = object_value.get_field("_expression") {
+            if expr.starts_with("{{") && expr.ends_with("}}") {
+                return Ok(true); // Allow expressions
+            }
+        }
+
+        // For container architecture, validate that all required child parameters have values
+        for (key, child) in &self.children {
+            if child.metadata().required {
+                if !object_value.contains_field(key) {
+                    return Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!("Required field '{}' is missing", key),
+                    });
+                }
+            }
+        }
+
+        // Check for additional properties if not allowed
+        if let Some(options) = &self.options {
+            if !options.allow_additional_properties {
+                let defined_children: std::collections::HashSet<_> = self.children.keys().collect();
+
+                for key in object_value.keys() {
+                    if !defined_children.contains(key) && key != "_expression" {
+                        return Err(ParameterError::InvalidValue {
+                            key: self.metadata.key.clone(),
+                            reason: format!("Additional property '{}' is not allowed", key),
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(true)
+    }
+
+    /// Get child parameter by key
+    pub fn get_child(&self, key: &str) -> Option<&Box<dyn ParameterType>> {
+        self.children.get(key)
+    }
+
+    /// Get mutable child parameter by key
+    pub fn get_child_mut(&mut self, key: &str) -> Option<&mut Box<dyn ParameterType>> {
+        self.children.get_mut(key)
+    }
+
+    /// Get all child keys
+    pub fn child_keys(&self) -> impl Iterator<Item = &String> {
+        self.children.keys()
+    }
+
+    /// Get all children as (key, parameter) pairs
+    pub fn children(&self) -> &HashMap<String, Box<dyn ParameterType>> {
+        &self.children
+    }
+
+    /// Get mutable reference to all children
+    pub fn children_mut(&mut self) -> &mut HashMap<String, Box<dyn ParameterType>> {
+        &mut self.children
+    }
+
+    /// Check if a child is required
+    pub fn is_child_required(&self, key: &str) -> bool {
+        self.children.get(key).map(|c| c.metadata().required).unwrap_or(false)
+    }
+
+    /// Get default values for all children
+    pub fn get_default_object_value(&self) -> ObjectValue {
+        let mut object_value = ObjectValue::new();
+
+        for (key, child) in &self.children {
+            // For container architecture, create default values based on parameter type
+            let default_json_val = match child.kind() {
+                ParameterKind::Text => serde_json::Value::String("".to_string()),
+                ParameterKind::Number => serde_json::Value::Number(0.into()),
+                ParameterKind::Boolean => serde_json::Value::Bool(false),
+                ParameterKind::Date => serde_json::Value::String("".to_string()),
+                ParameterKind::DateTime => serde_json::Value::String("".to_string()),
+                ParameterKind::Time => serde_json::Value::String("".to_string()),
+                ParameterKind::Color => serde_json::Value::String("#000000".to_string()),
+                ParameterKind::Secret => serde_json::Value::String("".to_string()),
+                ParameterKind::Hidden => serde_json::Value::String("".to_string()),
+                _ => serde_json::Value::String("".to_string()),
+            };
+            object_value.set_field(key, default_json_val);
+        }
+
+        object_value
+    }
+
+    /// Add a child parameter to the object
+    pub fn add_child(&mut self, key: impl Into<String>, child: Box<dyn ParameterType>) {
+        self.children.insert(key.into(), child);
+    }
+
+    /// Remove a child parameter from the object
+    pub fn remove_child(&mut self, key: &str) -> Option<Box<dyn ParameterType>> {
+        self.children.remove(key)
+    }
+
+    /// Check if a child exists
+    pub fn has_child(&self, key: &str) -> bool {
+        self.children.contains_key(key)
+    }
+
+    /// Get visible children based on display conditions
+    pub fn get_visible_children(&self) -> impl Iterator<Item = (&String, &Box<dyn ParameterType>)> {
+        self.children.iter()
+            .filter(|(_key, _child)| {
+                // TODO: Implement display condition evaluation based on current values
+                // For now, return all children
+                true
+            })
+    }
+
+    /// Get children count
+    pub fn children_count(&self) -> usize {
+        self.children.len()
+    }
+
+    /// Get all required children
+    pub fn get_required_children(&self) -> impl Iterator<Item = (&String, &Box<dyn ParameterType>)> {
+        self.children.iter().filter(|(_key, child)| child.metadata().required)
+    }
+
+    /// Get all optional children
+    pub fn get_optional_children(&self) -> impl Iterator<Item = (&String, &Box<dyn ParameterType>)> {
+        self.children.iter().filter(|(_key, child)| !child.metadata().required)
+    }
+
+    /// Check if all required children have values in the current ObjectValue
+    pub fn has_all_required_values(&self) -> bool {
+        if let Some(value) = &self.value {
+            self.get_required_children()
+                .all(|(key, _child)| value.contains_field(key))
+        } else {
+            self.get_required_children().count() == 0
+        }
+    }
+
+    /// Set a field value in the object
+    pub fn set_field_value(&mut self, key: &str, value: serde_json::Value) -> Result<(), ParameterError> {
+        if !self.has_child(key) && !self.options.as_ref().map(|o| o.allow_additional_properties).unwrap_or(false) {
+            return Err(ParameterError::InvalidValue {
+                key: self.metadata.key.clone(),
+                reason: format!("Field '{}' is not defined in this object", key),
+            });
+        }
+
+        if let Some(obj_value) = &mut self.value {
+            obj_value.set_field(key, value);
+        } else {
+            let mut obj_value = ObjectValue::new();
+            obj_value.set_field(key, value);
+            self.value = Some(obj_value);
+        }
+
+        Ok(())
+    }
+
+    /// Get a field value from the object
+    pub fn get_field_value(&self, key: &str) -> Option<&serde_json::Value> {
+        self.value.as_ref().and_then(|obj| obj.get_field(key))
+    }
+}
+
+// Helper function for value conversion
+fn convert_nebula_value_to_json(nebula_value: &nebula_value::Value) -> serde_json::Value {
+    match nebula_value {
+        nebula_value::Value::String(s) => serde_json::Value::String(s.to_string()),
+        nebula_value::Value::Int(i) => serde_json::Value::Number(i.value().into()),
+        nebula_value::Value::Float(f) => {
+            serde_json::Number::from_f64(f.value())
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null)
+        },
+        nebula_value::Value::Bool(b) => serde_json::Value::Bool(b.value()),
+        nebula_value::Value::Null => serde_json::Value::Null,
+        nebula_value::Value::Array(arr) => {
+            let json_array: Vec<serde_json::Value> = arr.iter()
+                .map(convert_nebula_value_to_json)
+                .collect();
+            serde_json::Value::Array(json_array)
+        },
+        nebula_value::Value::Object(obj) => {
+            let json_obj: serde_json::Map<String, serde_json::Value> = obj.iter()
+                .map(|(k, v)| (k.to_string(), convert_nebula_value_to_json(v)))
+                .collect();
+            serde_json::Value::Object(json_obj)
+        }
+        _ => serde_json::Value::String(nebula_value.to_string()),
+    }
+}

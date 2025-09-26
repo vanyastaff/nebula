@@ -2,10 +2,11 @@
 
 use std::fmt::{Debug, Display};
 use crate::core::{ParameterError, ParameterKind, ParameterMetadata};
-use crate::core::display::{DisplayContext, ParameterDisplay, ParameterDisplayError, Key, UiMode};
+use crate::core::display::{DisplayContext, ParameterDisplay, ParameterDisplayError, UiMode};
+use nebula_core::ParameterKey as Key;
 use crate::core::condition::ParameterCondition;
 use crate::core::validation::ParameterValidation;
-use nebula_value::Value as ParameterValue;
+use crate::core::ParameterValue;
 
 /// Base trait for all parameter types
 pub trait ParameterType {
@@ -18,7 +19,7 @@ pub trait ParameterType {
     /// Get parameter key
     #[inline]
     fn key(&self) -> &str {
-        &self.metadata().key
+        self.metadata().key.as_str()
     }
 
     /// Get parameter name
@@ -87,7 +88,7 @@ pub trait HasValue: ParameterType + Debug + Display {
         match self.get_value_mut() {
             Some(value) => f(value),
             None => Err(ParameterError::MissingValue {
-                key: self.key().try_into().unwrap_or_default(),
+                key: self.metadata().key.clone(),
             }),
         }
     }
@@ -151,7 +152,7 @@ pub trait HasValue: ParameterType + Debug + Display {
         match self.get_value() {
             Some(value) => self.validate(value),
             None if self.is_required() => Err(ParameterError::MissingValue {
-                key: self.key().try_into().unwrap_or_default(),
+                key: self.metadata().key.clone(),
             }),
             None => Ok(()),
         }
@@ -170,7 +171,7 @@ pub trait Validatable: HasValue {
             let json_value = self.value_to_json(value);
             if let Err(validation_error) = validation.validate(&json_value) {
                 return Err(ParameterError::InvalidValue {
-                    key: self.key().try_into().unwrap_or_default(),
+                    key: self.metadata().key.clone(),
                     reason: format!("{}", validation_error),
                 });
             }
@@ -179,7 +180,7 @@ pub trait Validatable: HasValue {
         // Basic validation - required field check
         if self.is_empty_value(value) && self.is_required() {
             return Err(ParameterError::MissingValue {
-                key: self.key().try_into().unwrap_or_default(),
+                key: self.metadata().key.clone(),
             });
         }
 
@@ -217,7 +218,7 @@ pub trait Displayable: ParameterType {
     /// Check if the parameter should be displayed given the current context
     fn should_display(&self, context: &DisplayContext) -> bool {
         match self.display() {
-            Some(display_config) => display_config.should_display(&context.properties),
+            Some(display_config) => display_config.should_display(&context.values),
             None => true, // Display by default if no conditions
         }
     }
@@ -225,7 +226,7 @@ pub trait Displayable: ParameterType {
     /// Validate display conditions and return detailed error if hidden
     fn validate_display(&self, context: &DisplayContext) -> Result<(), ParameterDisplayError> {
         match self.display() {
-            Some(display_config) => display_config.validate_display(&context.properties),
+            Some(display_config) => display_config.validate_display(&context.values),
             None => Ok(()), // No conditions means always visible
         }
     }
@@ -264,12 +265,12 @@ pub trait Displayable: ParameterType {
 
         let condition = ParameterCondition::Or(
             modes.into_iter()
-                .map(|mode| ParameterCondition::Eq(json!(mode)))
+                .map(|mode| ParameterCondition::Eq(json!(mode).into()))
                 .collect()
         );
 
         let mut display = self.display().cloned().unwrap_or_default();
-        display.add_show_condition("ui_mode".into(), condition);
+        display.add_show_condition("ui_mode".parse().unwrap_or("ui_mode".parse().unwrap()), condition);
         self.set_display(Some(display));
     }
 
