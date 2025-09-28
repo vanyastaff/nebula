@@ -1,7 +1,6 @@
 //! Simplified builder pattern for validation composition
 
 use crate::core::{Validator, ValidatorExt, ValidationContext, Valid, Invalid};
-use serde_json::Value;
 use async_trait::async_trait;
 
 // ==================== Validation Builder ====================
@@ -80,7 +79,7 @@ pub struct BuiltValidator<V: Validator> {
 
 #[async_trait]
 impl<V: Validator> Validator for BuiltValidator<V> {
-    async fn validate(&self, value: &Value, context: Option<&ValidationContext>) -> Result<Valid<()>, Invalid<()>> {
+    async fn validate(&self, value: &nebula_value::Value, context: Option<&ValidationContext>) -> Result<Valid<()>, Invalid<()>> {
         self.validator.validate(value, context).await
             .map_err(|invalid| invalid.with_validator_name(&self.name))
     }

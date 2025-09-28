@@ -1,6 +1,6 @@
 //! File and MIME type validation operations using the unified validator macro
 
-use crate::{validator, validator_fn};
+use crate::{validator, validator_fn, ValueExt};
 
 // ==================== FILE VALIDATORS ====================
 

@@ -7,13 +7,13 @@ use crate::{validator, validator_fn};
 validator! {
     /// Validator that checks if value is in a set of allowed values
     pub struct In {
-        allowed_values: Vec<serde_json::Value>
+        allowed_values: Vec<nebula_value::Value>
     }
     impl {
-        fn check(value: &Value, allowed_values: &Vec<serde_json::Value>) -> bool {
+        fn check(value: &Value, allowed_values: &Vec<nebula_value::Value>) -> bool {
             { allowed_values.contains(value) }
         }
-        fn error(allowed_values: &Vec<serde_json::Value>) -> String {
+        fn error(allowed_values: &Vec<nebula_value::Value>) -> String {
             { format!("Value must be one of the allowed values: {:?}", allowed_values) }
         }
         const DESCRIPTION: &str = "Value must be in the allowed set";
@@ -23,13 +23,13 @@ validator! {
 validator! {
     /// Validator that checks if value is NOT in a set of forbidden values
     pub struct NotIn {
-        forbidden_values: Vec<serde_json::Value>
+        forbidden_values: Vec<nebula_value::Value>
     }
     impl {
-        fn check(value: &Value, forbidden_values: &Vec<serde_json::Value>) -> bool {
+        fn check(value: &Value, forbidden_values: &Vec<nebula_value::Value>) -> bool {
             { !forbidden_values.contains(value) }
         }
-        fn error(forbidden_values: &Vec<serde_json::Value>) -> String {
+        fn error(forbidden_values: &Vec<nebula_value::Value>) -> String {
             { format!("Value must not be one of the forbidden values: {:?}", forbidden_values) }
         }
         const DESCRIPTION: &str = "Value must not be in the forbidden set";
@@ -82,8 +82,8 @@ validator! {
 
 // ==================== CONVENIENCE FUNCTIONS ====================
 
-validator_fn!(pub fn in_values(allowed_values: Vec<serde_json::Value>) -> In);
-validator_fn!(pub fn not_in_values(forbidden_values: Vec<serde_json::Value>) -> NotIn);
+validator_fn!(pub fn in_values(allowed_values: Vec<nebula_value::Value>) -> In);
+validator_fn!(pub fn not_in_values(forbidden_values: Vec<nebula_value::Value>) -> NotIn);
 validator_fn!(pub fn in_strings(allowed_strings: Vec<String>) -> InStrings);
 validator_fn!(pub fn not_in_strings(forbidden_strings: Vec<String>) -> NotInStrings);
 
@@ -99,10 +99,10 @@ pub fn not_in_str_values(forbidden: Vec<&str>) -> NotInStrings {
 }
 
 // JSON value convenience functions
-pub fn one_of(values: Vec<serde_json::Value>) -> In {
+pub fn one_of(values: Vec<nebula_value::Value>) -> In {
     In::new(values)
 }
 
-pub fn none_of(values: Vec<serde_json::Value>) -> NotIn {
+pub fn none_of(values: Vec<nebula_value::Value>) -> NotIn {
     NotIn::new(values)
 }

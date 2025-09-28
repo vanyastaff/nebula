@@ -1,19 +1,19 @@
 //! Comparison validation operations using the unified validator macro
 
-use crate::{validator, validator_fn};
+use crate::{validator, validator_fn, ValueExt};
 
 // ==================== COMPARISON VALIDATORS ====================
 
 validator! {
     /// Validator that checks if value equals another value
     pub struct Equals {
-        expected: serde_json::Value
+        expected: nebula_value::Value
     }
     impl {
-        fn check(value: &Value, expected: &serde_json::Value) -> bool {
+        fn check(value: &Value, expected: &nebula_value::Value) -> bool {
             { value == expected }
         }
-        fn error(expected: &serde_json::Value) -> String {
+        fn error(expected: &nebula_value::Value) -> String {
             { format!("Value must equal {}", expected) }
         }
         const DESCRIPTION: &str = "Value must equal expected value";
@@ -23,13 +23,13 @@ validator! {
 validator! {
     /// Validator that checks if a value does not equal another value
     pub struct NotEquals {
-        forbidden: serde_json::Value
+        forbidden: nebula_value::Value
     }
     impl {
-        fn check(value: &Value, forbidden: &serde_json::Value) -> bool {
+        fn check(value: &Value, forbidden: &nebula_value::Value) -> bool {
             { value != forbidden }
         }
-        fn error(forbidden: &serde_json::Value) -> String {
+        fn error(forbidden: &nebula_value::Value) -> String {
             { format!("Value must not equal {}", forbidden) }
         }
         const DESCRIPTION: &str = "Value must not equal forbidden value";
@@ -102,8 +102,8 @@ validator! {
 
 // ==================== CONVENIENCE FUNCTIONS ====================
 
-validator_fn!(pub fn equals(expected: serde_json::Value) -> Equals);
-validator_fn!(pub fn not_equals(forbidden: serde_json::Value) -> NotEquals);
+validator_fn!(pub fn equals(expected: nebula_value::Value) -> Equals);
+validator_fn!(pub fn not_equals(forbidden: nebula_value::Value) -> NotEquals);
 validator_fn!(pub fn greater_than(threshold: f64) -> GreaterThan);
 validator_fn!(pub fn greater_than_or_equal(threshold: f64) -> GreaterThanOrEqual);
 validator_fn!(pub fn less_than(threshold: f64) -> LessThan);
@@ -126,10 +126,10 @@ pub fn lte(threshold: f64) -> LessThanOrEqual {
     LessThanOrEqual::new(threshold)
 }
 
-pub fn eq(expected: serde_json::Value) -> Equals {
+pub fn eq(expected: nebula_value::Value) -> Equals {
     Equals::new(expected)
 }
 
-pub fn ne(forbidden: serde_json::Value) -> NotEquals {
+pub fn ne(forbidden: nebula_value::Value) -> NotEquals {
     NotEquals::new(forbidden)
 }

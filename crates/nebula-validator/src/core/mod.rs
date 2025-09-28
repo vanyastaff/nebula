@@ -10,6 +10,7 @@ mod error;
 mod traits;
 mod builder;
 mod macros;
+mod value_ext;
 
 // Re-export all core types
 pub use validity::{Valid, Invalid};
@@ -25,3 +26,6 @@ pub use traits::{
 pub use builder::{
     ValidationBuilder, BuiltValidator, validate,
 };
+
+// Re-export value extensions
+pub use value_ext::ValueExt;

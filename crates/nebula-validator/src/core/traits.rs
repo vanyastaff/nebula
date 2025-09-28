@@ -1,7 +1,7 @@
 //! Core validation traits for nebula-validator
 
 use async_trait::async_trait;
-use serde_json::Value;
+use nebula_value::Value;
 use std::collections::HashMap;
 
 use super::{Valid, Invalid};

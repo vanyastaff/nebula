@@ -1,6 +1,6 @@
 //! Numeric validation operations using the unified validator macro
 
-use crate::{validator, validator_fn};
+use crate::{validator, validator_fn, ValueExt};
 
 // ==================== NUMERIC RANGE VALIDATORS ====================
 
