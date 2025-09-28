@@ -414,6 +414,38 @@ impl Value {
         self.len() == 0
     }
 
+    /// Check if object contains a specific key
+    pub fn contains_key(&self, key: &str) -> bool {
+        match self {
+            Value::Object(obj) => obj.contains_key(key),
+            _ => false,
+        }
+    }
+
+    /// Get value from object by key
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        match self {
+            Value::Object(obj) => obj.get(key),
+            _ => None,
+        }
+    }
+
+    /// Check if array contains a specific value
+    pub fn contains(&self, value: &Value) -> bool {
+        match self {
+            Value::Array(arr) => arr.iter().any(|v| v == value),
+            _ => false,
+        }
+    }
+
+    /// Get array element by index
+    pub fn get_index(&self, index: usize) -> Option<&Value> {
+        match self {
+            Value::Array(arr) => arr.get(index),
+            _ => None,
+        }
+    }
+
     /// Merge two values (for objects, concatenate for arrays)
     pub fn merge(&mut self, other: Value) -> ValueResult<()> {
         match (self, other) {

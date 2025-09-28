@@ -43,6 +43,7 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 
 # Internal crates
 nebula-resilience = { path = "../nebula-resilience" }
+nebula-value = { path = "../nebula-value" }
 
 # Email validation - using regex for now
 # email-validator = "0.2"

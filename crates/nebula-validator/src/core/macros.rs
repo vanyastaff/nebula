@@ -35,7 +35,7 @@ macro_rules! validator {
                 self
             }
 
-            fn check($value: &serde_json::Value) -> bool {
+            fn check($value: &nebula_value::Value) -> bool {
                 $check_body
             }
 
@@ -49,7 +49,7 @@ macro_rules! validator {
         {
             async fn validate(
                 &self,
-                value: &serde_json::Value,
+                value: &nebula_value::Value,
                 _context: Option<&$crate::core::ValidationContext>,
             ) -> Result<$crate::core::Valid<()>, $crate::core::Invalid<()>> {
                 if Self::check(value) {
@@ -113,7 +113,7 @@ macro_rules! validator {
                 &self.$field
             })+
 
-            fn check($value: &serde_json::Value, $($param: &$param_ty),+) -> bool {
+            fn check($value: &nebula_value::Value, $($param: &$param_ty),+) -> bool {
                 $check_body
             }
 
@@ -129,7 +129,7 @@ macro_rules! validator {
         {
             async fn validate(
                 &self,
-                value: &serde_json::Value,
+                value: &nebula_value::Value,
                 _context: Option<&$crate::core::ValidationContext>,
             ) -> Result<$crate::core::Valid<()>, $crate::core::Invalid<()>> {
                 if Self::check(value, $(&self.$field),+) {
@@ -193,7 +193,7 @@ macro_rules! validator {
                 &self.$field
             })+
 
-            fn check($value: &serde_json::Value, $($param: &$param_ty),+, $ctx: Option<&$crate::core::ValidationContext>) -> bool {
+            fn check($value: &nebula_value::Value, $($param: &$param_ty),+, $ctx: Option<&$crate::core::ValidationContext>) -> bool {
                 $check_body
             }
 
@@ -209,7 +209,7 @@ macro_rules! validator {
         {
             async fn validate(
                 &self,
-                value: &serde_json::Value,
+                value: &nebula_value::Value,
                 context: Option<&$crate::core::ValidationContext>,
             ) -> Result<$crate::core::Valid<()>, $crate::core::Invalid<()>> {
                 if Self::check(value, $(&self.$field),+, context) {
@@ -273,7 +273,7 @@ macro_rules! validator {
                 &self.$field
             })+
 
-            fn check_with_context($value: &serde_json::Value, $ctx: &$crate::core::ValidationContext, $($param: &$param_ty),+) -> bool {
+            fn check_with_context($value: &nebula_value::Value, $ctx: &$crate::core::ValidationContext, $($param: &$param_ty),+) -> bool {
                 $check_body
             }
 
@@ -289,7 +289,7 @@ macro_rules! validator {
         {
             async fn validate(
                 &self,
-                value: &serde_json::Value,
+                value: &nebula_value::Value,
                 context: Option<&$crate::core::ValidationContext>,
             ) -> Result<$crate::core::Valid<()>, $crate::core::Invalid<()>> {
                 if let Some(ctx) = context {

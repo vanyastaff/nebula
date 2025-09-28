@@ -12,13 +12,12 @@ validator! {
     impl {
         fn check(value: &Value, size: &usize) -> bool {
             {
-                let collection_size = match value {
-                    serde_json::Value::Array(arr) => Some(arr.len()),
-                    serde_json::Value::Object(obj) => Some(obj.len()),
-                    serde_json::Value::String(s) => Some(s.len()),
-                    _ => None,
-                };
-                collection_size.map_or(false, |s| s == *size)
+                // Use value.len() which works for arrays, objects, strings, and bytes
+                if value.is_collection() || value.is_string() {
+                    value.len() == *size
+                } else {
+                    false
+                }
             }
         }
         fn error(size: &usize) -> String {
@@ -36,13 +35,11 @@ validator! {
     impl {
         fn check(value: &Value, min_size: &usize) -> bool {
             {
-                let collection_size = match value {
-                    serde_json::Value::Array(arr) => Some(arr.len()),
-                    serde_json::Value::Object(obj) => Some(obj.len()),
-                    serde_json::Value::String(s) => Some(s.len()),
-                    _ => None,
-                };
-                collection_size.map_or(false, |s| s >= *min_size)
+                if value.is_collection() || value.is_string() {
+                    value.len() >= *min_size
+                } else {
+                    false
+                }
             }
         }
         fn error(min_size: &usize) -> String {
@@ -60,13 +57,11 @@ validator! {
     impl {
         fn check(value: &Value, max_size: &usize) -> bool {
             {
-                let collection_size = match value {
-                    serde_json::Value::Array(arr) => Some(arr.len()),
-                    serde_json::Value::Object(obj) => Some(obj.len()),
-                    serde_json::Value::String(s) => Some(s.len()),
-                    _ => None,
-                };
-                collection_size.map_or(false, |s| s <= *max_size)
+                if value.is_collection() || value.is_string() {
+                    value.len() <= *max_size
+                } else {
+                    false
+                }
             }
         }
         fn error(max_size: &usize) -> String {
@@ -86,9 +81,9 @@ validator! {
         fn check(value: &Value, min_size: &usize, max_size: &usize) -> bool {
             {
                 let collection_size = match value {
-                    serde_json::Value::Array(arr) => Some(arr.len()),
-                    serde_json::Value::Object(obj) => Some(obj.len()),
-                    serde_json::Value::String(s) => Some(s.len()),
+                    nebula_value::Value::Array(arr) => Some(arr.len()),
+                    nebula_value::Value::Object(obj) => Some(obj.len()),
+                    nebula_value::Value::String(s) => Some(s.len()),
                     _ => None,
                 };
                 collection_size.map_or(false, |s| s >= *min_size && s <= *max_size)
@@ -106,19 +101,15 @@ validator! {
 validator! {
     /// Validator that checks if array contains a specific value
     pub struct ArrayContains {
-        value: serde_json::Value
+        value: nebula_value::Value
     }
     impl {
-        fn check(arr: &Value, value: &serde_json::Value) -> bool {
+        fn check(arr: &Value, value: &nebula_value::Value) -> bool {
             {
-                if let serde_json::Value::Array(array) = arr {
-                    array.contains(value)
-                } else {
-                    false
-                }
+                arr.contains(value)
             }
         }
-        fn error(value: &serde_json::Value) -> String {
+        fn error(value: &nebula_value::Value) -> String {
             { format!("Array must contain the value: {}", value) }
         }
         const DESCRIPTION: &str = "Array must contain specified value";
@@ -132,11 +123,10 @@ validator! {
     impl {
         fn check(value: &Value) -> bool {
             {
-                match value {
-                    serde_json::Value::Array(arr) => arr.is_empty(),
-                    serde_json::Value::Object(obj) => obj.is_empty(),
-                    serde_json::Value::String(s) => s.is_empty(),
-                    _ => false,
+                if value.is_collection() || value.is_string() {
+                    value.is_empty()
+                } else {
+                    false
                 }
             }
         }
@@ -154,11 +144,10 @@ validator! {
     impl {
         fn check(value: &Value) -> bool {
             {
-                match value {
-                    serde_json::Value::Array(arr) => !arr.is_empty(),
-                    serde_json::Value::Object(obj) => !obj.is_empty(),
-                    serde_json::Value::String(s) => !s.is_empty(),
-                    _ => false,
+                if value.is_collection() || value.is_string() {
+                    !value.is_empty()
+                } else {
+                    false
                 }
             }
         }
@@ -176,7 +165,7 @@ validator! {
     impl {
         fn check(value: &Value) -> bool {
             {
-                if let serde_json::Value::Array(arr) = value {
+                if let nebula_value::Value::Array(arr) = value {
                     let mut seen = std::collections::HashSet::new();
                     for item in arr {
                         if !seen.insert(item.to_string()) {
@@ -202,13 +191,13 @@ validator_fn!(pub fn size(size: usize) -> Size);
 validator_fn!(pub fn min_size(min_size: usize) -> MinSize);
 validator_fn!(pub fn max_size(max_size: usize) -> MaxSize);
 validator_fn!(pub fn size_range(min_size: usize, max_size: usize) -> SizeRange);
-validator_fn!(pub fn array_contains(value: serde_json::Value) -> ArrayContains);
+validator_fn!(pub fn array_contains(value: nebula_value::Value) -> ArrayContains);
 validator_fn!(pub fn empty() -> Empty);
 validator_fn!(pub fn not_empty() -> NotEmpty);
 validator_fn!(pub fn unique() -> Unique);
 
 // Specialized convenience functions
-pub fn contains_value(value: serde_json::Value) -> ArrayContains {
+pub fn contains_value(value: nebula_value::Value) -> ArrayContains {
     ArrayContains::new(value)
 }
 

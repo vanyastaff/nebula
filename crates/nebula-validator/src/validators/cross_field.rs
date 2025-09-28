@@ -1,7 +1,7 @@
 //! Cross-field validation operations using the unified validator macro
 
 use crate::{validator, validator_fn};
-use serde_json::Value;
+use nebula_value::Value;
 
 // ==================== CROSS-FIELD VALIDATORS ====================
 
@@ -65,14 +65,13 @@ validator! {
                 if let Some(other_val) = other_field_value {
                     if other_val == other_value {
                         // Field is required, check if it's empty
-                        let is_empty = match value {
-                            Value::Null => true,
-                            Value::String(s) => s.is_empty(),
-                            Value::Array(a) => a.is_empty(),
-                            Value::Object(o) => o.is_empty(),
-                            _ => false,
-                        };
-                        return !is_empty;
+                        if value.is_null() {
+                            return false;
+                        } else if value.is_collection() || value.is_string() {
+                            return !value.is_empty();
+                        } else {
+                            return true;
+                        }
                     }
                 }
 

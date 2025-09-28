@@ -12,11 +12,7 @@ validator! {
     impl {
         fn check(value: &Value, key: &String) -> bool {
             {
-                if let Some(object) = value.as_object() {
-                    object.contains_key(key)
-                } else {
-                    false
-                }
+                value.contains_key(key)
             }
         }
         fn error(key: &String) -> String {
@@ -34,8 +30,8 @@ validator! {
     impl {
         fn check(value: &Value, keys: &Vec<String>) -> bool {
             {
-                if let Some(object) = value.as_object() {
-                    keys.iter().all(|key| object.contains_key(key))
+                if value.is_object() {
+                    keys.iter().all(|key| value.contains_key(key))
                 } else {
                     false
                 }
@@ -56,8 +52,8 @@ validator! {
     impl {
         fn check(value: &Value, keys: &Vec<String>) -> bool {
             {
-                if let Some(object) = value.as_object() {
-                    keys.iter().any(|key| object.contains_key(key))
+                if value.is_object() {
+                    keys.iter().any(|key| value.contains_key(key))
                 } else {
                     false
                 }
@@ -79,7 +75,7 @@ validator! {
         fn check(value: &Value, allowed_keys: &Vec<String>) -> bool {
             {
                 if let Some(object) = value.as_object() {
-                    object.keys().all(|key| allowed_keys.contains(&key.to_string()))
+                    object.keys().iter().all(|key| allowed_keys.contains(key))
                 } else {
                     false
                 }

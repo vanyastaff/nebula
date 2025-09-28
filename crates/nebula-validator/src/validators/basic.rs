@@ -26,12 +26,12 @@ validator! {
     impl {
         fn check(value: &Value) -> bool {
             {
-                match value {
-                    serde_json::Value::Null => false,
-                    serde_json::Value::String(s) => !s.is_empty(),
-                    serde_json::Value::Array(a) => !a.is_empty(),
-                    serde_json::Value::Object(o) => !o.is_empty(),
-                    _ => true,
+                if value.is_null() {
+                    false
+                } else if value.is_collection() || value.is_string() {
+                    !value.is_empty()
+                } else {
+                    true
                 }
             }
         }
