@@ -28,6 +28,10 @@ pub enum CoreError {
     
     /// Type conversion error
     #[error("Type conversion failed: {0}")]
+    TypeConversion(String),
+
+    /// Conversion error
+    #[error("Conversion error: {0}")]
     ConversionError(String),
     
     /// Proof building error
@@ -41,6 +45,100 @@ pub enum CoreError {
     /// Other errors
     #[error("Core error: {0}")]
     Other(String),
+}
+
+/// Enhanced validation error for core validators
+#[derive(Debug, Clone)]
+pub struct ValidationError {
+    /// Error message
+    pub message: String,
+    /// Error code (optional)
+    pub code: Option<String>,
+    /// Field path (optional)
+    pub path: Option<String>,
+    /// Validator name that generated this error (optional)
+    pub validator: Option<String>,
+    /// Additional error details (optional)
+    pub details: Option<serde_json::Value>,
+}
+
+impl ValidationError {
+    /// Create a new validation error
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: None,
+            path: None,
+            validator: None,
+            details: None,
+        }
+    }
+
+    /// Set error code
+    pub fn with_code(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
+        self
+    }
+
+    /// Set field path
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    /// Set validator name
+    pub fn with_validator(mut self, validator: impl Into<String>) -> Self {
+        self.validator = Some(validator.into());
+        self
+    }
+
+    /// Set additional details
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for ValidationError {}
+
+/// Simple validator ID
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ValidatorId(String);
+
+impl ValidatorId {
+    /// Create a new validator ID
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// Get the ID as a string slice
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ValidatorId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for ValidatorId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for ValidatorId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
 }
 
 /// Result type for core operations
@@ -84,38 +182,21 @@ impl CoreError {
 }
 
 // Conversion from CoreError to ValidationError
-impl From<CoreError> for crate::types::ValidationError {
+impl From<CoreError> for ValidationError {
     fn from(error: CoreError) -> Self {
-        use crate::types::{ValidationError, ErrorCode};
-        
-        match error {
-            CoreError::ValidationExpired => {
-                ValidationError::new(ErrorCode::Expired, "Validation has expired")
-            },
-            CoreError::InvalidProof(msg) => {
-                ValidationError::new(ErrorCode::InvalidProof, msg)
-            },
-            CoreError::RecoveryFailed(msg) => {
-                ValidationError::new(ErrorCode::RecoveryFailed, msg)
-            },
-            CoreError::SignatureVerificationFailed(msg) => {
-                ValidationError::new(ErrorCode::SignatureFailed, msg)
-            },
-            CoreError::ContextError(msg) => {
-                ValidationError::new(ErrorCode::ContextError, msg)
-            },
-            CoreError::ConversionError(msg) => {
-                ValidationError::new(ErrorCode::ConversionError, msg)
-            },
-            CoreError::ProofBuildError(msg) => {
-                ValidationError::new(ErrorCode::ProofError, msg)
-            },
-            CoreError::SerializationError(err) => {
-                ValidationError::new(ErrorCode::SerializationError, err.to_string())
-            },
-            CoreError::Other(msg) => {
-                ValidationError::new(ErrorCode::InternalError, msg)
-            },
-        }
+        let message = match error {
+            CoreError::ValidationExpired => "Validation has expired".to_string(),
+            CoreError::InvalidProof(msg) => format!("Invalid proof: {}", msg),
+            CoreError::RecoveryFailed(msg) => format!("Recovery failed: {}", msg),
+            CoreError::SignatureVerificationFailed(msg) => format!("Signature verification failed: {}", msg),
+            CoreError::ContextError(msg) => format!("Context error: {}", msg),
+            CoreError::TypeConversion(msg) => format!("Type conversion failed: {}", msg),
+            CoreError::ConversionError(msg) => format!("Conversion error: {}", msg),
+            CoreError::ProofBuildError(msg) => format!("Failed to build proof: {}", msg),
+            CoreError::SerializationError(err) => format!("Serialization error: {}", err),
+            CoreError::Other(msg) => format!("Core error: {}", msg),
+        };
+
+        ValidationError::new(message)
     }
 }

@@ -15,7 +15,7 @@ documentation.workspace = true
 # Async and concurrency
 async-trait = "0.1"
 dashmap = "5.5"
-futures = { workspace = true }
+futures.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 
 # Data formats

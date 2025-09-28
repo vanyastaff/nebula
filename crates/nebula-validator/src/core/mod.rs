@@ -1,22 +1,27 @@
 //! Core functionality for nebula-validator
-//! 
+//!
 //! This module contains the fundamental types for validation:
 //! - `Valid<T>` and `Invalid<T>` for type-safe validation results
-//! - `Validated<T>` enum for handling both cases
-//! - `ValidationProof` for validation evidence
 //! - Core error types
+//! - Main validation trait
 
 mod validity;
-mod validated;
-mod proof;
 mod error;
+mod traits;
+mod builder;
+mod macros;
 
 // Re-export all core types
 pub use validity::{Valid, Invalid};
-pub use validated::Validated;
-pub use proof::{ValidationProof, ProofType, ProofBuilder};
-pub use error::{CoreError, CoreResult};
+pub use error::{CoreError, CoreResult, ValidationError, ValidatorId};
 
-// Re-export commonly used items
-pub use validated::ValidatedExt;
-pub use proof::ProofExt;
+// Re-export new unified traits
+pub use traits::{
+    Validator, ValidatorExt, ValidationContext, ValidationComplexity,
+    AndValidator, OrValidator, NotValidator, ConditionalValidator,
+};
+
+// Re-export builder patterns
+pub use builder::{
+    ValidationBuilder, BuiltValidator, validate,
+};

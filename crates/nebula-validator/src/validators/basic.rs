@@ -1,79 +1,64 @@
-//! Basic validation operations
-//! 
-//! This module provides fundamental validators for common validation tasks.
+//! Basic validation operations using the unified validator macro
 
-use async_trait::async_trait;
-use serde_json::Value;
-use crate::types::{ValidationResult, ValidationError, ValidatorMetadata, ValidationComplexity, ErrorCode};
-use crate::traits::Validatable;
+use crate::{validator, validator_fn};
 
-// ==================== Not Null Validator ====================
+// ==================== BASIC VALIDATORS ====================
 
-/// Validator that ensures a value is not null
-/// 
-/// This is a fundamental validator that checks if a value is present
-/// and not null.
-#[derive(Debug, Clone)]
-pub struct NotNull {
-    name: String,
-}
-
-impl NotNull {
-    /// Create a new not null validator
-    pub fn new() -> Self {
-        Self {
-            name: "not_null".to_string(),
+validator! {
+    /// Validator that ensures a value is not null
+    pub struct NotNull {
+    }
+    impl {
+        fn check(value: &Value) -> bool {
+            { !value.is_null() }
         }
-    }
-    
-    /// Set custom name for the validator
-    pub fn with_name(mut self, name: impl Into<String>) -> Self {
-        self.name = name.into();
-        self
-    }
-}
-
-impl Default for NotNull {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl Validatable for NotNull {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if value.is_null() {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::Custom("null_value".to_string()),
-                "Value cannot be null"
-            )])
-        } else {
-            ValidationResult::success(())
+        fn error() -> String {
+            { "Value cannot be null".to_string() }
         }
-    }
-    
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::new(
-            self.name.clone(),
-            "Value must not be null".to_string(),
-            crate::types::ValidatorCategory::Basic,
-        )
-        .with_tags(vec!["basic".to_string(), "null".to_string(), "presence".to_string()])
-    }
-    
-    fn complexity(&self) -> ValidationComplexity {
-        ValidationComplexity::Simple
+        const DESCRIPTION: &str = "Value must not be null";
     }
 }
 
-// ==================== Convenience Functions ====================
-
-/// Create a not null validator
-pub fn not_null() -> NotNull {
-    NotNull::new()
+validator! {
+    /// Validator that ensures a value is not empty/null/missing
+    pub struct Required {
+    }
+    impl {
+        fn check(value: &Value) -> bool {
+            {
+                match value {
+                    serde_json::Value::Null => false,
+                    serde_json::Value::String(s) => !s.is_empty(),
+                    serde_json::Value::Array(a) => !a.is_empty(),
+                    serde_json::Value::Object(o) => !o.is_empty(),
+                    _ => true,
+                }
+            }
+        }
+        fn error() -> String {
+            { "Value is required and cannot be empty".to_string() }
+        }
+        const DESCRIPTION: &str = "Value must be present and not empty";
+    }
 }
 
-// ==================== Re-exports ====================
+validator! {
+    /// Validator that ensures a value is defined (not null or undefined)
+    pub struct Defined {
+    }
+    impl {
+        fn check(value: &Value) -> bool {
+            { !value.is_null() }
+        }
+        fn error() -> String {
+            { "Value must be defined".to_string() }
+        }
+        const DESCRIPTION: &str = "Value must be defined (not null)";
+    }
+}
 
-// NotNull is already defined above
+// ==================== CONVENIENCE FUNCTIONS ====================
 
+validator_fn!(pub fn not_null() -> NotNull);
+validator_fn!(pub fn required() -> Required);
+validator_fn!(pub fn defined() -> Defined);

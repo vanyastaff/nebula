@@ -1,263 +1,185 @@
-//! Numeric validation operations
+//! Numeric validation operations using the unified validator macro
 
-use async_trait::async_trait;
-use serde_json::Value;
-use crate::{Validatable, ValidationResult, ValidationError, ErrorCode};
+use crate::{validator, validator_fn};
 
-/// Positive validator - number must be positive
-pub struct Positive;
+// ==================== NUMERIC RANGE VALIDATORS ====================
 
-#[async_trait]
-impl Validatable for Positive {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if let Some(n) = value.as_f64() {
-            if n > 0.0 {
-                ValidationResult::success(())
-            } else {
-                ValidationResult::failure(vec![ValidationError::new(
-                    ErrorCode::ValueOutOfRange,
-                    format!("Value {} must be positive", n)
-                ).with_actual_value(value.clone())])
-            }
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::TypeMismatch,
-                "Expected numeric value"
-            ).with_actual_value(value.clone())])
+validator! {
+    /// Validator that checks minimum numeric value
+    pub struct Min {
+        min_value: f64
+    }
+    impl {
+        fn check(value: &Value, min_value: &f64) -> bool {
+            { value.as_f64().map_or(false, |v| v >= *min_value) }
         }
-    }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new("positive", "positive", crate::ValidatorCategory::Basic)
-            .with_description("Number must be positive")
-            .with_tags(vec!["numeric".to_string(), "positive".to_string()])
-    }
-}
-
-/// Negative validator - number must be negative
-pub struct Negative;
-
-#[async_trait]
-impl Validatable for Negative {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if let Some(n) = value.as_f64() {
-            if n < 0.0 {
-                ValidationResult::success(())
-            } else {
-                ValidationResult::failure(vec![ValidationError::new(
-                    ErrorCode::ValueOutOfRange,
-                    format!("Value {} must be negative", n)
-                ).with_actual_value(value.clone())])
-            }
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::TypeMismatch,
-                "Expected numeric value"
-            ).with_actual_value(value.clone())])
+        fn error(min_value: &f64) -> String {
+            { format!("Value must be at least {}", min_value) }
         }
-    }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new("negative", "negative", crate::ValidatorCategory::Basic)
-            .with_description("Number must be negative")
-            .with_tags(vec!["numeric".to_string(), "negative".to_string()])
+        const DESCRIPTION: &str = "Number must meet minimum value requirement";
     }
 }
 
-/// Zero validator - number must be zero
-pub struct Zero;
-
-#[async_trait]
-impl Validatable for Zero {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if let Some(n) = value.as_f64() {
-            if n == 0.0 {
-                ValidationResult::success(())
-            } else {
-                ValidationResult::failure(vec![ValidationError::new(
-                    ErrorCode::ValueOutOfRange,
-                    format!("Value {} must be zero", n)
-                ).with_actual_value(value.clone())])
-            }
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::TypeMismatch,
-                "Expected numeric value"
-            ).with_actual_value(value.clone())])
+validator! {
+    /// Validator that checks maximum numeric value
+    pub struct Max {
+        max_value: f64
+    }
+    impl {
+        fn check(value: &Value, max_value: &f64) -> bool {
+            { value.as_f64().map_or(false, |v| v <= *max_value) }
         }
-    }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new("zero", "zero", crate::ValidatorCategory::Basic)
-            .with_description("Number must be zero")
-            .with_tags(vec!["numeric".to_string(), "zero".to_string()])
-    }
-}
-
-/// NonZero validator - number must not be zero
-pub struct NonZero;
-
-#[async_trait]
-impl Validatable for NonZero {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if let Some(n) = value.as_f64() {
-            if n != 0.0 {
-                ValidationResult::success(())
-            } else {
-                ValidationResult::failure(vec![ValidationError::new(
-                    ErrorCode::ValueOutOfRange,
-                    "Value must not be zero"
-                ).with_actual_value(value.clone())])
-            }
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::TypeMismatch,
-                "Expected numeric value"
-            ).with_actual_value(value.clone())])
+        fn error(max_value: &f64) -> String {
+            { format!("Value must be at most {}", max_value) }
         }
-    }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new("non_zero", "non_zero", crate::ValidatorCategory::Basic)
-            .with_description("Number must not be zero")
-            .with_tags(vec!["numeric".to_string(), "non_zero".to_string()])
+        const DESCRIPTION: &str = "Number must not exceed maximum value";
     }
 }
 
-/// Integer validator - number must be an integer
-pub struct Integer;
-
-#[async_trait]
-impl Validatable for Integer {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if value.is_i64() {
-            ValidationResult::success(())
-        } else if let Some(n) = value.as_f64() {
-            if n.fract() == 0.0 {
-                ValidationResult::success(())
-            } else {
-                ValidationResult::failure(vec![ValidationError::new(
-                    ErrorCode::ValueOutOfRange,
-                    format!("Value {} is not an integer", n)
-                ).with_actual_value(value.clone())])
-            }
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::TypeMismatch,
-                "Expected numeric value"
-            ).with_actual_value(value.clone())])
+validator! {
+    /// Validator that checks numeric value is within a range
+    pub struct Range {
+        min_value: f64,
+        max_value: f64
+    }
+    impl {
+        fn check(value: &Value, min_value: &f64, max_value: &f64) -> bool {
+            { value.as_f64().map_or(false, |v| v >= *min_value && v <= *max_value) }
         }
-    }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new("integer", "integer", crate::ValidatorCategory::Basic)
-            .with_description("Number must be an integer")
-            .with_tags(vec!["numeric".to_string(), "integer".to_string()])
-    }
-}
-
-/// Even validator - number must be even
-pub struct Even;
-
-#[async_trait]
-impl Validatable for Even {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if let Some(n) = value.as_f64() {
-            if n.fract() == 0.0 && (n as i64) % 2 == 0 {
-                ValidationResult::success(())
-            } else {
-                ValidationResult::failure(vec![ValidationError::new(
-                    ErrorCode::ValueOutOfRange,
-                    format!("Value {} is not even", n)
-                ).with_actual_value(value.clone())])
-            }
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::TypeMismatch,
-                "Expected numeric value"
-            ).with_actual_value(value.clone())])
+        fn error(min_value: &f64, max_value: &f64) -> String {
+            { format!("Value must be between {} and {}", min_value, max_value) }
         }
-    }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new("even", "even", crate::ValidatorCategory::Basic)
-            .with_description("Number must be even")
-            .with_tags(vec!["numeric".to_string(), "even".to_string()])
+        const DESCRIPTION: &str = "Number must be within specified range";
     }
 }
 
-/// Odd validator - number must be odd
-pub struct Odd;
+// ==================== SIGN VALIDATORS ====================
 
-#[async_trait]
-impl Validatable for Odd {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if let Some(n) = value.as_f64() {
-            if n.fract() == 0.0 && (n as i64) % 2 != 0 {
-                ValidationResult::success(())
-            } else {
-                ValidationResult::failure(vec![ValidationError::new(
-                    ErrorCode::ValueOutOfRange,
-                    format!("Value {} is not odd", n)
-                ).with_actual_value(value.clone())])
-            }
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::TypeMismatch,
-                "Expected numeric value"
-            ).with_actual_value(value.clone())])
+validator! {
+    /// Validator that checks if number is positive (> 0)
+    pub struct Positive {
+    }
+    impl {
+        fn check(value: &Value) -> bool {
+            { value.as_f64().map_or(false, |v| v > 0.0) }
         }
-    }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new("odd", "odd", crate::ValidatorCategory::Basic)
-            .with_description("Number must be odd")
-            .with_tags(vec!["numeric".to_string(), "odd".to_string()])
-    }
-}
-
-/// DivisibleBy validator - number must be divisible by the divisor
-pub struct DivisibleBy {
-    divisor: f64,
-}
-
-impl DivisibleBy {
-    pub fn new(divisor: f64) -> Self {
-        Self { divisor }
-    }
-}
-
-#[async_trait]
-impl Validatable for DivisibleBy {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if let Some(n) = value.as_f64() {
-            if self.divisor == 0.0 {
-                return ValidationResult::failure(vec![ValidationError::new(
-                    ErrorCode::ValueOutOfRange,
-                    "Divisor cannot be zero"
-                )]);
-            }
-            
-            if n % self.divisor == 0.0 {
-                ValidationResult::success(())
-            } else {
-                ValidationResult::failure(vec![ValidationError::new(
-                    ErrorCode::ValueOutOfRange,
-                    format!("Value {} is not divisible by {}", n, self.divisor)
-                ).with_actual_value(value.clone())
-                 .with_expected_value(Value::Number(serde_json::Number::from_f64(self.divisor).unwrap()))])
-            }
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::TypeMismatch,
-                "Expected numeric value"
-            ).with_actual_value(value.clone())])
+        fn error() -> String {
+            { "Value must be positive".to_string() }
         }
+        const DESCRIPTION: &str = "Number must be greater than zero";
     }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new("divisible_by", "divisible_by", crate::ValidatorCategory::Basic)
-            .with_description(format!("Number must be divisible by {}", self.divisor))
-            .with_tags(vec!["numeric".to_string(), "divisible".to_string()])
+}
+
+validator! {
+    /// Validator that checks if number is negative (< 0)
+    pub struct Negative {
     }
+    impl {
+        fn check(value: &Value) -> bool {
+            { value.as_f64().map_or(false, |v| v < 0.0) }
+        }
+        fn error() -> String {
+            { "Value must be negative".to_string() }
+        }
+        const DESCRIPTION: &str = "Number must be less than zero";
+    }
+}
+
+validator! {
+    /// Validator that checks if number is zero
+    pub struct Zero {
+    }
+    impl {
+        fn check(value: &Value) -> bool {
+            { value.as_f64().map_or(false, |v| v == 0.0) }
+        }
+        fn error() -> String {
+            { "Value must be zero".to_string() }
+        }
+        const DESCRIPTION: &str = "Number must be exactly zero";
+    }
+}
+
+validator! {
+    /// Validator that checks if number is non-negative (>= 0)
+    pub struct NonNegative {
+    }
+    impl {
+        fn check(value: &Value) -> bool {
+            { value.as_f64().map_or(false, |v| v >= 0.0) }
+        }
+        fn error() -> String {
+            { "Value must be non-negative".to_string() }
+        }
+        const DESCRIPTION: &str = "Number must be greater than or equal to zero";
+    }
+}
+
+validator! {
+    /// Validator that checks if number is non-positive (<= 0)
+    pub struct NonPositive {
+    }
+    impl {
+        fn check(value: &Value) -> bool {
+            { value.as_f64().map_or(false, |v| v <= 0.0) }
+        }
+        fn error() -> String {
+            { "Value must be non-positive".to_string() }
+        }
+        const DESCRIPTION: &str = "Number must be less than or equal to zero";
+    }
+}
+
+// ==================== TYPE VALIDATORS ====================
+
+validator! {
+    /// Validator that checks if number is an integer
+    pub struct Integer {
+    }
+    impl {
+        fn check(value: &Value) -> bool {
+            { value.as_f64().map_or(false, |v| v.fract() == 0.0) }
+        }
+        fn error() -> String {
+            { "Value must be an integer".to_string() }
+        }
+        const DESCRIPTION: &str = "Number must be a whole number";
+    }
+}
+
+validator! {
+    /// Validator that checks if number is finite (not infinity or NaN)
+    pub struct Finite {
+    }
+    impl {
+        fn check(value: &Value) -> bool {
+            { value.as_f64().map_or(false, |v| v.is_finite()) }
+        }
+        fn error() -> String {
+            { "Value must be finite".to_string() }
+        }
+        const DESCRIPTION: &str = "Number must be finite (not infinity or NaN)";
+    }
+}
+
+// ==================== CONVENIENCE FUNCTIONS ====================
+
+validator_fn!(pub fn min(min_value: f64) -> Min);
+validator_fn!(pub fn max(max_value: f64) -> Max);
+validator_fn!(pub fn numeric_range(min_value: f64, max_value: f64) -> Range);
+validator_fn!(pub fn positive() -> Positive);
+validator_fn!(pub fn negative() -> Negative);
+validator_fn!(pub fn zero() -> Zero);
+validator_fn!(pub fn non_negative() -> NonNegative);
+validator_fn!(pub fn non_positive() -> NonPositive);
+validator_fn!(pub fn integer() -> Integer);
+validator_fn!(pub fn finite() -> Finite);
+
+// Compatibility aliases
+pub fn range(min_value: f64, max_value: f64) -> Range {
+    Range::new(min_value, max_value)
+}
+
+pub fn between(min_value: f64, max_value: f64) -> Range {
+    Range::new(min_value, max_value)
 }

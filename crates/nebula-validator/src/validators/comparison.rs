@@ -1,347 +1,135 @@
-//! Comparison validation operations
+//! Comparison validation operations using the unified validator macro
 
-use async_trait::async_trait;
-use serde_json::Value;
-use crate::{Validatable, ValidationResult, ValidationError, ErrorCode};
+use crate::{validator, validator_fn};
 
-/// Equals validator - value must equal the expected value
-pub struct Equals {
-    expected: Value,
-}
+// ==================== COMPARISON VALIDATORS ====================
 
-impl Equals {
-    pub fn new(expected: Value) -> Self {
-        Self { expected }
+validator! {
+    /// Validator that checks if value equals another value
+    pub struct Equals {
+        expected: serde_json::Value
     }
-}
-
-#[async_trait]
-impl Validatable for Equals {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if value == &self.expected {
-            ValidationResult::success(())
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::ValueOutOfRange,
-                "Value does not equal expected value"
-            ).with_actual_value(value.clone())
-             .with_expected_value(self.expected.clone())])
+    impl {
+        fn check(value: &Value, expected: &serde_json::Value) -> bool {
+            { value == expected }
         }
-    }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new(
-            "equals",
-            "equals",
-            crate::ValidatorCategory::Basic,
-        )
-        .with_description("Value must equal expected value")
-        .with_tags(vec!["comparison".to_string(), "equals".to_string()])
-    }
-}
-
-/// NotEquals validator - value must not equal the expected value
-pub struct NotEquals {
-    expected: Value,
-}
-
-impl NotEquals {
-    pub fn new(expected: Value) -> Self {
-        Self { expected }
-    }
-}
-
-#[async_trait]
-impl Validatable for NotEquals {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if value != &self.expected {
-            ValidationResult::success(())
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::ValueOutOfRange,
-                "Value must not equal expected value"
-            ).with_actual_value(value.clone())
-             .with_expected_value(self.expected.clone())])
+        fn error(expected: &serde_json::Value) -> String {
+            { format!("Value must equal {}", expected) }
         }
-    }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new(
-            "not_equals",
-            "not_equals",
-            crate::ValidatorCategory::Basic,
-        )
-        .with_description("Value must not equal expected value")
-        .with_tags(vec!["comparison".to_string(), "not_equals".to_string()])
+        const DESCRIPTION: &str = "Value must equal expected value";
     }
 }
 
-/// GreaterThan validator - numeric value must be greater than the threshold
-pub struct GreaterThan {
-    threshold: f64,
-}
-
-impl GreaterThan {
-    pub fn new(threshold: f64) -> Self {
-        Self { threshold }
+validator! {
+    /// Validator that checks if a value does not equal another value
+    pub struct NotEquals {
+        forbidden: serde_json::Value
     }
-}
-
-#[async_trait]
-impl Validatable for GreaterThan {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if let Some(n) = value.as_f64() {
-            if n > self.threshold {
-                ValidationResult::success(())
-            } else {
-                ValidationResult::failure(vec![ValidationError::new(
-                    ErrorCode::ValueOutOfRange,
-                    format!("Value {} must be greater than {}", n, self.threshold)
-                ).with_actual_value(value.clone())
-                 .with_expected_value(Value::Number(serde_json::Number::from_f64(self.threshold).unwrap()))])
-            }
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::TypeMismatch,
-                "Expected numeric value"
-            ).with_actual_value(value.clone())])
+    impl {
+        fn check(value: &Value, forbidden: &serde_json::Value) -> bool {
+            { value != forbidden }
         }
-    }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new(
-            "greater_than",
-            "greater_than",
-            crate::ValidatorCategory::Basic,
-        )
-        .with_description(format!("Value must be greater than {}", self.threshold))
-        .with_tags(vec!["comparison".to_string(), "greater_than".to_string()])
-    }
-}
-
-/// LessThan validator - numeric value must be less than the threshold
-pub struct LessThan {
-    threshold: f64,
-}
-
-impl LessThan {
-    pub fn new(threshold: f64) -> Self {
-        Self { threshold }
-    }
-}
-
-#[async_trait]
-impl Validatable for LessThan {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if let Some(n) = value.as_f64() {
-            if n < self.threshold {
-                ValidationResult::success(())
-            } else {
-                ValidationResult::failure(vec![ValidationError::new(
-                    ErrorCode::ValueOutOfRange,
-                    format!("Value {} must be less than {}", n, self.threshold)
-                ).with_actual_value(value.clone())
-                 .with_expected_value(Value::Number(serde_json::Number::from_f64(self.threshold).unwrap()))])
-            }
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::TypeMismatch,
-                "Expected numeric value"
-            ).with_actual_value(value.clone())])
+        fn error(forbidden: &serde_json::Value) -> String {
+            { format!("Value must not equal {}", forbidden) }
         }
-    }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new(
-            "less_than",
-            "less_than",
-            crate::ValidatorCategory::Basic,
-        )
-        .with_description(format!("Value must be less than {}", self.threshold))
-        .with_tags(vec!["comparison".to_string(), "less_than".to_string()])
+        const DESCRIPTION: &str = "Value must not equal forbidden value";
     }
 }
 
-/// GreaterThanOrEqual validator - numeric value must be greater than or equal to the threshold
-pub struct GreaterThanOrEqual {
-    threshold: f64,
-}
-
-impl GreaterThanOrEqual {
-    pub fn new(threshold: f64) -> Self {
-        Self { threshold }
+validator! {
+    /// Validator that checks if numeric value is greater than threshold
+    pub struct GreaterThan {
+        threshold: f64
     }
-}
-
-#[async_trait]
-impl Validatable for GreaterThanOrEqual {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if let Some(n) = value.as_f64() {
-            if n >= self.threshold {
-                ValidationResult::success(())
-            } else {
-                ValidationResult::failure(vec![ValidationError::new(
-                    ErrorCode::ValueOutOfRange,
-                    format!("Value {} must be greater than or equal to {}", n, self.threshold)
-                ).with_actual_value(value.clone())
-                 .with_expected_value(Value::Number(serde_json::Number::from_f64(self.threshold).unwrap()))])
-            }
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::TypeMismatch,
-                "Expected numeric value"
-            ).with_actual_value(value.clone())])
+    impl {
+        fn check(value: &Value, threshold: &f64) -> bool {
+            { value.as_f64().map_or(false, |v| v > *threshold) }
         }
-    }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new(
-            "greater_than_or_equal",
-            "greater_than_or_equal",
-            crate::ValidatorCategory::Basic,
-        )
-        .with_description(format!("Value must be greater than or equal to {}", self.threshold))
-        .with_tags(vec!["comparison".to_string(), "greater_than_or_equal".to_string()])
-    }
-}
-
-/// LessThanOrEqual validator - numeric value must be less than or equal to the threshold
-pub struct LessThanOrEqual {
-    threshold: f64,
-}
-
-impl LessThanOrEqual {
-    pub fn new(threshold: f64) -> Self {
-        Self { threshold }
-    }
-}
-
-#[async_trait]
-impl Validatable for LessThanOrEqual {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if let Some(n) = value.as_f64() {
-            if n <= self.threshold {
-                ValidationResult::success(())
-            } else {
-                ValidationResult::failure(vec![ValidationError::new(
-                    ErrorCode::ValueOutOfRange,
-                    format!("Value {} must be less than or equal to {}", n, self.threshold)
-                ).with_actual_value(value.clone())
-                 .with_expected_value(Value::Number(serde_json::Number::from_f64(self.threshold).unwrap()))])
-            }
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::TypeMismatch,
-                "Expected numeric value"
-            ).with_actual_value(value.clone())])
+        fn error(threshold: &f64) -> String {
+            { format!("Value must be greater than {}", threshold) }
         }
-    }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new(
-            "less_than_or_equal",
-            "less_than_or_equal",
-            crate::ValidatorCategory::Basic,
-        )
-        .with_description(format!("Value must be less than or equal to {}", self.threshold))
-        .with_tags(vec!["comparison".to_string(), "less_than_or_equal".to_string()])
+        const DESCRIPTION: &str = "Value must be greater than threshold";
     }
 }
 
-/// Between validator - numeric value must be between min and max (inclusive)
-pub struct Between {
-    min: f64,
-    max: f64,
-}
-
-impl Between {
-    pub fn new(min: f64, max: f64) -> Self {
-        Self { min, max }
+validator! {
+    /// Validator that checks if numeric value is greater than or equal to threshold
+    pub struct GreaterThanOrEqual {
+        threshold: f64
     }
-}
-
-#[async_trait]
-impl Validatable for Between {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if let Some(n) = value.as_f64() {
-            if n >= self.min && n <= self.max {
-                ValidationResult::success(())
-            } else {
-                ValidationResult::failure(vec![ValidationError::new(
-                    ErrorCode::ValueOutOfRange,
-                    format!("Value {} must be between {} and {}", n, self.min, self.max)
-                ).with_actual_value(value.clone())
-                 .with_expected_value(Value::Object(serde_json::Map::from_iter(vec![
-                     ("min".to_string(), Value::Number(serde_json::Number::from_f64(self.min).unwrap())),
-                     ("max".to_string(), Value::Number(serde_json::Number::from_f64(self.max).unwrap()))
-                 ])))])
-            }
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::TypeMismatch,
-                "Expected numeric value"
-            ).with_actual_value(value.clone())])
+    impl {
+        fn check(value: &Value, threshold: &f64) -> bool {
+            { value.as_f64().map_or(false, |v| v >= *threshold) }
         }
-    }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new(
-            "between",
-            "between",
-            crate::ValidatorCategory::Basic,
-        )
-        .with_description(format!("Value must be between {} and {}", self.min, self.max))
-        .with_tags(vec!["comparison".to_string(), "between".to_string()])
-    }
-}
-
-/// NotBetween validator - numeric value must not be between min and max (inclusive)
-pub struct NotBetween {
-    min: f64,
-    max: f64,
-}
-
-impl NotBetween {
-    pub fn new(min: f64, max: f64) -> Self {
-        Self { min, max }
-    }
-}
-
-#[async_trait]
-impl Validatable for NotBetween {
-    async fn validate(&self, value: &Value) -> ValidationResult<()> {
-        if let Some(n) = value.as_f64() {
-            if n < self.min || n > self.max {
-                ValidationResult::success(())
-            } else {
-                ValidationResult::failure(vec![ValidationError::new(
-                    ErrorCode::ValueOutOfRange,
-                    format!("Value {} must not be between {} and {}", n, self.min, self.max)
-                ).with_actual_value(value.clone())
-                 .with_expected_value(Value::Object(serde_json::Map::from_iter(vec![
-                     ("min".to_string(), Value::Number(serde_json::Number::from_f64(self.min).unwrap())),
-                     ("max".to_string(), Value::Number(serde_json::Number::from_f64(self.max).unwrap()))
-                 ])))])
-            }
-        } else {
-            ValidationResult::failure(vec![ValidationError::new(
-                ErrorCode::TypeMismatch,
-                "Expected numeric value"
-            ).with_actual_value(value.clone())])
+        fn error(threshold: &f64) -> String {
+            { format!("Value must be greater than or equal to {}", threshold) }
         }
-    }
-    
-    fn metadata(&self) -> crate::ValidatorMetadata {
-        crate::ValidatorMetadata::new(
-            "not_between",
-            "not_between",
-            crate::ValidatorCategory::Basic,
-        )
-        .with_description(format!("Value must not be between {} and {}", self.min, self.max))
-        .with_tags(vec!["comparison".to_string(), "not_between".to_string()])
+        const DESCRIPTION: &str = "Value must be greater than or equal to threshold";
     }
 }
 
-// Legacy aliases for backward compatibility
-pub type MinValue = GreaterThanOrEqual;
-pub type MaxValue = LessThanOrEqual;
+validator! {
+    /// Validator that checks if numeric value is less than threshold
+    pub struct LessThan {
+        threshold: f64
+    }
+    impl {
+        fn check(value: &Value, threshold: &f64) -> bool {
+            { value.as_f64().map_or(false, |v| v < *threshold) }
+        }
+        fn error(threshold: &f64) -> String {
+            { format!("Value must be less than {}", threshold) }
+        }
+        const DESCRIPTION: &str = "Value must be less than threshold";
+    }
+}
+
+validator! {
+    /// Validator that checks if numeric value is less than or equal to threshold
+    pub struct LessThanOrEqual {
+        threshold: f64
+    }
+    impl {
+        fn check(value: &Value, threshold: &f64) -> bool {
+            { value.as_f64().map_or(false, |v| v <= *threshold) }
+        }
+        fn error(threshold: &f64) -> String {
+            { format!("Value must be less than or equal to {}", threshold) }
+        }
+        const DESCRIPTION: &str = "Value must be less than or equal to threshold";
+    }
+}
+
+// ==================== CONVENIENCE FUNCTIONS ====================
+
+validator_fn!(pub fn equals(expected: serde_json::Value) -> Equals);
+validator_fn!(pub fn not_equals(forbidden: serde_json::Value) -> NotEquals);
+validator_fn!(pub fn greater_than(threshold: f64) -> GreaterThan);
+validator_fn!(pub fn greater_than_or_equal(threshold: f64) -> GreaterThanOrEqual);
+validator_fn!(pub fn less_than(threshold: f64) -> LessThan);
+validator_fn!(pub fn less_than_or_equal(threshold: f64) -> LessThanOrEqual);
+
+// Simplified names
+pub fn gt(threshold: f64) -> GreaterThan {
+    GreaterThan::new(threshold)
+}
+
+pub fn gte(threshold: f64) -> GreaterThanOrEqual {
+    GreaterThanOrEqual::new(threshold)
+}
+
+pub fn lt(threshold: f64) -> LessThan {
+    LessThan::new(threshold)
+}
+
+pub fn lte(threshold: f64) -> LessThanOrEqual {
+    LessThanOrEqual::new(threshold)
+}
+
+pub fn eq(expected: serde_json::Value) -> Equals {
+    Equals::new(expected)
+}
+
+pub fn ne(forbidden: serde_json::Value) -> NotEquals {
+    NotEquals::new(forbidden)
+}
