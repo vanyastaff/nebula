@@ -8,3 +8,5 @@ pub mod bytes;
 
 // Re-exports
 pub use number::{Integer, Float, HashableFloat};
+pub use text::Text;
+pub use bytes::Bytes;
