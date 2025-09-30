@@ -19,7 +19,7 @@
 //! - When the `decimal` feature is enabled, `Decimal` participates in numeric
 //!   operations and has its own type code `'m'`.
 //!
-use crate::Value;
+use crate::{Value, Number};
 use core::fmt::{Display, Formatter};
 
 /// Represents the kind/type of a Value
@@ -39,7 +39,7 @@ pub enum ValueKind {
     DateTime,
     Duration,
     Bytes,
-    #[cfg(feature = "decimal")]
+    File,
     Decimal,
 }
 
@@ -57,14 +57,14 @@ impl ValueKind {
             Self::DateTime,
             Self::Duration,
             Self::Bytes,
-            #[cfg(feature = "decimal")]
+            Self::File,
             Self::Decimal,
         ]
     }
 
     /// Check if this kind is numeric
     pub const fn is_numeric(&self) -> bool {
-        matches!(self, Self::Integer | Self::Float)
+        matches!(self, Self::Integer | Self::Float | Self::Decimal)
     }
 
     /// Check if this kind is a collection
@@ -90,18 +90,18 @@ impl ValueKind {
         match value {
             Value::Null => Self::Null,
             Value::Bool(_) => Self::Boolean,
-            Value::Int(_) => Self::Integer,
-            Value::Float(_) => Self::Float,
+            Value::Number(Number::Int(_)) => Self::Integer,
+            Value::Number(Number::Float(_)) => Self::Float,
+            Value::Number(Number::Decimal(_)) => Self::Decimal,
             Value::String(_) => Self::String,
             Value::Array(_) => Self::Array,
             Value::Object(_) => Self::Object,
             Value::Bytes(_) => Self::Bytes,
-            #[cfg(feature = "decimal")]
-            Value::Decimal(_) => Self::Decimal,
             Value::Time(_) => Self::Time,
             Value::Date(_) => Self::Date,
             Value::DateTime(_) => Self::DateTime,
             Value::Duration(_) => Self::Duration,
+            Value::File(_) => Self::File,
         }
     }
 
@@ -134,7 +134,7 @@ impl ValueKind {
             Self::DateTime => "datetime",
             Self::Duration => "duration",
             Self::Bytes => "bytes",
-            #[cfg(feature = "decimal")]
+            Self::File => "file",
             Self::Decimal => "decimal",
         }
     }
@@ -154,7 +154,7 @@ impl ValueKind {
             Self::DateTime => 'x',
             Self::Duration => 'z',
             Self::Bytes => 'y',
-            #[cfg(feature = "decimal")]
+            Self::File => 'F',
             Self::Decimal => 'm',
         }
     }
@@ -174,7 +174,7 @@ impl ValueKind {
             'x' => Some(Self::DateTime),
             'z' => Some(Self::Duration),
             'y' => Some(Self::Bytes),
-            #[cfg(feature = "decimal")]
+            'F' => Some(Self::File),
             'm' => Some(Self::Decimal),
             _ => None,
         }
@@ -187,13 +187,12 @@ impl ValueKind {
             Self::Boolean => Some(1),
             Self::Integer => Some(8),
             Self::Float => Some(8),
-            #[cfg(feature = "decimal")]
             Self::Decimal => Some(16),
             Self::Date => Some(4),
             Self::Time => Some(8),
             Self::DateTime => Some(12),
             Self::Duration => Some(8),
-            Self::String | Self::Array | Self::Object | Self::Bytes => None,
+            Self::String | Self::Array | Self::Object | Self::Bytes | Self::File => None,
         }
     }
 
@@ -204,7 +203,6 @@ impl ValueKind {
             Self::Boolean => 1,
             Self::Integer => 2,
             Self::Float => 3,
-            #[cfg(feature = "decimal")]
             Self::Decimal => 4,
             Self::String => 5,
             Self::Date => 6,
@@ -214,6 +212,7 @@ impl ValueKind {
             Self::Bytes => 10,
             Self::Array => 11,
             Self::Object => 12,
+            Self::File => 13,
         }
     }
 }
@@ -281,13 +280,10 @@ impl TypeCompatibility {
             (ValueKind::Integer, ValueKind::Integer) => true,
             (ValueKind::Float, ValueKind::Float) => true,
             (ValueKind::Integer, ValueKind::Float) | (ValueKind::Float, ValueKind::Integer) => true,
-            #[cfg(feature = "decimal")]
             (ValueKind::Decimal, ValueKind::Decimal) => true,
-            #[cfg(feature = "decimal")]
             (ValueKind::Decimal, ValueKind::Integer) | (ValueKind::Integer, ValueKind::Decimal) => {
                 true
             }
-            #[cfg(feature = "decimal")]
             (ValueKind::Decimal, ValueKind::Float) | (ValueKind::Float, ValueKind::Decimal) => true,
             _ => false,
         }
