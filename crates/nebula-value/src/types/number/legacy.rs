@@ -61,7 +61,11 @@ impl fmt::Display for FloatInner {
 impl Hash for FloatInner {
     fn hash<H: Hasher>(&self, state: &mut H) {
         if self.0.is_nan() {
+            // Normalize all NaN values to the same bit pattern
             f64::NAN.to_bits().hash(state);
+        } else if self.0 == 0.0 {
+            // Normalize -0.0 and +0.0 to the same value
+            0.0f64.to_bits().hash(state);
         } else {
             self.0.to_bits().hash(state);
         }

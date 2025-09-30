@@ -683,6 +683,20 @@ impl Value {
 
     /// Insert value by path segments, creating intermediate objects as needed
     pub fn insert_path_segments(&mut self, segments: &[&str], value: Value) -> ValueResult<()> {
+        self.insert_path_segments_with_depth(segments, value, 0)
+    }
+
+    /// Internal implementation with depth tracking
+    fn insert_path_segments_with_depth(&mut self, segments: &[&str], value: Value, depth: usize) -> ValueResult<()> {
+        const MAX_PATH_DEPTH: usize = 100;
+
+        if depth > MAX_PATH_DEPTH {
+            return Err(NebulaError::validation(format!(
+                "Path depth exceeds maximum of {} (possible infinite recursion)",
+                MAX_PATH_DEPTH
+            )));
+        }
+
         if segments.is_empty() {
             *self = value;
             return Ok(());
@@ -716,7 +730,7 @@ impl Value {
                 Value::Null => {
                     // Create object structure
                     *self = Value::object(HashMap::new());
-                    self.insert_path_segments(segments, value)
+                    self.insert_path_segments_with_depth(segments, value, depth + 1)
                 }
                 _ => Err(NebulaError::value_operation_not_supported(
                     "insert_path",
@@ -732,7 +746,7 @@ impl Value {
                         .cloned()
                         .unwrap_or_else(|| Value::object(HashMap::new())); // Create intermediate object
 
-                    next_val.insert_path_segments(rest, value)?;
+                    next_val.insert_path_segments_with_depth(rest, value, depth + 1)?;
                     let new_obj = obj.insert(first.to_string(), next_val);
                     *obj = new_obj;
                     Ok(())
@@ -745,7 +759,7 @@ impl Value {
                         return Err(NebulaError::value_index_out_of_bounds(index, arr.len()));
                     }
                     let mut next_val = arr.get(index).cloned().unwrap_or_else(|| Value::object(HashMap::new()));
-                    next_val.insert_path_segments(rest, value)?;
+                    next_val.insert_path_segments_with_depth(rest, value, depth + 1)?;
                     let new_arr = arr
                         .set(index, next_val)
                         .map_err(|e| NebulaError::internal(format!("array set error: {:?}", e)))?;
@@ -755,7 +769,7 @@ impl Value {
                 Value::Null => {
                     // Create object structure and continue
                     *self = Value::object(HashMap::new());
-                    self.insert_path_segments(segments, value)
+                    self.insert_path_segments_with_depth(segments, value, depth + 1)
                 }
                 _ => Err(NebulaError::value_operation_not_supported(
                     "insert_path",
@@ -1185,12 +1199,13 @@ impl PartialOrd for Value {
 }
 
 // ==================== Eq Implementation ====================
-// SPECIAL CASE: We implement Eq for Value even though f64 NaN ≠ NaN
-// This is required for HashMap/HashSet usage and follows common practice
-// in data systems where NaN == NaN for hashing purposes.
-// The Hash implementation uses f64::to_bits() which treats equal bit patterns as equal.
-
-impl Eq for Value {}
+// NOTE: We do NOT implement Eq for Value because it contains Float (f64),
+// and f64 NaN ≠ NaN violates the Eq contract (reflexivity).
+// This is correct according to IEEE 754 and Rust's type system.
+//
+// If you need to use Value as a HashMap key, use the provided wrapper:
+// - HashableValue for cases where NaN == NaN semantics are acceptable
+// - Or use a different key type (String, i64, etc.)
 
 // ==================== Ord Implementation ====================
 // Note: Value cannot implement Ord because Float::partial_cmp returns None for NaN
@@ -1600,9 +1615,17 @@ impl From<Value> for serde_json::Value {
                         match n {
                             Number::Int(i) => serde_json::Value::Number(serde_json::Number::from(i)),
                             Number::Float(f) => {
-                                serde_json::Number::from_f64(f)
-                                    .map(serde_json::Value::Number)
-                                    .unwrap_or(serde_json::Value::Null)
+                                if f.is_finite() {
+                                    serde_json::Number::from_f64(f)
+                                        .map(serde_json::Value::Number)
+                                        .unwrap_or(serde_json::Value::Null)
+                                } else if f.is_nan() {
+                                    serde_json::Value::String("NaN".to_string())
+                                } else if f.is_infinite() && f.is_sign_positive() {
+                                    serde_json::Value::String("+Infinity".to_string())
+                                } else {
+                                    serde_json::Value::String("-Infinity".to_string())
+                                }
                             }
                             Number::Decimal(d) => {
                                 // For JSON numbers, try to convert to f64 if possible
@@ -1739,5 +1762,76 @@ impl TryFrom<Value> for std::collections::HashMap<String, Value> {
             }
             _ => Err(NebulaError::value_conversion_error("HashMap<String, Value>", &format!("{:?}", value))),
         }
+    }
+}
+
+// ==================== HashableValue Wrapper ====================
+
+/// Wrapper around [`Value`] that implements [`Eq`] for use in HashMap/HashSet.
+///
+/// # Important
+///
+/// This type treats NaN == NaN and -0.0 == +0.0 for hashing purposes,
+/// which violates IEEE 754 semantics but is commonly needed for data structures.
+///
+/// # Example
+///
+/// ```
+/// use std::collections::HashMap;
+/// use nebula_value::{Value, HashableValue};
+///
+/// let mut map = HashMap::new();
+/// map.insert(HashableValue(Value::float(f64::NAN)), "value");
+///
+/// // Both NaN values are treated as equal
+/// assert!(map.contains_key(&HashableValue(Value::float(f64::NAN))));
+/// ```
+#[derive(Clone, Debug, Hash)]
+pub struct HashableValue(pub Value);
+
+impl HashableValue {
+    /// Create a new hashable value
+    pub fn new(value: Value) -> Self {
+        Self(value)
+    }
+
+    /// Get inner value
+    pub fn into_inner(self) -> Value {
+        self.0
+    }
+
+    /// Get reference to inner value
+    pub fn as_value(&self) -> &Value {
+        &self.0
+    }
+}
+
+impl PartialEq for HashableValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Value::Number(Number::Float(a)), Value::Number(Number::Float(b))) => {
+                // NaN == NaN for HashableValue
+                if a.is_nan() && b.is_nan() {
+                    true
+                } else {
+                    a == b
+                }
+            }
+            _ => self.0 == other.0,
+        }
+    }
+}
+
+impl Eq for HashableValue {}
+
+impl From<Value> for HashableValue {
+    fn from(value: Value) -> Self {
+        Self(value)
+    }
+}
+
+impl From<HashableValue> for Value {
+    fn from(hv: HashableValue) -> Self {
+        hv.0
     }
 }

@@ -4,6 +4,7 @@
 //! content validation, character type validation, and format verification.
 
 use crate::{validator, validator_fn};
+use bon::builder;
 
 // ==================== STRING LENGTH VALIDATORS ====================
 
@@ -368,5 +369,36 @@ pub fn signed_numeric() -> NumericString {
 
 pub fn signed_decimal() -> NumericString {
     NumericString::new(true, true)
+}
+
+// ==================== BUILDER-BASED API ====================
+
+/// Create alphanumeric validator with builder pattern
+#[builder]
+pub fn alphanumeric_builder(
+    #[builder(default = false)]
+    allow_spaces: bool
+) -> Alphanumeric {
+    Alphanumeric::new(allow_spaces)
+}
+
+/// Create alphabetic validator with builder pattern
+#[builder]
+pub fn alpha_builder(
+    #[builder(default = false)]
+    allow_spaces: bool
+) -> Alpha {
+    Alpha::new(allow_spaces)
+}
+
+/// Create numeric string validator with builder pattern
+#[builder]
+pub fn numeric_string_builder(
+    #[builder(default = false)]
+    allow_decimal: bool,
+    #[builder(default = false)]
+    allow_negative: bool
+) -> NumericString {
+    NumericString::new(allow_decimal, allow_negative)
 }
 

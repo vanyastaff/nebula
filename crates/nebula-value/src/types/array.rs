@@ -37,6 +37,9 @@ pub enum ArrayError {
     #[error("Empty array for operation that requires at least one element")]
     EmptyArray,
 
+    #[error("Limit exceeded: {msg}")]
+    LimitExceeded { msg: String },
+
     #[error("Invalid operation: {msg}")]
     InvalidOperation { msg: String },
 
@@ -156,7 +159,7 @@ impl Array {
         &self.inner
     }
 
-    /// Converts to a Vec<Value>
+    /// Converts to a `Vec<Value>`
     #[inline]
     pub fn to_vec(&self) -> Vec<Value> {
         self.inner.to_vec()
@@ -861,7 +864,7 @@ impl Array {
         self.inner.iter().cloned()
     }
 
-    /// Converts to owned Vec<Value>
+    /// Converts to owned `Vec<Value>`
     #[inline]
     pub fn into_vec(self) -> Vec<Value> {
         self.inner.to_vec()

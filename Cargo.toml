@@ -11,6 +11,7 @@ members = [
     "crates/nebula-resilience",
     "crates/nebula-resource",
     "crates/nebula-system",
+    "crates/nebula-validator",
     "crates/nebula-value",
 ]
 resolver = "3"
@@ -29,7 +30,7 @@ documentation = "https://docs.rs/nebula"
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1.47.1", features = ["full"] }
+tokio = { version = "1.47.1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs"] }
 rayon = { version = "1.11.0" }
 async-trait = "0.1.89"
 
@@ -60,90 +61,6 @@ pretty_assertions = "1.4"
 mockall = "0.13.0"
 tempfile = "3.21"
 
-[workspace.lints.rust]
-# Rust compiler lints
-unsafe_code = "warn"
-# unstable_features = "warn"  # Это не валидный lint
-unused_extern_crates = "warn"
-unused_import_braces = "warn"
-unused_qualifications = "warn"
-variant_size_differences = "warn"
-missing_docs = "warn"  # Добавлено для nebula-memory
-
-# Дополнительные линты для безопасности
-rust_2018_idioms = "warn"
-rust_2021_compatibility = "warn"
-
-[workspace.lints.clippy]
-# Pedantic lints
-pedantic = { level = "warn", priority = -1 }
-cast_possible_truncation = "allow"
-cast_possible_wrap = "allow"
-cast_precision_loss = "allow"
-cast_sign_loss = "allow"
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-module_name_repetitions = "allow"
-must_use_candidate = "allow"
-similar_names = "allow"
-struct_excessive_bools = "allow"
-too_many_lines = "allow"
-wildcard_imports = "allow"
-
-# Restriction lints
-dbg_macro = "warn"
-print_stdout = "warn"
-print_stderr = "warn"
-todo = "warn"
-unimplemented = "warn"
-unwrap_used = "warn"
-expect_used = "warn"
-
-# Cargo lints
-cargo_common_metadata = "warn"
-negative_feature_names = "warn"
-redundant_feature_names = "warn"
-wildcard_dependencies = "warn"
-
-# Style lints
-needless_pass_by_value = "warn"
-trivially_copy_pass_by_ref = "warn"
-semicolon_if_nothing_returned = "warn"
-match_same_arms = "warn"
-single_match_else = "warn"
-unnecessary_wraps = "warn"
-redundant_else = "warn"
-unused_async = "warn"
-map_unwrap_or = "warn"
-map_flatten = "warn"
-filter_map_next = "warn"
-
-# Performance lints
-inefficient_to_string = "warn"
-large_types_passed_by_value = "warn"
-trivial_regex = "warn"
-needless_collect = "warn"
-
-# Correctness lints
-derive_partial_eq_without_eq = "warn"
-enum_glob_use = "warn"
-exit = "warn"
-lossy_float_literal = "warn"
-macro_use_imports = "warn"
-mem_forget = "warn"
-panic = "warn"
-panic_in_result_fn = "warn"
-use_debug = "warn"
-
-# Unsafe code specific lints (для nebula-memory)
-undocumented_unsafe_blocks = "warn"
-multiple_unsafe_ops_per_block = "warn"
-missing_safety_doc = "warn"
-
-[workspace.lints.rustdoc]
-all = "warn"
-missing_doc_code_examples = "allow"
-private_doc_tests = "warn"
 
 [profile.dev]
 opt-level = 0
@@ -163,27 +80,12 @@ panic = "abort"
 opt-level = 0
 debug = true
 
-[profile.bench]
-opt-level = 3
-lto = "thin"
-codegen-units = 1
 
-[profile.release-with-debug]
-inherits = "release"
-debug = true
-strip = false
+[workspace.lints.rust]
+rust_2018_idioms = "deny"
 
-[profile.embedded]
-inherits = "release"
-opt-level = "z"
-panic = "abort"
-lto = true
-strip = true
-
-[profile.wasm]
-inherits = "release"
-opt-level = "z"
-lto = true
-panic = "abort"
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
 
 

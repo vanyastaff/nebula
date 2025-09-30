@@ -185,19 +185,9 @@ impl AllocatorManager {
     pub fn with_allocator<F, R>(&self, allocator_id: AllocatorId, f: F) -> R
     where F: FnOnce() -> R {
         let previous = self.active_allocator.swap(allocator_id, Ordering::SeqCst);
-
-        struct RestoreGuard<'a> {
-            manager: &'a AllocatorManager,
-            previous: AllocatorId,
-        }
-        impl<'a> Drop for RestoreGuard<'a> {
-            fn drop(&mut self) {
-                self.manager.active_allocator.store(self.previous, Ordering::SeqCst);
-            }
-        }
-
-        let _guard = RestoreGuard { manager: self, previous };
-        f()
+        let result = f();
+        self.active_allocator.store(previous, Ordering::SeqCst);
+        result
     }
 
     /// List all registered allocators

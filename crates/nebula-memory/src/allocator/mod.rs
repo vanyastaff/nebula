@@ -6,6 +6,8 @@
 mod bump;
 mod error;
 mod manager;
+#[cfg(feature = "std")]
+mod monitored;
 mod pool;
 mod stack;
 mod stats;
@@ -14,8 +16,16 @@ mod tracked;
 mod traits;
 
 pub use bump::BumpAllocator;
-pub use error::{AllocError, AllocErrorKind, AllocResult};
+pub use error::{
+    AllocError, AllocErrorCode, AllocResult, ErrorStats, ErrorStatsSnapshot, MemoryState,
+};
+
+// Legacy types for backward compatibility
+#[allow(deprecated)]
+pub use error::AllocErrorKind;
 pub use manager::{AllocatorId, AllocatorManager, GlobalAllocatorManager};
+#[cfg(feature = "std")]
+pub use monitored::{MonitoredAllocator, MonitoredConfig};
 pub use pool::{PoolAllocator, PoolBox};
 pub use stack::{StackAllocator, StackFrame, StackMarker};
 pub use stats::{AllocatorStats, AtomicAllocatorStats, OptionalStats, StatisticsProvider};

@@ -10,7 +10,7 @@ use std::time::Duration as StdDuration;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "chrono")]
+
 use chrono::{Duration, NaiveTime, Timelike};
 
 use thiserror::Error;
@@ -149,7 +149,6 @@ impl TimeInner {
     }
 
     /// Converts to chrono NaiveTime
-    #[cfg(feature = "chrono")]
     pub fn to_naive(&self) -> NaiveTime {
         NaiveTime::from_num_seconds_from_midnight_opt(
             (self.nanos / Self::NANOS_PER_SECOND) as u32,
@@ -159,7 +158,6 @@ impl TimeInner {
     }
 
     /// Creates from chrono NaiveTime
-    #[cfg(feature = "chrono")]
     pub fn from_naive(time: NaiveTime) -> Self {
         let nanos = time.num_seconds_from_midnight() as u64 * Self::NANOS_PER_SECOND
             + time.nanosecond() as u64;
@@ -256,14 +254,14 @@ impl Time {
     }
 
     /// Creates Time for current time (local timezone)
-    #[cfg(feature = "chrono")]
+    
     pub fn now() -> Self {
         let now = chrono::Local::now().time();
         Self::from_naive_time(now)
     }
 
     /// Creates Time for current time (UTC)
-    #[cfg(feature = "chrono")]
+    
     pub fn now_utc() -> Self {
         let now = chrono::Utc::now().time();
         Self::from_naive_time(now)
@@ -311,7 +309,6 @@ impl Time {
     }
 
     /// Creates from chrono NaiveTime
-    #[cfg(feature = "chrono")]
     pub fn from_naive_time(time: NaiveTime) -> Self {
         Self {
             inner: Arc::new(TimeInner::from_naive(time)),
@@ -791,7 +788,7 @@ impl Time {
     }
 
     /// Returns relative time string (e.g., "in 5 minutes", "2 hours ago")
-    #[cfg(feature = "chrono")]
+    
     pub fn to_relative_string(&self) -> String {
         let now = Time::now();
         let diff_nanos = self.signed_duration_to(&now);
@@ -820,7 +817,6 @@ impl Time {
     // ==================== Conversions ====================
 
     /// Converts to chrono NaiveTime
-    #[cfg(feature = "chrono")]
     #[inline]
     pub fn to_naive(&self) -> NaiveTime {
         self.inner.to_naive()
@@ -956,14 +952,14 @@ impl From<Time> for StdDuration {
     }
 }
 
-#[cfg(feature = "chrono")]
+
 impl From<NaiveTime> for Time {
     fn from(time: NaiveTime) -> Self {
         Self::from_naive_time(time)
     }
 }
 
-#[cfg(feature = "chrono")]
+
 impl From<Time> for NaiveTime {
     fn from(time: Time) -> Self {
         time.to_naive()

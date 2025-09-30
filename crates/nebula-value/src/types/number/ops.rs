@@ -116,8 +116,11 @@ impl Hash for Number {
             Number::Float(f) => {
                 1u8.hash(state);
                 if f.is_nan() {
-                    // All NaN values hash to the same value
+                    // Normalize all NaN values to the same bit pattern
                     f64::NAN.to_bits().hash(state);
+                } else if *f == 0.0 {
+                    // Normalize -0.0 and +0.0 to the same value
+                    0.0f64.to_bits().hash(state);
                 } else {
                     f.to_bits().hash(state);
                 }

@@ -16,7 +16,7 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use super::{
-    AllocError, AllocErrorKind, AllocResult, Allocator,
+    AllocError, AllocErrorCode, AllocResult, Allocator,
     BulkAllocator, MemoryUsage, OptionalStats, Resettable,
     StatisticsProvider, ThreadSafeAllocator,
 };
@@ -235,8 +235,8 @@ impl BumpAllocator {
     /// Creates a new bump allocator with the specified capacity and config
     pub fn with_config(capacity: usize, config: BumpConfig) -> AllocResult<Self> {
         if capacity == 0 {
-            return Err(AllocError::with_kind_and_layout(
-                AllocErrorKind::InvalidLayout,
+            return Err(AllocError::with_layout(
+                AllocErrorCode::InvalidLayout,
                 Layout::from_size_align(0, 1).unwrap(),
             ));
         }
@@ -246,7 +246,9 @@ impl BumpAllocator {
         // Use safe memory operations for pattern fill
         let memory_ops = MemoryOps::new();
         if let Some(pattern) = config.alloc_pattern {
-            memory_ops.secure_fill_slice(&mut memory, pattern);
+            unsafe {
+                MemoryOps::secure_fill_slice(&mut memory, pattern);
+            }
         }
 
         let start_addr = memory.as_ptr() as usize;
@@ -381,7 +383,7 @@ impl BumpAllocator {
                             self.memory.as_ptr().add(dealloc_start) as *mut u8,
                             dealloc_end - dealloc_start
                         );
-                        self.memory_ops.secure_fill_slice(slice, pattern);
+                    MemoryOps::secure_fill_slice(slice, pattern);
                     }
                 }
             }
@@ -444,7 +446,7 @@ impl BumpAllocator {
                                     self.memory.as_ptr().add(offset) as *mut u8,
                                     actual_size
                                 );
-                                self.memory_ops.secure_fill_slice(slice, pattern);
+                            MemoryOps::secure_fill_slice(slice, pattern);
                             }
                         }
                     }
@@ -525,8 +527,8 @@ unsafe impl Allocator for BumpAllocator {
 
         // Validate alignment
         if !is_power_of_two(layout.align()) {
-            return Err(AllocError::with_kind_and_layout(
-                AllocErrorKind::InvalidLayout,
+            return Err(AllocError::with_layout(
+                AllocErrorCode::InvalidLayout,
                 layout,
             ));
         }
@@ -534,7 +536,7 @@ unsafe impl Allocator for BumpAllocator {
         if let Some(ptr) = self.try_bump(layout.size(), layout.align()) {
             Ok(NonNull::slice_from_raw_parts(ptr, layout.size()))
         } else {
-            Err(AllocError::with_kind_and_layout(AllocErrorKind::OutOfMemory, layout))
+            Err(AllocError::with_layout(AllocErrorCode::OutOfMemory, layout))
         }
     }
 
@@ -543,7 +545,9 @@ unsafe impl Allocator for BumpAllocator {
         // Use safe memory operations for dealloc pattern
         if let Some(pattern) = self.config.dealloc_pattern {
             if let Some(slice) = self.get_allocation_slice(ptr, layout.size()) {
-                self.memory_ops.secure_fill_slice(slice, pattern);
+                unsafe {
+                    MemoryOps::secure_fill_slice(slice, pattern);
+                }
             }
         }
 
@@ -594,7 +598,9 @@ unsafe impl Allocator for BumpAllocator {
         // Use safe deallocation
         if let Some(pattern) = self.config.dealloc_pattern {
             if let Some(slice) = self.get_allocation_slice(ptr, old_layout.size()) {
-                self.memory_ops.secure_fill_slice(slice, pattern);
+                unsafe {
+                    MemoryOps::secure_fill_slice(slice, pattern);
+                }
             }
         }
 
@@ -675,7 +681,9 @@ impl Resettable for BumpAllocator {
                         self.memory.as_ptr() as *mut u8,
                         used
                     );
-                    self.memory_ops.secure_fill_slice(slice, pattern);
+                    unsafe {
+                    MemoryOps::secure_fill_slice(slice, pattern);
+                }
                 }
             }
         }

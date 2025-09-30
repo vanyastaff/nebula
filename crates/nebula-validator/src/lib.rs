@@ -39,6 +39,167 @@ pub use validators::{
 pub use nebula_value::Value;
 pub use async_trait::async_trait;
 
+// ==================== CONVENIENCE BUILDER API ====================
+
+/// Create a string validator with length constraints using builder pattern
+#[bon::builder]
+pub fn string_constraints(
+    min_len: Option<usize>,
+    max_len: Option<usize>,
+    #[builder(default = false)]
+    alphanumeric_only: bool,
+    #[builder(default = false)]
+    allow_spaces: bool
+) -> Box<dyn Validator> {
+    // Build validator chain by conditionally chaining validators
+    match (min_len, max_len, alphanumeric_only) {
+        (Some(min_val), Some(max_val), true) => {
+            Box::new(string()
+                .and(min_length(min_val))
+                .and(max_length(max_val))
+                .and(alphanumeric(allow_spaces)))
+        },
+        (Some(min_val), Some(max_val), false) => {
+            Box::new(string()
+                .and(min_length(min_val))
+                .and(max_length(max_val)))
+        },
+        (Some(min_val), None, true) => {
+            Box::new(string()
+                .and(min_length(min_val))
+                .and(alphanumeric(allow_spaces)))
+        },
+        (Some(min_val), None, false) => {
+            Box::new(string().and(min_length(min_val)))
+        },
+        (None, Some(max_val), true) => {
+            Box::new(string()
+                .and(max_length(max_val))
+                .and(alphanumeric(allow_spaces)))
+        },
+        (None, Some(max_val), false) => {
+            Box::new(string().and(max_length(max_val)))
+        },
+        (None, None, true) => {
+            Box::new(string().and(alphanumeric(allow_spaces)))
+        },
+        (None, None, false) => {
+            Box::new(string())
+        },
+    }
+}
+
+/// Create a numeric validator with range constraints using builder pattern
+#[bon::builder]
+pub fn number_constraints(
+    min_val: Option<f64>,
+    max_val: Option<f64>,
+    #[builder(default = false)]
+    integer_only: bool,
+    #[builder(default = false)]
+    positive_only: bool
+) -> Box<dyn Validator> {
+    // Build validator chain by conditionally chaining validators
+    match (min_val, max_val, integer_only, positive_only) {
+        (Some(min_v), Some(max_v), true, true) => {
+            Box::new(number()
+                .and(min(min_v))
+                .and(max(max_v))
+                .and(integer())
+                .and(positive()))
+        },
+        (Some(min_v), Some(max_v), true, false) => {
+            Box::new(number()
+                .and(min(min_v))
+                .and(max(max_v))
+                .and(integer()))
+        },
+        (Some(min_v), Some(max_v), false, true) => {
+            Box::new(number()
+                .and(min(min_v))
+                .and(max(max_v))
+                .and(positive()))
+        },
+        (Some(min_v), Some(max_v), false, false) => {
+            Box::new(number()
+                .and(min(min_v))
+                .and(max(max_v)))
+        },
+        (Some(min_v), None, true, true) => {
+            Box::new(number()
+                .and(min(min_v))
+                .and(integer())
+                .and(positive()))
+        },
+        (Some(min_v), None, true, false) => {
+            Box::new(number()
+                .and(min(min_v))
+                .and(integer()))
+        },
+        (Some(min_v), None, false, true) => {
+            Box::new(number()
+                .and(min(min_v))
+                .and(positive()))
+        },
+        (Some(min_v), None, false, false) => {
+            Box::new(number().and(min(min_v)))
+        },
+        (None, Some(max_v), true, true) => {
+            Box::new(number()
+                .and(max(max_v))
+                .and(integer())
+                .and(positive()))
+        },
+        (None, Some(max_v), true, false) => {
+            Box::new(number()
+                .and(max(max_v))
+                .and(integer()))
+        },
+        (None, Some(max_v), false, true) => {
+            Box::new(number()
+                .and(max(max_v))
+                .and(positive()))
+        },
+        (None, Some(max_v), false, false) => {
+            Box::new(number().and(max(max_v)))
+        },
+        (None, None, true, true) => {
+            Box::new(number()
+                .and(integer())
+                .and(positive()))
+        },
+        (None, None, true, false) => {
+            Box::new(number().and(integer()))
+        },
+        (None, None, false, true) => {
+            Box::new(number().and(positive()))
+        },
+        (None, None, false, false) => {
+            Box::new(number())
+        },
+    }
+}
+
+// ==================== ADDITIONAL BUILDER CONVENIENCES ====================
+
+/// Create a collection validator with size constraints using builder pattern
+#[bon::builder]
+pub fn collection_constraints(
+    min_size: Option<usize>,
+    max_size: Option<usize>,
+    exact_size: Option<usize>,
+) -> Box<dyn Validator> {
+    match (min_size, max_size, exact_size) {
+        (_, _, Some(size)) => Box::new(array_size(size)),
+        (Some(min_val), Some(max_val), None) => {
+            Box::new(array_min_size(min_val).and(array_max_size(max_val)))
+        },
+        (Some(min_val), None, None) => Box::new(array_min_size(min_val)),
+        (None, Some(max_val), None) => Box::new(array_max_size(max_val)),
+        (None, None, None) => Box::new(array()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,5 +624,70 @@ mod tests {
         let not_validator = string().not();
         assert!(not_validator.validate(&Value::from(123), None).await.is_ok());
         assert!(not_validator.validate(&Value::from("hello"), None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_bon_builder_api() {
+        // Test string validator builder
+        let validator = string_constraints()
+            .min_len(3)
+            .max_len(10)
+            .alphanumeric_only(true)
+            .allow_spaces(false)
+            .call();
+
+        assert!(validator.validate(&Value::from("abc123"), None).await.is_ok());
+        assert!(validator.validate(&Value::from("ab"), None).await.is_err()); // Too short
+        assert!(validator.validate(&Value::from("abcdefghijk"), None).await.is_err()); // Too long
+        assert!(validator.validate(&Value::from("abc@123"), None).await.is_err()); // Not alphanumeric
+
+        // Test number validator builder
+        let validator = number_constraints()
+            .min_val(0.0)
+            .max_val(100.0)
+            .positive_only(true)
+            .call();
+
+        assert!(validator.validate(&Value::from(50), None).await.is_ok());
+        assert!(validator.validate(&Value::from(-5), None).await.is_err()); // Negative
+        assert!(validator.validate(&Value::from(150), None).await.is_err()); // Too high
+
+        // Test builder functions from specific modules
+        let numeric_validator = numeric_string_builder()
+            .allow_decimal(true)
+            .allow_negative(false)
+            .call();
+
+        assert!(numeric_validator.validate(&Value::from("123.45"), None).await.is_ok());
+        assert!(numeric_validator.validate(&Value::from("-123"), None).await.is_err()); // Negative not allowed
+
+        let alpha_validator = alpha_builder()
+            .allow_spaces(true)
+            .call();
+
+        assert!(alpha_validator.validate(&Value::from("hello world"), None).await.is_ok());
+        assert!(alpha_validator.validate(&Value::from("hello123"), None).await.is_err()); // Contains numbers
+
+        // Test ValidationBuilder with manual building
+        let builder_validator = validate(string())
+            .named("test_string")
+            .build();
+
+        assert_eq!(builder_validator.name(), "test_string");
+        assert!(builder_validator.validate(&Value::from("hello"), None).await.is_ok());
+
+        // Test collection constraints
+        let collection_validator = collection_constraints()
+            .min_size(2)
+            .max_size(5)
+            .call();
+
+        let valid_array = Value::from(json!([1, 2, 3]));
+        let too_small = Value::from(json!([1]));
+        let too_large = Value::from(json!([1, 2, 3, 4, 5, 6]));
+
+        assert!(collection_validator.validate(&valid_array, None).await.is_ok());
+        assert!(collection_validator.validate(&too_small, None).await.is_err());
+        assert!(collection_validator.validate(&too_large, None).await.is_err());
     }
 }

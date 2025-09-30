@@ -1,24 +1,70 @@
+use core::fmt;
 use std::collections::BTreeMap;
-use std::fmt;
-use std::hash::Hash;
 use std::path::PathBuf;
 use std::time::Duration;
+
 
 use chrono::{DateTime, Utc};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-use crate::{BinaryValue, ValueError, ValueResult};
+use crate::{Bytes, BytesError};
 
-/// File value with flattened structure - no nested location object
-#[derive(Debug, Clone, PartialEq, Hash, Eq)]
+// ══════════════════════════════════════════════════════════════════════════════
+// Error Types
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Result type alias for File operations
+pub type FileResult<T> = Result<T, FileError>;
+
+/// Rich, typed errors for File operations
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum FileError {
+    #[error("Bytes operation failed: {source}")]
+    BytesError { source: BytesError },
+
+    #[error("Cache key can only be set on Generated files")]
+    InvalidCacheKeyOperation,
+
+    #[error("Timeout can only be set on Generated files")]
+    InvalidTimeoutOperation,
+
+    #[error("Can only read data from InMemory files synchronously")]
+    DataNotAvailable,
+
+    #[error("Invalid storage type: {storage_type}")]
+    InvalidStorageType { storage_type: String },
+
+    #[error("File metadata is invalid: {reason}")]
+    InvalidMetadata { reason: String },
+
+    #[error("I/O operation failed: {reason}")]
+    IoError { reason: String },
+
+    #[error("Serialization failed: {reason}")]
+    #[cfg(feature = "serde")]
+    SerializationError { reason: String },
+}
+
+impl From<BytesError> for FileError {
+    fn from(err: BytesError) -> Self {
+        FileError::BytesError { source: err }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Core Types
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// File value with different storage backends
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "snake_case"))]
-pub enum FileValue {
+pub enum File {
     /// Data fully loaded in memory
     InMemory {
-        data: BinaryValue,
-
+        data: Bytes,
         #[cfg_attr(feature = "serde", serde(flatten))]
         metadata: FileMetadata,
     },
@@ -47,14 +93,13 @@ pub enum FileValue {
     /// File requires generation
     Generated {
         generator_id: String,
-        #[cfg(feature = "json")]
+        #[cfg(feature = "serde")]
         parameters: serde_json::Value,
-        #[cfg(not(feature = "json"))]
-        parameters: String, // Fallback to string if no JSON support
+        #[cfg(not(feature = "serde"))]
+        parameters: String,
         #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
         cache_key: Option<String>,
         #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-        #[cfg_attr(feature = "serde", serde(with = "optional_duration_seconds"))]
         timeout_seconds: Option<u64>,
         #[cfg_attr(feature = "serde", serde(flatten))]
         metadata: FileMetadata,
@@ -84,7 +129,7 @@ pub enum FileValue {
 }
 
 /// Storage backend types
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum StorageType {
@@ -95,7 +140,7 @@ pub enum StorageType {
     Custom(String),
 }
 
-/// File metadata (now flattened into each variant)
+/// File metadata
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct FileMetadata {
@@ -108,9 +153,11 @@ pub struct FileMetadata {
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub size: Option<usize>,
 
+    
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub created_at: Option<DateTime<Utc>>,
 
+    
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub modified_at: Option<DateTime<Utc>>,
 
@@ -126,24 +173,26 @@ pub struct FileMetadata {
     #[cfg_attr(feature = "serde", serde(default))]
     pub is_sensitive: bool,
 
-    #[cfg(feature = "json")]
+    #[cfg(feature = "serde")]
     #[cfg_attr(feature = "serde", serde(default))]
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "BTreeMap::is_empty"))]
     pub custom: BTreeMap<String, serde_json::Value>,
 
-    #[cfg(not(feature = "json"))]
+    #[cfg(not(feature = "serde"))]
     #[cfg_attr(feature = "serde", serde(default))]
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "HashMap::is_empty"))]
-    pub custom: BTreeMap<String, String>, // Fallback to string values
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "BTreeMap::is_empty"))]
+    pub custom: BTreeMap<String, String>,
 }
 
-impl Hash for FileMetadata {
+impl std::hash::Hash for FileMetadata {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.filename.hash(state);
         self.mime_type.hash(state);
         self.size.hash(state);
-        self.created_at.hash(state);
-        self.modified_at.hash(state);
+         {
+            self.created_at.hash(state);
+            self.modified_at.hash(state);
+        }
         self.checksum.hash(state);
         self.encoding.hash(state);
         self.format_version.hash(state);
@@ -152,22 +201,52 @@ impl Hash for FileMetadata {
     }
 }
 
-#[cfg(feature = "serde")]
-mod optional_duration_seconds {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S>(duration: &Option<u64>, serializer: S) -> Result<S::Ok, S::Error>
-    where S: Serializer {
-        duration.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
-    where D: Deserializer<'de> {
-        Option::<u64>::deserialize(deserializer)
+impl std::hash::Hash for File {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+        match self {
+            File::InMemory { data, metadata } => {
+                data.hash(state);
+                metadata.hash(state);
+            }
+            File::Remote { storage_key, storage_type, credentials_ref, metadata } => {
+                storage_key.hash(state);
+                storage_type.hash(state);
+                credentials_ref.hash(state);
+                metadata.hash(state);
+            }
+            File::Url { url, headers, follow_redirects, metadata } => {
+                url.hash(state);
+                headers.hash(state);
+                follow_redirects.hash(state);
+                metadata.hash(state);
+            }
+            File::Generated { generator_id, cache_key, timeout_seconds, metadata, .. } => {
+                generator_id.hash(state);
+                cache_key.hash(state);
+                timeout_seconds.hash(state);
+                metadata.hash(state);
+            }
+            File::Temporary { path, cleanup_on_drop, owner_id, metadata } => {
+                path.hash(state);
+                cleanup_on_drop.hash(state);
+                owner_id.hash(state);
+                metadata.hash(state);
+            }
+            File::Stream { stream_id, chunk_size, seekable, metadata } => {
+                stream_id.hash(state);
+                chunk_size.hash(state);
+                seekable.hash(state);
+                metadata.hash(state);
+            }
+        }
     }
 }
 
-// Helper functions
+// ══════════════════════════════════════════════════════════════════════════════
+// Helper Functions
+// ══════════════════════════════════════════════════════════════════════════════
+
 #[cfg(feature = "serde")]
 fn default_true() -> bool {
     true
@@ -178,32 +257,38 @@ fn default_chunk_size() -> usize {
     1_048_576 // 1MB
 }
 
-impl FileValue {
+// ══════════════════════════════════════════════════════════════════════════════
+// Implementation
+// ══════════════════════════════════════════════════════════════════════════════
+
+impl File {
     // === Constructor methods ===
 
     /// Creates a new in-memory file
     pub fn from_bytes(data: Vec<u8>, filename: Option<String>) -> Self {
-        let binary_data = BinaryValue::from(data);
-        let size = binary_data.len();
+        let bytes_data = Bytes::from(data);
+        let size = bytes_data.len();
         Self::InMemory {
-            data: binary_data,
+            data: bytes_data,
             metadata: FileMetadata {
                 filename,
                 size: Some(size),
+                
                 created_at: Some(Utc::now()),
                 ..Default::default()
             },
         }
     }
 
-    /// Creates a new in-memory file from BinaryValue
-    pub fn from_binary(data: BinaryValue, filename: Option<String>) -> Self {
+    /// Creates a new in-memory file from Bytes
+    pub fn from_bytes_data(data: Bytes, filename: Option<String>) -> Self {
         let size = data.len();
         Self::InMemory {
             data,
             metadata: FileMetadata {
                 filename,
                 size: Some(size),
+                
                 created_at: Some(Utc::now()),
                 ..Default::default()
             },
@@ -225,7 +310,7 @@ impl FileValue {
     }
 
     /// Creates a generated file
-    #[cfg(feature = "json")]
+    #[cfg(feature = "serde")]
     pub fn from_generator(
         generator_id: String,
         parameters: serde_json::Value,
@@ -241,7 +326,7 @@ impl FileValue {
     }
 
     /// Creates a generated file (without JSON support)
-    #[cfg(not(feature = "json"))]
+    #[cfg(not(feature = "serde"))]
     pub fn from_generator(
         generator_id: String,
         parameters: String,
@@ -268,6 +353,7 @@ impl FileValue {
             metadata: FileMetadata {
                 filename,
                 size,
+                
                 created_at: Some(Utc::now()),
                 ..Default::default()
             },
@@ -279,24 +365,24 @@ impl FileValue {
     /// Gets the metadata for this file
     pub fn metadata(&self) -> &FileMetadata {
         match self {
-            FileValue::InMemory { metadata, .. } => metadata,
-            FileValue::Remote { metadata, .. } => metadata,
-            FileValue::Url { metadata, .. } => metadata,
-            FileValue::Generated { metadata, .. } => metadata,
-            FileValue::Temporary { metadata, .. } => metadata,
-            FileValue::Stream { metadata, .. } => metadata,
+            File::InMemory { metadata, .. } => metadata,
+            File::Remote { metadata, .. } => metadata,
+            File::Url { metadata, .. } => metadata,
+            File::Generated { metadata, .. } => metadata,
+            File::Temporary { metadata, .. } => metadata,
+            File::Stream { metadata, .. } => metadata,
         }
     }
 
     /// Gets mutable metadata for this file
     pub fn metadata_mut(&mut self) -> &mut FileMetadata {
         match self {
-            FileValue::InMemory { metadata, .. } => metadata,
-            FileValue::Remote { metadata, .. } => metadata,
-            FileValue::Url { metadata, .. } => metadata,
-            FileValue::Generated { metadata, .. } => metadata,
-            FileValue::Temporary { metadata, .. } => metadata,
-            FileValue::Stream { metadata, .. } => metadata,
+            File::InMemory { metadata, .. } => metadata,
+            File::Remote { metadata, .. } => metadata,
+            File::Url { metadata, .. } => metadata,
+            File::Generated { metadata, .. } => metadata,
+            File::Temporary { metadata, .. } => metadata,
+            File::Stream { metadata, .. } => metadata,
         }
     }
 
@@ -313,71 +399,71 @@ impl FileValue {
     /// Gets the file size if known
     pub fn size(&self) -> Option<usize> {
         match self {
-            FileValue::InMemory { data, .. } => Some(data.len()),
+            File::InMemory { data, .. } => Some(data.len()),
             _ => self.metadata().size,
         }
     }
 
     /// Gets the binary data for InMemory files
-    pub fn binary_data(&self) -> Option<&BinaryValue> {
+    pub fn bytes_data(&self) -> Option<&Bytes> {
         match self {
-            FileValue::InMemory { data, .. } => Some(data),
+            File::InMemory { data, .. } => Some(data),
             _ => None,
         }
     }
 
     /// Gets mutable binary data for InMemory files
-    pub fn binary_data_mut(&mut self) -> Option<&mut BinaryValue> {
+    pub fn bytes_data_mut(&mut self) -> Option<&mut Bytes> {
         match self {
-            FileValue::InMemory { data, .. } => Some(data),
+            File::InMemory { data, .. } => Some(data),
             _ => None,
         }
     }
 
-    /// Reads the file content as BinaryValue (for InMemory files)
-    pub fn read_binary(&self) -> ValueResult<BinaryValue> {
+    /// Reads the file content as Bytes (for InMemory files)
+    pub fn read_bytes_data(&self) -> FileResult<Bytes> {
         match self {
-            FileValue::InMemory { data, .. } => Ok(data.clone()),
-            _ => Err(ValueError::custom(
-                "Can only read binary data from InMemory files synchronously",
-            )),
+            File::InMemory { data, .. } => Ok(data.clone()),
+            _ => Err(FileError::DataNotAvailable),
         }
     }
 
-    /// Reads the file content as Vec<u8> (for InMemory files)
-    pub fn read_bytes(&self) -> ValueResult<Vec<u8>> {
+    /// Reads the file content as `Vec<u8>` (for InMemory files)
+    pub fn read_bytes(&self) -> FileResult<Vec<u8>> {
         match self {
-            FileValue::InMemory { data, .. } => Ok(data.clone().into_bytes()),
-            _ => Err(ValueError::custom("Can only read bytes from InMemory files synchronously")),
+            File::InMemory { data, .. } => Ok(data.to_vec()),
+            _ => Err(FileError::DataNotAvailable),
         }
     }
 
     /// Reads the file content as UTF-8 string (for InMemory files)
-    pub fn read_string(&self) -> ValueResult<String> {
+    pub fn read_string(&self) -> FileResult<String> {
         match self {
-            FileValue::InMemory { data, .. } => data.to_utf8(),
-            _ => Err(ValueError::custom("Can only read string from InMemory files synchronously")),
+            File::InMemory { data, .. } => {
+                data.to_utf8().map_err(|e| FileError::BytesError { source: e })
+            }
+            _ => Err(FileError::DataNotAvailable),
         }
     }
 
     /// Checks if the file is immediately available (no I/O needed)
     pub fn is_immediately_available(&self) -> bool {
-        matches!(self, FileValue::InMemory { .. })
+        matches!(self, File::InMemory { .. })
     }
 
     /// Checks if the file requires network access
     pub fn requires_network(&self) -> bool {
-        matches!(self, FileValue::Url { .. } | FileValue::Remote { .. })
+        matches!(self, File::Url { .. } | File::Remote { .. })
     }
 
     /// Checks if the file needs to be generated
     pub fn requires_generation(&self) -> bool {
-        matches!(self, FileValue::Generated { .. })
+        matches!(self, File::Generated { .. })
     }
 
     /// Checks if the file is stored locally
     pub fn is_local(&self) -> bool {
-        matches!(self, FileValue::InMemory { .. } | FileValue::Temporary { .. })
+        matches!(self, File::InMemory { .. } | File::Temporary { .. })
     }
 
     /// Checks if this is likely an image file
@@ -407,7 +493,7 @@ impl FileValue {
         }
 
         // For InMemory files, check if content is valid UTF-8 with low entropy
-        if let FileValue::InMemory { data, .. } = self {
+        if let File::InMemory { data, .. } = self {
             // Try to decode as UTF-8 and check if entropy is reasonable for text
             if data.to_utf8().is_ok() {
                 let entropy = data.entropy();
@@ -422,7 +508,7 @@ impl FileValue {
     /// Detects the file type based on magic bytes (for InMemory files)
     pub fn detect_file_type(&self) -> Option<&'static str> {
         match self {
-            FileValue::InMemory { data, .. } => data.detect_file_type(),
+            File::InMemory { data, .. } => data.detect_file_type(),
             _ => None,
         }
     }
@@ -430,7 +516,7 @@ impl FileValue {
     /// Checks if the file appears to be compressed (for InMemory files)
     pub fn appears_compressed(&self) -> bool {
         match self {
-            FileValue::InMemory { data, .. } => data.appears_compressed(),
+            File::InMemory { data, .. } => data.appears_compressed(),
             _ => false,
         }
     }
@@ -438,15 +524,7 @@ impl FileValue {
     /// Gets entropy/randomness measure (for InMemory files)
     pub fn entropy(&self) -> Option<f64> {
         match self {
-            FileValue::InMemory { data, .. } => Some(data.entropy()),
-            _ => None,
-        }
-    }
-
-    /// Gets byte statistics (for InMemory files)
-    pub fn byte_statistics(&self) -> Option<crate::types::binary::ByteStatistics> {
-        match self {
-            FileValue::InMemory { data, .. } => Some(data.byte_statistics()),
+            File::InMemory { data, .. } => Some(data.entropy()),
             _ => None,
         }
     }
@@ -469,36 +547,36 @@ impl FileValue {
     }
 
     /// Sets a custom metadata field
-    #[cfg(feature = "json")]
+    #[cfg(feature = "serde")]
     pub fn set_custom_metadata(&mut self, key: String, value: serde_json::Value) {
         self.metadata_mut().custom.insert(key, value);
     }
 
     /// Sets a custom metadata field (string fallback)
-    #[cfg(not(feature = "json"))]
+    #[cfg(not(feature = "serde"))]
     pub fn set_custom_metadata(&mut self, key: String, value: String) {
         self.metadata_mut().custom.insert(key, value);
     }
 
     /// Updates the generator cache key (only for Generated files)
-    pub fn set_cache_key(&mut self, cache_key: Option<String>) -> ValueResult<()> {
+    pub fn set_cache_key(&mut self, cache_key: Option<String>) -> FileResult<()> {
         match self {
-            FileValue::Generated { cache_key: current_key, .. } => {
+            File::Generated { cache_key: current_key, .. } => {
                 *current_key = cache_key;
                 Ok(())
             },
-            _ => Err(ValueError::custom("Cache key can only be set on Generated files")),
+            _ => Err(FileError::InvalidCacheKeyOperation),
         }
     }
 
     /// Sets generation timeout (only for Generated files)
-    pub fn set_timeout(&mut self, timeout: Option<Duration>) -> ValueResult<()> {
+    pub fn set_timeout(&mut self, timeout: Option<Duration>) -> FileResult<()> {
         match self {
-            FileValue::Generated { timeout_seconds, .. } => {
+            File::Generated { timeout_seconds, .. } => {
                 *timeout_seconds = timeout.map(|d| d.as_secs());
                 Ok(())
             },
-            _ => Err(ValueError::custom("Timeout can only be set on Generated files")),
+            _ => Err(FileError::InvalidTimeoutOperation),
         }
     }
 
@@ -507,19 +585,19 @@ impl FileValue {
     /// Returns the file type as a string
     pub fn file_type(&self) -> &'static str {
         match self {
-            FileValue::InMemory { .. } => "in_memory",
-            FileValue::Remote { .. } => "remote",
-            FileValue::Url { .. } => "url",
-            FileValue::Generated { .. } => "generated",
-            FileValue::Temporary { .. } => "temporary",
-            FileValue::Stream { .. } => "stream",
+            File::InMemory { .. } => "in_memory",
+            File::Remote { .. } => "remote",
+            File::Url { .. } => "url",
+            File::Generated { .. } => "generated",
+            File::Temporary { .. } => "temporary",
+            File::Stream { .. } => "stream",
         }
     }
 
     /// Gets the storage type for remote files
     pub fn storage_type(&self) -> Option<&StorageType> {
         match self {
-            FileValue::Remote { storage_type, .. } => Some(storage_type),
+            File::Remote { storage_type, .. } => Some(storage_type),
             _ => None,
         }
     }
@@ -527,7 +605,7 @@ impl FileValue {
     /// Gets the generator ID for generated files
     pub fn generator_id(&self) -> Option<&str> {
         match self {
-            FileValue::Generated { generator_id, .. } => Some(generator_id),
+            File::Generated { generator_id, .. } => Some(generator_id),
             _ => None,
         }
     }
@@ -535,70 +613,153 @@ impl FileValue {
     /// Gets the URL for URL files
     pub fn url(&self) -> Option<&str> {
         match self {
-            FileValue::Url { url, .. } => Some(url),
+            File::Url { url, .. } => Some(url),
             _ => None,
         }
     }
 }
 
-impl fmt::Display for FileValue {
+impl fmt::Display for File {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let size_info = self.size().map(|s| format!(" ({s}B)")).unwrap_or_default();
-
         let filename_info = self.filename().map(|f| format!(" '{f}'")).unwrap_or_default();
-
         write!(f, "[{} file{}{}]", self.file_type(), filename_info, size_info)
     }
 }
 
-// === From implementations ===
+// ══════════════════════════════════════════════════════════════════════════════
+// From implementations
+// ══════════════════════════════════════════════════════════════════════════════
 
-impl From<Vec<u8>> for FileValue {
+impl From<Vec<u8>> for File {
     fn from(data: Vec<u8>) -> Self {
         Self::from_bytes(data, None)
     }
 }
 
-impl From<BinaryValue> for FileValue {
-    fn from(data: BinaryValue) -> Self {
-        Self::from_binary(data, None)
+impl From<Bytes> for File {
+    fn from(data: Bytes) -> Self {
+        Self::from_bytes_data(data, None)
     }
 }
 
-impl From<&[u8]> for FileValue {
+impl From<&[u8]> for File {
     fn from(data: &[u8]) -> Self {
         Self::from_bytes(data.to_vec(), None)
     }
 }
 
-impl From<String> for FileValue {
+impl From<String> for File {
     fn from(content: String) -> Self {
         Self::from_bytes(content.into_bytes(), None)
     }
 }
 
-impl From<&str> for FileValue {
+impl From<&str> for File {
     fn from(content: &str) -> Self {
         Self::from_bytes(content.as_bytes().to_vec(), None)
     }
 }
 
-// === JSON conversion (feature-gated) ===
+// ══════════════════════════════════════════════════════════════════════════════
+// JSON conversion (feature-gated)
+// ══════════════════════════════════════════════════════════════════════════════
 
-#[cfg(feature = "json")]
-impl From<FileValue> for serde_json::Value {
-    fn from(file: FileValue) -> Self {
+#[cfg(feature = "serde")]
+impl From<File> for serde_json::Value {
+    fn from(file: File) -> Self {
         serde_json::to_value(file).unwrap_or(serde_json::Value::Null)
     }
 }
 
-#[cfg(feature = "json")]
-impl TryFrom<serde_json::Value> for FileValue {
-    type Error = ValueError;
+#[cfg(feature = "serde")]
+impl TryFrom<serde_json::Value> for File {
+    type Error = FileError;
 
-    fn try_from(value: serde_json::Value) -> ValueResult<Self> {
+    fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
         serde_json::from_value(value)
-            .map_err(|e| ValueError::custom(format!("JSON to FileValue conversion error: {}", e)))
+            .map_err(|e| FileError::SerializationError { reason: e.to_string() })
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Ordering implementations
+// ══════════════════════════════════════════════════════════════════════════════
+
+impl PartialOrd for FileMetadata {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FileMetadata {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Compare by filename first, then by size, then by mime_type
+        self.filename.cmp(&other.filename)
+            .then_with(|| self.size.cmp(&other.size))
+            .then_with(|| self.mime_type.cmp(&other.mime_type))
+            .then_with(|| self.checksum.cmp(&other.checksum))
+            .then_with(|| self.encoding.cmp(&other.encoding))
+            .then_with(|| self.format_version.cmp(&other.format_version))
+            .then_with(|| self.is_sensitive.cmp(&other.is_sensitive))
+            // Skip custom metadata in comparison for simplicity
+    }
+}
+
+impl PartialOrd for File {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for File {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+
+        // Define explicit ordering for each variant
+        fn file_order(file: &File) -> u8 {
+            match file {
+                File::InMemory { .. } => 0,
+                File::Remote { .. } => 1,
+                File::Url { .. } => 2,
+                File::Generated { .. } => 3,
+                File::Temporary { .. } => 4,
+                File::Stream { .. } => 5,
+            }
+        }
+
+        let self_order = file_order(self);
+        let other_order = file_order(other);
+
+        match self_order.cmp(&other_order) {
+            Ordering::Equal => {
+                // Same variant, compare internal values
+                match (self, other) {
+                    (File::InMemory { data: d1, metadata: m1 }, File::InMemory { data: d2, metadata: m2 }) => {
+                        m1.cmp(m2).then_with(|| d1.cmp(d2))
+                    },
+                    (File::Remote { storage_key: k1, storage_type: t1, metadata: m1, .. },
+                     File::Remote { storage_key: k2, storage_type: t2, metadata: m2, .. }) => {
+                        m1.cmp(m2).then_with(|| k1.cmp(k2)).then_with(|| t1.cmp(t2))
+                    },
+                    (File::Url { url: u1, metadata: m1, .. }, File::Url { url: u2, metadata: m2, .. }) => {
+                        m1.cmp(m2).then_with(|| u1.cmp(u2))
+                    },
+                    (File::Generated { generator_id: g1, metadata: m1, .. },
+                     File::Generated { generator_id: g2, metadata: m2, .. }) => {
+                        m1.cmp(m2).then_with(|| g1.cmp(g2))
+                    },
+                    (File::Temporary { path: p1, metadata: m1, .. }, File::Temporary { path: p2, metadata: m2, .. }) => {
+                        m1.cmp(m2).then_with(|| p1.cmp(p2))
+                    },
+                    (File::Stream { stream_id: s1, metadata: m1, .. }, File::Stream { stream_id: s2, metadata: m2, .. }) => {
+                        m1.cmp(m2).then_with(|| s1.cmp(s2))
+                    },
+                    _ => Ordering::Equal, // Should not happen due to order check
+                }
+            },
+            ordering => ordering,
+        }
     }
 }
 
@@ -608,7 +769,7 @@ mod tests {
 
     #[test]
     fn test_file_creation() {
-        let file = FileValue::from_bytes(b"Hello World".to_vec(), Some("hello.txt".to_string()));
+        let file = File::from_bytes(b"Hello World".to_vec(), Some("hello.txt".to_string()));
 
         assert_eq!(file.filename(), Some("hello.txt"));
         assert_eq!(file.size(), Some(11));
@@ -620,10 +781,10 @@ mod tests {
     #[test]
     fn test_binary_operations() {
         let data = b"Hello World";
-        let file = FileValue::from_bytes(data.to_vec(), Some("hello.txt".to_string()));
+        let file = File::from_bytes(data.to_vec(), Some("hello.txt".to_string()));
 
-        let binary = file.read_binary().unwrap();
-        assert_eq!(binary.as_bytes(), data);
+        let bytes_data = file.read_bytes_data().unwrap();
+        assert_eq!(bytes_data.as_ref(), data);
 
         let bytes = file.read_bytes().unwrap();
         assert_eq!(bytes, data);
@@ -636,7 +797,7 @@ mod tests {
     fn test_file_type_detection() {
         // Test with JPEG magic bytes
         let jpeg_data = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
-        let file = FileValue::from_bytes(jpeg_data, Some("image.jpg".to_string()));
+        let file = File::from_bytes(jpeg_data, Some("image.jpg".to_string()));
 
         assert_eq!(file.detect_file_type(), Some("jpeg"));
         assert!(file.is_image_file());
@@ -646,8 +807,7 @@ mod tests {
     #[test]
     fn test_text_detection() {
         let text_data = "This is a text file with normal content.";
-        let file =
-            FileValue::from_bytes(text_data.as_bytes().to_vec(), Some("text.txt".to_string()));
+        let file = File::from_bytes(text_data.as_bytes().to_vec(), Some("text.txt".to_string()));
 
         assert!(file.is_text_file());
         assert!(!file.is_image_file());
@@ -657,21 +817,21 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "serde", feature = "json"))]
+    #[cfg(all(feature = "serde", feature = "chrono"))]
     #[test]
     fn test_serialization() {
-        let file = FileValue::from_bytes(b"Hello World".to_vec(), Some("hello.txt".to_string()));
+        let file = File::from_bytes(b"Hello World".to_vec(), Some("hello.txt".to_string()));
 
         let json = serde_json::to_value(&file).unwrap();
         assert_eq!(json["type"], "in_memory");
         assert_eq!(json["filename"], "hello.txt");
 
-        let deserialized: FileValue = serde_json::from_value(json).unwrap();
+        let deserialized: File = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized.filename(), Some("hello.txt"));
         assert_eq!(deserialized.size(), Some(11));
     }
 
-    #[cfg(feature = "json")]
+    #[cfg(feature = "serde")]
     #[test]
     fn test_generator_parameters() {
         let params = serde_json::json!({
@@ -679,13 +839,13 @@ mod tests {
             "data": {"value": 42}
         });
 
-        let file = FileValue::from_generator(
+        let file = File::from_generator(
             "pdf_generator".to_string(),
             params.clone(),
             FileMetadata::default(),
         );
 
-        if let FileValue::Generated { parameters, .. } = file {
+        if let File::Generated { parameters, .. } = file {
             assert_eq!(parameters["template"], "report");
             assert_eq!(parameters["data"]["value"], 42);
         } else {
@@ -695,9 +855,9 @@ mod tests {
 
     #[test]
     fn test_custom_metadata() {
-        let mut file = FileValue::from_bytes(b"test".to_vec(), None);
+        let mut file = File::from_bytes(b"test".to_vec(), None);
 
-        #[cfg(feature = "json")]
+        #[cfg(feature = "serde")]
         {
             file.set_custom_metadata(
                 "version".to_string(),
@@ -709,7 +869,7 @@ mod tests {
             );
         }
 
-        #[cfg(not(feature = "json"))]
+        #[cfg(not(feature = "serde"))]
         {
             file.set_custom_metadata("version".to_string(), "1.0".to_string());
             assert_eq!(file.metadata().custom.get("version"), Some(&"1.0".to_string()));

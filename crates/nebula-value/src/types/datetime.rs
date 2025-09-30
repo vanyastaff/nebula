@@ -10,7 +10,7 @@ use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "chrono")]
+
 use chrono::{Datelike, FixedOffset, Local, NaiveDateTime, TimeZone, Timelike, Utc};
 
 use thiserror::Error;
@@ -64,13 +64,11 @@ impl DateTimeInner {
     }
 
     /// Converts to chrono NaiveDateTime
-    #[cfg(feature = "chrono")]
     pub fn to_naive(&self) -> NaiveDateTime {
         NaiveDateTime::new(self.date.to_naive(), self.time.to_naive())
     }
 
     /// Creates from chrono NaiveDateTime
-    #[cfg(feature = "chrono")]
     pub fn from_naive(dt: NaiveDateTime) -> Self {
         Self {
             date: DateInner::from_naive(dt.date()),
@@ -139,14 +137,12 @@ impl DateTime {
     }
 
     /// Creates DateTime for current moment (local timezone)
-    #[cfg(feature = "chrono")]
     pub fn now() -> Self {
         let now = Local::now().naive_local();
         Self::from_naive_datetime(now)
     }
 
     /// Creates DateTime for current moment (UTC)
-    #[cfg(feature = "chrono")]
     pub fn now_utc() -> Self {
         let now = Utc::now().naive_utc();
         Self::from_naive_datetime(now)
@@ -169,47 +165,14 @@ impl DateTime {
 
     /// Creates from Unix timestamp in nanoseconds
     pub fn from_timestamp_nanos(nanos: i64) -> DateTimeResult<Self> {
-        #[cfg(feature = "chrono")]
-        {
-            let seconds = nanos / 1_000_000_000;
-            let nano_part = (nanos % 1_000_000_000) as u32;
+        let seconds = nanos / 1_000_000_000;
+        let nano_part = (nanos % 1_000_000_000) as u32;
 
-            NaiveDateTime::from_timestamp_opt(seconds, nano_part)
-                .map(|dt| Self::from_naive_datetime(dt))
-                .ok_or_else(|| DateTimeError::OutOfRange {
-                    msg: format!("Invalid timestamp: {} nanos", nanos),
-                })
-        }
-
-        #[cfg(not(feature = "chrono"))]
-        {
-            // Manual conversion without chrono
-            // Split into seconds and nanoseconds using Euclidean division to handle negatives
-            let seconds = nanos.div_euclid(1_000_000_000);
-            let nano_part = nanos.rem_euclid(1_000_000_000) as u32;
-
-            // Compute days since Unix epoch and seconds within the day (0..86400)
-            let days = seconds.div_euclid(86_400);
-            let secs_of_day = seconds.rem_euclid(86_400);
-
-            // Julian Day Number for 1970-01-01 is 2440588
-            let epoch_jd: i64 = 2_440_588;
-            let jd = epoch_jd + days;
-            if jd > i32::MAX as i64 || jd < i32::MIN as i64 {
-                return Err(DateTimeError::OutOfRange {
-                    msg: format!("Invalid timestamp: {} nanos", nanos),
-                });
-            }
-            let date = Date::from_julian_day(jd as i32).map_err(DateTimeError::DateError)?;
-
-            let hour = (secs_of_day / 3600) as u32;
-            let minute = ((secs_of_day % 3600) / 60) as u32;
-            let second = (secs_of_day % 60) as u32;
-            let time = Time::with_nanos(hour, minute, second, nano_part)
-                .map_err(DateTimeError::TimeError)?;
-
-            Ok(Self::from_date_time(date, time))
-        }
+        NaiveDateTime::from_timestamp_opt(seconds, nano_part)
+            .map(|dt| Self::from_naive_datetime(dt))
+            .ok_or_else(|| DateTimeError::OutOfRange {
+                msg: format!("Invalid timestamp: {} nanos", nanos),
+            })
     }
 
     /// Creates from SystemTime
@@ -229,7 +192,6 @@ impl DateTime {
     }
 
     /// Creates from chrono NaiveDateTime
-    #[cfg(feature = "chrono")]
     pub fn from_naive_datetime(dt: NaiveDateTime) -> Self {
         Self {
             inner: Arc::new(DateTimeInner::from_naive(dt)),
@@ -277,7 +239,6 @@ impl DateTime {
     }
 
     /// Parses from RFC 3339 string
-    #[cfg(feature = "chrono")]
     pub fn parse_rfc3339(s: &str) -> DateTimeResult<Self> {
         chrono::DateTime::parse_from_rfc3339(s)
             .map(|dt| Self::from_naive_datetime(dt.naive_utc()))
@@ -285,7 +246,6 @@ impl DateTime {
     }
 
     /// Parses from RFC 2822 string
-    #[cfg(feature = "chrono")]
     pub fn parse_rfc2822(s: &str) -> DateTimeResult<Self> {
         chrono::DateTime::parse_from_rfc2822(s)
             .map(|dt| Self::from_naive_datetime(dt.naive_utc()))
@@ -293,7 +253,6 @@ impl DateTime {
     }
 
     /// Parses with custom format
-    #[cfg(feature = "chrono")]
     pub fn parse_from_str(s: &str, fmt: &str) -> DateTimeResult<Self> {
         NaiveDateTime::parse_from_str(s, fmt)
             .map(|dt| Self::from_naive_datetime(dt))
@@ -386,18 +345,7 @@ impl DateTime {
     /// Returns Unix timestamp in seconds
     pub fn timestamp(&self) -> i64 {
         *self.timestamp_cache.get_or_init(|| {
-            #[cfg(feature = "chrono")]
-            {
-                self.inner.to_naive().timestamp()
-            }
-
-            #[cfg(not(feature = "chrono"))]
-            {
-                // Manual calculation
-                let days = self.date().days_since_epoch();
-                let seconds = self.time().total_seconds() as i64;
-                days * 86400 + seconds
-            }
+            self.inner.to_naive().timestamp()
         })
     }
 
@@ -576,7 +524,7 @@ impl DateTime {
     }
 
     /// Returns RFC 2822 string
-    #[cfg(feature = "chrono")]
+    
     pub fn to_rfc2822(&self) -> String {
         let dt = Utc
             .timestamp_opt(self.timestamp(), self.nanosecond())
@@ -611,7 +559,7 @@ impl DateTime {
     }
 
     /// Returns relative datetime string
-    #[cfg(feature = "chrono")]
+    
     pub fn to_relative_string(&self) -> String {
         let now = DateTime::now();
         let diff_seconds = self.signed_duration_to(&now) / 1_000_000_000;
@@ -652,7 +600,7 @@ impl DateTime {
     // ==================== Conversions ====================
 
     /// Converts to chrono NaiveDateTime
-    #[cfg(feature = "chrono")]
+    
     #[inline]
     pub fn to_naive(&self) -> NaiveDateTime {
         self.inner.to_naive()
@@ -666,21 +614,21 @@ impl DateTime {
     // ==================== Validation ====================
 
     /// Checks if the datetime is in the past
-    #[cfg(feature = "chrono")]
+    
     pub fn is_past(&self) -> bool {
         let now = DateTime::now();
         self < &now
     }
 
     /// Checks if the datetime is in the future
-    #[cfg(feature = "chrono")]
+    
     pub fn is_future(&self) -> bool {
         let now = DateTime::now();
         self > &now
     }
 
     /// Checks if the datetime is now (within 1 second)
-    #[cfg(feature = "chrono")]
+    
     pub fn is_now(&self) -> bool {
         let now = DateTime::now();
         let diff = self.duration_between(&now);
@@ -697,14 +645,8 @@ impl fmt::Display for DateTime {
 }
 
 impl Default for DateTime {
-    #[cfg(feature = "chrono")]
     fn default() -> Self {
         Self::now()
-    }
-
-    #[cfg(not(feature = "chrono"))]
-    fn default() -> Self {
-        Self::unix_epoch()
     }
 }
 
@@ -762,21 +704,21 @@ impl From<DateTime> for SystemTime {
     }
 }
 
-#[cfg(feature = "chrono")]
+
 impl From<NaiveDateTime> for DateTime {
     fn from(dt: NaiveDateTime) -> Self {
         Self::from_naive_datetime(dt)
     }
 }
 
-#[cfg(feature = "chrono")]
+
 impl From<DateTime> for NaiveDateTime {
     fn from(dt: DateTime) -> Self {
         dt.to_naive()
     }
 }
 
-#[cfg(feature = "chrono")]
+
 impl<Tz: TimeZone> From<chrono::DateTime<Tz>> for DateTime {
     fn from(dt: chrono::DateTime<Tz>) -> Self {
         Self::from_naive_datetime(dt.naive_utc())

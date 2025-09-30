@@ -16,7 +16,7 @@ use core::alloc::Layout;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-use super::{AllocError, AllocErrorKind, AllocResult, Allocator, MemoryUsage, Resettable};
+use super::{AllocError, AllocErrorCode, AllocResult, Allocator, MemoryUsage, Resettable};
 use crate::utils::align_up;
 
 /// Pool allocator for fixed-size blocks
@@ -85,15 +85,15 @@ impl PoolAllocator {
     pub fn new(block_size: usize, block_align: usize, block_count: usize) -> AllocResult<Self> {
         // Validate parameters
         if block_size < core::mem::size_of::<*mut u8>() {
-            return Err(AllocError::with_kind_and_layout(
-                AllocErrorKind::InvalidLayout,
+            return Err(AllocError::with_layout(
+                AllocErrorCode::InvalidLayout,
                 Layout::from_size_align(block_size, block_align).unwrap_or(Layout::new::<u8>()),
             ));
         }
 
         if !block_align.is_power_of_two() {
-            return Err(AllocError::with_kind_and_layout(
-                AllocErrorKind::InvalidAlignment,
+            return Err(AllocError::with_layout(
+                AllocErrorCode::InvalidAlignment,
                 Layout::from_size_align(block_size, block_align).unwrap_or(Layout::new::<u8>()),
             ));
         }
@@ -308,7 +308,7 @@ unsafe impl Allocator for PoolAllocator {
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
         // Check if the requested layout matches our pool configuration
         if layout.size() > self.block_size || layout.align() > self.block_align {
-            return Err(AllocError::with_kind_and_layout(AllocErrorKind::InvalidLayout, layout));
+            return Err(AllocError::with_layout(AllocErrorCode::InvalidLayout, layout));
         }
 
         // Handle zero-sized allocations
@@ -321,7 +321,7 @@ unsafe impl Allocator for PoolAllocator {
         if let Some(ptr) = self.try_allocate_block() {
             Ok(NonNull::slice_from_raw_parts(ptr, layout.size()))
         } else {
-            Err(AllocError::with_kind_and_layout(AllocErrorKind::OutOfMemory, layout))
+            Err(AllocError::with_layout(AllocErrorCode::OutOfMemory, layout))
         }
     }
 
@@ -343,8 +343,8 @@ unsafe impl Allocator for PoolAllocator {
     ) -> AllocResult<NonNull<[u8]>> {
         // Pool allocator can only handle allocations of the configured size
         if new_layout.size() > self.block_size || new_layout.align() > self.block_align {
-            return Err(AllocError::with_kind_and_layout(
-                AllocErrorKind::InvalidLayout,
+            return Err(AllocError::with_layout(
+                AllocErrorCode::InvalidLayout,
                 new_layout,
             ));
         }

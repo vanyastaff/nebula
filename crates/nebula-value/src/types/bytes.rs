@@ -513,7 +513,6 @@ impl Bytes {
     // ════════════════════════════════════════════════════════════════
 
     /// Converts to base64 string (standard)
-    #[cfg(feature = "base64")]
     #[must_use]
     pub fn to_base64(&self) -> String {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -521,7 +520,6 @@ impl Bytes {
     }
 
     /// Converts to base64 string (URL-safe)
-    #[cfg(feature = "base64")]
     #[must_use]
     pub fn to_base64_url(&self) -> String {
         use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -529,7 +527,6 @@ impl Bytes {
     }
 
     /// Creates from base64 string
-    #[cfg(feature = "base64")]
     pub fn from_base64(encoded: impl AsRef<str>) -> BytesResult<Self> {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
 
@@ -542,7 +539,6 @@ impl Bytes {
     }
 
     /// Creates from base64 string (URL-safe)
-    #[cfg(feature = "base64")]
     pub fn from_base64_url(encoded: impl AsRef<str>) -> BytesResult<Self> {
         use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
@@ -881,22 +877,28 @@ fn hex_digit_value(c: char) -> Option<u8> {
 
 impl fmt::Debug for Bytes {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.len() <= 32 {
-            write!(f, "Bytes({})", self.to_hex())
+        if self.len() <= 64 {
+            // Show hex dump for small sizes
+            let hex_pairs: Vec<String> = self.inner.chunks(2)
+                .map(|chunk| {
+                    if chunk.len() == 2 {
+                        format!("{:02x}{:02x}", chunk[0], chunk[1])
+                    } else {
+                        format!("{:02x}", chunk[0])
+                    }
+                })
+                .collect();
+            write!(f, "b\"[{}]\"", hex_pairs.join(" "))
         } else {
-            write!(
-                f,
-                "Bytes({} bytes, {}...)",
-                self.len(),
-                self.take(16).to_hex()
-            )
+            // Show truncated for large sizes
+            write!(f, "b\"<{} bytes>\"", self.len())
         }
     }
 }
 
 impl fmt::Display for Bytes {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_hex())
+        write!(f, "<{} bytes>", self.len())
     }
 }
 
@@ -917,16 +919,8 @@ impl FromStr for Bytes {
         if is_hex && !s.is_empty() {
             Self::from_hex(s)
         } else {
-            // Try base64
-            #[cfg(feature = "base64")]
-            {
-                Self::from_base64(s)
-            }
-            #[cfg(not(feature = "base64"))]
-            {
-                // Fallback to UTF-8
-                Ok(Self::from_utf8(s))
-            }
+            // Try base64, fallback to UTF-8 if that fails
+            Self::from_base64(s).or_else(|_| Ok(Self::from_utf8(s)))
         }
     }
 }
@@ -1125,15 +1119,7 @@ impl PartialEq<Vec<u8>> for Bytes {
 impl From<Bytes> for serde_json::Value {
     fn from(bytes: Bytes) -> Self {
         // Encode as base64 for JSON
-        #[cfg(feature = "base64")]
-        {
-            serde_json::Value::String(bytes.to_base64())
-        }
-        #[cfg(not(feature = "base64"))]
-        {
-            // Fallback to hex
-            serde_json::Value::String(bytes.to_hex())
-        }
+        serde_json::Value::String(bytes.to_base64())
     }
 }
 
@@ -1145,14 +1131,7 @@ impl TryFrom<serde_json::Value> for Bytes {
         match value {
             serde_json::Value::String(s) => {
                 // Try base64 first, then hex
-                #[cfg(feature = "base64")]
-                {
-                    Self::from_base64(&s).or_else(|_| Self::from_hex(&s))
-                }
-                #[cfg(not(feature = "base64"))]
-                {
-                    Self::from_hex(&s)
-                }
+                Self::from_base64(&s).or_else(|_| Self::from_hex(&s))
             }
             serde_json::Value::Array(arr) => {
                 // Array of bytes
@@ -1246,7 +1225,6 @@ mod tests {
         assert_eq!(decoded2, bytes);
     }
 
-    #[cfg(feature = "base64")]
     #[test]
     fn test_base64_encoding() {
         let bytes = Bytes::from_utf8("hello world");
@@ -1336,7 +1314,6 @@ mod tests {
         let json = serde_json::Value::from(bytes.clone());
 
         // Should be base64 encoded
-        #[cfg(feature = "base64")]
         assert_eq!(json, json!("dGVzdA=="));
 
         // Round trip

@@ -1,30 +1,31 @@
-//! Value type implementations
+// Primitive types
 //!
-//! This module contains concrete implementations for all supported value types,
-//! organized into logical groups:
 //!
-//! ## Primitive types
-//! - [`Boolean`] - boolean values
-//! - [`Text`] - string/text values
-//! - [`Bytes`] - binary data
 //!
-//! ## Numeric types
-//! - [`Integer`] - 64-bit signed integers
-//! - [`Float`] - 64-bit floating point numbers
-//! - [`Number`] - unified numeric type
-//! - [`Decimal`] - high-precision decimal numbers (optional)
+//!
 //!
 //! ## Collection types
-//! - [`Array`] - ordered sequences of values
-//! - [`Object`] - key-value mappings
-//!
+//! ## Numeric types
+//! ## Primitive types
 //! ## Temporal types
-//! - [`Date`] - calendar dates
-//! - [`Time`] - time of day
+//! - [`Array`] - ordered sequences of values
+//! - [`Boolean`] - boolean values
+//! - [`Bytes`] - binary data
 //! - [`DateTime`] - combined date and time
+//! - [`Date`] - calendar dates
+//! - [`Decimal`] - high-precision decimal numbers (optional)
 //! - [`Duration`] - time spans
-
-// Primitive types
+//! - [`Float`] - 64-bit floating point numbers
+//! - [`Integer`] - 64-bit signed integers
+//! - [`Number`] - unified numeric type
+//! - [`Object`] - key-value mappings
+//! - [`Text`] - string/text values
+//! - [`Time`] - time of day
+//! This module contains concrete implementations for all supported value types,
+//! Value type implementations
+//! organized into logical groups:
+pub mod object_builder;
+pub mod array_builder;
 mod boolean;
 mod text;
 mod bytes;
@@ -50,6 +51,7 @@ pub use text::{Text, TextError};
 pub use bytes::{Bytes, BytesError};
 pub use number::{Float, Integer, Number, NumberError, NumberResult, JsonNumberStrategy};
 pub use array::{Array, ArrayError};
+pub use array_builder::ArrayBuilder;
 pub use object::{Object, ObjectError};
 pub use date::{Date, DateError};
 pub use time::{Time, TimeError};
@@ -64,3 +66,5 @@ mod tests {
     #[test]
     fn it_works() {}
 }
+
+

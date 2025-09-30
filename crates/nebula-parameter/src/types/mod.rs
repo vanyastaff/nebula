@@ -1,4 +1,4 @@
-// Working parameter types with new trait system
+// Working parameter types with a new trait system
 pub mod button;
 pub mod checkbox;
 pub mod code;

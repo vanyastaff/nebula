@@ -83,7 +83,7 @@ impl ValuePath {
         Ok(Self { segments })
     }
 
-    /// Parse with bracket notation support (e.g., "users[0].name")
+    /// Parse with bracket notation support (e.g., "users\[0\].name")
     pub fn parse_extended(path: &str) -> ValueResult<Self> {
         if path.is_empty() {
             return Ok(Self::new());

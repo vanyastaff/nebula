@@ -32,6 +32,27 @@ pub trait ValueErrorExt {
 
     /// Create a value operation not supported error
     fn value_operation_not_supported(operation: impl Into<String>, value_type: impl Into<String>) -> Self;
+
+    /// Create a numeric overflow error
+    fn value_overflow(operation: impl Into<String>, value: impl Into<String>) -> Self;
+
+    /// Create a feature not enabled error
+    fn value_feature_not_enabled(feature: impl Into<String>, operation: impl Into<String>) -> Self;
+
+    /// Create a format error with detailed context
+    fn value_format_error(format_type: impl Into<String>, input: impl Into<String>, position: Option<usize>) -> Self;
+
+    /// Create a value range error
+    fn value_out_of_range(value: impl Into<String>, min: impl Into<String>, max: impl Into<String>) -> Self;
+
+    /// Create an error with path context
+    fn value_error_at_path(base_error: Self, path: impl Into<String>) -> Self;
+
+    /// Create an error with object key context
+    fn value_error_at_key(base_error: Self, key: impl Into<String>) -> Self;
+
+    /// Create an error with array index context
+    fn value_error_at_index(base_error: Self, index: usize) -> Self;
 }
 
 impl ValueErrorExt for NebulaError {
@@ -69,6 +90,45 @@ impl ValueErrorExt for NebulaError {
     /// Create a value operation not supported error
     fn value_operation_not_supported(operation: impl Into<String>, value_type: impl Into<String>) -> Self {
         Self::validation(format!("Operation '{}' not supported for {}", operation.into(), value_type.into()))
+    }
+
+    /// Create a numeric overflow error
+    fn value_overflow(operation: impl Into<String>, value: impl Into<String>) -> Self {
+        Self::validation(format!("Numeric overflow in {}: value {}", operation.into(), value.into()))
+    }
+
+    /// Create a feature not enabled error
+    fn value_feature_not_enabled(feature: impl Into<String>, operation: impl Into<String>) -> Self {
+        Self::validation(format!("Feature '{}' not enabled for operation: {}", feature.into(), operation.into()))
+    }
+
+    /// Create a format error with detailed context
+    fn value_format_error(format_type: impl Into<String>, input: impl Into<String>, position: Option<usize>) -> Self {
+        let base_msg = format!("Invalid {} format: {}", format_type.into(), input.into());
+        match position {
+            Some(pos) => Self::validation(format!("{} (at position {})", base_msg, pos)),
+            None => Self::validation(base_msg),
+        }
+    }
+
+    /// Create a value range error
+    fn value_out_of_range(value: impl Into<String>, min: impl Into<String>, max: impl Into<String>) -> Self {
+        Self::validation(format!("Value {} out of range [{}, {}]", value.into(), min.into(), max.into()))
+    }
+
+    /// Create an error with path context
+    fn value_error_at_path(base_error: Self, path: impl Into<String>) -> Self {
+        base_error.with_details(format!("at path: {}", path.into()))
+    }
+
+    /// Create an error with object key context
+    fn value_error_at_key(base_error: Self, key: impl Into<String>) -> Self {
+        base_error.with_details(format!("at key: '{}'", key.into()))
+    }
+
+    /// Create an error with array index context
+    fn value_error_at_index(base_error: Self, index: usize) -> Self {
+        base_error.with_details(format!("at index: {}", index))
     }
 }
 

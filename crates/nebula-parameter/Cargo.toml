@@ -27,12 +27,19 @@ chrono = { version = "0.4", features = ["serde"] }
 # Errors
 thiserror = { workspace = true }
 
+# Validation
+regex = "1.0"
+
 
 # Internal crates
 nebula-core = { path = "../nebula-core" }
 nebula-derive = { path = "../nebula-derive" }
 nebula-error = { path = "../nebula-error" }
 nebula-value = { path = "../nebula-value", features = ["serde"] }
+# nebula-validator = { path = "../nebula-validator" }  # Temporarily disabled until compilation issues resolved
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }
 
 [lints]
 workspace = true

@@ -9,7 +9,7 @@ use std::sync::Arc;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "chrono")]
+
 use chrono::{Datelike, Duration, Local, NaiveDate, Utc, Weekday};
 
 use thiserror::Error;
@@ -94,13 +94,11 @@ impl DateInner {
     }
 
     /// Converts to chrono NaiveDate
-    #[cfg(feature = "chrono")]
     pub fn to_naive(&self) -> NaiveDate {
         NaiveDate::from_ymd_opt(self.year, self.month as u32, self.day as u32).expect("Valid date")
     }
 
     /// Creates from chrono NaiveDate
-    #[cfg(feature = "chrono")]
     pub fn from_naive(date: NaiveDate) -> Self {
         Self {
             year: date.year(),
@@ -120,39 +118,15 @@ impl DateInner {
 
     /// Calculates day of week (Monday = 0, Sunday = 6)
     pub fn day_of_week(&self) -> u8 {
-        #[cfg(feature = "chrono")]
-        {
-            let date = self.to_naive();
-            match date.weekday() {
-                Weekday::Mon => 0,
-                Weekday::Tue => 1,
-                Weekday::Wed => 2,
-                Weekday::Thu => 3,
-                Weekday::Fri => 4,
-                Weekday::Sat => 5,
-                Weekday::Sun => 6,
-            }
-        }
-
-        #[cfg(not(feature = "chrono"))]
-        {
-            // Zeller's congruence
-            let mut year = self.year;
-            let mut month = self.month as i32;
-
-            if month < 3 {
-                month += 12;
-                year -= 1;
-            }
-
-            let k = year % 100;
-            let j = year / 100;
-
-            let h =
-                (self.day as i32 + ((13 * (month + 1)) / 5) + k + (k / 4) + (j / 4) - (2 * j)) % 7;
-
-            // Convert to Monday = 0, Sunday = 6
-            ((h + 5) % 7) as u8
+        let date = self.to_naive();
+        match date.weekday() {
+            Weekday::Mon => 0,
+            Weekday::Tue => 1,
+            Weekday::Wed => 2,
+            Weekday::Thu => 3,
+            Weekday::Fri => 4,
+            Weekday::Sat => 5,
+            Weekday::Sun => 6,
         }
     }
 }
@@ -187,14 +161,12 @@ impl Date {
     }
 
     /// Creates Date for today (local timezone)
-    #[cfg(feature = "chrono")]
     pub fn today() -> Self {
         let today = Local::now().naive_local().date();
         Self::from_naive_date(today)
     }
 
     /// Creates Date for today (UTC)
-    #[cfg(feature = "chrono")]
     pub fn today_utc() -> Self {
         let today = Utc::now().naive_utc().date();
         Self::from_naive_date(today)
@@ -202,31 +174,11 @@ impl Date {
 
     /// Creates from Julian day number
     pub fn from_julian_day(jd: i32) -> DateResult<Self> {
-        #[cfg(feature = "chrono")]
-        {
-            NaiveDate::from_num_days_from_ce_opt(jd - 1721425)
-                .map(|d| Self::from_naive_date(d))
-                .ok_or_else(|| DateError::OutOfRange {
-                    msg: format!("Invalid Julian day: {}", jd),
-                })
-        }
-
-        #[cfg(not(feature = "chrono"))]
-        {
-            // Manual Julian day conversion
-            let a = jd + 32044;
-            let b = (4 * a + 3) / 146097;
-            let c = a - (146097 * b) / 4;
-            let d = (4 * c + 3) / 1461;
-            let e = c - (1461 * d) / 4;
-            let m = (5 * e + 2) / 153;
-
-            let day = e - (153 * m + 2) / 5 + 1;
-            let month = m + 3 - 12 * (m / 10);
-            let year = 100 * b + d - 4800 + m / 10;
-
-            Self::new(year, month as u32, day as u32)
-        }
+        NaiveDate::from_num_days_from_ce_opt(jd - 1721425)
+            .map(|d| Self::from_naive_date(d))
+            .ok_or_else(|| DateError::OutOfRange {
+                msg: format!("Invalid Julian day: {}", jd),
+            })
     }
 
     /// Creates from day of year
@@ -269,27 +221,14 @@ impl Date {
             });
         }
 
-        #[cfg(feature = "chrono")]
-        {
-            NaiveDate::from_isoywd_opt(year, week, Weekday::try_from((weekday - 1) as u8).unwrap())
-                .map(|d| Self::from_naive_date(d))
-                .ok_or_else(|| DateError::InvalidFormat {
-                    msg: format!("Invalid ISO week date: {}-W{:02}-{}", year, week, weekday),
-                })
-        }
-
-        #[cfg(not(feature = "chrono"))]
-        {
-            // Calculate date from ISO week
-            // This is complex without chrono, simplified version
-            Err(DateError::InvalidFormat {
-                msg: "ISO week date requires chrono feature".to_string(),
+        NaiveDate::from_isoywd_opt(year, week, Weekday::try_from((weekday - 1) as u8).unwrap())
+            .map(|d| Self::from_naive_date(d))
+            .ok_or_else(|| DateError::InvalidFormat {
+                msg: format!("Invalid ISO week date: {}-W{:02}-{}", year, week, weekday),
             })
-        }
     }
 
     /// Creates from chrono NaiveDate
-    #[cfg(feature = "chrono")]
     pub fn from_naive_date(date: NaiveDate) -> Self {
         Self {
             inner: Arc::new(DateInner::from_naive(date)),
@@ -396,7 +335,6 @@ impl Date {
     }
 
     /// Returns the ISO week number
-    #[cfg(feature = "chrono")]
     pub fn iso_week(&self) -> u32 {
         self.inner.to_naive().iso_week().week()
     }
@@ -422,19 +360,7 @@ impl Date {
 
     /// Returns the Julian day number
     pub fn julian_day(&self) -> i32 {
-        #[cfg(feature = "chrono")]
-        {
-            self.inner.to_naive().num_days_from_ce() + 1721425
-        }
-
-        #[cfg(not(feature = "chrono"))]
-        {
-            let a = (14 - self.month() as i32) / 12;
-            let y = self.year() + 4800 - a;
-            let m = self.month() as i32 + 12 * a - 3;
-
-            self.day() as i32 + (153 * m + 2) / 5 + 365 * y + y / 4 - y / 100 + y / 400 - 32045
-        }
+        self.inner.to_naive().num_days_from_ce() + 1721425
     }
 
     /// Gets the internal representation
@@ -447,23 +373,10 @@ impl Date {
 
     /// Adds days to the date
     pub fn add_days(&self, days: i64) -> DateResult<Self> {
-        #[cfg(feature = "chrono")]
-        {
-            let date = self.inner.to_naive();
-            date.checked_add_signed(Duration::days(days))
-                .map(|d| Self::from_naive_date(d))
-                .ok_or(DateError::ArithmeticOverflow)
-        }
-
-        #[cfg(not(feature = "chrono"))]
-        {
-            // Manual date arithmetic
-            let jd = self.julian_day() as i64 + days;
-            if jd > i32::MAX as i64 || jd < i32::MIN as i64 {
-                return Err(DateError::ArithmeticOverflow);
-            }
-            Self::from_julian_day(jd as i32)
-        }
+        let date = self.inner.to_naive();
+        date.checked_add_signed(Duration::days(days))
+            .map(|d| Self::from_naive_date(d))
+            .ok_or(DateError::ArithmeticOverflow)
     }
 
     /// Adds weeks to the date
@@ -621,7 +534,6 @@ impl Date {
     }
 
     /// Returns relative date string (e.g., "today", "yesterday", "3 days ago")
-    #[cfg(feature = "chrono")]
     pub fn to_relative_string(&self) -> String {
         let today = Date::today();
         let days = today.days_between(self);
@@ -652,7 +564,6 @@ impl Date {
     // ==================== Conversions ====================
 
     /// Converts to chrono NaiveDate
-    #[cfg(feature = "chrono")]
     #[inline]
     pub fn to_naive(&self) -> NaiveDate {
         self.inner.to_naive()
@@ -676,21 +587,18 @@ impl Date {
     }
 
     /// Checks if the date is in the past
-    #[cfg(feature = "chrono")]
     pub fn is_past(&self) -> bool {
         let today = Date::today();
         self < &today
     }
 
     /// Checks if the date is in the future
-    #[cfg(feature = "chrono")]
     pub fn is_future(&self) -> bool {
         let today = Date::today();
         self > &today
     }
 
     /// Checks if the date is today
-    #[cfg(feature = "chrono")]
     pub fn is_today(&self) -> bool {
         let today = Date::today();
         self == &today
@@ -706,14 +614,8 @@ impl fmt::Display for Date {
 }
 
 impl Default for Date {
-    #[cfg(feature = "chrono")]
     fn default() -> Self {
         Self::today()
-    }
-
-    #[cfg(not(feature = "chrono"))]
-    fn default() -> Self {
-        Self::unix_epoch().unwrap()
     }
 }
 

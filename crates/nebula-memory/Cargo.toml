@@ -17,7 +17,7 @@ categories = ["memory-management", "data-structures", "caching", "no-std"]
 default = ["std"]
 
 # Core features
-std = ["once_cell", "parking_lot", "libc"]
+std = ["once_cell", "parking_lot", "libc", "chrono"]
 alloc = []
 
 # Memory management features
@@ -27,9 +27,10 @@ cache = ["std", "hashbrown"]
 stats = ["std"]
 budget = ["stats"]
 streaming = ["alloc"]
+logging = ["std", "nebula-log"]
 
 # Full feature set
-full = ["std", "pool", "arena", "cache", "stats", "budget", "streaming"]
+full = ["std", "pool", "arena", "cache", "stats", "budget", "streaming", "logging"]
 
 [dependencies]
 # Collections
@@ -38,6 +39,12 @@ hashbrown = { version = "0.15", optional = true, default-features = false }
 
 # Core dependencies
 cfg-if = "1.0"
+dyn-clone = "1.0"
+spin = "0.9"
+chrono = { version = "0.4", optional = true, default-features = false, features = ["clock"] }
+
+# No-std collections
+heapless = "0.8"
 
 # Platform-specific
 libc = { version = "0.2", optional = true }
@@ -47,6 +54,9 @@ once_cell = { version = "1.21", optional = true }
 parking_lot = { version = "0.12", optional = true }
 
 # Internal crates
+nebula-core = { path = "..\\nebula-core" }
+nebula-error = { path = "..\\nebula-error" }
+nebula-log = { path = "..\\nebula-log", optional = true }
 nebula-system = { path = "..\\nebula-system" }
 
 [dev-dependencies]

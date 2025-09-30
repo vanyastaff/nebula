@@ -45,6 +45,9 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 nebula-resilience = { path = "../nebula-resilience" }
 nebula-value = { path = "../nebula-value" }
 
+# Builder patterns
+bon = "3.2"
+
 # Email validation - using regex for now
 # email-validator = "0.2"
 

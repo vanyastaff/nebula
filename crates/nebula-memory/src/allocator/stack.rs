@@ -16,7 +16,7 @@ use core::alloc::Layout;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use super::{AllocError, AllocErrorKind, AllocResult, Allocator, MemoryUsage, Resettable};
+use super::{AllocError, AllocErrorCode, AllocResult, Allocator, MemoryUsage, Resettable};
 
 /// Stack allocator that supports LIFO allocation and deallocation
 ///
@@ -60,8 +60,8 @@ impl StackAllocator {
     /// Creates a new stack allocator with the specified capacity
     pub fn new(capacity: usize) -> AllocResult<Self> {
         if capacity == 0 {
-            return Err(AllocError::with_kind_and_layout(
-                AllocErrorKind::InvalidLayout,
+            return Err(AllocError::with_layout(
+                AllocErrorCode::InvalidLayout,
                 Layout::from_size_align(0, 1).unwrap(),
             ));
         }
@@ -240,7 +240,7 @@ unsafe impl Allocator for StackAllocator {
         if let Some(ptr) = self.try_allocate(layout.size(), layout.align()) {
             Ok(NonNull::slice_from_raw_parts(ptr, layout.size()))
         } else {
-            Err(AllocError::with_kind_and_layout(AllocErrorKind::OutOfMemory, layout))
+            Err(AllocError::with_layout(AllocErrorCode::OutOfMemory, layout))
         }
     }
 

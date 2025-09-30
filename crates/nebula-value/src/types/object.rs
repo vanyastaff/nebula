@@ -9,9 +9,6 @@ use std::sync::Arc;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "indexmap")]
-use indexmap::IndexMap;
-
 use thiserror::Error;
 
 #[cfg(feature = "rayon")]
@@ -52,10 +49,6 @@ pub enum ObjectError {
 }
 
 /// Type alias for the internal map type
-#[cfg(feature = "indexmap")]
-type InternalMap = IndexMap<String, Value>;
-
-#[cfg(not(feature = "indexmap"))]
 type InternalMap = BTreeMap<String, Value>;
 
 /// A high-performance, feature-rich object/map type with functional programming support
@@ -88,13 +81,9 @@ impl Object {
         }
     }
 
-    /// Creates an Object with specified capacity
+    /// Creates an Object with specified capacity (ignored for BTreeMap)
     #[inline]
     pub fn with_capacity(_capacity: usize) -> Self {
-        #[cfg(feature = "indexmap")]
-        let map = IndexMap::with_capacity(_capacity);
-
-        #[cfg(not(feature = "indexmap"))]
         let map = BTreeMap::new(); // BTreeMap doesn't have with_capacity
 
         Self {
@@ -160,11 +149,10 @@ impl Object {
         self.len() == 0
     }
 
-    /// Returns the capacity (for IndexMap)
-    #[cfg(feature = "indexmap")]
+    /// Returns the capacity (BTreeMap doesn't track capacity, returns len)
     #[inline]
     pub fn capacity(&self) -> usize {
-        self.inner.capacity()
+        self.inner.len() // BTreeMap doesn't have capacity
     }
 
     /// Clears the object (returns a new empty object)
@@ -872,10 +860,19 @@ impl Index<&str> for Object {
     ///
     /// # Examples
     ///
+    /// # Panics
+    ///
+    /// Panics if the key does not exist in the object. Use [`Object::get`] for safe access.
+    ///
+    /// # Example
+    ///
     /// ```rust
     /// use nebula_value::{Object, Value};
     /// let obj = Object::from_iter(vec![("foo", Value::from(1))]);
     /// assert_eq!(obj["foo"].as_i64(), Some(1));
+    ///
+    /// // Use get() for safe access:
+    /// assert!(obj.get("nonexistent").is_none());
     /// ```
     fn index(&self, key: &str) -> &Self::Output {
         match self.get(key) {
@@ -907,15 +904,6 @@ impl From<InternalMap> for Object {
     #[inline]
     fn from(map: InternalMap) -> Self {
         Self::from_map(map)
-    }
-}
-
-#[cfg(feature = "indexmap")]
-impl From<BTreeMap<String, Value>> for Object {
-    #[inline]
-    fn from(map: BTreeMap<String, Value>) -> Self {
-        let internal: InternalMap = map.into_iter().collect();
-        Self::from_map(internal)
     }
 }
 
@@ -1080,20 +1068,10 @@ impl IntoIterator for Object {
     }
 }
 
-#[cfg(not(feature = "indexmap"))]
+
 impl<'a> IntoIterator for &'a Object {
     type Item = (&'a String, &'a Value);
     type IntoIter = std::collections::btree_map::Iter<'a, String, Value>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.inner.iter()
-    }
-}
-
-#[cfg(feature = "indexmap")]
-impl<'a> IntoIterator for &'a Object {
-    type Item = (&'a String, &'a Value);
-    type IntoIter = indexmap::map::Iter<'a, String, Value>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.inner.iter()

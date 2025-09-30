@@ -1,6 +1,7 @@
 //! Numeric validation operations using the unified validator macro
 
 use crate::{validator, validator_fn, ValueExt};
+use bon::builder;
 
 // ==================== NUMERIC RANGE VALIDATORS ====================
 
@@ -181,5 +182,27 @@ pub fn range(min_value: f64, max_value: f64) -> Range {
 }
 
 pub fn between(min_value: f64, max_value: f64) -> Range {
+    Range::new(min_value, max_value)
+}
+
+// ==================== BUILDER-BASED API ====================
+
+/// Create range validator with builder pattern
+#[builder]
+pub fn range_builder(
+    min_value: f64,
+    max_value: f64
+) -> Range {
+    Range::new(min_value, max_value)
+}
+
+/// Create range validator with optional bounds using builder pattern
+#[builder]
+pub fn flexible_range(
+    #[builder(default = f64::NEG_INFINITY)]
+    min_value: f64,
+    #[builder(default = f64::INFINITY)]
+    max_value: f64
+) -> Range {
     Range::new(min_value, max_value)
 }

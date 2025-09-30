@@ -14,8 +14,8 @@ use thiserror::Error;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "pattern")]
-use regex::Regex;
+// Pattern matching with regex removed - add 'regex' dependency and uncomment if needed
+// use regex::Regex;
 
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
@@ -45,9 +45,9 @@ pub enum TextError {
     #[error("Invalid UTF-8 sequence at byte {index}")]
     InvalidUtf8 { index: usize },
 
-    #[error("Pattern compilation error: {msg}")]
-    #[cfg(feature = "pattern")]
-    PatternError { msg: String },
+    // Pattern compilation error - re-enable when pattern feature is added
+    // #[error("Pattern compilation error: {msg}")]
+    // PatternError { msg: String },
 
     #[error("JSON type mismatch: expected string, got {found}")]
     #[cfg(feature = "serde")]
@@ -308,30 +308,28 @@ impl Text {
     }
 
     // ==================== Pattern Matching (Regex) ====================
-
-    #[cfg(feature = "pattern")]
-    /// Checks if text matches a regex pattern
-    pub fn matches_pattern(&self, pattern: &str) -> TextResult<bool> {
-        Regex::new(pattern)
-            .map(|re| re.is_match(&self.inner))
-            .map_err(|e| TextError::PatternError { msg: e.to_string() })
-    }
-
-    #[cfg(feature = "pattern")]
-    /// Replaces all regex matches
-    pub fn regex_replace(&self, pattern: &str, replacement: &str) -> TextResult<Text> {
-        Regex::new(pattern)
-            .map(|re| Self::new(re.replace_all(&self.inner, replacement).into_owned()))
-            .map_err(|e| TextError::PatternError { msg: e.to_string() })
-    }
-
-    #[cfg(feature = "pattern")]
-    /// Finds all regex matches
-    pub fn find_all_matches(&self, pattern: &str) -> TextResult<Vec<&str>> {
-        Regex::new(pattern)
-            .map(|re| re.find_iter(&self.inner).map(|m| m.as_str()).collect())
-            .map_err(|e| TextError::PatternError { msg: e.to_string() })
-    }
+    // Pattern matching methods removed - add 'regex' dependency and uncomment if needed
+    //
+    // /// Checks if text matches a regex pattern
+    // pub fn matches_pattern(&self, pattern: &str) -> TextResult<bool> {
+    //     Regex::new(pattern)
+    //         .map(|re| re.is_match(&self.inner))
+    //         .map_err(|e| TextError::PatternError { msg: e.to_string() })
+    // }
+    //
+    // /// Replaces all regex matches
+    // pub fn regex_replace(&self, pattern: &str, replacement: &str) -> TextResult<Text> {
+    //     Regex::new(pattern)
+    //         .map(|re| Self::new(re.replace_all(&self.inner, replacement).into_owned()))
+    //         .map_err(|e| TextError::PatternError { msg: e.to_string() })
+    // }
+    //
+    // /// Finds all regex matches
+    // pub fn find_all_matches(&self, pattern: &str) -> TextResult<Vec<&str>> {
+    //     Regex::new(pattern)
+    //         .map(|re| re.find_iter(&self.inner).map(|m| m.as_str()).collect())
+    //         .map_err(|e| TextError::PatternError { msg: e.to_string() })
+    // }
 
     // ==================== Splitting ====================
 
@@ -732,14 +730,14 @@ impl Text {
     // ==================== Base64 Operations ====================
 
     /// Encodes text as base64
-    #[cfg(feature = "base64")]
+    
     pub fn to_base64(&self) -> Text {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
         Self::new(STANDARD.encode(self.as_bytes()))
     }
 
     /// Decodes from base64
-    #[cfg(feature = "base64")]
+    
     pub fn from_base64(encoded: &str) -> TextResult<Text> {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
 
@@ -1193,7 +1191,7 @@ mod tests {
         assert_eq!(wrapped[1].as_str(), "long text");
     }
 
-    #[cfg(feature = "base64")]
+    
     #[test]
     fn test_base64() {
         let original = Text::from("Hello, World!");
@@ -1223,19 +1221,19 @@ mod tests {
         assert_eq!(t1.as_str(), t2.as_str());
     }
 
-    #[cfg(feature = "pattern")]
-    #[test]
-    fn test_regex() {
-        let text = Text::from("hello123world456");
-
-        assert!(text.matches_pattern(r"\d+").unwrap());
-
-        let replaced = text.regex_replace(r"\d+", "X").unwrap();
-        assert_eq!(replaced.as_str(), "helloXworldX");
-
-        let matches = text.find_all_matches(r"\d+").unwrap();
-        assert_eq!(matches, vec!["123", "456"]);
-    }
+    // Pattern matching test removed - uncomment when pattern feature is added
+    // #[test]
+    // fn test_regex() {
+    //     let text = Text::from("hello123world456");
+    //
+    //     assert!(text.matches_pattern(r"\d+").unwrap());
+    //
+    //     let replaced = text.regex_replace(r"\d+", "X").unwrap();
+    //     assert_eq!(replaced.as_str(), "helloXworldX");
+    //
+    //     let matches = text.find_all_matches(r"\d+").unwrap());
+    //     assert_eq!(matches, vec!["123", "456"]);
+    // }
 
     #[cfg(feature = "rayon")]
     #[test]
