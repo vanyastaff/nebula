@@ -25,7 +25,8 @@
       "Bash(for:*)",
       "Bash(do [ ! -f \"$dir/mod.rs\" ])",
       "Bash(touch:*)",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash([ -f kind.rs ])"
     ],
     "deny": [],
     "ask": []

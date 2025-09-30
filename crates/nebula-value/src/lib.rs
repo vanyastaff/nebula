@@ -151,12 +151,9 @@
 //! |------|-------------|-------------------|
 //! }
 //! }
-pub mod lib_v2;
 extern crate alloc;
-
 pub mod core;
 pub mod types;
-
 // Re-export core types
 pub use core::{
     error::{ValueResult, ValueErrorExt, ValueResultExt},
@@ -166,13 +163,10 @@ pub use core::{
     value::{Value, HashableValue},
     NebulaError, NebulaResult, ResultExt, // Unified error handling
 };
-
 // Re-export type implementations
 pub use types::*;
-
 /// Prelude for common imports
 pub mod prelude {
     pub use crate::core::prelude::*;
     pub use crate::{Value, ValueKind, NebulaError, ValueResult, ValueErrorExt, ValueResultExt};
 }
-

@@ -15,6 +15,9 @@ pub trait ValueErrorExt {
     /// Create a value type mismatch error
     fn value_type_mismatch(expected: impl Into<String>, actual: impl Into<String>) -> Self;
 
+    /// Create a value limit exceeded error
+    fn value_limit_exceeded(limit: &str, max: usize, actual: usize) -> Self;
+
     /// Create a value conversion error
     fn value_conversion_error(from: impl Into<String>, to: impl Into<String>) -> Self;
 
@@ -59,6 +62,12 @@ impl ValueErrorExt for NebulaError {
     /// Create a value type mismatch error
     fn value_type_mismatch(expected: impl Into<String>, actual: impl Into<String>) -> Self {
         Self::validation(format!("Type mismatch: expected {}, got {}", expected.into(), actual.into()))
+    }
+
+    /// Create a value limit exceeded error
+    fn value_limit_exceeded(limit: &str, max: usize, actual: usize) -> Self {
+        Self::validation(format!("{} exceeded: {} > {} (limit: {}, max: {}, actual: {})",
+            limit, actual, max, limit, max, actual))
     }
 
     /// Create a value conversion error
@@ -178,6 +187,15 @@ mod tests {
         let error = NebulaError::value_operation_not_supported("add", "boolean");
         assert!(error.is_client_error());
         assert_eq!(error.error_code(), "VALIDATION_ERROR");
+    }
+
+    #[test]
+    fn test_value_limit_exceeded() {
+        let error = NebulaError::value_limit_exceeded("max_array_length", 1000, 1500);
+        assert!(error.is_client_error());
+        assert!(error.to_string().contains("exceeded"));
+        assert!(error.to_string().contains("1000"));
+        assert!(error.to_string().contains("1500"));
     }
 
     #[test]
