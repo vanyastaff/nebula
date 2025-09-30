@@ -154,6 +154,11 @@
 extern crate alloc;
 pub mod core;
 pub mod types;
+
+// V2 modules
+pub mod scalar;
+pub mod collections;
+pub mod validation;
 // Re-export core types
 pub use core::{
     error::{ValueResult, ValueErrorExt, ValueResultExt},

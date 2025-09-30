@@ -344,6 +344,13 @@ mod tests {
         assert_eq!(map.get(&Text::from_str("key3")), None);
     }
 
+    #[test]
+    fn test_text_utf8() {
+        let text = Text::from_str("Hello L <");
+        assert_eq!(text.len(), 17); // Byte length
+        assert_eq!(text.char_count(), 9); // Character count
+        assert!(text.contains("L"));
+    }
 
     #[test]
     fn test_text_clone_efficiency() {

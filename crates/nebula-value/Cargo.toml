@@ -40,7 +40,8 @@ async-trait = { workspace = true }
 
 # Serialization (optional)
 serde = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
+# TEMP: not optional for v2 placeholder (Array/Object use serde_json::Value)
+serde_json = { workspace = true }
 
 # Temporal (TEMP: not optional for v1 compat)
 chrono = { workspace = true }

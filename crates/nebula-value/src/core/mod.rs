@@ -32,6 +32,7 @@
 //! The central [`Value`] enum represents any data value in the Nebula ecosystem.
 //! This module contains the fundamental types and utilities that power the value system:
 //! module provides direct access for advanced use cases.
+pub mod value_v2;
 pub mod error;
 pub mod kind;
 pub mod limits;
@@ -58,4 +59,5 @@ pub mod prelude {
     /// Re-export NebulaError context utilities
     pub use nebula_error::{ResultExt, ErrorContext};
 }
+
 
