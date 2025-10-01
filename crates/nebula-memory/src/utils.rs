@@ -108,7 +108,9 @@ pub fn is_aligned_ptr<T>(ptr: *const T, alignment: usize) -> bool {
     is_aligned(ptr as usize, alignment)
 }
 
-/// Formats bytes into human-readable string
+/// Format bytes into human-readable string
+///
+/// Re-exported from nebula-system for convenience and consistency across the ecosystem.
 ///
 /// # Examples
 /// ```
@@ -119,92 +121,28 @@ pub fn is_aligned_ptr<T>(ptr: *const T, alignment: usize) -> bool {
 /// assert_eq!(format_bytes(1048576), "1.00 MB");
 /// ```
 #[cfg(feature = "std")]
-pub fn format_bytes(bytes: usize) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB", "PB"];
-    const THRESHOLD: f64 = 1024.0;
+pub use nebula_system::utils::format_bytes_usize as format_bytes;
 
-    let mut size = bytes as f64;
-    let mut unit_index = 0;
-
-    while size >= THRESHOLD && unit_index < UNITS.len() - 1 {
-        size /= THRESHOLD;
-        unit_index += 1;
-    }
-
-    if unit_index == 0 {
-        format!("{} {}", bytes, UNITS[0])
-    } else {
-        format!("{:.2} {}", size, UNITS[unit_index])
-    }
-}
-
-/// Formats duration into human-readable string
+/// Format duration into human-readable string
 ///
-/// # Examples
-/// ```
-/// use std::time::Duration;
-///
-/// use nebula_memory::utils::format_duration;
-///
-/// assert_eq!(format_duration(Duration::from_nanos(500)), "500ns");
-/// assert_eq!(format_duration(Duration::from_micros(1500)), "1.50ms");
-/// assert_eq!(format_duration(Duration::from_secs(65)), "1m 5s");
-/// ```
+/// Re-exported from nebula-system for consistency.
 #[cfg(feature = "std")]
-pub fn format_duration(duration: Duration) -> String {
-    let nanos = duration.as_nanos();
-
-    if nanos < 1_000 {
-        format!("{}ns", nanos)
-    } else if nanos < 1_000_000 {
-        format!("{:.2}µs", nanos as f64 / 1_000.0)
-    } else if nanos < 1_000_000_000 {
-        format!("{:.2}ms", nanos as f64 / 1_000_000.0)
-    } else {
-        let secs = duration.as_secs();
-        if secs < 60 {
-            format!("{:.2}s", duration.as_secs_f64())
-        } else if secs < 3600 {
-            let mins = secs / 60;
-            let secs = secs % 60;
-            format!("{}m {}s", mins, secs)
-        } else {
-            let hours = secs / 3600;
-            let mins = (secs % 3600) / 60;
-            let secs = secs % 60;
-            format!("{}h {}m {}s", hours, mins, secs)
-        }
-    }
-}
+pub use nebula_system::utils::format_duration;
 
 /// Format percentage
-pub fn format_percentage(value: f64) -> String {
-    format!("{:.1}%", value * 100.0)
-}
+///
+/// Re-exported from nebula-system for consistency.
+pub use nebula_system::utils::format_percentage;
 
 /// Format rate (per second)
-pub fn format_rate(rate: f64) -> String {
-    if rate < 1_000.0 {
-        format!("{:.1}/s", rate)
-    } else if rate < 1_000_000.0 {
-        format!("{:.1}K/s", rate / 1_000.0)
-    } else {
-        format!("{:.1}M/s", rate / 1_000_000.0)
-    }
-}
+///
+/// Re-exported from nebula-system for consistency.
+pub use nebula_system::utils::format_rate;
 
 /// Get cache line size for current platform
-#[inline]
-pub fn cache_line_size() -> usize {
-    cfg_if::cfg_if! {
-        if #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))] {
-            64
-        } else {
-            // Conservative default
-            64
-        }
-    }
-}
+///
+/// Re-exported from nebula-system for consistency.
+pub use nebula_system::utils::cache_line_size;
 
 /// Memory barrier for synchronization
 #[inline(always)]
@@ -286,43 +224,22 @@ impl Drop for Timer {
 }
 
 /// Platform information
-#[derive(Debug, Clone, Copy)]
-pub struct PlatformInfo {
-    pub page_size: usize,
-    pub cache_line_size: usize,
-    pub pointer_width: usize,
-}
-
-impl PlatformInfo {
-    #[inline]
-    pub fn current() -> Self {
-        Self {
-            page_size: page_size(),
-            cache_line_size: cache_line_size(),
-            pointer_width: mem::size_of::<usize>() * 8,
-        }
-    }
-}
+///
+/// Re-exported from nebula-system for consistency across the ecosystem.
+pub use nebula_system::utils::PlatformInfo;
 
 /// Get system page size
+///
+/// Uses actual syscall-based detection via syscalls module instead of hardcoded values
 #[inline]
 pub fn page_size() -> usize {
-    cfg_if::cfg_if! {
-        if #[cfg(unix)] {
-            4096 // Common page size for Unix systems
-        } else if #[cfg(windows)] {
-            4096 // Common page size for Windows
-        } else {
-            4096 // Conservative default
-        }
-    }
+    crate::syscalls::get_page_size()
 }
 
 /// Check if a number is power of two
-#[inline(always)]
-pub const fn is_power_of_two(n: usize) -> bool {
-    n != 0 && (n & (n - 1)) == 0
-}
+///
+/// Re-exported from nebula-system for consistency.
+pub use nebula_system::utils::is_power_of_two;
 
 /// Atomically update maximum value
 #[inline]
@@ -636,36 +553,9 @@ mod tests {
         assert_eq!(next_power_of_two(63), 64);
     }
 
-    #[cfg(feature = "std")]
-    #[test]
-    fn test_format_bytes() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(512), "512 B");
-        assert_eq!(format_bytes(1024), "1.00 KB");
-        assert_eq!(format_bytes(1536), "1.50 KB");
-        assert_eq!(format_bytes(1048576), "1.00 MB");
-        assert_eq!(format_bytes(1073741824), "1.00 GB");
-    }
+    // Tests for format_bytes and format_duration are now in nebula-system
 
-    #[cfg(feature = "std")]
-    #[test]
-    fn test_format_duration() {
-        use std::time::Duration;
-
-        assert_eq!(format_duration(Duration::from_nanos(500)), "500ns");
-        assert_eq!(format_duration(Duration::from_micros(500)), "500.00µs");
-        assert_eq!(format_duration(Duration::from_millis(500)), "500.00ms");
-        assert_eq!(format_duration(Duration::from_secs(30)), "30.00s");
-        assert_eq!(format_duration(Duration::from_secs(90)), "1m 30s");
-        assert_eq!(format_duration(Duration::from_secs(3661)), "1h 1m 1s");
-    }
-
-    #[test]
-    fn test_cache_line_utils() {
-        let cache_size = cache_line_size();
-        assert!(cache_size > 0);
-        assert!(cache_size.is_power_of_two());
-    }
+    // Test for cache_line_size is now in nebula-system
 
     #[cfg(feature = "std")]
     #[test]
@@ -686,11 +576,5 @@ mod tests {
         assert_eq!(perf::format_throughput(1_500_000.0), "1.50M ops/s");
     }
 
-    #[test]
-    fn test_platform_info() {
-        let info = PlatformInfo::current();
-        assert!(info.page_size >= 4096);
-        assert!(info.cache_line_size >= 64);
-        assert!(info.pointer_width == 32 || info.pointer_width == 64);
-    }
+    // Test for PlatformInfo is now in nebula-system
 }

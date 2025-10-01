@@ -24,7 +24,7 @@ use std::{
     vec::Vec,
 };
 
-use crate::error::MemoryResult;
+use crate::core::error::MemoryResult;
 use crate::extensions::MemoryExtension;
 
 /// A boxed future that can be stored and handled generically
@@ -58,7 +58,7 @@ pub struct NoopAsyncAllocator;
 
 impl AsyncAllocator for NoopAsyncAllocator {
     fn allocate<'a>(&'a self, _size: usize, _align: usize) -> BoxFuture<'a, MemoryResult<usize>> {
-        use crate::error::MemoryError;
+        use crate::core::error::MemoryError;
         boxed(core::future::ready(Err(MemoryError::NotSupported {
             feature: "async allocation",
             context: Some("NoopAsyncAllocator does not support allocation".to_string()),
@@ -71,7 +71,7 @@ impl AsyncAllocator for NoopAsyncAllocator {
         _size: usize,
         _align: usize,
     ) -> BoxFuture<'a, MemoryResult<()>> {
-        use crate::error::MemoryError;
+        use crate::core::error::MemoryError;
         boxed(core::future::ready(Err(MemoryError::NotSupported {
             feature: "async deallocation",
             context: Some("NoopAsyncAllocator does not support deallocation".to_string()),

@@ -4,11 +4,9 @@
 //! including the MemoryBudget struct and related types.
 
 use std::sync::{Arc, Mutex, RwLock, Weak};
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::error::MemoryResult;
-use crate::stats::MemoryStats;
+use crate::core::error::{MemoryResult, MemoryError};
 use super::config::BudgetConfig;
 
 /// Current state of a memory budget
@@ -286,11 +284,10 @@ impl MemoryBudget {
             let mut stats = self.stats.lock().unwrap();
             stats.failed += 1;
             
-            return Err(crate::error::MemoryError::OutOfMemory {
-                requested: size,
-                available: effective_limit - *used,
-                context: format!("Budget '{}' limit exceeded", config.name),
-            });
+            return Err(MemoryError::allocation_failed(
+                format!("Budget '{}' limit exceeded: requested {} bytes, available {} bytes",
+                    config.name, size, effective_limit - *used)
+            ));
         }
         
         // Update parent budget if needed

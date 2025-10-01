@@ -14,8 +14,8 @@ use nebula_log::{debug, info, warn, error, Loggable};
 use nebula_system::memory::{self, MemoryInfo, MemoryPressure};
 
 use crate::allocator::AllocatorStats;
-use crate::config::MemoryConfig;
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::config::MemoryConfig;
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// System memory monitoring configuration
 #[derive(Debug, Clone)]

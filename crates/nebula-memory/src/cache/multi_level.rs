@@ -25,7 +25,7 @@ use {
 
 use super::compute::{CacheKey, CacheResult, ComputeCache};
 use super::config::{CacheConfig, CacheMetrics};
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// A level in a multi-level cache
 pub trait CacheLevel<K, V>: Send + Sync {

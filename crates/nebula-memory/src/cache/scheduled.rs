@@ -29,7 +29,7 @@ use {
 
 use super::compute::{CacheKey, CacheResult, ComputeCache};
 use super::config::{CacheConfig, CacheMetrics};
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Priority of scheduled tasks
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

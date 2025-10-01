@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "std")]
 use std::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 
-use crate::error::MemoryResult;
+use crate::core::error::MemoryResult;
 use crate::extensions::MemoryExtension;
 
 /// Types of memory metrics

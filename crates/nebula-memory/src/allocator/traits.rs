@@ -12,13 +12,18 @@
 //! - `Allocator`: Basic allocation/deallocation operations
 //! - `BulkAllocator`: Optimized bulk allocation support
 //! - `ThreadSafeAllocator`: Marker for thread-safe allocators
-//! - `MemoryUsage`: Memory tracking capabilities
-//! - `Resettable`: Allocator reset functionality
+//!
+//! Common traits are re-exported from `core::traits`:
+//! - `MemoryUsage`: Memory tracking capabilities (from core)
+//! - `Resettable`: Allocator reset functionality (from core)
 
 use core::alloc::Layout;
 use core::ptr::NonNull;
 
 use super::{AllocError, AllocErrorCode, AllocResult};
+
+// Re-export core traits for convenience
+pub use crate::core::traits::{MemoryUsage, Resettable, BasicMemoryUsage};
 
 /// Validation of layout parameters
 ///
@@ -400,178 +405,6 @@ pub unsafe trait BulkAllocator: Allocator {
 /// - Thread-local allocators (no sharing, inherently safe)
 /// - Delegating to thread-safe system allocators
 pub unsafe trait ThreadSafeAllocator: Allocator + Sync + Send {}
-
-/// Memory usage reporting trait
-///
-/// Allows allocators to report their current memory usage statistics.
-/// This is useful for monitoring, debugging, and implementing memory limits.
-/// This trait focuses on basic capacity management rather than detailed
-/// profiling.
-///
-/// For comprehensive statistics and profiling, see `StatisticsProvider`.
-///
-/// # Use Cases
-/// - Memory usage monitoring and alerts
-/// - Implementing allocation limits
-/// - Basic performance profiling
-/// - Resource management in constrained environments
-pub trait MemoryUsage {
-    /// Returns current allocated memory in bytes
-    ///
-    /// This should include all memory currently allocated by this allocator
-    /// and not yet deallocated. Does not include memory overhead or
-    /// internal allocator data structures unless specified by the
-    /// implementation.
-    fn used_memory(&self) -> usize;
-
-    /// Returns total available memory in bytes
-    ///
-    /// Returns `None` if the allocator has no inherent memory limit
-    /// (e.g., system allocators). Returns `Some(bytes)` if there's a
-    /// specific limit (e.g., pool allocators, embedded systems).
-    fn available_memory(&self) -> Option<usize>;
-
-    /// Returns total memory capacity in bytes
-    ///
-    /// This is the sum of used and available memory. Returns `None`
-    /// if the allocator has no inherent limit.
-    fn total_memory(&self) -> Option<usize> {
-        match (self.used_memory(), self.available_memory()) {
-            (used, Some(available)) => Some(used + available),
-            _ => None,
-        }
-    }
-
-    /// Returns memory usage as a percentage (0.0 to 100.0)
-    ///
-    /// Returns `None` if total memory is unknown or zero.
-    /// Useful for implementing memory pressure warnings.
-    fn memory_usage_percent(&self) -> Option<f32> {
-        self.total_memory().and_then(|total| {
-            if total == 0 {
-                Some(0.0)
-            } else {
-                Some((self.used_memory() as f32 / total as f32) * 100.0)
-            }
-        })
-    }
-
-    /// Checks if memory usage is above the specified percentage threshold
-    ///
-    /// Returns `None` if usage percentage cannot be determined.
-    /// This is a convenience method for implementing memory pressure handling.
-    fn is_memory_pressure(&self, threshold_percent: f32) -> Option<bool> {
-        self.memory_usage_percent().map(|usage| usage >= threshold_percent)
-    }
-
-    /// Returns detailed memory usage information
-    ///
-    /// Provides a basic view of memory usage. Default implementation
-    /// uses the other trait methods, but allocators can override this for
-    /// more detailed reporting.
-    fn memory_usage(&self) -> BasicMemoryUsage {
-        BasicMemoryUsage {
-            used: self.used_memory(),
-            available: self.available_memory(),
-            total: self.total_memory(),
-            usage_percent: self.memory_usage_percent(),
-        }
-    }
-}
-
-/// Basic memory usage information for simple allocators
-///
-/// This is a simplified view of memory usage that focuses on capacity
-/// management. For detailed metrics and profiling, use the `MemoryMetrics` type
-/// from the stats module.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BasicMemoryUsage {
-    /// Currently used memory in bytes
-    pub used: usize,
-    /// Available memory in bytes (None if unlimited)
-    pub available: Option<usize>,
-    /// Total memory capacity in bytes (None if unlimited)
-    pub total: Option<usize>,
-    /// Memory usage as percentage (None if cannot be calculated)
-    pub usage_percent: Option<f32>,
-}
-
-impl core::fmt::Display for BasicMemoryUsage {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "used: {} bytes", self.used)?;
-
-        if let Some(total) = self.total {
-            write!(f, ", total: {} bytes", total)?;
-        }
-
-        if let Some(percent) = self.usage_percent {
-            write!(f, " ({:.1}%)", percent)?;
-        }
-
-        Ok(())
-    }
-}
-
-/// Resettable allocator trait
-///
-/// Allocators implementing this trait can be reset, invalidating all previous
-/// allocations. This is useful for:
-/// - Arena/bump allocators that can reset to beginning
-/// - Pool allocators that can return all memory to the pool
-/// - Temporary allocators for scoped operations
-/// - Memory debugging scenarios
-///
-/// # Safety Considerations
-/// Resetting an allocator is an inherently dangerous operation because it
-/// invalidates all existing allocations. Users must ensure no live references
-/// exist before reset.
-pub trait Resettable {
-    /// Resets the allocator, invalidating all previous allocations
-    ///
-    /// # Safety
-    /// - All pointers from previous allocations become invalid immediately
-    /// - Using invalidated pointers results in undefined behavior
-    /// - Caller must ensure no live references exist before calling this method
-    /// - After reset, the allocator should be ready for new allocations
-    ///
-    /// # Implementation Notes
-    /// Implementations should:
-    /// 1. Mark all allocated memory as available
-    /// 2. Reset internal state to initial condition
-    /// 3. Ensure the allocator is ready for new allocations
-    unsafe fn reset(&self);
-
-    /// Checks if the allocator can be safely reset
-    ///
-    /// Default implementation always returns `true`, but specific allocators
-    /// may have conditions where reset is not possible or advisable.
-    ///
-    /// # Examples of when reset might not be safe:
-    /// - Allocator is currently being used by other threads
-    /// - Allocator has active external references
-    /// - Allocator is in an inconsistent state
-    fn can_reset(&self) -> bool {
-        true
-    }
-
-    /// Resets the allocator only if it's safe to do so
-    ///
-    /// This is a safer alternative to `reset()` that checks `can_reset()`
-    /// first. Returns `true` if reset was performed, `false` if it was
-    /// skipped.
-    ///
-    /// # Safety
-    /// Same safety requirements as `reset()`, but only applies if reset is
-    /// actually performed.
-    unsafe fn try_reset(&self) -> bool {
-        if self.can_reset() {
-            unsafe { self.reset() };
-            true
-        } else {
-            false
-        }
-    }
-}
 
 // ============================================================================
 // Blanket implementations for references

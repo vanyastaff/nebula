@@ -29,7 +29,7 @@ use {
     spin::{Mutex, RwLock},
 };
 
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Time window for statistics aggregation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

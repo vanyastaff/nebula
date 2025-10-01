@@ -28,7 +28,7 @@ use crate::cache::{
     compute::{CacheEntry, CacheKey},
     stats::{AccessPattern, SizeDistribution},
 };
-use crate::error::MemoryResult;
+use crate::core::error::MemoryResult;
 
 /// LRU implementation strategies for different scenarios
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,8 +1,7 @@
-//! Direct system call optimizations for memory management
+//! Direct system call wrappers for memory operations
 //!
-//! This module provides direct system call wrappers for memory-related
-//! operations, avoiding the overhead of standard library functions where
-//! needed.
+//! This module provides direct, unsafe system call wrappers for memory-related
+//! operations used by custom allocators. These bypass standard library overhead.
 
 use std::io;
 
@@ -74,8 +73,7 @@ impl MemoryProtection {
 
 /// Memory mapping with direct syscalls
 ///
-/// This function uses direct system calls to map memory, which can be more
-/// efficient than using standard library functions in some cases.
+/// Uses direct system calls to map memory - more efficient than stdlib for allocator use.
 pub fn memory_map(
     addr: Option<*mut u8>,
     size: usize,
@@ -85,7 +83,6 @@ pub fn memory_map(
     #[cfg(unix)]
     {
         use std::ptr;
-
         use libc::{
             mmap, MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_HUGETLB, MAP_PRIVATE, MAP_SHARED,
         };
@@ -133,7 +130,6 @@ pub fn memory_map(
     #[cfg(windows)]
     {
         use std::ptr;
-
         use winapi::um::memoryapi::VirtualAlloc;
         use winapi::um::winnt::{MEM_COMMIT, MEM_LARGE_PAGES, MEM_RESERVE};
 
@@ -149,7 +145,7 @@ pub fn memory_map(
         let addr_ptr = addr.unwrap_or(ptr::null_mut());
 
         let ptr = unsafe {
-            VirtualAlloc(addr_ptr as *mut std::ffi::c_void, size, alloc_type, page_protection)
+            VirtualAlloc(addr_ptr as *mut winapi::ctypes::c_void, size, alloc_type, page_protection)
         };
 
         if ptr.is_null() {
@@ -191,7 +187,7 @@ pub fn memory_unmap(addr: *mut u8, size: usize) -> io::Result<()> {
         use winapi::um::memoryapi::VirtualFree;
         use winapi::um::winnt::MEM_RELEASE;
 
-        let result = unsafe { VirtualFree(addr as *mut std::ffi::c_void, 0, MEM_RELEASE) };
+        let result = unsafe { VirtualFree(addr as *mut winapi::ctypes::c_void, 0, MEM_RELEASE) };
         if result == 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -225,15 +221,13 @@ pub fn memory_protect(addr: *mut u8, size: usize, protection: MemoryProtection) 
 
     #[cfg(windows)]
     {
-        use std::ptr;
-
         use winapi::um::memoryapi::VirtualProtect;
 
         let prot = protection.to_windows_flags();
         let mut old_protect = 0;
 
         let result =
-            unsafe { VirtualProtect(addr as *mut std::ffi::c_void, size, prot, &mut old_protect) };
+            unsafe { VirtualProtect(addr as *mut winapi::ctypes::c_void, size, prot, &mut old_protect) };
 
         if result == 0 {
             Err(io::Error::last_os_error())
@@ -244,82 +238,9 @@ pub fn memory_protect(addr: *mut u8, size: usize, protection: MemoryProtection) 
 
     #[cfg(not(any(unix, windows)))]
     {
-        // Not supported on other platforms
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Memory protection not supported on this platform",
-        ))
-    }
-}
-
-/// Advise memory access pattern
-pub fn memory_advise(addr: *mut u8, size: usize, advice: MemoryAdvice) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        use libc::madvise;
-
-        let advice_val = match advice {
-            MemoryAdvice::Normal => libc::MADV_NORMAL,
-            MemoryAdvice::Random => libc::MADV_RANDOM,
-            MemoryAdvice::Sequential => libc::MADV_SEQUENTIAL,
-            MemoryAdvice::WillNeed => libc::MADV_WILLNEED,
-            MemoryAdvice::DontNeed => libc::MADV_DONTNEED,
-            #[cfg(target_os = "linux")]
-            MemoryAdvice::HugePage => libc::MADV_HUGEPAGE,
-            #[cfg(not(target_os = "linux"))]
-            MemoryAdvice::HugePage => libc::MADV_NORMAL, // Fallback
-            MemoryAdvice::Free => {
-                #[cfg(target_os = "linux")]
-                {
-                    libc::MADV_FREE
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    libc::MADV_DONTNEED // Fallback for non-Linux
-                }
-            },
-        };
-
-        let result = unsafe { madvise(addr as *mut libc::c_void, size, advice_val) };
-        if result == -1 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        // Windows doesn't have direct equivalent to madvise, but we can use
-        // VirtualAlloc/VirtualFree for similar functionality in some cases
-        use winapi::um::memoryapi::{VirtualAlloc, VirtualFree};
-        use winapi::um::winnt::{MEM_DECOMMIT, MEM_RESET};
-
-        let result = match advice {
-            MemoryAdvice::DontNeed | MemoryAdvice::Free => {
-                // We can decommit the memory
-                unsafe { VirtualFree(addr as *mut std::ffi::c_void, size, MEM_DECOMMIT) }
-            },
-            _ => {
-                // For other advice types, we don't have a direct equivalent
-                // Return success for now
-                1
-            },
-        };
-
-        if result == 0 && advice != MemoryAdvice::Normal {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        // Not supported on other platforms
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Memory advice not supported on this platform",
         ))
     }
 }
@@ -341,6 +262,81 @@ pub enum MemoryAdvice {
     HugePage,
     /// Memory can be freed
     Free,
+}
+
+/// Advise memory access pattern
+pub fn memory_advise(addr: *mut u8, size: usize, advice: MemoryAdvice) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use libc::madvise;
+
+        let advice_val = match advice {
+            MemoryAdvice::Normal => libc::MADV_NORMAL,
+            MemoryAdvice::Random => libc::MADV_RANDOM,
+            MemoryAdvice::Sequential => libc::MADV_SEQUENTIAL,
+            MemoryAdvice::WillNeed => libc::MADV_WILLNEED,
+            MemoryAdvice::DontNeed => libc::MADV_DONTNEED,
+            #[cfg(target_os = "linux")]
+            MemoryAdvice::HugePage => libc::MADV_HUGEPAGE,
+            #[cfg(not(target_os = "linux"))]
+            MemoryAdvice::HugePage => libc::MADV_NORMAL,
+            MemoryAdvice::Free => {
+                #[cfg(target_os = "linux")]
+                {
+                    libc::MADV_FREE
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    libc::MADV_DONTNEED
+                }
+            },
+        };
+
+        let result = unsafe { madvise(addr as *mut libc::c_void, size, advice_val) };
+        if result == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use winapi::um::memoryapi::VirtualFree;
+        use winapi::um::winnt::MEM_DECOMMIT;
+
+        let result = match advice {
+            MemoryAdvice::DontNeed | MemoryAdvice::Free => {
+                unsafe { VirtualFree(addr as *mut winapi::ctypes::c_void, size, MEM_DECOMMIT) }
+            },
+            _ => 1, // No-op for other advice types
+        };
+
+        if result == 0 && advice != MemoryAdvice::Normal {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Memory advice not supported on this platform",
+        ))
+    }
+}
+
+/// Memory synchronization type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemorySyncType {
+    /// Synchronous flush (blocks until complete)
+    Sync,
+    /// Asynchronous flush (returns immediately)
+    Async,
+    /// Invalidate cached data
+    Invalidate,
 }
 
 /// Synchronize memory with physical storage
@@ -367,7 +363,7 @@ pub fn memory_sync(addr: *mut u8, size: usize, sync_type: MemorySyncType) -> io:
     {
         use winapi::um::memoryapi::FlushViewOfFile;
 
-        let result = unsafe { FlushViewOfFile(addr as *const std::ffi::c_void, size) };
+        let result = unsafe { FlushViewOfFile(addr as *const winapi::ctypes::c_void, size) };
         if result == 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -377,7 +373,6 @@ pub fn memory_sync(addr: *mut u8, size: usize, sync_type: MemorySyncType) -> io:
 
     #[cfg(not(any(unix, windows)))]
     {
-        // Not supported on other platforms
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Memory synchronization not supported on this platform",
@@ -385,28 +380,16 @@ pub fn memory_sync(addr: *mut u8, size: usize, sync_type: MemorySyncType) -> io:
     }
 }
 
-/// Memory synchronization type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemorySyncType {
-    /// Synchronous flush (blocks until complete)
-    Sync,
-    /// Asynchronous flush (returns immediately)
-    Async,
-    /// Invalidate cached data
-    Invalidate,
-}
-
-/// Prefetch memory
+/// Prefetch memory for better cache performance
 pub fn memory_prefetch(addr: *const u8, size: usize) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
-        // Use a simple loop for prefetching
+        // Use simple loop for small regions
         if size <= 4096 {
             unsafe {
                 let end = addr.add(size);
                 let mut ptr = addr;
                 while ptr < end {
-                    // Use volatile read as a simple prefetch method
                     std::ptr::read_volatile(ptr);
                     ptr = ptr.add(64);
                 }
@@ -433,13 +416,31 @@ pub fn memory_prefetch(addr: *const u8, size: usize) -> io::Result<()> {
             let end = addr.add(size);
             let mut ptr = addr;
             while ptr < end {
-                // Do simple volatile reads
                 std::ptr::read_volatile(ptr);
                 ptr = ptr.add(64);
             }
         }
         Ok(())
     }
+}
+
+/// Memory page information
+#[derive(Debug, Clone)]
+pub struct MemoryPageInfo {
+    /// Base address of the page
+    pub address: *const u8,
+    /// Size of the memory region
+    pub size: usize,
+    /// Whether the page is readable
+    pub read: bool,
+    /// Whether the page is writable
+    pub write: bool,
+    /// Whether the page is executable
+    pub execute: bool,
+    /// Whether the page is shared
+    pub shared: bool,
+    /// Path to mapped file (if any)
+    pub path: Option<String>,
 }
 
 /// Get memory page information
@@ -450,7 +451,7 @@ pub fn get_memory_page_info(addr: *const u8) -> io::Result<MemoryPageInfo> {
         use std::io::Read;
 
         let pid = unsafe { libc::getpid() };
-        let page_size = crate::platform::get_page_size();
+        let page_size = crate::syscalls::get_page_size();
         let page_addr = (addr as usize / page_size) * page_size;
 
         let maps_path = format!("/proc/{}/maps", pid);
@@ -458,7 +459,6 @@ pub fn get_memory_page_info(addr: *const u8) -> io::Result<MemoryPageInfo> {
         let mut content = String::new();
         file.read_to_string(&mut content)?;
 
-        // Parse maps file to find the page info
         for line in content.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 5 {
@@ -488,7 +488,6 @@ pub fn get_memory_page_info(addr: *const u8) -> io::Result<MemoryPageInfo> {
             }
         }
 
-        // Page not found in maps
         Err(io::Error::new(io::ErrorKind::NotFound, "Memory page not found"))
     }
 
@@ -503,7 +502,7 @@ pub fn get_memory_page_info(addr: *const u8) -> io::Result<MemoryPageInfo> {
         unsafe {
             let mut info: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
             let result = VirtualQuery(
-                addr as *const std::ffi::c_void,
+                addr as *const winapi::ctypes::c_void,
                 &mut info,
                 std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
             );
@@ -518,7 +517,6 @@ pub fn get_memory_page_info(addr: *const u8) -> io::Result<MemoryPageInfo> {
             let write = info.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE) != 0;
             let execute =
                 info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE) != 0;
-            let committed = info.State & MEM_COMMIT != 0;
 
             Ok(MemoryPageInfo {
                 address: info.BaseAddress as *const u8,
@@ -526,37 +524,17 @@ pub fn get_memory_page_info(addr: *const u8) -> io::Result<MemoryPageInfo> {
                 read,
                 write,
                 execute,
-                shared: false, // Windows API doesn't easily expose this
-                path: None,    // Windows API doesn't easily expose this
+                shared: false,
+                path: None,
             })
         }
     }
 
     #[cfg(not(any(target_os = "linux", windows)))]
     {
-        // Not supported on other platforms
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Memory page info not supported on this platform",
         ))
     }
-}
-
-/// Memory page information
-#[derive(Debug, Clone)]
-pub struct MemoryPageInfo {
-    /// Base address of the page
-    pub address: *const u8,
-    /// Size of the memory region
-    pub size: usize,
-    /// Whether the page is readable
-    pub read: bool,
-    /// Whether the page is writable
-    pub write: bool,
-    /// Whether the page is executable
-    pub execute: bool,
-    /// Whether the page is shared
-    pub shared: bool,
-    /// Path to mapped file (if any)
-    pub path: Option<String>,
 }

@@ -33,7 +33,6 @@
 //! - `pool`: Object pooling system
 //! - `cache`: Multi-level caching
 //! - `stats`: Memory usage statistics
-//! - `budget`: Memory budget management
 //! - `streaming`: Streaming data optimizations
 //! - `logging`: Integration with nebula-log
 //! - `full`: Enable all features
@@ -55,17 +54,23 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
-// Core error types and utilities
-pub mod error;
+// Core functionality - foundational types and traits
+pub mod core;
 
-// Memory allocators
+// Memory allocators - the heart of nebula-memory
 pub mod allocator;
-
-// Core traits for memory management
-pub mod traits;
 
 // Utility functions and helpers
 pub mod utils;
+
+// Re-export core types for convenience
+pub use crate::core::{MemoryError, MemoryErrorCode, MemoryResult, MemoryConfig};
+
+// Legacy compatibility re-exports
+#[deprecated(since = "0.2.0", note = "Use crate::core::error instead")]
+pub mod error {
+    pub use crate::core::error::*;
+}
 
 // Core features that depend on allocators
 #[cfg(feature = "arena")]
@@ -93,23 +98,28 @@ pub mod budget;
 #[cfg_attr(docsrs, doc(cfg(feature = "streaming")))]
 pub mod streaming;
 
-// Configuration and management
-pub mod config;
-
-// System integration
+// Low-level system calls for allocators
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod syscalls;
+
+// System integration
+#[cfg(all(feature = "std", feature = "monitoring"))]
+#[cfg_attr(docsrs, doc(cfg(feature = "monitoring")))]
 pub mod monitoring;
 
 // Public API exports
 pub mod prelude {
     //! Convenient re-exports of commonly used types and traits.
 
+    // Core types
+    pub use crate::core::{MemoryError, MemoryErrorCode, MemoryResult, MemoryConfig};
+    pub use crate::core::traits::{MemoryManager, MemoryUsage, Resettable};
+
+    // Allocator types
     pub use crate::allocator::{AllocError, AllocResult, Allocator, GlobalAllocatorManager};
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", feature = "monitoring"))]
     pub use crate::allocator::{MonitoredAllocator, MonitoredConfig};
-    pub use crate::error::{MemoryError, MemoryErrorCode, MemoryResult};
-    pub use crate::traits::{MemoryManager, MemoryUsage};
 
     #[cfg(feature = "arena")]
     pub use crate::arena::{Arena, ArenaOptions, TypedArena};
@@ -124,14 +134,13 @@ pub mod prelude {
     pub use crate::stats::{MemoryStats, MemoryTracker, StatsCollector};
 
     #[cfg(feature = "budget")]
-    pub use crate::budget::{MemoryBudget, BudgetConfig, BudgetTracker};
+    pub use crate::budget::{BudgetConfig, MemoryBudget, BudgetState, BudgetMetrics};
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", feature = "monitoring"))]
     pub use crate::monitoring::{MemoryMonitor, MonitoringConfig, PressureAction, IntegratedStats};
 }
 
-// Re-export key types at crate root for convenience
-pub use crate::error::{MemoryError, MemoryResult};
+// Re-export allocator types at crate root for convenience
 pub use crate::allocator::{AllocError, AllocResult};
 
 #[cfg(feature = "logging")]
@@ -165,11 +174,6 @@ pub fn init() -> MemoryResult<()> {
     crate::allocator::GlobalAllocatorManager::init()
         .map_err(|e| MemoryError::initialization_failed(e))?;
 
-    #[cfg(feature = "stats")]
-    {
-        crate::stats::initialize_global_tracker()?;
-    }
-
     #[cfg(feature = "logging")]
     {
         info!("nebula-memory system initialized successfully");
@@ -186,15 +190,6 @@ pub fn shutdown() -> MemoryResult<()> {
     #[cfg(feature = "logging")]
     {
         debug!("Shutting down nebula-memory system");
-    }
-
-    #[cfg(feature = "stats")]
-    {
-        crate::stats::finalize_global_tracker()?;
-    }
-
-    #[cfg(feature = "logging")]
-    {
         info!("nebula-memory system shutdown complete");
     }
 

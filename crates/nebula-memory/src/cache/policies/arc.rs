@@ -27,7 +27,7 @@ use crate::cache::{
     compute::{CacheEntry, CacheKey},
     stats::{AccessPattern, Percentiles, SizeDistribution},
 };
-use crate::error::MemoryResult;
+use crate::core::error::MemoryResult;
 
 /// ARC configuration for different workload scenarios
 #[derive(Debug, Clone)]

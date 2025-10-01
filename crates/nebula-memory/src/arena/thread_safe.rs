@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use super::{ArenaAllocate, ArenaConfig, ArenaStats};
-use crate::error::MemoryError;
+use crate::core::error::MemoryError;
 use crate::utils::align_up;
 
 /// Thread-safe memory chunk with atomic bump pointer
@@ -90,6 +90,46 @@ impl ThreadSafeArena {
             stats: ArenaStats::new(),
             chunk_mutex: Mutex::new(()),
         }
+    }
+
+    /// Creates arena with production config - optimized for performance
+    pub fn production(capacity: usize) -> Self {
+        Self::new(ArenaConfig::production().with_initial_size(capacity))
+    }
+
+    /// Creates arena with debug config - optimized for debugging
+    pub fn debug(capacity: usize) -> Self {
+        Self::new(ArenaConfig::debug().with_initial_size(capacity))
+    }
+
+    /// Creates arena with performance config (alias for production)
+    pub fn performance(capacity: usize) -> Self {
+        Self::production(capacity)
+    }
+
+    /// Creates arena with conservative config - balanced
+    pub fn conservative(capacity: usize) -> Self {
+        Self::new(ArenaConfig::conservative().with_initial_size(capacity))
+    }
+
+    /// Creates a tiny thread-safe arena (4KB)
+    pub fn tiny() -> Self {
+        Self::new(ArenaConfig::small_objects().with_initial_size(4 * 1024))
+    }
+
+    /// Creates a small thread-safe arena (64KB)
+    pub fn small() -> Self {
+        Self::new(ArenaConfig::default().with_initial_size(64 * 1024))
+    }
+
+    /// Creates a medium thread-safe arena (1MB)
+    pub fn medium() -> Self {
+        Self::new(ArenaConfig::default().with_initial_size(1024 * 1024))
+    }
+
+    /// Creates a large thread-safe arena (16MB)
+    pub fn large() -> Self {
+        Self::new(ArenaConfig::large_objects().with_initial_size(16 * 1024 * 1024))
     }
 
     /// Allocates a new chunk when needed

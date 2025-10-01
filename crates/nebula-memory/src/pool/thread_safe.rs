@@ -14,7 +14,7 @@ use std::time::Duration;
 use spin::{Condvar, Mutex};
 
 use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, PoolStats, Poolable};
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Thread-safe object pool using mutex
 ///

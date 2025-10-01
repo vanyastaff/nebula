@@ -16,14 +16,13 @@ use nebula_error::{
     ErrorContext,
     ErrorKind,
     kinds::SystemError,
-    Result as NebulaResult
 };
 
 #[cfg(feature = "std")]
 use std::collections::HashMap;
 
-#[cfg(feature = "std")]
-use std::backtrace::{Backtrace, BacktraceStatus};
+#[cfg(feature = "backtrace")]
+use std::backtrace::Backtrace;
 
 #[cfg(feature = "logging")]
 use nebula_log::{error, warn, debug};
@@ -120,6 +119,23 @@ impl AllocErrorCode {
             }),
         }
     }
+    /// Get the error code as a string
+    pub fn code(&self) -> &'static str {
+        match self {
+            AllocErrorCode::OutOfMemory => "ALLOC_OUT_OF_MEMORY",
+            AllocErrorCode::SizeOverflow => "ALLOC_SIZE_OVERFLOW",
+            AllocErrorCode::InvalidAlignment => "ALLOC_INVALID_ALIGNMENT",
+            AllocErrorCode::ExceedsMaxSize => "ALLOC_EXCEEDS_MAX_SIZE",
+            AllocErrorCode::InvalidLayout => "ALLOC_INVALID_LAYOUT",
+            AllocErrorCode::InvalidState => "ALLOC_INVALID_STATE",
+            AllocErrorCode::ConcurrentAccess => "ALLOC_CONCURRENT_ACCESS",
+            AllocErrorCode::ResourceLimit => "ALLOC_RESOURCE_LIMIT",
+            AllocErrorCode::PoolExhausted => "ALLOC_POOL_EXHAUSTED",
+            AllocErrorCode::ArenaExhausted => "ALLOC_ARENA_EXHAUSTED",
+            AllocErrorCode::AllocationDenied => "ALLOC_DENIED",
+        }
+    }
+
     pub fn message(&self) -> &'static str {
         match self {
             AllocErrorCode::OutOfMemory => "Memory allocation failed due to insufficient memory",
@@ -476,6 +492,35 @@ impl AllocError {
     }
 
     // ============================================================================
+    // Error Type Checks
+    // ============================================================================
+
+    /// Checks if this is an out of memory error
+    pub fn is_out_of_memory(&self) -> bool {
+        self.inner.error_code() == AllocErrorCode::OutOfMemory.code()
+    }
+
+    /// Checks if this is an invalid alignment error
+    pub fn is_invalid_alignment(&self) -> bool {
+        self.inner.error_code() == AllocErrorCode::InvalidAlignment.code()
+    }
+
+    /// Checks if this is a size overflow error
+    pub fn is_size_overflow(&self) -> bool {
+        self.inner.error_code() == AllocErrorCode::SizeOverflow.code()
+    }
+
+    /// Checks if this is an invalid layout error
+    pub fn is_invalid_layout(&self) -> bool {
+        self.inner.error_code() == AllocErrorCode::InvalidLayout.code()
+    }
+
+    /// Checks if this is an invalid state error
+    pub fn is_invalid_state(&self) -> bool {
+        self.inner.error_code() == AllocErrorCode::InvalidState.code()
+    }
+
+    // ============================================================================
     // Convenience Constructors
     // ============================================================================
 
@@ -502,6 +547,22 @@ impl AllocError {
     /// Creates an invalid layout error
     pub fn invalid_layout() -> Self {
         Self::new(AllocErrorCode::InvalidLayout)
+    }
+
+    /// Creates an invalid input/state error with message
+    pub fn invalid_input(message: impl Into<String>) -> Self {
+        #[cfg(feature = "std")]
+        {
+            let context = Self::create_context("error", message.into());
+            let mut err = Self::new(AllocErrorCode::InvalidState);
+            err.inner = err.inner.with_context(context);
+            err
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            let _ = message;
+            Self::new(AllocErrorCode::InvalidState)
+        }
     }
 
     /// Creates an error for specific size and alignment

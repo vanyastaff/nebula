@@ -9,7 +9,7 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
 use super::{GrowthStrategy, NoOpCallbacks, PoolCallbacks, PoolConfig, PoolStats, Poolable};
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Single-threaded object pool for efficient memory reuse
 ///

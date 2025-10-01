@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 use super::ArenaStats;
-use crate::error::MemoryError;
+use crate::core::error::MemoryError;
 use crate::utils::align_up;
 
 /// Configuration for streaming arena

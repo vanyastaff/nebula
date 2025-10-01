@@ -8,7 +8,7 @@ use std::ptr::NonNull;
 use lz4_flex::{compress_prepend_size, decompress_size_prepended};
 
 use super::{align_up, ArenaStats};
-use crate::error::MemoryError;
+use crate::core::error::MemoryError;
 
 /// Compression level for the arena
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

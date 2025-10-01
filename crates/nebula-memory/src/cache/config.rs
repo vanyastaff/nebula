@@ -13,7 +13,7 @@ use {alloc::string::String, core::time::Duration};
 #[cfg(feature = "std")]
 use std::time::Duration;
 
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Eviction policy for cache entries
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

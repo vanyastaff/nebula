@@ -6,11 +6,48 @@
 use core::alloc::Layout;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use core::num::NonZeroUsize;
 
 use super::{AllocError, AllocResult, Allocator, ThreadSafeAllocator};
 
 /// Unique identifier for registered allocators
-pub type AllocatorId = usize;
+///
+/// Uses NonZeroUsize for memory efficiency (allows Option<AllocatorId> to be same size)
+/// and provides type safety preventing accidental mixing with raw usizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AllocatorId(NonZeroUsize);
+
+impl AllocatorId {
+    /// Generate a new unique allocator ID
+    ///
+    /// IDs are generated atomically and are guaranteed to be unique within the process.
+    #[must_use]
+    pub fn new() -> Self {
+        static COUNTER: AtomicUsize = AtomicUsize::new(1);
+        // Start from 1 to ensure NonZeroUsize is always valid
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: COUNTER starts at 1 and only increments, so id is always non-zero
+        // In the extremely unlikely event of overflow, we wrap (but this would take
+        // billions of allocator registrations)
+        Self(NonZeroUsize::new(id).unwrap_or_else(|| {
+            // Overflow protection: restart from 1
+            COUNTER.store(1, Ordering::Relaxed);
+            NonZeroUsize::new(1).unwrap()
+        }))
+    }
+
+    /// Get the raw ID value (for internal use only)
+    #[inline]
+    pub(crate) fn as_usize(self) -> usize {
+        self.0.get()
+    }
+}
+
+impl Default for AllocatorId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Type-erased allocator for storage in manager
 pub trait ManagedAllocator: Send + Sync {
@@ -66,14 +103,11 @@ pub struct AllocatorManager {
     #[cfg(not(feature = "std"))]
     allocators: spin::RwLock<heapless::FnvIndexMap<AllocatorId, &'static dyn ManagedAllocator, 16>>,
 
-    /// Currently active allocator ID
+    /// Currently active allocator ID (stored as usize for atomic operations)
     active_allocator: AtomicUsize,
 
     /// Default fallback allocator ID
-    default_allocator: AllocatorId,
-
-    /// Next available ID
-    next_id: AtomicUsize,
+    default_allocator: Option<AllocatorId>,
 }
 
 impl AllocatorManager {
@@ -82,15 +116,14 @@ impl AllocatorManager {
         Self {
             allocators: Default::default(),
             active_allocator: AtomicUsize::new(0),
-            default_allocator: 0,
-            next_id: AtomicUsize::new(1),
+            default_allocator: None,
         }
     }
 
     /// Register an allocator and return its ID
     #[cfg(feature = "std")]
     pub fn register<A: ManagedAllocator + 'static>(&self, allocator: A) -> AllocatorId {
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let id = AllocatorId::new();
         let mut registry = self.allocators.write().unwrap();
         registry.insert(id, Box::new(allocator));
         id
@@ -102,7 +135,7 @@ impl AllocatorManager {
         &self,
         allocator: &'static dyn ManagedAllocator,
     ) -> Result<AllocatorId, &'static str> {
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let id = AllocatorId::new();
         let mut registry = self.allocators.write();
         registry.insert(id, allocator).map_err(|_| "Registry full")?;
         Ok(id)
@@ -117,8 +150,8 @@ impl AllocatorManager {
         let exists = self.allocators.read().contains_key(&allocator_id);
 
         if exists {
-            self.default_allocator = allocator_id;
-            self.active_allocator.store(allocator_id, Ordering::SeqCst);
+            self.default_allocator = Some(allocator_id);
+            self.active_allocator.store(allocator_id.as_usize(), Ordering::SeqCst);
             Ok(())
         } else {
             Err("Allocator ID not found")
@@ -135,7 +168,7 @@ impl AllocatorManager {
         let exists = self.allocators.read().contains_key(&allocator_id);
 
         if exists {
-            self.active_allocator.store(allocator_id, Ordering::SeqCst);
+            self.active_allocator.store(allocator_id.as_usize(), Ordering::SeqCst);
             Ok(())
         } else {
             Err("Allocator ID not found")
@@ -143,14 +176,16 @@ impl AllocatorManager {
     }
 
     /// Gets the current active allocator ID
-    pub fn get_active_allocator_id(&self) -> AllocatorId {
-        self.active_allocator.load(Ordering::SeqCst)
+    pub fn get_active_allocator_id(&self) -> Option<AllocatorId> {
+        let id_raw = self.active_allocator.load(Ordering::SeqCst);
+        NonZeroUsize::new(id_raw).map(AllocatorId)
     }
 
     /// Get the name of the active allocator
     pub fn get_active_allocator_name(&self) -> &'static str {
-        let id = self.get_active_allocator_id();
-        self.with_allocator_by_id(id, |alloc| alloc.name()).unwrap_or("unknown")
+        self.get_active_allocator_id()
+            .and_then(|id| self.with_allocator_by_id(id, |alloc| alloc.name()))
+            .unwrap_or("unknown")
     }
 
     /// Execute a function with access to specific allocator
@@ -172,19 +207,21 @@ impl AllocatorManager {
     /// Execute a function with the active allocator
     pub fn with_active_allocator<F, R>(&self, f: F) -> Option<R>
     where F: FnOnce(&dyn ManagedAllocator) -> R {
-        let id = self.get_active_allocator_id();
+        let id = self.get_active_allocator_id()?;
         self.with_allocator_by_id(id, f)
     }
 
     /// Resets to the default allocator
     pub fn reset_to_default(&self) {
-        self.active_allocator.store(self.default_allocator, Ordering::SeqCst);
+        if let Some(default_id) = self.default_allocator {
+            self.active_allocator.store(default_id.as_usize(), Ordering::SeqCst);
+        }
     }
 
     /// Executes a function with a specific allocator temporarily active
     pub fn with_allocator<F, R>(&self, allocator_id: AllocatorId, f: F) -> R
     where F: FnOnce() -> R {
-        let previous = self.active_allocator.swap(allocator_id, Ordering::SeqCst);
+        let previous = self.active_allocator.swap(allocator_id.as_usize(), Ordering::SeqCst);
         let result = f();
         self.active_allocator.store(previous, Ordering::SeqCst);
         result

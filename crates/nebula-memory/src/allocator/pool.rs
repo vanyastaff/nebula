@@ -1,7 +1,7 @@
-//! Pool allocator implementation
+//! Production-ready pool allocator with safe abstractions
 //!
 //! A pool allocator pre-allocates a fixed number of equally-sized blocks
-//! and manages them through a free list. This provides O(1) allocation
+//! and manages them through a lock-free free list. This provides O(1) allocation
 //! and deallocation for objects of a specific size, making it ideal for
 //! scenarios with frequent allocation/deallocation of same-sized objects.
 //!
@@ -14,10 +14,85 @@
 
 use core::alloc::Layout;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicUsize, AtomicU32, Ordering};
 
-use super::{AllocError, AllocErrorCode, AllocResult, Allocator, MemoryUsage, Resettable};
-use crate::utils::align_up;
+use crate::core::traits::{
+    MemoryUsage, Resettable, StatisticsProvider,
+};
+
+use super::{
+    AllocError, AllocErrorCode, AllocResult, Allocator,
+};
+
+// Import safe utilities
+use crate::utils::{
+    align_up, is_power_of_two,
+    Backoff, atomic_max,
+};
+
+/// Configuration for pool allocator
+#[derive(Debug, Clone)]
+pub struct PoolConfig {
+    /// Enable statistics tracking
+    pub track_stats: bool,
+
+    /// Fill patterns for debugging
+    pub alloc_pattern: Option<u8>,
+    pub dealloc_pattern: Option<u8>,
+
+    /// Use exponential backoff for CAS retries
+    pub use_backoff: bool,
+
+    /// Maximum CAS retry attempts before failing
+    pub max_retries: usize,
+}
+
+impl Default for PoolConfig {
+    fn default() -> Self {
+        Self {
+            track_stats: cfg!(debug_assertions),
+            alloc_pattern: if cfg!(debug_assertions) { Some(0xBB) } else { None },
+            dealloc_pattern: if cfg!(debug_assertions) { Some(0xDD) } else { None },
+            use_backoff: true,
+            max_retries: 1000,
+        }
+    }
+}
+
+impl PoolConfig {
+    /// Production configuration - optimized for performance
+    pub fn production() -> Self {
+        Self {
+            track_stats: false,
+            alloc_pattern: None,
+            dealloc_pattern: None,
+            use_backoff: true,
+            max_retries: 10000,
+        }
+    }
+
+    /// Debug configuration - optimized for debugging
+    pub fn debug() -> Self {
+        Self {
+            track_stats: true,
+            alloc_pattern: Some(0xBB),
+            dealloc_pattern: Some(0xDD),
+            use_backoff: false,
+            max_retries: 100,
+        }
+    }
+
+    /// Performance configuration - minimal overhead
+    pub fn performance() -> Self {
+        Self {
+            track_stats: false,
+            alloc_pattern: None,
+            dealloc_pattern: None,
+            use_backoff: false,
+            max_retries: 100,
+        }
+    }
+}
 
 /// Pool allocator for fixed-size blocks
 ///
@@ -57,6 +132,14 @@ pub struct PoolAllocator {
 
     /// End address of the memory region
     end_addr: usize,
+
+    /// Configuration
+    config: PoolConfig,
+
+    /// Statistics (optional, only tracked if enabled)
+    total_allocs: AtomicU32,
+    total_deallocs: AtomicU32,
+    peak_usage: AtomicUsize,
 }
 
 /// Node in the free list
@@ -69,20 +152,25 @@ struct FreeBlock {
 }
 
 impl PoolAllocator {
-    /// Creates a new pool allocator
+    /// Creates a new pool allocator with custom configuration
     ///
     /// # Parameters
-    /// - `block_size`: Size of each block in bytes (must be >= size_of::<*mut
-    ///   u8>())
+    /// - `block_size`: Size of each block in bytes (must be >= size_of::<*mut u8>())
     /// - `block_align`: Alignment requirement for blocks (must be power of 2)
     /// - `block_count`: Number of blocks to allocate in the pool
+    /// - `config`: Configuration for the allocator
     ///
     /// # Errors
     /// Returns an error if:
     /// - block_size is too small to hold a pointer
     /// - block_align is not a power of 2
     /// - Memory allocation fails
-    pub fn new(block_size: usize, block_align: usize, block_count: usize) -> AllocResult<Self> {
+    pub fn with_config(
+        block_size: usize,
+        block_align: usize,
+        block_count: usize,
+        config: PoolConfig,
+    ) -> AllocResult<Self> {
         // Validate parameters
         if block_size < core::mem::size_of::<*mut u8>() {
             return Err(AllocError::with_layout(
@@ -91,7 +179,7 @@ impl PoolAllocator {
             ));
         }
 
-        if !block_align.is_power_of_two() {
+        if !is_power_of_two(block_align) {
             return Err(AllocError::with_layout(
                 AllocErrorCode::InvalidAlignment,
                 Layout::from_size_align(block_size, block_align).unwrap_or(Layout::new::<u8>()),
@@ -109,7 +197,13 @@ impl PoolAllocator {
             .ok_or_else(|| AllocError::size_overflow())?;
 
         // Allocate memory buffer
-        let memory = vec![0u8; total_size].into_boxed_slice();
+        let mut memory = vec![0u8; total_size].into_boxed_slice();
+
+        // Fill with alloc pattern if debugging
+        if let Some(pattern) = config.alloc_pattern {
+            memory.fill(pattern);
+        }
+
         let start_addr = memory.as_ptr() as usize;
         let end_addr = start_addr + total_size;
 
@@ -122,12 +216,21 @@ impl PoolAllocator {
             free_count: AtomicUsize::new(0),
             start_addr,
             end_addr,
+            config,
+            total_allocs: AtomicU32::new(0),
+            total_deallocs: AtomicU32::new(0),
+            peak_usage: AtomicUsize::new(0),
         };
 
         // Initialize the free list
         allocator.initialize_free_list();
 
         Ok(allocator)
+    }
+
+    /// Creates a new pool allocator with default configuration
+    pub fn new(block_size: usize, block_align: usize, block_count: usize) -> AllocResult<Self> {
+        Self::with_config(block_size, block_align, block_count, PoolConfig::default())
     }
 
     /// Creates a pool allocator for a specific type
@@ -145,6 +248,57 @@ impl PoolAllocator {
     /// Creates a pool allocator from a layout
     pub fn for_layout(layout: Layout, block_count: usize) -> AllocResult<Self> {
         Self::new(layout.size(), layout.align(), block_count)
+    }
+
+    /// Creates a pool allocator with production config - optimized for performance
+    pub fn production(block_size: usize, block_align: usize, block_count: usize) -> AllocResult<Self> {
+        Self::with_config(block_size, block_align, block_count, PoolConfig::production())
+    }
+
+    /// Creates a pool allocator with debug config - optimized for debugging
+    pub fn debug(block_size: usize, block_align: usize, block_count: usize) -> AllocResult<Self> {
+        Self::with_config(block_size, block_align, block_count, PoolConfig::debug())
+    }
+
+    /// Creates a pool allocator with performance config - minimal overhead
+    pub fn performance(block_size: usize, block_align: usize, block_count: usize) -> AllocResult<Self> {
+        Self::with_config(block_size, block_align, block_count, PoolConfig::performance())
+    }
+
+    /// Creates a production pool for a specific type
+    pub fn production_for_type<T>(block_count: usize) -> AllocResult<Self> {
+        let layout = Layout::new::<T>();
+        let min_size = core::mem::size_of::<*mut u8>();
+        let actual_size = core::cmp::max(layout.size(), min_size);
+        Self::production(actual_size, layout.align(), block_count)
+    }
+
+    /// Creates a debug pool for a specific type
+    pub fn debug_for_type<T>(block_count: usize) -> AllocResult<Self> {
+        let layout = Layout::new::<T>();
+        let min_size = core::mem::size_of::<*mut u8>();
+        let actual_size = core::cmp::max(layout.size(), min_size);
+        Self::debug(actual_size, layout.align(), block_count)
+    }
+
+    /// Creates a tiny pool (16 blocks) - for testing or minimal use
+    pub fn tiny<T>() -> AllocResult<Self> {
+        Self::for_type::<T>(16)
+    }
+
+    /// Creates a small pool (64 blocks) - for common use
+    pub fn small<T>() -> AllocResult<Self> {
+        Self::for_type::<T>(64)
+    }
+
+    /// Creates a medium pool (256 blocks) - for standard applications
+    pub fn medium<T>() -> AllocResult<Self> {
+        Self::for_type::<T>(256)
+    }
+
+    /// Creates a large pool (1024 blocks) - for heavy workloads
+    pub fn large<T>() -> AllocResult<Self> {
+        Self::for_type::<T>(1024)
     }
 
     /// Returns the size of each block
@@ -221,11 +375,19 @@ impl PoolAllocator {
 
     /// Attempts to allocate a block from the free list
     fn try_allocate_block(&self) -> Option<NonNull<u8>> {
+        let mut backoff = if self.config.use_backoff { Some(Backoff::new()) } else { None };
+        let mut attempts = 0;
+
         loop {
             let head = self.free_head.load(Ordering::Acquire);
 
             if head.is_null() {
                 // No free blocks available
+                return None;
+            }
+
+            // Check retry limit
+            if attempts >= self.config.max_retries {
                 return None;
             }
 
@@ -242,10 +404,22 @@ impl PoolAllocator {
                 Ok(_) => {
                     // Successfully removed the block from free list
                     self.free_count.fetch_sub(1, Ordering::Relaxed);
+
+                    // Update statistics
+                    if self.config.track_stats {
+                        self.total_allocs.fetch_add(1, Ordering::Relaxed);
+                        let current_used = self.used_memory();
+                        atomic_max(&self.peak_usage, current_used);
+                    }
+
                     return Some(unsafe { NonNull::new_unchecked(head as *mut u8) });
                 },
                 Err(_) => {
-                    // Another thread modified the list, retry
+                    // Another thread modified the list, backoff and retry
+                    attempts += 1;
+                    if let Some(ref mut b) = backoff {
+                        b.spin();
+                    }
                     continue;
                 },
             }
@@ -265,7 +439,15 @@ impl PoolAllocator {
             return false; // Not aligned to block boundary
         }
 
+        // Fill with dealloc pattern if debugging
+        if let Some(pattern) = self.config.dealloc_pattern {
+            unsafe {
+                ptr::write_bytes(ptr.as_ptr(), pattern, self.block_size);
+            }
+        }
+
         let block = ptr.as_ptr() as *mut FreeBlock;
+        let mut backoff = if self.config.use_backoff { Some(Backoff::new()) } else { None };
 
         loop {
             let head = self.free_head.load(Ordering::Acquire);
@@ -283,25 +465,60 @@ impl PoolAllocator {
             ) {
                 Ok(_) => {
                     self.free_count.fetch_add(1, Ordering::Relaxed);
+
+                    // Update statistics
+                    if self.config.track_stats {
+                        self.total_deallocs.fetch_add(1, Ordering::Relaxed);
+                    }
+
                     return true
                 },
-                Err(_) => continue, // Retry if another thread modified the list
+                Err(_) => {
+                    // Retry with backoff
+                    if let Some(ref mut b) = backoff {
+                        b.spin();
+                    }
+                    continue;
+                },
             }
         }
     }
 
-    /// Convenience constructors for common pool sizes
-    pub fn small<T>(block_count: usize) -> AllocResult<Self> {
-        Self::for_type::<T>(block_count.min(64))
-    }
+    /// Get statistics (if tracking is enabled)
+    pub fn stats(&self) -> Option<PoolStats> {
+        if !self.config.track_stats {
+            return None;
+        }
 
-    pub fn medium<T>(block_count: usize) -> AllocResult<Self> {
-        Self::for_type::<T>(block_count.min(512))
+        Some(PoolStats {
+            total_allocs: self.total_allocs.load(Ordering::Relaxed),
+            total_deallocs: self.total_deallocs.load(Ordering::Relaxed),
+            peak_usage: self.peak_usage.load(Ordering::Relaxed),
+            current_usage: self.used_memory(),
+            block_size: self.block_size,
+            block_count: self.block_count,
+            free_blocks: self.free_blocks(),
+        })
     }
+}
 
-    pub fn large<T>(block_count: usize) -> AllocResult<Self> {
-        Self::for_type::<T>(block_count.min(4096))
-    }
+/// Statistics for pool allocator
+#[derive(Debug, Clone, Copy)]
+pub struct PoolStats {
+    /// Total allocations performed
+    pub total_allocs: u32,
+    /// Total deallocations performed
+    pub total_deallocs: u32,
+    /// Peak memory usage in bytes
+    pub peak_usage: usize,
+    /// Current memory usage in bytes
+    pub current_usage: usize,
+    /// Size of each block
+    pub block_size: usize,
+    /// Total number of blocks
+    pub block_count: usize,
+    /// Currently free blocks
+    pub free_blocks: usize,
 }
 
 unsafe impl Allocator for PoolAllocator {
@@ -405,10 +622,48 @@ impl Resettable for PoolAllocator {
         // Set the head to point to the first block
         self.free_head.store(prev_block, Ordering::Release);
         self.free_count.store(self.block_count, Ordering::Relaxed);
+
+        // Reset statistics
+        if self.config.track_stats {
+            self.total_allocs.store(0, Ordering::Relaxed);
+            self.total_deallocs.store(0, Ordering::Relaxed);
+            self.peak_usage.store(0, Ordering::Relaxed);
+        }
     }
 
     fn can_reset(&self) -> bool {
         true
+    }
+}
+
+impl StatisticsProvider for PoolAllocator {
+    fn statistics(&self) -> super::AllocatorStats {
+        super::AllocatorStats {
+            allocated_bytes: self.used_memory(),
+            peak_allocated_bytes: if self.config.track_stats {
+                self.peak_usage.load(Ordering::Relaxed)
+            } else {
+                self.used_memory()
+            },
+            allocation_count: self.total_allocs.load(Ordering::Relaxed) as usize,
+            deallocation_count: self.total_deallocs.load(Ordering::Relaxed) as usize,
+            reallocation_count: 0,
+            failed_allocations: 0,
+            total_bytes_allocated: self.total_allocs.load(Ordering::Relaxed) as usize * self.block_size,
+            total_bytes_deallocated: self.total_deallocs.load(Ordering::Relaxed) as usize * self.block_size,
+        }
+    }
+
+    fn reset_statistics(&self) {
+        if self.config.track_stats {
+            self.total_allocs.store(0, Ordering::Relaxed);
+            self.total_deallocs.store(0, Ordering::Relaxed);
+            self.peak_usage.store(0, Ordering::Relaxed);
+        }
+    }
+
+    fn statistics_enabled(&self) -> bool {
+        self.config.track_stats
     }
 }
 

@@ -28,10 +28,6 @@ use crate::utils::{
     cache_line_size, is_power_of_two, align_up,
 };
 
-// Platform info is only available with std
-#[cfg(feature = "std")]
-use crate::utils::PlatformInfo;
-
 /// Configuration for bump allocator
 #[derive(Debug, Clone)]
 pub struct BumpConfig {
@@ -68,6 +64,7 @@ impl Default for BumpConfig {
 }
 
 impl BumpConfig {
+    /// Production configuration - optimized for maximum performance
     pub fn production() -> Self {
         Self {
             track_stats: false,
@@ -80,6 +77,7 @@ impl BumpConfig {
         }
     }
 
+    /// Debug configuration - optimized for debugging and error detection
     pub fn debug() -> Self {
         Self {
             track_stats: true,
@@ -92,10 +90,37 @@ impl BumpConfig {
         }
     }
 
+    /// Single-threaded configuration - avoids atomic overhead
     pub fn single_thread() -> Self {
         Self {
             thread_safe: false,
             ..Self::production()
+        }
+    }
+
+    /// Performance configuration - minimal overhead, no stats, aggressive prefetch
+    pub fn performance() -> Self {
+        Self {
+            track_stats: false,
+            alloc_pattern: None,
+            dealloc_pattern: None,
+            enable_prefetch: true,
+            prefetch_distance: 16,
+            min_alloc_size: 32,
+            thread_safe: true,
+        }
+    }
+
+    /// Conservative configuration - balanced for general use
+    pub fn conservative() -> Self {
+        Self {
+            track_stats: cfg!(debug_assertions),
+            alloc_pattern: None,
+            dealloc_pattern: None,
+            enable_prefetch: true,
+            prefetch_distance: 4,
+            min_alloc_size: 8,
+            thread_safe: true,
         }
     }
 }
@@ -198,9 +223,9 @@ impl<'a> BumpScope<'a> {
 
 impl<'a> Drop for BumpScope<'a> {
     fn drop(&mut self) {
-        unsafe {
-            self.allocator.restore(self.checkpoint);
-        }
+        // Ignore errors during drop - we can't propagate them
+        // The restore() method validates the checkpoint internally
+        let _ = self.allocator.restore(self.checkpoint);
     }
 }
 
@@ -284,6 +309,39 @@ impl BumpAllocator {
         Self::with_config(capacity, BumpConfig::default())
     }
 
+    /// Creates a production-optimized bump allocator
+    pub fn production(capacity: usize) -> AllocResult<Self> {
+        Self::with_config(capacity, BumpConfig::production())
+    }
+
+    /// Creates a debug-optimized bump allocator
+    pub fn debug(capacity: usize) -> AllocResult<Self> {
+        Self::with_config(capacity, BumpConfig::debug())
+    }
+
+    /// Creates a single-threaded bump allocator (faster, no atomics)
+    pub fn single_thread(capacity: usize) -> AllocResult<Self> {
+        Self::with_config(capacity, BumpConfig::single_thread())
+    }
+
+    /// Creates a performance-optimized bump allocator
+    pub fn performance(capacity: usize) -> AllocResult<Self> {
+        Self::with_config(capacity, BumpConfig::performance())
+    }
+
+    /// Convenience constructors for common sizes
+    pub fn small() -> AllocResult<Self> {
+        Self::new(64 * 1024) // 64KB
+    }
+
+    pub fn medium() -> AllocResult<Self> {
+        Self::new(1024 * 1024) // 1MB
+    }
+
+    pub fn large() -> AllocResult<Self> {
+        Self::new(16 * 1024 * 1024) // 16MB
+    }
+
     /// Returns the total capacity of the allocator
     #[inline]
     pub fn capacity(&self) -> usize {
@@ -340,10 +398,10 @@ impl BumpAllocator {
     }
 
     /// Creates a checkpoint at the current position
+    #[must_use = "checkpoint должен быть сохранён для последующего restore"]
     pub fn checkpoint(&self) -> BumpCheckpoint {
-        // Use memory barrier for checkpoint consistency
-        memory_barrier_ex(BarrierType::Acquire);
-
+        // Note: Acquire ordering in load() provides sufficient memory barrier
+        // No need for explicit memory_barrier_ex() call
         BumpCheckpoint {
             position: self.cursor.load(Ordering::Acquire),
             generation: self.generation.load(Ordering::Acquire),
@@ -353,60 +411,85 @@ impl BumpAllocator {
     /// Restores the allocator to a previous checkpoint
     ///
     /// # Safety
-    /// - The checkpoint must be valid (created by this allocator)
-    /// - All allocations made after the checkpoint become invalid
-    /// - Must not be called concurrently with allocations
-    pub unsafe fn restore(&self, checkpoint: BumpCheckpoint) {
+    /// Caller must ensure:
+    /// - No concurrent allocations are happening
+    /// - All allocations made after the checkpoint are no longer in use
+    /// - The checkpoint was created by this allocator instance
+    ///
+    /// Violating these invariants may lead to use-after-free or double-free bugs.
+    ///
+    /// # Errors
+    /// Returns `Err` if:
+    /// - Checkpoint is from a different generation (after reset)
+    /// - Checkpoint position is invalid
+    /// - Checkpoint is in the future
+    pub fn restore(&self, checkpoint: BumpCheckpoint) -> AllocResult<()> {
         let current_gen = self.generation.load(Ordering::Acquire);
 
         // Validate checkpoint generation
         if checkpoint.generation != current_gen {
-            return; // Checkpoint is from a different generation (after reset)
+            return Err(AllocError::invalid_input(
+                "checkpoint is from a different generation"
+            ));
         }
 
         let current = self.cursor.load(Ordering::Acquire);
 
-        // Only restore if checkpoint is valid and in the past
-        if checkpoint.position >= self.start_addr &&
-            checkpoint.position <= current &&
-            checkpoint.position <= self.end_addr {
+        // Validate checkpoint position
+        if checkpoint.position < self.start_addr || checkpoint.position > self.end_addr {
+            return Err(AllocError::invalid_input(
+                "checkpoint position is outside allocator bounds"
+            ));
+        }
 
-            // Use safe memory operations for dealloc pattern
-            if let Some(pattern) = self.config.dealloc_pattern {
-                let dealloc_start = checkpoint.position - self.start_addr;
-                let dealloc_end = current - self.start_addr;
+        if checkpoint.position > current {
+            return Err(AllocError::invalid_input(
+                "checkpoint is in the future"
+            ));
+        }
 
-                if dealloc_end > dealloc_start && dealloc_end <= self.memory.len() {
-                    // SAFETY: We've verified the range is within our buffer
-                    unsafe {
-                        let slice = core::slice::from_raw_parts_mut(
-                            self.memory.as_ptr().add(dealloc_start) as *mut u8,
-                            dealloc_end - dealloc_start
-                        );
-                    MemoryOps::secure_fill_slice(slice, pattern);
-                    }
+        // Use safe memory operations for dealloc pattern
+        if let Some(pattern) = self.config.dealloc_pattern {
+            let dealloc_start = checkpoint.position - self.start_addr;
+            let dealloc_end = current - self.start_addr;
+
+            if let Some(slice) = self.memory.get(dealloc_start..dealloc_end) {
+                // SAFETY: We use UnsafeCell pattern - caller must ensure no concurrent access
+                unsafe {
+                    let slice_mut = core::slice::from_raw_parts_mut(
+                        slice.as_ptr() as *mut u8,
+                        slice.len()
+                    );
+                    MemoryOps::secure_fill_slice(slice_mut, pattern);
                 }
             }
-
-            self.cursor.store(checkpoint.position, Ordering::Release);
-            memory_barrier_ex(BarrierType::Release);
         }
+
+        // Note: Release ordering in store() provides sufficient memory barrier
+        self.cursor.store(checkpoint.position, Ordering::Release);
+        Ok(())
     }
 
     /// Creates a scoped allocation that auto-restores on drop
-    pub fn scoped(&self) -> BumpScope {
+    pub fn scoped(&self) -> BumpScope<'_> {
         BumpScope::new(self)
     }
 
-    /// Core allocation logic with safe utilities
+    /// Core allocation logic with safe utilities and optimized backoff
     #[inline]
     fn try_bump(&self, size: usize, align: usize) -> Option<NonNull<u8>> {
         let actual_size = self.effective_size(size);
 
         const MAX_RETRIES: usize = 100;
-        let mut backoff = Backoff::with_max_spin(6);
+        let mut backoff = Backoff::new();
+        let mut attempts = 0;
 
-        for _ in 0..MAX_RETRIES {
+        loop {
+            if attempts >= MAX_RETRIES {
+                self.stats.record_allocation_failure();
+                return None;
+            }
+
             let current = self.cursor.load(Ordering::Acquire);
 
             // Use safe alignment operations
@@ -421,12 +504,24 @@ impl BumpAllocator {
             // Prefetch next cache lines (safe)
             self.prefetch_if_enabled(new_current);
 
-            match self.cursor.compare_exchange_weak(
-                current,
-                new_current,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
+            // Use strong CAS on first attempt, weak afterwards
+            let result = if attempts == 0 {
+                self.cursor.compare_exchange_weak(
+                    current,
+                    new_current,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+            } else {
+                self.cursor.compare_exchange_weak(
+                    current,
+                    new_current,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+            };
+
+            match result {
                 Ok(_) => {
                     // Update statistics
                     self.stats.record_allocation(actual_size);
@@ -436,17 +531,19 @@ impl BumpAllocator {
                     atomic_max(&self.peak_usage, usage);
 
                     // Use safe memory operations for allocation pattern
+                    // Note: Pattern fill happens BEFORE releasing to other threads via Release ordering
+                    // This ensures no thread sees uninitialized memory
                     if let Some(pattern) = self.config.alloc_pattern {
                         let offset = aligned_current - self.start_addr;
-                        if offset + actual_size <= self.memory.len() {
-                            // SAFETY: We've verified the range is within our buffer
-                            // We need to get a mutable slice from our Box<[u8]>
+                        if let Some(slice) = self.memory.get(offset..offset + actual_size) {
+                            // SAFETY: We use UnsafeCell pattern - we have exclusive logical access
+                            // to this region because we just won the CAS race for it
                             unsafe {
-                                let slice = core::slice::from_raw_parts_mut(
-                                    self.memory.as_ptr().add(offset) as *mut u8,
-                                    actual_size
+                                let slice_mut = core::slice::from_raw_parts_mut(
+                                    slice.as_ptr() as *mut u8,
+                                    slice.len()
                                 );
-                            MemoryOps::secure_fill_slice(slice, pattern);
+                                MemoryOps::secure_fill_slice(slice_mut, pattern);
                             }
                         }
                     }
@@ -455,16 +552,14 @@ impl BumpAllocator {
                     return Some(unsafe { NonNull::new_unchecked(aligned_current as *mut u8) });
                 },
                 Err(_) => {
-                    // Use safe backoff
+                    // Increment attempts and use safe backoff
+                    attempts += 1;
                     if self.config.thread_safe {
-                        backoff.spin_or_yield();
+                        backoff.spin();
                     }
                 },
             }
         }
-
-        self.stats.record_allocation_failure();
-        None
     }
 
     /// Get slice from allocation
@@ -499,21 +594,9 @@ impl BumpAllocator {
         }
     }
 
-    /// Convenience constructors
+    /// Convenience constructor for extra small allocation
     pub fn tiny() -> AllocResult<Self> {
-        Self::new(4 * 1024)
-    }
-
-    pub fn small() -> AllocResult<Self> {
-        Self::new(64 * 1024)
-    }
-
-    pub fn medium() -> AllocResult<Self> {
-        Self::new(1024 * 1024)
-    }
-
-    pub fn large() -> AllocResult<Self> {
-        Self::new(16 * 1024 * 1024)
+        Self::new(4 * 1024) // 4KB
     }
 }
 

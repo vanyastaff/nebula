@@ -11,7 +11,7 @@ use core::ops::{Deref, DerefMut};
 use std::collections::BinaryHeap;
 
 use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, PoolStats, Poolable};
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Object pool that maintains objects based on priority
 ///

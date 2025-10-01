@@ -43,7 +43,7 @@ use tokio::{
 use super::compute::{CacheKey, ComputeCache};
 use super::config::CacheConfig;
 use super::stats::{AtomicCacheStats, StatsProvider, TimeWindow};
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Result type for async cache operations
 pub type AsyncCacheResult<T> = Result<T, MemoryError>;

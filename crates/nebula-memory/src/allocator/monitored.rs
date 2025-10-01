@@ -16,7 +16,7 @@ use crate::allocator::{
     AllocError, AllocErrorCode, AllocResult, Allocator, AllocatorStats,
     AtomicAllocatorStats, StatisticsProvider,
 };
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::error::{MemoryError, MemoryResult};
 
 #[cfg(feature = "std")]
 use crate::monitoring::{MemoryMonitor, MonitoringConfig, PressureAction, IntegratedStats};

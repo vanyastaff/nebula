@@ -4,7 +4,7 @@
 use alloc::{boxed::Box, vec::Vec};
 
 use super::{ObjectPool, PoolConfig, PoolStats, Poolable};
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Batch allocator for efficient bulk operations
 ///

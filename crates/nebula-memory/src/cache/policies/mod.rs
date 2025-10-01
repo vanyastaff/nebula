@@ -24,7 +24,7 @@ use {
 };
 
 use super::compute::{CacheEntry, CacheKey};
-use crate::error::MemoryResult;
+use crate::core::error::MemoryResult;
 
 // Re-export policy modules
 mod adaptive;

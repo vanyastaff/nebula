@@ -29,6 +29,11 @@ budget = ["stats"]
 streaming = ["alloc"]
 logging = ["std", "nebula-log"]
 
+# Platform-specific features
+numa-aware = ["libc"]
+linux-optimizations = ["libc"]
+monitoring = ["std"]
+
 # Full feature set
 full = ["std", "pool", "arena", "cache", "stats", "budget", "streaming", "logging"]
 
@@ -48,6 +53,11 @@ heapless = "0.8"
 
 # Platform-specific
 libc = { version = "0.2", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["memoryapi", "sysinfoapi", "libloaderapi"] }
+
+# Linux NUMA support is available through libc
 
 # Synchronization
 once_cell = { version = "1.21", optional = true }

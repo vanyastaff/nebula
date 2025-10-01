@@ -1,4 +1,4 @@
-//! Stack allocator implementation
+//! Production-ready stack allocator with safe abstractions
 //!
 //! A stack allocator allocates memory in a LIFO (Last In, First Out) manner,
 //! similar to how a call stack works. Unlike a bump allocator, it supports
@@ -14,9 +14,84 @@
 
 use core::alloc::Layout;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, AtomicU32, Ordering};
 
-use super::{AllocError, AllocErrorCode, AllocResult, Allocator, MemoryUsage, Resettable};
+use crate::core::traits::{
+    MemoryUsage, Resettable, StatisticsProvider,
+};
+
+use super::{
+    AllocError, AllocErrorCode, AllocResult, Allocator,
+};
+
+// Import safe utilities
+use crate::utils::{
+    align_up, is_power_of_two, Backoff, atomic_max,
+};
+
+/// Configuration for stack allocator
+#[derive(Debug, Clone)]
+pub struct StackConfig {
+    /// Enable statistics tracking
+    pub track_stats: bool,
+
+    /// Fill patterns for debugging
+    pub alloc_pattern: Option<u8>,
+    pub dealloc_pattern: Option<u8>,
+
+    /// Use exponential backoff for CAS retries
+    pub use_backoff: bool,
+
+    /// Maximum CAS retry attempts
+    pub max_retries: usize,
+}
+
+impl Default for StackConfig {
+    fn default() -> Self {
+        Self {
+            track_stats: cfg!(debug_assertions),
+            alloc_pattern: if cfg!(debug_assertions) { Some(0xCC) } else { None },
+            dealloc_pattern: if cfg!(debug_assertions) { Some(0xDD) } else { None },
+            use_backoff: true,
+            max_retries: 500,
+        }
+    }
+}
+
+impl StackConfig {
+    /// Production configuration - optimized for performance
+    pub fn production() -> Self {
+        Self {
+            track_stats: false,
+            alloc_pattern: None,
+            dealloc_pattern: None,
+            use_backoff: true,
+            max_retries: 1000,
+        }
+    }
+
+    /// Debug configuration - optimized for debugging
+    pub fn debug() -> Self {
+        Self {
+            track_stats: true,
+            alloc_pattern: Some(0xCC),
+            dealloc_pattern: Some(0xDD),
+            use_backoff: false,
+            max_retries: 100,
+        }
+    }
+
+    /// Performance configuration - minimal overhead
+    pub fn performance() -> Self {
+        Self {
+            track_stats: false,
+            alloc_pattern: None,
+            dealloc_pattern: None,
+            use_backoff: false,
+            max_retries: 100,
+        }
+    }
+}
 
 /// Stack allocator that supports LIFO allocation and deallocation
 ///
@@ -36,6 +111,9 @@ pub struct StackAllocator {
     /// Owned memory buffer
     memory: Box<[u8]>,
 
+    /// Configuration
+    config: StackConfig,
+
     /// Start of the memory region (cached for performance)
     start_addr: usize,
 
@@ -44,6 +122,11 @@ pub struct StackAllocator {
 
     /// End address (cached for performance)
     end_addr: usize,
+
+    /// Statistics (optional, only tracked if enabled)
+    total_allocs: AtomicU32,
+    total_deallocs: AtomicU32,
+    peak_usage: AtomicUsize,
 }
 
 /// Stack frame marker for tracking allocations
@@ -57,8 +140,8 @@ pub struct StackMarker {
 }
 
 impl StackAllocator {
-    /// Creates a new stack allocator with the specified capacity
-    pub fn new(capacity: usize) -> AllocResult<Self> {
+    /// Creates a new stack allocator with custom configuration
+    pub fn with_config(capacity: usize, config: StackConfig) -> AllocResult<Self> {
         if capacity == 0 {
             return Err(AllocError::with_layout(
                 AllocErrorCode::InvalidLayout,
@@ -66,11 +149,46 @@ impl StackAllocator {
             ));
         }
 
-        let memory = vec![0u8; capacity].into_boxed_slice();
+        let mut memory = vec![0u8; capacity].into_boxed_slice();
+
+        // Fill with alloc pattern if debugging
+        if let Some(pattern) = config.alloc_pattern {
+            memory.fill(pattern);
+        }
+
         let start_addr = memory.as_ptr() as usize;
         let end_addr = start_addr + capacity;
 
-        Ok(Self { memory, start_addr, top: AtomicUsize::new(start_addr), end_addr })
+        Ok(Self {
+            memory,
+            config,
+            start_addr,
+            top: AtomicUsize::new(start_addr),
+            end_addr,
+            total_allocs: AtomicU32::new(0),
+            total_deallocs: AtomicU32::new(0),
+            peak_usage: AtomicUsize::new(0),
+        })
+    }
+
+    /// Creates a new stack allocator with default configuration
+    pub fn new(capacity: usize) -> AllocResult<Self> {
+        Self::with_config(capacity, StackConfig::default())
+    }
+
+    /// Creates a production-optimized stack allocator
+    pub fn production(capacity: usize) -> AllocResult<Self> {
+        Self::with_config(capacity, StackConfig::production())
+    }
+
+    /// Creates a debug-optimized stack allocator
+    pub fn debug(capacity: usize) -> AllocResult<Self> {
+        Self::with_config(capacity, StackConfig::debug())
+    }
+
+    /// Creates a performance-optimized stack allocator
+    pub fn performance(capacity: usize) -> AllocResult<Self> {
+        Self::with_config(capacity, StackConfig::performance())
     }
 
     /// Creates a stack allocator from a pre-allocated boxed slice
@@ -78,7 +196,16 @@ impl StackAllocator {
         let start_addr = memory.as_ptr() as usize;
         let end_addr = start_addr + memory.len();
 
-        Self { memory, start_addr, top: AtomicUsize::new(start_addr), end_addr }
+        Self {
+            memory,
+            config: StackConfig::default(),
+            start_addr,
+            top: AtomicUsize::new(start_addr),
+            end_addr,
+            total_allocs: AtomicU32::new(0),
+            total_deallocs: AtomicU32::new(0),
+            peak_usage: AtomicUsize::new(0),
+        }
     }
 
     /// Returns the total capacity of the allocator
@@ -148,9 +275,20 @@ impl StackAllocator {
         let expected_start = current_top.saturating_sub(layout.size());
 
         // Check if this pointer matches the most recent allocation
-        if ptr.as_ptr() as usize == Self::align_up(expected_start, layout.align()) {
+        if ptr.as_ptr() as usize == align_up(expected_start, layout.align()) {
+            // Fill with dealloc pattern if debugging
+            if let Some(pattern) = self.config.dealloc_pattern {
+                ptr::write_bytes(ptr.as_ptr(), pattern, layout.size());
+            }
+
             // This is the most recent allocation, we can safely pop it
             self.top.store(expected_start, Ordering::Release);
+
+            // Update statistics
+            if self.config.track_stats {
+                self.total_deallocs.fetch_add(1, Ordering::Relaxed);
+            }
+
             true
         } else {
             // Not the most recent allocation, cannot pop
@@ -164,18 +302,19 @@ impl StackAllocator {
         (size + align - 1) & !(align - 1)
     }
 
-    /// Maximum backoff iterations
-    const MAX_BACKOFF: usize = 32; // Smaller than bump allocator since contention is less likely
-    const MAX_RETRIES: usize = 500;
-
-    /// Attempts to allocate memory with adaptive backoff
+    /// Attempts to allocate memory with adaptive backoff and statistics tracking
     fn try_allocate(&self, size: usize, align: usize) -> Option<NonNull<u8>> {
-        let mut backoff = 0;
+        let mut backoff = if self.config.use_backoff { Some(Backoff::new()) } else { None };
         let mut attempts = 0;
 
         loop {
+            // Check retry limit
+            if attempts >= self.config.max_retries {
+                return None;
+            }
+
             let current_top = self.top.load(Ordering::Acquire);
-            let aligned_addr = Self::align_up(current_top, align);
+            let aligned_addr = align_up(current_top, align);
             let new_top = aligned_addr.checked_add(size)?;
 
             // Check if we have enough space
@@ -196,22 +335,29 @@ impl StackAllocator {
             };
 
             match result {
-                Ok(_) => return Some(unsafe { NonNull::new_unchecked(aligned_addr as *mut u8) }),
-                Err(_) => {
-                    attempts += 1;
-
-                    if attempts >= Self::MAX_RETRIES {
-                        return None;
+                Ok(_) => {
+                    // Update statistics if tracking is enabled
+                    if self.config.track_stats {
+                        self.total_allocs.fetch_add(1, Ordering::Relaxed);
+                        let current_used = new_top - self.start_addr;
+                        atomic_max(&self.peak_usage, current_used);
                     }
 
-                    // Exponential backoff
-                    if backoff > 0 {
-                        for _ in 0..backoff {
-                            core::hint::spin_loop();
+                    // Fill with alloc pattern if debugging
+                    if let Some(pattern) = self.config.alloc_pattern {
+                        unsafe {
+                            ptr::write_bytes(aligned_addr as *mut u8, pattern, size);
                         }
                     }
 
-                    backoff = if backoff == 0 { 1 } else { (backoff * 2).min(Self::MAX_BACKOFF) };
+                    return Some(unsafe { NonNull::new_unchecked(aligned_addr as *mut u8) });
+                },
+                Err(_) => {
+                    // Increment attempts and use backoff
+                    attempts += 1;
+                    if let Some(ref mut b) = backoff {
+                        b.spin();
+                    }
                 },
             }
         }
@@ -315,10 +461,48 @@ impl MemoryUsage for StackAllocator {
 impl Resettable for StackAllocator {
     unsafe fn reset(&self) {
         self.top.store(self.start_addr, Ordering::Release);
+
+        // Reset statistics
+        if self.config.track_stats {
+            self.total_allocs.store(0, Ordering::Relaxed);
+            self.total_deallocs.store(0, Ordering::Relaxed);
+            self.peak_usage.store(0, Ordering::Relaxed);
+        }
     }
 
     fn can_reset(&self) -> bool {
         true
+    }
+}
+
+impl StatisticsProvider for StackAllocator {
+    fn statistics(&self) -> super::AllocatorStats {
+        super::AllocatorStats {
+            allocated_bytes: self.used(),
+            peak_allocated_bytes: if self.config.track_stats {
+                self.peak_usage.load(Ordering::Relaxed)
+            } else {
+                self.used()
+            },
+            allocation_count: self.total_allocs.load(Ordering::Relaxed) as usize,
+            deallocation_count: self.total_deallocs.load(Ordering::Relaxed) as usize,
+            reallocation_count: 0,
+            failed_allocations: 0,
+            total_bytes_allocated: 0, // Stack doesn't track this granularly
+            total_bytes_deallocated: 0,
+        }
+    }
+
+    fn reset_statistics(&self) {
+        if self.config.track_stats {
+            self.total_allocs.store(0, Ordering::Relaxed);
+            self.total_deallocs.store(0, Ordering::Relaxed);
+            self.peak_usage.store(0, Ordering::Relaxed);
+        }
+    }
+
+    fn statistics_enabled(&self) -> bool {
+        self.config.track_stats
     }
 }
 

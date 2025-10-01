@@ -7,7 +7,7 @@ use std::ptr::{self, NonNull};
 use std::time::Instant;
 
 use super::{ArenaAllocate, ArenaConfig, ArenaStats};
-use crate::error::MemoryError;
+use crate::core::error::MemoryError;
 use crate::utils::align_up;
 
 /// Memory chunk managed by the arena
@@ -77,6 +77,56 @@ impl Arena {
     /// Creates new arena with default config and minimum capacity
     pub fn with_capacity(capacity: usize) -> Self {
         Self::new(ArenaConfig::default().with_initial_size(capacity))
+    }
+
+    /// Creates arena with production config - optimized for performance
+    pub fn production(capacity: usize) -> Self {
+        Self::new(ArenaConfig::production().with_initial_size(capacity))
+    }
+
+    /// Creates arena with debug config - optimized for debugging
+    pub fn debug(capacity: usize) -> Self {
+        Self::new(ArenaConfig::debug().with_initial_size(capacity))
+    }
+
+    /// Creates arena with performance config (alias for production)
+    pub fn performance(capacity: usize) -> Self {
+        Self::production(capacity)
+    }
+
+    /// Creates arena with conservative config - balanced
+    pub fn conservative(capacity: usize) -> Self {
+        Self::new(ArenaConfig::conservative().with_initial_size(capacity))
+    }
+
+    /// Creates arena optimized for small frequent allocations
+    pub fn small_objects(capacity: usize) -> Self {
+        Self::new(ArenaConfig::small_objects().with_initial_size(capacity))
+    }
+
+    /// Creates arena optimized for large infrequent allocations
+    pub fn large_objects(capacity: usize) -> Self {
+        Self::new(ArenaConfig::large_objects().with_initial_size(capacity))
+    }
+
+    /// Creates a tiny arena (4KB) for testing or minimal use
+    pub fn tiny() -> Self {
+        Self::new(ArenaConfig::small_objects().with_initial_size(4 * 1024))
+    }
+
+    /// Creates a small arena (64KB) for common use
+    pub fn small() -> Self {
+        Self::new(ArenaConfig::default().with_initial_size(64 * 1024))
+    }
+
+    /// Creates a medium arena (1MB) for standard applications
+    pub fn medium() -> Self {
+        Self::new(ArenaConfig::default().with_initial_size(1024 * 1024))
+    }
+
+    /// Creates a large arena (16MB) for heavy workloads
+    pub fn large() -> Self {
+        Self::new(ArenaConfig::large_objects().with_initial_size(16 * 1024 * 1024))
     }
 
     /// Allocates new chunk of memory

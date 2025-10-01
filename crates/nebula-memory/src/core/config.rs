@@ -1,4 +1,4 @@
-//! # Configuration for nebula-memory
+//! Configuration for nebula-memory
 //!
 //! This module provides comprehensive configuration management for all memory
 //! components in the nebula-memory crate, following nebula patterns.
@@ -6,7 +6,7 @@
 use core::fmt;
 use core::time::Duration;
 
-use crate::core::error::{MemoryError, MemoryErrorCode, MemoryResult};
+use super::error::{MemoryError, MemoryResult};
 
 #[cfg(feature = "logging")]
 use nebula_log::{info, debug, warn};
@@ -61,27 +61,55 @@ impl MemoryConfig {
         Self::default()
     }
 
-    /// Create a configuration optimized for high-performance scenarios
-    pub fn high_performance() -> Self {
+    /// Production configuration - optimized for maximum performance
+    pub fn production() -> Self {
         let mut config = Self::default();
-        config.allocator = AllocatorConfig::high_performance();
+        config.allocator = AllocatorConfig::production();
 
         #[cfg(feature = "pool")]
         {
-            config.pool = PoolConfig::high_performance();
+            config.pool = PoolConfig::production();
         }
 
         #[cfg(feature = "arena")]
         {
-            config.arena = ArenaConfig::high_performance();
+            config.arena = ArenaConfig::production();
         }
 
         #[cfg(feature = "cache")]
         {
-            config.cache = CacheConfig::high_performance();
+            config.cache = CacheConfig::production();
         }
 
         config
+    }
+
+    /// Debug configuration - optimized for debugging and error detection
+    pub fn debug() -> Self {
+        let mut config = Self::default();
+        config.allocator = AllocatorConfig::debug();
+
+        #[cfg(feature = "pool")]
+        {
+            config.pool = PoolConfig::debug();
+        }
+
+        #[cfg(feature = "arena")]
+        {
+            config.arena = ArenaConfig::debug();
+        }
+
+        #[cfg(feature = "cache")]
+        {
+            config.cache = CacheConfig::debug();
+        }
+
+        config
+    }
+
+    /// Create a configuration optimized for high-performance scenarios
+    pub fn high_performance() -> Self {
+        Self::production()
     }
 
     /// Create a configuration optimized for low memory usage
@@ -182,8 +210,8 @@ impl Default for AllocatorConfig {
 }
 
 impl AllocatorConfig {
-    /// Configuration optimized for high performance
-    pub fn high_performance() -> Self {
+    /// Production configuration - optimized for maximum performance
+    pub fn production() -> Self {
         Self {
             default_allocator: AllocatorType::Bump,
             max_allocation_size: 1 << 32, // 4GB
@@ -191,6 +219,22 @@ impl AllocatorConfig {
             enable_safety_checks: false,
             alignment_preference: AlignmentPreference::CacheLine,
         }
+    }
+
+    /// Debug configuration - optimized for debugging and error detection
+    pub fn debug() -> Self {
+        Self {
+            default_allocator: AllocatorType::Tracked,
+            max_allocation_size: 1 << 30, // 1GB
+            enable_tracking: true,
+            enable_safety_checks: true,
+            alignment_preference: AlignmentPreference::Natural,
+        }
+    }
+
+    /// Configuration optimized for high performance (alias for production)
+    pub fn high_performance() -> Self {
+        Self::production()
     }
 
     /// Configuration optimized for low memory usage
@@ -297,8 +341,8 @@ impl Default for PoolConfig {
 
 #[cfg(feature = "pool")]
 impl PoolConfig {
-    /// Configuration optimized for high performance
-    pub fn high_performance() -> Self {
+    /// Production configuration - optimized for maximum performance
+    pub fn production() -> Self {
         Self {
             default_capacity: 128,
             max_capacity: 4096,
@@ -307,6 +351,23 @@ impl PoolConfig {
             shrink_strategy: PoolShrinkStrategy::Never,
             cleanup_interval: None,
         }
+    }
+
+    /// Debug configuration - optimized for debugging and error detection
+    pub fn debug() -> Self {
+        Self {
+            default_capacity: 16,
+            max_capacity: 256,
+            enable_stats: true,
+            growth_strategy: PoolGrowthStrategy::Linear(8),
+            shrink_strategy: PoolShrinkStrategy::Lazy,
+            cleanup_interval: Some(Duration::from_secs(10)),
+        }
+    }
+
+    /// Configuration optimized for high performance (alias for production)
+    pub fn high_performance() -> Self {
+        Self::production()
     }
 
     /// Configuration optimized for low memory usage
@@ -394,8 +455,8 @@ impl Default for ArenaConfig {
 
 #[cfg(feature = "arena")]
 impl ArenaConfig {
-    /// Configuration optimized for high performance
-    pub fn high_performance() -> Self {
+    /// Production configuration - optimized for maximum performance
+    pub fn production() -> Self {
         Self {
             default_size: 1024 * 1024, // 1MB
             max_size: 256 * 1024 * 1024, // 256MB
@@ -403,6 +464,22 @@ impl ArenaConfig {
             growth_strategy: ArenaGrowthStrategy::Fixed(2 * 1024 * 1024), // 2MB
             enable_compression: false,
         }
+    }
+
+    /// Debug configuration - optimized for debugging and error detection
+    pub fn debug() -> Self {
+        Self {
+            default_size: 64 * 1024, // 64KB
+            max_size: 16 * 1024 * 1024, // 16MB
+            enable_stats: true,
+            growth_strategy: ArenaGrowthStrategy::Double,
+            enable_compression: false,
+        }
+    }
+
+    /// Configuration optimized for high performance (alias for production)
+    pub fn high_performance() -> Self {
+        Self::production()
     }
 
     /// Configuration optimized for low memory usage
@@ -484,8 +561,8 @@ impl Default for CacheConfig {
 
 #[cfg(feature = "cache")]
 impl CacheConfig {
-    /// Configuration optimized for high performance
-    pub fn high_performance() -> Self {
+    /// Production configuration - optimized for maximum performance
+    pub fn production() -> Self {
         Self {
             default_capacity: 1024,
             max_capacity: 16384,
@@ -493,6 +570,22 @@ impl CacheConfig {
             enable_stats: false,
             default_ttl: None,
         }
+    }
+
+    /// Debug configuration - optimized for debugging and error detection
+    pub fn debug() -> Self {
+        Self {
+            default_capacity: 128,
+            max_capacity: 1024,
+            eviction_policy: EvictionPolicy::Lru,
+            enable_stats: true,
+            default_ttl: Some(Duration::from_secs(60)), // 1 minute
+        }
+    }
+
+    /// Configuration optimized for high performance (alias for production)
+    pub fn high_performance() -> Self {
+        Self::production()
     }
 
     /// Configuration optimized for low memory usage
