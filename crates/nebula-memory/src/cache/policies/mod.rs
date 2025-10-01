@@ -1,10 +1,10 @@
-//! Cache eviction policies
+#![cfg_attr(not(feature = "std"), no_std)]
 //!
+//! Cache eviction policies
 //! This module provides various cache eviction policies that determine
 //! which entries to remove when a cache is full.
-
-#![cfg_attr(not(feature = "std"), no_std)]
-
+pub mod fifo;
+pub mod random;
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
@@ -28,8 +28,10 @@ mod ttl;
 
 pub use adaptive::AdaptivePolicy;
 pub use arc::ArcPolicy;
+pub use fifo::FifoPolicy;
 pub use lfu::LfuPolicy;
 pub use lru::LruPolicy;
+pub use random::RandomPolicy;
 pub use ttl::TtlPolicy;
 
 /// Type-erased entry for eviction policy
@@ -100,3 +102,5 @@ mod tests {
         assert_eq!(adaptive.name(), "Adaptive");
     }
 }
+
+
