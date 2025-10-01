@@ -6,3 +6,7 @@
 
 /// Bump allocator (arena) implementation with checkpointing support
 pub mod bump;
+
+/// Pool allocator for fixed-size object reuse
+pub mod pool;
+
