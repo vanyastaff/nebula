@@ -13,6 +13,8 @@ use std::time::Duration;
 use spin::{Condvar, Mutex};
 
 use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
+#[cfg(feature = "stats")]
+use super::PoolStats;
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Thread-safe object pool using mutex

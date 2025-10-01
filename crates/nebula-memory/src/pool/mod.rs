@@ -16,6 +16,7 @@ mod lockfree;
 mod object_pool;
 mod poolable;
 mod priority;
+#[cfg(feature = "stats")]
 mod stats;
 mod thread_safe;
 mod ttl;
@@ -29,6 +30,7 @@ pub use lockfree::LockFreePool;
 pub use object_pool::{ObjectPool, PooledValue};
 pub use poolable::Poolable;
 pub use priority::PriorityPool;
+#[cfg(feature = "stats")]
 pub use stats::PoolStats;
 pub use thread_safe::ThreadSafePool;
 pub use ttl::TtlPool;

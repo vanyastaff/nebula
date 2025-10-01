@@ -4,6 +4,8 @@
 use alloc::{boxed::Box, vec::Vec};
 
 use super::{ObjectPool, PoolConfig, Poolable};
+#[cfg(feature = "stats")]
+use super::PoolStats;
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Batch allocator for efficient bulk operations
