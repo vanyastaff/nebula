@@ -24,7 +24,7 @@ alloc = []
 # Major feature groups (простые, понятные)
 pool = ["std", "crossbeam-queue"]
 arena = ["std"]
-cache = ["std", "hashbrown"]
+cache = ["std", "hashbrown", "rand"]
 stats = ["std"]
 budget = ["std"]
 streaming = ["alloc"]
