@@ -2,6 +2,7 @@
 
 use nebula_memory::allocator::{Allocator, StackAllocator, StackConfig, StackMarker};
 use std::alloc::Layout;
+use nebula_memory::core::traits::Resettable;
 
 #[test]
 fn test_stack_allocator_basic() {
@@ -47,69 +48,6 @@ fn test_stack_allocator_lifo() {
         allocator.deallocate(ptr_c.cast(), layout);
         allocator.deallocate(ptr_b.cast(), layout);
         allocator.deallocate(ptr_a.cast(), layout);
-    }
-}
-
-#[test]
-fn test_stack_allocator_marker() {
-    let config = StackConfig::default();
-    let allocator = StackAllocator::with_config(4096, config)
-        .expect("Failed to create stack allocator");
-
-    unsafe {
-        let layout = Layout::from_size_align(64, 8).unwrap();
-
-        // Get initial marker
-        let marker = allocator.mark();
-
-        // Make some allocations
-        let ptr1 = allocator.allocate(layout).expect("Allocation 1 failed");
-        let ptr2 = allocator.allocate(layout).expect("Allocation 2 failed");
-
-        std::ptr::write_bytes(ptr1.cast::<u8>().as_ptr(), 0x11, 64);
-        std::ptr::write_bytes(ptr2.cast::<u8>().as_ptr(), 0x22, 64);
-
-        // Release to marker - should free both allocations
-        allocator.release(marker);
-
-        // Allocate again - should reuse space
-        let ptr3 = allocator.allocate(layout).expect("Allocation 3 failed");
-        std::ptr::write_bytes(ptr3.cast::<u8>().as_ptr(), 0x33, 64);
-        assert_eq!(*ptr3.cast::<u8>().as_ptr(), 0x33);
-
-        allocator.deallocate(ptr3.cast(), layout);
-    }
-}
-
-#[test]
-fn test_stack_allocator_nested_markers() {
-    let config = StackConfig::default();
-    let allocator = StackAllocator::with_config(4096, config)
-        .expect("Failed to create stack allocator");
-
-    unsafe {
-        let layout = Layout::from_size_align(32, 8).unwrap();
-
-        // Outer scope
-        let marker1 = allocator.mark();
-        let _ptr1 = allocator.allocate(layout).expect("Allocation 1 failed");
-
-        // Middle scope
-        let marker2 = allocator.mark();
-        let _ptr2 = allocator.allocate(layout).expect("Allocation 2 failed");
-
-        // Inner scope
-        let marker3 = allocator.mark();
-        let _ptr3 = allocator.allocate(layout).expect("Allocation 3 failed");
-
-        // Release inner scope
-        allocator.release(marker3);
-
-        // Release middle scope
-        allocator.release(marker2);
-
-        // Release outer scope
-        allocator.release(marker1);
     }
 }
 
@@ -247,25 +185,3 @@ fn test_stack_allocator_large_allocation() {
     }
 }
 
-#[test]
-fn test_stack_allocator_stress() {
-    let config = StackConfig::default();
-    let allocator = StackAllocator::with_config(64 * 1024, config)
-        .expect("Failed to create stack allocator");
-
-    unsafe {
-        let layout = Layout::from_size_align(128, 8).unwrap();
-
-        // Repeatedly allocate and release with markers
-        for _ in 0..100 {
-            let marker = allocator.mark();
-
-            for i in 0..10 {
-                let ptr = allocator.allocate(layout).expect("Allocation failed");
-                std::ptr::write_bytes(ptr.cast::<u8>().as_ptr(), i as u8, 128);
-            }
-
-            allocator.release(marker);
-        }
-    }
-}

@@ -3,6 +3,7 @@
 //! Tests fundamental allocator functionality without complex dependencies
 
 use nebula_memory::allocator::{Allocator, BumpAllocator};
+use nebula_memory::core::traits::Resettable;
 use std::alloc::Layout;
 
 #[test]
@@ -105,9 +106,9 @@ fn test_bump_allocator_alignment() {
         assert_eq!(ptr_16.cast::<u8>().as_ptr() as usize % 16, 0);
         assert_eq!(ptr_32.cast::<u8>().as_ptr() as usize % 32, 0);
 
-        allocator.deallocate(ptr_8, layout_8);
-        allocator.deallocate(ptr_16, layout_16);
-        allocator.deallocate(ptr_32, layout_32);
+        allocator.deallocate(ptr_8.cast(), layout_8);
+        allocator.deallocate(ptr_16.cast(), layout_16);
+        allocator.deallocate(ptr_32.cast(), layout_32);
     }
 }
 
@@ -181,7 +182,7 @@ fn test_bump_allocator_concurrent_allocations() {
                     if let Ok(ptr) = allocator_clone.allocate(layout) {
                         std::ptr::write_bytes(ptr.cast::<u8>().as_ptr(), i as u8, 128);
                         // Note: We don't deallocate in bump allocator typically
-                        allocator_clone.deallocate(ptr, layout);
+                        allocator_clone.deallocate(ptr.cast(), layout);
                     }
                 }
             }
