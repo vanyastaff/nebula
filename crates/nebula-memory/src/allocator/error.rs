@@ -627,38 +627,6 @@ impl std::error::Error for AllocError {
     }
 }
 
-// ============================================================================
-// Legacy Compatibility
-// ============================================================================
-
-/// Legacy error kind enum for backward compatibility
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[deprecated(note = "Use AllocErrorCode instead")]
-pub enum AllocErrorKind {
-    /// General allocation failure (out of memory)
-    OutOfMemory,
-    /// Size overflow when calculating total allocation size
-    SizeOverflow,
-    /// Invalid alignment (not a power of two)
-    InvalidAlignment,
-    /// Allocation size exceeds maximum supported size
-    ExceedsMaxSize,
-    /// Invalid layout parameters
-    InvalidLayout,
-}
-
-#[allow(deprecated)]
-impl From<AllocErrorKind> for AllocErrorCode {
-    fn from(kind: AllocErrorKind) -> Self {
-        match kind {
-            AllocErrorKind::OutOfMemory => AllocErrorCode::OutOfMemory,
-            AllocErrorKind::SizeOverflow => AllocErrorCode::SizeOverflow,
-            AllocErrorKind::InvalidAlignment => AllocErrorCode::InvalidAlignment,
-            AllocErrorKind::ExceedsMaxSize => AllocErrorCode::ExceedsMaxSize,
-            AllocErrorKind::InvalidLayout => AllocErrorCode::InvalidLayout,
-        }
-    }
-}
 
 // ============================================================================
 // Result Type and Utilities
@@ -753,10 +721,8 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_compatibility() {
-        #[allow(deprecated)]
-        let legacy_code = AllocErrorKind::OutOfMemory;
-        let new_code: AllocErrorCode = legacy_code.into();
+    fn test_error_code_conversion() {
+        let code = AllocErrorCode::OutOfMemory;
 
         assert_eq!(new_code, AllocErrorCode::OutOfMemory);
     }

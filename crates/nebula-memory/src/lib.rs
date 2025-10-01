@@ -66,12 +66,6 @@ pub mod utils;
 // Re-export core types for convenience
 pub use crate::core::{MemoryError, MemoryErrorCode, MemoryResult, MemoryConfig};
 
-// Legacy compatibility re-exports
-#[deprecated(since = "0.2.0", note = "Use crate::core::error instead")]
-pub mod error {
-    pub use crate::core::error::*;
-}
-
 // Core features that depend on allocators
 #[cfg(feature = "arena")]
 #[cfg_attr(docsrs, doc(cfg(feature = "arena")))]

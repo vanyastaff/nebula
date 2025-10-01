@@ -17,9 +17,6 @@ pub use bump::BumpAllocator;
 pub use error::{
     AllocError, AllocErrorCode, AllocResult, ErrorStats, ErrorStatsSnapshot, MemoryState,
 };
-// Legacy types for backward compatibility
-#[allow(deprecated)]
-pub use error::AllocErrorKind;
 pub use manager::{AllocatorId, AllocatorManager, GlobalAllocatorManager};
 #[cfg(all(feature = "std", feature = "monitoring"))]
 pub use monitored::{MonitoredAllocator, MonitoredConfig};
