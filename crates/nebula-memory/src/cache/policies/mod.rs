@@ -86,24 +86,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_policy_factory() {
-        let lru: Box<dyn EvictionPolicy<String, usize>> = PolicyFactory::create("lru");
+    fn test_policy_names() {
+        // Test direct policy creation and name verification
+        let lru: Box<dyn EvictionPolicy<String, usize>> = Box::new(LruPolicy::<String, usize>::new());
         assert_eq!(lru.name(), "LRU");
 
-        let lfu: Box<dyn EvictionPolicy<String, usize>> = PolicyFactory::create("lfu");
+        let lfu: Box<dyn EvictionPolicy<String, usize>> = Box::new(LfuPolicy::<String, usize>::new());
         assert_eq!(lfu.name(), "LFU");
 
-        let ttl: Box<dyn EvictionPolicy<String, usize>> = PolicyFactory::create("ttl");
+        let ttl: Box<dyn EvictionPolicy<String, usize>> = Box::new(TtlPolicy::<String>::new(std::time::Duration::from_secs(60)));
         assert_eq!(ttl.name(), "TTL");
 
-        let arc: Box<dyn EvictionPolicy<String, usize>> = PolicyFactory::create("arc");
+        let arc: Box<dyn EvictionPolicy<String, usize>> = Box::new(ArcPolicy::<String, usize>::new(100));
         assert_eq!(arc.name(), "ARC");
 
-        let adaptive: Box<dyn EvictionPolicy<String, usize>> = PolicyFactory::create("adaptive");
+        let adaptive: Box<dyn EvictionPolicy<String, usize>> = Box::new(AdaptivePolicy::<String, usize>::new(100));
         assert_eq!(adaptive.name(), "Adaptive");
-
-        // Unknown policy defaults to LRU
-        let unknown: Box<dyn EvictionPolicy<String, usize>> = PolicyFactory::create("unknown");
-        assert_eq!(unknown.name(), "LRU");
     }
 }

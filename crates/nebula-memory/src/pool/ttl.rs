@@ -303,7 +303,7 @@ mod tests {
 
     use super::*;
 
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq)]
     struct TestObject {
         value: i32,
     }

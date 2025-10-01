@@ -290,7 +290,7 @@ impl<T: Poolable + 'static> HierarchicalPoolExt<T> for Arc<Mutex<HierarchicalPoo
 mod tests {
     use super::*;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq)]
     struct TestObject {
         value: i32,
     }

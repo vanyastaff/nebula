@@ -408,7 +408,7 @@ unsafe impl<T: Poolable + Send> Send for PooledValue<T> {}
 mod tests {
     use super::*;
 
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq)]
     struct TestObject {
         value: i32,
         resets: usize,
