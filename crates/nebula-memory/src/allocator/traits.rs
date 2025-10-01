@@ -161,23 +161,11 @@ pub unsafe trait Allocator {
         let new_ptr = unsafe { self.allocate(new_layout)? };
 
         unsafe {
-            #[cfg(feature = "nightly")]
-            {
-                core::intrinsics::copy_nonoverlapping(
-                    ptr.as_ptr(),
-                    new_ptr.as_mut_ptr(),
-                    old_layout.size(),
-                );
-            }
-
-            #[cfg(not(feature = "nightly"))]
-            {
-                core::ptr::copy_nonoverlapping(
-                    ptr.as_ptr(),
-                    new_ptr.as_ptr() as *mut u8,
-                    old_layout.size(),
-                );
-            }
+            core::ptr::copy_nonoverlapping(
+                ptr.as_ptr() as *const u8,
+                new_ptr.as_ptr() as *mut u8,
+                old_layout.size(),
+            );
         }
 
         unsafe { self.deallocate(ptr, old_layout) };
@@ -279,18 +267,7 @@ pub unsafe trait BulkAllocator: Allocator {
     ) -> AllocResult<NonNull<[u8]>> {
         if count == 0 {
             // For zero count, return a valid dangling pointer
-            let dangling = if layout.size() == 0 {
-                #[cfg(feature = "nightly")]
-                {
-                    layout.dangling()
-                }
-                #[cfg(not(feature = "nightly"))]
-                {
-                    NonNull::<u8>::dangling()
-                }
-            } else {
-                NonNull::<u8>::dangling()
-            };
+            let dangling = NonNull::<u8>::dangling();
             return Ok(NonNull::slice_from_raw_parts(dangling, 0));
         }
 

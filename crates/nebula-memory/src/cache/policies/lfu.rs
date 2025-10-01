@@ -568,8 +568,10 @@ where
     where
         K: core::hash::Hash,
     {
-        use core::hash::Hasher;
-        let mut hasher = hashbrown::hash_map::DefaultHashBuilder::default().build_hasher();
+        use core::hash::{Hash as _, Hasher};
+        use std::collections::hash_map::RandomState;
+        use std::hash::BuildHasher;
+        let mut hasher = RandomState::new().build_hasher();
         key.hash(&mut hasher);
         hasher.finish()
     }
