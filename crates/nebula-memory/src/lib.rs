@@ -61,9 +61,6 @@ pub mod core;
 // Memory allocators - the heart of nebula-memory
 pub mod allocator;
 
-// New allocator implementations (modular structure)
-pub mod allocators;
-
 // Utility functions and helpers
 pub mod utils;
 
