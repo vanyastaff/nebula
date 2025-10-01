@@ -138,9 +138,7 @@ impl<T: Poolable> AsyncPool<T> {
         // Create new object if under max capacity
         if let Some(max_cap) = inner.config.max_capacity {
             if inner.total_created >= max_cap {
-                return Err(MemoryError::pool_exhausted(
-                    "AsyncPool max capacity reached"
-                ));
+                return Err(MemoryError::pool_exhausted());
             }
         }
 
