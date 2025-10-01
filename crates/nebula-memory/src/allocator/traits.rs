@@ -229,15 +229,8 @@ pub unsafe trait Allocator {
     /// - Some allocators may have smaller limits due to implementation
     ///   constraints
     fn max_allocation_size() -> usize {
-        #[cfg(feature = "nightly")]
-        {
-            core::alloc::Layout::max_size()
-        }
-
-        #[cfg(not(feature = "nightly"))]
-        {
-            isize::MAX as usize
-        }
+        // Layout::max_size() is unstable, use safe maximum
+        isize::MAX as usize
     }
 
     /// Checks if the allocator supports zero-sized allocations
