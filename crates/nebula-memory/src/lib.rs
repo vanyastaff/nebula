@@ -47,6 +47,8 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(feature = "nightly", feature(alloc_layout_extra))]
+#![cfg_attr(feature = "nightly", feature(slice_ptr_get))]
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 #![warn(rust_2018_idioms)]

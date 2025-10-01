@@ -120,7 +120,7 @@ where
                     "Allocation denied by monitor: size={}, align={}",
                     layout.size(),
                     layout.align()
-                ).log("monitored_allocator");
+                );
             }
             return Ok(false);
         }
@@ -152,7 +152,7 @@ where
                 action,
                 layout.size(),
                 memory_info.usage_percent
-            ).log("monitored_allocator");
+            );
         }
 
         Ok(allowed)
@@ -223,7 +223,7 @@ where
                                 "Allocation successful: size={}, align={}",
                                 layout.size(),
                                 layout.align()
-                            ).log("monitored_allocator");
+                            );
                         }
 
                         Ok(ptr)
@@ -238,7 +238,7 @@ where
                                 layout.size(),
                                 layout.align(),
                                 err
-                            ).log("monitored_allocator");
+                            );
                         }
 
                         Err(err)
@@ -260,7 +260,7 @@ where
                     warn!(
                         "Monitor error, allowing allocation: {}",
                         monitor_error
-                    ).log("monitored_allocator");
+                    );
                 }
 
                 match self.inner.allocate(layout) {
@@ -287,7 +287,7 @@ where
                 "Deallocation: size={}, align={}",
                 layout.size(),
                 layout.align()
-            ).log("monitored_allocator");
+            );
         }
     }
 

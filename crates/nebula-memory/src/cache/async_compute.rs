@@ -351,7 +351,7 @@ where
 
 impl<K, V> AsyncComputeCache<K, V>
 where
-    K: CacheKey + Send + Sync + 'static,
+    K: CacheKey + Send + Sync + std::fmt::Debug + 'static,
     V: Clone + Send + Sync + 'static,
 {
     /// Create a new async compute cache

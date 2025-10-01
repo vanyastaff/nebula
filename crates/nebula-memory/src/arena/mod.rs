@@ -297,17 +297,13 @@ impl ArenaConfig {
 
     /// Creates config from global memory configuration
     pub fn from_memory_config(config: &crate::core::config::MemoryConfig) -> Self {
-        Self {
-            initial_size: config.default_arena_config.chunk_size,
-            growth_factor: config.default_arena_config.growth_factor as f64,
-            max_chunk_size: config.default_arena_config.max_chunk_size,
-            track_stats: config.enable_tracking,
-            zero_memory: false, // Not directly mapped from current config
-            default_alignment: config.platform_optimizations.cache_line_size.min(8),
-            #[cfg(feature = "numa-aware")]
-            numa_aware: config.platform_optimizations.numa_aware,
-            #[cfg(feature = "numa-aware")]
-            numa_node: config.platform_optimizations.preferred_numa_node,
+        #[cfg(feature = "arena")]
+        {
+            config.arena.clone()
+        }
+        #[cfg(not(feature = "arena"))]
+        {
+            Self::default()
         }
     }
 

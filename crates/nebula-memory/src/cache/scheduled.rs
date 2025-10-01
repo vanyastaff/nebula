@@ -77,7 +77,11 @@ pub enum MemoryPressure {
 }
 
 /// A scheduled task to run on the cache
-pub trait ScheduledTask<K, V>: Send + Sync {
+pub trait ScheduledTask<K, V>: Send + Sync
+where
+    K: CacheKey,
+    V: Clone + Send + Sync + 'static,
+{
     /// Run the task on the cache
     fn run(&self, cache: &ScheduledCache<K, V>, context: &TaskContext) -> TaskResult;
 
