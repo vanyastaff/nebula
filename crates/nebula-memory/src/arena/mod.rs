@@ -1,50 +1,50 @@
-//! High-performance arena allocation module for nebula-memory
 //!
-//! This module provides various arena allocators optimized for different use
-//! cases:
 //!
-//! # Arena Types
 //!
-//! - [`Arena`]: Basic single-threaded bump allocator for general use
-//! - [`TypedArena<T>`]: Type-safe arena for homogeneous allocations
-//! - [`ThreadSafeArena`]: Lock-free arena with atomic operations for concurrent
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!     *value
+//!     let value = arena_clone.alloc(100).unwrap();
 //!   access
-//! - [`LocalArena`]: Thread-local arena for maximum performance
-//! - [`CrossThreadArena`]: Arena that can be moved between threads (exclusive
 //!   access)
-//! - [`CompressedArena`]: Arena with transparent compression support
-//! - [`StreamingArena`]: Arena optimized for streaming/sequential allocation
 //!   patterns
-//!
+//! # Arena Types
 //! # Examples
-//!
+//! - [`Arena`]: Basic single-threaded bump allocator for general use
+//! - [`CompressedArena`]: Arena with transparent compression support
+//! - [`CrossThreadArena`]: Arena that can be moved between threads (exclusive
+//! - [`LocalArena`]: Thread-local arena for maximum performance
+//! - [`StreamingArena`]: Arena optimized for streaming/sequential allocation
+//! - [`ThreadSafeArena`]: Lock-free arena with atomic operations for concurrent
+//! - [`TypedArena<T>`]: Type-safe arena for homogeneous allocations
 //! Basic usage:
-//! ```rust
-//! use nebula_memory::arena::{Arena, ArenaConfig};
-//!
-//! let arena = Arena::new(ArenaConfig::default());
-//! let value = arena.alloc(42).unwrap();
-//! assert_eq!(*value, 42);
-//! ```
-//!
+//! High-performance arena allocation module for nebula-memory
+//! This module provides various arena allocators optimized for different use
 //! Thread-safe usage:
+//! ```
+//! ```
 //! ```rust
+//! ```rust
+//! assert_eq!(*value, 42);
+//! assert_eq!(handle.join().unwrap(), 100);
+//! cases:
+//! let arena = Arc::new(ThreadSafeArena::new(ArenaConfig::default()));
+//! let arena = Arena::new(ArenaConfig::default());
+//! let arena_clone = Arc::clone(&arena);
+//! let handle = thread::spawn(move || {
+//! let value = arena.alloc(42).unwrap();
+//! use nebula_memory::arena::{Arena, ArenaConfig};
+//! use nebula_memory::arena::{ArenaConfig, ThreadSafeArena};
 //! use std::sync::Arc;
 //! use std::thread;
-//!
-//! use nebula_memory::arena::{ArenaConfig, ThreadSafeArena};
-//!
-//! let arena = Arc::new(ThreadSafeArena::new(ArenaConfig::default()));
-//! let arena_clone = Arc::clone(&arena);
-//!
-//! let handle = thread::spawn(move || {
-//!     let value = arena_clone.alloc(100).unwrap();
-//!     *value
 //! });
-//!
-//! assert_eq!(handle.join().unwrap(), 100);
-//! ```
-
+pub mod scope;
 use std::alloc::Layout;
 
 use crate::core::error::MemoryError;
@@ -83,6 +83,7 @@ pub use self::local::{
     alloc_local, local_arena, reset_local_arena, with_local_arena, with_local_arena_mut,
     LocalArena, LocalRef, LocalRefMut,
 };
+pub use self::scope::ArenaScope;
 pub use self::stats::{ArenaStats, ArenaStatsSnapshot};
 #[cfg(feature = "streaming")]
 pub use self::streaming::{StreamCheckpoint, StreamOptions, StreamingArena, StreamingArenaRef};
@@ -581,3 +582,4 @@ mod tests {
         assert_eq!(config.numa_node, 0);
     }
 }
+

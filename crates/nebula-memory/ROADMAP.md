@@ -25,7 +25,7 @@
   - [ ] Either implement `streaming` module or remove feature from Cargo.toml
   - [ ] Decide: keep or remove `compression` feature
   - [ ] Decide: keep or remove `async` feature
-  - [ ] Decide: keep or remove `backtrace` feature
+  - [ ] Decide:  remove `backtrace` feature
 
 - [ ] Update feature dependencies
   ```toml
