@@ -59,7 +59,7 @@ impl<T: Poolable> ObjectPool<T> {
                 {
                     stats.record_creation();
                     stats.update_memory(
-                        objects.iter().map(|o| o.memory_usage()).sum::<usize>()
+                        objects.iter().map(|o: &T| o.memory_usage()).sum::<usize>()
                             + obj.memory_usage(),
                     );
                 }
