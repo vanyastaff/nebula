@@ -67,7 +67,7 @@ pub struct RealTimeMonitor {
     stop_signal: Arc<RwLock<bool>>,
     // State to track if an alert is currently active to respect cooldowns.
     // Maps alert name to last triggered Instant.
-    last_alert_triggered: Arc<RwLock<hashbrown::HashMap<String, Instant>>>,
+    last_alert_triggered: Arc<RwLock<std::collections::HashMap<String, Instant>>>,
 }
 
 #[cfg(feature = "std")]
@@ -105,7 +105,7 @@ impl RealTimeMonitor {
             histogram: Arc::new(RwLock::new(histogram)),
             monitor_handle: None,
             stop_signal: Arc::new(RwLock::new(false)),
-            last_alert_triggered: Arc::new(RwLock::new(hashbrown::HashMap::new())),
+            last_alert_triggered: Arc::new(RwLock::new(std::collections::HashMap::new())),
         }
     }
 
