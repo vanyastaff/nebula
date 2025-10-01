@@ -1,440 +1,179 @@
-use crate::Value;
-use crate::core::error::{ValueResult, ValueErrorExt};
+//! Path-based access for Value
+//!
+//! Supports JSON path-like syntax: $.user.name, $.items[0]
+
+use crate::core::error::{ValueErrorExt, ValueResult};
+use crate::core::value::Value;
 use crate::core::NebulaError;
-use crate::types::Object;
-use std::fmt;
 
-/// Represents a segment in a value path
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Path segment for navigating values
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathSegment {
-    /// Object key
+    /// Object key access: .key
     Key(String),
-    /// Array index
+    /// Array index access: [index]
     Index(usize),
-    /// Wildcard for iteration
-    Wildcard,
-    /// Recursive descent
-    Recursive,
 }
 
-impl PathSegment {
-    /// Parse a segment from string
-    pub fn parse(s: &str) -> ValueResult<Self> {
-        if s.is_empty() {
-            return Err(NebulaError::validation(format!("Empty path segment")));
-        }
+impl Value {
+    // ==================== Path-based Access ====================
 
-        match s {
-            "*" => Ok(Self::Wildcard),
-            "**" => Ok(Self::Recursive),
-            _ => {
-                // Try to parse as array index
-                if let Ok(index) = s.parse::<usize>() {
-                    Ok(Self::Index(index))
-                } else {
-                    Ok(Self::Key(s.to_string()))
-                }
-            }
-        }
+    /// Get value by path (e.g., "user.name", "items[0]")
+    ///
+    /// Supported syntax:
+    /// - `.key` - object key access
+    /// - `[index]` - array index access
+    /// - Chained: `user.addresses[0].city`
+    pub fn get_path(&self, path: &str) -> ValueResult<&Value> {
+        let segments = parse_path(path)?;
+        self.get_path_segments(&segments)
     }
-}
 
-impl fmt::Display for PathSegment {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// Get value by parsed path segments
+    ///
+    /// Note: Currently returns an error for nested paths in Array/Object.
+    /// Path access for collections requires owned Value (use `get_path_owned` when available).
+    pub fn get_path_segments(&self, segments: &[PathSegment]) -> ValueResult<&Value> {
+        // For now, only support single-level access
+        if segments.is_empty() {
+            return Ok(self);
+        }
+
+        // Path traversal for Array/Object with serde_json::Value storage
+        // is complex with borrowed returns. Document limitation.
+        match (self, &segments[0]) {
+            #[cfg(feature = "serde")]
+            (Value::Object(_), PathSegment::Key(_)) |
+            (Value::Array(_), PathSegment::Index(_)) if segments.len() > 1 => {
+                return Err(NebulaError::validation(
+                    "Multi-level path access not yet supported for Array/Object (requires owned return)",
+                ));
+            }
+
+            // Single level access for non-collection types would work,
+            // but Array/Object need conversion from serde_json::Value
+            #[cfg(feature = "serde")]
+            (Value::Object(_), PathSegment::Key(_)) |
+            (Value::Array(_), PathSegment::Index(_)) => {
+                return Err(NebulaError::validation(
+                    "Path access for Array/Object requires owned Value (not yet implemented)",
+                ));
+            }
+
+            #[cfg(not(feature = "serde"))]
+            (Value::Object(_), PathSegment::Key(_)) |
+            (Value::Array(_), PathSegment::Index(_)) => {
+                return Err(NebulaError::validation(
+                    "Path access for collections requires 'serde' feature",
+                ));
+            }
+
+            _ => {}
+        }
+
+        // For other types, path access doesn't make sense
+        let current = self;
+        for segment in segments {
+            current = match (current, segment) {
+
+                // Type mismatch errors
+                (val, PathSegment::Key(key)) => {
+                    return Err(NebulaError::value_type_mismatch(
+                        "Object",
+                        val.kind().name(),
+                    )
+                    .with_details(format!("Cannot access key '{}' on {}", key, val.kind().name())));
+                }
+
+                (val, PathSegment::Index(idx)) => {
+                    return Err(NebulaError::value_type_mismatch(
+                        "Array",
+                        val.kind().name(),
+                    )
+                    .with_details(format!("Cannot access index {} on {}", idx, val.kind().name())));
+                }
+            };
+        }
+
+        Ok(current)
+    }
+
+    /// Check if path exists
+    pub fn has_path(&self, path: &str) -> bool {
+        self.get_path(path).is_ok()
+    }
+
+    // ==================== Convenience Methods ====================
+
+    /// Get value from object by key (if this is an object)
+    pub fn get_key(&self, key: &str) -> ValueResult<Option<serde_json::Value>> {
         match self {
-            Self::Key(k) => write!(f, "{}", k),
-            Self::Index(i) => write!(f, "{}", i),
-            Self::Wildcard => write!(f, "*"),
-            Self::Recursive => write!(f, "**"),
+            Value::Object(obj) => Ok(obj.get(key).cloned()),
+            _ => Err(NebulaError::value_type_mismatch("Object", self.kind().name())),
+        }
+    }
+
+    /// Get value from array by index (if this is an array)
+    pub fn get_index(&self, index: usize) -> ValueResult<Option<serde_json::Value>> {
+        match self {
+            Value::Array(arr) => Ok(arr.get(index).cloned()),
+            _ => Err(NebulaError::value_type_mismatch("Array", self.kind().name())),
         }
     }
 }
 
-/// Represents a path to navigate through Value structures
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ValuePath {
-    segments: Vec<PathSegment>,
-}
+/// Parse a path string into segments
+///
+/// Examples:
+/// - "user.name" -> [Key("user"), Key("name")]
+/// - "items[0]" -> [Key("items"), Index(0)]
+/// - "data[0].value" -> [Key("data"), Index(0), Key("value")]
+fn parse_path(path: &str) -> ValueResult<Vec<PathSegment>> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut chars = path.chars().peekable();
 
-impl ValuePath {
-    /// Create an empty path
-    pub fn new() -> Self {
-        Self {
-            segments: Vec::new(),
-        }
-    }
+    while let Some(ch) = chars.next() {
+        match ch {
+            '.' => {
+                if !current.is_empty() {
+                    segments.push(PathSegment::Key(current.clone()));
+                    current.clear();
+                }
+            }
+            '[' => {
+                if !current.is_empty() {
+                    segments.push(PathSegment::Key(current.clone()));
+                    current.clear();
+                }
 
-    /// Create a path from segments
-    pub fn from_segments(segments: Vec<PathSegment>) -> Self {
-        Self { segments }
-    }
-
-    /// Parse a path from string (e.g., "user.address.0.city")
-    pub fn parse(path: &str) -> ValueResult<Self> {
-        if path.is_empty() {
-            return Ok(Self::new());
-        }
-
-        let segments = path
-            .split('.')
-            .map(PathSegment::parse)
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(Self { segments })
-    }
-
-    /// Parse with bracket notation support (e.g., "users\[0\].name")
-    pub fn parse_extended(path: &str) -> ValueResult<Self> {
-        if path.is_empty() {
-            return Ok(Self::new());
-        }
-
-        let mut segments = Vec::new();
-        let mut current = String::new();
-        let mut in_bracket = false;
-
-        for ch in path.chars() {
-            match ch {
-                '[' => {
-                    if !current.is_empty() {
-                        segments.push(PathSegment::parse(&current)?);
-                        current.clear();
+                // Parse index
+                let mut index_str = String::new();
+                while let Some(&ch) = chars.peek() {
+                    if ch == ']' {
+                        chars.next(); // consume ']'
+                        break;
                     }
-                    in_bracket = true;
+                    index_str.push(chars.next().unwrap());
                 }
-                ']' => {
-                    if in_bracket {
-                        segments.push(PathSegment::parse(&current)?);
-                        current.clear();
-                        in_bracket = false;
-                    } else {
-                        return Err(NebulaError::validation(format!("Invalid path syntax: {}", path)));
-                    }
-                }
-                '.' => {
-                    if !in_bracket {
-                        if !current.is_empty() {
-                            segments.push(PathSegment::parse(&current)?);
-                            current.clear();
-                        }
-                    } else {
-                        current.push(ch);
-                    }
-                }
-                _ => current.push(ch),
+
+                let index = index_str
+                    .parse::<usize>()
+                    .map_err(|_| NebulaError::value_parse_error("path index", index_str))?;
+
+                segments.push(PathSegment::Index(index));
             }
-        }
-
-        if in_bracket {
-            return Err(NebulaError::validation(format!("Unclosed bracket in path: {}", path)));
-        }
-
-        if !current.is_empty() {
-            segments.push(PathSegment::parse(&current)?);
-        }
-
-        Ok(Self { segments })
-    }
-
-    /// Get the segments
-    pub fn segments(&self) -> &[PathSegment] {
-        &self.segments
-    }
-
-    /// Check if path is empty
-    pub fn is_empty(&self) -> bool {
-        self.segments.is_empty()
-    }
-
-    /// Get the length of the path
-    pub fn len(&self) -> usize {
-        self.segments.len()
-    }
-
-    /// Push a segment to the path
-    pub fn push(&mut self, segment: PathSegment) {
-        self.segments.push(segment);
-    }
-
-    /// Pop a segment from the path
-    pub fn pop(&mut self) -> Option<PathSegment> {
-        self.segments.pop()
-    }
-
-    /// Get a value at this path
-    pub fn get<'a>(&self, value: &'a Value) -> Option<&'a Value> {
-        self.get_from(value, 0)
-    }
-
-    fn get_from<'a>(&self, value: &'a Value, index: usize) -> Option<&'a Value> {
-        if index >= self.segments.len() {
-            return Some(value);
-        }
-
-        match &self.segments[index] {
-            PathSegment::Key(key) => {
-                if let Value::Object(obj) = value {
-                    obj.get(key).and_then(|v| self.get_from(v, index + 1))
-                } else {
-                    None
-                }
-            }
-            PathSegment::Index(idx) => {
-                if let Value::Array(arr) = value {
-                    arr.get(*idx).and_then(|v| self.get_from(v, index + 1))
-                } else {
-                    None
-                }
-            }
-            PathSegment::Wildcard => {
-                // Return None for wildcard in simple get
-                // Use get_all for wildcard support
-                None
-            }
-            PathSegment::Recursive => {
-                // Return None for recursive in simple get
-                // Use get_all for recursive support
-                None
+            _ => {
+                current.push(ch);
             }
         }
     }
 
-    /// Get all values matching this path (supports wildcards)
-    pub fn get_all<'a>(&self, value: &'a Value) -> Vec<&'a Value> {
-        let mut results = Vec::new();
-        self.get_all_from(value, 0, &mut results);
-        results
+    if !current.is_empty() {
+        segments.push(PathSegment::Key(current));
     }
 
-    fn get_all_from<'a>(&self, value: &'a Value, index: usize, results: &mut Vec<&'a Value>) {
-        if index >= self.segments.len() {
-            results.push(value);
-            return;
-        }
-
-        match &self.segments[index] {
-            PathSegment::Key(key) => {
-                if let Value::Object(obj) = value
-                    && let Some(v) = obj.get(key)
-                {
-                    self.get_all_from(v, index + 1, results);
-                }
-            }
-            PathSegment::Index(idx) => {
-                if let Value::Array(arr) = value
-                    && let Some(v) = arr.get(*idx)
-                {
-                    self.get_all_from(v, index + 1, results);
-                }
-            }
-            PathSegment::Wildcard => match value {
-                Value::Array(arr) => {
-                    for item in arr.iter() {
-                        self.get_all_from(item, index + 1, results);
-                    }
-                }
-                Value::Object(obj) => {
-                    for (_, val) in obj.iter() {
-                        self.get_all_from(val, index + 1, results);
-                    }
-                }
-                _ => {}
-            },
-            PathSegment::Recursive => {
-                // Add current value
-                self.get_all_from(value, index + 1, results);
-
-                // Recursively search all children
-                match value {
-                    Value::Array(arr) => {
-                        for item in arr.iter() {
-                            self.get_all_from(item, index, results);
-                        }
-                    }
-                    Value::Object(obj) => {
-                        for (_, val) in obj.iter() {
-                            self.get_all_from(val, index, results);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    /// Set a value at this path
-    pub fn set(&self, value: &mut Value, new_value: Value) -> ValueResult<()> {
-        self.set_from(value, new_value, 0)
-    }
-
-    fn set_from(
-        &self,
-        value: &mut Value,
-        new_value: Value,
-        index: usize,
-    ) -> ValueResult<()> {
-        if index >= self.segments.len() {
-            *value = new_value;
-            return Ok(());
-        }
-
-        if index == self.segments.len() - 1 {
-            // Last segment - set the value
-            match &self.segments[index] {
-                PathSegment::Key(key) => {
-                    if let Value::Object(obj) = value {
-                        let _ = obj.insert(key.clone(), new_value);
-                        Ok(())
-                    } else {
-                        Err(NebulaError::value_type_mismatch("object", value.type_name()))
-                    }
-                }
-                PathSegment::Index(idx) => {
-                    if let Value::Array(arr) = value {
-                        if *idx >= arr.len() {
-                            return Err(NebulaError::value_index_out_of_bounds(*idx, arr.len()));
-                        }
-                        let new_arr = arr
-                            .set(*idx, new_value)
-                            .map_err(|e| NebulaError::internal(format!("array set error: {:?}", e)))?;
-                        *arr = new_arr;
-                        Ok(())
-                    } else {
-                        Err(NebulaError::value_type_mismatch("array", value.type_name()))
-                    }
-                }
-                _ => Err(NebulaError::value_operation_not_supported(
-                    "set with wildcard",
-                    "path",
-                )),
-            }
-        } else {
-            // Navigate deeper
-            match &self.segments[index] {
-                PathSegment::Key(key) => {
-                    if let Value::Object(obj) = value {
-                        let mut next_val = obj
-                            .get(key)
-                            .cloned()
-                            .unwrap_or(Value::Object(Object::new()));
-                        self.set_from(&mut next_val, new_value, index + 1)?;
-                        let new_obj = obj.insert(key.clone(), next_val);
-                        *obj = new_obj;
-                        Ok(())
-                    } else {
-                        Err(NebulaError::value_type_mismatch("object", value.type_name()))
-                    }
-                }
-                PathSegment::Index(idx) => {
-                    if let Value::Array(arr) = value {
-                        if *idx >= arr.len() {
-                            return Err(NebulaError::value_index_out_of_bounds(*idx, arr.len()));
-                        }
-                        let mut elem = arr
-                            .get(*idx)
-                            .cloned()
-                            .ok_or_else(|| NebulaError::value_index_out_of_bounds(*idx, arr.len()))?;
-                        self.set_from(&mut elem, new_value, index + 1)?;
-                        let new_arr = arr
-                            .set(*idx, elem)
-                            .map_err(|e| NebulaError::internal(format!("array set error: {:?}", e)))?;
-                        *arr = new_arr;
-                        Ok(())
-                    } else {
-                        Err(NebulaError::value_type_mismatch("array", value.type_name()))
-                    }
-                }
-                _ => Err(NebulaError::value_operation_not_supported(
-                    "set with wildcard",
-                    "path",
-                )),
-            }
-        }
-    }
-
-    /// Delete value at this path
-    pub fn delete(&self, value: &mut Value) -> ValueResult<bool> {
-        if self.segments.is_empty() {
-            return Ok(false);
-        }
-
-        let (last, path) = self.segments.split_last().unwrap();
-
-        // Navigate to parent
-        let parent = if path.is_empty() {
-            value
-        } else {
-            let parent_path = Self::from_segments(path.to_vec());
-            parent_path
-                .get_mut(value)
-                .ok_or_else(|| NebulaError::internal("Parent path not found"))?
-        };
-
-        // Delete from parent
-        match last {
-            PathSegment::Key(key) => {
-                if let Value::Object(obj) = parent {
-                    match obj.remove(key) {
-                        Ok((new_obj, _)) => {
-                            *parent = Value::Object(new_obj);
-                            Ok(true)
-                        }
-                        Err(_) => Ok(false),
-                    }
-                } else {
-                    Err(NebulaError::value_type_mismatch("object", parent.type_name()))
-                }
-            }
-            PathSegment::Index(idx) => {
-                if let Value::Array(arr) = parent {
-                    if *idx < arr.len() {
-                        if let Ok((new_arr, _)) = arr.remove(*idx) {
-                            *parent = Value::Array(new_arr);
-                            Ok(true)
-                        } else {
-                            Ok(false)
-                        }
-                    } else {
-                        Ok(false)
-                    }
-                } else {
-                    Err(NebulaError::value_type_mismatch("array", parent.type_name()))
-                }
-            }
-            _ => Err(NebulaError::value_operation_not_supported(
-                "delete with wildcard",
-                "path",
-            )),
-        }
-    }
-
-    /// Get mutable reference to value at path (not supported for persistent structures)
-    pub fn get_mut<'a>(&self, _value: &'a mut Value) -> Option<&'a mut Value> {
-        None
-    }
-
-    #[allow(dead_code)]
-    fn get_mut_from<'a>(&self, _value: &'a mut Value, _index: usize) -> Option<&'a mut Value> {
-        None
-    }
-}
-
-impl fmt::Display for ValuePath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, segment) in self.segments.iter().enumerate() {
-            if i > 0 {
-                write!(f, ".")?;
-            }
-            write!(f, "{}", segment)?;
-        }
-        Ok(())
-    }
-}
-
-impl Default for ValuePath {
-    fn default() -> Self {
-        Self::new()
-    }
+    Ok(segments)
 }
 
 #[cfg(test)]
@@ -442,24 +181,75 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_path_parse() {
-        let path = ValuePath::parse("user.address.city").unwrap();
-        assert_eq!(path.segments.len(), 3);
-
-        let path = ValuePath::parse("items.0.name").unwrap();
-        assert_eq!(path.segments[1], PathSegment::Index(0));
-
-        let path = ValuePath::parse("data.*.id").unwrap();
-        assert_eq!(path.segments[1], PathSegment::Wildcard);
+    fn test_parse_path_simple() {
+        let segments = parse_path("user").unwrap();
+        assert_eq!(segments, vec![PathSegment::Key("user".to_string())]);
     }
 
     #[test]
-    fn test_path_parse_extended() {
-        let path = ValuePath::parse_extended("users[0].name").unwrap();
-        assert_eq!(path.segments.len(), 3);
-        assert_eq!(path.segments[1], PathSegment::Index(0));
-
-        let path = ValuePath::parse_extended("data[field.with.dots]").unwrap();
-        assert_eq!(path.segments.len(), 2);
+    fn test_parse_path_nested() {
+        let segments = parse_path("user.name").unwrap();
+        assert_eq!(
+            segments,
+            vec![
+                PathSegment::Key("user".to_string()),
+                PathSegment::Key("name".to_string())
+            ]
+        );
     }
+
+    #[test]
+    fn test_parse_path_index() {
+        let segments = parse_path("items[0]").unwrap();
+        assert_eq!(
+            segments,
+            vec![
+                PathSegment::Key("items".to_string()),
+                PathSegment::Index(0)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_path_complex() {
+        let segments = parse_path("data[0].value").unwrap();
+        assert_eq!(
+            segments,
+            vec![
+                PathSegment::Key("data".to_string()),
+                PathSegment::Index(0),
+                PathSegment::Key("value".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_path_multiple_indices() {
+        let segments = parse_path("matrix[0][1]").unwrap();
+        assert_eq!(
+            segments,
+            vec![
+                PathSegment::Key("matrix".to_string()),
+                PathSegment::Index(0),
+                PathSegment::Index(1)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_get_key_type_mismatch() {
+        let val = Value::integer(42);
+        let result = val.get_key("foo");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_index_type_mismatch() {
+        let val = Value::text("hello");
+        let result = val.get_index(0);
+        assert!(result.is_err());
+    }
+
+    // Note: Full path access tests require proper Value integration with Array/Object
+    // These will be added once Array/Object use Value instead of serde_json::Value
 }

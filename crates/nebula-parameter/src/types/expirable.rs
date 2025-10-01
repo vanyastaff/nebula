@@ -132,29 +132,35 @@ impl ExpirableValue {
 
     /// Create a new ExpirableValue with a string value
     pub fn new_string(value: impl Into<String>, ttl: u64) -> Self {
-        Self::new(nebula_value::Value::String(value.into().into()), ttl)
+        Self::new(nebula_value::Value::text(value.into()), ttl)
     }
 
     /// Create a new ExpirableValue with a boolean value
     pub fn new_bool(value: bool, ttl: u64) -> Self {
-        Self::new(nebula_value::Value::Bool(value.into()), ttl)
+        Self::new(nebula_value::Value::boolean(value), ttl)
     }
 
     /// Create a new ExpirableValue with an integer value
     pub fn new_int(value: i64, ttl: u64) -> Self {
-        Self::new(nebula_value::Value::Int(value.into()), ttl)
+        Self::new(nebula_value::Value::integer(value), ttl)
     }
 
     /// Create a new ExpirableValue from ParameterValue
     pub fn from_parameter_value(param_value: &ParameterValue, ttl: u64) -> Self {
         let nebula_val = match param_value {
             ParameterValue::Value(v) => v.clone(),
-            ParameterValue::Expression(expr) => nebula_value::Value::String(expr.clone().into()),
-            ParameterValue::Routing(_) => nebula_value::Value::String("routing_value".into()),
+            ParameterValue::Expression(expr) => nebula_value::Value::text(expr.clone()),
+            ParameterValue::Routing(_) => nebula_value::Value::text("routing_value"),
             ParameterValue::Mode(mode_val) => mode_val.value.clone(),
             ParameterValue::Expirable(exp_val) => exp_val.value.clone(),
-            ParameterValue::List(list_val) => nebula_value::Value::Array(list_val.items.clone().into()),
-            ParameterValue::Object(_obj_val) => nebula_value::Value::String("object_value".into()),
+            ParameterValue::List(list_val) => {
+                // Convert Vec<nebula_value::Value> to Vec<serde_json::Value> for Array
+                let json_items: Vec<serde_json::Value> = list_val.items.iter()
+                    .filter_map(|v| serde_json::to_value(v).ok())
+                    .collect();
+                nebula_value::Value::Array(nebula_value::Array::from(json_items))
+            },
+            ParameterValue::Object(_obj_val) => nebula_value::Value::text("object_value"),
         };
         Self::new(nebula_val, ttl)
     }
@@ -246,7 +252,8 @@ impl HasValue for ExpirableParameter {
         self.value.as_ref().map(|exp_val| ParameterValue::Expirable(exp_val.clone()))
     }
 
-    fn set_parameter_value(&mut self, value: ParameterValue) -> Result<(), ParameterError> {
+    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+        let value = value.into();
         match value {
             ParameterValue::Expirable(exp_val) => {
                 self.value = Some(exp_val);
@@ -271,7 +278,7 @@ impl Validatable for ExpirableParameter {
 
     fn is_empty_value(&self, value: &Self::Value) -> bool {
         value.is_expired() || match &value.value {
-            nebula_value::Value::String(s) => s.as_str().trim().is_empty(),
+            nebula_value::Value::Text(s) => s.as_str().trim().is_empty(),
             nebula_value::Value::Null => true,
             nebula_value::Value::Array(a) => a.is_empty(),
             nebula_value::Value::Object(o) => o.is_empty(),

@@ -380,26 +380,16 @@ impl<V: Validator, C: Validator> Validator for ConditionalValidator<V, C> {
 // ============= Helper Functions =============
 
 /// Get nested value from JSON object using dot notation path
-fn get_nested_value<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+///
+/// Note: Temporarily disabled as nebula-value v2's Array/Object use serde_json::Value internally
+/// and don't yet support full path traversal returning nebula_value::Value references.
+/// This will be re-enabled once the collections are migrated to store nebula_value::Value.
+fn get_nested_value<'a>(_value: &'a Value, path: &str) -> Option<&'a Value> {
     if path.is_empty() {
-        return Some(value);
+        return Some(_value);
     }
 
-    let parts: Vec<&str> = path.split('.').collect();
-    let mut current = value;
-
-    for part in parts {
-        match current {
-            Value::Object(obj) => {
-                current = obj.get(part)?;
-            },
-            Value::Array(arr) => {
-                let index: usize = part.parse().ok()?;
-                current = arr.get(index)?;
-            },
-            _ => return None,
-        }
-    }
-
-    Some(current)
+    // TODO: Re-implement once nebula-value v2 collections support nested Value access
+    // For now, ValidationContext path-based access is disabled
+    None
 }

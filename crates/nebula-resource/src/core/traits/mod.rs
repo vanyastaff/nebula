@@ -135,7 +135,7 @@ pub trait Poolable: Send + Sync {
 #[async_trait]
 pub trait Stateful: Send + Sync {
     /// The type of state this resource maintains
-    type State: Send + Sync + Clone;
+    type State: Send + Sync + Clone + serde::Serialize + serde::de::DeserializeOwned;
 
     /// Save the current state of the resource
     async fn save_state(&self) -> ResourceResult<Self::State>;

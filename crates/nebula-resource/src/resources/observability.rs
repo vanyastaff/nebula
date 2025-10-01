@@ -76,7 +76,7 @@ impl ResourceInstance for LoggerInstance {
         *self.last_accessed.lock().unwrap()
     }
 
-    fn touch(&mut self) {
+    fn touch(&self) {
         *self.last_accessed.lock().unwrap() = Some(chrono::Utc::now());
     }
 }
@@ -176,7 +176,7 @@ impl ResourceInstance for MetricsInstance {
         *self.last_accessed.lock().unwrap()
     }
 
-    fn touch(&mut self) {
+    fn touch(&self) {
         *self.last_accessed.lock().unwrap() = Some(chrono::Utc::now());
     }
 }
@@ -276,7 +276,7 @@ impl ResourceInstance for TracerInstance {
         *self.last_accessed.lock().unwrap()
     }
 
-    fn touch(&mut self) {
+    fn touch(&self) {
         *self.last_accessed.lock().unwrap() = Some(chrono::Utc::now());
     }
 }

@@ -1,11 +1,10 @@
-//! # Nebula Resilience
-
+#![allow(clippy::module_name_repetitions)]
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
 #![warn(clippy::all, clippy::pedantic)]
-#![allow(clippy::module_name_repetitions)]
-
 // Core module
+//! # Nebula Resilience
+pub mod helpers;
 pub mod core;
 
 // Patterns module
@@ -58,17 +57,35 @@ pub use manager::{ResilienceManager, PolicyBuilder, RetryableOperation};
 
 /// Prelude
 pub mod prelude {
+    // Core types
     pub use crate::core::{ResilienceError, ResilienceResult};
-    pub use crate::patterns::{Bulkhead, CircuitBreaker, RetryStrategy, timeout};
+
+    // Pattern primitives
+    pub use crate::patterns::{
+        Bulkhead,
+        BulkheadConfig,
+        CircuitBreaker,
+        CircuitBreakerConfig,
+        CircuitState,
+        RetryStrategy,
+        timeout
+    };
+
+    // High-level abstractions
     pub use crate::{
         ResiliencePolicy,
         ResilienceManager,
         ResilienceChain,
-        // Configuration
+    };
+
+    // Configuration
+    pub use crate::{
         ResilienceConfig,
+        ResilienceConfigManager,
         DynamicConfig,
         ResiliencePresets,
         ConfigResult,
+        ConfigError,
     };
 
     // Re-export nebula ecosystem for convenience

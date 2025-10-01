@@ -157,15 +157,16 @@ impl HasValue for FileParameter {
     fn get_parameter_value(&self) -> Option<ParameterValue> {
         self.value.as_ref().map(|file_ref| {
             // Convert FileReference to a simple string representation (path)
-            ParameterValue::Value(nebula_value::Value::String(file_ref.path.to_string_lossy().to_string().into()))
+            ParameterValue::Value(nebula_value::Value::text(file_ref.path.to_string_lossy().to_string()))
         })
     }
 
-    fn set_parameter_value(&mut self, value: ParameterValue) -> Result<(), ParameterError> {
+    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+        let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::String(s)) => {
+            ParameterValue::Value(nebula_value::Value::Text(s)) => {
                 // Simple path-based file reference
-                let file_ref = FileReference::new(&*s.to_string(), s.to_string());
+                let file_ref = FileReference::new(s.as_str(), s.to_string());
                 if self.is_valid_file(&file_ref)? {
                     self.value = Some(file_ref);
                     Ok(())

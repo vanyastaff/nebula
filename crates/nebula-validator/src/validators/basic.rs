@@ -1,6 +1,6 @@
 //! Basic validation operations using the unified validator macro
 
-use crate::{validator, validator_fn};
+use crate::{validator, validator_fn, ValueExt};
 
 // ==================== BASIC VALIDATORS ====================
 
@@ -28,7 +28,7 @@ validator! {
             {
                 if value.is_null() {
                     false
-                } else if value.is_collection() || value.is_string() {
+                } else if value.is_collection() || value.is_text() {
                     !value.is_empty()
                 } else {
                     true

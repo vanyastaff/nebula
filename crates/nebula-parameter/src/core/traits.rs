@@ -60,8 +60,8 @@ pub trait HasValue: ParameterType + Debug + Display {
     /// Converts to generic ParameterValue
     fn get_parameter_value(&self) -> Option<ParameterValue>;
 
-    /// Sets from generic ParameterValue
-    fn set_parameter_value(&mut self, value: ParameterValue) -> Result<(), ParameterError>;
+    /// Sets from generic ParameterValue or any type that converts to it
+    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError>;
 
     // --- Default implementations (convenience methods) ---
 

@@ -78,13 +78,14 @@ impl HasValue for CheckboxParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.map(|b| ParameterValue::Value(nebula_value::Value::Bool(b.into())))
+        self.value.map(|b| ParameterValue::Value(nebula_value::Value::boolean(b)))
     }
 
-    fn set_parameter_value(&mut self, value: ParameterValue) -> Result<(), ParameterError> {
+    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+        let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::Bool(b)) => {
-                self.value = Some(b.value());
+            ParameterValue::Value(nebula_value::Value::Boolean(b)) => {
+                self.value = Some(b);
                 Ok(())
             },
             ParameterValue::Expression(_expr) => {

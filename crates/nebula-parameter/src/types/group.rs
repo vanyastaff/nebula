@@ -201,51 +201,22 @@ impl HasValue for GroupParameter {
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
         self.value.as_ref().map(|group_val| {
+            // Object uses serde_json::Value internally, so we can just clone the values
             ParameterValue::Value(nebula_value::Value::Object(
-                group_val.values.iter()
-                    .map(|(k, v)| {
-                        let value = match v {
-                            serde_json::Value::String(s) => nebula_value::Value::string(s.clone()),
-                            serde_json::Value::Number(n) => {
-                                if let Some(i) = n.as_i64() {
-                                    nebula_value::Value::int(i)
-                                } else if let Some(f) = n.as_f64() {
-                                    nebula_value::Value::float(f)
-                                } else {
-                                    nebula_value::Value::string(n.to_string())
-                                }
-                            },
-                            serde_json::Value::Bool(b) => nebula_value::Value::bool(*b),
-                            serde_json::Value::Null => nebula_value::Value::null(),
-                            _ => nebula_value::Value::string(v.to_string()),
-                        };
-                        (k.clone(), value)
-                    })
-                    .collect::<std::collections::BTreeMap<_, _>>()
-                    .into()
+                group_val.values.clone().into_iter().collect()
             ))
         })
     }
 
-    fn set_parameter_value(&mut self, value: ParameterValue) -> Result<(), ParameterError> {
+    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+        let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Object(obj)) => {
                 let mut group_value = GroupValue::new();
 
-                for (key, val) in obj.iter() {
-                    let json_val = match val {
-                        nebula_value::Value::String(s) => serde_json::Value::String(s.to_string()),
-                        nebula_value::Value::Int(i) => serde_json::Value::Number(i.value().into()),
-                        nebula_value::Value::Float(f) => {
-                            serde_json::Number::from_f64(f.value())
-                                .map(serde_json::Value::Number)
-                                .unwrap_or(serde_json::Value::Null)
-                        },
-                        nebula_value::Value::Bool(b) => serde_json::Value::Bool(b.value()),
-                        nebula_value::Value::Null => serde_json::Value::Null,
-                        _ => serde_json::Value::String(val.to_string()),
-                    };
-                    group_value.set_field(key.to_string(), json_val);
+                for (key, val) in obj.entries() {
+                    // val is already a &serde_json::Value, just clone it
+                    group_value.set_field(key.to_string(), val.clone());
                 }
 
                 if self.is_valid_group_value(&group_value)? {

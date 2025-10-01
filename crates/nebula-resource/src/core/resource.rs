@@ -184,7 +184,9 @@ pub trait ResourceInstance: Send + Sync + Any {
     fn last_accessed_at(&self) -> Option<chrono::DateTime<chrono::Utc>>;
 
     /// Update last access timestamp
-    fn touch(&mut self);
+    ///
+    /// Uses interior mutability to update timestamp without requiring &mut self
+    fn touch(&self);
 
     /// Check if this instance can be safely terminated
     fn can_terminate(&self) -> bool {

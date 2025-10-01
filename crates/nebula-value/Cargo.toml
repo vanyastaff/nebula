@@ -43,8 +43,8 @@ serde = { workspace = true, optional = true }
 # TEMP: not optional for v2 placeholder (Array/Object use serde_json::Value)
 serde_json = { workspace = true }
 
-# Temporal (TEMP: not optional for v1 compat)
-chrono = { workspace = true }
+# Temporal (optional)
+chrono = { workspace = true, optional = true }
 
 # Decimal (TEMP: not optional for v1 compat)
 rust_decimal = { version = "1.35", features = ["serde"] }
@@ -60,14 +60,14 @@ base64 = "0.22"
 rand = "0.9"
 
 [features]
-default = ["std"]
+default = ["std", "temporal"]
 std = []
+temporal = ["dep:chrono"]
 # decimal = ["dep:rust_decimal"]  # TEMP: not optional
-# temporal = ["dep:chrono"]  # TEMP: not optional
 # memory-pooling = ["dep:nebula-memory"]  # TEMP: disabled
 # validation = ["dep:nebula-validator"]  # TEMP: disabled
 serde = ["dep:serde", "im/serde"]
-full = ["std", "serde"]
+full = ["std", "serde", "temporal"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

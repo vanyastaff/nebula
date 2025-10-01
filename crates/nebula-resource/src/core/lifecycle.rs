@@ -107,7 +107,7 @@ impl LifecycleState {
             (Terminated, _) => false,
 
             // Self-transitions are always allowed
-            (state, target) if state == target => true,
+            (state, target) if *state == target => true,
 
             // All other transitions are invalid
             _ => false,

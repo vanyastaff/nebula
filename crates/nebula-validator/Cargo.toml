@@ -42,7 +42,6 @@ chrono = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
 
 # Internal crates
-nebula-resilience = { path = "../nebula-resilience" }
 nebula-value = { path = "../nebula-value" }
 
 # Builder patterns

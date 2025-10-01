@@ -475,10 +475,11 @@ impl PoolManager {
         T: Send + Sync + 'static,
     {
         let pools = self.pools.read();
-        pools.get(pool_id)?.downcast_ref::<ResourcePool<T>>().map(|pool| {
-            // This is a simplification - in reality we'd need better type handling
-            unsafe { std::mem::transmute(pool) }
-        })
+        let any_pool = pools.get(pool_id)?;
+        // Safe downcast from Arc<dyn Any> to Arc<ResourcePool<T>>
+        Arc::clone(any_pool)
+            .downcast::<ResourcePool<T>>()
+            .ok()
     }
 
     /// Perform maintenance on all pools

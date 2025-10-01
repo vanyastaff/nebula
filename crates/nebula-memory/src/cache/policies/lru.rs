@@ -20,7 +20,7 @@ use std::{
 #[cfg(not(feature = "std"))]
 use {
     alloc::{boxed::Box, collections::VecDeque, vec::Vec},
-    core::{hash::Hash, ptr::NonNull, time::Duration},
+    core::{hash::Hash, marker::PhantomData, ptr::NonNull, time::Duration},
     hashbrown::HashMap,
 };
 

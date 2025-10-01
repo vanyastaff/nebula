@@ -6,7 +6,9 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// Defines the scope and visibility of a resource
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// Note: Hash is not derived because the Custom variant contains HashMap
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ResourceScope {
     /// Global scope - shared across all workflows and tenants

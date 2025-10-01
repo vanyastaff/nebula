@@ -1,6 +1,6 @@
 //! Collection validation operations using the unified validator macro
 
-use crate::{validator, validator_fn};
+use crate::{validator, validator_fn, ValueExt};
 
 // ==================== SIZE VALIDATORS ====================
 
@@ -13,7 +13,7 @@ validator! {
         fn check(value: &Value, size: &usize) -> bool {
             {
                 // Use value.len() which works for arrays, objects, strings, and bytes
-                if value.is_collection() || value.is_string() {
+                if value.is_collection() || value.is_text() {
                     value.len() == *size
                 } else {
                     false
@@ -35,7 +35,7 @@ validator! {
     impl {
         fn check(value: &Value, min_size: &usize) -> bool {
             {
-                if value.is_collection() || value.is_string() {
+                if value.is_collection() || value.is_text() {
                     value.len() >= *min_size
                 } else {
                     false
@@ -57,7 +57,7 @@ validator! {
     impl {
         fn check(value: &Value, max_size: &usize) -> bool {
             {
-                if value.is_collection() || value.is_string() {
+                if value.is_collection() || value.is_text() {
                     value.len() <= *max_size
                 } else {
                     false
@@ -83,7 +83,7 @@ validator! {
                 let collection_size = match value {
                     nebula_value::Value::Array(arr) => Some(arr.len()),
                     nebula_value::Value::Object(obj) => Some(obj.len()),
-                    nebula_value::Value::String(s) => Some(s.len()),
+                    nebula_value::Value::Text(s) => Some(s.len()),
                     _ => None,
                 };
                 collection_size.map_or(false, |s| s >= *min_size && s <= *max_size)
@@ -106,7 +106,12 @@ validator! {
     impl {
         fn check(arr: &Value, value: &nebula_value::Value) -> bool {
             {
-                arr.contains(value)
+                // Compare values by string representation (workaround for mixed Value types)
+                if let nebula_value::Value::Array(a) = arr {
+                    let value_str = value.to_string();
+                    return a.iter().any(|item| item.to_string() == value_str);
+                }
+                false
             }
         }
         fn error(value: &nebula_value::Value) -> String {
@@ -123,7 +128,7 @@ validator! {
     impl {
         fn check(value: &Value) -> bool {
             {
-                if value.is_collection() || value.is_string() {
+                if value.is_collection() || value.is_text() {
                     value.is_empty()
                 } else {
                     false
@@ -144,7 +149,7 @@ validator! {
     impl {
         fn check(value: &Value) -> bool {
             {
-                if value.is_collection() || value.is_string() {
+                if value.is_collection() || value.is_text() {
                     !value.is_empty()
                 } else {
                     false
@@ -167,7 +172,7 @@ validator! {
             {
                 if let nebula_value::Value::Array(arr) = value {
                     let mut seen = std::collections::HashSet::new();
-                    for item in arr {
+                    for item in arr.iter() {
                         if !seen.insert(item.to_string()) {
                             return false;
                         }

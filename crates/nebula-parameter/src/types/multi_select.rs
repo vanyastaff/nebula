@@ -104,22 +104,25 @@ impl HasValue for MultiSelectParameter {
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
         self.value.as_ref().map(|vec| {
-            let array: Vec<nebula_value::Value> = vec.iter()
-                .map(|s| nebula_value::Value::String(s.clone().into()))
+            // Array uses serde_json::Value internally
+            let array: Vec<serde_json::Value> = vec.iter()
+                .map(|s| serde_json::Value::String(s.clone()))
                 .collect();
-            ParameterValue::Value(nebula_value::Value::Array(array.into()))
+            ParameterValue::Value(nebula_value::Value::Array(nebula_value::Array::from(array)))
         })
     }
 
-    fn set_parameter_value(&mut self, value: ParameterValue) -> Result<(), ParameterError> {
+    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+        let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Array(arr)) => {
                 let mut string_values = Vec::new();
 
+                // arr.iter() returns &serde_json::Value, not &nebula_value::Value
                 for item in arr.iter() {
                     match item {
-                        nebula_value::Value::String(s) => {
-                            string_values.push(s.to_string());
+                        serde_json::Value::String(s) => {
+                            string_values.push(s.clone());
                         }
                         _ => {
                             return Err(ParameterError::InvalidValue {

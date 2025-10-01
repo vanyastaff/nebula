@@ -280,7 +280,7 @@ impl ResourceInstance for HttpClientInstance {
         *self.last_accessed.lock()
     }
 
-    fn touch(&mut self) {
+    fn touch(&self) {
         *self.last_accessed.lock() = Some(chrono::Utc::now());
     }
 }

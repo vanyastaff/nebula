@@ -1,10 +1,13 @@
-//! Object (key-value map) type for nebula-value
 //!
-//! This module provides an Object type that:
-//! - Uses persistent data structures (im::HashMap) for efficient cloning
+//! - Key count limits for DoS protection
 //! - O(log n) operations
 //! - Thread-safe via Arc
-//! - Key count limits for DoS protection
+//! - Uses persistent data structures (im::HashMap) for efficient cloning
+//! Object (key-value map) type for nebula-value
+//! This module provides an Object type that:
+pub mod builder;
+
+pub use builder::ObjectBuilder;
 
 use std::fmt;
 use std::hash::{Hash, Hasher};

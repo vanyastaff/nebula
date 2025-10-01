@@ -104,12 +104,12 @@ impl ParameterCondition {
 
     /// Create a regex pattern condition
     pub fn regex_pattern<T: Into<String>>(pattern: T) -> Self {
-        ParameterCondition::Regex(ParameterValue::from(Value::String(pattern.into().into())))
+        ParameterCondition::Regex(ParameterValue::from(Value::text(pattern.into())))
     }
 
     /// Create a contains condition
     pub fn contains<T: Into<String>>(substring: T) -> Self {
-        ParameterCondition::Contains(ParameterValue::from(Value::String(substring.into().into())))
+        ParameterCondition::Contains(ParameterValue::from(Value::text(substring.into())))
     }
 
     /// Create an AND condition
@@ -136,16 +136,16 @@ impl ParameterCondition {
         F: Fn(f64, f64) -> bool,
     {
         match (value.as_value(), expected.as_value()) {
-            (Some(Value::Int(a)), Some(Value::Int(b))) => {
+            (Some(Value::Integer(a)), Some(Value::Integer(b))) => {
                 op(a.value() as f64, b.value() as f64)
             }
             (Some(Value::Float(a)), Some(Value::Float(b))) => {
                 op(a.value(), b.value())
             }
-            (Some(Value::Int(a)), Some(Value::Float(b))) => {
+            (Some(Value::Integer(a)), Some(Value::Float(b))) => {
                 op(a.value() as f64, b.value())
             }
-            (Some(Value::Float(a)), Some(Value::Int(b))) => {
+            (Some(Value::Float(a)), Some(Value::Integer(b))) => {
                 op(a.value(), b.value() as f64)
             }
             _ => false,
@@ -159,7 +159,7 @@ impl ParameterCondition {
         F: Fn(&str, &str) -> bool,
     {
         match (value.as_value(), expected.as_value()) {
-            (Some(Value::String(a)), Some(Value::String(b))) => op(a, b),
+            (Some(Value::Text(a)), Some(Value::Text(b))) => op(a, b),
             _ => false,
         }
     }
@@ -171,7 +171,7 @@ impl ParameterCondition {
         F: Fn(usize) -> bool,
     {
         match value.as_value() {
-            Some(Value::String(s)) => op(s.len()),
+            Some(Value::Text(s)) => op(s.len()),
             _ => false,
         }
     }
@@ -179,7 +179,7 @@ impl ParameterCondition {
     /// Evaluate regex pattern
     fn evaluate_regex(value: &ParameterValue, pattern: &ParameterValue) -> bool {
         match (value.as_value(), pattern.as_value()) {
-            (Some(Value::String(s)), Some(Value::String(p))) => {
+            (Some(Value::Text(s)), Some(Value::Text(p))) => {
                 // Enhanced regex patterns for common validation cases
                 match p.as_str() {
                     // Email pattern

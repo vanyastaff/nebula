@@ -1,6 +1,5 @@
 //! Example demonstrating nebula-config integration with the Nebula ecosystem
 
-use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -61,9 +60,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set dynamic configuration using NebulaValue
     let dynamic_value = NebulaValue::Object({
         let obj = nebula_value::Object::new();
-        let _ = obj.insert("runtime_mode".to_string(), NebulaValue::string("development"));
-        let _ = obj.insert("request_timeout".to_string(), NebulaValue::int(30));
-        let _ = obj.insert("retry_count".to_string(), NebulaValue::int(3));
+        let obj = obj.insert("runtime_mode".to_string(), serde_json::json!("development"));
+        let obj = obj.insert("request_timeout".to_string(), serde_json::json!(30));
+        let obj = obj.insert("retry_count".to_string(), serde_json::json!(3));
         obj
     });
 
@@ -156,10 +155,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let override_config = NebulaValue::Object({
         let obj = nebula_value::Object::new();
-        let mut app_obj = nebula_value::Object::new();
-        let _ = app_obj.insert("debug".to_string(), NebulaValue::bool(true));
-        let _ = app_obj.insert("log_level".to_string(), NebulaValue::string("debug"));
-        let _ = obj.insert("app".to_string(), NebulaValue::Object(app_obj));
+        let app_obj = nebula_value::Object::new();
+        let app_obj = app_obj.insert("debug".to_string(), serde_json::json!(true));
+        let app_obj = app_obj.insert("log_level".to_string(), serde_json::json!("debug"));
+        let obj = obj.insert("app".to_string(), serde_json::json!(serde_json::Value::Object({
+            let mut map = serde_json::Map::new();
+            for (k, v) in app_obj.entries() {
+                map.insert(k.clone(), v.clone());
+            }
+            map
+        })));
         obj
     });
 
@@ -225,8 +230,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let dynamic_update = NebulaValue::Object({
             let obj = nebula_value::Object::new();
-            let _ = obj.insert("iteration".to_string(), NebulaValue::int(i));
-            let _ = obj.insert("timestamp".to_string(), NebulaValue::string(
+            let obj = obj.insert("iteration".to_string(), serde_json::json!(i));
+            let obj = obj.insert("timestamp".to_string(), serde_json::json!(
                 chrono::Utc::now().to_rfc3339()
             ));
             obj
@@ -266,9 +271,9 @@ async fn validate_config_structure(config: &Config) -> ConfigResult<()> {
 
     // Validate port ranges
     let app_port = config.get::<u16>("app.port").await?;
-    if app_port < 1024 || app_port > 65535 {
+    if app_port < 1024 {
         return Err(ConfigError::validation_with_field(
-            "Port must be between 1024 and 65535",
+            "Port must be at least 1024",
             "app.port",
         ));
     }

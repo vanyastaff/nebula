@@ -1,6 +1,5 @@
 use std::fmt;
-use std::cmp::Ordering;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 
 /// Signed 64-bit integer
 ///

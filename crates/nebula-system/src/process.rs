@@ -373,7 +373,7 @@ pub fn tree() -> Vec<ProcessTree> {
 
     // Build tree recursively
     fn build_tree(
-        process: ProcessInfo,
+        process: &ProcessInfo,
         children_map: &HashMap<u32, Vec<ProcessInfo>>,
     ) -> ProcessTree {
         let children = children_map
@@ -381,16 +381,19 @@ pub fn tree() -> Vec<ProcessTree> {
             .map(|children| {
                 children
                     .iter()
-                    .map(|child| build_tree(child.clone(), children_map))
+                    .map(|child| build_tree(child, children_map))
                     .collect()
             })
             .unwrap_or_default();
 
-        ProcessTree { process, children }
+        ProcessTree {
+            process: process.clone(),  // Clone only once at the leaf
+            children
+        }
     }
 
     roots
-        .into_iter()
+        .iter()
         .map(|root| build_tree(root, &children_map))
         .collect()
 }

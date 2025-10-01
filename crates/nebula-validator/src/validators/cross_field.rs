@@ -1,6 +1,6 @@
 //! Cross-field validation operations using the unified validator macro
 
-use crate::{validator, validator_fn};
+use crate::{validator, validator_fn, ValueExt};
 use nebula_value::Value;
 
 // ==================== CROSS-FIELD VALIDATORS ====================
@@ -67,7 +67,7 @@ validator! {
                         // Field is required, check if it's empty
                         if value.is_null() {
                             return false;
-                        } else if value.is_collection() || value.is_string() {
+                        } else if value.is_collection() || value.is_text() {
                             return !value.is_empty();
                         } else {
                             return true;

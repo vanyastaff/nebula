@@ -153,7 +153,7 @@ pub fn interfaces() -> Vec<NetworkInterface> {
                 };
 
                 NetworkInterface {
-                    name: name.clone(),
+                    name: name.to_string(),
                     mac_address: Some(network.mac_address().to_string()),
                     ip_addresses: vec![], // Would need additional platform-specific code
                     is_up: true,          // Assume up if in the list
@@ -208,7 +208,7 @@ pub fn usage() -> Vec<NetworkUsage> {
                 let tx_diff = current_stats.tx_bytes.saturating_sub(prev_stats.tx_bytes);
 
                 usage_list.push(NetworkUsage {
-                    interface: name.clone(),
+                    interface: name.to_string(),
                     rx_rate: rx_diff as f64,
                     tx_rate: tx_diff as f64,
                     total_rx: current_stats.rx_bytes,
@@ -216,7 +216,7 @@ pub fn usage() -> Vec<NetworkUsage> {
                 });
             } else {
                 usage_list.push(NetworkUsage {
-                    interface: name.clone(),
+                    interface: name.to_string(),
                     rx_rate: 0.0,
                     tx_rate: 0.0,
                     total_rx: current_stats.rx_bytes,
@@ -225,7 +225,7 @@ pub fn usage() -> Vec<NetworkUsage> {
             }
 
             // Update stats cache
-            stats.insert(name.clone(), current_stats);
+            stats.insert(name.to_string(), current_stats);
         }
 
         usage_list
@@ -273,7 +273,7 @@ pub fn config() -> NetworkConfig {
     let info = SystemInfo::get();
 
     NetworkConfig {
-        hostname: info.os.hostname.clone(),
+        hostname: info.os.hostname.as_str().to_string(),
         dns_servers: detect_dns_servers(),
         gateway: detect_gateway(),
         domain: None,

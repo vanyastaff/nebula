@@ -105,15 +105,21 @@ pub struct HardwareInfo {
 
 impl SystemInfo {
     /// Get cached system information
+    ///
+    /// Returns a cheap reference-counted pointer to the cached system info.
+    /// Arc::clone is cheap (just increments a counter).
+    #[inline]
     pub fn get() -> Arc<SystemInfo> {
-        SYSTEM_INFO.clone()
+        Arc::clone(&SYSTEM_INFO)
     }
 
     /// Refresh and get current information
+    ///
+    /// Updates the cache with fresh system information and returns it.
     pub fn refresh() -> Arc<SystemInfo> {
         let mut cache = SYSTEM_INFO_CACHE.write();
         *cache = Arc::new(detect_system_info());
-        cache.clone()
+        Arc::clone(&cache)
     }
 
     /// Get current memory information (always fresh)
@@ -145,7 +151,7 @@ static SYSTEM_INFO: std::sync::LazyLock<Arc<SystemInfo>> =
     std::sync::LazyLock::new(|| Arc::new(detect_system_info()));
 
 static SYSTEM_INFO_CACHE: std::sync::LazyLock<RwLock<Arc<SystemInfo>>> =
-    std::sync::LazyLock::new(|| RwLock::new(SYSTEM_INFO.clone()));
+    std::sync::LazyLock::new(|| RwLock::new(Arc::clone(&SYSTEM_INFO)));
 
 #[cfg(feature = "sysinfo")]
 pub(crate) static SYSINFO_SYSTEM: std::sync::LazyLock<RwLock<sysinfo::System>> =

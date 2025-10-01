@@ -26,7 +26,16 @@
       "Bash(do [ ! -f \"$dir/mod.rs\" ])",
       "Bash(touch:*)",
       "Bash(done)",
-      "Bash([ -f kind.rs ])"
+      "Bash([ -f kind.rs ])",
+      "Bash(cat:*)",
+      "Bash(timeout 120 cargo build -p nebula-memory)",
+      "Bash(git reset:*)",
+      "Bash(timeout 120 cargo build -p nebula-memory --all-features)",
+      "Bash(do [ -d \"$dir\" ])",
+      "Bash(python3:*)",
+      "Bash(perl:*)",
+      "Bash(awk:*)",
+      "Bash(1)"
     ],
     "deny": [],
     "ask": []

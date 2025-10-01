@@ -2247,6 +2247,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lz4_flex"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08ab2867e3eeeca90e844d1940eab391c9dc5228783db2ed999acbc0a9ed375a"
+
+[[package]]
 name = "mach2"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2540,14 +2546,18 @@ dependencies = [
 name = "nebula-memory"
 version = "0.1.0"
 dependencies = [
+ "backtrace",
  "cfg-if",
  "chrono",
  "criterion 0.5.1",
  "crossbeam-queue",
  "dyn-clone",
+ "futures",
+ "futures-core",
  "hashbrown 0.15.5",
  "heapless",
  "libc",
+ "lz4_flex",
  "nebula-core",
  "nebula-error",
  "nebula-log",
@@ -2557,6 +2567,8 @@ dependencies = [
  "proptest",
  "rand 0.8.5",
  "spin",
+ "tokio",
+ "winapi",
 ]
 
 [[package]]
@@ -2672,7 +2684,6 @@ dependencies = [
  "chrono",
  "dashmap 5.5.3",
  "futures",
- "nebula-resilience",
  "nebula-value",
  "pretty_assertions",
  "rand 0.8.5",

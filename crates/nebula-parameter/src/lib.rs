@@ -10,9 +10,6 @@ pub use types::*;
 // Re-export key types from nebula-core
 pub use nebula_core::prelude::{ParameterKey, KeyParseError};
 
-// Re-export validation utilities for convenience
-pub use core::validation_modern::utils;
-
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::core::{

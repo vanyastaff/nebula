@@ -1,10 +1,13 @@
-//! Array type for nebula-value
 //!
-//! This module provides an Array type that:
-//! - Uses persistent data structures (im::Vector) for efficient cloning
+//! - Length limits for DoS protection
 //! - O(log n) operations for most operations
 //! - Thread-safe via Arc
-//! - Length limits for DoS protection
+//! - Uses persistent data structures (im::Vector) for efficient cloning
+//! Array type for nebula-value
+//! This module provides an Array type that:
+pub mod builder;
+
+pub use builder::ArrayBuilder;
 
 use std::fmt;
 use std::hash::{Hash, Hasher};

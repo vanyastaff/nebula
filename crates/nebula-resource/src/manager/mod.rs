@@ -400,6 +400,7 @@ where
 impl<R> ResourceFactory for ResourceFactoryWrapper<R>
 where
     R: Resource + Send + Sync + 'static,
+    R::Config: serde::de::DeserializeOwned,
 {
     async fn create_instance(
         &self,

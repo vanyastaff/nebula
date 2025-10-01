@@ -10,7 +10,7 @@ validator! {
     }
     impl {
         fn check(value: &Value) -> bool {
-            { value.is_string() }
+            { value.is_text() }
         }
         fn error() -> String {
             { "Value must be a string".to_string() }

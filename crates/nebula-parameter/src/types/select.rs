@@ -98,12 +98,13 @@ impl HasValue for SelectParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|s| ParameterValue::Value(nebula_value::Value::String(s.clone().into())))
+        self.value.as_ref().map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
     }
 
-    fn set_parameter_value(&mut self, value: ParameterValue) -> Result<(), ParameterError> {
+    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+        let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::String(s)) => {
+            ParameterValue::Value(nebula_value::Value::Text(s)) => {
                 let string_value = s.to_string();
                 // Validate that the value is one of the available options
                 if self.is_valid_option(&string_value) {

@@ -379,11 +379,13 @@ impl From<NebulaError> for ResourceError {
 
 impl From<ResourceError> for NebulaError {
     fn from(error: ResourceError) -> Self {
-        // Convert ResourceError to appropriate NebulaError variant
-        NebulaError::new(nebula_error::ErrorKind::Resource {
-            message: error.to_string(),
-            resource_id: error.resource_id().unwrap_or("unknown").to_string(),
-            retryable: error.is_retryable(),
-        })
+        // Convert ResourceError to appropriate NebulaError System variant
+        use nebula_error::kinds::system::SystemError;
+
+        let sys_error = SystemError::ResourceExhausted {
+            resource: format!("{}: {}", error.resource_id().unwrap_or("unknown"), error),
+        };
+
+        NebulaError::new(nebula_error::ErrorKind::System(sys_error))
     }
 }
