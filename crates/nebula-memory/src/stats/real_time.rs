@@ -120,9 +120,7 @@ impl RealTimeMonitor {
         }
 
         if self.config.interval.is_zero() {
-            return Err(MemoryError::MonitorError {
-                message: "Monitoring interval cannot be zero when enabled".to_string(),
-            });
+            return Err(MemoryError::monitor_error("monitor error"));
         }
 
         let monitored_stats = Arc::clone(&self.monitored_stats);

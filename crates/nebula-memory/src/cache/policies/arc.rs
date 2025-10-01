@@ -125,21 +125,15 @@ impl ArcConfig {
     /// Validate the configuration
     pub fn validate(&self) -> MemoryResult<()> {
         if self.capacity == 0 {
-            return Err(crate::core::error::MemoryError::InvalidConfig {
-                reason: "capacity must be greater than 0".to_string(),
-            });
+            return Err(crate::core::error::MemoryError::invalid_config("configuration error"));
         }
 
         if !(0.0..=2.0).contains(&self.learning_rate) {
-            return Err(crate::core::error::MemoryError::InvalidConfig {
-                reason: "learning_rate must be between 0.0 and 2.0".to_string(),
-            });
+            return Err(crate::core::error::MemoryError::invalid_config("configuration error"));
         }
 
         if self.max_p > self.capacity {
-            return Err(crate::core::error::MemoryError::InvalidConfig {
-                reason: "max_p cannot exceed capacity".to_string(),
-            });
+            return Err(crate::core::error::MemoryError::invalid_config("configuration error"));
         }
 
         Ok(())

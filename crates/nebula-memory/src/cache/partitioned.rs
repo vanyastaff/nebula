@@ -146,15 +146,11 @@ impl PartitionedConfig {
         self.cache_config.validate()?;
 
         if self.partition_count == 0 {
-            return Err(MemoryError::InvalidConfig {
-                reason: "partition_count must be greater than 0".to_string(),
-            });
+            return Err(MemoryError::invalid_config("configuration error"));
         }
 
         if !(0.1..=1.0).contains(&self.rebalance_threshold) {
-            return Err(MemoryError::InvalidConfig {
-                reason: "rebalance_threshold must be between 0.1 and 1.0".to_string(),
-            });
+            return Err(MemoryError::invalid_config("configuration error"));
         }
 
         Ok(())

@@ -189,10 +189,7 @@ impl MemorySnapshot {
             SnapshotFormat::Text => Ok(self.format_text()),
             SnapshotFormat::Json => self.format_json(),
             SnapshotFormat::Csv => Ok(self.format_csv()),
-            SnapshotFormat::Binary => Err(MemoryError::NotSupported {
-                feature: "binary format",
-                context: Some("Binary serialization not implemented".to_string()),
-            }),
+            SnapshotFormat::Binary => Err(MemoryError::not_supported("not supported")),
         }
     }
 

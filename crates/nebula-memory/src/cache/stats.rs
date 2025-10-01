@@ -904,9 +904,7 @@ impl StatsCollector {
             stats.reset();
             Ok(())
         } else {
-            Err(MemoryError::InvalidArgument {
-                reason: format!("Cache '{}' not found", name),
-            })
+            Err(MemoryError::invalid_input("cache not found"))
         }
     }
 

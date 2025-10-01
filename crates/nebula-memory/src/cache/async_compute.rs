@@ -161,15 +161,11 @@ impl AsyncCacheConfig {
         self.cache_config.validate()?;
 
         if self.max_concurrent_computations == 0 {
-            return Err(MemoryError::InvalidConfig {
-                reason: "max_concurrent_computations must be greater than 0".to_string(),
-            });
+            return Err(MemoryError::invalid_config("configuration error"));
         }
 
         if self.max_batch_size == 0 {
-            return Err(MemoryError::InvalidConfig {
-                reason: "max_batch_size must be greater than 0".to_string(),
-            });
+            return Err(MemoryError::invalid_config("configuration error"));
         }
 
         Ok(())
