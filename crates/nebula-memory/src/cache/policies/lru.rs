@@ -915,8 +915,9 @@ where
         // Calculate sequential access ratio
         let mut sequential_count = 0;
         let unique_recent: std::collections::HashSet<_> = self.recent_accesses.iter().collect();
+        let recent_vec: Vec<_> = self.recent_accesses.iter().collect();
 
-        for window in self.recent_accesses.windows(2) {
+        for window in recent_vec.windows(2) {
             if window[0] == window[1] {
                 sequential_count += 1;
             }

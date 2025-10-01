@@ -759,7 +759,8 @@ where
 
         // Calculate sequential access ratio
         let mut sequential_count = 0;
-        for window in self.access_history.windows(2) {
+        let history_vec: Vec<_> = self.access_history.iter().collect();
+        for window in history_vec.windows(2) {
             if window[0] == window[1] {
                 sequential_count += 1;
             }

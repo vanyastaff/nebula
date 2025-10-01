@@ -251,8 +251,6 @@ where
     /// Create with capacity
     pub fn with_capacity(capacity: usize) -> Self {
         let mut policy = Self::new();
-        policy.lru = LruPolicy::with_capacity(capacity);
-        policy.lfu = LfuPolicy::with_capacity(capacity);
         policy.arc = ArcPolicy::with_capacity(capacity);
         policy
     }

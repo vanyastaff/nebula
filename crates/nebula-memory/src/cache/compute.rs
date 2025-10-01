@@ -477,7 +477,7 @@ where
         #[cfg(feature = "std")]
         {
             // True random using thread_rng
-            use rand::seq::IteratorRandom;
+            use rand::seq::SliceRandom;
             let keys: Vec<_> = self.entries.keys().cloned().collect();
             if let Some(key) = keys.choose(&mut rand::thread_rng()) {
                 self.entries.remove(key);
