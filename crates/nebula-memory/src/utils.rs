@@ -5,11 +5,14 @@
 //! - Size formatting utilities
 //! - Platform-specific helpers
 //! - Performance measurement tools
+//! - Checked arithmetic operations
 
 use core::sync::atomic::{compiler_fence, fence, Ordering};
 use core::{mem, ptr};
 #[cfg(feature = "std")]
 use std::time::{Duration, Instant};
+
+use crate::allocator::{AllocError, AllocResult};
 
 /// Aligns a value up to the nearest multiple of alignment
 ///
@@ -222,6 +225,96 @@ impl Drop for Timer {
         self.print();
     }
 }
+
+// ============================================================================
+// Checked Arithmetic for Overflow Safety
+// ============================================================================
+
+/// Extension trait for checked arithmetic operations that return AllocResult
+///
+/// This trait provides a consistent way to handle overflow/underflow in
+/// memory-related calculations throughout the crate.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_memory::utils::CheckedArithmetic;
+///
+/// let a: usize = 10;
+/// let b: usize = 20;
+///
+/// assert_eq!(a.try_add(b).unwrap(), 30);
+/// assert!(usize::MAX.try_add(1).is_err());
+/// ```
+pub trait CheckedArithmetic: Sized {
+    /// Checked addition. Returns AllocError on overflow.
+    fn try_add(self, rhs: Self) -> AllocResult<Self>;
+
+    /// Checked subtraction. Returns AllocError on underflow.
+    fn try_sub(self, rhs: Self) -> AllocResult<Self>;
+
+    /// Checked multiplication. Returns AllocError on overflow.
+    fn try_mul(self, rhs: Self) -> AllocResult<Self>;
+
+    /// Checked division. Returns AllocError on division by zero.
+    fn try_div(self, rhs: Self) -> AllocResult<Self>;
+}
+
+impl CheckedArithmetic for usize {
+    #[inline]
+    fn try_add(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_add(rhs)
+            .ok_or_else(|| AllocError::size_overflow())
+    }
+
+    #[inline]
+    fn try_sub(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_sub(rhs)
+            .ok_or_else(|| AllocError::size_overflow())
+    }
+
+    #[inline]
+    fn try_mul(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_mul(rhs)
+            .ok_or_else(|| AllocError::size_overflow())
+    }
+
+    #[inline]
+    fn try_div(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_div(rhs)
+            .ok_or_else(|| AllocError::invalid_input("division by zero"))
+    }
+}
+
+impl CheckedArithmetic for isize {
+    #[inline]
+    fn try_add(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_add(rhs)
+            .ok_or_else(|| AllocError::size_overflow())
+    }
+
+    #[inline]
+    fn try_sub(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_sub(rhs)
+            .ok_or_else(|| AllocError::size_overflow())
+    }
+
+    #[inline]
+    fn try_mul(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_mul(rhs)
+            .ok_or_else(|| AllocError::size_overflow())
+    }
+
+    #[inline]
+    fn try_div(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_div(rhs)
+            .ok_or_else(|| AllocError::invalid_input("division by zero"))
+    }
+}
+
+// ============================================================================
+// Platform Information
+// ============================================================================
 
 /// Platform information
 ///

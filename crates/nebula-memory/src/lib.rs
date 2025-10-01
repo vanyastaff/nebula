@@ -138,6 +138,9 @@ pub mod prelude {
 
     #[cfg(all(feature = "std", feature = "monitoring"))]
     pub use crate::monitoring::{MemoryMonitor, MonitoringConfig, PressureAction, IntegratedStats};
+
+    // Utility traits for safe arithmetic
+    pub use crate::utils::CheckedArithmetic;
 }
 
 // Re-export allocator types at crate root for convenience

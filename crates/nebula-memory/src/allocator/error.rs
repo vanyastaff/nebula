@@ -32,7 +32,11 @@ use nebula_log::{error, warn, debug};
 // ============================================================================
 
 /// Allocator-specific error codes following nebula-error patterns
+///
+/// This enum is marked as `#[non_exhaustive]` to allow adding new error codes
+/// in the future without breaking API compatibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum AllocErrorCode {
     /// General allocation failure (out of memory)
     OutOfMemory,
