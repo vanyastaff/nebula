@@ -1,6 +1,5 @@
 //! Checkpoint and scoping support for bump allocator
 
-use crate::allocator::AllocResult;
 use super::BumpAllocator;
 
 /// Checkpoint for saving/restoring allocator state

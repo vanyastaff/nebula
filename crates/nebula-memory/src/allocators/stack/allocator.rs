@@ -177,7 +177,7 @@ impl StackAllocator {
     /// # Safety
     /// - The pointer must have been allocated by this allocator
     /// - The layout must match the original allocation layout
-    pub unsafe fn try_pop(&self, ptr: NonNull<u8>, layout: Layout) -> bool {
+    pub unsafe fn try_pop(&self, ptr: NonNull<u8>, layout: Layout) -> bool { unsafe {
         let current_top = self.top.load(Ordering::Acquire);
         let expected_start = current_top.saturating_sub(layout.size());
 
@@ -201,7 +201,7 @@ impl StackAllocator {
             // Not the most recent allocation, cannot pop
             false
         }
-    }
+    }}
 
     /// Aligns a size up to the specified alignment
     #[inline]

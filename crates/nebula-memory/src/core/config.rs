@@ -4,6 +4,11 @@
 //! components in the nebula-memory crate, following nebula patterns.
 
 use core::fmt;
+
+#[cfg(feature = "std")]
+use std::time::Duration;
+
+#[cfg(not(feature = "std"))]
 use core::time::Duration;
 
 use super::error::{MemoryError, MemoryResult};

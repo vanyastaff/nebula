@@ -8,7 +8,7 @@
 //! - Checked arithmetic operations
 
 use core::sync::atomic::{compiler_fence, fence, Ordering};
-use core::{mem, ptr};
+use core::ptr;
 #[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 

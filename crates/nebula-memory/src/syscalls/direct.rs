@@ -495,7 +495,7 @@ pub fn get_memory_page_info(addr: *const u8) -> io::Result<MemoryPageInfo> {
     {
         use winapi::um::memoryapi::VirtualQuery;
         use winapi::um::winnt::{
-            MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_EXECUTE, PAGE_EXECUTE_READ,
+            MEMORY_BASIC_INFORMATION, PAGE_EXECUTE, PAGE_EXECUTE_READ,
             PAGE_EXECUTE_READWRITE, PAGE_READONLY, PAGE_READWRITE,
         };
 

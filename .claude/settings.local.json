@@ -36,7 +36,8 @@
       "Bash(perl:*)",
       "Bash(awk:*)",
       "Bash(1)",
-      "Bash(do)"
+      "Bash(do)",
+      "Bash(cargo fix:*)"
     ],
     "deny": [],
     "ask": []
