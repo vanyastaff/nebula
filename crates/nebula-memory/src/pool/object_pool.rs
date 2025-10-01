@@ -269,15 +269,10 @@ impl<T: Poolable> ObjectPool<T> {
     }
 
     /// Get pool statistics
+    /// Note: This method is only available with the "stats" feature enabled
     #[cfg(feature = "stats")]
     pub fn stats(&self) -> &PoolStats {
         &self.stats
-    }
-
-    /// Get pool statistics (empty stats when feature is disabled)
-    #[cfg(not(feature = "stats"))]
-    pub fn stats(&self) -> PoolStats {
-        PoolStats::default()
     }
 
     /// Update memory statistics

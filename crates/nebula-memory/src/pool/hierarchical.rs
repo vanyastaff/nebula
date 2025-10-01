@@ -159,6 +159,7 @@ impl<T: Poolable> HierarchicalPool<T> {
     }
 
     /// Get statistics for entire hierarchy
+    #[cfg(feature = "stats")]
     pub fn hierarchy_stats(&self) -> HierarchyStats {
         // Получаем ссылку на stats для преобразования
         let stats = self.local.stats();
@@ -206,6 +207,7 @@ pub struct PoolStatsSnapshot {
     pub hit_rate: f64,
 }
 
+#[cfg(feature = "stats")]
 impl From<&PoolStats> for PoolStatsSnapshot {
     fn from(_stats: &PoolStats) -> Self {
         Self {
@@ -216,6 +218,7 @@ impl From<&PoolStats> for PoolStatsSnapshot {
     }
 }
 
+#[cfg(feature = "stats")]
 impl From<PoolStats> for PoolStatsSnapshot {
     fn from(stats: PoolStats) -> Self {
         Self::from(&stats)
