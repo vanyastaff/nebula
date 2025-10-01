@@ -564,9 +564,14 @@ where
     }
 
     /// Simple hash function for probabilistic operations
-    fn simple_hash(&self, key: &K) -> u64 {
-        // Simplified hash - in production you'd use a proper hash function
-        format!("{:?}", key).len() as u64 * 2654435761
+    fn simple_hash(&self, key: &K) -> u64
+    where
+        K: core::hash::Hash,
+    {
+        use core::hash::Hasher;
+        let mut hasher = hashbrown::hash_map::DefaultHashBuilder::default().build_hasher();
+        key.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Add key to frequency bucket

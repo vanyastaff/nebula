@@ -255,7 +255,10 @@ impl CircuitBreaker {
 }
 
 /// Future that waits for a computation to complete
-pub struct ComputationFuture<V> {
+pub struct ComputationFuture<V>
+where
+    V: Clone + Send + Sync,
+{
     key: String,
     cache: Weak<AsyncComputeCacheInner<V>>,
     registered: bool,

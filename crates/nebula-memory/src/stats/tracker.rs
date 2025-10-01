@@ -53,7 +53,7 @@ pub struct MemoryTracker {
 impl MemoryTracker {
     /// Create new memory tracker
     pub fn new(config: TrackingConfig) -> Self {
-        let mut metric_history = hashbrown::HashMap::default();
+        let mut metric_history: hashbrown::HashMap<TrackedMetric, VecDeque<DataPoint>> = hashbrown::HashMap::new();
         let max_history = config.max_history;
 
         // Initialize history for each tracked metric

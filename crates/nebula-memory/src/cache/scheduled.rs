@@ -220,7 +220,6 @@ pub struct SchedulerStats {
 }
 
 /// Task execution entry
-#[derive(Debug)]
 struct TaskEntry<K, V> {
     task: Box<dyn ScheduledTask<K, V>>,
     next_run: SystemTime,
