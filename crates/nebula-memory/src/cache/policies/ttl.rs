@@ -22,7 +22,7 @@ use {
     hashbrown::HashMap,
 };
 
-use super::{EvictionPolicy, VictimSelector, adaptive::EvictionEntry};
+use super::{EvictionEntry, EvictionPolicy, VictimSelector};
 use crate::cache::compute::{CacheEntry, CacheKey};
 
 /// TTL (Time To Live) cache eviction policy
@@ -36,8 +36,6 @@ where K: CacheKey
     /// Insertion times for entries
     #[cfg(feature = "std")]
     insertion_times: HashMap<K, Instant>,
-    /// Fallback policy for when no entries have expired
-    fallback_policy: Box<dyn EvictionPolicy<K, CacheEntry<()>>>,
 }
 
 impl<K> TtlPolicy<K>
@@ -50,7 +48,6 @@ where K: CacheKey
             custom_ttls: HashMap::new(),
             #[cfg(feature = "std")]
             insertion_times: HashMap::new(),
-            fallback_policy: Box::new(super::LruPolicy::new()),
         }
     }
 
@@ -99,19 +96,19 @@ where K: CacheKey + Send + Sync
             let mut oldest_key = None;
             let mut oldest_time = now;
             
-            for (key, _) in entries {
-                if let Some(insert_time) = self.insertion_times.get(*key) {
-                    let ttl = self.custom_ttls.get(*key).unwrap_or(&self.default_ttl);
-                    
+            for &(key, _) in entries {
+                if let Some(insert_time) = self.insertion_times.get(key) {
+                    let ttl = self.custom_ttls.get(key).unwrap_or(&self.default_ttl);
+
                     // Проверяем, истек ли срок действия
                     if now.duration_since(*insert_time) >= *ttl {
-                        return Some((*key).clone());
+                        return Some(key.clone());
                     }
-                    
+
                     // Запоминаем самую старую запись для возможного использования позже
                     if *insert_time < oldest_time {
                         oldest_time = *insert_time;
-                        oldest_key = Some((*key).clone());
+                        oldest_key = Some(key.clone());
                     }
                 }
             }
@@ -123,13 +120,9 @@ where K: CacheKey + Send + Sync
         }
         
         // Если нет просроченных записей или не поддерживается std,
-        // используем запасную политику
-        let fallback_entries: Vec<(&K, &CacheEntry<()>)> = entries
-            .iter()
-            .map(|(k, _)| (*k, &CacheEntry::new(())))
-            .collect();
-        
-        self.fallback_policy.as_victim_selector().select_victim(&fallback_entries)
+        // используем запасную политику (temporarily stubbed)
+        // TODO: Fix fallback policy integration - type mismatch with CacheEntry<()>
+        None
     }
 }
 
@@ -138,11 +131,7 @@ where K: CacheKey + Send + Sync
 {
     fn record_access(&mut self, key: &K) {
         // TTL policy doesn't change based on access
-        #[cfg(feature = "std")]
-        {
-            // Но передаем доступ запасной политике
-            self.fallback_policy.record_access(key);
-        }
+        let _ = key;
     }
 
     fn record_insertion(&mut self, key: &K, _entry: &CacheEntry<V>) {
@@ -150,10 +139,9 @@ where K: CacheKey + Send + Sync
         {
             // Запоминаем время вставки
             self.insertion_times.insert(key.clone(), Instant::now());
-            
-            // Передаем вставку запасной политике
-            let fallback_entry = CacheEntry::new(());
-            self.fallback_policy.record_insertion(key, &fallback_entry);
+
+            // TODO: Fix fallback policy integration - type mismatch
+            // self.fallback_policy.record_insertion(key, &fallback_entry);
         }
     }
 
@@ -162,10 +150,9 @@ where K: CacheKey + Send + Sync
         {
             // Удаляем информацию о времени вставки
             self.insertion_times.remove(key);
-            
-            // Передаем удаление запасной политике
-            self.fallback_policy.record_removal(key);
         }
+        #[cfg(not(feature = "std"))]
+        let _ = key;
     }
 
     fn as_victim_selector(&self) -> &dyn VictimSelector<K, V> {

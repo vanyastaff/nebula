@@ -75,11 +75,7 @@ unsafe impl Allocator for SystemAllocator {
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
         if layout.size() == 0 {
             // Handle zero-sized allocations by returning a well-aligned dangling pointer
-            #[cfg(feature = "nightly")]
-            let ptr = layout.dangling();
-            #[cfg(not(feature = "nightly"))]
             let ptr = NonNull::<u8>::dangling();
-
             return Ok(NonNull::slice_from_raw_parts(ptr, 0));
         }
 

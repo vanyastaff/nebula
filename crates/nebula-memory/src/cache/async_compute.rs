@@ -253,7 +253,7 @@ impl CircuitBreaker {
 /// Future that waits for a computation to complete
 pub struct ComputationFuture<V>
 where
-    V: Clone + Send + Sync,
+    V: Clone + Send + Sync + 'static,
 {
     key: String,
     cache: Weak<AsyncComputeCacheInner<V>>,
@@ -389,7 +389,7 @@ where
 
         // First, try to get from cache
         {
-            let cache = self.inner.cache.read().await;
+            let mut cache = self.inner.cache.write().await;
             if let Some(value) = cache.get(&key_str) {
                 self.inner.stats.record_hit(Some(start_time.elapsed().as_nanos() as u64));
 
@@ -517,7 +517,7 @@ where
 
         // First pass: check cache for all keys
         {
-            let cache = self.inner.cache.read().await;
+            let mut cache = self.inner.cache.write().await;
             for key in &keys {
                 let key_str = format!("{:?}", key);
                 if let Some(value) = cache.get(&key_str) {
@@ -771,7 +771,7 @@ pub struct AsyncCacheBuilder<K, V> {
 
 impl<K, V> AsyncCacheBuilder<K, V>
 where
-    K: CacheKey + Send + Sync + 'static,
+    K: CacheKey + Send + Sync + std::fmt::Debug + 'static,
     V: Clone + Send + Sync + 'static,
 {
     /// Create a new cache builder

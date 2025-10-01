@@ -794,10 +794,11 @@ where
 
     fn segmented_access(&mut self, segments: &mut Vec<LruSegment<K>>, key: &K, size_hint: Option<usize>) {
         // Find the segment containing the key and potentially promote
+        let segments_len = segments.len();
         for (i, segment) in segments.iter_mut().enumerate() {
             if segment.access(key) {
                 // Check if should promote to higher segment
-                if i < segments.len() - 1 && segment.should_promote(key) {
+                if i < segments_len - 1 && segment.should_promote(key) {
                     if segment.remove(key) {
                         let size = size_hint.unwrap_or(0);
                         segments[i + 1].insert(key.clone(), size);
@@ -833,9 +834,10 @@ where
             // Check if hot list has capacity
             if hot_list.len() >= hot_capacity {
                 if let Some(demoted) = hot_list.pop_back() {
-                    hot_map.remove(&demoted.key);
+                    let demoted_key = demoted.key.clone();
+                    hot_map.remove(&demoted_key);
                     let cold_node_ptr = cold_list.push_front(demoted);
-                    cold_map.insert(cold_node_ptr.clone(), cold_node_ptr);
+                    cold_map.insert(demoted_key, cold_node_ptr);
                 }
             }
 

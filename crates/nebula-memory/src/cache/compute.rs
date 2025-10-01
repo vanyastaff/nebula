@@ -334,8 +334,7 @@ where
     where F: Fn(&K) -> Result<V, MemoryError> {
         keys.into_iter()
             .map(|key| {
-                let key_ref = &key;
-                self.get_or_compute(key, || compute_fn(key_ref))
+                self.get_or_compute(key.clone(), || compute_fn(&key))
             })
             .collect()
     }
@@ -345,8 +344,7 @@ where
     where F: Fn(&K) -> Result<V, MemoryError> {
         for key in keys {
             if !self.contains_key(&key) {
-                let key_ref = &key;
-                self.get_or_compute(key, || compute_fn(key_ref))?;
+                self.get_or_compute(key.clone(), || compute_fn(&key))?;
             }
         }
         Ok(())

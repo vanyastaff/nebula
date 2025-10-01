@@ -192,13 +192,13 @@ impl MemoryBudget {
     
     /// Create a new memory budget with a parent
     pub fn with_parent(config: BudgetConfig, parent: Arc<MemoryBudget>) -> Arc<Self> {
-        let budget = Self::new(config);
-        
+        let mut budget = Self::new(config);
+
         // Set parent and add self to parent's children
-        let mut budget_mut = Arc::get_mut(&budget).unwrap();
+        let budget_mut = Arc::get_mut(&mut budget).unwrap();
         budget_mut.parent = Some(parent.clone());
         parent.children.lock().unwrap().push(Arc::downgrade(&budget));
-        
+
         budget
     }
     

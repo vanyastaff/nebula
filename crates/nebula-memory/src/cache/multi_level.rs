@@ -203,7 +203,7 @@ impl MultiLevelStats {
         self.level_hits
             .iter()
             .enumerate()
-            .max_by_key(|(_, &hits)| hits)
+            .max_by_key(|(_, hits)| *hits)
             .map(|(idx, _)| idx)
     }
 
@@ -570,8 +570,7 @@ where
     {
         keys.into_iter()
             .map(|key| {
-                let key_ref = &key;
-                self.get_or_compute(key, || compute_fn(key_ref))
+                self.get_or_compute(key.clone(), || compute_fn(&key))
             })
             .collect()
     }

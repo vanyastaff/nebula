@@ -380,7 +380,7 @@ where
 
         // Try read lock first for cache hit
         {
-            let mut cache = partition.read().unwrap();
+            let mut cache = partition.write().unwrap();
             if let Some(value) = cache.get(&key) {
                 #[cfg(feature = "std")]
                 if self.config.partition_metrics {
@@ -428,7 +428,7 @@ where
         let partition_idx = self.get_partition_index(key);
         let partition = &self.partitions[partition_idx];
 
-        let mut cache = partition.read().unwrap();
+        let mut cache = partition.write().unwrap();
         let result = cache.get(key);
 
         #[cfg(feature = "std")]
@@ -495,8 +495,7 @@ where
     {
         keys.into_iter()
             .map(|key| {
-                let key_ref = &key;
-                self.get_or_compute(key, || compute_fn(key_ref))
+                self.get_or_compute(key.clone(), || compute_fn(&key))
             })
             .collect()
     }
