@@ -107,7 +107,7 @@ impl MemoryMonitor {
                     memory_info.pressure,
                     self.pressure_change_count,
                     memory_info.usage_percent
-                ).log("memory_monitor");
+                );
             }
 
             self.last_pressure = memory_info.pressure;
@@ -156,21 +156,21 @@ impl MemoryMonitor {
                     memory_info.usage_percent,
                     memory::format_bytes(memory_info.used),
                     memory::format_bytes(memory_info.total)
-                ).log("memory_monitor");
+                );
             }
             PressureAction::ReduceAllocations => {
                 #[cfg(feature = "logging")]
                 warn!(
                     "High memory pressure: reducing allocation limits. Current: {:.1}% used",
                     memory_info.usage_percent
-                ).log("memory_monitor");
+                );
             }
             PressureAction::ForceCleanup => {
                 #[cfg(feature = "logging")]
                 warn!(
                     "Forcing memory cleanup due to high pressure: {:.1}% used",
                     memory_info.usage_percent
-                ).log("memory_monitor");
+                );
                 // Note: actual cleanup would be implemented by the calling allocator
             }
             PressureAction::DenyLargeAllocations => {
@@ -178,14 +178,14 @@ impl MemoryMonitor {
                 warn!(
                     "Denying large allocations due to memory pressure: {:.1}% used",
                     memory_info.usage_percent
-                ).log("memory_monitor");
+                );
             }
             PressureAction::Emergency => {
                 #[cfg(feature = "logging")]
                 error!(
                     "EMERGENCY: Critical memory pressure at {:.1}% usage. Minimizing allocations.",
                     memory_info.usage_percent
-                ).log("memory_monitor");
+                );
             }
         }
         Ok(())
@@ -211,7 +211,7 @@ impl MemoryMonitor {
                 memory::format_bytes(size),
                 memory_info.usage_percent,
                 action
-            ).log("memory_monitor");
+            );
         }
 
         Ok(allowed)
