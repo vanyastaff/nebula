@@ -209,7 +209,7 @@ impl<T: Poolable> ObjectPool<T> {
             let current = self.objects.len();
             let new_total = current.saturating_add(additional);
             if new_total > max {
-                return Err(MemoryError::BudgetExceeded { limit: max, requested: new_total });
+                return Err(MemoryError::budget_exceeded());
             }
         }
 

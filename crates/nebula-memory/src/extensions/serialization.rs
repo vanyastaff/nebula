@@ -248,7 +248,7 @@ impl Serializer for JsonSerializer {
                     let content = json[1..json.len() - 1].to_string();
                     Ok(Box::new(StringValue(content)))
                 } else {
-                    Err(MemoryError::InvalidConfig { reason: "Expected JSON string".to_string() })
+                    Err(MemoryError::invalid_config("configuration error"))
                 }
             },
             "number" => {
@@ -260,13 +260,13 @@ impl Serializer for JsonSerializer {
             "boolean" => match json {
                 "true" => Ok(Box::new(BooleanValue(true))),
                 "false" => Ok(Box::new(BooleanValue(false))),
-                _ => Err(MemoryError::InvalidConfig { reason: "Invalid JSON boolean".to_string() }),
+                _ => Err(MemoryError::invalid_config("configuration error")),
             },
             "null" => {
                 if json == "null" {
                     Ok(Box::new(NullValue))
                 } else {
-                    Err(MemoryError::InvalidConfig { reason: "Expected JSON null".to_string() })
+                    Err(MemoryError::invalid_config("configuration error"))
                 }
             },
             _ => Err(MemoryError::NotSupported {

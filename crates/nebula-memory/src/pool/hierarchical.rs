@@ -136,10 +136,7 @@ impl<T: Poolable> HierarchicalPool<T> {
             });
         }
 
-        Err(MemoryError::PoolExhausted {
-            type_name: std::any::type_name::<T>(),
-            pool_size: 0 // Используем 0, так как здесь нет конкретного размера пула
-        })
+        Err(MemoryError::pool_exhausted())
     }
 
     /// Return object to pool

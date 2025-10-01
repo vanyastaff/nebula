@@ -35,7 +35,8 @@
       "Bash(python3:*)",
       "Bash(perl:*)",
       "Bash(awk:*)",
-      "Bash(1)"
+      "Bash(1)",
+      "Bash(do)"
     ],
     "deny": [],
     "ask": []
