@@ -284,10 +284,7 @@ impl MemoryBudget {
             let mut stats = self.stats.lock().unwrap();
             stats.failed += 1;
             
-            return Err(MemoryError::allocation_failed(
-                format!("Budget '{}' limit exceeded: requested {} bytes, available {} bytes",
-                    config.name, size, effective_limit - *used)
-            ));
+            return Err(MemoryError::allocation_failed());
         }
         
         // Update parent budget if needed

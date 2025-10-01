@@ -411,11 +411,11 @@ impl<K, V> VictimSelector<K, V> for AdaptivePolicy<K, V>
 where
     K: CacheKey,
 {
-    fn select_victim(&self, entries: &[EvictionEntry<K, V>]) -> Option<K> {
+    fn select_victim(&self, _entries: &[EvictionEntry<K, V>]) -> Option<K> {
         match self.active_policy {
-            PolicyType::LRU => self.lru.select_victim(entries),
-            PolicyType::LFU => self.lfu.select_victim(entries),
-            PolicyType::ARC => self.arc.select_victim(entries),
+            PolicyType::LRU => self.lru.select_victim(),
+            PolicyType::LFU => self.lfu.select_victim(),
+            PolicyType::ARC => self.arc.select_victim(),
         }
     }
 }
