@@ -42,7 +42,7 @@ macro_rules! arena_alloc {
 #[macro_export]
 macro_rules! try_arena_alloc {
     ($arena:expr, $($value:expr),+ $(,)?) => {{
-        (|| -> Result<_, $crate::error::MemoryError> {
+        (|| -> Result<_, $crate::core::error::MemoryError> {
             Ok(($(
                 $arena.alloc($value)?
             ),+))
@@ -327,21 +327,21 @@ macro_rules! arena_alloc_or {
 macro_rules! impl_arena_alloc {
     ($type:ty) => {
         impl $type {
-            pub fn alloc<T>(&self, value: T) -> Result<&mut T, $crate::error::MemoryError> {
+            pub fn alloc<T>(&self, value: T) -> Result<&mut T, $crate::core::error::MemoryError> {
                 self.arena.alloc(value)
             }
 
             pub fn alloc_slice<T>(
                 &self,
                 slice: &[T],
-            ) -> Result<&mut [T], $crate::error::MemoryError>
+            ) -> Result<&mut [T], $crate::core::error::MemoryError>
             where
                 T: Copy,
             {
                 self.arena.alloc_slice(slice)
             }
 
-            pub fn alloc_str(&self, s: &str) -> Result<&str, $crate::error::MemoryError> {
+            pub fn alloc_str(&self, s: &str) -> Result<&str, $crate::core::error::MemoryError> {
                 self.arena.alloc_str(s)
             }
         }

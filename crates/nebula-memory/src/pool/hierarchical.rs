@@ -319,7 +319,7 @@ mod tests {
         {
             let mut parent_guard = parent.lock().unwrap();
             let obj = parent_guard.get().unwrap();
-            assert_eq!(*obj.value, 0); // Reset
+            assert_eq!(obj.value, 0); // Reset
             assert!(!obj.is_borrowed());
         }
 

@@ -345,7 +345,7 @@ mod tests {
 
         // Should get newest object first (LIFO within TTL)
         let obj = pool.get().unwrap();
-        assert_eq!(*obj.value, 0); // Reset value
+        assert_eq!(obj.value, 0); // Reset value
 
         // Age should be minimal for newest
         assert!(pool.oldest_age().unwrap() >= Duration::from_millis(10));

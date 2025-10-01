@@ -339,7 +339,7 @@ mod tests {
             let arena = Arc::clone(&arena);
             handles.push(thread::spawn(move || {
                 let val = arena.alloc(i).unwrap();
-                assert_eq!(**val, i);
+                assert_eq!(*val, i);
             }));
         }
 

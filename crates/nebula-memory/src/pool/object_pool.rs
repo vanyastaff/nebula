@@ -370,13 +370,13 @@ impl<T: Poolable> Deref for PooledValue<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &self.value
+        &*self.value
     }
 }
 
 impl<T: Poolable> DerefMut for PooledValue<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.value
+        &mut *self.value
     }
 }
 
@@ -427,7 +427,7 @@ mod tests {
 
         // Get object
         let mut obj = pool.get().unwrap();
-        assert_eq!(*obj.value, 0); // Should be reset
+        assert_eq!(obj.value, 0); // Should be reset
         obj.value = 100;
 
         // Return happens on drop

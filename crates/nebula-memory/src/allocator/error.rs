@@ -724,6 +724,6 @@ mod tests {
     fn test_error_code_conversion() {
         let code = AllocErrorCode::OutOfMemory;
 
-        assert_eq!(new_code, AllocErrorCode::OutOfMemory);
+        assert_eq!(code, AllocErrorCode::OutOfMemory);
     }
 }

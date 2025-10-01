@@ -430,13 +430,13 @@ mod tests {
             let id2 = manager.register(system2);
 
             manager.set_active_allocator(id1).unwrap();
-            assert_eq!(manager.get_active_allocator_id(), id1);
+            assert_eq!(manager.get_active_allocator_id(), Some(id1));
 
             manager.with_allocator(id2, || {
-                assert_eq!(manager.get_active_allocator_id(), id2);
+                assert_eq!(manager.get_active_allocator_id(), Some(id2));
             });
 
-            assert_eq!(manager.get_active_allocator_id(), id1);
+            assert_eq!(manager.get_active_allocator_id(), Some(id1));
         }
     }
 
