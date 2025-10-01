@@ -92,6 +92,11 @@ pub mod stats;
 #[cfg_attr(docsrs, doc(cfg(feature = "budget")))]
 pub mod budget;
 
+// Async support
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+pub mod async_support;
+
 // Streaming module not yet implemented
 // #[cfg(feature = "streaming")]
 // #[cfg_attr(docsrs, doc(cfg(feature = "streaming")))]
