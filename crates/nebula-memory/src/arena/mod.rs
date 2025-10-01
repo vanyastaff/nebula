@@ -296,15 +296,9 @@ impl ArenaConfig {
     }
 
     /// Creates config from global memory configuration
-    pub fn from_memory_config(config: &crate::core::config::MemoryConfig) -> Self {
-        #[cfg(feature = "arena")]
-        {
-            config.arena.clone()
-        }
-        #[cfg(not(feature = "arena"))]
-        {
-            Self::default()
-        }
+    pub fn from_memory_config(_config: &crate::core::config::MemoryConfig) -> Self {
+        // TODO: Proper mapping between core::config::ArenaConfig and arena::ArenaConfig
+        Self::default()
     }
 
     /// Sets initial chunk size
