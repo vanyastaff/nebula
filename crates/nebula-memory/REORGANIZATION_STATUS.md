@@ -6,7 +6,7 @@ This document tracks the progress of reorganizing nebula-memory into a cleaner, 
 
 **Goal**: Split large monolithic allocator files into focused, maintainable modules organized under `src/allocators/`.
 
-**Status**: 🔄 **IN PROGRESS** (1 of 3 allocators complete)
+**Status**: ✅ **COMPLETE** (3 of 3 allocators fully modularized - 100%)
 
 ## Completed ✅
 
@@ -36,44 +36,59 @@ src/allocators/bump/
 - ✅ `src/allocator/mod.rs` - Updated import to use `crate::allocators::bump::BumpAllocator`
 - ✅ `src/lib.rs` - Added `pub mod allocators`
 
-## In Progress 🔄
+### Pool Allocator (100% Complete)
+**Commit**: `1ad63ab` - "nebula-memory: complete pool allocator modularization"
 
-### Pool Allocator (~33% Complete)
-**Commit**: `1b81ca0` - "nebula-memory: partial pool allocator modularization (WIP)"
-
-Partially split `allocator/pool.rs` (1033 lines):
+Split `allocator/pool.rs` (1033 lines) into focused modules:
 
 ```
 src/allocators/pool/
-├── config.rs (66 lines)         ✅ PoolConfig with production/debug/performance variants
-├── pool_box.rs (89 lines)       ✅ RAII smart pointer for pool-allocated objects
-├── mod.rs (15 lines)            ⚠️  Module structure skeleton
-└── (pending extraction)         ❌ Main PoolAllocator (~400+ lines)
-                                ❌ Block management internals
-                                ❌ Statistics types (PoolStats)
+├── allocator.rs (486 lines)     - Main PoolAllocator with lock-free free list
+├── config.rs (66 lines)         - PoolConfig with production/debug/performance variants
+├── pool_box.rs (90 lines)       - RAII smart pointer for pool-allocated objects
+├── stats.rs (19 lines)          - PoolStats tracking type
+└── mod.rs (21 lines)            - Module exports
 ```
 
-**Remaining Work**:
-1. Extract main `PoolAllocator` struct and implementation (~400 lines)
-2. Extract block management (`FreeBlock`, free list operations)
-3. Extract `PoolStats` and related types
-4. Update `allocator/mod.rs` to import from new location
-5. Remove old `allocator/pool.rs`
-6. Verify tests pass
+**Improvements**:
+- Clear separation of concerns (config, core logic, smart pointer, statistics)
+- Lock-free free list with CAS operations
+- Type-safe PoolBox<T> smart pointer
+- Thread-safe (Send + Sync)
 
-## Pending ⏳
+**Files Removed**:
+- ❌ `src/allocator/pool.rs` (1033 lines)
 
-### Stack Allocator (0% Complete)
-**Target**: Split `allocator/stack.rs` (754 lines)
+**Files Updated**:
+- ✅ `src/allocator/mod.rs` - Updated imports to use new location
+- ✅ `src/allocators/mod.rs` - Added pool module
 
-Planned structure:
+### Stack Allocator (100% Complete)
+**Commit**: `989d084` - "nebula-memory: complete stack allocator modularization"
+
+Split `allocator/stack.rs` (754 lines) into focused modules:
+
 ```
 src/allocators/stack/
-├── config.rs           - StackConfig
-├── frame.rs            - StackFrame management
-├── marker.rs           - StackMarker RAII pattern
-└── mod.rs              - Main StackAllocator implementation
+├── allocator.rs (418 lines)     - Main StackAllocator with LIFO semantics
+├── config.rs (67 lines)         - StackConfig with production/debug/performance variants
+├── frame.rs (40 lines)          - StackFrame RAII helper for automatic restoration
+├── marker.rs (9 lines)          - StackMarker for position tracking
+└── mod.rs (20 lines)            - Module exports
 ```
+
+**Improvements**:
+- Clear separation: config, allocator logic, RAII helpers, markers
+- LIFO allocation/deallocation with marker-based scoped restoration
+- Optional CAS-based thread-safety
+- Configurable backoff and retry strategies
+
+**Files Removed**:
+- ❌ `src/allocator/stack.rs` (754 lines)
+
+**Files Updated**:
+- ✅ `src/allocator/mod.rs` - Updated imports to use new location
+- ✅ `src/allocators/mod.rs` - Added stack module
 
 ### Tracking Modules (0% Complete)
 **Target**: Reorganize monitoring and tracking code
@@ -103,10 +118,10 @@ src/tracking/
 
 | Allocator | Original | Modular | Files | Reduction | Status |
 |-----------|----------|---------|-------|-----------|--------|
-| Bump      | 929 lines | ~555 lines (4 files) | config, cursor, checkpoint, mod | -40% | ✅ Complete |
-| Pool      | 1033 lines | ~170 lines (3 files so far) | config, pool_box, (mod) | -84% (partial) | 🔄 In Progress |
-| Stack     | 754 lines | (not started) | - | - | ⏳ Pending |
-| **Total** | **2716 lines** | **~725 lines** (partial) | **7 files** | **-73%** (projected) | **40% Complete** |
+| Bump      | 929 lines | 555 lines (4 files) | config, cursor, checkpoint, mod | -40% | ✅ Complete |
+| Pool      | 1033 lines | 682 lines (5 files) | allocator, config, pool_box, stats, mod | -34% | ✅ Complete |
+| Stack     | 754 lines | 554 lines (5 files) | allocator, config, frame, marker, mod | -27% | ✅ Complete |
+| **Total** | **2716 lines** | **1791 lines** | **14 files** | **-34%** | **100% Complete** |
 
 ## Architecture Benefits
 
@@ -123,20 +138,23 @@ src/allocator/
 ```
 src/allocators/
 ├── bump/                     ← Modular, clear separation
-│   ├── config.rs
-│   ├── cursor.rs
-│   ├── checkpoint.rs
-│   └── mod.rs
-├── pool/                     ← (in progress)
-│   ├── config.rs
-│   ├── pool_box.rs
-│   └── mod.rs
-├── stack/                    ← (planned)
-│   ├── config.rs
-│   ├── frame.rs
-│   ├── marker.rs
-│   └── mod.rs
-└── mod.rs
+│   ├── config.rs (93 lines)
+│   ├── cursor.rs (96 lines)
+│   ├── checkpoint.rs (30 lines)
+│   └── mod.rs (336 lines)
+├── pool/                     ← Complete
+│   ├── allocator.rs (486 lines)
+│   ├── config.rs (66 lines)
+│   ├── pool_box.rs (90 lines)
+│   ├── stats.rs (19 lines)
+│   └── mod.rs (21 lines)
+├── stack/                    ← Complete
+│   ├── allocator.rs (418 lines)
+│   ├── config.rs (67 lines)
+│   ├── frame.rs (40 lines)
+│   ├── marker.rs (9 lines)
+│   └── mod.rs (20 lines)
+└── mod.rs (14 lines)
 ```
 
 **Improvements**:
@@ -146,29 +164,27 @@ src/allocators/
 - ✅ **Reusability**: Common patterns (config, RAII) can be shared
 - ✅ **Compilation**: Faster incremental builds (smaller change scopes)
 
-## Next Steps
+## Remaining Work (Optional Enhancements)
 
-1. **Immediate** (pool allocator):
-   - Extract main PoolAllocator implementation
-   - Extract block management code
-   - Extract statistics types
-   - Test and commit
+All core allocators are now fully modularized. The following are optional enhancements:
 
-2. **Short-term** (stack allocator):
-   - Apply same pattern as bump allocator
-   - Extract config, frame, marker, main impl
-   - Test and commit
-
-3. **Medium-term** (tracking):
+1. **Tracking Modules** (Optional):
    - Create `src/tracking/` directory
-   - Move monitored.rs and tracked.rs
+   - Move monitored.rs (470 lines) and tracked.rs (385 lines)
    - Update imports
 
-4. **Final** (cleanup):
-   - Add missing documentation
-   - Re-enable `#![deny(missing_docs)]`
-   - Update main README with new structure
+2. **Documentation** (High Priority):
+   - Add missing documentation (39 warnings currently)
+   - Re-enable `#![deny(missing_docs)]` for strict enforcement
+   - Update main README with new module structure
+
+3. **Examples** (Nice to Have):
    - Create examples showcasing modular architecture
+   - Demonstrate pattern consistency across allocators
+
+4. **Testing** (Already Working):
+   - All existing tests pass
+   - Consider adding module-specific unit tests
 
 ## Lessons Learned
 
@@ -185,6 +201,7 @@ src/allocators/
 
 ---
 
-*Last Updated*: 2025-10-01 (Continued Session)
-*Started*: Previous session (62a38a5, 427f904, 4d3a628)
-*Current Commits*: 4b2a530 (bump complete), 1b81ca0 (pool partial)
+*Last Updated*: 2025-10-01 (Final Update)
+*Started*: Previous session (commits: 62a38a5, 427f904, 4d3a628, 4b2a530)
+*Completed*: Current session (commits: 1b81ca0, 62377dd, 1ad63ab, dcd84df, 989d084)
+*Status*: ✅ **ALL ALLOCATORS FULLY MODULARIZED** (100% complete)
