@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use nebula_error::{NebulaError, ErrorKind, kinds::SystemError};
 #[cfg(feature = "logging")]
-use nebula_log::{debug, info, warn, error, Loggable};
+use nebula_log::{debug, info, warn, error};
 use nebula_system::memory::{self, MemoryInfo, MemoryPressure};
 
 use crate::allocator::AllocatorStats;

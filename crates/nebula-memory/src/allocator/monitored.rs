@@ -10,7 +10,7 @@ use core::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "logging")]
-use nebula_log::{debug, warn, error, Loggable};
+use nebula_log::{debug, warn, error};
 
 use crate::allocator::{
     AllocError, AllocErrorCode, AllocResult, Allocator, AllocatorStats,

@@ -120,16 +120,16 @@ pub mod prelude {
     pub use crate::allocator::{MonitoredAllocator, MonitoredConfig};
 
     #[cfg(feature = "arena")]
-    pub use crate::arena::{Arena, ArenaOptions, TypedArena};
+    pub use crate::arena::{Arena, TypedArena};
 
     #[cfg(feature = "pool")]
-    pub use crate::pool::{ObjectPool, PoolConfig, PooledObject};
+    pub use crate::pool::{ObjectPool, PooledValue};
 
     #[cfg(feature = "cache")]
-    pub use crate::cache::{Cache, CacheConfig, CacheKey, CacheValue};
+    pub use crate::cache::{CacheConfig, CacheKey, ComputeCache};
 
     #[cfg(feature = "stats")]
-    pub use crate::stats::{MemoryStats, MemoryTracker, StatsCollector};
+    pub use crate::stats::{MemoryStats, MemoryTracker};
 
     #[cfg(feature = "budget")]
     pub use crate::budget::{BudgetConfig, MemoryBudget, BudgetState, BudgetMetrics};

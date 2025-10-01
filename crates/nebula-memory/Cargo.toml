@@ -40,10 +40,10 @@ profiling = ["std", "stats"]
 adaptive = ["stats"]
 
 # Optional
-compression = []
-async = ["std"]
+compression = ["lz4_flex"]
+async = ["std", "tokio", "futures-core", "futures"]
 nightly = []
-backtrace = ["std"]
+backtrace-feature = ["std", "backtrace"]
 
 # Convenience sets (для удобства пользователей)
 full = ["std", "pool", "arena", "cache", "stats", "budget", "streaming", "monitoring", "logging"]
@@ -73,6 +73,18 @@ winapi = { version = "0.3", features = ["memoryapi", "sysinfoapi", "libloaderapi
 # Synchronization
 once_cell = { version = "1.21", optional = true }
 parking_lot = { version = "0.12", optional = true }
+
+# Async runtime (optional)
+tokio = { version = "1.0", optional = true, default-features = false, features = ["sync", "time"] }
+futures-core = { version = "0.3", optional = true, default-features = false }
+futures = { version = "0.3", optional = true, default-features = false, features = ["alloc"] }
+
+# Compression (optional)
+lz4_flex = { version = "0.11", optional = true, default-features = false }
+
+# Debug tools (optional)
+backtrace = { version = "0.3", optional = true }
+rand = { version = "0.8", optional = true }
 
 # Internal crates
 nebula-core = { path = "..\\nebula-core" }

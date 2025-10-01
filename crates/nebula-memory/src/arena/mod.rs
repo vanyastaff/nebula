@@ -296,7 +296,7 @@ impl ArenaConfig {
     }
 
     /// Creates config from global memory configuration
-    pub fn from_memory_config(config: &crate::config::MemoryConfig) -> Self {
+    pub fn from_memory_config(config: &crate::core::config::MemoryConfig) -> Self {
         Self {
             initial_size: config.default_arena_config.chunk_size,
             growth_factor: config.default_arena_config.growth_factor as f64,

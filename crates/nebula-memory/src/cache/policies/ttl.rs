@@ -22,7 +22,7 @@ use {
     hashbrown::HashMap,
 };
 
-use super::{EvictionPolicy, VictimSelector};
+use super::{EvictionPolicy, VictimSelector, adaptive::EvictionEntry};
 use crate::cache::compute::{CacheEntry, CacheKey};
 
 /// TTL (Time To Live) cache eviction policy

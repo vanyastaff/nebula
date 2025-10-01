@@ -64,10 +64,10 @@ pub use snapshot::{MemorySnapshot, SnapshotDiff, SnapshotFormat};
 pub use tracker::{DataPoint, MemoryTracker, WindowStats};
 
 /// Initialize global statistics system
-pub fn initialize(config: StatsConfig) -> crate::error::MemoryResult<()> {
+pub fn initialize(config: StatsConfig) -> crate::core::error::MemoryResult<()> {
     config
         .validate()
-        .map_err(|e| crate::error::MemoryError::InvalidConfig { reason: e.to_string() })?;
+        .map_err(|e| crate::core::error::MemoryError::InvalidConfig { reason: e.to_string() })?;
     // Initialize any global state if needed
     Ok(())
 }
