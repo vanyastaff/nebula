@@ -165,10 +165,7 @@ impl<T: Poolable> LockFreePool<T> {
             let created = self.size.load(Ordering::Relaxed);
 
             if created >= max {
-                return Err(MemoryError::PoolExhausted {
-                    type_name: std::any::type_name::<T>(),
-                    pool_size: max
-                });
+                return Err(MemoryError::pool_exhausted());
             }
         }
 

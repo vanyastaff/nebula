@@ -136,10 +136,7 @@ impl<T: Poolable> PriorityPool<T> {
                 let created = 0;
 
                 if created >= max {
-                    return Err(MemoryError::PoolExhausted {
-                        type_name: std::any::type_name::<T>(),
-                        pool_size: max
-                    });
+                    return Err(MemoryError::pool_exhausted());
                 }
             }
 
@@ -199,10 +196,7 @@ impl<T: Poolable> PriorityPool<T> {
                 let created = 0;
 
                 if created >= max {
-                    return Err(MemoryError::PoolExhausted {
-                        type_name: std::any::type_name::<T>(),
-                        pool_size: max
-                    });
+                    return Err(MemoryError::pool_exhausted());
                 }
             }
 
