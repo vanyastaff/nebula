@@ -14,13 +14,14 @@ extern crate alloc;
 use std::{
     collections::HashMap,
     hash::Hash,
+    marker::PhantomData,
     time::{Duration, Instant},
 };
 
 #[cfg(not(feature = "std"))]
 use {
     alloc::{boxed::Box, vec::Vec},
-    core::hash::Hash,
+    core::{hash::Hash, marker::PhantomData},
     hashbrown::HashMap,
 };
 
@@ -174,6 +175,8 @@ pub struct AdaptivePolicy<K, V>
 where
     K: CacheKey,
 {
+    /// Phantom data for unused type parameter V
+    _phantom: PhantomData<V>,
     /// Currently active policy
     active_policy: PolicyType,
     /// LRU policy instance
@@ -225,6 +228,7 @@ where
         shadow_misses.insert(PolicyType::ARC, 0);
 
         Self {
+            _phantom: PhantomData,
             active_policy: PolicyType::LRU,
             lru: LruPolicy::new(),
             lfu: LfuPolicy::new(),

@@ -13,13 +13,14 @@ extern crate alloc;
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     hash::Hash,
+    marker::PhantomData,
     time::{Duration, Instant},
 };
 
 #[cfg(not(feature = "std"))]
 use {
     alloc::{collections::BTreeMap, vec::Vec},
-    core::{hash::Hash, time::Duration},
+    core::{hash::Hash, marker::PhantomData, time::Duration},
     hashbrown::HashMap,
 };
 
@@ -132,6 +133,8 @@ pub struct LfuPolicy<K, V>
 where
     K: CacheKey,
 {
+    /// Phantom data for unused type parameter V
+    _phantom: PhantomData<V>,
     /// Configuration
     config: LfuConfig,
     /// Frequency counts for each key
@@ -174,6 +177,7 @@ where
     /// Create a new LFU policy with custom configuration
     pub fn with_config(config: LfuConfig) -> Self {
         Self {
+            _phantom: PhantomData,
             config,
             frequencies: HashMap::new(),
             key_to_bucket: HashMap::new(),

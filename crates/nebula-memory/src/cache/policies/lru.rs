@@ -13,6 +13,7 @@ extern crate alloc;
 use std::{
     collections::{HashMap, VecDeque},
     hash::Hash,
+    marker::PhantomData,
     ptr::NonNull,
     time::{Duration, Instant},
 };
@@ -401,6 +402,8 @@ pub struct LruPolicy<K, V>
 where
     K: CacheKey,
 {
+    /// Phantom data for unused type parameter V
+    _phantom: PhantomData<V>,
     /// Configuration
     config: LruConfig,
     /// Current strategy implementation
@@ -496,6 +499,7 @@ where
         };
 
         Self {
+            _phantom: PhantomData,
             config,
             strategy_impl,
             access_pattern: AccessPattern::default(),

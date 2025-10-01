@@ -13,13 +13,14 @@ extern crate alloc;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     hash::Hash,
+    marker::PhantomData,
     time::{Duration, Instant},
 };
 
 #[cfg(not(feature = "std"))]
 use {
     alloc::{collections::VecDeque, vec::Vec},
-    core::{hash::Hash, time::Duration},
+    core::{hash::Hash, marker::PhantomData, time::Duration},
     hashbrown::{HashMap, HashSet},
 };
 
@@ -259,6 +260,8 @@ pub struct ArcPolicy<K, V>
 where
     K: CacheKey,
 {
+    /// Phantom data for unused type parameter V
+    _phantom: PhantomData<V>,
     /// Configuration
     config: ArcConfig,
 
@@ -321,6 +324,7 @@ where
         let max_p = config.max_p.min(config.capacity);
 
         Self {
+            _phantom: PhantomData,
             config,
             t1: VecDeque::new(),
             t2: VecDeque::new(),
