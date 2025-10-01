@@ -266,7 +266,7 @@ where
 {
     fn new<K>(key: K, cache: Weak<AsyncComputeCacheInner<V>>) -> Self
     where
-        K: CacheKey,
+        K: CacheKey + std::fmt::Debug,
     {
         Self {
             key: format!("{:?}", key), // Simplified key conversion
@@ -301,7 +301,6 @@ where
 }
 
 /// Batch request for multiple keys
-#[derive(Debug)]
 pub struct BatchRequest<K, V> {
     pub keys: Vec<K>,
     pub compute_fn: Box<dyn Fn(&K) -> Pin<Box<dyn Future<Output = AsyncCacheResult<V>> + Send>> + Send + Sync>,
