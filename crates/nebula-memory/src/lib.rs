@@ -129,9 +129,6 @@ pub mod prelude {
     #[cfg(feature = "cache")]
     pub use crate::cache::{CacheConfig, CacheKey, ComputeCache};
 
-    #[cfg(feature = "stats")]
-    pub use crate::stats::{MemoryStats, MemoryTracker};
-
     #[cfg(feature = "budget")]
     pub use crate::budget::{BudgetConfig, MemoryBudget, BudgetState, BudgetMetrics};
 

@@ -38,7 +38,8 @@
       "Bash(1)",
       "Bash(do)",
       "Bash(cargo fix:*)",
-      "Bash(timeout 120 cargo test -p nebula-memory --all-features --lib)"
+      "Bash(timeout 120 cargo test -p nebula-memory --all-features --lib)",
+      "Bash(git restore:*)"
     ],
     "deny": [],
     "ask": []

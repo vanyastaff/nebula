@@ -14,8 +14,8 @@ readme = "README.md"
 categories = ["memory-management", "data-structures", "caching", "no-std"]
 
 [features]
-# Default: Just std library support
-default = ["std"]
+# Default: Core functionality without stats/monitoring
+default = ["std", "pool", "arena", "cache", "budget", "logging"]
 
 # Core runtime
 std = ["once_cell", "parking_lot", "libc", "chrono"]
