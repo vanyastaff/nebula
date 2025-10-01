@@ -91,9 +91,10 @@ pub mod stats;
 #[cfg_attr(docsrs, doc(cfg(feature = "budget")))]
 pub mod budget;
 
-#[cfg(feature = "streaming")]
-#[cfg_attr(docsrs, doc(cfg(feature = "streaming")))]
-pub mod streaming;
+// Streaming module not yet implemented
+// #[cfg(feature = "streaming")]
+// #[cfg_attr(docsrs, doc(cfg(feature = "streaming")))]
+// pub mod streaming;
 
 // Low-level system calls for allocators
 #[cfg(feature = "std")]
