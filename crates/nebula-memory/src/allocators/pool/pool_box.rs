@@ -4,7 +4,7 @@ use core::alloc::Layout;
 use core::ptr::{self, NonNull};
 
 use super::PoolAllocator;
-use crate::allocator::AllocError;
+use crate::allocator::{AllocError, Allocator};
 
 /// RAII smart pointer for pool-allocated values
 ///

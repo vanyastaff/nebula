@@ -6,20 +6,20 @@ mod error;
 mod manager;
 #[cfg(all(feature = "std", feature = "monitoring"))]
 mod monitored;
-mod pool;
 mod stack;
 mod stats;
 mod system;
 mod tracked;
 mod traits;
+// Re-export from new modular structure
 pub use crate::allocators::bump::BumpAllocator;
+pub use crate::allocators::pool::{PoolAllocator, PoolBox, PoolStats};
 pub use error::{
     AllocError, AllocErrorCode, AllocResult, ErrorStats, ErrorStatsSnapshot, MemoryState,
 };
 pub use manager::{AllocatorId, AllocatorManager, GlobalAllocatorManager};
 #[cfg(all(feature = "std", feature = "monitoring"))]
 pub use monitored::{MonitoredAllocator, MonitoredConfig};
-pub use pool::{PoolAllocator, PoolBox};
 pub use stack::{StackAllocator, StackFrame, StackMarker};
 pub use stats::{AllocatorStats, AtomicAllocatorStats, OptionalStats, StatisticsProvider};
 pub use system::SystemAllocator;
