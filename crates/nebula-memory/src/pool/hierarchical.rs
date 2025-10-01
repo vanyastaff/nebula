@@ -11,7 +11,7 @@ use core::ops::{Deref, DerefMut};
 #[cfg(feature = "std")]
 use std::sync::{Arc, Mutex, Weak};
 
-use super::{NoOpCallbacks, ObjectPool, PoolCallbacks, PoolConfig, PoolStats, Poolable};
+use super::{ObjectPool, PoolConfig, PoolStats, Poolable};
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Hierarchical pool supporting parent-child relationships

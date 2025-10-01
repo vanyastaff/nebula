@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 #[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 
-use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, PoolStats, Poolable};
+use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Object pool with time-to-live for pooled objects

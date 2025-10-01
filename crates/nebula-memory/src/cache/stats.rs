@@ -612,7 +612,7 @@ impl AtomicCacheStats {
 
         // Calculate windowed statistics
         // This is a simplified implementation - in production you'd want more sophisticated aggregation
-        let mut windowed_stats = CacheStats::new();
+        let windowed_stats = CacheStats::new();
 
         // For demonstration, just use the latest values
         // In a real implementation, you'd aggregate the data points properly

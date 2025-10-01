@@ -4,7 +4,6 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "std")]
 use std::sync::{Arc, Condvar, Mutex};
 #[cfg(feature = "std")]
@@ -13,7 +12,7 @@ use std::time::Duration;
 #[cfg(not(feature = "std"))]
 use spin::{Condvar, Mutex};
 
-use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, PoolStats, Poolable};
+use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Thread-safe object pool using mutex

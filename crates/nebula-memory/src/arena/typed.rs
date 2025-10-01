@@ -61,7 +61,7 @@ impl<T> TypedArena<T> {
 
     /// Create a new typed arena with initial capacity
     pub fn with_capacity(capacity: usize) -> Self {
-        let mut arena = Self::new();
+        let arena = Self::new();
         arena.chunk_capacity.set(capacity);
         arena
     }

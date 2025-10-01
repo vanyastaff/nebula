@@ -10,10 +10,9 @@ extern crate alloc;
 
 #[cfg(feature = "std")]
 use std::{
-    collections::HashMap,
     hash::{Hash, Hasher},
     sync::{Arc, RwLock},
-    time::{Duration, Instant},
+    time::Instant,
     thread,
 };
 
@@ -25,8 +24,8 @@ use {
     spin::RwLock,
 };
 
-use super::compute::{CacheEntry, CacheKey, CacheResult, ComputeCache};
-use super::config::{CacheConfig, CacheMetrics, EvictionPolicy};
+use super::compute::{CacheKey, CacheResult, ComputeCache};
+use super::config::{CacheConfig, CacheMetrics};
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Hash function strategy for partitioning

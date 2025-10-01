@@ -215,7 +215,7 @@ where
         }
 
         // Insert the new entry
-        let mut entry = CacheEntry::new(value.clone());
+        let entry = CacheEntry::new(value.clone());
 
         #[cfg(not(feature = "std"))]
         {
@@ -273,7 +273,7 @@ where
             self.evict_entry()?;
         }
 
-        let mut entry = CacheEntry::new(value);
+        let entry = CacheEntry::new(value);
 
         #[cfg(not(feature = "std"))]
         {

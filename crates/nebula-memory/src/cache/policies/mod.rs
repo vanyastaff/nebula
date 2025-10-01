@@ -8,12 +8,6 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
-#[cfg(feature = "std")]
-use std::{
-    collections::HashMap,
-    hash::Hash,
-    time::{Duration, Instant},
-};
 
 #[cfg(not(feature = "std"))]
 use {
@@ -23,8 +17,7 @@ use {
     hashbrown::HashMap,
 };
 
-use super::compute::{CacheEntry, CacheKey};
-use crate::core::error::MemoryResult;
+use super::compute::CacheEntry;
 
 // Re-export policy modules
 mod adaptive;

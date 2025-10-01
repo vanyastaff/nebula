@@ -10,7 +10,7 @@ use core::ops::{Deref, DerefMut};
 #[cfg(feature = "std")]
 use std::collections::BinaryHeap;
 
-use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, PoolStats, Poolable};
+use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Object pool that maintains objects based on priority

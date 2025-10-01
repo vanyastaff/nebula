@@ -12,7 +12,6 @@ extern crate alloc;
 #[cfg(feature = "std")]
 use std::{
     collections::{HashMap, VecDeque},
-    hash::Hash,
     marker::PhantomData,
     ptr::NonNull,
     time::{Duration, Instant},
@@ -29,7 +28,6 @@ use crate::cache::{
     compute::{CacheEntry, CacheKey},
     stats::{AccessPattern, SizeDistribution},
 };
-use crate::core::error::MemoryResult;
 
 /// LRU implementation strategies for different scenarios
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,7 +168,7 @@ impl<K> DoublyLinkedList<K> {
     }
 
     /// Remove a specific node
-    fn remove_node(&mut self, mut node: NonNull<LruNode<K>>) {
+    fn remove_node(&mut self, node: NonNull<LruNode<K>>) {
         unsafe {
             match (*node.as_ptr()).prev {
                 Some(prev) => (*prev.as_ptr()).next = (*node.as_ptr()).next,
@@ -189,7 +187,7 @@ impl<K> DoublyLinkedList<K> {
     }
 
     /// Move node to front
-    fn move_to_front(&mut self, mut node: NonNull<LruNode<K>>) {
+    fn move_to_front(&mut self, node: NonNull<LruNode<K>>) {
         if self.head == Some(node) {
             return; // Already at front
         }
@@ -679,7 +677,7 @@ where
                 }
                 None
             },
-            LruStrategyImpl::Clock { clock, .. } => {
+            LruStrategyImpl::Clock {  .. } => {
                 // This is a mutable operation, so we'd need to handle it differently
                 // For now, return None and handle in actual eviction
                 None

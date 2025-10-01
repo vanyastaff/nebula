@@ -28,7 +28,6 @@ use crate::cache::{
     compute::{CacheEntry, CacheKey},
     stats::{AccessPattern, SizeDistribution},
 };
-use crate::core::error::MemoryResult;
 
 /// Frequency tracking modes for different scenarios
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

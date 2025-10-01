@@ -1,6 +1,5 @@
 //! Trait for objects that can be pooled
 
-use core::fmt::Debug;
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;

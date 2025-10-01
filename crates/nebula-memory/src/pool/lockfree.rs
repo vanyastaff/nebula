@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 #[cfg(feature = "std")]
 use std::sync::Arc;
 
-use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, PoolStats, Poolable};
+use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Lock-free object pool using atomic operations

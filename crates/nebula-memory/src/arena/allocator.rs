@@ -53,24 +53,24 @@ impl<A: ArenaAllocate> ArenaAllocator<A> {
     /// # Safety
     ///
     /// The caller must ensure the memory is properly initialized before use
-    pub unsafe fn allocate(&self, layout: Layout) -> Result<NonNull<u8>, MemoryError> {
+    pub unsafe fn allocate(&self, layout: Layout) -> Result<NonNull<u8>, MemoryError> { unsafe {
         let ptr = self.arena.alloc_bytes(layout.size(), layout.align())?;
         NonNull::new(ptr).ok_or_else(|| MemoryError::allocation_failed())
-    }
+    }}
 
     /// Allocate a slice of memory with the given layout
     ///
     /// # Safety
     ///
     /// The caller must ensure the memory is properly initialized before use
-    pub unsafe fn allocate_slice(&self, layout: Layout) -> Result<NonNull<[u8]>, MemoryError> {
+    pub unsafe fn allocate_slice(&self, layout: Layout) -> Result<NonNull<[u8]>, MemoryError> { unsafe {
         let ptr = self.arena.alloc_bytes(layout.size(), layout.align())?;
 
         // Create a slice from the allocated memory
         let slice = std::slice::from_raw_parts_mut(ptr, layout.size());
 
         Ok(NonNull::from(slice))
-    }
+    }}
 
     /// Allocate and initialize a value
     pub fn alloc<T>(&self, value: T) -> Result<&mut T, MemoryError> {

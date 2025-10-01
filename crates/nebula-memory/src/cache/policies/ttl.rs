@@ -11,7 +11,6 @@ extern crate alloc;
 #[cfg(feature = "std")]
 use std::{
     collections::HashMap,
-    hash::Hash,
     time::{Duration, Instant},
 };
 

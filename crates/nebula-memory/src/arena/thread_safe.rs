@@ -155,7 +155,7 @@ impl ThreadSafeArena {
         drop(chunks);
 
         // Create and initialize new chunk
-        let mut chunk = ThreadSafeChunk::new(chunk_size)?;
+        let chunk = ThreadSafeChunk::new(chunk_size)?;
         if self.config.zero_memory {
             unsafe {
                 ptr::write_bytes(chunk.ptr.as_ptr(), 0, chunk_size);

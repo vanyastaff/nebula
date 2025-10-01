@@ -398,7 +398,7 @@ where
                 // Add ready tasks to execution queue
                 if !ready_tasks.is_empty() {
                     let mut queue = task_queue.lock().unwrap();
-                    let mut tasks_guard = tasks.lock().unwrap();
+                    let tasks_guard = tasks.lock().unwrap();
 
                     for (task_name, _, context) in ready_tasks {
                         // Find the task by name and add to queue

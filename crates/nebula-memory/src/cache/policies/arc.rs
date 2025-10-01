@@ -12,7 +12,6 @@ extern crate alloc;
 #[cfg(feature = "std")]
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    hash::Hash,
     marker::PhantomData,
     time::{Duration, Instant},
 };
@@ -26,7 +25,7 @@ use {
 
 use crate::cache::{
     compute::{CacheEntry, CacheKey},
-    stats::{AccessPattern, Percentiles, SizeDistribution},
+    stats::{AccessPattern, SizeDistribution},
 };
 use crate::core::error::MemoryResult;
 

@@ -3,7 +3,7 @@
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec::Vec};
 
-use super::{ObjectPool, PoolConfig, PoolStats, Poolable};
+use super::{ObjectPool, PoolConfig, Poolable};
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Batch allocator for efficient bulk operations
