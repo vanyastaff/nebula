@@ -2,7 +2,6 @@
 //! Custom allocators for memory management
 //! This module provides various memory allocator implementations and management
 //! utilities for different memory allocation patterns and requirements.
-mod bump;
 mod error;
 mod manager;
 #[cfg(all(feature = "std", feature = "monitoring"))]
@@ -13,7 +12,7 @@ mod stats;
 mod system;
 mod tracked;
 mod traits;
-pub use bump::BumpAllocator;
+pub use crate::allocators::bump::BumpAllocator;
 pub use error::{
     AllocError, AllocErrorCode, AllocResult, ErrorStats, ErrorStatsSnapshot, MemoryState,
 };

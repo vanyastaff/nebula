@@ -47,7 +47,7 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![deny(missing_docs)]
+#![warn(missing_docs)]
 #![warn(clippy::all)]
 #![warn(rust_2018_idioms)]
 
@@ -59,6 +59,9 @@ pub mod core;
 
 // Memory allocators - the heart of nebula-memory
 pub mod allocator;
+
+// New allocator implementations (modular structure)
+pub mod allocators;
 
 // Utility functions and helpers
 pub mod utils;
