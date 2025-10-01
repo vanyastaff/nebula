@@ -10,3 +10,5 @@ pub mod bump;
 /// Pool allocator for fixed-size object reuse
 pub mod pool;
 
+/// Stack allocator for LIFO memory management
+pub mod stack;

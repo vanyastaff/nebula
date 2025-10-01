@@ -6,7 +6,6 @@ mod error;
 mod manager;
 #[cfg(all(feature = "std", feature = "monitoring"))]
 mod monitored;
-mod stack;
 mod stats;
 mod system;
 mod tracked;
@@ -20,7 +19,7 @@ pub use error::{
 pub use manager::{AllocatorId, AllocatorManager, GlobalAllocatorManager};
 #[cfg(all(feature = "std", feature = "monitoring"))]
 pub use monitored::{MonitoredAllocator, MonitoredConfig};
-pub use stack::{StackAllocator, StackFrame, StackMarker};
+pub use crate::allocators::stack::{StackAllocator, StackFrame, StackMarker, StackConfig};
 pub use stats::{AllocatorStats, AtomicAllocatorStats, OptionalStats, StatisticsProvider};
 pub use system::SystemAllocator;
 pub use tracked::TrackedAllocator;

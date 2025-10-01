@@ -1,97 +1,15 @@
-//! Production-ready stack allocator with safe abstractions
-//!
-//! A stack allocator allocates memory in a LIFO (Last In, First Out) manner,
-//! similar to how a call stack works. Unlike a bump allocator, it supports
-//! deallocating the most recently allocated block, allowing for stack-like
-//! memory management patterns.
-//!
-//! # Use Cases
-//! - Nested scoping allocations
-//! - Recursive algorithms with temporary storage
-//! - Expression evaluation with temporary results
-//! - Function call simulation with local variables
-//! - Any scenario requiring LIFO allocation/deallocation
+//! Main stack allocator implementation
 
 use core::alloc::Layout;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicUsize, AtomicU32, Ordering};
 
-use crate::core::traits::{
-    MemoryUsage, Resettable, StatisticsProvider,
-};
-
-use super::{
+use super::{StackConfig, StackMarker};
+use crate::allocator::{
     AllocError, AllocErrorCode, AllocResult, Allocator,
+    AllocatorStats, MemoryUsage, Resettable, StatisticsProvider,
 };
-
-// Import safe utilities
-use crate::utils::{
-    align_up, is_power_of_two, Backoff, atomic_max,
-};
-
-/// Configuration for stack allocator
-#[derive(Debug, Clone)]
-pub struct StackConfig {
-    /// Enable statistics tracking
-    pub track_stats: bool,
-
-    /// Fill patterns for debugging
-    pub alloc_pattern: Option<u8>,
-    pub dealloc_pattern: Option<u8>,
-
-    /// Use exponential backoff for CAS retries
-    pub use_backoff: bool,
-
-    /// Maximum CAS retry attempts
-    pub max_retries: usize,
-}
-
-impl Default for StackConfig {
-    fn default() -> Self {
-        Self {
-            track_stats: cfg!(debug_assertions),
-            alloc_pattern: if cfg!(debug_assertions) { Some(0xCC) } else { None },
-            dealloc_pattern: if cfg!(debug_assertions) { Some(0xDD) } else { None },
-            use_backoff: true,
-            max_retries: 500,
-        }
-    }
-}
-
-impl StackConfig {
-    /// Production configuration - optimized for performance
-    pub fn production() -> Self {
-        Self {
-            track_stats: false,
-            alloc_pattern: None,
-            dealloc_pattern: None,
-            use_backoff: true,
-            max_retries: 1000,
-        }
-    }
-
-    /// Debug configuration - optimized for debugging
-    pub fn debug() -> Self {
-        Self {
-            track_stats: true,
-            alloc_pattern: Some(0xCC),
-            dealloc_pattern: Some(0xDD),
-            use_backoff: false,
-            max_retries: 100,
-        }
-    }
-
-    /// Performance configuration - minimal overhead
-    pub fn performance() -> Self {
-        Self {
-            track_stats: false,
-            alloc_pattern: None,
-            dealloc_pattern: None,
-            use_backoff: false,
-            max_retries: 100,
-        }
-    }
-}
+use crate::utils::{align_up, Backoff, atomic_max};
 
 /// Stack allocator that supports LIFO allocation and deallocation
 ///
@@ -105,8 +23,7 @@ impl StackConfig {
 ///             <------ allocated ------>         <-- available -->
 /// ```
 ///
-/// Deallocations must happen in reverse order: alloc3, then alloc2, then
-/// alloc1.
+/// Deallocations must happen in reverse order: alloc3, then alloc2, then alloc1.
 pub struct StackAllocator {
     /// Owned memory buffer
     memory: Box<[u8]>,
@@ -127,16 +44,6 @@ pub struct StackAllocator {
     total_allocs: AtomicU32,
     total_deallocs: AtomicU32,
     peak_usage: AtomicUsize,
-}
-
-/// Stack frame marker for tracking allocations
-///
-/// This marker allows for scoped deallocation - you can save a marker,
-/// make several allocations, then restore to the marker to deallocate
-/// all allocations made after the marker was created.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StackMarker {
-    position: usize,
 }
 
 impl StackAllocator {
@@ -476,8 +383,8 @@ impl Resettable for StackAllocator {
 }
 
 impl StatisticsProvider for StackAllocator {
-    fn statistics(&self) -> super::AllocatorStats {
-        super::AllocatorStats {
+    fn statistics(&self) -> AllocatorStats {
+        AllocatorStats {
             allocated_bytes: self.used(),
             peak_allocated_bytes: if self.config.track_stats {
                 self.peak_usage.load(Ordering::Relaxed)
@@ -509,246 +416,3 @@ impl StatisticsProvider for StackAllocator {
 // Thread safety
 unsafe impl Send for StackAllocator {}
 unsafe impl Sync for StackAllocator {}
-
-/// RAII helper for automatic stack restoration
-///
-/// This struct automatically restores the stack to a marked position
-/// when it goes out of scope, providing exception-safe stack management.
-pub struct StackFrame<'a> {
-    allocator: &'a StackAllocator,
-    marker: StackMarker,
-}
-
-impl<'a> StackFrame<'a> {
-    /// Creates a new stack frame that will restore to the current position
-    /// when dropped
-    pub fn new(allocator: &'a StackAllocator) -> Self {
-        let marker = allocator.mark();
-        Self { allocator, marker }
-    }
-
-    /// Gets the underlying allocator
-    pub fn allocator(&self) -> &'a StackAllocator {
-        self.allocator
-    }
-
-    /// Manually restore and consume this frame
-    pub fn restore(self) {
-        // Drop will handle the restoration
-        drop(self);
-    }
-}
-
-impl<'a> Drop for StackFrame<'a> {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = self.allocator.restore_to_marker(self.marker);
-        }
-    }
-}
-
-/// Convenience macro for stack frame allocation
-#[macro_export]
-macro_rules! with_stack_frame {
-    ($allocator:expr, $body:block) => {{
-        let _frame = StackFrame::new($allocator);
-        $body
-    }};
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_basic_allocation() {
-        let allocator = StackAllocator::new(1024).unwrap();
-        let layout = Layout::new::<u64>();
-
-        unsafe {
-            let ptr1 = allocator.allocate(layout).unwrap();
-            let ptr2 = allocator.allocate(layout).unwrap();
-
-            assert_eq!(ptr1.len(), 8);
-            assert_eq!(ptr2.len(), 8);
-            assert_ne!(ptr1.as_ptr(), ptr2.as_ptr());
-        }
-
-        assert!(allocator.used() >= 16);
-    }
-
-    #[test]
-    fn test_stack_deallocation() {
-        let allocator = StackAllocator::new(1024).unwrap();
-        let layout = Layout::new::<u64>();
-
-        unsafe {
-            let ptr1 = allocator.allocate(layout).unwrap();
-            let used_after_first = allocator.used();
-
-            let ptr2 = allocator.allocate(layout).unwrap();
-            let used_after_second = allocator.used();
-
-            // Deallocate the most recent allocation (ptr2)
-            allocator.deallocate(ptr2.cast(), layout);
-            assert_eq!(allocator.used(), used_after_first);
-
-            // Deallocate the first allocation (ptr1)
-            allocator.deallocate(ptr1.cast(), layout);
-            assert_eq!(allocator.used(), 0);
-        }
-    }
-
-    #[test]
-    fn test_stack_marker() {
-        let allocator = StackAllocator::new(1024).unwrap();
-        let layout = Layout::new::<u32>();
-
-        unsafe {
-            let _ = allocator.allocate(layout).unwrap();
-            let marker = allocator.mark();
-
-            let _ = allocator.allocate(layout).unwrap();
-            let _ = allocator.allocate(layout).unwrap();
-
-            let used_before_restore = allocator.used();
-            assert!(used_before_restore >= 12); // At least 3 * 4 bytes
-
-            allocator.restore_to_marker(marker).unwrap();
-            assert!(allocator.used() < used_before_restore);
-        }
-    }
-
-    #[test]
-    fn test_stack_frame_raii() {
-        let allocator = StackAllocator::new(1024).unwrap();
-        let layout = Layout::new::<u32>();
-
-        unsafe {
-            let _ = allocator.allocate(layout).unwrap();
-            let used_before_frame = allocator.used();
-
-            {
-                let _frame = StackFrame::new(&allocator);
-                let _ = allocator.allocate(layout).unwrap();
-                let _ = allocator.allocate(layout).unwrap();
-
-                assert!(allocator.used() > used_before_frame);
-            } // _frame is dropped here, automatically restoring
-
-            assert_eq!(allocator.used(), used_before_frame);
-        }
-    }
-
-    #[test]
-    fn test_out_of_order_deallocation() {
-        let allocator = StackAllocator::new(1024).unwrap();
-        let layout = Layout::new::<u64>();
-
-        unsafe {
-            let ptr1 = allocator.allocate(layout).unwrap();
-            let ptr2 = allocator.allocate(layout).unwrap();
-            let used_before = allocator.used();
-
-            // Try to deallocate ptr1 (not the most recent) - should be no-op
-            allocator.deallocate(ptr1.cast(), layout);
-            assert_eq!(allocator.used(), used_before); // No change
-
-            // Deallocate ptr2 (most recent) - should succeed
-            allocator.deallocate(ptr2.cast(), layout);
-            assert!(allocator.used() < used_before);
-        }
-    }
-
-    #[test]
-    fn test_reallocate_in_place() {
-        let allocator = StackAllocator::new(1024).unwrap();
-
-        unsafe {
-            let old_layout = Layout::from_size_align(8, 8).unwrap();
-            let ptr = allocator.allocate(old_layout).unwrap();
-
-            // Write test data
-            (ptr.as_ptr() as *mut u64).write(0xDEADBEEF);
-
-            let used_before = allocator.used();
-
-            // Reallocate to larger size
-            let new_layout = Layout::from_size_align(16, 8).unwrap();
-            let new_ptr = allocator.reallocate(ptr.cast(), old_layout, new_layout).unwrap();
-
-            // Data should be preserved regardless of whether it's in-place or not
-            assert_eq!((new_ptr.as_ptr() as *const u64).read(), 0xDEADBEEF);
-            assert_eq!(new_ptr.len(), 16);
-
-            // Memory usage should have increased
-            assert!(allocator.used() > used_before);
-        }
-    }
-
-    #[test]
-    fn test_thread_safety() {
-        use std::sync::Arc;
-        use std::thread;
-
-        let allocator = Arc::new(StackAllocator::new(4096).unwrap());
-        let layout = Layout::new::<u64>();
-
-        let handles: Vec<_> = (0..4)
-            .map(|_| {
-                let alloc = allocator.clone();
-                thread::spawn(move || {
-                    for _ in 0..10 {
-                        unsafe {
-                            if let Ok(ptr) = alloc.allocate(layout) {
-                                // Write some data
-                                (ptr.as_ptr() as *mut u64).write(42);
-                                // In a real scenario, we'd need coordination
-                                // for proper deallocation
-                            }
-                        }
-                    }
-                })
-            })
-            .collect();
-
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        assert!(allocator.used() > 0);
-    }
-
-    #[test]
-    fn test_macro() {
-        let allocator = StackAllocator::new(1024).unwrap();
-        let layout = Layout::new::<u32>();
-
-        unsafe {
-            let _ = allocator.allocate(layout).unwrap();
-            let used_before = allocator.used();
-
-            with_stack_frame!(&allocator, {
-                let _ = allocator.allocate(layout).unwrap();
-                let _ = allocator.allocate(layout).unwrap();
-                assert!(allocator.used() > used_before);
-            });
-
-            assert_eq!(allocator.used(), used_before);
-        }
-    }
-
-    #[test]
-    fn test_stats() {
-        let allocator = StackAllocator::medium().unwrap();
-        let layout = Layout::new::<u64>();
-
-        unsafe {
-            let _ = allocator.allocate(layout).unwrap();
-        }
-
-        // Just check basic metrics through MemoryUsage trait
-        assert!(allocator.used_memory() > 0);
-        assert!(allocator.available_memory().unwrap() < allocator.total_memory().unwrap());
-    }
-}
