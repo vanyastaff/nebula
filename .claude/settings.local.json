@@ -37,7 +37,8 @@
       "Bash(awk:*)",
       "Bash(1)",
       "Bash(do)",
-      "Bash(cargo fix:*)"
+      "Bash(cargo fix:*)",
+      "Bash(timeout 120 cargo test -p nebula-memory --all-features --lib)"
     ],
     "deny": [],
     "ask": []

@@ -378,6 +378,6 @@ mod tests {
     fn string_allocation() {
         let arena = ThreadSafeArena::new(ArenaConfig::default());
         let s = arena.alloc_str("test").unwrap();
-        assert_eq!(*s, "test");
+        assert_eq!(s, "test");
     }
 }
