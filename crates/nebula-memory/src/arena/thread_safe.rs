@@ -22,14 +22,12 @@ impl ThreadSafeChunk {
     /// Creates a new chunk with specified size (minimum 64 bytes)
     fn new(size: usize) -> Result<Self, MemoryError> {
         let size = size.max(64); // Minimum chunk size to reduce overhead
-        let layout = Layout::from_size_align(size, 1).map_err(|_| MemoryError::InvalidLayout {
-            reason: "invalid layout in ThreadSafeChunk::new",
-        })?;
+        let layout = Layout::from_size_align(size, 1).map_err(|_| MemoryError::invalid_layout())?;
 
         // Safety: Layout is non-zero and properly aligned
         let ptr = unsafe { alloc(layout) };
         let ptr =
-            NonNull::new(ptr).ok_or(MemoryError::OutOfMemory { requested: size, available: 0 })?;
+            NonNull::new(ptr).ok_or_else(|| MemoryError::out_of_memory(size, 0))?;
 
         Ok(Self { ptr, capacity: size, used: AtomicUsize::new(0) })
     }
@@ -185,7 +183,7 @@ impl ThreadSafeArena {
     /// Allocates aligned memory block (thread-safe)
     pub fn alloc_bytes_aligned(&self, size: usize, align: usize) -> Result<*mut u8, MemoryError> {
         if !align.is_power_of_two() {
-            return Err(MemoryError::InvalidAlignment { required: align, actual: 0 });
+            return Err(MemoryError::invalid_alignment(align, 0));
         }
 
         let start_time = self.config.track_stats.then(Instant::now);
@@ -208,7 +206,7 @@ impl ThreadSafeArena {
         // Try again with new chunk
         let current = self.current_chunk.load(Ordering::Acquire);
         let chunk = unsafe { &*current };
-        chunk.try_alloc(size, align).ok_or(MemoryError::AllocationFailed).map(|ptr| {
+        chunk.try_alloc(size, align).ok_or(MemoryError::allocation_failed()).map(|ptr| {
             if let Some(start) = start_time {
                 self.stats.record_allocation(size, start.elapsed().as_nanos() as u64);
             }

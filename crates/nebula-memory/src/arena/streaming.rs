@@ -50,15 +50,13 @@ struct StreamBuffer {
 
 impl StreamBuffer {
     fn new(size: usize) -> Result<Self, MemoryError> {
-        let layout = Layout::from_size_align(size, 1).map_err(|_| MemoryError::InvalidLayout {
-            reason: "Invalid size or alignment for StreamBuffer",
-        })?;
+        let layout = Layout::from_size_align(size, 1).map_err(|_| MemoryError::invalid_layout())?;
 
         let ptr = unsafe { alloc(layout) };
 
         match NonNull::new(ptr) {
             Some(ptr) => Ok(StreamBuffer { ptr, capacity: size, used: Cell::new(0) }),
-            None => Err(MemoryError::AllocationFailed),
+            None => Err(MemoryError::allocation_failed()),
         }
     }
 
@@ -149,10 +147,7 @@ impl<T> StreamingArena<T> {
                     return Ok(());
                 }
             }
-            return Err(MemoryError::OutOfMemory {
-                requested: self.options.buffer_size,
-                available: 0,
-            });
+            return Err(MemoryError::out_of_memory(self.options.buffer_size, 0));
         }
 
         // Allocate new buffer
@@ -173,7 +168,7 @@ impl<T> StreamingArena<T> {
     /// Allocate bytes in the streaming arena
     pub fn alloc_bytes(&self, size: usize, align: usize) -> Result<*mut u8, MemoryError> {
         if size > self.options.buffer_size {
-            return Err(MemoryError::AllocationTooLarge);
+            return Err(MemoryError::allocation_too_large(0));
         }
 
         let start_time =
@@ -211,7 +206,7 @@ impl<T> StreamingArena<T> {
                 }
                 Ok(ptr)
             },
-            None => Err(MemoryError::AllocationFailed),
+            None => Err(MemoryError::allocation_failed()),
         }
     }
 
@@ -435,6 +430,6 @@ mod tests {
 
         // Try to allocate more than buffer size
         let result = arena.alloc_bytes(200, 1);
-        assert!(matches!(result, Err(MemoryError::AllocationTooLarge)));
+        assert!(matches!(result, Err(MemoryError::allocation_too_large(0))));
     }
 }

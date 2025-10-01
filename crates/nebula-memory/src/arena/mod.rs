@@ -366,25 +366,19 @@ impl ArenaConfig {
     /// Validates the configuration
     pub fn validate(&self) -> Result<(), MemoryError> {
         if self.initial_size == 0 {
-            return Err(MemoryError::InvalidLayout {
-                reason: "Initial size must be greater than 0",
-            });
+            return Err(MemoryError::invalid_config("Initial size must be greater than 0"));
         }
 
         if self.growth_factor < 1.0 {
-            return Err(MemoryError::InvalidLayout { reason: "Growth factor must be >= 1.0" });
+            return Err(MemoryError::invalid_config("Growth factor must be >= 1.0"));
         }
 
         if !self.default_alignment.is_power_of_two() {
-            return Err(MemoryError::InvalidLayout {
-                reason: "Default alignment must be power of 2",
-            });
+            return Err(MemoryError::invalid_config("Default alignment must be power of 2"));
         }
 
         if self.max_chunk_size < self.initial_size {
-            return Err(MemoryError::InvalidLayout {
-                reason: "Max chunk size must be >= initial size",
-            });
+            return Err(MemoryError::invalid_config("Max chunk size must be >= initial size"));
         }
 
         Ok(())

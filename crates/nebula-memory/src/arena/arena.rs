@@ -24,12 +24,12 @@ impl Chunk {
         let size = size.max(64); // Minimum 64 bytes
 
         let layout = Layout::from_size_align(size, 1)
-            .map_err(|_| MemoryError::InvalidLayout { reason: "size overflow" })?;
+            .map_err(|_| MemoryError::invalid_layout())?;
 
         // Safety: Layout is non-zero size and properly aligned
         let ptr = unsafe { alloc(layout) };
         let ptr =
-            NonNull::new(ptr).ok_or(MemoryError::OutOfMemory { requested: size, available: 0 })?;
+            NonNull::new(ptr).ok_or_else(|| MemoryError::out_of_memory(size, 0))?;
 
         Ok(Self { ptr, capacity: size, next: None })
     }
@@ -170,7 +170,7 @@ impl Arena {
     /// Allocates aligned memory block
     pub fn alloc_bytes_aligned(&self, size: usize, align: usize) -> Result<*mut u8, MemoryError> {
         if !align.is_power_of_two() {
-            return Err(MemoryError::InvalidAlignment { required: align, actual: 0 });
+            return Err(MemoryError::invalid_alignment(align, 0));
         }
 
         let start_time = self.config.track_stats.then(Instant::now);

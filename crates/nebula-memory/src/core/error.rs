@@ -506,6 +506,58 @@ impl MemoryError {
         Self::new(MemoryErrorCode::InvalidConfig)
             .with_context("details", details)
     }
+
+    /// Creates an out of memory error
+    pub fn out_of_memory(requested: usize, available: usize) -> Self {
+        let mut error = Self::new(MemoryErrorCode::AllocationFailed);
+        error.size = Some(requested);
+        error.with_context("available", available)
+    }
+
+    /// Creates an allocation too large error
+    pub fn allocation_too_large(requested: usize) -> Self {
+        let mut error = Self::new(MemoryErrorCode::ExceedsMaxSize);
+        error.size = Some(requested);
+        error
+    }
+
+    /// Creates an invalid alignment error
+    pub fn invalid_alignment(required: usize, actual: usize) -> Self {
+        Self::new(MemoryErrorCode::InvalidAlignment)
+            .with_context("required", required)
+            .with_context("actual", actual)
+    }
+
+    /// Creates an invalid argument error
+    pub fn invalid_argument<T: fmt::Display>(details: T) -> Self {
+        Self::new(MemoryErrorCode::InvalidState)
+            .with_context("argument", details)
+    }
+
+    /// Creates an invalid index error
+    pub fn invalid_index(index: usize, length: usize) -> Self {
+        Self::new(MemoryErrorCode::InvalidState)
+            .with_context("index", index)
+            .with_context("length", length)
+    }
+
+    /// Creates a not supported error
+    pub fn not_supported<T: fmt::Display>(feature: T) -> Self {
+        Self::new(MemoryErrorCode::InvalidState)
+            .with_context("feature", feature)
+    }
+
+    /// Creates a decompression failed error
+    pub fn decompression_failed<T: fmt::Display>(details: T) -> Self {
+        Self::new(MemoryErrorCode::InvalidState)
+            .with_context("decompression_error", details)
+    }
+
+    /// Creates a monitor error
+    pub fn monitor_error<T: fmt::Display>(details: T) -> Self {
+        Self::new(MemoryErrorCode::InvalidState)
+            .with_context("monitor_error", details)
+    }
 }
 
 impl From<MemoryErrorCode> for MemoryError {
