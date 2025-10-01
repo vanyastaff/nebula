@@ -14,28 +14,39 @@ readme = "README.md"
 categories = ["memory-management", "data-structures", "caching", "no-std"]
 
 [features]
+# Default: Just std library support
 default = ["std"]
 
-# Core features
+# Core runtime
 std = ["once_cell", "parking_lot", "libc", "chrono"]
 alloc = []
 
-# Memory management features
+# Major feature groups (простые, понятные)
 pool = ["std", "crossbeam-queue"]
 arena = ["std"]
 cache = ["std", "hashbrown"]
 stats = ["std"]
-budget = ["stats"]
+budget = ["std"]
 streaming = ["alloc"]
 logging = ["std", "nebula-log"]
 
-# Platform-specific features
+# Platform optimization
 numa-aware = ["libc"]
 linux-optimizations = ["libc"]
-monitoring = ["std"]
 
-# Full feature set
-full = ["std", "pool", "arena", "cache", "stats", "budget", "streaming", "logging"]
+# Development/debugging (объединены)
+monitoring = ["std", "stats"]
+profiling = ["std", "stats"]
+adaptive = ["stats"]
+
+# Optional
+compression = []
+async = ["std"]
+nightly = []
+backtrace = ["std"]
+
+# Convenience sets (для удобства пользователей)
+full = ["std", "pool", "arena", "cache", "stats", "budget", "streaming", "monitoring", "logging"]
 
 [dependencies]
 # Collections
