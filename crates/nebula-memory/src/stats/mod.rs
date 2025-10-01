@@ -67,7 +67,7 @@ pub use tracker::{DataPoint, MemoryTracker, WindowStats};
 pub fn initialize(config: StatsConfig) -> crate::core::error::MemoryResult<()> {
     config
         .validate()
-        .map_err(|e| crate::core::error::MemoryError::InvalidConfig { reason: e.to_string() })?;
+        .map_err(|e| crate::core::error::MemoryError::invalid_config("invalid config"))?;
     // Initialize any global state if needed
     Ok(())
 }

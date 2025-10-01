@@ -943,7 +943,7 @@ mod tests {
 
         // Error should be propagated
         let result = cache.get_or_compute("error".to_string(), || {
-            Err(MemoryError::AllocationFailed)
+            Err(MemoryError::allocation_failed())
         });
 
         assert!(result.is_err());

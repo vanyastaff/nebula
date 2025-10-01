@@ -286,7 +286,7 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let cache = match self.cache.upgrade() {
             Some(cache) => cache,
-            None => return Poll::Ready(Err(MemoryError::AllocationFailed)),
+            None => return Poll::Ready(Err(MemoryError::allocation_failed())),
         };
 
         // Register waker if not already done
@@ -437,19 +437,19 @@ where
             });
 
             if !breaker.can_execute() {
-                return Err(MemoryError::AllocationFailed); // Circuit breaker open
+                return Err(MemoryError::allocation_failed()); // Circuit breaker open
             }
         }
 
         // Acquire computation permit
         let _permit = self.inner.computation_semaphore.acquire().await
-            .map_err(|_| MemoryError::AllocationFailed)?;
+            .map_err(|_| MemoryError::allocation_failed())?;
 
         // Start computation
         let computation_start = Instant::now();
         let result = if let Some(timeout_duration) = self.inner.config.computation_timeout {
             timeout(timeout_duration, compute_fn()).await
-                .map_err(|_| MemoryError::AllocationFailed)?
+                .map_err(|_| MemoryError::allocation_failed())?
         } else {
             compute_fn().await
         };
@@ -689,7 +689,7 @@ where
                     }
                 }
             } else {
-                return Err(MemoryError::AllocationFailed);
+                return Err(MemoryError::allocation_failed());
             }
         }
     }
