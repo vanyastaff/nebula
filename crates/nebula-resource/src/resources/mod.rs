@@ -1,40 +1,30 @@
 //! Built-in resource implementations
-
 /// Database resources
+pub mod database;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 #[cfg(feature = "mysql")]
 pub mod mysql;
 #[cfg(feature = "mongodb")]
 pub mod mongodb;
-pub mod database;
-
 /// Cache resources
 pub mod cache;
-
 /// In-memory cache with LRU eviction
 pub mod memory_cache;
-
 /// Redis cache resource
 #[cfg(feature = "redis")]
 pub mod redis_cache;
-
 /// HTTP client resources
 pub mod http_client;
-
 /// Message queue resources
 pub mod message_queue;
-
 /// Kafka message queue
 #[cfg(feature = "kafka")]
 pub mod kafka;
-
 /// Storage resources
 pub mod storage;
-
 /// Observability resources
 pub mod observability;
-
 // Re-exports for convenience
 pub use database::DatabaseResource;
 #[cfg(feature = "postgres")]
@@ -53,8 +43,4 @@ pub use message_queue::MessageQueueResource;
 pub use kafka::{KafkaProducerResource, KafkaConsumerResource};
 pub use storage::StorageResource;
 pub use observability::{LoggerResource, MetricsResource, TracerResource};
-
-
-
-
 
