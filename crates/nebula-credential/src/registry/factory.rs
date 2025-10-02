@@ -1,4 +1,4 @@
-use crate::core::{AccessToken, CredentialContext, CredentialError};
+use crate::core::{AccessToken, CredentialContext, CredentialError, CredentialMetadata};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::Value;
@@ -23,6 +23,17 @@ pub trait CredentialFactory: Send + Sync {
         state_json: Value,
         cx: &mut CredentialContext,
     ) -> Result<(Box<dyn erased_serde::Serialize>, AccessToken), CredentialError>;
+
+    /// Get metadata about this credential type (optional)
+    fn metadata(&self) -> CredentialMetadata {
+        CredentialMetadata {
+            id: self.type_name(),
+            name: self.type_name(),
+            description: "",
+            supports_refresh: true,
+            requires_interaction: false,
+        }
+    }
 }
 
 /// Registry for credential types
@@ -56,6 +67,19 @@ impl CredentialRegistry {
     /// Check if type is registered
     pub fn has_type(&self, type_name: &str) -> bool {
         self.factories.contains_key(type_name)
+    }
+
+    /// Get metadata for all registered credential types
+    pub fn list_metadata(&self) -> Vec<CredentialMetadata> {
+        self.factories
+            .iter()
+            .map(|entry| entry.value().metadata())
+            .collect()
+    }
+
+    /// Get metadata for a specific credential type
+    pub fn get_metadata(&self, type_name: &str) -> Option<CredentialMetadata> {
+        self.factories.get(type_name).map(|f| f.metadata())
     }
 }
 
