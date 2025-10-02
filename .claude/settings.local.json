@@ -42,7 +42,8 @@
       "Bash(git restore:*)",
       "Bash(cargo:*)",
       "Bash(MIRIFLAGS=\"-Zmiri-permissive-provenance\" cargo +nightly miri test --test miri_safety -- miri_bump_allocator_basic)",
-      "Bash(export MIRIFLAGS=\"-Zmiri-permissive-provenance\")"
+      "Bash(export MIRIFLAGS=\"-Zmiri-permissive-provenance\")",
+      "Bash(rm:*)"
     ],
     "deny": [],
     "ask": []
