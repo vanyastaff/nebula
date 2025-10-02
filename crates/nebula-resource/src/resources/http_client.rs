@@ -265,7 +265,7 @@ impl HttpClientInstance {
 
     /// Make an HTTP POST request with JSON body
     #[cfg(feature = "serde")]
-    pub async fn post_json<T: serde::Serialize>(
+    pub async fn post_json<T: Serialize>(
         &self,
         url: &str,
         body: &T,
@@ -323,7 +323,7 @@ impl HttpClientInstance {
     async fn execute_with_resilience<F, Fut>(&self, mut f: F) -> ResourceResult<HttpResponse>
     where
         F: FnMut() -> Fut + Send,
-        Fut: std::future::Future<Output = ResourceResult<HttpResponse>> + Send,
+        Fut: Future<Output = ResourceResult<HttpResponse>> + Send,
     {
         // Apply retry if configured
         if let Some(ref strategy) = self.retry_strategy {
@@ -331,14 +331,13 @@ impl HttpClientInstance {
 
             for attempt in 1..=strategy.max_attempts {
                 // Check circuit breaker before attempt
-                if let Some(ref cb) = self.circuit_breaker {
-                    if cb.is_open().await {
+                if let Some(ref cb) = self.circuit_breaker
+                    && cb.is_open().await {
                         return Err(ResourceError::CircuitBreakerOpen {
                             resource_id: "http_client:1.0".to_string(),
                             retry_after_ms: None,
                         });
                     }
-                }
 
                 // Execute request
                 let result = f().await;
@@ -373,14 +372,13 @@ impl HttpClientInstance {
             }))
         } else {
             // No retry, just check circuit breaker
-            if let Some(ref cb) = self.circuit_breaker {
-                if cb.is_open().await {
+            if let Some(ref cb) = self.circuit_breaker
+                && cb.is_open().await {
                     return Err(ResourceError::CircuitBreakerOpen {
                         resource_id: "http_client:1.0".to_string(),
                         retry_after_ms: None,
                     });
                 }
-            }
 
             let result = f().await;
 

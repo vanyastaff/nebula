@@ -20,7 +20,7 @@ use crate::core::{
         ResourceInstanceMetadata, ResourceMetadata, TypedResourceInstance,
     },
     scoping::{ResourceScope, ScopingStrategy},
-    traits::{HealthCheckable, HealthStatus, Poolable},
+    traits::HealthCheckable,
 };
 
 use crate::health::{HealthCheckConfig, HealthChecker};
@@ -380,7 +380,7 @@ impl ResourceManager {
         // In a real implementation, we'd maintain a TypeId -> ResourceId mapping
         for entry in self.metadata_cache.iter() {
             // This is a simplified check - in reality we'd need better type mapping
-            if entry.key().name.contains(&std::any::type_name::<T>()) {
+            if entry.key().name.contains(std::any::type_name::<T>()) {
                 return Ok(entry.key().clone());
             }
         }
@@ -407,8 +407,7 @@ impl ResourceManager {
             .downcast_ref::<TypedResourceInstance<T>>()
             .ok_or_else(|| {
                 ResourceError::internal("unknown", "Failed to cast instance to requested type")
-            })
-            .map(|typed| typed.clone())
+            }).cloned()
     }
 
     fn create_guard_with_pool<T>(
@@ -517,7 +516,7 @@ impl ResourceManager {
     /// Get the health status of a specific instance
     pub fn get_instance_health(
         &self,
-        instance_id: &uuid::Uuid,
+        instance_id: &Uuid,
     ) -> Option<crate::health::HealthRecord> {
         self.health_checker.get_health(instance_id)
     }
@@ -871,7 +870,7 @@ where
             context: context.clone(),
             created_at: chrono::Utc::now(),
             last_accessed_at: None,
-            tags: std::collections::HashMap::new(),
+            tags: HashMap::new(),
         };
 
         let typed_instance = TypedResourceInstance::new(Arc::new(instance), metadata);

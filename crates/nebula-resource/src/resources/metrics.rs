@@ -6,7 +6,6 @@ use crate::core::{
     scoping::ResourceScope,
 };
 
-use std::sync::Arc;
 
 /// Metrics resource configuration for Prometheus export
 #[derive(Debug, Clone)]

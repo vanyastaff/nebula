@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::{
     context::ResourceContext,
     error::{ResourceError, ResourceResult},
-    resource::{ResourceId, TypedResourceInstance},
+    resource::TypedResourceInstance,
     traits::{HealthCheckable, HealthStatus},
 };
 
@@ -460,7 +460,7 @@ pub struct ResourcePool<T> {
     factory: Arc<
         dyn Fn() -> std::pin::Pin<
                 Box<
-                    dyn std::future::Future<Output = ResourceResult<TypedResourceInstance<T>>>
+                    dyn Future<Output = ResourceResult<TypedResourceInstance<T>>>
                         + Send,
                 >,
             > + Send
@@ -483,7 +483,7 @@ where
     where
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut:
-            std::future::Future<Output = ResourceResult<TypedResourceInstance<T>>> + Send + 'static,
+            Future<Output = ResourceResult<TypedResourceInstance<T>>> + Send + 'static,
     {
         Self {
             config,
@@ -856,7 +856,9 @@ where
             self.select_weighted_round_robin(available)
         } else {
             // Hybrid approach: use performance metrics to select
-            let best_index = available
+            
+
+            available
                 .iter_mut()
                 .enumerate()
                 .map(|(idx, entry)| {
@@ -871,9 +873,7 @@ where
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .map(|(idx, _)| idx)
-                .unwrap_or(0);
-
-            best_index
+                .unwrap_or(0)
         }
     }
 

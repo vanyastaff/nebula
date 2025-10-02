@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use super::{
     context::ResourceContext,
     error::{ResourceError, ResourceResult},
-    lifecycle::LifecycleState,
 };
 
 /// Health status for resource health checks
@@ -199,7 +198,7 @@ pub trait Poolable: Send + Sync {
 #[async_trait]
 pub trait Stateful: Send + Sync {
     /// The type of state this resource maintains
-    type State: Send + Sync + Clone + serde::Serialize + serde::de::DeserializeOwned;
+    type State: Send + Sync + Clone + Serialize + serde::de::DeserializeOwned;
 
     /// Save the current state of the resource
     async fn save_state(&self) -> ResourceResult<Self::State>;

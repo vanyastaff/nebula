@@ -14,7 +14,6 @@ use metrics::{Counter, Gauge, Histogram};
 
 use crate::core::{
     context::ResourceContext,
-    error::ResourceResult,
     lifecycle::{LifecycleEvent, LifecycleState},
     resource::ResourceId,
 };
@@ -289,13 +288,31 @@ pub enum ObservabilityEventType {
     /// Resource lifecycle event
     Lifecycle(LifecycleState, LifecycleState),
     /// Performance metric event
-    Performance { operation: String, duration_ms: u64 },
+    Performance {
+        /// Operation name
+        operation: String,
+        /// Duration in milliseconds
+        duration_ms: u64,
+    },
     /// Error event
-    Error { error_type: String, message: String },
+    Error {
+        /// Error type
+        error_type: String,
+        /// Error message
+        message: String,
+    },
     /// Health check event
-    HealthCheck { status: String, score: f64 },
+    HealthCheck {
+        /// Health status
+        status: String,
+        /// Health score
+        score: f64,
+    },
     /// Custom event
-    Custom { event_name: String },
+    Custom {
+        /// Event name
+        event_name: String,
+    },
 }
 
 /// Observability collector that aggregates metrics and events
@@ -474,6 +491,7 @@ pub struct ObservabilityStats {
 
 /// Macros for convenient tracing
 #[macro_export]
+/// Macro to trace a resource operation with automatic timing
 macro_rules! trace_resource_operation {
     ($collector:expr, $resource_id:expr, $operation:expr, $code:block) => {{
         let trace = $collector.start_trace($resource_id.clone(), $operation.to_string());

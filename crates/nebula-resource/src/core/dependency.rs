@@ -99,13 +99,12 @@ impl DependencyGraph {
         let mut path = Vec::new();
 
         for node in self.dependencies.keys() {
-            if !visited.contains(node) {
-                if let Some(cycle) =
+            if !visited.contains(node)
+                && let Some(cycle) =
                     self.detect_cycle_dfs(node, &mut visited, &mut rec_stack, &mut path)
                 {
                     return Some(cycle);
                 }
-            }
         }
 
         None
@@ -200,14 +199,13 @@ impl DependencyGraph {
         }
 
         // If we haven't sorted all nodes, there's a cycle
-        if sorted.len() != all_nodes.len() {
-            if let Some(cycle) = self.detect_cycle() {
+        if sorted.len() != all_nodes.len()
+            && let Some(cycle) = self.detect_cycle() {
                 return Err(ResourceError::internal(
                     cycle[0].to_string(),
                     format!("Circular dependency detected: {:?}", cycle),
                 ));
             }
-        }
 
         Ok(sorted)
     }

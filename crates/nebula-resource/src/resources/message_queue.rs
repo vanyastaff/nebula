@@ -6,9 +6,12 @@ use crate::core::{
     scoping::ResourceScope,
 };
 
+/// Message queue configuration
 #[derive(Debug, Clone)]
 pub struct MessageQueueConfig {
+    /// Broker URL for message queue
     pub broker_url: String,
+    /// Topic prefix for message topics
     pub topic_prefix: String,
 }
 
@@ -39,6 +42,7 @@ impl ResourceConfig for MessageQueueConfig {
     }
 }
 
+/// Message queue resource instance
 pub struct MessageQueueInstance {
     instance_id: uuid::Uuid,
     resource_id: ResourceId,

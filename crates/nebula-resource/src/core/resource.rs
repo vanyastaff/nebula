@@ -15,7 +15,6 @@ use super::{
     error::{ResourceError, ResourceResult},
     lifecycle::LifecycleState,
     scoping::ResourceScope,
-    traits::{HealthCheckable, HealthStatus},
     versioning::Version,
 };
 

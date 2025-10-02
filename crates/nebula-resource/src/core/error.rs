@@ -1,6 +1,5 @@
 //! Error types for resource management
 
-use std::fmt;
 
 use nebula_error::NebulaError;
 use thiserror::Error;

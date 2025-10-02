@@ -4,7 +4,6 @@ use crate::core::{
     context::ResourceContext,
     error::{ResourceError, ResourceResult},
     resource::{Resource, ResourceConfig, ResourceId, ResourceInstance, ResourceMetadata},
-    scoping::ResourceScope,
     traits::{HealthCheckable, HealthStatus},
 };
 use std::collections::HashMap;
@@ -172,14 +171,13 @@ impl MemoryCacheInstance {
         let key_string = key.to_string();
         if let Some(entry) = cache.get(&key_string) {
             // Check if expired
-            if let Some(expires_at) = entry.expires_at {
-                if Instant::now() > expires_at {
+            if let Some(expires_at) = entry.expires_at
+                && Instant::now() > expires_at {
                     // Expired, remove it
                     cache.remove(&key_string);
                     self.record_miss();
                     return None;
                 }
-            }
 
             self.record_hit();
             Some(entry.value.clone())
@@ -418,8 +416,11 @@ impl CacheStats {
 /// Public cache statistics
 #[derive(Debug, Clone)]
 pub struct CacheStatistics {
+    /// Number of cache hits
     pub hits: u64,
+    /// Number of cache misses
     pub misses: u64,
+    /// Number of cache sets
     pub sets: u64,
 }
 

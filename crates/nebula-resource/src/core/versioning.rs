@@ -229,11 +229,10 @@ impl VersionChecker {
             return false;
         }
 
-        if let Some(ref max) = self.max_version {
-            if version > max {
+        if let Some(ref max) = self.max_version
+            && version > max {
                 return false;
             }
-        }
 
         true
     }

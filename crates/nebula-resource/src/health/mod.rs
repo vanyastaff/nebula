@@ -7,7 +7,7 @@
 //! - Automatic unhealthy resource detection
 
 use crate::core::{
-    error::{ResourceError, ResourceResult},
+    error::ResourceResult,
     resource::ResourceId,
     traits::{HealthCheckable, HealthStatus},
 };
