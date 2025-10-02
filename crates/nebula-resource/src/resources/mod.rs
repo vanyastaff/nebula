@@ -1,30 +1,21 @@
 //! Built-in resource implementations
-
 /// Database resources
+pub mod http_client;
 pub mod database;
-
 /// Cache resources
 pub mod cache;
-
 /// In-memory cache with LRU eviction
 pub mod memory_cache;
-
 /// Redis cache resource
 #[cfg(feature = "redis")]
 pub mod redis_cache;
-
 /// HTTP client resources
-pub mod http_client;
-
 /// Message queue resources
 pub mod message_queue;
-
 /// Storage resources
 pub mod storage;
-
 /// Observability resources
 pub mod observability;
-
 // Re-exports for convenience
 pub use database::DatabaseResource;
 pub use cache::CacheResource;

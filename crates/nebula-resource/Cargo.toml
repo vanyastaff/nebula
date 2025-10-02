@@ -40,6 +40,9 @@ postgres = ["dep:sqlx"]
 mysql = ["dep:sqlx"]
 redis = ["dep:redis"]
 
+# HTTP client support
+http-client = ["dep:reqwest"]
+
 # Testing utilities
 testing = ["dep:mockall", "dep:test-case"]
 
@@ -55,6 +58,7 @@ nebula-log = { path = "../nebula-log" }
 nebula-error = { path = "../nebula-error" }
 nebula-derive = { path = "../nebula-derive" }
 nebula-credential = { path = "../nebula-credential", optional = true }
+nebula-resilience = { path = "../nebula-resilience" }
 
 # Async runtime
 tokio = { version = "1.0", features = ["rt-multi-thread", "time", "sync", "macros"], optional = true }
@@ -90,6 +94,9 @@ chrono = { version = "0.4", features = ["serde"] }
 # Database drivers
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "mysql", "uuid", "chrono"], optional = true }
 redis = { version = "0.24", features = ["tokio-comp", "connection-manager"], optional = true }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream", "cookies"], default-features = false, optional = true }
 
 # Resource pooling (custom implementation)
 # Note: deadpool and bb8 removed - we use custom pool implementation
