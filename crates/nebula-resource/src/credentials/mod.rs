@@ -84,7 +84,7 @@ impl ResourceCredentialProvider {
     /// Get token as string (for convenience)
     pub async fn get_token_string(&self) -> ResourceResult<String> {
         let token = self.get_token().await?;
-        Ok(token.to_string())
+        Ok(token.token.with_exposed(ToString::to_string))
     }
 
     /// Clear cached token
@@ -200,7 +200,7 @@ pub async fn build_connection_string_with_credentials(
 /// Credential rotation scheduler
 #[cfg(feature = "credentials")]
 pub struct CredentialRotationScheduler {
-    handlers: Arc<parking_lot::RwLock<Vec<Arc<CredentialRotationHandler>>>>,
+    handlers: Arc<tokio::sync::RwLock<Vec<Arc<CredentialRotationHandler>>>>,
     rotation_interval: std::time::Duration,
     running: Arc<tokio::sync::RwLock<bool>>,
 }
@@ -210,15 +210,15 @@ impl CredentialRotationScheduler {
     /// Create a new rotation scheduler
     pub fn new(rotation_interval: std::time::Duration) -> Self {
         Self {
-            handlers: Arc::new(parking_lot::RwLock::new(Vec::new())),
+            handlers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             rotation_interval,
             running: Arc::new(tokio::sync::RwLock::new(false)),
         }
     }
 
     /// Add a rotation handler
-    pub fn add_handler(&self, handler: Arc<CredentialRotationHandler>) {
-        let mut handlers = self.handlers.write();
+    pub async fn add_handler(&self, handler: Arc<CredentialRotationHandler>) {
+        let mut handlers = self.handlers.write().await;
         handlers.push(handler);
     }
 
@@ -254,8 +254,12 @@ impl CredentialRotationScheduler {
                 }
 
                 // Perform rotation checks
-                let handlers_list = handlers.read();
-                for handler in handlers_list.iter() {
+                let handlers_snapshot = {
+                    let handlers_list = handlers.read().await;
+                    handlers_list.clone()
+                };
+
+                for handler in handlers_snapshot.iter() {
                     match handler.check_and_rotate().await {
                         Ok(rotated) => {
                             if rotated {
@@ -291,8 +295,8 @@ impl CredentialRotationScheduler {
     }
 
     /// Get number of registered handlers
-    pub fn handler_count(&self) -> usize {
-        self.handlers.read().len()
+    pub async fn handler_count(&self) -> usize {
+        self.handlers.read().await.len()
     }
 }
 
@@ -324,7 +328,7 @@ mod tests {
     #[tokio::test]
     async fn test_rotation_scheduler() {
         let scheduler = CredentialRotationScheduler::default();
-        assert_eq!(scheduler.handler_count(), 0);
+        assert_eq!(scheduler.handler_count().await, 0);
 
         scheduler.stop().await;
     }
