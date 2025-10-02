@@ -62,8 +62,8 @@ pub struct DatabaseInstance {
     resource_id: ResourceId,
     context: crate::core::context::ResourceContext,
     created_at: chrono::DateTime<chrono::Utc>,
-    last_accessed: std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>,
-    state: std::sync::RwLock<crate::core::lifecycle::LifecycleState>,
+    last_accessed: parking_lot::Mutex<Option<chrono::DateTime<chrono::Utc>>>,
+    state: parking_lot::RwLock<crate::core::lifecycle::LifecycleState>,
     url: String,
     max_connections: u32,
 }
@@ -78,7 +78,7 @@ impl ResourceInstance for DatabaseInstance {
     }
 
     fn lifecycle_state(&self) -> crate::core::lifecycle::LifecycleState {
-        *self.state.read().unwrap()
+        *self.state.read()
     }
 
     fn context(&self) -> &crate::core::context::ResourceContext {
@@ -90,11 +90,11 @@ impl ResourceInstance for DatabaseInstance {
     }
 
     fn last_accessed_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
-        *self.last_accessed.lock().unwrap()
+        *self.last_accessed.lock()
     }
 
     fn touch(&self) {
-        *self.last_accessed.lock().unwrap() = Some(chrono::Utc::now());
+        *self.last_accessed.lock() = Some(chrono::Utc::now());
     }
 }
 
@@ -128,8 +128,8 @@ impl Resource for DatabaseResource {
             resource_id: self.metadata().id,
             context: context.clone(),
             created_at: chrono::Utc::now(),
-            last_accessed: std::sync::Mutex::new(None),
-            state: std::sync::RwLock::new(crate::core::lifecycle::LifecycleState::Ready),
+            last_accessed: parking_lot::Mutex::new(None),
+            state: parking_lot::RwLock::new(crate::core::lifecycle::LifecycleState::Ready),
             url: config.url.clone(),
             max_connections: config.max_connections,
         })
@@ -155,7 +155,7 @@ impl DatabaseInstance {
     /// Simulate a database query
     pub async fn execute_query(&self, _query: &str) -> ResourceResult<u64> {
         // Update last accessed time
-        *self.last_accessed.lock().unwrap() = Some(chrono::Utc::now());
+        *self.last_accessed.lock() = Some(chrono::Utc::now());
 
         // Simulate query execution
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;

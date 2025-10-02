@@ -1,7 +1,8 @@
 //! Testing utilities for resource management
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -39,7 +40,7 @@ impl TestResourceManager {
     where
         T: TestableResource + 'static,
     {
-        let mut resources = self.resources.lock().unwrap();
+        let mut resources = self.resources.lock();
         resources.insert(resource_id, Arc::new(resource));
     }
 
@@ -48,14 +49,14 @@ impl TestResourceManager {
     where
         T: Send + Sync + 'static,
     {
-        let resources = self.resources.lock().unwrap();
+        let resources = self.resources.lock();
         let testable = resources
             .get(resource_id)
             .ok_or_else(|| ResourceError::unavailable(resource_id, "Mock resource not found", false))?;
 
         // Record the call
         {
-            let mut history = self.call_history.lock().unwrap();
+            let mut history = self.call_history.lock();
             history.push(ResourceCall::Acquire {
                 resource_id: resource_id.to_string(),
                 timestamp: chrono::Utc::now(),
@@ -86,17 +87,17 @@ impl TestResourceManager {
 
     /// Get call history for verification
     pub fn call_history(&self) -> Vec<ResourceCall> {
-        self.call_history.lock().unwrap().clone()
+        self.call_history.lock().clone()
     }
 
     /// Clear call history
     pub fn clear_history(&self) {
-        self.call_history.lock().unwrap().clear();
+        self.call_history.lock().clear();
     }
 
     /// Verify that a specific call was made
     pub fn verify_call(&self, expected_call: &ResourceCall) -> bool {
-        let history = self.call_history.lock().unwrap();
+        let history = self.call_history.lock();
         history.iter().any(|call| call.matches(expected_call))
     }
 }
@@ -258,8 +259,8 @@ pub struct MockResourceInstance {
     resource_id: ResourceId,
     context: ResourceContext,
     created_at: chrono::DateTime<chrono::Utc>,
-    last_accessed: std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>,
-    state: std::sync::RwLock<LifecycleState>,
+    last_accessed: parking_lot::Mutex<Option<chrono::DateTime<chrono::Utc>>>,
+    state: parking_lot::RwLock<LifecycleState>,
 
     /// Mock behavior
     behavior: MockBehavior,
@@ -277,8 +278,8 @@ impl MockResourceInstance {
             resource_id,
             context,
             created_at: chrono::Utc::now(),
-            last_accessed: std::sync::Mutex::new(None),
-            state: std::sync::RwLock::new(LifecycleState::Ready),
+            last_accessed: parking_lot::Mutex::new(None),
+            state: parking_lot::RwLock::new(LifecycleState::Ready),
             behavior,
         }
     }
@@ -325,11 +326,11 @@ impl ResourceInstance for MockResourceInstance {
     }
 
     fn last_accessed_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
-        *self.last_accessed.lock().unwrap()
+        *self.last_accessed.lock()
     }
 
     fn touch(&mut self) {
-        *self.last_accessed.lock().unwrap() = Some(chrono::Utc::now());
+        *self.last_accessed.lock() = Some(chrono::Utc::now());
     }
 }
 
