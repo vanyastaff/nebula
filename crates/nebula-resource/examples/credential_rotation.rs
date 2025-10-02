@@ -9,9 +9,7 @@
 //! Note: Requires the 'credentials' feature to be enabled
 
 #[cfg(feature = "credentials")]
-use nebula_resource::credentials::{
-    CredentialConfig, CredentialRotationScheduler,
-};
+use nebula_resource::credentials::{CredentialConfig, CredentialRotationScheduler};
 
 #[cfg(not(feature = "credentials"))]
 fn main() {
@@ -33,7 +31,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     println!("   ✓ Credential ID: {}", config.credential_id);
     println!("   ✓ Auto-refresh: {}", config.auto_refresh);
-    println!("   ✓ Refresh threshold: {} minutes\n", config.refresh_threshold_minutes);
+    println!(
+        "   ✓ Refresh threshold: {} minutes\n",
+        config.refresh_threshold_minutes
+    );
 
     // 2. Create rotation scheduler
     println!("2. Creating rotation scheduler...");
@@ -63,7 +64,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("5. Scheduler lifecycle:");
     println!("   - Handlers: {}", scheduler.handler_count());
     println!("   - Status: Ready to start");
-    println!("   - Interval: Check and rotate every {:?}", rotation_interval);
+    println!(
+        "   - Interval: Check and rotate every {:?}",
+        rotation_interval
+    );
     println!();
 
     // Note: We can't actually start the scheduler without a real CredentialManager

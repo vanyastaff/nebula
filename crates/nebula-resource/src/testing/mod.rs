@@ -1,8 +1,8 @@
 //! Testing utilities for resource management
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -50,9 +50,9 @@ impl TestResourceManager {
         T: Send + Sync + 'static,
     {
         let resources = self.resources.lock();
-        let testable = resources
-            .get(resource_id)
-            .ok_or_else(|| ResourceError::unavailable(resource_id, "Mock resource not found", false))?;
+        let testable = resources.get(resource_id).ok_or_else(|| {
+            ResourceError::unavailable(resource_id, "Mock resource not found", false)
+        })?;
 
         // Record the call
         {
@@ -154,20 +154,36 @@ impl ResourceCall {
     pub fn matches(&self, other: &ResourceCall) -> bool {
         match (self, other) {
             (
-                ResourceCall::Acquire { resource_id: id1, .. },
-                ResourceCall::Acquire { resource_id: id2, .. },
+                ResourceCall::Acquire {
+                    resource_id: id1, ..
+                },
+                ResourceCall::Acquire {
+                    resource_id: id2, ..
+                },
             ) => id1 == id2,
             (
-                ResourceCall::Release { resource_id: id1, .. },
-                ResourceCall::Release { resource_id: id2, .. },
+                ResourceCall::Release {
+                    resource_id: id1, ..
+                },
+                ResourceCall::Release {
+                    resource_id: id2, ..
+                },
             ) => id1 == id2,
             (
-                ResourceCall::HealthCheck { resource_id: id1, .. },
-                ResourceCall::HealthCheck { resource_id: id2, .. },
+                ResourceCall::HealthCheck {
+                    resource_id: id1, ..
+                },
+                ResourceCall::HealthCheck {
+                    resource_id: id2, ..
+                },
             ) => id1 == id2,
             (
-                ResourceCall::Create { resource_id: id1, .. },
-                ResourceCall::Create { resource_id: id2, .. },
+                ResourceCall::Create {
+                    resource_id: id1, ..
+                },
+                ResourceCall::Create {
+                    resource_id: id2, ..
+                },
             ) => id1 == id2,
             _ => false,
         }
@@ -268,11 +284,7 @@ pub struct MockResourceInstance {
 
 impl MockResourceInstance {
     /// Create a new mock instance
-    pub fn new(
-        resource_id: ResourceId,
-        context: ResourceContext,
-        behavior: MockBehavior,
-    ) -> Self {
+    pub fn new(resource_id: ResourceId, context: ResourceContext, behavior: MockBehavior) -> Self {
         Self {
             instance_id: Uuid::new_v4(),
             resource_id,
@@ -549,10 +561,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_resource() {
-        let metadata = ResourceMetadata::new(
-            ResourceId::new("test", "1.0"),
-            "Test resource".to_string(),
-        );
+        let metadata =
+            ResourceMetadata::new(ResourceId::new("test", "1.0"), "Test resource".to_string());
 
         let mock_resource = MockResource::new(metadata);
         let config = MockResourceConfig {
@@ -577,10 +587,8 @@ mod tests {
     async fn test_resource_manager() {
         let manager = TestResourceManager::new();
 
-        let metadata = ResourceMetadata::new(
-            ResourceId::new("test", "1.0"),
-            "Test resource".to_string(),
-        );
+        let metadata =
+            ResourceMetadata::new(ResourceId::new("test", "1.0"), "Test resource".to_string());
         let mock_resource = MockResource::new(metadata);
 
         manager.register_mock("test".to_string(), mock_resource);
@@ -592,10 +600,8 @@ mod tests {
 
     #[test]
     fn test_scenario_builder() {
-        let metadata = ResourceMetadata::new(
-            ResourceId::new("test", "1.0"),
-            "Test resource".to_string(),
-        );
+        let metadata =
+            ResourceMetadata::new(ResourceId::new("test", "1.0"), "Test resource".to_string());
         let mock_resource = MockResource::new(metadata);
 
         let scenario = TestScenarioBuilder::new()

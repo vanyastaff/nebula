@@ -97,7 +97,9 @@ impl HealthStatus {
     pub fn is_usable(&self) -> bool {
         match &self.state {
             HealthState::Healthy => true,
-            HealthState::Degraded { performance_impact, .. } => *performance_impact < 0.8,
+            HealthState::Degraded {
+                performance_impact, ..
+            } => *performance_impact < 0.8,
             HealthState::Unhealthy { .. } | HealthState::Unknown => false,
         }
     }
@@ -106,7 +108,9 @@ impl HealthStatus {
     pub fn score(&self) -> f64 {
         match &self.state {
             HealthState::Healthy => 1.0,
-            HealthState::Degraded { performance_impact, .. } => 1.0 - performance_impact,
+            HealthState::Degraded {
+                performance_impact, ..
+            } => 1.0 - performance_impact,
             HealthState::Unhealthy { .. } => 0.0,
             HealthState::Unknown => 0.5,
         }
@@ -120,7 +124,10 @@ pub trait HealthCheckable: Send + Sync {
     async fn health_check(&self) -> ResourceResult<HealthStatus>;
 
     /// Perform a detailed health check with additional context
-    async fn detailed_health_check(&self, context: &ResourceContext) -> ResourceResult<HealthStatus> {
+    async fn detailed_health_check(
+        &self,
+        context: &ResourceContext,
+    ) -> ResourceResult<HealthStatus> {
         // Default implementation just calls the basic health check
         self.health_check().await
     }

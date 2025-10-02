@@ -151,7 +151,10 @@ impl FromStr for Version {
 
         // Split on '-' for pre-release
         let (core_part, pre_release) = if let Some(pos) = version_part.find('-') {
-            (&version_part[..pos], Some(version_part[pos + 1..].to_string()))
+            (
+                &version_part[..pos],
+                Some(version_part[pos + 1..].to_string()),
+            )
         } else {
             (version_part, None)
         };

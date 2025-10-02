@@ -35,13 +35,21 @@ impl ResourceConfig for LoggerConfig {
         }
 
         match self.level.to_lowercase().as_str() {
-            "trace" | "debug" | "info" | "warn" | "error" => {},
-            _ => return Err(ResourceError::configuration("Invalid log level. Must be one of: trace, debug, info, warn, error")),
+            "trace" | "debug" | "info" | "warn" | "error" => {}
+            _ => {
+                return Err(ResourceError::configuration(
+                    "Invalid log level. Must be one of: trace, debug, info, warn, error",
+                ));
+            }
         }
 
         match self.format.to_lowercase().as_str() {
-            "json" | "pretty" | "compact" => {},
-            _ => return Err(ResourceError::configuration("Invalid format. Must be one of: json, pretty, compact")),
+            "json" | "pretty" | "compact" => {}
+            _ => {
+                return Err(ResourceError::configuration(
+                    "Invalid format. Must be one of: json, pretty, compact",
+                ));
+            }
         }
 
         Ok(())
@@ -118,7 +126,11 @@ impl Resource for LoggerResource {
         .with_default_scope(ResourceScope::Global)
     }
 
-    async fn create(&self, config: &Self::Config, context: &crate::core::context::ResourceContext) -> ResourceResult<Self::Instance> {
+    async fn create(
+        &self,
+        config: &Self::Config,
+        context: &crate::core::context::ResourceContext,
+    ) -> ResourceResult<Self::Instance> {
         config.validate()?;
 
         // Parse format
@@ -131,7 +143,7 @@ impl Resource for LoggerResource {
 
         // Initialize logger with nebula-log
         let logger_config = nebula_log::Config {
-            level: config.level.clone(),  // level is String in nebula-log Config
+            level: config.level.clone(), // level is String in nebula-log Config
             format,
             ..Default::default()
         };
@@ -139,11 +151,12 @@ impl Resource for LoggerResource {
         // Initialize logger with nebula-log
         // Note: The LoggerGuard is dropped immediately after initialization, which is fine
         // because nebula-log sets up a global logger that persists
-        let _guard = nebula_log::init_with(logger_config)
-            .map_err(|e| ResourceError::initialization(
+        let _guard = nebula_log::init_with(logger_config).map_err(|e| {
+            ResourceError::initialization(
                 "logger:1.0",
-                format!("Failed to initialize logger: {}", e)
-            ))?;
+                format!("Failed to initialize logger: {}", e),
+            )
+        })?;
 
         Ok(LoggerInstance {
             instance_id: uuid::Uuid::new_v4(),

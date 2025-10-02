@@ -49,15 +49,21 @@ impl ResourceConfig for MongoDbConfig {
         }
 
         if !self.url.starts_with("mongodb://") && !self.url.starts_with("mongodb+srv://") {
-            return Err(ResourceError::configuration("MongoDB URL must start with mongodb:// or mongodb+srv://"));
+            return Err(ResourceError::configuration(
+                "MongoDB URL must start with mongodb:// or mongodb+srv://",
+            ));
         }
 
         if self.database.is_empty() {
-            return Err(ResourceError::configuration("Database name cannot be empty"));
+            return Err(ResourceError::configuration(
+                "Database name cannot be empty",
+            ));
         }
 
         if self.timeout_seconds == 0 {
-            return Err(ResourceError::configuration("Timeout must be greater than 0"));
+            return Err(ResourceError::configuration(
+                "Timeout must be greater than 0",
+            ));
         }
 
         Ok(())
@@ -170,8 +176,10 @@ impl HealthCheckable for MongoDbInstance {
                 Ok(_) => Ok(HealthStatus::healthy()),
                 Err(e) => {
                     let latency = start.elapsed();
-                    Ok(HealthStatus::unhealthy(format!("MongoDB ping failed: {}", e))
-                        .with_latency(latency))
+                    Ok(
+                        HealthStatus::unhealthy(format!("MongoDB ping failed: {}", e))
+                            .with_latency(latency),
+                    )
                 }
             }
         }
@@ -183,14 +191,21 @@ impl HealthCheckable for MongoDbInstance {
         }
     }
 
-    async fn detailed_health_check(&self, _context: &ResourceContext) -> ResourceResult<HealthStatus> {
+    async fn detailed_health_check(
+        &self,
+        _context: &ResourceContext,
+    ) -> ResourceResult<HealthStatus> {
         #[cfg(feature = "mongodb")]
         {
             use mongodb::bson::doc;
 
             let start = std::time::Instant::now();
 
-            match self.database().run_command(doc! { "serverStatus": 1 }).await {
+            match self
+                .database()
+                .run_command(doc! { "serverStatus": 1 })
+                .await
+            {
                 Ok(status) => {
                     let latency = start.elapsed();
 
@@ -202,10 +217,12 @@ impl HealthCheckable for MongoDbInstance {
 
                     if let Some(connections) = status.get_document("connections").ok() {
                         if let Ok(current) = connections.get_i32("current") {
-                            health = health.with_metadata("connections_current", current.to_string());
+                            health =
+                                health.with_metadata("connections_current", current.to_string());
                         }
                         if let Ok(available) = connections.get_i32("available") {
-                            health = health.with_metadata("connections_available", available.to_string());
+                            health = health
+                                .with_metadata("connections_available", available.to_string());
                         }
                     }
 
@@ -215,9 +232,11 @@ impl HealthCheckable for MongoDbInstance {
                 }
                 Err(e) => {
                     let latency = start.elapsed();
-                    Ok(HealthStatus::unhealthy(format!("MongoDB serverStatus failed: {}", e))
-                        .with_latency(latency)
-                        .with_metadata("database", self.database_name.clone()))
+                    Ok(
+                        HealthStatus::unhealthy(format!("MongoDB serverStatus failed: {}", e))
+                            .with_latency(latency)
+                            .with_metadata("database", self.database_name.clone()),
+                    )
                 }
             }
         }
@@ -258,14 +277,12 @@ impl Resource for MongoDbResource {
         {
             use std::time::Duration;
 
-            let mut client_options = ClientOptions::parse(&config.url)
-                .await
-                .map_err(|e| {
-                    ResourceError::initialization(
-                        "mongodb:1.0",
-                        format!("Failed to parse MongoDB URL: {}", e),
-                    )
-                })?;
+            let mut client_options = ClientOptions::parse(&config.url).await.map_err(|e| {
+                ResourceError::initialization(
+                    "mongodb:1.0",
+                    format!("Failed to parse MongoDB URL: {}", e),
+                )
+            })?;
 
             if let Some(ref app_name) = config.app_name {
                 client_options.app_name = Some(app_name.clone());
@@ -281,24 +298,22 @@ impl Resource for MongoDbResource {
 
             client_options.connect_timeout = Some(Duration::from_secs(config.timeout_seconds));
 
-            let client = MongoClient::with_options(client_options)
-                .map_err(|e| {
-                    ResourceError::initialization(
-                        "mongodb:1.0",
-                        format!("Failed to create MongoDB client: {}", e),
-                    )
-                })?;
+            let client = MongoClient::with_options(client_options).map_err(|e| {
+                ResourceError::initialization(
+                    "mongodb:1.0",
+                    format!("Failed to create MongoDB client: {}", e),
+                )
+            })?;
 
             // Test connection with ping
             use mongodb::bson::doc;
             let db = client.database(&config.database);
-            db.run_command(doc! { "ping": 1 }).await
-                .map_err(|e| {
-                    ResourceError::initialization(
-                        "mongodb:1.0",
-                        format!("Failed to connect to MongoDB: {}", e),
-                    )
-                })?;
+            db.run_command(doc! { "ping": 1 }).await.map_err(|e| {
+                ResourceError::initialization(
+                    "mongodb:1.0",
+                    format!("Failed to connect to MongoDB: {}", e),
+                )
+            })?;
 
             Ok(MongoDbInstance {
                 instance_id: uuid::Uuid::new_v4(),

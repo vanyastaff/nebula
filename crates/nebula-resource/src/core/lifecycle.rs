@@ -191,11 +191,7 @@ pub struct LifecycleEvent {
 
 impl LifecycleEvent {
     /// Create a new lifecycle event
-    pub fn new(
-        resource_id: String,
-        from_state: LifecycleState,
-        to_state: LifecycleState,
-    ) -> Self {
+    pub fn new(resource_id: String, from_state: LifecycleState, to_state: LifecycleState) -> Self {
         Self {
             resource_id,
             from_state,

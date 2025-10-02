@@ -35,16 +35,22 @@ impl Default for MetricsConfig {
 impl ResourceConfig for MetricsConfig {
     fn validate(&self) -> ResourceResult<()> {
         if self.endpoint.is_empty() {
-            return Err(ResourceError::configuration("Metrics endpoint cannot be empty"));
+            return Err(ResourceError::configuration(
+                "Metrics endpoint cannot be empty",
+            ));
         }
 
         if self.namespace.is_empty() {
-            return Err(ResourceError::configuration("Metrics namespace cannot be empty"));
+            return Err(ResourceError::configuration(
+                "Metrics namespace cannot be empty",
+            ));
         }
 
         // Validate endpoint format
         if !self.endpoint.contains(':') {
-            return Err(ResourceError::configuration("Metrics endpoint must include port (e.g., 0.0.0.0:9090)"));
+            return Err(ResourceError::configuration(
+                "Metrics endpoint must include port (e.g., 0.0.0.0:9090)",
+            ));
         }
 
         Ok(())
@@ -165,18 +171,22 @@ impl Resource for MetricsResource {
         .with_default_scope(ResourceScope::Global)
     }
 
-    async fn create(&self, config: &Self::Config, context: &crate::core::context::ResourceContext) -> ResourceResult<Self::Instance> {
+    async fn create(
+        &self,
+        config: &Self::Config,
+        context: &crate::core::context::ResourceContext,
+    ) -> ResourceResult<Self::Instance> {
         config.validate()?;
 
         #[cfg(feature = "metrics")]
         let recorder = {
             let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
-            let handle = builder
-                .install_recorder()
-                .map_err(|e| ResourceError::initialization(
+            let handle = builder.install_recorder().map_err(|e| {
+                ResourceError::initialization(
                     "metrics:1.0",
-                    format!("Failed to install Prometheus recorder: {}", e)
-                ))?;
+                    format!("Failed to install Prometheus recorder: {}", e),
+                )
+            })?;
             Some(Arc::new(handle))
         };
 

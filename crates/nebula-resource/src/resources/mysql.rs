@@ -9,7 +9,7 @@ use crate::core::{
 };
 
 #[cfg(feature = "mysql")]
-use sqlx::{mysql::MySqlPoolOptions, MySqlPool, Row};
+use sqlx::{MySqlPool, Row, mysql::MySqlPoolOptions};
 
 /// MySQL/MariaDB configuration
 #[derive(Debug, Clone)]
@@ -36,7 +36,7 @@ impl Default for MySqlConfig {
             max_connections: 10,
             min_connections: 2,
             timeout_seconds: 30,
-            idle_timeout_seconds: Some(600), // 10 minutes
+            idle_timeout_seconds: Some(600),  // 10 minutes
             max_lifetime_seconds: Some(1800), // 30 minutes
         }
     }
@@ -49,19 +49,27 @@ impl ResourceConfig for MySqlConfig {
         }
 
         if !self.url.starts_with("mysql://") && !self.url.starts_with("mariadb://") {
-            return Err(ResourceError::configuration("MySQL URL must start with mysql:// or mariadb://"));
+            return Err(ResourceError::configuration(
+                "MySQL URL must start with mysql:// or mariadb://",
+            ));
         }
 
         if self.max_connections == 0 {
-            return Err(ResourceError::configuration("Max connections must be greater than 0"));
+            return Err(ResourceError::configuration(
+                "Max connections must be greater than 0",
+            ));
         }
 
         if self.min_connections > self.max_connections {
-            return Err(ResourceError::configuration("Min connections cannot exceed max connections"));
+            return Err(ResourceError::configuration(
+                "Min connections cannot exceed max connections",
+            ));
         }
 
         if self.timeout_seconds == 0 {
-            return Err(ResourceError::configuration("Timeout must be greater than 0"));
+            return Err(ResourceError::configuration(
+                "Timeout must be greater than 0",
+            ));
         }
 
         Ok(())
@@ -139,12 +147,9 @@ impl MySqlInstance {
     pub async fn execute_query(&self, query: &str) -> ResourceResult<u64> {
         self.touch();
 
-        let result = sqlx::query(query)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| {
-                ResourceError::internal("mysql:1.0", format!("Query execution failed: {}", e))
-            })?;
+        let result = sqlx::query(query).execute(&self.pool).await.map_err(|e| {
+            ResourceError::internal("mysql:1.0", format!("Query execution failed: {}", e))
+        })?;
 
         Ok(result.rows_affected())
     }
@@ -168,9 +173,7 @@ impl MySqlInstance {
         sqlx::query_as::<_, T>(query)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| {
-                ResourceError::internal("mysql:1.0", format!("Fetch failed: {}", e))
-            })
+            .map_err(|e| ResourceError::internal("mysql:1.0", format!("Fetch failed: {}", e)))
     }
 
     /// Fetch all rows
@@ -184,9 +187,7 @@ impl MySqlInstance {
         sqlx::query_as::<_, T>(query)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| {
-                ResourceError::internal("mysql:1.0", format!("Fetch failed: {}", e))
-            })
+            .map_err(|e| ResourceError::internal("mysql:1.0", format!("Fetch failed: {}", e)))
     }
 
     /// Begin a transaction
@@ -223,8 +224,10 @@ impl HealthCheckable for MySqlInstance {
                 Ok(_) => Ok(HealthStatus::healthy()),
                 Err(e) => {
                     let latency = start.elapsed();
-                    Ok(HealthStatus::unhealthy(format!("MySQL query failed: {}", e))
-                        .with_latency(latency))
+                    Ok(
+                        HealthStatus::unhealthy(format!("MySQL query failed: {}", e))
+                            .with_latency(latency),
+                    )
                 }
             }
         }
@@ -236,7 +239,10 @@ impl HealthCheckable for MySqlInstance {
         }
     }
 
-    async fn detailed_health_check(&self, _context: &ResourceContext) -> ResourceResult<HealthStatus> {
+    async fn detailed_health_check(
+        &self,
+        _context: &ResourceContext,
+    ) -> ResourceResult<HealthStatus> {
         #[cfg(feature = "mysql")]
         {
             let start = std::time::Instant::now();
@@ -265,10 +271,12 @@ impl HealthCheckable for MySqlInstance {
                 }
                 Err(e) => {
                     let latency = start.elapsed();
-                    Ok(HealthStatus::unhealthy(format!("MySQL query failed: {}", e))
-                        .with_latency(latency)
-                        .with_metadata("pool_size", size.to_string())
-                        .with_metadata("pool_max", max_size.to_string()))
+                    Ok(
+                        HealthStatus::unhealthy(format!("MySQL query failed: {}", e))
+                            .with_latency(latency)
+                            .with_metadata("pool_size", size.to_string())
+                            .with_metadata("pool_max", max_size.to_string()),
+                    )
                 }
             }
         }
@@ -313,22 +321,21 @@ impl Resource for MySqlResource {
                 .acquire_timeout(std::time::Duration::from_secs(config.timeout_seconds));
 
             if let Some(idle_timeout) = config.idle_timeout_seconds {
-                pool_options = pool_options.idle_timeout(std::time::Duration::from_secs(idle_timeout));
+                pool_options =
+                    pool_options.idle_timeout(std::time::Duration::from_secs(idle_timeout));
             }
 
             if let Some(max_lifetime) = config.max_lifetime_seconds {
-                pool_options = pool_options.max_lifetime(std::time::Duration::from_secs(max_lifetime));
+                pool_options =
+                    pool_options.max_lifetime(std::time::Duration::from_secs(max_lifetime));
             }
 
-            let pool = pool_options
-                .connect(&config.url)
-                .await
-                .map_err(|e| {
-                    ResourceError::initialization(
-                        "mysql:1.0",
-                        format!("Failed to connect to MySQL: {}", e),
-                    )
-                })?;
+            let pool = pool_options.connect(&config.url).await.map_err(|e| {
+                ResourceError::initialization(
+                    "mysql:1.0",
+                    format!("Failed to connect to MySQL: {}", e),
+                )
+            })?;
 
             Ok(MySqlInstance {
                 instance_id: uuid::Uuid::new_v4(),

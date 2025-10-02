@@ -18,11 +18,15 @@ pub struct CacheConfig {
 impl ResourceConfig for CacheConfig {
     fn validate(&self) -> ResourceResult<()> {
         if self.url.is_empty() {
-            return Err(crate::core::error::ResourceError::configuration("Cache URL cannot be empty"));
+            return Err(crate::core::error::ResourceError::configuration(
+                "Cache URL cannot be empty",
+            ));
         }
 
         if self.max_connections == 0 {
-            return Err(crate::core::error::ResourceError::configuration("Max connections must be greater than 0"));
+            return Err(crate::core::error::ResourceError::configuration(
+                "Max connections must be greater than 0",
+            ));
         }
 
         Ok(())

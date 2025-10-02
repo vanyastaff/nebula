@@ -23,15 +23,12 @@ use crate::core::{
     traits::{HealthCheckable, HealthStatus, Poolable},
 };
 
-use crate::pool::{PoolTrait, ResourcePool, PoolStrategy};
-use crate::health::{HealthChecker, HealthCheckConfig};
+use crate::health::{HealthCheckConfig, HealthChecker};
+use crate::pool::{PoolStrategy, PoolTrait, ResourcePool};
 
 /// Message for cleanup channel (async drop pattern)
 enum CleanupMessage {
-    Release {
-        instance_id: Uuid,
-        type_id: TypeId,
-    },
+    Release { instance_id: Uuid, type_id: TypeId },
 }
 
 /// Central manager for all resource operations
@@ -103,14 +100,18 @@ impl ResourceManager {
     /// Create a new resource manager with custom configuration
     pub fn with_config(config: ResourceManagerConfig) -> Self {
         let (cleanup_tx, mut cleanup_rx) = tokio::sync::mpsc::unbounded_channel();
-        let pools: Arc<DashMap<TypeId, Arc<dyn PoolTrait + Send + Sync>>> = Arc::new(DashMap::new());
+        let pools: Arc<DashMap<TypeId, Arc<dyn PoolTrait + Send + Sync>>> =
+            Arc::new(DashMap::new());
         let pools_clone = Arc::clone(&pools);
 
         // Spawn cleanup task for async drop handling
         tokio::spawn(async move {
             while let Some(msg) = cleanup_rx.recv().await {
                 match msg {
-                    CleanupMessage::Release { instance_id, type_id } => {
+                    CleanupMessage::Release {
+                        instance_id,
+                        type_id,
+                    } => {
                         if let Some(pool) = pools_clone.get(&type_id) {
                             let _ = pool.release_any(instance_id).await;
                         }
@@ -226,7 +227,8 @@ impl ResourceManager {
         self.validate_scope_access(resource_id, context)?;
 
         // Initialize dependencies in correct order before acquiring this resource
-        self.ensure_dependencies_initialized(resource_id, context).await?;
+        self.ensure_dependencies_initialized(resource_id, context)
+            .await?;
 
         // Get or create pool for this type
         let pool = if let Some(pool) = self.pools.get(&type_id) {
@@ -257,14 +259,13 @@ impl ResourceManager {
     {
         let factory = {
             let registry = self.registry.read();
-            registry
-                .get(resource_id)
-                .cloned()
-                .ok_or_else(|| ResourceError::unavailable(
+            registry.get(resource_id).cloned().ok_or_else(|| {
+                ResourceError::unavailable(
                     resource_id.unique_key(),
                     "Resource type not registered",
                     false,
-                ))?
+                )
+            })?
         };
 
         let factory_clone = Arc::clone(&factory);
@@ -305,10 +306,12 @@ impl ResourceManager {
                 // Cast to typed instance
                 let typed_instance = instance
                     .downcast_ref::<TypedResourceInstance<T>>()
-                    .ok_or_else(|| ResourceError::internal(
-                        "unknown",
-                        "Failed to cast instance to requested type",
-                    ))?
+                    .ok_or_else(|| {
+                        ResourceError::internal(
+                            "unknown",
+                            "Failed to cast instance to requested type",
+                        )
+                    })?
                     .clone();
 
                 // Emit ready event
@@ -360,9 +363,10 @@ impl ResourceManager {
 
     /// Get metadata for a specific resource type
     pub fn get_metadata(&self, resource_id: &ResourceId) -> Option<ResourceMetadata> {
-        self.metadata_cache.get(resource_id).map(|entry| entry.value().clone())
+        self.metadata_cache
+            .get(resource_id)
+            .map(|entry| entry.value().clone())
     }
-
 
     // Helper methods
 
@@ -383,7 +387,10 @@ impl ResourceManager {
 
         Err(ResourceError::unavailable(
             "unknown",
-            format!("No resource registered for type {}", std::any::type_name::<T>()),
+            format!(
+                "No resource registered for type {}",
+                std::any::type_name::<T>()
+            ),
             false,
         ))
     }
@@ -398,10 +405,9 @@ impl ResourceManager {
         // This is a simplified cast - in reality we'd need more sophisticated type handling
         instance
             .downcast_ref::<TypedResourceInstance<T>>()
-            .ok_or_else(|| ResourceError::internal(
-                "unknown",
-                "Failed to cast instance to requested type",
-            ))
+            .ok_or_else(|| {
+                ResourceError::internal("unknown", "Failed to cast instance to requested type")
+            })
             .map(|typed| typed.clone())
     }
 
@@ -458,11 +464,7 @@ impl ResourceManager {
 
             // Get metadata to find the TypeId
             let metadata = self.metadata_cache.get(dep_id).ok_or_else(|| {
-                ResourceError::unavailable(
-                    dep_id.unique_key(),
-                    "Dependency not registered",
-                    false,
-                )
+                ResourceError::unavailable(dep_id.unique_key(), "Dependency not registered", false)
             })?;
 
             // Check if pool exists by looking in registry
@@ -513,7 +515,10 @@ impl ResourceManager {
     }
 
     /// Get the health status of a specific instance
-    pub fn get_instance_health(&self, instance_id: &uuid::Uuid) -> Option<crate::health::HealthRecord> {
+    pub fn get_instance_health(
+        &self,
+        instance_id: &uuid::Uuid,
+    ) -> Option<crate::health::HealthRecord> {
         self.health_checker.get_health(instance_id)
     }
 
@@ -612,11 +617,7 @@ impl ResourceManager {
     ) -> ResourceResult<()> {
         // Get resource metadata
         let metadata = self.metadata_cache.get(resource_id).ok_or_else(|| {
-            ResourceError::unavailable(
-                resource_id.to_string(),
-                "Resource not registered",
-                false,
-            )
+            ResourceError::unavailable(resource_id.to_string(), "Resource not registered", false)
         })?;
 
         let resource_scope = &metadata.default_scope;
@@ -628,7 +629,14 @@ impl ResourceManager {
             (ResourceScope::Global, _) => Ok(()),
 
             // Tenant resources can only be accessed from the same tenant or broader
-            (ResourceScope::Tenant { tenant_id: res_tenant }, ResourceScope::Tenant { tenant_id: ctx_tenant }) => {
+            (
+                ResourceScope::Tenant {
+                    tenant_id: res_tenant,
+                },
+                ResourceScope::Tenant {
+                    tenant_id: ctx_tenant,
+                },
+            ) => {
                 if res_tenant == ctx_tenant {
                     Ok(())
                 } else {
@@ -644,16 +652,21 @@ impl ResourceManager {
             }
 
             // Tenant resources cannot be accessed from narrower scopes without matching tenant
-            (ResourceScope::Tenant { .. }, _) => {
-                Err(ResourceError::unavailable(
-                    resource_id.to_string(),
-                    "Tenant-scoped resource requires tenant context",
-                    false,
-                ))
-            }
+            (ResourceScope::Tenant { .. }, _) => Err(ResourceError::unavailable(
+                resource_id.to_string(),
+                "Tenant-scoped resource requires tenant context",
+                false,
+            )),
 
             // Workflow resources can only be accessed from the same workflow or broader
-            (ResourceScope::Workflow { workflow_id: res_wf }, ResourceScope::Workflow { workflow_id: ctx_wf }) => {
+            (
+                ResourceScope::Workflow {
+                    workflow_id: res_wf,
+                },
+                ResourceScope::Workflow {
+                    workflow_id: ctx_wf,
+                },
+            ) => {
                 if res_wf == ctx_wf {
                     Ok(())
                 } else {
@@ -669,15 +682,32 @@ impl ResourceManager {
             }
 
             // Workflow resources can be accessed from narrower scopes within the same workflow
-            (ResourceScope::Workflow { workflow_id: res_wf }, ResourceScope::Execution { .. }) |
-            (ResourceScope::Workflow { workflow_id: res_wf }, ResourceScope::Action { .. }) => {
+            (
+                ResourceScope::Workflow {
+                    workflow_id: res_wf,
+                },
+                ResourceScope::Execution { .. },
+            )
+            | (
+                ResourceScope::Workflow {
+                    workflow_id: res_wf,
+                },
+                ResourceScope::Action { .. },
+            ) => {
                 // In a real implementation, we'd verify the execution/action belongs to this workflow
                 // For now, we allow it (this would be enhanced with proper context tracking)
                 Ok(())
             }
 
             // Execution resources
-            (ResourceScope::Execution { execution_id: res_exec }, ResourceScope::Execution { execution_id: ctx_exec }) => {
+            (
+                ResourceScope::Execution {
+                    execution_id: res_exec,
+                },
+                ResourceScope::Execution {
+                    execution_id: ctx_exec,
+                },
+            ) => {
                 if res_exec == ctx_exec {
                     Ok(())
                 } else {
@@ -690,13 +720,25 @@ impl ResourceManager {
             }
 
             // Execution resources can be accessed from actions in the same execution
-            (ResourceScope::Execution { execution_id: res_exec }, ResourceScope::Action { .. }) => {
+            (
+                ResourceScope::Execution {
+                    execution_id: res_exec,
+                },
+                ResourceScope::Action { .. },
+            ) => {
                 // In a real implementation, we'd verify the action belongs to this execution
                 Ok(())
             }
 
             // Action resources
-            (ResourceScope::Action { action_id: res_action }, ResourceScope::Action { action_id: ctx_action }) => {
+            (
+                ResourceScope::Action {
+                    action_id: res_action,
+                },
+                ResourceScope::Action {
+                    action_id: ctx_action,
+                },
+            ) => {
                 if res_action == ctx_action {
                     Ok(())
                 } else {
@@ -709,16 +751,14 @@ impl ResourceManager {
             }
 
             // All other combinations are not allowed
-            _ => {
-                Err(ResourceError::unavailable(
-                    resource_id.to_string(),
-                    format!(
-                        "Scope mismatch: resource scope {:?} cannot be accessed from context scope {:?}",
-                        resource_scope, context_scope
-                    ),
-                    false,
-                ))
-            }
+            _ => Err(ResourceError::unavailable(
+                resource_id.to_string(),
+                format!(
+                    "Scope mismatch: resource scope {:?} cannot be accessed from context scope {:?}",
+                    resource_scope, context_scope
+                ),
+                false,
+            )),
         }
     }
 }
@@ -864,12 +904,24 @@ mod tests {
     }
 
     impl ResourceInstance for TestInstance {
-        fn instance_id(&self) -> Uuid { self.id }
-        fn resource_id(&self) -> &ResourceId { todo!() }
-        fn lifecycle_state(&self) -> LifecycleState { LifecycleState::Ready }
-        fn context(&self) -> &ResourceContext { todo!() }
-        fn created_at(&self) -> chrono::DateTime<chrono::Utc> { chrono::Utc::now() }
-        fn last_accessed_at(&self) -> Option<chrono::DateTime<chrono::Utc>> { None }
+        fn instance_id(&self) -> Uuid {
+            self.id
+        }
+        fn resource_id(&self) -> &ResourceId {
+            todo!()
+        }
+        fn lifecycle_state(&self) -> LifecycleState {
+            LifecycleState::Ready
+        }
+        fn context(&self) -> &ResourceContext {
+            todo!()
+        }
+        fn created_at(&self) -> chrono::DateTime<chrono::Utc> {
+            chrono::Utc::now()
+        }
+        fn last_accessed_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+            None
+        }
         fn touch(&self) {}
     }
 
@@ -879,10 +931,7 @@ mod tests {
         type Instance = TestInstance;
 
         fn metadata(&self) -> ResourceMetadata {
-            ResourceMetadata::new(
-                ResourceId::new("test", "1.0"),
-                "Test resource".to_string(),
-            )
+            ResourceMetadata::new(ResourceId::new("test", "1.0"), "Test resource".to_string())
         }
 
         async fn create(
@@ -890,9 +939,7 @@ mod tests {
             _config: &Self::Config,
             _context: &ResourceContext,
         ) -> ResourceResult<Self::Instance> {
-            Ok(TestInstance {
-                id: Uuid::new_v4(),
-            })
+            Ok(TestInstance { id: Uuid::new_v4() })
         }
     }
 
@@ -945,7 +992,9 @@ mod tests {
             "test-tenant".to_string(),
         );
         let resource_id = ResourceId::new("test", "1.0");
-        let result = manager.get_by_id::<TestInstance>(&resource_id, &context).await;
+        let result = manager
+            .get_by_id::<TestInstance>(&resource_id, &context)
+            .await;
 
         assert!(result.is_err());
         if let Err(e) = result {

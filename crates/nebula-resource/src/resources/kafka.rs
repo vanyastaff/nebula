@@ -26,15 +26,15 @@ use crate::core::{
     lifecycle::LifecycleState,
     resource::{Resource, ResourceConfig, ResourceId, ResourceInstance, ResourceMetadata},
     scoping::ResourceScope,
-    traits::{HealthCheckable, HealthStatus, Poolable, PoolConfig},
+    traits::{HealthCheckable, HealthStatus, PoolConfig, Poolable},
 };
 
 #[cfg(feature = "kafka")]
 use rdkafka::{
-    producer::{FutureProducer, FutureRecord},
-    consumer::{Consumer, StreamConsumer},
-    config::ClientConfig,
     Message,
+    config::ClientConfig,
+    consumer::{Consumer, StreamConsumer},
+    producer::{FutureProducer, FutureRecord},
 };
 
 /// Kafka producer configuration
@@ -290,10 +290,16 @@ impl KafkaProducerInstance {
             .set("client.id", &config.client_id)
             .set("compression.type", config.compression_type.as_str())
             .set("acks", config.acks.as_str())
-            .set("request.timeout.ms", config.request_timeout.as_millis().to_string())
+            .set(
+                "request.timeout.ms",
+                config.request_timeout.as_millis().to_string(),
+            )
             .set("batch.size", config.batch_size.to_string())
             .set("linger.ms", config.linger_ms.as_millis().to_string())
-            .set("max.in.flight.requests.per.connection", config.max_in_flight_requests.to_string())
+            .set(
+                "max.in.flight.requests.per.connection",
+                config.max_in_flight_requests.to_string(),
+            )
             .set("enable.idempotence", config.enable_idempotence.to_string());
 
         // Add extra configuration
@@ -371,9 +377,7 @@ impl KafkaProducerInstance {
         _key: Option<&[u8]>,
         _payload: &[u8],
     ) -> ResourceResult<(i32, i64)> {
-        Err(ResourceError::configuration(
-            "Kafka feature not enabled",
-        ))
+        Err(ResourceError::configuration("Kafka feature not enabled"))
     }
 
     /// Send a JSON message
@@ -399,10 +403,7 @@ impl KafkaProducerInstance {
     #[cfg(feature = "kafka")]
     pub async fn flush(&self, timeout: Duration) -> ResourceResult<()> {
         self.producer.flush(timeout).map_err(|e| {
-            ResourceError::internal(
-                "kafka_producer:1.0",
-                format!("Failed to flush: {}", e),
-            )
+            ResourceError::internal("kafka_producer:1.0", format!("Failed to flush: {}", e))
         })
     }
 }
@@ -475,7 +476,10 @@ impl Poolable for KafkaProducerInstance {
     }
 
     fn is_valid_for_pool(&self) -> bool {
-        matches!(self.lifecycle_state(), LifecycleState::Ready | LifecycleState::Idle)
+        matches!(
+            self.lifecycle_state(),
+            LifecycleState::Ready | LifecycleState::Idle
+        )
     }
 
     fn prepare_for_pool(&mut self) -> ResourceResult<()> {
@@ -576,9 +580,18 @@ impl KafkaConsumerInstance {
             .set("client.id", &config.client_id)
             .set("auto.offset.reset", config.auto_offset_reset.as_str())
             .set("enable.auto.commit", config.enable_auto_commit.to_string())
-            .set("auto.commit.interval.ms", config.auto_commit_interval.as_millis().to_string())
-            .set("session.timeout.ms", config.session_timeout.as_millis().to_string())
-            .set("max.poll.interval.ms", config.max_poll_interval.as_millis().to_string());
+            .set(
+                "auto.commit.interval.ms",
+                config.auto_commit_interval.as_millis().to_string(),
+            )
+            .set(
+                "session.timeout.ms",
+                config.session_timeout.as_millis().to_string(),
+            )
+            .set(
+                "max.poll.interval.ms",
+                config.max_poll_interval.as_millis().to_string(),
+            );
 
         // Add extra configuration
         for (key, value) in &config.extra_config {
@@ -677,12 +690,14 @@ impl KafkaConsumerInstance {
     /// Commit offsets manually
     #[cfg(feature = "kafka")]
     pub async fn commit(&self) -> ResourceResult<()> {
-        self.consumer.commit_consumer_state(rdkafka::consumer::CommitMode::Async).map_err(|e| {
-            ResourceError::internal(
-                "kafka_consumer:1.0",
-                format!("Failed to commit offsets: {}", e),
-            )
-        })
+        self.consumer
+            .commit_consumer_state(rdkafka::consumer::CommitMode::Async)
+            .map_err(|e| {
+                ResourceError::internal(
+                    "kafka_consumer:1.0",
+                    format!("Failed to commit offsets: {}", e),
+                )
+            })
     }
 }
 
@@ -805,14 +820,17 @@ pub struct KafkaMessage {
 impl KafkaMessage {
     /// Get payload as UTF-8 string
     pub fn payload_as_str(&self) -> ResourceResult<Option<&str>> {
-        self.payload.as_ref().map(|p| {
-            std::str::from_utf8(p).map_err(|e| {
-                ResourceError::internal(
-                    "kafka_message",
-                    format!("Failed to parse payload as UTF-8: {}", e),
-                )
+        self.payload
+            .as_ref()
+            .map(|p| {
+                std::str::from_utf8(p).map_err(|e| {
+                    ResourceError::internal(
+                        "kafka_message",
+                        format!("Failed to parse payload as UTF-8: {}", e),
+                    )
+                })
             })
-        }).transpose()
+            .transpose()
     }
 
     /// Get payload as JSON
@@ -821,26 +839,32 @@ impl KafkaMessage {
     where
         T: serde::de::DeserializeOwned,
     {
-        self.payload.as_ref().map(|p| {
-            serde_json::from_slice(p).map_err(|e| {
-                ResourceError::internal(
-                    "kafka_message",
-                    format!("Failed to parse payload as JSON: {}", e),
-                )
+        self.payload
+            .as_ref()
+            .map(|p| {
+                serde_json::from_slice(p).map_err(|e| {
+                    ResourceError::internal(
+                        "kafka_message",
+                        format!("Failed to parse payload as JSON: {}", e),
+                    )
+                })
             })
-        }).transpose()
+            .transpose()
     }
 
     /// Get key as UTF-8 string
     pub fn key_as_str(&self) -> ResourceResult<Option<&str>> {
-        self.key.as_ref().map(|k| {
-            std::str::from_utf8(k).map_err(|e| {
-                ResourceError::internal(
-                    "kafka_message",
-                    format!("Failed to parse key as UTF-8: {}", e),
-                )
+        self.key
+            .as_ref()
+            .map(|k| {
+                std::str::from_utf8(k).map_err(|e| {
+                    ResourceError::internal(
+                        "kafka_message",
+                        format!("Failed to parse key as UTF-8: {}", e),
+                    )
+                })
             })
-        }).transpose()
+            .transpose()
     }
 }
 

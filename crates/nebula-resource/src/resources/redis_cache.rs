@@ -230,9 +230,9 @@ impl RedisCacheInstance {
         let key = self.prefix_key(key);
         let mut conn = self.manager.clone();
 
-        conn.get(&key).await.map_err(|e| {
-            ResourceError::internal("redis-cache:1.0", format!("Get failed: {}", e))
-        })
+        conn.get(&key)
+            .await
+            .map_err(|e| ResourceError::internal("redis-cache:1.0", format!("Get failed: {}", e)))
     }
 
     /// Set a value in Redis
@@ -243,9 +243,9 @@ impl RedisCacheInstance {
         let key = self.prefix_key(key);
         let mut conn = self.manager.clone();
 
-        conn.set(&key, value).await.map_err(|e| {
-            ResourceError::internal("redis-cache:1.0", format!("Set failed: {}", e))
-        })
+        conn.set(&key, value)
+            .await
+            .map_err(|e| ResourceError::internal("redis-cache:1.0", format!("Set failed: {}", e)))
     }
 
     /// Set a value with expiration (in seconds)
@@ -256,9 +256,9 @@ impl RedisCacheInstance {
         let key = self.prefix_key(key);
         let mut conn = self.manager.clone();
 
-        conn.set_ex(&key, value, seconds).await.map_err(|e| {
-            ResourceError::internal("redis-cache:1.0", format!("SetEx failed: {}", e))
-        })
+        conn.set_ex(&key, value, seconds)
+            .await
+            .map_err(|e| ResourceError::internal("redis-cache:1.0", format!("SetEx failed: {}", e)))
     }
 
     /// Delete a key
@@ -310,9 +310,9 @@ impl RedisCacheInstance {
         let key = self.prefix_key(key);
         let mut conn = self.manager.clone();
 
-        conn.incr(&key, 1).await.map_err(|e| {
-            ResourceError::internal("redis-cache:1.0", format!("Incr failed: {}", e))
-        })
+        conn.incr(&key, 1)
+            .await
+            .map_err(|e| ResourceError::internal("redis-cache:1.0", format!("Incr failed: {}", e)))
     }
 
     /// Decrement a counter
@@ -323,9 +323,9 @@ impl RedisCacheInstance {
         let key = self.prefix_key(key);
         let mut conn = self.manager.clone();
 
-        conn.decr(&key, 1).await.map_err(|e| {
-            ResourceError::internal("redis-cache:1.0", format!("Decr failed: {}", e))
-        })
+        conn.decr(&key, 1)
+            .await
+            .map_err(|e| ResourceError::internal("redis-cache:1.0", format!("Decr failed: {}", e)))
     }
 
     /// Get the underlying connection manager
@@ -343,10 +343,7 @@ impl HealthCheckable for RedisCacheInstance {
         use redis::AsyncCommands;
         let mut conn = self.manager.clone();
 
-        match redis::cmd("PING")
-            .query_async::<_, String>(&mut conn)
-            .await
-        {
+        match redis::cmd("PING").query_async::<_, String>(&mut conn).await {
             Ok(_) => Ok(HealthStatus::healthy().with_latency(start.elapsed())),
             Err(e) => {
                 let latency = start.elapsed();
@@ -355,7 +352,10 @@ impl HealthCheckable for RedisCacheInstance {
         }
     }
 
-    async fn detailed_health_check(&self, _context: &ResourceContext) -> ResourceResult<HealthStatus> {
+    async fn detailed_health_check(
+        &self,
+        _context: &ResourceContext,
+    ) -> ResourceResult<HealthStatus> {
         let start = std::time::Instant::now();
 
         use redis::AsyncCommands;
@@ -401,12 +401,13 @@ impl HealthCheckable for RedisCacheInstance {
 #[async_trait::async_trait]
 impl HealthCheckable for RedisCacheInstance {
     async fn health_check(&self) -> ResourceResult<HealthStatus> {
-        Ok(HealthStatus::unhealthy(
-            "Redis feature not enabled",
-        ))
+        Ok(HealthStatus::unhealthy("Redis feature not enabled"))
     }
 
-    async fn detailed_health_check(&self, _context: &ResourceContext) -> ResourceResult<HealthStatus> {
+    async fn detailed_health_check(
+        &self,
+        _context: &ResourceContext,
+    ) -> ResourceResult<HealthStatus> {
         self.health_check().await
     }
 }

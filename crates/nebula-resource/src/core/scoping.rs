@@ -132,15 +132,24 @@ impl ResourceScope {
                 // Note: This is simplified - in reality we'd need context to check execution ownership
                 true
             }
-            (Self::Execution { execution_id: e1 }, Self::Execution { execution_id: e2 }) => e1 == e2,
+            (Self::Execution { execution_id: e1 }, Self::Execution { execution_id: e2 }) => {
+                e1 == e2
+            }
 
             // Action only contains itself
             (Self::Action { action_id: a1 }, Self::Action { action_id: a2 }) => a1 == a2,
 
             // Custom scopes only contain themselves
-            (Self::Custom { name: n1, attributes: a1 }, Self::Custom { name: n2, attributes: a2 }) => {
-                n1 == n2 && a1 == a2
-            }
+            (
+                Self::Custom {
+                    name: n1,
+                    attributes: a1,
+                },
+                Self::Custom {
+                    name: n2,
+                    attributes: a2,
+                },
+            ) => n1 == n2 && a1 == a2,
 
             // All other combinations
             _ => false,
@@ -176,7 +185,11 @@ impl ResourceScope {
             }
             Self::Action { action_id } => format!("Action scope (action: {})", action_id),
             Self::Custom { name, attributes } => {
-                format!("Custom scope '{}' with {} attributes", name, attributes.len())
+                format!(
+                    "Custom scope '{}' with {} attributes",
+                    name,
+                    attributes.len()
+                )
             }
         }
     }
@@ -208,7 +221,11 @@ pub enum ScopingStrategy {
 
 impl ScopingStrategy {
     /// Check if a resource scope is compatible with a requested scope using this strategy
-    pub fn is_compatible(&self, resource_scope: &ResourceScope, requested_scope: &ResourceScope) -> bool {
+    pub fn is_compatible(
+        &self,
+        resource_scope: &ResourceScope,
+        requested_scope: &ResourceScope,
+    ) -> bool {
         match self {
             Self::Strict => resource_scope == requested_scope,
             Self::Hierarchical => resource_scope.contains(requested_scope),

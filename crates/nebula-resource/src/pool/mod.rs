@@ -255,8 +255,9 @@ impl PerformanceMetrics {
 
     fn record_success(&mut self, response_time_ms: f64) {
         let total_ops = self.successful_ops + 1;
-        self.avg_response_time_ms =
-            (self.avg_response_time_ms * self.successful_ops as f64 + response_time_ms) / total_ops as f64;
+        self.avg_response_time_ms = (self.avg_response_time_ms * self.successful_ops as f64
+            + response_time_ms)
+            / total_ops as f64;
         self.successful_ops = total_ops;
         self.last_operation = Some(Instant::now());
     }
@@ -320,9 +321,9 @@ impl<T> PoolEntry<T> {
 
             match &health.state {
                 crate::core::traits::HealthState::Healthy => 1.0 * age_factor,
-                crate::core::traits::HealthState::Degraded { performance_impact, .. } => {
-                    (1.0 - performance_impact) * age_factor
-                }
+                crate::core::traits::HealthState::Degraded {
+                    performance_impact, ..
+                } => (1.0 - performance_impact) * age_factor,
                 crate::core::traits::HealthState::Unhealthy { .. } => 0.1 * age_factor,
                 crate::core::traits::HealthState::Unknown => 0.5 * age_factor,
             }
@@ -362,7 +363,10 @@ impl<T> PoolEntry<T> {
 #[async_trait]
 pub trait PoolTrait: Send + Sync {
     /// Acquire a resource from the pool as type-erased Any
-    async fn acquire_any(&self, context: &ResourceContext) -> ResourceResult<Arc<dyn Any + Send + Sync>>;
+    async fn acquire_any(
+        &self,
+        context: &ResourceContext,
+    ) -> ResourceResult<Arc<dyn Any + Send + Sync>>;
 
     /// Release a resource back to the pool
     async fn release_any(&self, instance_id: Uuid) -> ResourceResult<()>;
@@ -419,17 +423,17 @@ impl AdaptiveState {
         }
 
         // Calculate average response time for recent selections
-        let recent_avg: f64 = self.selection_history
+        let recent_avg: f64 = self
+            .selection_history
             .iter()
             .rev()
             .take(10)
             .map(|(_, rt)| rt)
-            .sum::<f64>() / 10.0;
+            .sum::<f64>()
+            / 10.0;
 
-        let overall_avg: f64 = self.selection_history
-            .iter()
-            .map(|(_, rt)| rt)
-            .sum::<f64>() / self.selection_history.len() as f64;
+        let overall_avg: f64 = self.selection_history.iter().map(|(_, rt)| rt).sum::<f64>()
+            / self.selection_history.len() as f64;
 
         // If recent performance is better, increase preference for current strategy
         if recent_avg < overall_avg * 0.9 {
@@ -453,7 +457,15 @@ pub struct ResourcePool<T> {
     /// Pool statistics
     stats: Arc<RwLock<PoolStats>>,
     /// Factory function for creating new resources
-    factory: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ResourceResult<TypedResourceInstance<T>>> + Send>> + Send + Sync>,
+    factory: Arc<
+        dyn Fn() -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = ResourceResult<TypedResourceInstance<T>>>
+                        + Send,
+                >,
+            > + Send
+            + Sync,
+    >,
     /// Resource health checker
     health_checker: Option<Arc<dyn HealthCheckable + Send + Sync>>,
     /// Weighted round robin state
@@ -470,7 +482,8 @@ where
     pub fn new<F, Fut>(config: PoolConfig, strategy: PoolStrategy, factory: F) -> Self
     where
         F: Fn() -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = ResourceResult<TypedResourceInstance<T>>> + Send + 'static,
+        Fut:
+            std::future::Future<Output = ResourceResult<TypedResourceInstance<T>>> + Send + 'static,
     {
         Self {
             config,
@@ -520,9 +533,10 @@ where
                 let mut stats = self.stats.write();
                 stats.active_count += 1;
                 let duration = start_time.elapsed();
-                stats.avg_acquisition_time_ms =
-                    (stats.avg_acquisition_time_ms * (stats.total_acquisitions - 1) as f64 +
-                     duration.as_millis() as f64) / stats.total_acquisitions as f64;
+                stats.avg_acquisition_time_ms = (stats.avg_acquisition_time_ms
+                    * (stats.total_acquisitions - 1) as f64
+                    + duration.as_millis() as f64)
+                    / stats.total_acquisitions as f64;
 
                 // Update wait time stats
                 stats.total_wait_time_ms += wait_time;
@@ -532,7 +546,11 @@ where
                 stats.utilization = stats.calculate_utilization(self.config.max_size);
             }
 
-            return Ok(PooledResource::new(instance_id, Arc::clone(&self.acquired), Arc::clone(&self.stats)));
+            return Ok(PooledResource::new(
+                instance_id,
+                Arc::clone(&self.acquired),
+                Arc::clone(&self.stats),
+            ));
         }
 
         // Create new resource if pool not at capacity
@@ -574,9 +592,10 @@ where
                 stats.peak_active_count = stats.active_count;
             }
             let duration = start_time.elapsed();
-            stats.avg_acquisition_time_ms =
-                (stats.avg_acquisition_time_ms * (stats.total_acquisitions - 1) as f64 +
-                 duration.as_millis() as f64) / stats.total_acquisitions as f64;
+            stats.avg_acquisition_time_ms = (stats.avg_acquisition_time_ms
+                * (stats.total_acquisitions - 1) as f64
+                + duration.as_millis() as f64)
+                / stats.total_acquisitions as f64;
 
             // Update wait time stats
             stats.total_wait_time_ms += wait_time;
@@ -586,7 +605,11 @@ where
             stats.utilization = stats.calculate_utilization(self.config.max_size);
         }
 
-        Ok(PooledResource::new(instance_id, Arc::clone(&self.acquired), Arc::clone(&self.stats)))
+        Ok(PooledResource::new(
+            instance_id,
+            Arc::clone(&self.acquired),
+            Arc::clone(&self.stats),
+        ))
     }
 
     /// Release a resource back to the pool
@@ -762,12 +785,8 @@ where
                     .map(|(i, _)| i)
                     .unwrap_or(0)
             }
-            PoolStrategy::WeightedRoundRobin => {
-                self.select_weighted_round_robin(&mut available)
-            }
-            PoolStrategy::Adaptive => {
-                self.select_adaptive(&mut available)
-            }
+            PoolStrategy::WeightedRoundRobin => self.select_weighted_round_robin(&mut available),
+            PoolStrategy::Adaptive => self.select_adaptive(&mut available),
         };
 
         Ok(Some(available.remove(index)))
@@ -847,7 +866,9 @@ where
                     (idx, score)
                 })
                 .max_by(|(_, score1), (_, score2)| {
-                    score1.partial_cmp(score2).unwrap_or(std::cmp::Ordering::Equal)
+                    score1
+                        .partial_cmp(score2)
+                        .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .map(|(idx, _)| idx)
                 .unwrap_or(0);
@@ -884,7 +905,10 @@ impl<T> PoolTrait for ResourcePool<T>
 where
     T: Send + Sync + 'static,
 {
-    async fn acquire_any(&self, _context: &ResourceContext) -> ResourceResult<Arc<dyn Any + Send + Sync>> {
+    async fn acquire_any(
+        &self,
+        _context: &ResourceContext,
+    ) -> ResourceResult<Arc<dyn Any + Send + Sync>> {
         let pooled = self.acquire().await?;
         let instance_id = pooled.instance_id();
 
@@ -894,7 +918,10 @@ where
             // Return the TypedResourceInstance wrapped as Any
             Ok(Arc::new(entry.instance.clone()) as Arc<dyn Any + Send + Sync>)
         } else {
-            Err(ResourceError::internal("pool", "Failed to get acquired instance"))
+            Err(ResourceError::internal(
+                "pool",
+                "Failed to get acquired instance",
+            ))
         }
     }
 
@@ -959,7 +986,9 @@ impl<T> PooledResource<T> {
     /// Get a cloned Arc to the underlying resource
     pub fn get_instance(&self) -> Option<Arc<T>> {
         let acquired = self.acquired.lock();
-        acquired.get(&self.instance_id()).map(|entry| Arc::clone(&entry.instance.instance))
+        acquired
+            .get(&self.instance_id())
+            .map(|entry| Arc::clone(&entry.instance.instance))
     }
 
     /// Get the instance ID
@@ -1006,9 +1035,7 @@ impl PoolManager {
         let pools = self.pools.read();
         let any_pool = pools.get(pool_id)?;
         // Safe downcast from Arc<dyn Any> to Arc<ResourcePool<T>>
-        Arc::clone(any_pool)
-            .downcast::<ResourcePool<T>>()
-            .ok()
+        Arc::clone(any_pool).downcast::<ResourcePool<T>>().ok()
     }
 
     /// Perform maintenance on all pools
@@ -1100,7 +1127,11 @@ mod tests {
             max_size: 5,
             ..Default::default()
         };
-        let pool = ResourcePool::new(config, PoolStrategy::WeightedRoundRobin, create_test_instance);
+        let pool = ResourcePool::new(
+            config,
+            PoolStrategy::WeightedRoundRobin,
+            create_test_instance,
+        );
 
         // Pre-populate pool with some resources
         let mut resources = Vec::new();

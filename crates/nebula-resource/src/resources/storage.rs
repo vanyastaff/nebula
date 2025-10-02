@@ -16,15 +16,21 @@ pub struct StorageConfig {
 impl ResourceConfig for StorageConfig {
     fn validate(&self) -> ResourceResult<()> {
         if self.endpoint.is_empty() {
-            return Err(crate::core::error::ResourceError::configuration("Storage endpoint cannot be empty"));
+            return Err(crate::core::error::ResourceError::configuration(
+                "Storage endpoint cannot be empty",
+            ));
         }
 
         if self.bucket.is_empty() {
-            return Err(crate::core::error::ResourceError::configuration("Storage bucket cannot be empty"));
+            return Err(crate::core::error::ResourceError::configuration(
+                "Storage bucket cannot be empty",
+            ));
         }
 
         if self.region.is_empty() {
-            return Err(crate::core::error::ResourceError::configuration("Storage region cannot be empty"));
+            return Err(crate::core::error::ResourceError::configuration(
+                "Storage region cannot be empty",
+            ));
         }
 
         Ok(())
@@ -101,7 +107,11 @@ impl Resource for StorageResource {
         .with_default_scope(ResourceScope::Global)
     }
 
-    async fn create(&self, config: &Self::Config, context: &crate::core::context::ResourceContext) -> ResourceResult<Self::Instance> {
+    async fn create(
+        &self,
+        config: &Self::Config,
+        context: &crate::core::context::ResourceContext,
+    ) -> ResourceResult<Self::Instance> {
         config.validate()?;
 
         Ok(StorageInstance {

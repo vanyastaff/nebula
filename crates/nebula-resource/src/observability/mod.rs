@@ -67,7 +67,10 @@ impl ResourceMetrics {
             #[cfg(feature = "metrics")]
             active_instances: metrics::gauge!("resource_active_instances", all_labels.clone()),
             #[cfg(feature = "metrics")]
-            acquisition_duration: metrics::histogram!("resource_acquisition_duration_seconds", all_labels.clone()),
+            acquisition_duration: metrics::histogram!(
+                "resource_acquisition_duration_seconds",
+                all_labels.clone()
+            ),
             #[cfg(feature = "metrics")]
             creations: metrics::counter!("resource_creations_total", all_labels.clone()),
             #[cfg(feature = "metrics")]

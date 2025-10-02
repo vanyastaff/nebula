@@ -16,7 +16,7 @@ use crate::core::{
     lifecycle::LifecycleState,
     resource::{Resource, ResourceConfig, ResourceId, ResourceInstance, ResourceMetadata},
     scoping::ResourceScope,
-    traits::{HealthCheckable, HealthStatus, Poolable, PoolConfig},
+    traits::{HealthCheckable, HealthStatus, PoolConfig, Poolable},
 };
 
 use nebula_resilience::{CircuitBreaker, CircuitBreakerConfig, RetryStrategy};
@@ -79,13 +79,19 @@ impl ResourceConfig for HttpClientConfig {
             return Err(ResourceError::configuration("Timeout cannot be zero"));
         }
         if self.connect_timeout.is_zero() {
-            return Err(ResourceError::configuration("Connect timeout cannot be zero"));
+            return Err(ResourceError::configuration(
+                "Connect timeout cannot be zero",
+            ));
         }
         if self.max_connections_per_host == 0 {
-            return Err(ResourceError::configuration("Max connections per host cannot be zero"));
+            return Err(ResourceError::configuration(
+                "Max connections per host cannot be zero",
+            ));
         }
         if self.max_redirects > 50 {
-            return Err(ResourceError::configuration("Max redirects cannot exceed 50"));
+            return Err(ResourceError::configuration(
+                "Max redirects cannot exceed 50",
+            ));
         }
         Ok(())
     }
@@ -266,15 +272,23 @@ impl HttpClientInstance {
     ) -> ResourceResult<HttpResponse> {
         self.touch();
         let json = serde_json::to_vec(body).map_err(|e| {
-            ResourceError::internal("http_client:1.0", format!("Failed to serialize JSON: {}", e))
+            ResourceError::internal(
+                "http_client:1.0",
+                format!("Failed to serialize JSON: {}", e),
+            )
         })?;
 
         let mut headers = HashMap::new();
         headers.insert("Content-Type".to_string(), "application/json".to_string());
 
         self.execute_with_resilience(|| async {
-            self.request(HttpMethod::Post, url, Some(headers.clone()), Some(json.clone()))
-                .await
+            self.request(
+                HttpMethod::Post,
+                url,
+                Some(headers.clone()),
+                Some(json.clone()),
+            )
+            .await
         })
         .await
     }
@@ -396,7 +410,11 @@ impl HttpClientInstance {
             if url.starts_with("http://") || url.starts_with("https://") {
                 url.to_string()
             } else {
-                format!("{}/{}", base.trim_end_matches('/'), url.trim_start_matches('/'))
+                format!(
+                    "{}/{}",
+                    base.trim_end_matches('/'),
+                    url.trim_start_matches('/')
+                )
             }
         } else {
             url.to_string()
@@ -438,15 +456,9 @@ impl HttpClientInstance {
                     operation: "http_request".to_string(),
                 }
             } else if e.is_connect() {
-                ResourceError::internal(
-                    "http_client:1.0",
-                    format!("Connection failed: {}", e),
-                )
+                ResourceError::internal("http_client:1.0", format!("Connection failed: {}", e))
             } else {
-                ResourceError::internal(
-                    "http_client:1.0",
-                    format!("Request failed: {}", e),
-                )
+                ResourceError::internal("http_client:1.0", format!("Request failed: {}", e))
             }
         })?;
 
@@ -557,8 +569,10 @@ impl HealthCheckable for HttpClientInstance {
                 }
                 Err(e) => {
                     let latency = start.elapsed();
-                    Ok(HealthStatus::unhealthy(format!("Health check failed: {}", e))
-                        .with_latency(latency))
+                    Ok(
+                        HealthStatus::unhealthy(format!("Health check failed: {}", e))
+                            .with_latency(latency),
+                    )
                 }
             }
         } else {
@@ -605,7 +619,10 @@ impl Poolable for HttpClientInstance {
     }
 
     fn is_valid_for_pool(&self) -> bool {
-        matches!(self.lifecycle_state(), LifecycleState::Ready | LifecycleState::Idle)
+        matches!(
+            self.lifecycle_state(),
+            LifecycleState::Ready | LifecycleState::Idle
+        )
     }
 
     fn prepare_for_pool(&mut self) -> ResourceResult<()> {
@@ -661,11 +678,7 @@ impl Resource for HttpClientResource {
     ) -> ResourceResult<Self::Instance> {
         config.validate()?;
 
-        HttpClientInstance::new(
-            self.metadata().id,
-            context.clone(),
-            config.clone(),
-        )
+        HttpClientInstance::new(self.metadata().id, context.clone(), config.clone())
     }
 
     async fn cleanup(&self, _instance: Self::Instance) -> ResourceResult<()> {
@@ -712,7 +725,10 @@ impl HttpResponse {
     /// Get response body as string
     pub fn text(&self) -> ResourceResult<String> {
         String::from_utf8(self.body.clone()).map_err(|e| {
-            ResourceError::internal("http_client", format!("Failed to parse response as UTF-8: {}", e))
+            ResourceError::internal(
+                "http_client",
+                format!("Failed to parse response as UTF-8: {}", e),
+            )
         })
     }
 
@@ -724,7 +740,10 @@ impl HttpResponse {
     {
         let text = self.text()?;
         serde_json::from_str(&text).map_err(|e| {
-            ResourceError::internal("http_client", format!("Failed to parse response as JSON: {}", e))
+            ResourceError::internal(
+                "http_client",
+                format!("Failed to parse response as JSON: {}", e),
+            )
         })
     }
 }
@@ -749,13 +768,21 @@ mod tests {
 
         config2.base_url = Some("https://api.example.com".to_string());
         config2.timeout = Duration::from_secs(60);
-        config2.default_headers.insert("Authorization".to_string(), "Bearer token".to_string());
+        config2
+            .default_headers
+            .insert("Authorization".to_string(), "Bearer token".to_string());
 
         config1.merge(config2);
 
-        assert_eq!(config1.base_url, Some("https://api.example.com".to_string()));
+        assert_eq!(
+            config1.base_url,
+            Some("https://api.example.com".to_string())
+        );
         assert_eq!(config1.timeout, Duration::from_secs(60));
-        assert_eq!(config1.default_headers.get("Authorization"), Some(&"Bearer token".to_string()));
+        assert_eq!(
+            config1.default_headers.get("Authorization"),
+            Some(&"Bearer token".to_string())
+        );
     }
 
     #[tokio::test]
@@ -824,12 +851,9 @@ mod tests {
             "test".to_string(),
         );
 
-        let instance = HttpClientInstance::new(
-            ResourceId::new("http_client", "1.0"),
-            context,
-            config,
-        )
-        .unwrap();
+        let instance =
+            HttpClientInstance::new(ResourceId::new("http_client", "1.0"), context, config)
+                .unwrap();
 
         assert!(instance.circuit_breaker.is_some());
     }
@@ -847,12 +871,9 @@ mod tests {
             "test".to_string(),
         );
 
-        let instance = HttpClientInstance::new(
-            ResourceId::new("http_client", "1.0"),
-            context,
-            config,
-        )
-        .unwrap();
+        let instance =
+            HttpClientInstance::new(ResourceId::new("http_client", "1.0"), context, config)
+                .unwrap();
 
         assert!(instance.retry_strategy.is_none());
         assert!(instance.circuit_breaker.is_none());

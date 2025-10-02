@@ -300,7 +300,10 @@ impl HealthCheckable for MemoryCacheInstance {
         let mut status = HealthStatus::healthy()
             .with_metadata("size", size.to_string())
             .with_metadata("capacity", capacity.to_string())
-            .with_metadata("utilization", format!("{:.1}%", (size as f64 / capacity as f64) * 100.0));
+            .with_metadata(
+                "utilization",
+                format!("{:.1}%", (size as f64 / capacity as f64) * 100.0),
+            );
 
         if let Some(stats) = self.stats() {
             status = status

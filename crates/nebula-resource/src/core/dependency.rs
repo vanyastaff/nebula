@@ -81,10 +81,7 @@ impl DependencyGraph {
 
     /// Get all dependencies for a resource
     pub fn get_dependencies(&self, resource: &ResourceId) -> Vec<ResourceId> {
-        self.dependencies
-            .get(resource)
-            .cloned()
-            .unwrap_or_default()
+        self.dependencies.get(resource).cloned().unwrap_or_default()
     }
 
     /// Get all dependents of a resource (what depends on this resource)
@@ -103,12 +100,9 @@ impl DependencyGraph {
 
         for node in self.dependencies.keys() {
             if !visited.contains(node) {
-                if let Some(cycle) = self.detect_cycle_dfs(
-                    node,
-                    &mut visited,
-                    &mut rec_stack,
-                    &mut path,
-                ) {
+                if let Some(cycle) =
+                    self.detect_cycle_dfs(node, &mut visited, &mut rec_stack, &mut path)
+                {
                     return Some(cycle);
                 }
             }

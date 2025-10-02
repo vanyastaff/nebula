@@ -30,7 +30,11 @@ pub struct StateVersion {
 impl StateVersion {
     /// Create a new state version
     pub fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 
     /// Check if this version is compatible with another
@@ -40,9 +44,9 @@ impl StateVersion {
 
     /// Check if this version is newer than another
     pub fn is_newer_than(&self, other: &StateVersion) -> bool {
-        self.major > other.major ||
-        (self.major == other.major && self.minor > other.minor) ||
-        (self.major == other.major && self.minor == other.minor && self.patch > other.patch)
+        self.major > other.major
+            || (self.major == other.major && self.minor > other.minor)
+            || (self.major == other.major && self.minor == other.minor && self.patch > other.patch)
     }
 }
 
@@ -72,11 +76,7 @@ pub struct PersistedState {
 
 impl PersistedState {
     /// Create a new persisted state
-    pub fn new(
-        resource_id: ResourceId,
-        version: StateVersion,
-        data: serde_json::Value,
-    ) -> Self {
+    pub fn new(resource_id: ResourceId, version: StateVersion, data: serde_json::Value) -> Self {
         let saved_at = chrono::Utc::now();
         let checksum = Self::calculate_checksum(&data, &saved_at);
 
@@ -102,7 +102,10 @@ impl PersistedState {
         self
     }
 
-    fn calculate_checksum(data: &serde_json::Value, timestamp: &chrono::DateTime<chrono::Utc>) -> String {
+    fn calculate_checksum(
+        data: &serde_json::Value,
+        timestamp: &chrono::DateTime<chrono::Utc>,
+    ) -> String {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
@@ -285,11 +288,7 @@ impl StateManager {
             )
         })?;
 
-        let persisted_state = PersistedState::new(
-            resource_id.clone(),
-            version,
-            serialized,
-        );
+        let persisted_state = PersistedState::new(resource_id.clone(), version, serialized);
 
         // Save to persistence backend
         self.persistence.save_state(&persisted_state).await?;
@@ -318,7 +317,9 @@ impl StateManager {
             let cache = self.cache.read();
             cache.get(resource_id).cloned()
         } {
-            return self.restore_state_from_persisted(resource, &cached_state, &current_version).await;
+            return self
+                .restore_state_from_persisted(resource, &cached_state, &current_version)
+                .await;
         }
 
         // Load from persistence
@@ -341,7 +342,8 @@ impl StateManager {
             cache.insert(resource_id.clone(), persisted_state.clone());
         }
 
-        self.restore_state_from_persisted(resource, &persisted_state, &current_version).await
+        self.restore_state_from_persisted(resource, &persisted_state, &current_version)
+            .await
     }
 
     /// Delete state for a resource
@@ -383,7 +385,10 @@ impl StateManager {
 
         // Migrate if necessary
         if &persisted_state.version != current_version {
-            if !self.migration.supports_migration(&persisted_state.version, current_version) {
+            if !self
+                .migration
+                .supports_migration(&persisted_state.version, current_version)
+            {
                 return Err(ResourceError::internal(
                     persisted_state.resource_id.unique_key(),
                     format!(

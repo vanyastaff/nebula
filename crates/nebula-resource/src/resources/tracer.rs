@@ -34,7 +34,9 @@ impl Default for TracerConfig {
 impl ResourceConfig for TracerConfig {
     fn validate(&self) -> ResourceResult<()> {
         if self.endpoint.is_empty() {
-            return Err(ResourceError::configuration("Tracer endpoint cannot be empty"));
+            return Err(ResourceError::configuration(
+                "Tracer endpoint cannot be empty",
+            ));
         }
 
         if self.service_name.is_empty() {
@@ -44,7 +46,9 @@ impl ResourceConfig for TracerConfig {
         #[cfg(feature = "tracing")]
         {
             if self.sample_rate < 0.0 || self.sample_rate > 1.0 {
-                return Err(ResourceError::configuration("Sample rate must be between 0.0 and 1.0"));
+                return Err(ResourceError::configuration(
+                    "Sample rate must be between 0.0 and 1.0",
+                ));
             }
         }
 
@@ -123,7 +127,11 @@ impl Resource for TracerResource {
         .with_default_scope(ResourceScope::Global)
     }
 
-    async fn create(&self, config: &Self::Config, context: &ResourceContext) -> ResourceResult<Self::Instance> {
+    async fn create(
+        &self,
+        config: &Self::Config,
+        context: &ResourceContext,
+    ) -> ResourceResult<Self::Instance> {
         config.validate()?;
 
         // Note: OpenTelemetry tracer initialization would go here when tracing feature is enabled

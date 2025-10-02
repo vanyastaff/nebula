@@ -9,7 +9,7 @@ use crate::core::{
 };
 
 #[cfg(feature = "postgres")]
-use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 
 /// PostgreSQL configuration
 #[derive(Debug, Clone)]
@@ -45,23 +45,33 @@ impl Default for PostgresConfig {
 impl ResourceConfig for PostgresConfig {
     fn validate(&self) -> ResourceResult<()> {
         if self.url.is_empty() {
-            return Err(ResourceError::configuration("PostgreSQL URL cannot be empty"));
+            return Err(ResourceError::configuration(
+                "PostgreSQL URL cannot be empty",
+            ));
         }
 
         if !self.url.starts_with("postgresql://") && !self.url.starts_with("postgres://") {
-            return Err(ResourceError::configuration("PostgreSQL URL must start with postgresql:// or postgres://"));
+            return Err(ResourceError::configuration(
+                "PostgreSQL URL must start with postgresql:// or postgres://",
+            ));
         }
 
         if self.max_connections == 0 {
-            return Err(ResourceError::configuration("Max connections must be greater than 0"));
+            return Err(ResourceError::configuration(
+                "Max connections must be greater than 0",
+            ));
         }
 
         if self.min_connections > self.max_connections {
-            return Err(ResourceError::configuration("Min connections cannot exceed max connections"));
+            return Err(ResourceError::configuration(
+                "Min connections cannot exceed max connections",
+            ));
         }
 
         if self.timeout_seconds == 0 {
-            return Err(ResourceError::configuration("Timeout must be greater than 0"));
+            return Err(ResourceError::configuration(
+                "Timeout must be greater than 0",
+            ));
         }
 
         Ok(())
@@ -140,12 +150,9 @@ impl PostgresInstance {
     pub async fn execute_query(&self, query: &str) -> ResourceResult<u64> {
         self.touch();
 
-        let result = sqlx::query(query)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| {
-                ResourceError::internal("postgres:1.0", format!("Query execution failed: {}", e))
-            })?;
+        let result = sqlx::query(query).execute(&self.pool).await.map_err(|e| {
+            ResourceError::internal("postgres:1.0", format!("Query execution failed: {}", e))
+        })?;
 
         Ok(result.rows_affected())
     }
@@ -169,9 +176,7 @@ impl PostgresInstance {
         sqlx::query_as::<_, T>(query)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| {
-                ResourceError::internal("postgres:1.0", format!("Fetch failed: {}", e))
-            })
+            .map_err(|e| ResourceError::internal("postgres:1.0", format!("Fetch failed: {}", e)))
     }
 
     /// Fetch all rows
@@ -185,9 +190,7 @@ impl PostgresInstance {
         sqlx::query_as::<_, T>(query)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| {
-                ResourceError::internal("postgres:1.0", format!("Fetch failed: {}", e))
-            })
+            .map_err(|e| ResourceError::internal("postgres:1.0", format!("Fetch failed: {}", e)))
     }
 
     /// Begin a transaction
@@ -224,8 +227,10 @@ impl HealthCheckable for PostgresInstance {
                 Ok(_) => Ok(HealthStatus::healthy()),
                 Err(e) => {
                     let latency = start.elapsed();
-                    Ok(HealthStatus::unhealthy(format!("PostgreSQL query failed: {}", e))
-                        .with_latency(latency))
+                    Ok(
+                        HealthStatus::unhealthy(format!("PostgreSQL query failed: {}", e))
+                            .with_latency(latency),
+                    )
                 }
             }
         }
@@ -237,7 +242,10 @@ impl HealthCheckable for PostgresInstance {
         }
     }
 
-    async fn detailed_health_check(&self, _context: &ResourceContext) -> ResourceResult<HealthStatus> {
+    async fn detailed_health_check(
+        &self,
+        _context: &ResourceContext,
+    ) -> ResourceResult<HealthStatus> {
         #[cfg(feature = "postgres")]
         {
             let start = std::time::Instant::now();
@@ -266,10 +274,12 @@ impl HealthCheckable for PostgresInstance {
                 }
                 Err(e) => {
                     let latency = start.elapsed();
-                    Ok(HealthStatus::unhealthy(format!("PostgreSQL query failed: {}", e))
-                        .with_latency(latency)
-                        .with_metadata("pool_size", size.to_string())
-                        .with_metadata("pool_max", max_size.to_string()))
+                    Ok(
+                        HealthStatus::unhealthy(format!("PostgreSQL query failed: {}", e))
+                            .with_latency(latency)
+                            .with_metadata("pool_size", size.to_string())
+                            .with_metadata("pool_max", max_size.to_string()),
+                    )
                 }
             }
         }

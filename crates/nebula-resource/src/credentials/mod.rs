@@ -125,7 +125,16 @@ impl Default for CredentialConfig {
 #[cfg(feature = "credentials")]
 pub struct CredentialRotationHandler {
     provider: Arc<ResourceCredentialProvider>,
-    rotation_callback: Option<Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = ResourceResult<()>> + Send>> + Send + Sync>>,
+    rotation_callback: Option<
+        Arc<
+            dyn Fn(
+                    String,
+                ) -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = ResourceResult<()>> + Send>,
+                > + Send
+                + Sync,
+        >,
+    >,
 }
 
 #[cfg(feature = "credentials")]

@@ -270,16 +270,34 @@ impl ResourceContext {
 
         // Basic context
         fields.insert("context_id".to_string(), self.context_id.to_string().into());
-        fields.insert("created_at".to_string(), self.created_at.to_rfc3339().into());
+        fields.insert(
+            "created_at".to_string(),
+            self.created_at.to_rfc3339().into(),
+        );
 
         // Workflow context
-        fields.insert("workflow_id".to_string(), self.workflow.workflow_id.clone().into());
-        fields.insert("workflow_name".to_string(), self.workflow.workflow_name.clone().into());
-        fields.insert("workflow_version".to_string(), self.workflow.workflow_version.clone().into());
+        fields.insert(
+            "workflow_id".to_string(),
+            self.workflow.workflow_id.clone().into(),
+        );
+        fields.insert(
+            "workflow_name".to_string(),
+            self.workflow.workflow_name.clone().into(),
+        );
+        fields.insert(
+            "workflow_version".to_string(),
+            self.workflow.workflow_version.clone().into(),
+        );
 
         // Execution context
-        fields.insert("execution_id".to_string(), self.execution.execution_id.clone().into());
-        fields.insert("attempt_number".to_string(), self.execution.attempt_number.into());
+        fields.insert(
+            "execution_id".to_string(),
+            self.execution.execution_id.clone().into(),
+        );
+        fields.insert(
+            "attempt_number".to_string(),
+            self.execution.attempt_number.into(),
+        );
 
         // Action context (if present)
         if let Some(ref action) = self.action {
@@ -300,7 +318,10 @@ impl ResourceContext {
         }
 
         // Environment context
-        fields.insert("environment".to_string(), self.environment.environment.clone().into());
+        fields.insert(
+            "environment".to_string(),
+            self.environment.environment.clone().into(),
+        );
         fields.insert("region".to_string(), self.environment.region.clone().into());
 
         // Scope
@@ -440,7 +461,11 @@ mod tests {
         let context = ResourceContext::builder()
             .workflow("wf-1".to_string(), "Test".to_string(), "2.0".to_string())
             .execution("ex-1".to_string(), 2)
-            .environment("prod".to_string(), "us-west-2".to_string(), "enterprise".to_string())
+            .environment(
+                "prod".to_string(),
+                "us-west-2".to_string(),
+                "enterprise".to_string(),
+            )
             .metadata("test_key", "test_value")
             .tag("env", "production")
             .build();
@@ -461,10 +486,8 @@ mod tests {
             "test".to_string(),
         );
 
-        let action_context = base_context.derive_for_action(
-            "action-789".to_string(),
-            "Test Action".to_string(),
-        );
+        let action_context =
+            base_context.derive_for_action("action-789".to_string(), "Test Action".to_string());
 
         assert_eq!(action_context.execution.execution_id, "ex-456");
         assert!(action_context.action.is_some());

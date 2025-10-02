@@ -40,19 +40,27 @@ impl Default for DatabaseConfig {
 impl ResourceConfig for DatabaseConfig {
     fn validate(&self) -> ResourceResult<()> {
         if self.url.is_empty() {
-            return Err(crate::core::error::ResourceError::configuration("Database URL cannot be empty"));
+            return Err(crate::core::error::ResourceError::configuration(
+                "Database URL cannot be empty",
+            ));
         }
 
         if self.max_connections == 0 {
-            return Err(crate::core::error::ResourceError::configuration("Max connections must be greater than 0"));
+            return Err(crate::core::error::ResourceError::configuration(
+                "Max connections must be greater than 0",
+            ));
         }
 
         if self.min_connections > self.max_connections {
-            return Err(crate::core::error::ResourceError::configuration("Min connections cannot exceed max connections"));
+            return Err(crate::core::error::ResourceError::configuration(
+                "Min connections cannot exceed max connections",
+            ));
         }
 
         if self.timeout_seconds == 0 {
-            return Err(crate::core::error::ResourceError::configuration("Timeout must be greater than 0"));
+            return Err(crate::core::error::ResourceError::configuration(
+                "Timeout must be greater than 0",
+            ));
         }
 
         Ok(())

@@ -74,11 +74,11 @@
 
 // Core modules
 pub mod core;
+pub mod health;
 pub mod manager;
+pub mod observability;
 pub mod pool;
 pub mod stateful;
-pub mod observability;
-pub mod health;
 
 // Feature-gated modules
 #[cfg(feature = "credentials")]

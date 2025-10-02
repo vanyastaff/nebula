@@ -161,10 +161,7 @@ impl ResourceError {
     }
 
     /// Create a configuration error with source
-    pub fn configuration_with_source<S: Into<String>, E>(
-        message: S,
-        source: E,
-    ) -> Self
+    pub fn configuration_with_source<S: Into<String>, E>(message: S, source: E) -> Self
     where
         E: std::error::Error + Send + Sync + 'static,
     {
@@ -175,10 +172,7 @@ impl ResourceError {
     }
 
     /// Create an initialization error
-    pub fn initialization<S1: Into<String>, S2: Into<String>>(
-        resource_id: S1,
-        reason: S2,
-    ) -> Self {
+    pub fn initialization<S1: Into<String>, S2: Into<String>>(resource_id: S1, reason: S2) -> Self {
         Self::Initialization {
             resource_id: resource_id.into(),
             reason: reason.into(),
@@ -240,10 +234,7 @@ impl ResourceError {
     }
 
     /// Create a cleanup error
-    pub fn cleanup<S1: Into<String>, S2: Into<String>>(
-        resource_id: S1,
-        reason: S2,
-    ) -> Self {
+    pub fn cleanup<S1: Into<String>, S2: Into<String>>(resource_id: S1, reason: S2) -> Self {
         Self::Cleanup {
             resource_id: resource_id.into(),
             reason: reason.into(),
@@ -324,10 +315,7 @@ impl ResourceError {
     }
 
     /// Create an internal error
-    pub fn internal<S1: Into<String>, S2: Into<String>>(
-        resource_id: S1,
-        message: S2,
-    ) -> Self {
+    pub fn internal<S1: Into<String>, S2: Into<String>>(resource_id: S1, message: S2) -> Self {
         Self::Internal {
             resource_id: resource_id.into(),
             message: message.into(),

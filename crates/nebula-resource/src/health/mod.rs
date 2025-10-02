@@ -101,10 +101,8 @@ impl HealthChecker {
                 }
 
                 // Perform health check with timeout
-                let check_result = tokio::time::timeout(
-                    check_timeout,
-                    instance.health_check()
-                ).await;
+                let check_result =
+                    tokio::time::timeout(check_timeout, instance.health_check()).await;
 
                 let status = match check_result {
                     Ok(Ok(status)) => {
@@ -298,11 +296,7 @@ mod tests {
         let healthy_instance = Arc::new(MockHealthCheckable {
             should_fail: Arc::new(RwLock::new(false)),
         });
-        checker.start_monitoring(
-            healthy_id,
-            ResourceId::new("test", "1.0"),
-            healthy_instance,
-        );
+        checker.start_monitoring(healthy_id, ResourceId::new("test", "1.0"), healthy_instance);
 
         // Add unhealthy instance
         let unhealthy_id = uuid::Uuid::new_v4();

@@ -15,11 +15,15 @@ pub struct MessageQueueConfig {
 impl ResourceConfig for MessageQueueConfig {
     fn validate(&self) -> ResourceResult<()> {
         if self.broker_url.is_empty() {
-            return Err(crate::core::error::ResourceError::configuration("Broker URL cannot be empty"));
+            return Err(crate::core::error::ResourceError::configuration(
+                "Broker URL cannot be empty",
+            ));
         }
 
         if self.topic_prefix.is_empty() {
-            return Err(crate::core::error::ResourceError::configuration("Topic prefix cannot be empty"));
+            return Err(crate::core::error::ResourceError::configuration(
+                "Topic prefix cannot be empty",
+            ));
         }
 
         Ok(())
@@ -92,7 +96,11 @@ impl Resource for MessageQueueResource {
         .with_default_scope(ResourceScope::Global)
     }
 
-    async fn create(&self, config: &Self::Config, context: &crate::core::context::ResourceContext) -> ResourceResult<Self::Instance> {
+    async fn create(
+        &self,
+        config: &Self::Config,
+        context: &crate::core::context::ResourceContext,
+    ) -> ResourceResult<Self::Instance> {
         config.validate()?;
 
         Ok(MessageQueueInstance {
