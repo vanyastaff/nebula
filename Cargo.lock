@@ -1937,9 +1937,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bon",
+ "chrono",
  "nebula-core",
  "nebula-derive",
  "nebula-error",
+ "nebula-value",
  "serde",
  "serde_json",
  "serde_with",
@@ -1960,7 +1962,9 @@ dependencies = [
  "nebula-value",
  "once_cell",
  "parking_lot",
+ "rand 0.8.5",
  "serde",
+ "serde_json",
  "thiserror 2.0.16",
  "tokio",
 ]
