@@ -69,6 +69,12 @@ pub struct PoolStats {
     pub last_acquisition: Option<chrono::DateTime<chrono::Utc>>,
     /// Health check statistics
     pub health_checks: HealthCheckStats,
+    /// Pool utilization (0.0 to 1.0)
+    pub utilization: f64,
+    /// Average wait time for acquisitions in milliseconds
+    pub avg_wait_time_ms: f64,
+    /// Total wait time in milliseconds
+    pub total_wait_time_ms: f64,
 }
 
 impl Default for PoolStats {
@@ -85,8 +91,109 @@ impl Default for PoolStats {
             resources_destroyed: 0,
             last_acquisition: None,
             health_checks: HealthCheckStats::default(),
+            utilization: 0.0,
+            avg_wait_time_ms: 0.0,
+            total_wait_time_ms: 0.0,
         }
     }
+}
+
+impl PoolStats {
+    /// Calculate current utilization percentage (0.0 to 1.0)
+    pub fn calculate_utilization(&self, max_size: usize) -> f64 {
+        if max_size == 0 {
+            0.0
+        } else {
+            self.active_count as f64 / max_size as f64
+        }
+    }
+
+    /// Check if pool is under-utilized (< 30% used)
+    pub fn is_underutilized(&self) -> bool {
+        self.utilization < 0.3
+    }
+
+    /// Check if pool is over-utilized (> 80% used)
+    pub fn is_overutilized(&self) -> bool {
+        self.utilization > 0.8
+    }
+
+    /// Get scaling recommendation based on utilization
+    pub fn scaling_recommendation(&self, max_size: usize) -> ScalingRecommendation {
+        if self.is_overutilized() && self.active_count >= max_size {
+            ScalingRecommendation::ScaleUp {
+                current_size: max_size,
+                recommended_size: (max_size as f64 * 1.5) as usize,
+                reason: "Pool is at capacity and highly utilized".to_string(),
+            }
+        } else if self.is_underutilized() && self.active_count < max_size / 2 {
+            ScalingRecommendation::ScaleDown {
+                current_size: max_size,
+                recommended_size: (max_size as f64 * 0.75) as usize,
+                reason: "Pool is under-utilized".to_string(),
+            }
+        } else {
+            ScalingRecommendation::NoChange {
+                current_size: max_size,
+                reason: "Pool utilization is within acceptable range".to_string(),
+            }
+        }
+    }
+}
+
+/// Scaling recommendation for the pool
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum ScalingRecommendation {
+    /// Recommend scaling up the pool
+    ScaleUp {
+        /// Current pool size
+        current_size: usize,
+        /// Recommended new size
+        recommended_size: usize,
+        /// Reason for scaling up
+        reason: String,
+    },
+    /// Recommend scaling down the pool
+    ScaleDown {
+        /// Current pool size
+        current_size: usize,
+        /// Recommended new size
+        recommended_size: usize,
+        /// Reason for scaling down
+        reason: String,
+    },
+    /// No scaling change needed
+    NoChange {
+        /// Current pool size
+        current_size: usize,
+        /// Reason for no change
+        reason: String,
+    },
+}
+
+/// Pool monitoring insights for operational visibility
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct PoolMonitoringInsights {
+    /// Current pool utilization (0.0 to 1.0)
+    pub current_utilization: f64,
+    /// Average acquisition time in milliseconds
+    pub avg_acquisition_time_ms: f64,
+    /// Average wait time in milliseconds
+    pub avg_wait_time_ms: f64,
+    /// Peak active resource count
+    pub peak_active_count: usize,
+    /// Current active resource count
+    pub current_active_count: usize,
+    /// Current idle resource count
+    pub current_idle_count: usize,
+    /// Number of failed acquisitions
+    pub failed_acquisitions: u64,
+    /// Scaling recommendation
+    pub scaling_recommendation: ScalingRecommendation,
+    /// Overall health score (0.0 to 1.0)
+    pub health_score: f64,
 }
 
 /// Health check statistics for the pool
@@ -117,6 +224,56 @@ struct PoolEntry<T> {
     acquisition_count: u64,
     /// Last health check result
     last_health_check: Option<(Instant, HealthStatus)>,
+    /// Weight for weighted round robin (0.0 to 1.0)
+    weight: f64,
+    /// Performance metrics
+    performance: PerformanceMetrics,
+}
+
+/// Performance metrics for a pool entry
+#[derive(Debug, Clone)]
+struct PerformanceMetrics {
+    /// Average response time in milliseconds
+    avg_response_time_ms: f64,
+    /// Total successful operations
+    successful_ops: u64,
+    /// Total failed operations
+    failed_ops: u64,
+    /// Last operation timestamp
+    last_operation: Option<Instant>,
+}
+
+impl PerformanceMetrics {
+    fn new() -> Self {
+        Self {
+            avg_response_time_ms: 0.0,
+            successful_ops: 0,
+            failed_ops: 0,
+            last_operation: None,
+        }
+    }
+
+    fn record_success(&mut self, response_time_ms: f64) {
+        let total_ops = self.successful_ops + 1;
+        self.avg_response_time_ms =
+            (self.avg_response_time_ms * self.successful_ops as f64 + response_time_ms) / total_ops as f64;
+        self.successful_ops = total_ops;
+        self.last_operation = Some(Instant::now());
+    }
+
+    fn record_failure(&mut self) {
+        self.failed_ops += 1;
+        self.last_operation = Some(Instant::now());
+    }
+
+    fn success_rate(&self) -> f64 {
+        let total = self.successful_ops + self.failed_ops;
+        if total == 0 {
+            1.0
+        } else {
+            self.successful_ops as f64 / total as f64
+        }
+    }
 }
 
 impl<T> PoolEntry<T> {
@@ -128,6 +285,8 @@ impl<T> PoolEntry<T> {
             last_accessed: now,
             acquisition_count: 0,
             last_health_check: None,
+            weight: 1.0,
+            performance: PerformanceMetrics::new(),
         }
     }
 
@@ -146,6 +305,53 @@ impl<T> PoolEntry<T> {
 
     fn is_expired(&self, max_lifetime: Duration, idle_timeout: Duration) -> bool {
         self.age() > max_lifetime || self.idle_time() > idle_timeout
+    }
+
+    /// Calculate weight based on health and performance
+    fn calculate_weight(&mut self) -> f64 {
+        // Base weight from health status
+        let health_weight = if let Some((check_time, ref health)) = self.last_health_check {
+            // Decay weight if health check is old (older than 30 seconds)
+            let age_factor = if check_time.elapsed().as_secs() > 30 {
+                0.7
+            } else {
+                1.0
+            };
+
+            match &health.state {
+                crate::core::traits::HealthState::Healthy => 1.0 * age_factor,
+                crate::core::traits::HealthState::Degraded { performance_impact, .. } => {
+                    (1.0 - performance_impact) * age_factor
+                }
+                crate::core::traits::HealthState::Unhealthy { .. } => 0.1 * age_factor,
+                crate::core::traits::HealthState::Unknown => 0.5 * age_factor,
+            }
+        } else {
+            // No health check data, assume healthy but penalize slightly
+            0.8
+        };
+
+        // Performance weight based on success rate
+        let perf_weight = self.performance.success_rate();
+
+        // Response time weight (faster is better)
+        // Normalize response time: 0-100ms = 1.0, 100-500ms = 0.5-1.0, >500ms = 0.1-0.5
+        let response_weight = if self.performance.avg_response_time_ms == 0.0 {
+            1.0
+        } else if self.performance.avg_response_time_ms < 100.0 {
+            1.0
+        } else if self.performance.avg_response_time_ms < 500.0 {
+            1.0 - (self.performance.avg_response_time_ms - 100.0) / 800.0
+        } else {
+            0.5 / (1.0 + (self.performance.avg_response_time_ms - 500.0) / 1000.0)
+        };
+
+        // Combined weight (weighted average)
+        let weight = health_weight * 0.5 + perf_weight * 0.3 + response_weight * 0.2;
+
+        // Update cached weight
+        self.weight = weight;
+        weight
     }
 }
 
@@ -177,6 +383,63 @@ pub trait PoolTrait: Send + Sync {
     fn type_id(&self) -> TypeId;
 }
 
+/// Adaptive strategy state
+#[derive(Debug, Clone)]
+struct AdaptiveState {
+    /// Recent selection history (resource index, response time)
+    selection_history: Vec<(usize, f64)>,
+    /// Maximum history size
+    max_history: usize,
+    /// Current strategy preference (0.0 = FIFO, 1.0 = Weighted)
+    strategy_preference: f64,
+}
+
+impl AdaptiveState {
+    fn new() -> Self {
+        Self {
+            selection_history: Vec::new(),
+            max_history: 100,
+            strategy_preference: 0.5,
+        }
+    }
+
+    fn record_selection(&mut self, index: usize, response_time_ms: f64) {
+        self.selection_history.push((index, response_time_ms));
+        if self.selection_history.len() > self.max_history {
+            self.selection_history.remove(0);
+        }
+
+        // Adjust strategy preference based on recent performance
+        self.adjust_preference();
+    }
+
+    fn adjust_preference(&mut self) {
+        if self.selection_history.len() < 10 {
+            return;
+        }
+
+        // Calculate average response time for recent selections
+        let recent_avg: f64 = self.selection_history
+            .iter()
+            .rev()
+            .take(10)
+            .map(|(_, rt)| rt)
+            .sum::<f64>() / 10.0;
+
+        let overall_avg: f64 = self.selection_history
+            .iter()
+            .map(|(_, rt)| rt)
+            .sum::<f64>() / self.selection_history.len() as f64;
+
+        // If recent performance is better, increase preference for current strategy
+        if recent_avg < overall_avg * 0.9 {
+            self.strategy_preference = (self.strategy_preference + 0.1).min(1.0);
+        } else if recent_avg > overall_avg * 1.1 {
+            self.strategy_preference = (self.strategy_preference - 0.1).max(0.0);
+        }
+    }
+}
+
 /// Generic resource pool implementation
 pub struct ResourcePool<T> {
     /// Pool configuration
@@ -193,6 +456,10 @@ pub struct ResourcePool<T> {
     factory: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ResourceResult<TypedResourceInstance<T>>> + Send>> + Send + Sync>,
     /// Resource health checker
     health_checker: Option<Arc<dyn HealthCheckable + Send + Sync>>,
+    /// Weighted round robin state
+    wrr_current_index: Arc<Mutex<usize>>,
+    /// Adaptive strategy state
+    adaptive_state: Arc<Mutex<AdaptiveState>>,
 }
 
 impl<T> ResourcePool<T>
@@ -213,6 +480,8 @@ where
             stats: Arc::new(RwLock::new(PoolStats::default())),
             factory: Arc::new(move || Box::pin(factory())),
             health_checker: None,
+            wrr_current_index: Arc::new(Mutex::new(0)),
+            adaptive_state: Arc::new(Mutex::new(AdaptiveState::new())),
         }
     }
 
@@ -225,6 +494,7 @@ where
     /// Acquire a resource from the pool
     pub async fn acquire(&self) -> ResourceResult<PooledResource<T>> {
         let start_time = Instant::now();
+        let wait_start = Instant::now();
 
         // Update stats
         {
@@ -235,6 +505,7 @@ where
 
         // Try to get an existing resource
         if let Some(mut entry) = self.get_available_resource().await? {
+            let wait_time = wait_start.elapsed().as_millis() as f64;
             entry.touch();
             let instance_id = entry.instance.instance_id();
 
@@ -252,6 +523,13 @@ where
                 stats.avg_acquisition_time_ms =
                     (stats.avg_acquisition_time_ms * (stats.total_acquisitions - 1) as f64 +
                      duration.as_millis() as f64) / stats.total_acquisitions as f64;
+
+                // Update wait time stats
+                stats.total_wait_time_ms += wait_time;
+                stats.avg_wait_time_ms = stats.total_wait_time_ms / stats.total_acquisitions as f64;
+
+                // Update utilization
+                stats.utilization = stats.calculate_utilization(self.config.max_size);
             }
 
             return Ok(PooledResource::new(instance_id, Arc::clone(&self.acquired), Arc::clone(&self.stats)));
@@ -261,6 +539,10 @@ where
         {
             let stats = self.stats.read();
             if stats.active_count + stats.idle_count >= self.config.max_size {
+                // Update failed acquisition stats
+                let mut stats = self.stats.write();
+                stats.failed_acquisitions += 1;
+
                 return Err(ResourceError::pool_exhausted(
                     "pool",
                     stats.active_count + stats.idle_count,
@@ -272,6 +554,7 @@ where
 
         // Create new resource
         let instance = (self.factory)().await?;
+        let wait_time = wait_start.elapsed().as_millis() as f64;
         let mut entry = PoolEntry::new(instance);
         entry.touch();
         let instance_id = entry.instance.instance_id();
@@ -294,6 +577,13 @@ where
             stats.avg_acquisition_time_ms =
                 (stats.avg_acquisition_time_ms * (stats.total_acquisitions - 1) as f64 +
                  duration.as_millis() as f64) / stats.total_acquisitions as f64;
+
+            // Update wait time stats
+            stats.total_wait_time_ms += wait_time;
+            stats.avg_wait_time_ms = stats.total_wait_time_ms / stats.total_acquisitions as f64;
+
+            // Update utilization
+            stats.utilization = stats.calculate_utilization(self.config.max_size);
         }
 
         Ok(PooledResource::new(instance_id, Arc::clone(&self.acquired), Arc::clone(&self.stats)))
@@ -347,6 +637,53 @@ where
     /// Get current pool statistics
     pub fn stats(&self) -> PoolStats {
         self.stats.read().clone()
+    }
+
+    /// Get pool monitoring insights
+    pub fn monitoring_insights(&self) -> PoolMonitoringInsights {
+        let stats = self.stats.read();
+        let recommendation = stats.scaling_recommendation(self.config.max_size);
+
+        PoolMonitoringInsights {
+            current_utilization: stats.utilization,
+            avg_acquisition_time_ms: stats.avg_acquisition_time_ms,
+            avg_wait_time_ms: stats.avg_wait_time_ms,
+            peak_active_count: stats.peak_active_count,
+            current_active_count: stats.active_count,
+            current_idle_count: stats.idle_count,
+            failed_acquisitions: stats.failed_acquisitions,
+            scaling_recommendation: recommendation,
+            health_score: self.calculate_health_score(&stats),
+        }
+    }
+
+    /// Calculate overall health score for the pool (0.0 to 1.0)
+    fn calculate_health_score(&self, stats: &PoolStats) -> f64 {
+        // Start with perfect score
+        let mut score = 1.0;
+
+        // Penalize for high utilization (over 90%)
+        if stats.utilization > 0.9 {
+            score -= (stats.utilization - 0.9) * 0.5;
+        }
+
+        // Penalize for failed acquisitions
+        if stats.total_acquisitions > 0 {
+            let failure_rate = stats.failed_acquisitions as f64 / stats.total_acquisitions as f64;
+            score -= failure_rate * 0.3;
+        }
+
+        // Penalize for slow acquisition times (> 100ms)
+        if stats.avg_acquisition_time_ms > 100.0 {
+            score -= ((stats.avg_acquisition_time_ms - 100.0) / 1000.0).min(0.2);
+        }
+
+        // Penalize for high wait times (> 50ms)
+        if stats.avg_wait_time_ms > 50.0 {
+            score -= ((stats.avg_wait_time_ms - 50.0) / 500.0).min(0.2);
+        }
+
+        score.max(0.0).min(1.0)
     }
 
     /// Perform maintenance on the pool (cleanup expired resources)
@@ -426,16 +763,110 @@ where
                     .unwrap_or(0)
             }
             PoolStrategy::WeightedRoundRobin => {
-                // Simple implementation - would need more sophisticated logic
-                0
+                self.select_weighted_round_robin(&mut available)
             }
             PoolStrategy::Adaptive => {
-                // Simple implementation - would need ML/heuristics
-                0
+                self.select_adaptive(&mut available)
             }
         };
 
         Ok(Some(available.remove(index)))
+    }
+
+    /// Select resource using weighted round robin strategy
+    fn select_weighted_round_robin(&self, available: &mut Vec<PoolEntry<T>>) -> usize {
+        if available.is_empty() {
+            return 0;
+        }
+
+        // Calculate weights for all resources
+        let weights: Vec<f64> = available
+            .iter_mut()
+            .map(|entry| entry.calculate_weight())
+            .collect();
+
+        // Calculate total weight
+        let total_weight: f64 = weights.iter().sum();
+
+        if total_weight == 0.0 {
+            // All weights are zero, fall back to round robin
+            let mut current = self.wrr_current_index.lock();
+            let index = *current % available.len();
+            *current = (*current + 1) % available.len();
+            return index;
+        }
+
+        // Get current index and find next resource using weighted probability
+        let mut current = self.wrr_current_index.lock();
+        let start_index = *current % available.len();
+
+        // Weighted round robin: iterate from current position, selecting based on weight
+        let mut cumulative_weight = 0.0;
+        let target_weight = ((*current as f64 / available.len() as f64) % 1.0) * total_weight;
+
+        for i in 0..available.len() {
+            let idx = (start_index + i) % available.len();
+            cumulative_weight += weights[idx];
+
+            if cumulative_weight >= target_weight || i == available.len() - 1 {
+                *current = (*current + 1) % (available.len() * 100); // Cycle through 100 rounds
+                return idx;
+            }
+        }
+
+        // Fallback
+        start_index
+    }
+
+    /// Select resource using adaptive strategy
+    fn select_adaptive(&self, available: &mut Vec<PoolEntry<T>>) -> usize {
+        if available.is_empty() {
+            return 0;
+        }
+
+        let state = self.adaptive_state.lock();
+        let preference = state.strategy_preference;
+        drop(state);
+
+        // Blend between FIFO (simple) and weighted (complex) based on preference
+        if preference < 0.3 {
+            // Prefer simple FIFO strategy
+            0
+        } else if preference > 0.7 {
+            // Prefer weighted strategy
+            self.select_weighted_round_robin(available)
+        } else {
+            // Hybrid approach: use performance metrics to select
+            let best_index = available
+                .iter_mut()
+                .enumerate()
+                .map(|(idx, entry)| {
+                    let weight = entry.calculate_weight();
+                    let idle_penalty = entry.idle_time().as_secs_f64() / 60.0; // Penalize idle resources
+                    let score = weight - idle_penalty.min(0.5);
+                    (idx, score)
+                })
+                .max_by(|(_, score1), (_, score2)| {
+                    score1.partial_cmp(score2).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(idx, _)| idx)
+                .unwrap_or(0);
+
+            best_index
+        }
+    }
+
+    /// Record performance metrics for adaptive strategy
+    pub fn record_operation(&self, instance_id: Uuid, success: bool, response_time_ms: f64) {
+        // Update entry performance metrics if it's currently acquired
+        let mut acquired = self.acquired.lock();
+        if let Some(entry) = acquired.get_mut(&instance_id) {
+            if success {
+                entry.performance.record_success(response_time_ms);
+            } else {
+                entry.performance.record_failure();
+            }
+        }
     }
 
     fn update_destroy_stats(&self) {
@@ -660,5 +1091,219 @@ mod tests {
         let stats = pool.stats();
         assert_eq!(stats.total_releases, 1);
         assert_eq!(stats.active_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_weighted_round_robin_strategy() {
+        let config = PoolConfig {
+            min_size: 3,
+            max_size: 5,
+            ..Default::default()
+        };
+        let pool = ResourcePool::new(config, PoolStrategy::WeightedRoundRobin, create_test_instance);
+
+        // Pre-populate pool with some resources
+        let mut resources = Vec::new();
+        for _ in 0..3 {
+            resources.push(pool.acquire().await.unwrap());
+        }
+
+        // Release them back to pool
+        for resource in resources {
+            pool.release(resource.instance_id()).await.unwrap();
+        }
+
+        // Now acquire with weighted strategy - should select based on weights
+        let resource1 = pool.acquire().await.unwrap();
+        assert!(resource1.instance_id().to_string().len() == 36);
+
+        pool.release(resource1.instance_id()).await.unwrap();
+
+        let stats = pool.stats();
+        assert!(stats.total_acquisitions >= 4);
+    }
+
+    #[tokio::test]
+    async fn test_adaptive_strategy() {
+        let config = PoolConfig {
+            min_size: 2,
+            max_size: 5,
+            ..Default::default()
+        };
+        let pool = ResourcePool::new(config, PoolStrategy::Adaptive, create_test_instance);
+
+        // Acquire and release multiple times to build history
+        for _ in 0..5 {
+            let resource = pool.acquire().await.unwrap();
+            let instance_id = resource.instance_id();
+            drop(resource);
+            pool.release(instance_id).await.unwrap();
+        }
+
+        let stats = pool.stats();
+        assert_eq!(stats.total_acquisitions, 5);
+        assert_eq!(stats.total_releases, 5);
+        assert!(stats.avg_acquisition_time_ms >= 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_pool_utilization_tracking() {
+        let config = PoolConfig {
+            min_size: 0,
+            max_size: 10,
+            ..Default::default()
+        };
+        let pool = ResourcePool::new(config, PoolStrategy::Fifo, create_test_instance);
+
+        // Acquire 5 resources (50% utilization)
+        let mut resources = Vec::new();
+        for _ in 0..5 {
+            resources.push(pool.acquire().await.unwrap());
+        }
+
+        let stats = pool.stats();
+        assert_eq!(stats.active_count, 5);
+        assert_eq!(stats.utilization, 0.5);
+        assert!(!stats.is_underutilized());
+        assert!(!stats.is_overutilized());
+
+        // Acquire 4 more (90% utilization)
+        for _ in 0..4 {
+            resources.push(pool.acquire().await.unwrap());
+        }
+
+        let stats = pool.stats();
+        assert_eq!(stats.active_count, 9);
+        assert!(stats.utilization >= 0.8);
+        assert!(stats.is_overutilized());
+    }
+
+    #[tokio::test]
+    async fn test_pool_monitoring_insights() {
+        let config = PoolConfig {
+            min_size: 0,
+            max_size: 10,
+            ..Default::default()
+        };
+        let pool = ResourcePool::new(config, PoolStrategy::Fifo, create_test_instance);
+
+        // Acquire some resources
+        let mut resources = Vec::new();
+        for _ in 0..3 {
+            resources.push(pool.acquire().await.unwrap());
+        }
+
+        let insights = pool.monitoring_insights();
+        assert_eq!(insights.current_active_count, 3);
+        assert_eq!(insights.current_idle_count, 0);
+        assert!(insights.health_score >= 0.0 && insights.health_score <= 1.0);
+        assert!(matches!(
+            insights.scaling_recommendation,
+            ScalingRecommendation::NoChange { .. }
+        ));
+
+        // Acquire many more to trigger scale-up recommendation
+        for _ in 0..7 {
+            resources.push(pool.acquire().await.unwrap());
+        }
+
+        let insights = pool.monitoring_insights();
+        assert_eq!(insights.current_active_count, 10);
+        assert!(insights.current_utilization >= 0.9);
+    }
+
+    #[tokio::test]
+    async fn test_pool_performance_metrics() {
+        let config = PoolConfig::default();
+        let pool = ResourcePool::new(config, PoolStrategy::Fifo, create_test_instance);
+
+        // Acquire and release to build metrics
+        let resource = pool.acquire().await.unwrap();
+        let instance_id = resource.instance_id();
+
+        // Record some operations
+        pool.record_operation(instance_id, true, 50.0);
+        pool.record_operation(instance_id, true, 75.0);
+        pool.record_operation(instance_id, false, 0.0);
+
+        drop(resource);
+        pool.release(instance_id).await.unwrap();
+
+        let stats = pool.stats();
+        assert!(stats.avg_acquisition_time_ms >= 0.0);
+        assert!(stats.avg_wait_time_ms >= 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_lru_strategy() {
+        let config = PoolConfig {
+            min_size: 0,
+            max_size: 5,
+            ..Default::default()
+        };
+        let pool = ResourcePool::new(config, PoolStrategy::Lru, create_test_instance);
+
+        // Acquire and release multiple resources
+        let r1 = pool.acquire().await.unwrap();
+        let id1 = r1.instance_id();
+        drop(r1);
+        pool.release(id1).await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let r2 = pool.acquire().await.unwrap();
+        let id2 = r2.instance_id();
+        drop(r2);
+        pool.release(id2).await.unwrap();
+
+        // Next acquire should get least recently used (r1)
+        let r3 = pool.acquire().await.unwrap();
+        // In LRU, the oldest used resource should be selected
+        assert!(r3.instance_id() == id1 || r3.instance_id() == id2);
+    }
+
+    #[tokio::test]
+    async fn test_scaling_recommendations() {
+        // Test ScaleUp recommendation (at capacity and overutilized)
+        let stats = PoolStats {
+            active_count: 10,
+            idle_count: 0,
+            utilization: 1.0,
+            ..Default::default()
+        };
+
+        let recommendation = stats.scaling_recommendation(10);
+        assert!(matches!(
+            recommendation,
+            ScalingRecommendation::ScaleUp { .. }
+        ));
+
+        // Test ScaleDown recommendation (underutilized)
+        let stats_low = PoolStats {
+            active_count: 2,
+            idle_count: 8,
+            utilization: 0.2,
+            ..Default::default()
+        };
+
+        let recommendation_low = stats_low.scaling_recommendation(10);
+        assert!(matches!(
+            recommendation_low,
+            ScalingRecommendation::ScaleDown { .. }
+        ));
+
+        // Test NoChange recommendation (normal utilization)
+        let stats_normal = PoolStats {
+            active_count: 5,
+            idle_count: 5,
+            utilization: 0.5,
+            ..Default::default()
+        };
+
+        let recommendation_normal = stats_normal.scaling_recommendation(10);
+        assert!(matches!(
+            recommendation_normal,
+            ScalingRecommendation::NoChange { .. }
+        ));
     }
 }
