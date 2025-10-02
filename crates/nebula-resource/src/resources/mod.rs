@@ -30,7 +30,7 @@ pub mod storage;
 pub mod observability;
 
 // Re-exports for convenience
-pub use database::DatabaseResource;
+pub use database::{DatabaseResource, MySqlResource};
 pub use cache::CacheResource;
 pub use memory_cache::MemoryCacheResource;
 #[cfg(feature = "redis")]
