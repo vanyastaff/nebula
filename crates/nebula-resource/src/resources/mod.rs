@@ -1,6 +1,6 @@
 //! Built-in resource implementations
-
 /// HTTP client resources
+pub mod redis_cache;
 pub mod http_client;
 
 /// Database resources
@@ -25,3 +25,4 @@ pub use cache::CacheResource;
 pub use message_queue::MessageQueueResource;
 pub use storage::StorageResource;
 pub use observability::{LoggerResource, MetricsResource, TracerResource};
+pub use redis_cache::RedisCacheResource;

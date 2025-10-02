@@ -37,6 +37,8 @@ pooling = []
 
 # Database support
 postgres = ["dep:sqlx"]
+mysql = ["dep:sqlx"]
+redis = ["dep:redis"]
 
 # Testing utilities
 testing = ["dep:mockall", "dep:test-case"]
@@ -86,7 +88,8 @@ metrics-exporter-prometheus = { version = "0.12", optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 
 # Database drivers
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono"], optional = true }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "mysql", "uuid", "chrono"], optional = true }
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager"], optional = true }
 
 # Resource pooling (custom implementation)
 # Note: deadpool and bb8 removed - we use custom pool implementation
