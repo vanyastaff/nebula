@@ -261,21 +261,24 @@ impl BumpAllocator {
                     let usage = new_current - self.start_addr;
                     atomic_max(&self.peak_usage, usage);
 
-                    // Fill with pattern before returning
+                    // Calculate return pointer with proper provenance
+                    let offset = aligned - self.start_addr;
+                    let ptr = unsafe {
+                        // SAFETY: offset is within bounds (checked by compare_exchange)
+                        // Cast to mut is safe for allocator - we own the memory
+                        (self.memory.as_ptr() as *mut u8).add(offset)
+                    };
+
+                    // Fill with pattern if configured
+                    // Note: This uses interior mutability through raw pointers
                     if let Some(pattern) = self.config.alloc_pattern {
-                        let offset = aligned - self.start_addr;
-                        if let Some(slice) = self.memory.get(offset..offset + actual_size) {
-                            unsafe {
-                                let slice_mut = core::slice::from_raw_parts_mut(
-                                    slice.as_ptr() as *mut u8,
-                                    slice.len()
-                                );
-                                MemoryOps::secure_fill_slice(slice_mut, pattern);
-                            }
+                        unsafe {
+                            // SAFETY: We just allocated this memory, it's uninitialized
+                            core::ptr::write_bytes(ptr, pattern, actual_size);
                         }
                     }
 
-                    return Some(unsafe { NonNull::new_unchecked(aligned as *mut u8) });
+                    return Some(unsafe { NonNull::new_unchecked(ptr) });
                 }
                 Err(_) => {
                     attempts += 1;

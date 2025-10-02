@@ -35,6 +35,7 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-value/benches" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-value/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-memory/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-memory/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />
