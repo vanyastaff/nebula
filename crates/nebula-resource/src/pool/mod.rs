@@ -1,6 +1,6 @@
 //! Resource pooling system
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,10 +12,14 @@ use uuid::Uuid;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
+    context::ResourceContext,
     error::{ResourceError, ResourceResult},
     resource::{ResourceId, TypedResourceInstance},
-    traits::{HealthCheckable, HealthStatus, PoolConfig},
+    traits::{HealthCheckable, HealthStatus},
 };
+
+// Re-export types for public API
+pub use crate::core::traits::PoolConfig;
 
 /// Strategy for selecting resources from the pool
 #[derive(Debug, Clone, PartialEq)]
@@ -143,6 +147,34 @@ impl<T> PoolEntry<T> {
     fn is_expired(&self, max_lifetime: Duration, idle_timeout: Duration) -> bool {
         self.age() > max_lifetime || self.idle_time() > idle_timeout
     }
+}
+
+/// Type-erased trait for resource pool operations
+///
+/// This trait allows ResourceManager to work with pools of different types
+/// without knowing the concrete type parameter at compile time.
+#[async_trait]
+pub trait PoolTrait: Send + Sync {
+    /// Acquire a resource from the pool as type-erased Any
+    async fn acquire_any(&self, context: &ResourceContext) -> ResourceResult<Arc<dyn Any + Send + Sync>>;
+
+    /// Release a resource back to the pool
+    async fn release_any(&self, instance_id: Uuid) -> ResourceResult<()>;
+
+    /// Perform health checks on all pool resources
+    async fn health_check_all(&self) -> ResourceResult<Vec<HealthStatus>>;
+
+    /// Get pool statistics
+    fn stats(&self) -> PoolStats;
+
+    /// Perform maintenance on the pool
+    async fn maintain(&self) -> ResourceResult<()>;
+
+    /// Shutdown the pool
+    async fn shutdown(&self) -> ResourceResult<()>;
+
+    /// Get the TypeId for the resource type this pool manages
+    fn type_id(&self) -> TypeId;
 }
 
 /// Generic resource pool implementation
@@ -319,28 +351,36 @@ where
 
     /// Perform maintenance on the pool (cleanup expired resources)
     pub async fn maintain(&self) -> ResourceResult<()> {
-        let mut available = self.available.lock();
-        let initial_count = available.len();
+        let (initial_count, removed_count, current_len) = {
+            let mut available = self.available.lock();
+            let initial_count = available.len();
 
-        // Remove expired resources
-        available.retain(|entry| {
-            !entry.is_expired(self.config.max_lifetime, self.config.idle_timeout)
-        });
+            // Remove expired resources
+            available.retain(|entry| {
+                !entry.is_expired(self.config.max_lifetime, self.config.idle_timeout)
+            });
 
-        let removed_count = initial_count - available.len();
+            let removed_count = initial_count - available.len();
+            let current_len = available.len();
 
-        // Update stats
-        {
-            let mut stats = self.stats.write();
-            stats.resources_destroyed += removed_count as u64;
-            stats.idle_count = available.len();
-        }
+            // Update stats
+            {
+                let mut stats = self.stats.write();
+                stats.resources_destroyed += removed_count as u64;
+                stats.idle_count = current_len;
+            }
+
+            (initial_count, removed_count, current_len)
+        };
 
         // Ensure minimum pool size
-        while available.len() < self.config.min_size {
+        let mut current_count = current_len;
+        while current_count < self.config.min_size {
             match (self.factory)().await {
                 Ok(instance) => {
+                    let mut available = self.available.lock();
                     available.push(PoolEntry::new(instance));
+                    current_count = available.len();
                 }
                 Err(_) => break, // Can't create more resources
             }
@@ -404,6 +444,64 @@ where
     }
 }
 
+/// Implementation of PoolTrait for ResourcePool<T>
+///
+/// This provides type-erased access to pool operations, allowing the ResourceManager
+/// to store and use pools of different types uniformly.
+#[async_trait]
+impl<T> PoolTrait for ResourcePool<T>
+where
+    T: Send + Sync + 'static,
+{
+    async fn acquire_any(&self, _context: &ResourceContext) -> ResourceResult<Arc<dyn Any + Send + Sync>> {
+        let pooled = self.acquire().await?;
+        let instance_id = pooled.instance_id();
+
+        // Get the actual instance from the pooled resource
+        let acquired = self.acquired.lock();
+        if let Some(entry) = acquired.get(&instance_id) {
+            // Return the TypedResourceInstance wrapped as Any
+            Ok(Arc::new(entry.instance.clone()) as Arc<dyn Any + Send + Sync>)
+        } else {
+            Err(ResourceError::internal("pool", "Failed to get acquired instance"))
+        }
+    }
+
+    async fn release_any(&self, instance_id: Uuid) -> ResourceResult<()> {
+        self.release(instance_id).await
+    }
+
+    async fn health_check_all(&self) -> ResourceResult<Vec<HealthStatus>> {
+        let mut statuses = Vec::new();
+
+        // Check all available resources
+        let available = self.available.lock();
+        for entry in available.iter() {
+            if let Some((_, status)) = &entry.last_health_check {
+                statuses.push(status.clone());
+            }
+        }
+
+        Ok(statuses)
+    }
+
+    fn stats(&self) -> PoolStats {
+        self.stats()
+    }
+
+    async fn maintain(&self) -> ResourceResult<()> {
+        self.maintain().await
+    }
+
+    async fn shutdown(&self) -> ResourceResult<()> {
+        self.shutdown().await
+    }
+
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<T>()
+    }
+}
+
 /// A resource that's been acquired from a pool
 pub struct PooledResource<T> {
     /// Instance ID
@@ -427,10 +525,10 @@ impl<T> PooledResource<T> {
         }
     }
 
-    /// Get a reference to the underlying resource
-    pub fn as_ref(&self) -> Option<&T> {
+    /// Get a cloned Arc to the underlying resource
+    pub fn get_instance(&self) -> Option<Arc<T>> {
         let acquired = self.acquired.lock();
-        acquired.get(&self.instance_id).map(|entry| entry.instance.as_ref())
+        acquired.get(&self.instance_id()).map(|entry| Arc::clone(&entry.instance.instance))
     }
 
     /// Get the instance ID

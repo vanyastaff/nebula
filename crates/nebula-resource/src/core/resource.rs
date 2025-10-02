@@ -332,6 +332,12 @@ impl<T> Clone for TypedResourceInstance<T> {
     }
 }
 
+impl<T> AsRef<T> for TypedResourceInstance<T> {
+    fn as_ref(&self) -> &T {
+        &self.instance
+    }
+}
+
 impl<T> fmt::Debug for TypedResourceInstance<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TypedResourceInstance")

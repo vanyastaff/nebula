@@ -20,6 +20,7 @@ use crate::core::{
 };
 
 /// Resource metrics collector
+#[derive(Clone)]
 pub struct ResourceMetrics {
     /// Resource acquisition counter
     #[cfg(feature = "metrics")]
@@ -346,6 +347,12 @@ impl ObservabilityCollector {
 
     /// Get or create metrics for a resource type
     pub fn get_resource_metrics(&self, resource_id: &ResourceId) -> ResourceMetrics {
+        let metrics = self.resource_metrics.read();
+        if let Some(m) = metrics.get(resource_id) {
+            return m.clone();
+        }
+        drop(metrics);
+
         let mut metrics = self.resource_metrics.write();
         metrics
             .entry(resource_id.clone())
@@ -358,7 +365,7 @@ impl ObservabilityCollector {
         if self.config.events_enabled {
             let obs_event = ObservabilityEvent {
                 timestamp: event.timestamp,
-                resource_id: ResourceId::new(&event.resource_id, "1.0"), // Simplified
+                resource_id: ResourceId::new(event.resource_id.clone(), "1.0".to_string()), // Simplified
                 event_type: ObservabilityEventType::Lifecycle(event.from_state, event.to_state),
                 data: event.metadata.clone().unwrap_or_default(),
                 context: None,

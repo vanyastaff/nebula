@@ -22,16 +22,23 @@ use crate::core::{
     traits::{HealthCheckable, HealthStatus, Poolable},
 };
 
-#[cfg(feature = "pooling")]
-use crate::pool::{PoolManager, ResourcePool};
+use crate::pool::{PoolTrait, ResourcePool, PoolStrategy};
+
+/// Message for cleanup channel (async drop pattern)
+enum CleanupMessage {
+    Release {
+        instance_id: Uuid,
+        type_id: TypeId,
+    },
+}
 
 /// Central manager for all resource operations
 pub struct ResourceManager {
     /// Registry of resource factories
     registry: Arc<RwLock<HashMap<ResourceId, Arc<dyn ResourceFactory>>>>,
 
-    /// Active resource instances by scope and type
-    instances: Arc<DashMap<String, Arc<dyn Any + Send + Sync>>>,
+    /// Resource pools by TypeId
+    pools: Arc<DashMap<TypeId, Arc<dyn PoolTrait + Send + Sync>>>,
 
     /// Resource metadata cache
     metadata_cache: Arc<DashMap<ResourceId, ResourceMetadata>>,
@@ -39,9 +46,8 @@ pub struct ResourceManager {
     /// Lifecycle event subscribers
     event_subscribers: Arc<RwLock<Vec<futures::channel::mpsc::UnboundedSender<LifecycleEvent>>>>,
 
-    /// Pool manager for resource pooling
-    #[cfg(feature = "pooling")]
-    pool_manager: Arc<PoolManager>,
+    /// Cleanup channel for async drop operations
+    cleanup_tx: tokio::sync::mpsc::UnboundedSender<CleanupMessage>,
 
     /// Configuration
     config: ResourceManagerConfig,
@@ -85,13 +91,29 @@ impl ResourceManager {
 
     /// Create a new resource manager with custom configuration
     pub fn with_config(config: ResourceManagerConfig) -> Self {
+        let (cleanup_tx, mut cleanup_rx) = tokio::sync::mpsc::unbounded_channel();
+        let pools: Arc<DashMap<TypeId, Arc<dyn PoolTrait + Send + Sync>>> = Arc::new(DashMap::new());
+        let pools_clone = Arc::clone(&pools);
+
+        // Spawn cleanup task for async drop handling
+        tokio::spawn(async move {
+            while let Some(msg) = cleanup_rx.recv().await {
+                match msg {
+                    CleanupMessage::Release { instance_id, type_id } => {
+                        if let Some(pool) = pools_clone.get(&type_id) {
+                            let _ = pool.release_any(instance_id).await;
+                        }
+                    }
+                }
+            }
+        });
+
         Self {
             registry: Arc::new(RwLock::new(HashMap::new())),
-            instances: Arc::new(DashMap::new()),
+            pools,
             metadata_cache: Arc::new(DashMap::new()),
             event_subscribers: Arc::new(RwLock::new(Vec::new())),
-            #[cfg(feature = "pooling")]
-            pool_manager: Arc::new(PoolManager::new()),
+            cleanup_tx,
             config,
             scoping_strategy: ScopingStrategy::default(),
         }
@@ -106,6 +128,7 @@ impl ResourceManager {
     pub fn register<R>(&self, resource: R) -> ResourceResult<()>
     where
         R: Resource + 'static,
+        R::Config: serde::de::DeserializeOwned,
     {
         let metadata = resource.metadata();
         let resource_id = metadata.id.clone();
@@ -150,29 +173,35 @@ impl ResourceManager {
     where
         T: Send + Sync + 'static,
     {
-        let instance_key = self.build_instance_key(resource_id, &context.scope);
+        let type_id = TypeId::of::<T>();
 
-        // Try to get existing instance
-        if let Some(instance) = self.instances.get(&instance_key) {
-            if let Ok(typed_instance) = self.cast_to_typed_instance::<T>(instance.value()) {
-                return Ok(self.create_guard(typed_instance));
-            }
-        }
+        // Get or create pool for this type
+        let pool = if let Some(pool) = self.pools.get(&type_id) {
+            Arc::clone(pool.value())
+        } else {
+            // Create a new pool for this type
+            self.create_pool_for_type::<T>(resource_id, context).await?
+        };
 
-        // Create new instance
-        self.create_instance(resource_id, context).await
+        // Acquire from pool
+        let instance_any = pool.acquire_any(context).await?;
+
+        // Cast to typed instance
+        let typed_instance = self.cast_to_typed_instance::<T>(&instance_any)?;
+
+        // Create guard with pool reference for cleanup
+        Ok(self.create_guard_with_pool(typed_instance, pool))
     }
 
-    /// Create a new resource instance
-    async fn create_instance<T>(
+    /// Create a pool for a resource type
+    async fn create_pool_for_type<T>(
         &self,
         resource_id: &ResourceId,
         context: &ResourceContext,
-    ) -> ResourceResult<ResourceGuard<T>>
+    ) -> ResourceResult<Arc<dyn PoolTrait + Send + Sync>>
     where
         T: Send + Sync + 'static,
     {
-        // Get factory
         let factory = {
             let registry = self.registry.read();
             registry
@@ -185,37 +214,77 @@ impl ResourceManager {
                 ))?
         };
 
-        // Emit creation start event
-        self.emit_lifecycle_event(LifecycleEvent::new(
-            resource_id.unique_key(),
-            LifecycleState::Created,
-            LifecycleState::Initializing,
-        ));
+        let factory_clone = Arc::clone(&factory);
+        let context_clone = context.clone();
+        let resource_id_clone = resource_id.clone();
+        let event_subscribers = Arc::clone(&self.event_subscribers);
 
-        // Create configuration (simplified for now)
-        let config = serde_json::json!({});
-        let dependencies = HashMap::new();
+        // Create factory function for pool
+        let pool_factory = move || {
+            let factory = Arc::clone(&factory_clone);
+            let context = context_clone.clone();
+            let resource_id = resource_id_clone.clone();
+            let subscribers = Arc::clone(&event_subscribers);
 
-        // Create instance through factory
-        let instance = factory
-            .create_instance(config, context, &dependencies)
-            .await?;
+            async move {
+                // Emit creation start event
+                let event = LifecycleEvent::new(
+                    resource_id.unique_key(),
+                    LifecycleState::Created,
+                    LifecycleState::Initializing,
+                );
+                {
+                    let subs = subscribers.read();
+                    for sender in subs.iter() {
+                        let _ = sender.unbounded_send(event.clone());
+                    }
+                }
 
-        // Cast to typed instance
-        let typed_instance = self.cast_to_typed_instance::<T>(&instance)?;
+                // Create configuration (simplified for now)
+                let config = serde_json::json!({});
+                let dependencies = HashMap::new();
 
-        // Store instance
-        let instance_key = self.build_instance_key(resource_id, &context.scope);
-        self.instances.insert(instance_key, instance);
+                // Create instance through factory
+                let instance = factory
+                    .create_instance(config, &context, &dependencies)
+                    .await?;
 
-        // Emit ready event
-        self.emit_lifecycle_event(LifecycleEvent::new(
-            resource_id.unique_key(),
-            LifecycleState::Initializing,
-            LifecycleState::Ready,
-        ));
+                // Cast to typed instance
+                let typed_instance = instance
+                    .downcast_ref::<TypedResourceInstance<T>>()
+                    .ok_or_else(|| ResourceError::internal(
+                        "unknown",
+                        "Failed to cast instance to requested type",
+                    ))?
+                    .clone();
 
-        Ok(self.create_guard(typed_instance))
+                // Emit ready event
+                let event = LifecycleEvent::new(
+                    resource_id.unique_key(),
+                    LifecycleState::Initializing,
+                    LifecycleState::Ready,
+                );
+                {
+                    let subs = subscribers.read();
+                    for sender in subs.iter() {
+                        let _ = sender.unbounded_send(event.clone());
+                    }
+                }
+
+                Ok(typed_instance)
+            }
+        };
+
+        // Create pool with default config
+        let pool_config = crate::core::traits::PoolConfig::default();
+        let pool = ResourcePool::new(pool_config, PoolStrategy::Lifo, pool_factory);
+        let pool_trait: Arc<dyn PoolTrait + Send + Sync> = Arc::new(pool);
+
+        // Store pool
+        let type_id = TypeId::of::<T>();
+        self.pools.insert(type_id, Arc::clone(&pool_trait));
+
+        Ok(pool_trait)
     }
 
     /// Subscribe to lifecycle events
@@ -275,10 +344,6 @@ impl ResourceManager {
         ))
     }
 
-    fn build_instance_key(&self, resource_id: &ResourceId, scope: &ResourceScope) -> String {
-        format!("{}:{}", resource_id.unique_key(), scope.scope_key())
-    }
-
     fn cast_to_typed_instance<T>(
         &self,
         instance: &Arc<dyn Any + Send + Sync>,
@@ -296,16 +361,24 @@ impl ResourceManager {
             .map(|typed| typed.clone())
     }
 
-    fn create_guard<T>(&self, instance: TypedResourceInstance<T>) -> ResourceGuard<T>
+    fn create_guard_with_pool<T>(
+        &self,
+        instance: TypedResourceInstance<T>,
+        pool: Arc<dyn PoolTrait + Send + Sync>,
+    ) -> ResourceGuard<T>
     where
         T: Send + Sync + 'static,
     {
         let instance_id = instance.instance_id();
-        let resource_id = instance.resource_id().clone();
+        let type_id = TypeId::of::<T>();
+        let cleanup_tx = self.cleanup_tx.clone();
 
         ResourceGuard::new(instance, move |_instance| {
-            // Cleanup callback when guard is dropped
-            // In a real implementation, this would handle returning to pool, cleanup, etc.
+            // Send cleanup message to async cleanup task
+            let _ = cleanup_tx.send(CleanupMessage::Release {
+                instance_id,
+                type_id,
+            });
         })
     }
 
