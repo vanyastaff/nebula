@@ -4,7 +4,7 @@
 //! making it more convenient to use.
 
 use nebula_parameter::prelude::*;
-use nebula_parameter::types::{TextParameter, CheckboxParameter, NumberParameter};
+use nebula_parameter::types::{CheckboxParameter, NumberParameter, TextParameter};
 use nebula_value::Value;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -76,7 +76,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Can pass nebula_value::Integer
         let integer = nebula_value::Integer::new(999);
         number_param.set_parameter_value(integer)?;
-        println!("   Set from nebula_value::Integer: {:?}", number_param.get_value());
+        println!(
+            "   Set from nebula_value::Integer: {:?}",
+            number_param.get_value()
+        );
     }
 
     println!();
@@ -110,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // param.set_parameter_value(ParameterValue::Value(Value::text("old way")))?;
 
         // NEW WAY (simpler):
-        param.set_parameter_value("new way")?;  // Just pass &str!
+        param.set_parameter_value("new way")?; // Just pass &str!
 
         println!("   ✓ Much cleaner API!");
     }

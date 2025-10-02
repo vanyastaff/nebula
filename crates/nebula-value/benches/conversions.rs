@@ -2,10 +2,10 @@
 //
 // Tests performance of TryFrom implementations and ValueConversion trait
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use nebula_value::{Value, Integer, Float, Text, Bytes, Array, Object};
-use std::convert::TryFrom;
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use nebula_value::{Array, Bytes, Float, Integer, Object, Text, Value};
 use serde_json::json;
+use std::convert::TryFrom;
 
 fn bench_try_from_value(c: &mut Criterion) {
     let mut group = c.benchmark_group("try_from_value");
@@ -63,9 +63,7 @@ fn bench_try_from_value(c: &mut Criterion) {
         b.iter(|| Array::try_from(black_box(array_val.clone())).unwrap());
     });
 
-    let object_val = Value::Object(Object::from_iter(vec![
-        ("key".to_string(), json!(1))
-    ]));
+    let object_val = Value::Object(Object::from_iter(vec![("key".to_string(), json!(1))]));
     group.bench_function("value_to_object", |b| {
         b.iter(|| Object::try_from(black_box(object_val.clone())).unwrap());
     });

@@ -2,8 +2,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 
 /// Parameter for boolean checkbox
@@ -78,22 +78,26 @@ impl HasValue for CheckboxParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.map(|b| ParameterValue::Value(nebula_value::Value::boolean(b)))
+        self.value
+            .map(|b| ParameterValue::Value(nebula_value::Value::boolean(b)))
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Boolean(b)) => {
                 self.value = Some(b);
                 Ok(())
-            },
+            }
             ParameterValue::Expression(_expr) => {
                 // Store as false for now, expression will be evaluated later
                 // In real implementation, you'd mark this as needing evaluation
                 self.value = Some(false);
                 Ok(())
-            },
+            }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Expected boolean value".to_string(),

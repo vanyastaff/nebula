@@ -19,9 +19,9 @@ use super::predictive::{MemoryTrend, Prediction, PredictiveAnalytics};
 #[cfg(feature = "profiling")]
 use super::profiler::{MemoryProfiler, ProfileReport}; // Only if profiling feature is enabled
 use super::real_time::{MemoryAlert, RealTimeData, RealTimeMonitor}; /* Real-time data and
-                                                                      * alerts */
+ * alerts */
 use super::tracker::MemoryTracker; // Tracker provides historical data // For predictions
-                                   // and trends
+// and trends
 
 /// A comprehensive snapshot of all aggregated memory statistics.
 #[derive(Debug, Clone)]
@@ -108,31 +108,43 @@ impl Aggregator {
         // 2. Get Profile Report from MemoryProfiler (if enabled)
         #[cfg(feature = "profiling")]
         let profile_report = if self.profiler.read().is_profiling_enabled() {
-            Some(self.profiler.read().generate_report(overall_metrics.clone()))
+            Some(
+                self.profiler
+                    .read()
+                    .generate_report(overall_metrics.clone()),
+            )
         } else {
             None
         };
 
         // 3. Get Latest Live Data from RealTimeMonitor (if running)
         let latest_live_data = self.monitor.read().get_latest_data();
-        let active_alerts =
-            latest_live_data.as_ref().map_or(Vec::new(), |data| data.active_alerts.clone());
+        let active_alerts = latest_live_data
+            .as_ref()
+            .map_or(Vec::new(), |data| data.active_alerts.clone());
 
         // 4. Summarize Historical Metrics from MemoryTracker (if history is enabled)
         let historical_metrics_summary = if self.config.tracking.max_history > 0 {
             let history = self.tracker.get_history();
             if !history.is_empty() {
                 let total_snapshots = history.len();
-                let avg_current_allocated =
-                    history.iter().map(|m| m.current_allocated as f64).sum::<f64>()
-                        / total_snapshots as f64;
+                let avg_current_allocated = history
+                    .iter()
+                    .map(|m| m.current_allocated as f64)
+                    .sum::<f64>()
+                    / total_snapshots as f64;
                 let max_peak_allocated =
                     history.iter().map(|m| m.peak_allocated).max().unwrap_or(0); // Safe unwrap due to !is_empty()
-                let avg_allocation_rate = history.iter()
+                let avg_allocation_rate = history
+                    .iter()
                     .filter(|m| m.elapsed_secs > 0.0) // Avoid division by zero
                     .map(|m| m.allocation_rate())
                     .sum::<f64>()
-                    / history.iter().filter(|m| m.elapsed_secs > 0.0).count().max(1) as f64; // At least 1 for division
+                    / history
+                        .iter()
+                        .filter(|m| m.elapsed_secs > 0.0)
+                        .count()
+                        .max(1) as f64; // At least 1 for division
                 let total_allocations = history.last().map_or(0, |m| m.allocations); // Total since tracker started
                 let fragmentation_over_time =
                     history.iter().map(|m| m.fragmentation_ratio()).sum::<f64>()
@@ -218,12 +230,22 @@ mod tests {
         let stats = MemoryStats::new();
         stats.allocations.store(allocations, Ordering::Relaxed);
         stats.deallocations.store(deallocations, Ordering::Relaxed);
-        stats.allocated_bytes.store(current_allocated, Ordering::Relaxed);
-        stats.peak_allocated.store(peak_allocated, Ordering::Relaxed);
-        stats.total_allocated_bytes.store(total_allocated_bytes, Ordering::Relaxed);
-        stats.total_deallocated_bytes.store(total_deallocated_bytes, Ordering::Relaxed);
+        stats
+            .allocated_bytes
+            .store(current_allocated, Ordering::Relaxed);
+        stats
+            .peak_allocated
+            .store(peak_allocated, Ordering::Relaxed);
+        stats
+            .total_allocated_bytes
+            .store(total_allocated_bytes, Ordering::Relaxed);
+        stats
+            .total_deallocated_bytes
+            .store(total_deallocated_bytes, Ordering::Relaxed);
         #[cfg(feature = "std")]
-        stats.total_allocation_time_nanos.store(0, Ordering::Relaxed);
+        stats
+            .total_allocation_time_nanos
+            .store(0, Ordering::Relaxed);
         Arc::new(stats)
     }
 
@@ -251,7 +273,9 @@ mod tests {
         let monitored_stats = create_dummy_memory_stats(0, 0, 0, 0, 0, 0);
         let tracker = Arc::new(MemoryTracker::new(stats_config.tracking.clone()));
         #[cfg(feature = "profiling")]
-        let profiler = Arc::new(RwLock::new(MemoryProfiler::new(stats_config.tracking.clone())));
+        let profiler = Arc::new(RwLock::new(MemoryProfiler::new(
+            stats_config.tracking.clone(),
+        )));
         let monitor = Arc::new(RwLock::new(RealTimeMonitor::new(
             stats_config.monitoring.clone(),
             stats_config.alerts.clone(),
@@ -285,7 +309,9 @@ mod tests {
         let monitored_stats = create_dummy_memory_stats(100, 50, 500, 1000, 5000, 4500);
         let tracker = Arc::new(MemoryTracker::new(stats_config.tracking.clone()));
         #[cfg(feature = "profiling")]
-        let profiler = Arc::new(RwLock::new(MemoryProfiler::new(stats_config.tracking.clone())));
+        let profiler = Arc::new(RwLock::new(MemoryProfiler::new(
+            stats_config.tracking.clone(),
+        )));
         let monitor = Arc::new(RwLock::new(RealTimeMonitor::new(
             stats_config.monitoring.clone(),
             stats_config.alerts.clone(),
@@ -303,9 +329,15 @@ mod tests {
             tracker.as_ref().add_snapshot(metrics);
 
             // For testing, we need to ensure stats change or mock data points for tracker
-            monitored_stats.allocated_bytes.store(500 + i * 100, Ordering::Relaxed);
-            monitored_stats.peak_allocated.store(1000 + i * 100, Ordering::Relaxed);
-            monitored_stats.allocations.store(100 + i as u64, Ordering::Relaxed);
+            monitored_stats
+                .allocated_bytes
+                .store(500 + i * 100, Ordering::Relaxed);
+            monitored_stats
+                .peak_allocated
+                .store(1000 + i * 100, Ordering::Relaxed);
+            monitored_stats
+                .allocations
+                .store(100 + i as u64, Ordering::Relaxed);
         }
 
         let aggregator = Aggregator::new(
@@ -356,7 +388,9 @@ mod tests {
 
         let monitored_stats = create_dummy_memory_stats(0, 0, 0, 0, 0, 0);
         let tracker = Arc::new(MemoryTracker::new(stats_config.tracking.clone()));
-        let profiler = Arc::new(RwLock::new(MemoryProfiler::new(stats_config.tracking.clone())));
+        let profiler = Arc::new(RwLock::new(MemoryProfiler::new(
+            stats_config.tracking.clone(),
+        )));
         let monitor = Arc::new(RwLock::new(RealTimeMonitor::new(
             stats_config.monitoring.clone(),
             stats_config.alerts.clone(),
@@ -414,7 +448,9 @@ mod tests {
         let monitored_stats = create_dummy_memory_stats(0, 0, 0, 0, 0, 0);
         let tracker = Arc::new(MemoryTracker::new(stats_config.tracking.clone()));
         #[cfg(feature = "profiling")]
-        let profiler = Arc::new(RwLock::new(MemoryProfiler::new(stats_config.tracking.clone())));
+        let profiler = Arc::new(RwLock::new(MemoryProfiler::new(
+            stats_config.tracking.clone(),
+        )));
         let monitor = Arc::new(RwLock::new(RealTimeMonitor::new(
             stats_config.monitoring.clone(),
             stats_config.alerts.clone(),
@@ -429,7 +465,9 @@ mod tests {
         monitor.write().start().unwrap();
 
         // Simulate activity that triggers an alert and histogram samples
-        monitored_stats.allocated_bytes.store(600, Ordering::Relaxed); // Trigger memory alert
+        monitored_stats
+            .allocated_bytes
+            .store(600, Ordering::Relaxed); // Trigger memory alert
         monitored_stats.allocations.store(100, Ordering::Relaxed);
         monitor.write().add_histogram_sample(10);
         monitor.write().add_histogram_sample(200);
@@ -472,7 +510,9 @@ mod tests {
         let monitored_stats = create_dummy_memory_stats(0, 0, 0, 0, 0, 0);
         let tracker = Arc::new(MemoryTracker::new(stats_config.tracking.clone()));
         #[cfg(feature = "profiling")]
-        let profiler = Arc::new(RwLock::new(MemoryProfiler::new(stats_config.tracking.clone())));
+        let profiler = Arc::new(RwLock::new(MemoryProfiler::new(
+            stats_config.tracking.clone(),
+        )));
         let monitor = Arc::new(RwLock::new(RealTimeMonitor::new(
             stats_config.monitoring.clone(),
             stats_config.alerts.clone(),
@@ -530,6 +570,6 @@ mod tests {
         // Predicted for x=50s: 1.0 * 50.0 + 100.0 (intercept if x_values started from
         // 0) Check this against the `predict_linear` test in `predictive.rs`
         assert!((prediction.value - 150.0).abs() < 5.0); // Allow some floating
-                                                         // point variance
+        // point variance
     }
 }

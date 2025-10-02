@@ -158,20 +158,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let app_obj = nebula_value::Object::new();
         let app_obj = app_obj.insert("debug".to_string(), serde_json::json!(true));
         let app_obj = app_obj.insert("log_level".to_string(), serde_json::json!("debug"));
-        let obj = obj.insert("app".to_string(), serde_json::json!(serde_json::Value::Object({
-            let mut map = serde_json::Map::new();
-            for (k, v) in app_obj.entries() {
-                map.insert(k.clone(), v.clone());
-            }
-            map
-        })));
+        let obj = obj.insert(
+            "app".to_string(),
+            serde_json::json!(serde_json::Value::Object({
+                let mut map = serde_json::Map::new();
+                for (k, v) in app_obj.entries() {
+                    map.insert(k.clone(), v.clone());
+                }
+                map
+            })),
+        );
         obj
     });
 
     config.merge(override_config).await?;
 
     let debug_enabled: bool = config.get("app.debug").await?;
-    let log_level: String = config.get("app.log_level").await.unwrap_or_else(|_| "info".to_string());
+    let log_level: String = config
+        .get("app.log_level")
+        .await
+        .unwrap_or_else(|_| "info".to_string());
 
     info!(
         debug_mode = debug_enabled,
@@ -231,18 +237,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let dynamic_update = NebulaValue::Object({
             let obj = nebula_value::Object::new();
             let obj = obj.insert("iteration".to_string(), serde_json::json!(i));
-            let obj = obj.insert("timestamp".to_string(), serde_json::json!(
-                chrono::Utc::now().to_rfc3339()
-            ));
+            let obj = obj.insert(
+                "timestamp".to_string(),
+                serde_json::json!(chrono::Utc::now().to_rfc3339()),
+            );
             obj
         });
 
-        config.set_value(&format!("simulation.update_{}", i), dynamic_update).await?;
+        config
+            .set_value(&format!("simulation.update_{}", i), dynamic_update)
+            .await?;
 
-        info!(
-            iteration = i,
-            "Configuration updated dynamically"
-        );
+        info!(iteration = i, "Configuration updated dynamically");
     }
 
     info!("Configuration ecosystem integration example completed successfully");
@@ -252,12 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Validate configuration structure
 async fn validate_config_structure(config: &Config) -> ConfigResult<()> {
     // Check required fields exist
-    let required_fields = [
-        "app.name",
-        "app.port",
-        "database.host",
-        "database.port",
-    ];
+    let required_fields = ["app.name", "app.port", "database.host", "database.port"];
 
     for field in &required_fields {
         let value = config.get_value(field).await?;

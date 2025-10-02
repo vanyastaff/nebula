@@ -2,10 +2,10 @@
 
 use std::collections::HashMap;
 
-use nebula_value::{Value, Object};
+use nebula_value::{Object, Value};
 // Import extension traits for ergonomic conversions
-use nebula_value::{ValueRefExt, JsonValueExt};
-use crate::core::config::{ResilienceConfig, ConfigResult, ConfigError};
+use crate::core::config::{ConfigError, ConfigResult, ResilienceConfig};
+use nebula_value::{JsonValueExt, ValueRefExt};
 
 /// Dynamic configuration container that can hold any resilience configuration
 #[derive(Debug, Clone)]
@@ -88,7 +88,8 @@ impl DynamicConfig {
             let remaining = &path[1..];
 
             // Get nested value or create empty object
-            let nested_json = obj.get(key)
+            let nested_json = obj
+                .get(key)
                 .cloned()
                 .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
@@ -99,11 +100,17 @@ impl DynamicConfig {
                 Value::Object(nested_obj) => {
                     let updated_nested = self.set_nested_value(&nested_obj, remaining, value)?;
                     let updated_json = serde_json::Value::Object(
-                        updated_nested.entries().map(|(k, v)| (k.clone(), v.clone())).collect()
+                        updated_nested
+                            .entries()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
                     );
                     Ok(obj.insert(key.to_string(), updated_json))
                 }
-                _ => Err(ConfigError::validation(format!("Path '{}' exists but is not an object", key)))
+                _ => Err(ConfigError::validation(format!(
+                    "Path '{}' exists but is not an object",
+                    key
+                ))),
             }
         }
     }
@@ -114,7 +121,8 @@ impl DynamicConfig {
         }
 
         let key = path[0];
-        let json_value = obj.get(key)
+        let json_value = obj
+            .get(key)
             .ok_or_else(|| ConfigError::not_found("config", key))?;
 
         if path.len() == 1 {
@@ -123,10 +131,11 @@ impl DynamicConfig {
             // Convert serde_json::Value to nebula Value for matching
             let value = json_value.to_nebula_value_or_null();
             match value {
-                Value::Object(nested_obj) => {
-                    self.get_nested_value(&nested_obj, &path[1..])
-                }
-                _ => Err(ConfigError::validation(format!("Path '{}' is not an object", key)))
+                Value::Object(nested_obj) => self.get_nested_value(&nested_obj, &path[1..]),
+                _ => Err(ConfigError::validation(format!(
+                    "Path '{}' is not an object",
+                    key
+                ))),
             }
         }
     }
@@ -180,17 +189,34 @@ impl ResiliencePresets {
         let mut config = DynamicConfig::new();
 
         // Circuit breaker for database
-        config.set_value("circuit_breaker.failure_threshold", Value::integer(5)).unwrap();
-        config.set_value("circuit_breaker.reset_timeout", Value::text("60s")).unwrap();
-        config.set_value("circuit_breaker.half_open_max_operations", Value::integer(3)).unwrap();
+        config
+            .set_value("circuit_breaker.failure_threshold", Value::integer(5))
+            .unwrap();
+        config
+            .set_value("circuit_breaker.reset_timeout", Value::text("60s"))
+            .unwrap();
+        config
+            .set_value(
+                "circuit_breaker.half_open_max_operations",
+                Value::integer(3),
+            )
+            .unwrap();
 
         // Retry for database
-        config.set_value("retry.max_attempts", Value::integer(3)).unwrap();
-        config.set_value("retry.base_delay", Value::text("100ms")).unwrap();
-        config.set_value("retry.max_delay", Value::text("5s")).unwrap();
+        config
+            .set_value("retry.max_attempts", Value::integer(3))
+            .unwrap();
+        config
+            .set_value("retry.base_delay", Value::text("100ms"))
+            .unwrap();
+        config
+            .set_value("retry.max_delay", Value::text("5s"))
+            .unwrap();
 
         // Timeout for database
-        config.set_value("timeout.duration", Value::text("30s")).unwrap();
+        config
+            .set_value("timeout.duration", Value::text("30s"))
+            .unwrap();
 
         config
     }
@@ -200,21 +226,42 @@ impl ResiliencePresets {
         let mut config = DynamicConfig::new();
 
         // Circuit breaker for HTTP
-        config.set_value("circuit_breaker.failure_threshold", Value::integer(3)).unwrap();
-        config.set_value("circuit_breaker.reset_timeout", Value::text("30s")).unwrap();
-        config.set_value("circuit_breaker.half_open_max_operations", Value::integer(2)).unwrap();
+        config
+            .set_value("circuit_breaker.failure_threshold", Value::integer(3))
+            .unwrap();
+        config
+            .set_value("circuit_breaker.reset_timeout", Value::text("30s"))
+            .unwrap();
+        config
+            .set_value(
+                "circuit_breaker.half_open_max_operations",
+                Value::integer(2),
+            )
+            .unwrap();
 
         // Retry for HTTP
-        config.set_value("retry.max_attempts", Value::integer(3)).unwrap();
-        config.set_value("retry.base_delay", Value::text("1s")).unwrap();
-        config.set_value("retry.max_delay", Value::text("10s")).unwrap();
+        config
+            .set_value("retry.max_attempts", Value::integer(3))
+            .unwrap();
+        config
+            .set_value("retry.base_delay", Value::text("1s"))
+            .unwrap();
+        config
+            .set_value("retry.max_delay", Value::text("10s"))
+            .unwrap();
 
         // Timeout for HTTP
-        config.set_value("timeout.duration", Value::text("10s")).unwrap();
+        config
+            .set_value("timeout.duration", Value::text("10s"))
+            .unwrap();
 
         // Rate limiting for HTTP
-        config.set_value("rate_limit.requests_per_second", Value::integer(100)).unwrap();
-        config.set_value("rate_limit.burst", Value::integer(20)).unwrap();
+        config
+            .set_value("rate_limit.requests_per_second", Value::integer(100))
+            .unwrap();
+        config
+            .set_value("rate_limit.burst", Value::integer(20))
+            .unwrap();
 
         config
     }
@@ -226,12 +273,20 @@ impl ResiliencePresets {
         // No circuit breaker for file I/O (usually not needed)
 
         // Light retry for file I/O
-        config.set_value("retry.max_attempts", Value::integer(2)).unwrap();
-        config.set_value("retry.base_delay", Value::text("500ms")).unwrap();
-        config.set_value("retry.max_delay", Value::text("2s")).unwrap();
+        config
+            .set_value("retry.max_attempts", Value::integer(2))
+            .unwrap();
+        config
+            .set_value("retry.base_delay", Value::text("500ms"))
+            .unwrap();
+        config
+            .set_value("retry.max_delay", Value::text("2s"))
+            .unwrap();
 
         // Generous timeout for file I/O
-        config.set_value("timeout.duration", Value::text("60s")).unwrap();
+        config
+            .set_value("timeout.duration", Value::text("60s"))
+            .unwrap();
 
         config
     }
@@ -255,7 +310,9 @@ mod tests {
     fn test_dynamic_config_nested() {
         let mut config = DynamicConfig::new();
 
-        config.set_value("level1.level2.key", Value::integer(42)).unwrap();
+        config
+            .set_value("level1.level2.key", Value::integer(42))
+            .unwrap();
         let retrieved = config.get_value("level1.level2.key").unwrap();
 
         assert_eq!(retrieved, Value::integer(42));
@@ -264,7 +321,9 @@ mod tests {
     #[test]
     fn test_presets() {
         let db_config = ResiliencePresets::database();
-        let threshold = db_config.get_value("circuit_breaker.failure_threshold").unwrap();
+        let threshold = db_config
+            .get_value("circuit_breaker.failure_threshold")
+            .unwrap();
         assert_eq!(threshold, Value::integer(5));
 
         let http_config = ResiliencePresets::http_api();

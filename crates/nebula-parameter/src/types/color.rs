@@ -2,8 +2,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 
 /// Parameter for color selection
@@ -106,10 +106,15 @@ impl HasValue for ColorParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+        self.value
+            .as_ref()
+            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Text(s)) => {
@@ -123,12 +128,12 @@ impl HasValue for ColorParameter {
                         reason: format!("Invalid color format: {}", s),
                     })
                 }
-            },
+            }
             ParameterValue::Expression(expr) => {
                 // Allow expressions for dynamic colors
                 self.value = Some(expr);
                 Ok(())
-            },
+            }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Expected string value for color".to_string(),
@@ -173,7 +178,9 @@ impl ColorParameter {
             return true;
         }
 
-        let format = self.options.as_ref()
+        let format = self
+            .options
+            .as_ref()
             .and_then(|opts| opts.format.as_ref())
             .unwrap_or(&ColorFormat::Hex);
 

@@ -107,9 +107,7 @@ macro_rules! arena_str {
 /// ```
 #[macro_export]
 macro_rules! local_alloc {
-    ($value:expr) => {{
-        $crate::arena::alloc_local($value).expect("Local arena allocation failed")
-    }};
+    ($value:expr) => {{ $crate::arena::alloc_local($value).expect("Local arena allocation failed") }};
 }
 
 /// Create a typed arena and allocate values
@@ -388,13 +386,9 @@ macro_rules! arena_debug {
 /// ```
 #[macro_export]
 macro_rules! strict_arena {
-    () => {{
-        $crate::arena::StrictArena::new($crate::arena::Arena::new(Default::default()))
-    }};
+    () => {{ $crate::arena::StrictArena::new($crate::arena::Arena::new(Default::default())) }};
 
-    ($config:expr) => {{
-        $crate::arena::StrictArena::new($crate::arena::Arena::new($config))
-    }};
+    ($config:expr) => {{ $crate::arena::StrictArena::new($crate::arena::Arena::new($config)) }};
 }
 
 // Helper wrapper for strict arena
@@ -414,8 +408,12 @@ impl<A: crate::arena::ArenaAllocate> StrictArena<A> {
     }
 
     pub fn alloc_slice<T>(&self, slice: &[T]) -> &mut [T]
-    where T: Copy {
-        self.inner.alloc_slice(slice).expect("Arena allocation failed")
+    where
+        T: Copy,
+    {
+        self.inner
+            .alloc_slice(slice)
+            .expect("Arena allocation failed")
     }
 }
 
@@ -527,7 +525,13 @@ mod tests {
         }
 
         let arena = Arena::new(Default::default());
-        let s = arena_struct!(arena, TestStruct { x: 42, y: "test".to_string() });
+        let s = arena_struct!(
+            arena,
+            TestStruct {
+                x: 42,
+                y: "test".to_string()
+            }
+        );
 
         assert_eq!(s.x, 42);
         assert_eq!(s.y, "test");
@@ -574,7 +578,9 @@ mod tests {
 
         impl_arena_alloc!(CustomAllocator);
 
-        let allocator = CustomAllocator { arena: Arena::new(Default::default()) };
+        let allocator = CustomAllocator {
+            arena: Arena::new(Default::default()),
+        };
 
         let x = allocator.alloc(42).unwrap();
         assert_eq!(*x, 42);

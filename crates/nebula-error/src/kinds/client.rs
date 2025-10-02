@@ -214,13 +214,22 @@ mod tests {
     #[test]
     fn test_client_error_display() {
         let validation_error = ClientError::validation("Invalid email format");
-        assert_eq!(validation_error.to_string(), "Validation error: Invalid email format");
+        assert_eq!(
+            validation_error.to_string(),
+            "Validation error: Invalid email format"
+        );
 
         let not_found_error = ClientError::not_found("User", "user123");
-        assert_eq!(not_found_error.to_string(), "Resource not found: User 'user123'");
+        assert_eq!(
+            not_found_error.to_string(),
+            "Resource not found: User 'user123'"
+        );
 
         let permission_error = ClientError::permission_denied("read", "sensitive_data");
-        assert_eq!(permission_error.to_string(), "Permission denied: read on sensitive_data");
+        assert_eq!(
+            permission_error.to_string(),
+            "Permission denied: read on sensitive_data"
+        );
     }
 
     #[test]

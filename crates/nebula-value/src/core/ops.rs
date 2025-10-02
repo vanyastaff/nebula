@@ -2,9 +2,9 @@
 //!
 //! This module implements operations on Value with proper type coercion
 
+use crate::core::NebulaError;
 use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::value::Value;
-use crate::core::NebulaError;
 use crate::scalar::Float;
 
 impl Value {
@@ -14,16 +14,13 @@ impl Value {
     pub fn add(&self, other: &Value) -> ValueResult<Value> {
         match (self, other) {
             // Integer + Integer
-            (Value::Integer(a), Value::Integer(b)) => {
-                a.checked_add(*b)
-                    .map(Value::Integer)
-                    .ok_or_else(|| NebulaError::validation("Integer overflow in addition"))
-            }
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_add(*b)
+                .map(Value::Integer)
+                .ok_or_else(|| NebulaError::validation("Integer overflow in addition")),
 
             // Float + Float
-            (Value::Float(a), Value::Float(b)) => {
-                Ok(Value::Float(*a + *b))
-            }
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a + *b)),
 
             // Integer + Float (promote to float)
             (Value::Integer(a), Value::Float(b)) => {
@@ -36,19 +33,13 @@ impl Value {
             }
 
             // Decimal operations
-            (Value::Decimal(a), Value::Decimal(b)) => {
-                Ok(Value::Decimal(*a + *b))
-            }
+            (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(*a + *b)),
 
             // Text concatenation
-            (Value::Text(a), Value::Text(b)) => {
-                Ok(Value::Text(a.concat(b)))
-            }
+            (Value::Text(a), Value::Text(b)) => Ok(Value::Text(a.concat(b))),
 
             // Array concatenation
-            (Value::Array(a), Value::Array(b)) => {
-                Ok(Value::Array(a.concat(b)))
-            }
+            (Value::Array(a), Value::Array(b)) => Ok(Value::Array(a.concat(b))),
 
             _ => Err(NebulaError::value_operation_not_supported(
                 "add",
@@ -61,16 +52,13 @@ impl Value {
     pub fn sub(&self, other: &Value) -> ValueResult<Value> {
         match (self, other) {
             // Integer - Integer
-            (Value::Integer(a), Value::Integer(b)) => {
-                a.checked_sub(*b)
-                    .map(Value::Integer)
-                    .ok_or_else(|| NebulaError::validation("Integer overflow in subtraction"))
-            }
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_sub(*b)
+                .map(Value::Integer)
+                .ok_or_else(|| NebulaError::validation("Integer overflow in subtraction")),
 
             // Float - Float
-            (Value::Float(a), Value::Float(b)) => {
-                Ok(Value::Float(*a - *b))
-            }
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a - *b)),
 
             // Integer - Float
             (Value::Integer(a), Value::Float(b)) => {
@@ -83,9 +71,7 @@ impl Value {
             }
 
             // Decimal
-            (Value::Decimal(a), Value::Decimal(b)) => {
-                Ok(Value::Decimal(*a - *b))
-            }
+            (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(*a - *b)),
 
             _ => Err(NebulaError::value_operation_not_supported(
                 "subtract",
@@ -98,16 +84,13 @@ impl Value {
     pub fn mul(&self, other: &Value) -> ValueResult<Value> {
         match (self, other) {
             // Integer * Integer
-            (Value::Integer(a), Value::Integer(b)) => {
-                a.checked_mul(*b)
-                    .map(Value::Integer)
-                    .ok_or_else(|| NebulaError::validation("Integer overflow in multiplication"))
-            }
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_mul(*b)
+                .map(Value::Integer)
+                .ok_or_else(|| NebulaError::validation("Integer overflow in multiplication")),
 
             // Float * Float
-            (Value::Float(a), Value::Float(b)) => {
-                Ok(Value::Float(*a * *b))
-            }
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a * *b)),
 
             // Integer * Float
             (Value::Integer(a), Value::Float(b)) => {
@@ -120,9 +103,7 @@ impl Value {
             }
 
             // Decimal
-            (Value::Decimal(a), Value::Decimal(b)) => {
-                Ok(Value::Decimal(*a * *b))
-            }
+            (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(*a * *b)),
 
             _ => Err(NebulaError::value_operation_not_supported(
                 "multiply",
@@ -143,16 +124,13 @@ impl Value {
             }
 
             // Integer / Integer
-            (Value::Integer(a), Value::Integer(b)) => {
-                a.checked_div(*b)
-                    .map(Value::Integer)
-                    .ok_or_else(|| NebulaError::validation("Integer overflow in division"))
-            }
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_div(*b)
+                .map(Value::Integer)
+                .ok_or_else(|| NebulaError::validation("Integer overflow in division")),
 
             // Float / Float
-            (Value::Float(a), Value::Float(b)) => {
-                Ok(Value::Float(*a / *b))
-            }
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a / *b)),
 
             // Integer / Float
             (Value::Integer(a), Value::Float(b)) => {
@@ -186,11 +164,10 @@ impl Value {
                 Err(NebulaError::validation("Modulo by zero"))
             }
 
-            (Value::Integer(a), Value::Integer(b)) => {
-                a.checked_rem(*b)
-                    .map(Value::Integer)
-                    .ok_or_else(|| NebulaError::validation("Integer overflow in modulo"))
-            }
+            (Value::Integer(a), Value::Integer(b)) => a
+                .checked_rem(*b)
+                .map(Value::Integer)
+                .ok_or_else(|| NebulaError::validation("Integer overflow in modulo")),
 
             _ => Err(NebulaError::value_operation_not_supported(
                 "modulo",
@@ -219,12 +196,8 @@ impl Value {
             (Value::Float(a), Value::Float(b)) => Ok(a.total_cmp(b)),
 
             // Integer vs Float
-            (Value::Integer(a), Value::Float(b)) => {
-                Ok(Float::new(a.value() as f64).total_cmp(b))
-            }
-            (Value::Float(a), Value::Integer(b)) => {
-                Ok(a.total_cmp(&Float::new(b.value() as f64)))
-            }
+            (Value::Integer(a), Value::Float(b)) => Ok(Float::new(a.value() as f64).total_cmp(b)),
+            (Value::Float(a), Value::Integer(b)) => Ok(a.total_cmp(&Float::new(b.value() as f64))),
 
             // Text
             (Value::Text(a), Value::Text(b)) => Ok(a.cmp(b)),
@@ -307,14 +280,10 @@ impl Value {
     pub fn merge(&self, other: &Value) -> ValueResult<Value> {
         match (self, other) {
             // Deep merge for objects
-            (Value::Object(a), Value::Object(b)) => {
-                Ok(Value::Object(a.merge(b)))
-            }
+            (Value::Object(a), Value::Object(b)) => Ok(Value::Object(a.merge(b))),
 
             // Arrays: concatenation (alternative: union/dedup available as separate method)
-            (Value::Array(a), Value::Array(b)) => {
-                Ok(Value::Array(a.concat(b)))
-            }
+            (Value::Array(a), Value::Array(b)) => Ok(Value::Array(a.concat(b))),
 
             // For non-mergeable types, right overwrites left
             (_, right) => Ok(right.clone()),

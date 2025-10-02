@@ -91,7 +91,10 @@ mod tests {
 
     #[test]
     fn test_result_extension() {
-        let result: std::result::Result<(), std::io::Error> = Err(std::io::Error::new(std::io::ErrorKind::NotFound, "test error"));
+        let result: std::result::Result<(), std::io::Error> = Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "test error",
+        ));
         let nebula_result = result.context("Operation failed");
 
         assert!(nebula_result.is_err());
@@ -119,7 +122,10 @@ mod tests {
 
     #[test]
     fn test_context_with_metadata() {
-        let result: std::result::Result<(), std::io::Error> = Err(std::io::Error::new(std::io::ErrorKind::NotFound, "test error"));
+        let result: std::result::Result<(), std::io::Error> = Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "test error",
+        ));
         let nebula_result = result.with_context(|| {
             ErrorContext::new("Operation failed")
                 .with_component("user-service")

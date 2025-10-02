@@ -26,7 +26,10 @@ impl LocalArena {
 
     /// Creates new local arena with custom config
     pub fn with_config(config: ArenaConfig) -> Self {
-        Self { arena: Arena::new(config), generation: Cell::new(0) }
+        Self {
+            arena: Arena::new(config),
+            generation: Cell::new(0),
+        }
     }
 
     /// Gets current generation counter
@@ -177,19 +180,27 @@ impl<T> LocalRefMut<MaybeUninit<T>> {
     pub fn init(mut self, value: T) -> LocalRefMut<T> {
         unsafe { self.ptr.as_mut().write(value) };
 
-        LocalRefMut { ptr: self.ptr.cast(), generation: self.generation, _phantom: PhantomData }
+        LocalRefMut {
+            ptr: self.ptr.cast(),
+            generation: self.generation,
+            _phantom: PhantomData,
+        }
     }
 }
 
 /// Executes closure with thread-local arena
 pub fn with_local_arena<F, R>(f: F) -> R
-where F: FnOnce(&LocalArena) -> R {
+where
+    F: FnOnce(&LocalArena) -> R,
+{
     LOCAL_ARENA.with(|arena| f(&arena.borrow()))
 }
 
 /// Executes closure with mutable thread-local arena
 pub fn with_local_arena_mut<F, R>(f: F) -> R
-where F: FnOnce(&mut LocalArena) -> R {
+where
+    F: FnOnce(&mut LocalArena) -> R,
+{
     LOCAL_ARENA.with(|arena| f(&mut arena.borrow_mut()))
 }
 

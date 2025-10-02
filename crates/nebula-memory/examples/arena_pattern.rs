@@ -46,9 +46,18 @@ fn typed_arena_example() {
     let arena = TypedArena::<Node>::production();
 
     // Build a linked list in the arena
-    let node3 = arena.alloc(Node { value: 3, next: None });
-    let node2 = arena.alloc(Node { value: 2, next: Some(node3) });
-    let node1 = arena.alloc(Node { value: 1, next: Some(node2) });
+    let node3 = arena.alloc(Node {
+        value: 3,
+        next: None,
+    });
+    let node2 = arena.alloc(Node {
+        value: 2,
+        next: Some(node3),
+    });
+    let node1 = arena.alloc(Node {
+        value: 1,
+        next: Some(node2),
+    });
 
     // Traverse the list
     print!("  Linked list: ");

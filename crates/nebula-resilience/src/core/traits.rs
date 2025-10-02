@@ -1,9 +1,9 @@
 //! Core traits for resilience patterns
 
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
-use std::fmt;
 
 use super::error::ResilienceError;
 use super::result::ResilienceResult;

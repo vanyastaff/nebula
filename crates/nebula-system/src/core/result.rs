@@ -1,7 +1,7 @@
 //! Result type and extension traits for system operations
 
 use crate::core::error::{SystemError, SystemResult};
-use nebula_error::{NebulaError, ErrorContext};
+use nebula_error::{ErrorContext, NebulaError};
 
 /// Extension trait for Result types (system-specific)
 pub trait SystemResultExt<T> {
@@ -40,25 +40,26 @@ where
 
     fn with_component(self, component: impl Into<String>) -> SystemResult<T> {
         self.map_err(|e| {
-            NebulaError::internal(format!("{}", e))
-                .with_context(ErrorContext::new("System operation failed")
-                    .with_component(component))
+            NebulaError::internal(format!("{}", e)).with_context(
+                ErrorContext::new("System operation failed").with_component(component),
+            )
         })
     }
 
     fn with_operation(self, operation: impl Into<String>) -> SystemResult<T> {
         self.map_err(|e| {
-            NebulaError::internal(format!("{}", e))
-                .with_context(ErrorContext::new("System operation failed")
-                    .with_operation(operation))
+            NebulaError::internal(format!("{}", e)).with_context(
+                ErrorContext::new("System operation failed").with_operation(operation),
+            )
         })
     }
 
     fn with_platform_context(self, platform: impl Into<String>) -> SystemResult<T> {
         self.map_err(|e| {
-            NebulaError::internal(format!("{}", e))
-                .with_context(ErrorContext::new("Platform-specific operation failed")
-                    .with_metadata("platform", platform.into()))
+            NebulaError::internal(format!("{}", e)).with_context(
+                ErrorContext::new("Platform-specific operation failed")
+                    .with_metadata("platform", platform.into()),
+            )
         })
     }
 }
@@ -103,8 +104,7 @@ impl SystemIoResultExt for Result<(), std::io::Error> {
         self.map_err(|e| {
             let code = e.raw_os_error();
             NebulaError::system_platform_error(format!("{}", e), code)
-                .with_context(ErrorContext::new("IO operation failed")
-                    .with_component(component))
+                .with_context(ErrorContext::new("IO operation failed").with_component(component))
         })
     }
 
@@ -112,8 +112,7 @@ impl SystemIoResultExt for Result<(), std::io::Error> {
         self.map_err(|e| {
             let code = e.raw_os_error();
             NebulaError::system_platform_error(format!("{}", e), code)
-                .with_context(ErrorContext::new("IO operation failed")
-                    .with_operation(operation))
+                .with_context(ErrorContext::new("IO operation failed").with_operation(operation))
         })
     }
 }
@@ -142,6 +141,9 @@ mod tests {
         assert!(system_result.is_err());
         let error = system_result.unwrap_err();
         assert!(error.context().is_some());
-        assert_eq!(error.context().unwrap().component, Some("cpu-info".to_string()));
+        assert_eq!(
+            error.context().unwrap().component,
+            Some("cpu-info".to_string())
+        );
     }
 }

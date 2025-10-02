@@ -107,7 +107,11 @@ impl MemoryTracker {
                         history.pop_front();
                     }
                     if self.config.max_history > 0 {
-                        history.push_back(DataPoint { timestamp: now, value, metadata: None });
+                        history.push_back(DataPoint {
+                            timestamp: now,
+                            value,
+                            metadata: None,
+                        });
                     }
                 }
             }
@@ -149,19 +153,32 @@ impl MemoryTracker {
         }
 
         let cutoff_time = Instant::now() - window;
-        let window_data: Vec<&MemoryMetrics> =
-            history.iter().filter(|metrics| metrics.timestamp >= cutoff_time).collect();
+        let window_data: Vec<&MemoryMetrics> = history
+            .iter()
+            .filter(|metrics| metrics.timestamp >= cutoff_time)
+            .collect();
 
         if window_data.is_empty() {
             return None;
         }
 
-        let avg_usage = window_data.iter().map(|m| m.current_allocated as f64).sum::<f64>()
+        let avg_usage = window_data
+            .iter()
+            .map(|m| m.current_allocated as f64)
+            .sum::<f64>()
             / window_data.len() as f64;
 
-        let max_usage = window_data.iter().map(|m| m.current_allocated).max().unwrap_or(0);
+        let max_usage = window_data
+            .iter()
+            .map(|m| m.current_allocated)
+            .max()
+            .unwrap_or(0);
 
-        let min_usage = window_data.iter().map(|m| m.current_allocated).min().unwrap_or(0);
+        let min_usage = window_data
+            .iter()
+            .map(|m| m.current_allocated)
+            .min()
+            .unwrap_or(0);
 
         let total_allocations = window_data
             .last()
@@ -219,7 +236,11 @@ impl MemoryTracker {
             })
             .sum();
 
-        let r_squared = if ss_tot > 0.0 { 1.0 - (ss_res / ss_tot) } else { 0.0 };
+        let r_squared = if ss_tot > 0.0 {
+            1.0 - (ss_res / ss_tot)
+        } else {
+            0.0
+        };
 
         let trend_type = if slope.abs() < 0.01 {
             TrendType::Stable
@@ -242,9 +263,12 @@ impl MemoryTracker {
     /// Reset tracking history
     pub fn reset(&self) {
         self.history.write().clear();
-        self.metric_history.write().iter_mut().for_each(|(_, history)| {
-            history.clear();
-        });
+        self.metric_history
+            .write()
+            .iter_mut()
+            .for_each(|(_, history)| {
+                history.clear();
+            });
         *self.last_sample.write() = Instant::now();
     }
 

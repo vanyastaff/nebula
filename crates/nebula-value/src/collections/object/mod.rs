@@ -14,9 +14,9 @@ use std::hash::{Hash, Hasher};
 
 use im::HashMap;
 
+use crate::core::NebulaError;
 use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::limits::ValueLimits;
-use crate::core::NebulaError;
 
 // Forward declaration - will be replaced with actual Value type
 type ValueItem = serde_json::Value;
@@ -114,9 +114,9 @@ impl Object {
     /// Remove key (returns new Object and removed value)
     pub fn remove(&self, key: &str) -> Option<(Self, ValueItem)> {
         let mut new_map = self.inner.clone();
-        new_map.remove(key).map(|val| {
-            (Self { inner: new_map }, val)
-        })
+        new_map
+            .remove(key)
+            .map(|val| (Self { inner: new_map }, val))
     }
 
     /// Get all keys
@@ -156,7 +156,8 @@ impl Object {
     where
         F: Fn(&String, &ValueItem) -> bool,
     {
-        let filtered: HashMap<String, ValueItem> = self.inner
+        let filtered: HashMap<String, ValueItem> = self
+            .inner
             .iter()
             .filter(|(k, v)| predicate(k, v))
             .map(|(k, v)| (k.clone(), v.clone()))
@@ -265,9 +266,7 @@ mod tests {
 
     #[test]
     fn test_object_structural_sharing() {
-        let obj1 = Object::from_iter(vec![
-            ("key1".to_string(), json!(1)),
-        ]);
+        let obj1 = Object::from_iter(vec![("key1".to_string(), json!(1))]);
         let obj2 = obj1.insert("key2".to_string(), json!(2));
 
         assert_eq!(obj1.len(), 1);
@@ -324,15 +323,9 @@ mod tests {
 
     #[test]
     fn test_object_equality() {
-        let obj1 = Object::from_iter(vec![
-            ("a".to_string(), json!(1)),
-        ]);
-        let obj2 = Object::from_iter(vec![
-            ("a".to_string(), json!(1)),
-        ]);
-        let obj3 = Object::from_iter(vec![
-            ("a".to_string(), json!(2)),
-        ]);
+        let obj1 = Object::from_iter(vec![("a".to_string(), json!(1))]);
+        let obj2 = Object::from_iter(vec![("a".to_string(), json!(1))]);
+        let obj3 = Object::from_iter(vec![("a".to_string(), json!(2))]);
 
         assert_eq!(obj1, obj2);
         assert_ne!(obj1, obj3);

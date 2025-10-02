@@ -223,7 +223,9 @@ mod tests {
             // Write some data
             *(ptr.as_ptr() as *mut u32) = 0x12345678;
 
-            let new_ptr = allocator.reallocate(ptr.cast(), old_layout, new_layout).unwrap();
+            let new_ptr = allocator
+                .reallocate(ptr.cast(), old_layout, new_layout)
+                .unwrap();
 
             // Data should be preserved
             assert_eq!(*(new_ptr.as_ptr() as *const u32), 0x12345678);

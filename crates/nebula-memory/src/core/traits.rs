@@ -2,8 +2,8 @@
 //!
 //! This module defines the fundamental traits used throughout nebula-memory.
 
+use super::error::{MemoryError, MemoryResult};
 use core::alloc::Layout;
-use super::error::{MemoryResult, MemoryError};
 
 /// Core memory management trait for allocators and pools
 ///
@@ -70,7 +70,8 @@ pub trait MemoryUsage {
     ///
     /// Returns `None` if usage percentage cannot be determined.
     fn is_memory_pressure(&self, threshold_percent: f32) -> Option<bool> {
-        self.memory_usage_percent().map(|usage| usage >= threshold_percent)
+        self.memory_usage_percent()
+            .map(|usage| usage >= threshold_percent)
     }
 
     /// Returns detailed memory usage information

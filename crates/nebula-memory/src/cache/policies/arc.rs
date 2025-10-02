@@ -86,7 +86,7 @@ impl ArcConfig {
         Self {
             capacity,
             max_ghost_size: capacity * 4, // Larger ghost lists
-            learning_rate: 0.5, // Slower adaptation
+            learning_rate: 0.5,           // Slower adaptation
             aggressive_adaptation: false,
             protect_new_items: true,
             protection_duration: Duration::from_secs(300),
@@ -124,15 +124,21 @@ impl ArcConfig {
     /// Validate the configuration
     pub fn validate(&self) -> MemoryResult<()> {
         if self.capacity == 0 {
-            return Err(crate::core::error::MemoryError::invalid_config("configuration error"));
+            return Err(crate::core::error::MemoryError::invalid_config(
+                "configuration error",
+            ));
         }
 
         if !(0.0..=2.0).contains(&self.learning_rate) {
-            return Err(crate::core::error::MemoryError::invalid_config("configuration error"));
+            return Err(crate::core::error::MemoryError::invalid_config(
+                "configuration error",
+            ));
         }
 
         if self.max_p > self.capacity {
-            return Err(crate::core::error::MemoryError::invalid_config("configuration error"));
+            return Err(crate::core::error::MemoryError::invalid_config(
+                "configuration error",
+            ));
         }
 
         Ok(())
@@ -192,7 +198,7 @@ pub struct WorkloadStats {
     pub total_requests: u64,
     /// Ghost hits in B1 (recency preference)
     pub b1_hits: u64,
-    /// Ghost hits in B2 (frequency preference) 
+    /// Ghost hits in B2 (frequency preference)
     pub b2_hits: u64,
     /// Sequential access ratio
     pub sequential_ratio: f64,
@@ -216,8 +222,9 @@ impl WorkloadStats {
 
         let total_ghost_hits = self.b1_hits + self.b2_hits;
         let balanced_hits = total_ghost_hits as f64 / 2.0;
-        let deviation = ((self.b1_hits as f64 - balanced_hits).abs() +
-            (self.b2_hits as f64 - balanced_hits).abs()) / 2.0;
+        let deviation = ((self.b1_hits as f64 - balanced_hits).abs()
+            + (self.b2_hits as f64 - balanced_hits).abs())
+            / 2.0;
 
         1.0 - (deviation / balanced_hits).min(1.0)
     }
@@ -350,19 +357,19 @@ where
         match self.location_map.get(key).copied() {
             Some(ArcLocation::T1) => {
                 self.handle_t1_hit(key, size_hint);
-            },
+            }
             Some(ArcLocation::T2) => {
                 self.handle_t2_hit(key, size_hint);
-            },
+            }
             Some(ArcLocation::B1) => {
                 self.handle_b1_hit(key, size_hint);
-            },
+            }
             Some(ArcLocation::B2) => {
                 self.handle_b2_hit(key, size_hint);
-            },
+            }
             None => {
                 self.handle_cache_miss(key, size_hint);
-            },
+            }
         }
 
         // Perform workload analysis and adaptation
@@ -392,7 +399,7 @@ where
                             self.location_map.insert(key.clone(), ArcLocation::B1);
                         }
                     }
-                },
+                }
                 ArcLocation::T2 => {
                     if let Some(pos) = self.t2.iter().position(|e| &e.key == key) {
                         let entry = self.t2.remove(pos).unwrap();
@@ -402,13 +409,13 @@ where
                             self.location_map.insert(key.clone(), ArcLocation::B2);
                         }
                     }
-                },
+                }
                 ArcLocation::B1 => {
                     self.b1.remove(key);
-                },
+                }
                 ArcLocation::B2 => {
                     self.b2.remove(key);
-                },
+                }
             }
         }
 
@@ -581,14 +588,16 @@ where
         let base_delta = if towards_recency {
             // B1 hit: increase recency preference
             if self.b2.len() > 0 {
-                ((self.b1.len() as f64 / self.b2.len() as f64) * self.config.learning_rate).ceil() as usize
+                ((self.b1.len() as f64 / self.b2.len() as f64) * self.config.learning_rate).ceil()
+                    as usize
             } else {
                 (self.config.learning_rate).ceil() as usize
             }
         } else {
-            // B2 hit: increase frequency preference  
+            // B2 hit: increase frequency preference
             if self.b1.len() > 0 {
-                ((self.b2.len() as f64 / self.b1.len() as f64) * self.config.learning_rate).ceil() as usize
+                ((self.b2.len() as f64 / self.b1.len() as f64) * self.config.learning_rate).ceil()
+                    as usize
             } else {
                 (self.config.learning_rate).ceil() as usize
             }
@@ -618,7 +627,7 @@ where
                 }
             }
         }
-        // Case B: |T1| <= p  
+        // Case B: |T1| <= p
         else {
             // Remove LRU from T2 and add to B2
             if let Some(victim) = self.t2.pop_front() {
@@ -673,14 +682,16 @@ where
                 match location {
                     ArcLocation::T1 => {
                         if let Some(entry) = self.t1.iter().find(|e| &e.key == key) {
-                            return entry.protected && !entry.is_protection_expired(self.config.protection_duration);
+                            return entry.protected
+                                && !entry.is_protection_expired(self.config.protection_duration);
                         }
-                    },
+                    }
                     ArcLocation::T2 => {
                         if let Some(entry) = self.t2.iter().find(|e| &e.key == key) {
-                            return entry.protected && !entry.is_protection_expired(self.config.protection_duration);
+                            return entry.protected
+                                && !entry.is_protection_expired(self.config.protection_duration);
                         }
-                    },
+                    }
                     _ => return false,
                 }
             }
@@ -730,13 +741,13 @@ where
                     if self.p < self.config.capacity * 3 / 4 {
                         self.p += 1;
                     }
-                },
+                }
                 WorkloadType::FrequencyBiased => {
                     // For frequency-biased workloads, prefer frequency
                     if self.p > self.config.capacity / 4 {
                         self.p -= 1;
                     }
-                },
+                }
                 _ => {
                     // For other workloads, let normal adaptation work
                 }
@@ -865,8 +876,10 @@ where
             adaptation_parameter: self.p,
             adaptation_efficiency: self.workload_stats.adaptation_efficiency(),
             workload_type: self.workload_stats.workload_type(),
-            recency_bias: self.workload_stats.b1_hits as f64 / (self.workload_stats.b1_hits + self.workload_stats.b2_hits).max(1) as f64,
-            frequency_bias: self.workload_stats.b2_hits as f64 / (self.workload_stats.b1_hits + self.workload_stats.b2_hits).max(1) as f64,
+            recency_bias: self.workload_stats.b1_hits as f64
+                / (self.workload_stats.b1_hits + self.workload_stats.b2_hits).max(1) as f64,
+            frequency_bias: self.workload_stats.b2_hits as f64
+                / (self.workload_stats.b1_hits + self.workload_stats.b2_hits).max(1) as f64,
             protected_items: self.protected_items.len(),
         }
     }
@@ -960,9 +973,7 @@ mod tests {
 
     #[test]
     fn test_arc_workload_analysis() {
-        let mut policy = ArcPolicy::<String, i32>::with_config(
-            ArcConfig::for_random_access(10)
-        );
+        let mut policy = ArcPolicy::<String, i32>::with_config(ArcConfig::for_random_access(10));
         let entry = CacheEntry::new(42);
 
         // Create a frequency-biased workload
@@ -987,25 +998,20 @@ mod tests {
     #[test]
     fn test_arc_preset_configurations() {
         // Test scan-resistant configuration
-        let scan_policy = ArcPolicy::<String, i32>::with_config(
-            ArcConfig::for_scan_resistant(100)
-        );
+        let scan_policy = ArcPolicy::<String, i32>::with_config(ArcConfig::for_scan_resistant(100));
         assert!(scan_policy.config.protect_new_items);
         assert!(scan_policy.config.max_ghost_size >= 400);
 
         // Test temporal workload configuration
-        let temporal_policy = ArcPolicy::<String, i32>::with_config(
-            ArcConfig::for_temporal_workloads(100)
-        );
+        let temporal_policy =
+            ArcPolicy::<String, i32>::with_config(ArcConfig::for_temporal_workloads(100));
         assert!(temporal_policy.config.aggressive_adaptation);
         assert!(temporal_policy.config.ghost_hit_boost > 1.0);
     }
 
     #[test]
     fn test_arc_protection_mechanism() {
-        let mut policy = ArcPolicy::<String, i32>::with_config(
-            ArcConfig::for_scan_resistant(10)
-        );
+        let mut policy = ArcPolicy::<String, i32>::with_config(ArcConfig::for_scan_resistant(10));
         let entry = CacheEntry::new(42);
 
         policy.record_insertion(&"protected".to_string(), &entry, Some(100));
@@ -1053,12 +1059,13 @@ mod tests {
 
         let workload_type = stats.workload_type();
         // Should detect some pattern
-        assert!(matches!(workload_type, 
-            WorkloadType::Sequential | 
-            WorkloadType::Temporal | 
-            WorkloadType::RecencyBiased | 
-            WorkloadType::FrequencyBiased | 
-            WorkloadType::Mixed
+        assert!(matches!(
+            workload_type,
+            WorkloadType::Sequential
+                | WorkloadType::Temporal
+                | WorkloadType::RecencyBiased
+                | WorkloadType::FrequencyBiased
+                | WorkloadType::Mixed
         ));
     }
 

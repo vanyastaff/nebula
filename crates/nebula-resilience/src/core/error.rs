@@ -94,20 +94,33 @@ impl Clone for ResilienceError {
                 state: state.clone(),
                 retry_after: *retry_after,
             },
-            Self::BulkheadFull { max_concurrency, queued } => Self::BulkheadFull {
+            Self::BulkheadFull {
+                max_concurrency,
+                queued,
+            } => Self::BulkheadFull {
                 max_concurrency: *max_concurrency,
                 queued: *queued,
             },
-            Self::RateLimitExceeded { retry_after, limit, current } => Self::RateLimitExceeded {
+            Self::RateLimitExceeded {
+                retry_after,
+                limit,
+                current,
+            } => Self::RateLimitExceeded {
                 retry_after: *retry_after,
                 limit: *limit,
                 current: *current,
             },
-            Self::RetryLimitExceeded { attempts, last_error } => Self::RetryLimitExceeded {
+            Self::RetryLimitExceeded {
+                attempts,
+                last_error,
+            } => Self::RetryLimitExceeded {
                 attempts: *attempts,
                 last_error: last_error.clone(),
             },
-            Self::FallbackFailed { reason, original_error } => Self::FallbackFailed {
+            Self::FallbackFailed {
+                reason,
+                original_error,
+            } => Self::FallbackFailed {
                 reason: reason.clone(),
                 original_error: original_error.clone(),
             },
@@ -117,7 +130,11 @@ impl Clone for ResilienceError {
             Self::InvalidConfig { message } => Self::InvalidConfig {
                 message: message.clone(),
             },
-            Self::Custom { message, retryable, source: _ } => Self::Custom {
+            Self::Custom {
+                message,
+                retryable,
+                source: _,
+            } => Self::Custom {
                 message: message.clone(),
                 retryable: *retryable,
                 source: None, // Can't clone trait objects, so we lose the source
@@ -143,17 +160,35 @@ impl fmt::Display for ResilienceError {
                 }
                 Ok(())
             }
-            Self::BulkheadFull { max_concurrency, queued } => {
-                write!(f, "Bulkhead full: max={}, queued={}", max_concurrency, queued)
+            Self::BulkheadFull {
+                max_concurrency,
+                queued,
+            } => {
+                write!(
+                    f,
+                    "Bulkhead full: max={}, queued={}",
+                    max_concurrency, queued
+                )
             }
-            Self::RateLimitExceeded { limit, current, retry_after } => {
-                write!(f, "Rate limit exceeded: limit={}/s, current={}/s", limit, current)?;
+            Self::RateLimitExceeded {
+                limit,
+                current,
+                retry_after,
+            } => {
+                write!(
+                    f,
+                    "Rate limit exceeded: limit={}/s, current={}/s",
+                    limit, current
+                )?;
                 if let Some(duration) = retry_after {
                     write!(f, " (retry after {:?})", duration)?;
                 }
                 Ok(())
             }
-            Self::RetryLimitExceeded { attempts, last_error } => {
+            Self::RetryLimitExceeded {
+                attempts,
+                last_error,
+            } => {
                 write!(f, "Retry limit exceeded after {} attempts", attempts)?;
                 if let Some(err) = last_error {
                     write!(f, " - last error: {}", err)?;
@@ -183,9 +218,9 @@ impl fmt::Display for ResilienceError {
 impl StdError for ResilienceError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
-            Self::Custom { source: Some(src), .. } => {
-                Some(src.as_ref() as &(dyn StdError + 'static))
-            }
+            Self::Custom {
+                source: Some(src), ..
+            } => Some(src.as_ref() as &(dyn StdError + 'static)),
             _ => None,
         }
     }
@@ -279,8 +314,8 @@ impl ResilienceError {
     /// Get retry delay hint if available
     pub fn retry_after(&self) -> Option<Duration> {
         match self {
-            Self::RateLimitExceeded { retry_after, .. } |
-            Self::CircuitBreakerOpen { retry_after, .. } => *retry_after,
+            Self::RateLimitExceeded { retry_after, .. }
+            | Self::CircuitBreakerOpen { retry_after, .. } => *retry_after,
             _ => None,
         }
     }
@@ -331,34 +366,48 @@ impl From<ResilienceError> for NebulaError {
             }
             ResilienceError::CircuitBreakerOpen { state, retry_after } => {
                 let msg = match retry_after {
-                    Some(duration) => format!("Circuit breaker is {} (retry after {:?})", state, duration),
+                    Some(duration) => {
+                        format!("Circuit breaker is {} (retry after {:?})", state, duration)
+                    }
                     None => format!("Circuit breaker is {}", state),
                 };
                 NebulaError::service_unavailable("circuit-breaker", msg)
             }
-            ResilienceError::BulkheadFull { max_concurrency, queued } => {
-                NebulaError::new(
-                    nebula_error::ErrorKind::System(
-                        nebula_error::kinds::SystemError::resource_exhausted(
-                            format!("Bulkhead full: max={}, queued={}", max_concurrency, queued)
-                        )
-                    )
-                )
-            }
-            ResilienceError::RateLimitExceeded { limit, current: _, retry_after: _ } => {
+            ResilienceError::BulkheadFull {
+                max_concurrency,
+                queued,
+            } => NebulaError::new(nebula_error::ErrorKind::System(
+                nebula_error::kinds::SystemError::resource_exhausted(format!(
+                    "Bulkhead full: max={}, queued={}",
+                    max_concurrency, queued
+                )),
+            )),
+            ResilienceError::RateLimitExceeded {
+                limit,
+                current: _,
+                retry_after: _,
+            } => {
                 // Convert f64 limit to u32 for NebulaError API
                 let limit_u32 = limit as u32;
                 let period = Duration::from_secs(1); // Assume per-second limit
                 NebulaError::rate_limit_exceeded(limit_u32, period)
             }
-            ResilienceError::RetryLimitExceeded { attempts, last_error } => {
+            ResilienceError::RetryLimitExceeded {
+                attempts,
+                last_error,
+            } => {
                 let msg = match last_error {
-                    Some(err) => format!("Retry limit exceeded after {} attempts: {}", attempts, err),
+                    Some(err) => {
+                        format!("Retry limit exceeded after {} attempts: {}", attempts, err)
+                    }
                     None => format!("Retry limit exceeded after {} attempts", attempts),
                 };
                 NebulaError::internal(msg)
             }
-            ResilienceError::FallbackFailed { reason, original_error } => {
+            ResilienceError::FallbackFailed {
+                reason,
+                original_error,
+            } => {
                 let msg = match original_error {
                     Some(err) => format!("Fallback failed: {} (original: {})", reason, err),
                     None => format!("Fallback failed: {}", reason),
@@ -375,7 +424,11 @@ impl From<ResilienceError> for NebulaError {
             ResilienceError::InvalidConfig { message } => {
                 NebulaError::validation(format!("Invalid resilience configuration: {}", message))
             }
-            ResilienceError::Custom { message, retryable, source: _ } => {
+            ResilienceError::Custom {
+                message,
+                retryable,
+                source: _,
+            } => {
                 if retryable {
                     NebulaError::service_unavailable("resilience-custom", message)
                 } else {
@@ -400,7 +453,7 @@ impl From<NebulaError> for ResilienceError {
         } else if code.contains("rate_limit") {
             ResilienceError::RateLimitExceeded {
                 retry_after: err.retry_after(),
-                limit: 100.0, // Default limit
+                limit: 100.0,   // Default limit
                 current: 150.0, // Assumed over limit
             }
         } else if err.is_client_error() {

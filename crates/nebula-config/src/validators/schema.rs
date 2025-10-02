@@ -55,9 +55,7 @@ impl SchemaValidator {
         }
 
         match schema {
-            Value::Object(schema_obj) => {
-                self.validate_with_schema_object(data, schema_obj, path)
-            }
+            Value::Object(schema_obj) => self.validate_with_schema_object(data, schema_obj, path),
             Value::Bool(allow_all) => {
                 if !allow_all {
                     Err(ConfigError::validation_error(
@@ -68,12 +66,10 @@ impl SchemaValidator {
                     Ok(())
                 }
             }
-            _ => {
-                Err(ConfigError::validation_error(
-                    format!("Invalid schema format at path '{}'", path),
-                    Some(path.to_string()),
-                ))
-            }
+            _ => Err(ConfigError::validation_error(
+                format!("Invalid schema format at path '{}'", path),
+                Some(path.to_string()),
+            )),
         }
     }
 
@@ -162,11 +158,7 @@ impl SchemaValidator {
         if let Some(enum_arr) = enum_val.as_array() {
             if !enum_arr.contains(data) {
                 return Err(ConfigError::validation_error(
-                    format!(
-                        "Value at '{}' must be one of {:?}",
-                        path,
-                        enum_arr
-                    ),
+                    format!("Value at '{}' must be one of {:?}", path, enum_arr),
                     Some(path.to_string()),
                 ));
             }
@@ -235,10 +227,7 @@ impl SchemaValidator {
             if let Some(min) = min_props.as_u64() {
                 if (obj.len() as u64) < min {
                     return Err(ConfigError::validation_error(
-                        format!(
-                            "Object at '{}' must have at least {} properties",
-                            path, min
-                        ),
+                        format!("Object at '{}' must have at least {} properties", path, min),
                         Some(path.to_string()),
                     ));
                 }
@@ -249,10 +238,7 @@ impl SchemaValidator {
             if let Some(max) = max_props.as_u64() {
                 if (obj.len() as u64) > max {
                     return Err(ConfigError::validation_error(
-                        format!(
-                            "Object at '{}' must have at most {} properties",
-                            path, max
-                        ),
+                        format!("Object at '{}' must have at most {} properties", path, max),
                         Some(path.to_string()),
                     ));
                 }
@@ -341,10 +327,7 @@ impl SchemaValidator {
             if let Some(min) = min_length.as_u64() {
                 if (s.len() as u64) < min {
                     return Err(ConfigError::validation_error(
-                        format!(
-                            "String at '{}' must be at least {} characters",
-                            path, min
-                        ),
+                        format!("String at '{}' must be at least {} characters", path, min),
                         Some(path.to_string()),
                     ));
                 }
@@ -355,10 +338,7 @@ impl SchemaValidator {
             if let Some(max) = max_length.as_u64() {
                 if (s.len() as u64) > max {
                     return Err(ConfigError::validation_error(
-                        format!(
-                            "String at '{}' must be at most {} characters",
-                            path, max
-                        ),
+                        format!("String at '{}' must be at most {} characters", path, max),
                         Some(path.to_string()),
                     ));
                 }
@@ -419,7 +399,11 @@ impl SchemaValidator {
                         format!(
                             "Number at '{}' must be {} {}",
                             path,
-                            if exclusive { "greater than" } else { "at least" },
+                            if exclusive {
+                                "greater than"
+                            } else {
+                                "at least"
+                            },
                             min
                         ),
                         Some(path.to_string()),
@@ -457,10 +441,7 @@ impl SchemaValidator {
                     let remainder = value % divisor;
                     if remainder.abs() > f64::EPSILON {
                         return Err(ConfigError::validation_error(
-                            format!(
-                                "Number at '{}' must be a multiple of {}",
-                                path, divisor
-                            ),
+                            format!("Number at '{}' must be a multiple of {}", path, divisor),
                             Some(path.to_string()),
                         ));
                     }
@@ -594,7 +575,10 @@ impl SchemaValidator {
     }
 
     fn is_valid_hostname(&self, s: &str) -> bool {
-        !s.is_empty() && s.len() <= 253 && s.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-')
+        !s.is_empty()
+            && s.len() <= 253
+            && s.chars()
+                .all(|c| c.is_alphanumeric() || c == '.' || c == '-')
     }
 }
 

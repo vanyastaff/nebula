@@ -5,8 +5,8 @@ use crate::watchers::{ConfigWatchEvent, ConfigWatchEventType};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 
 /// Polling watcher that checks for changes at regular intervals
@@ -139,20 +139,12 @@ impl PollingWatcher {
             for source in &sources {
                 match source {
                     ConfigSource::File(path) | ConfigSource::FileAuto(path) => {
-                        self.check_file_changes(
-                            path,
-                            source,
-                            &callback,
-                            &metadata_cache
-                        ).await;
+                        self.check_file_changes(path, source, &callback, &metadata_cache)
+                            .await;
                     }
                     ConfigSource::Directory(dir) => {
-                        self.check_directory_changes(
-                            dir,
-                            source,
-                            &callback,
-                            &metadata_cache
-                        ).await;
+                        self.check_directory_changes(dir, source, &callback, &metadata_cache)
+                            .await;
                     }
                     _ => {}
                 }
@@ -174,30 +166,24 @@ impl PollingWatcher {
         match (cache.get(path), current_metadata) {
             (Some(old), Some(new)) if Self::has_changed(old, &new) => {
                 // File modified
-                let event = ConfigWatchEvent::new(
-                    ConfigWatchEventType::Modified,
-                    source.clone()
-                ).with_path(path.clone());
+                let event = ConfigWatchEvent::new(ConfigWatchEventType::Modified, source.clone())
+                    .with_path(path.clone());
 
                 callback(event);
                 cache.insert(path.clone(), new);
             }
             (Some(_), None) => {
                 // File deleted
-                let event = ConfigWatchEvent::new(
-                    ConfigWatchEventType::Deleted,
-                    source.clone()
-                ).with_path(path.clone());
+                let event = ConfigWatchEvent::new(ConfigWatchEventType::Deleted, source.clone())
+                    .with_path(path.clone());
 
                 callback(event);
                 cache.remove(path);
             }
             (None, Some(new)) => {
                 // File created
-                let event = ConfigWatchEvent::new(
-                    ConfigWatchEventType::Created,
-                    source.clone()
-                ).with_path(path.clone());
+                let event = ConfigWatchEvent::new(ConfigWatchEventType::Created, source.clone())
+                    .with_path(path.clone());
 
                 callback(event);
                 cache.insert(path.clone(), new);
@@ -237,19 +223,17 @@ impl PollingWatcher {
             match cache.get(path) {
                 Some(old) if Self::has_changed(old, new_metadata) => {
                     // File modified
-                    let event = ConfigWatchEvent::new(
-                        ConfigWatchEventType::Modified,
-                        source.clone()
-                    ).with_path(path.clone());
+                    let event =
+                        ConfigWatchEvent::new(ConfigWatchEventType::Modified, source.clone())
+                            .with_path(path.clone());
 
                     callback(event);
                 }
                 None => {
                     // File created
-                    let event = ConfigWatchEvent::new(
-                        ConfigWatchEventType::Created,
-                        source.clone()
-                    ).with_path(path.clone());
+                    let event =
+                        ConfigWatchEvent::new(ConfigWatchEventType::Created, source.clone())
+                            .with_path(path.clone());
 
                     callback(event);
                 }
@@ -267,10 +251,8 @@ impl PollingWatcher {
         for path in paths_in_dir {
             if !current_files.contains_key(&path) {
                 // File deleted
-                let event = ConfigWatchEvent::new(
-                    ConfigWatchEventType::Deleted,
-                    source.clone()
-                ).with_path(path.clone());
+                let event = ConfigWatchEvent::new(ConfigWatchEventType::Deleted, source.clone())
+                    .with_path(path.clone());
 
                 callback(event);
                 cache.remove(&path);
@@ -310,13 +292,9 @@ impl ConfigWatcher for PollingWatcher {
         // Start polling task
         let watcher = self.clone();
         let handle = tokio::spawn(async move {
-            watcher.start_polling_loop(
-                sources,
-                callback,
-                watching,
-                metadata_cache,
-                interval
-            ).await;
+            watcher
+                .start_polling_loop(sources, callback, watching, metadata_cache, interval)
+                .await;
         });
 
         // Store task handle

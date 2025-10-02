@@ -3,9 +3,9 @@
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec::Vec};
 
-use super::{ObjectPool, PoolConfig, Poolable};
 #[cfg(feature = "stats")]
 use super::PoolStats;
+use super::{ObjectPool, PoolConfig, Poolable};
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Batch allocator for efficient bulk operations
@@ -54,13 +54,23 @@ pub struct Batch<T: Poolable> {
 impl<T: Poolable> BatchAllocator<T> {
     /// Create new batch allocator
     pub fn new<F>(capacity: usize, factory: F) -> Self
-    where F: Fn() -> T + 'static {
-        Self::with_config(PoolConfig { initial_capacity: capacity, ..Default::default() }, factory)
+    where
+        F: Fn() -> T + 'static,
+    {
+        Self::with_config(
+            PoolConfig {
+                initial_capacity: capacity,
+                ..Default::default()
+            },
+            factory,
+        )
     }
 
     /// Create with custom configuration
     pub fn with_config<F>(config: PoolConfig, factory: F) -> Self
-    where F: Fn() -> T + 'static {
+    where
+        F: Fn() -> T + 'static,
+    {
         let batch_size_hint = (config.initial_capacity / 10).max(1);
 
         Self {
@@ -74,7 +84,10 @@ impl<T: Poolable> BatchAllocator<T> {
     /// Get a batch of objects
     pub fn get_batch(&mut self, count: usize) -> MemoryResult<Batch<T>> {
         if count == 0 {
-            return Ok(Batch { objects: Vec::new(), allocator: self as *mut _ });
+            return Ok(Batch {
+                objects: Vec::new(),
+                allocator: self as *mut _,
+            });
         }
 
         let mut objects = Vec::with_capacity(count);
@@ -87,15 +100,15 @@ impl<T: Poolable> BatchAllocator<T> {
             match self.pool.get() {
                 Ok(pooled) => {
                     objects.push(pooled.detach());
-                },
+                }
                 Err(_) if objects.is_empty() => {
                     // First object failed - propagate error
                     return Err(MemoryError::pool_exhausted());
-                },
+                }
                 Err(_) => {
                     // Partial batch is ok
                     break;
-                },
+                }
             }
         }
 
@@ -119,7 +132,10 @@ impl<T: Poolable> BatchAllocator<T> {
             }
         }
 
-        Ok(Batch { objects, allocator: self as *mut _ })
+        Ok(Batch {
+            objects,
+            allocator: self as *mut _,
+        })
     }
 
     /// Try to get exact batch size
@@ -136,7 +152,7 @@ impl<T: Poolable> BatchAllocator<T> {
                         self.pool.return_object(obj);
                     }
                     return None;
-                },
+                }
             }
         }
 
@@ -153,7 +169,10 @@ impl<T: Poolable> BatchAllocator<T> {
                 / self.batch_stats.total_batches as f64;
         }
 
-        Some(Batch { objects, allocator: self as *mut _ })
+        Some(Batch {
+            objects,
+            allocator: self as *mut _,
+        })
     }
 
     /// Return a batch of objects
@@ -247,9 +266,15 @@ impl<T: Poolable> Batch<T> {
             Vec::new()
         };
 
-        let first = Batch { objects: current_objects, allocator };
+        let first = Batch {
+            objects: current_objects,
+            allocator,
+        };
 
-        let second = Batch { objects: second_half, allocator };
+        let second = Batch {
+            objects: second_half,
+            allocator,
+        };
 
         core::mem::forget(self);
 

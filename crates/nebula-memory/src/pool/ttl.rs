@@ -9,9 +9,9 @@ use std::collections::VecDeque;
 #[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 
-use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
 #[cfg(feature = "stats")]
 use super::PoolStats;
+use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Object pool with time-to-live for pooled objects
@@ -51,16 +51,24 @@ struct TtlWrapper<T> {
 impl<T: Poolable> TtlPool<T> {
     /// Create new TTL pool
     pub fn new<F>(capacity: usize, ttl: Duration, factory: F) -> Self
-    where F: Fn() -> T + 'static {
+    where
+        F: Fn() -> T + 'static,
+    {
         Self::with_config(
-            PoolConfig { initial_capacity: capacity, ttl: Some(ttl), ..Default::default() },
+            PoolConfig {
+                initial_capacity: capacity,
+                ttl: Some(ttl),
+                ..Default::default()
+            },
             factory,
         )
     }
 
     /// Create pool with custom configuration
     pub fn with_config<F>(mut config: PoolConfig, factory: F) -> Self
-    where F: Fn() -> T + 'static {
+    where
+        F: Fn() -> T + 'static,
+    {
         let ttl = config.ttl.unwrap_or(Duration::from_secs(300)); // 5 min default
         config.ttl = Some(ttl);
 
@@ -77,7 +85,10 @@ impl<T: Poolable> TtlPool<T> {
                 let obj = factory();
                 #[cfg(feature = "stats")]
                 stats.record_creation();
-                objects.push_back(TtlWrapper { value: obj, created_at: now });
+                objects.push_back(TtlWrapper {
+                    value: obj,
+                    created_at: now,
+                });
             }
         }
 
@@ -172,7 +183,10 @@ impl<T: Poolable> TtlPool<T> {
             obj
         };
 
-        Ok(TtlPooledValue { value: ManuallyDrop::new(obj), pool: self as *mut _ })
+        Ok(TtlPooledValue {
+            value: ManuallyDrop::new(obj),
+            pool: self as *mut _,
+        })
     }
 
     /// Return object to pool
@@ -203,7 +217,10 @@ impl<T: Poolable> TtlPool<T> {
         }
 
         obj.reset();
-        self.objects.push_back(TtlWrapper { value: obj, created_at: Instant::now() });
+        self.objects.push_back(TtlWrapper {
+            value: obj,
+            created_at: Instant::now(),
+        });
     }
 
     /// Force cleanup of expired objects

@@ -375,30 +375,21 @@ pub fn signed_decimal() -> NumericString {
 
 /// Create alphanumeric validator with builder pattern
 #[builder]
-pub fn alphanumeric_builder(
-    #[builder(default = false)]
-    allow_spaces: bool
-) -> Alphanumeric {
+pub fn alphanumeric_builder(#[builder(default = false)] allow_spaces: bool) -> Alphanumeric {
     Alphanumeric::new(allow_spaces)
 }
 
 /// Create alphabetic validator with builder pattern
 #[builder]
-pub fn alpha_builder(
-    #[builder(default = false)]
-    allow_spaces: bool
-) -> Alpha {
+pub fn alpha_builder(#[builder(default = false)] allow_spaces: bool) -> Alpha {
     Alpha::new(allow_spaces)
 }
 
 /// Create numeric string validator with builder pattern
 #[builder]
 pub fn numeric_string_builder(
-    #[builder(default = false)]
-    allow_decimal: bool,
-    #[builder(default = false)]
-    allow_negative: bool
+    #[builder(default = false)] allow_decimal: bool,
+    #[builder(default = false)] allow_negative: bool,
 ) -> NumericString {
     NumericString::new(allow_decimal, allow_negative)
 }
-

@@ -78,6 +78,7 @@ pub mod manager;
 pub mod pool;
 pub mod stateful;
 pub mod observability;
+pub mod health;
 
 // Feature-gated modules
 #[cfg(feature = "credentials")]

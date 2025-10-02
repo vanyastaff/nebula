@@ -3,9 +3,9 @@
 //! This example demonstrates the circuit breaker pattern with various failure scenarios
 //! and shows the security improvements and optimizations made to the implementation.
 
+use nebula_resilience::{CircuitBreaker, CircuitBreakerConfig, ResilienceConfig, ResilienceError};
 use std::time::Duration;
 use tokio::time::sleep;
-use nebula_resilience::{CircuitBreaker, CircuitBreakerConfig, ResilienceError, ResilienceConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -26,10 +26,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Demonstrate successful operations (fast path)
     for i in 1..=5 {
-        let result = circuit_breaker.execute(|| async {
-            println!("  ✅ Executing operation {}", i);
-            Ok::<String, ResilienceError>(format!("Success {}", i))
-        }).await;
+        let result = circuit_breaker
+            .execute(|| async {
+                println!("  ✅ Executing operation {}", i);
+                Ok::<String, ResilienceError>(format!("Success {}", i))
+            })
+            .await;
 
         match result {
             Ok(value) => println!("  ✅ Operation {} succeeded: {}", i, value),
@@ -49,19 +51,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Simulate failures to trigger circuit opening
     for i in 1..=4 {
-        let result = breaker.execute(|| async {
-            if i <= 2 {
-                println!("  💥 Simulating failure {}", i);
-                Err(ResilienceError::Custom {
-                    message: format!("Simulated failure {}", i),
-                    retryable: true,
-                    source: None,
-                })
-            } else {
-                println!("  ✅ Attempting operation {}", i);
-                Ok::<String, ResilienceError>(format!("Success {}", i))
-            }
-        }).await;
+        let result = breaker
+            .execute(|| async {
+                if i <= 2 {
+                    println!("  💥 Simulating failure {}", i);
+                    Err(ResilienceError::Custom {
+                        message: format!("Simulated failure {}", i),
+                        retryable: true,
+                        source: None,
+                    })
+                } else {
+                    println!("  ✅ Attempting operation {}", i);
+                    Ok::<String, ResilienceError>(format!("Success {}", i))
+                }
+            })
+            .await;
 
         match result {
             Ok(value) => println!("  ✅ Operation {} succeeded: {}", i, value),
@@ -82,17 +86,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     sleep(Duration::from_millis(600)).await;
 
     // This should transition to half-open
-    let result = breaker.execute(|| async {
-        println!("  🔧 Testing half-open operation");
-        Ok::<String, ResilienceError>("Recovery test".to_string())
-    }).await;
+    let result = breaker
+        .execute(|| async {
+            println!("  🔧 Testing half-open operation");
+            Ok::<String, ResilienceError>("Recovery test".to_string())
+        })
+        .await;
 
     match result {
         Ok(value) => {
             println!("  ✅ Half-open test succeeded: {}", value);
             let state = breaker.state().await;
             println!("  🔄 Circuit state after success: {:?}", state);
-        },
+        }
         Err(e) => println!("  ❌ Half-open test failed: {}", e),
     }
 
@@ -101,30 +107,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test extreme values that should be validated
     let invalid_configs = vec![
-        ("Zero failure threshold", CircuitBreakerConfig {
-            failure_threshold: 0,
-            reset_timeout: Duration::from_secs(1),
-            half_open_max_operations: 1,
-            count_timeouts: true,
-        }),
-        ("Extremely high failure threshold", CircuitBreakerConfig {
-            failure_threshold: 50_000, // Should be capped
-            reset_timeout: Duration::from_secs(1),
-            half_open_max_operations: 1,
-            count_timeouts: true,
-        }),
-        ("Extremely long timeout", CircuitBreakerConfig {
-            failure_threshold: 5,
-            reset_timeout: Duration::from_secs(7200), // 2 hours - should be limited
-            half_open_max_operations: 1,
-            count_timeouts: true,
-        }),
-        ("Zero half-open operations", CircuitBreakerConfig {
-            failure_threshold: 5,
-            reset_timeout: Duration::from_secs(1),
-            half_open_max_operations: 0,
-            count_timeouts: true,
-        }),
+        (
+            "Zero failure threshold",
+            CircuitBreakerConfig {
+                failure_threshold: 0,
+                reset_timeout: Duration::from_secs(1),
+                half_open_max_operations: 1,
+                count_timeouts: true,
+            },
+        ),
+        (
+            "Extremely high failure threshold",
+            CircuitBreakerConfig {
+                failure_threshold: 50_000, // Should be capped
+                reset_timeout: Duration::from_secs(1),
+                half_open_max_operations: 1,
+                count_timeouts: true,
+            },
+        ),
+        (
+            "Extremely long timeout",
+            CircuitBreakerConfig {
+                failure_threshold: 5,
+                reset_timeout: Duration::from_secs(7200), // 2 hours - should be limited
+                half_open_max_operations: 1,
+                count_timeouts: true,
+            },
+        ),
+        (
+            "Zero half-open operations",
+            CircuitBreakerConfig {
+                failure_threshold: 5,
+                reset_timeout: Duration::from_secs(1),
+                half_open_max_operations: 0,
+                count_timeouts: true,
+            },
+        ),
     ];
 
     for (name, config) in invalid_configs {
@@ -142,10 +160,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let operations = 1000;
 
     for _ in 0..operations {
-        let _ = perf_breaker.execute(|| async {
-            // Minimal operation to test fast path
-            Ok::<(), ResilienceError>(())
-        }).await;
+        let _ = perf_breaker
+            .execute(|| async {
+                // Minimal operation to test fast path
+                Ok::<(), ResilienceError>(())
+            })
+            .await;
     }
 
     let elapsed = start.elapsed();
@@ -164,18 +184,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let breaker = concurrent_breaker.clone();
         let handle = tokio::spawn(async move {
             for i in 0..50 {
-                let result = breaker.execute(|| async {
-                    // Simulate some work
-                    if (worker_id + i) % 20 == 0 {
-                        Err(ResilienceError::Custom {
-                            message: "Occasional failure".to_string(),
-                            retryable: true,
-                            source: None,
-                        })
-                    } else {
-                        Ok::<String, ResilienceError>(format!("Worker {} operation {}", worker_id, i))
-                    }
-                }).await;
+                let result = breaker
+                    .execute(|| async {
+                        // Simulate some work
+                        if (worker_id + i) % 20 == 0 {
+                            Err(ResilienceError::Custom {
+                                message: "Occasional failure".to_string(),
+                                retryable: true,
+                                source: None,
+                            })
+                        } else {
+                            Ok::<String, ResilienceError>(format!(
+                                "Worker {} operation {}",
+                                worker_id, i
+                            ))
+                        }
+                    })
+                    .await;
 
                 if i % 10 == 0 {
                     match result {
@@ -196,7 +221,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n  🔒 Concurrent test completed successfully");
 
     let stats = concurrent_breaker.stats().await;
-    println!("  📊 Final stats: state={:?}, failures={}", stats.state, stats.failure_count);
+    println!(
+        "  📊 Final stats: state={:?}, failures={}",
+        stats.state, stats.failure_count
+    );
 
     println!("\n🎉 Circuit Breaker Demo Completed Successfully!");
     println!("   ✅ Fast-path optimization working");

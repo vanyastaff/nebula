@@ -44,10 +44,10 @@ pub struct HealthConfig {
 impl Default for HealthConfig {
     fn default() -> Self {
         Self {
-            max_failure_rate: 0.1,      // 10% failures
-            max_leak_rate: 0.05,         // 5% leaks
-            min_utilization: 0.2,        // 20% minimum
-            max_utilization: 0.9,        // 90% maximum
+            max_failure_rate: 0.1, // 10% failures
+            max_leak_rate: 0.05,   // 5% leaks
+            min_utilization: 0.2,  // 20% minimum
+            max_utilization: 0.9,  // 90% maximum
             #[cfg(feature = "std")]
             rate_window: Duration::from_secs(60),
         }
@@ -169,7 +169,9 @@ impl PoolHealthMonitor {
         let returns = self.total_returns.load(Ordering::Relaxed);
         let known_leaks = self.leaked_objects.load(Ordering::Relaxed);
 
-        let potential_leaks = checkouts.saturating_sub(returns).saturating_sub(known_leaks);
+        let potential_leaks = checkouts
+            .saturating_sub(returns)
+            .saturating_sub(known_leaks);
 
         LeakDetectionReport {
             total_checkouts: checkouts,

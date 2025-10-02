@@ -1,8 +1,8 @@
 //! Example showing context propagation across async boundaries
 
+use anyhow::Result;
 use nebula_log::prelude::*;
 use nebula_log::{Context, with_context};
-use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {

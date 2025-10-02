@@ -1,6 +1,6 @@
 //! Process information and management
 
-use crate::core::{SystemResult, SystemError, NebulaError};
+use crate::core::{NebulaError, SystemError, SystemResult};
 use std::collections::HashMap;
 
 #[cfg(feature = "serde")]
@@ -387,8 +387,8 @@ pub fn tree() -> Vec<ProcessTree> {
             .unwrap_or_default();
 
         ProcessTree {
-            process: process.clone(),  // Clone only once at the leaf
-            children
+            process: process.clone(), // Clone only once at the leaf
+            children,
         }
     }
 

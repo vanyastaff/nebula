@@ -1,6 +1,6 @@
 //! File and MIME type validation operations using the unified validator macro
 
-use crate::{validator, validator_fn, ValueExt};
+use crate::{ValueExt, validator, validator_fn};
 
 // ==================== FILE VALIDATORS ====================
 
@@ -140,7 +140,12 @@ pub fn mime_types(allowed_types: Vec<&str>) -> MimeType {
 }
 
 pub fn file_extensions(allowed_extensions: Vec<&str>) -> FileExtension {
-    FileExtension::new(allowed_extensions.into_iter().map(|s| s.to_string()).collect())
+    FileExtension::new(
+        allowed_extensions
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect(),
+    )
 }
 
 // Common MIME type convenience functions

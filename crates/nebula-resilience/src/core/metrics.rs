@@ -1,10 +1,10 @@
 //! High-performance metrics collection and reporting with security hardening
 
+use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use std::collections::HashMap;
-use parking_lot::RwLock;
 
 /// Maximum number of unique metrics to prevent memory exhaustion attacks
 const MAX_METRICS_COUNT: usize = 10_000;

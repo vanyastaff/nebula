@@ -2,8 +2,8 @@
 //!
 //! Shows how to use PoolAllocator for efficient object reuse.
 
-use std::alloc::Layout;
 use nebula_memory::allocator::PoolAllocator;
+use std::alloc::Layout;
 
 #[derive(Debug)]
 struct Message {

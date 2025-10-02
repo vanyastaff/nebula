@@ -90,7 +90,7 @@ impl PolicyMetrics {
             hits: 0,
             misses: 0,
             requests: 0,
-            last_reset: Instant::now()
+            last_reset: Instant::now(),
         }
     }
 
@@ -100,7 +100,7 @@ impl PolicyMetrics {
         Self {
             hits: 0,
             misses: 0,
-            requests: 0
+            requests: 0,
         }
     }
 
@@ -333,8 +333,8 @@ where
     /// Perform the actual policy evaluation
     fn perform_policy_evaluation(&mut self) {
         // Check if we have enough data
-        let total_requests: usize = self.shadow_hits.values().sum::<usize>() +
-            self.shadow_misses.values().sum::<usize>();
+        let total_requests: usize =
+            self.shadow_hits.values().sum::<usize>() + self.shadow_misses.values().sum::<usize>();
 
         if total_requests < self.min_requests {
             return;
@@ -510,7 +510,8 @@ trait PolicyExtensions<K> {
 
 // These would need to be implemented in the actual policy types
 impl<K, V> PolicyExtensions<K> for LruPolicy<K, V>
-where K: CacheKey
+where
+    K: CacheKey,
 {
     fn would_hit(&self, _key: &K) -> bool {
         // Simplified implementation - would need actual logic
@@ -519,7 +520,8 @@ where K: CacheKey
 }
 
 impl<K, V> PolicyExtensions<K> for LfuPolicy<K, V>
-where K: CacheKey
+where
+    K: CacheKey,
 {
     fn would_hit(&self, _key: &K) -> bool {
         // Simplified implementation - would need actual logic
@@ -528,7 +530,8 @@ where K: CacheKey
 }
 
 impl<K, V> PolicyExtensions<K> for ArcPolicy<K, V>
-where K: CacheKey
+where
+    K: CacheKey,
 {
     fn would_hit(&self, _key: &K) -> bool {
         // Simplified implementation - would need actual logic
@@ -554,8 +557,7 @@ mod tests {
 
     #[test]
     fn test_policy_switching() {
-        let mut policy = AdaptivePolicy::<String, i32>::new()
-            .with_min_requests(10);
+        let mut policy = AdaptivePolicy::<String, i32>::new().with_min_requests(10);
 
         let entry = CacheEntry::new(42);
 

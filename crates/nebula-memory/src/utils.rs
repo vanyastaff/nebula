@@ -7,8 +7,8 @@
 //! - Performance measurement tools
 //! - Checked arithmetic operations
 
-use core::sync::atomic::{compiler_fence, fence, Ordering};
 use core::ptr;
+use core::sync::atomic::{Ordering, compiler_fence, fence};
 #[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 
@@ -170,7 +170,7 @@ pub fn secure_zero(ptr: *mut u8, len: usize) {
 #[inline]
 #[cfg(target_arch = "x86_64")]
 pub fn prefetch_read<T>(ptr: *const T) {
-    use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+    use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
     unsafe {
         _mm_prefetch::<_MM_HINT_T0>(ptr.cast());
     }
@@ -184,7 +184,7 @@ pub fn prefetch_read<T>(_ptr: *const T) {}
 #[inline]
 #[cfg(target_arch = "x86_64")]
 pub fn prefetch_write<T>(ptr: *mut T) {
-    use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T1};
+    use core::arch::x86_64::{_MM_HINT_T1, _mm_prefetch};
     unsafe {
         _mm_prefetch::<_MM_HINT_T1>(ptr.cast());
     }
@@ -206,7 +206,10 @@ pub struct Timer {
 impl Timer {
     #[inline]
     pub fn new(name: &'static str) -> Self {
-        Self { start: Instant::now(), name }
+        Self {
+            start: Instant::now(),
+            name,
+        }
     }
 
     #[inline]
@@ -450,7 +453,10 @@ impl Backoff {
     /// Create new backoff with default parameters
     #[inline]
     pub fn new() -> Self {
-        Self { current: 1, max: 64 }
+        Self {
+            current: 1,
+            max: 64,
+        }
     }
 
     /// Create backoff with custom maximum
@@ -579,7 +585,9 @@ pub mod perf {
     /// assert_eq!(result, 42);
     /// ```
     pub fn measure_time<F, R>(f: F) -> (R, Duration)
-    where F: FnOnce() -> R {
+    where
+        F: FnOnce() -> R,
+    {
         let start = Instant::now();
         let result = f();
         let duration = start.elapsed();

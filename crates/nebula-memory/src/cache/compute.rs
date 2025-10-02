@@ -59,13 +59,22 @@ impl<V: Clone> CacheEntry<V> {
     #[cfg(feature = "std")]
     pub fn new(value: V) -> Self {
         let now = Instant::now();
-        Self { value, created_at: now, last_accessed: now, access_count: 1 }
+        Self {
+            value,
+            created_at: now,
+            last_accessed: now,
+            access_count: 1,
+        }
     }
 
     /// Create a new cache entry (no-std version)
     #[cfg(not(feature = "std"))]
     pub fn new(value: V) -> Self {
-        Self { value, access_count: 1, access_order: 0 }
+        Self {
+            value,
+            access_count: 1,
+            access_order: 0,
+        }
     }
 
     /// Update the access time and count
@@ -125,7 +134,9 @@ where
 
     /// Create a new compute cache with the given configuration
     pub fn with_config(config: CacheConfig) -> Self {
-        let initial_capacity = config.initial_capacity.unwrap_or_else(|| config.max_entries);
+        let initial_capacity = config
+            .initial_capacity
+            .unwrap_or_else(|| config.max_entries);
 
         #[cfg(feature = "std")]
         let metrics = Arc::new(Mutex::new(CacheMetrics::new()));
@@ -142,7 +153,9 @@ where
 
     /// Get a value from the cache, computing it if not present
     pub fn get_or_compute<F>(&mut self, key: K, compute_fn: F) -> CacheResult<V>
-    where F: FnOnce() -> Result<V, MemoryError> {
+    where
+        F: FnOnce() -> Result<V, MemoryError>,
+    {
         // Check if the key exists in the cache
         if let Some(entry) = self.entries.get_mut(&key) {
             // Check if the entry has expired
@@ -331,17 +344,19 @@ where
 
     /// Batch get or compute multiple values
     pub fn get_or_compute_batch<F>(&mut self, keys: Vec<K>, compute_fn: F) -> Vec<CacheResult<V>>
-    where F: Fn(&K) -> Result<V, MemoryError> {
+    where
+        F: Fn(&K) -> Result<V, MemoryError>,
+    {
         keys.into_iter()
-            .map(|key| {
-                self.get_or_compute(key.clone(), || compute_fn(&key))
-            })
+            .map(|key| self.get_or_compute(key.clone(), || compute_fn(&key)))
             .collect()
     }
 
     /// Warm up cache with values for given keys
     pub fn warm_up<F>(&mut self, keys: Vec<K>, compute_fn: F) -> CacheResult<()>
-    where F: Fn(&K) -> Result<V, MemoryError> {
+    where
+        F: Fn(&K) -> Result<V, MemoryError>,
+    {
         for key in keys {
             if !self.contains_key(&key) {
                 self.get_or_compute(key.clone(), || compute_fn(&key))?;
@@ -396,7 +411,11 @@ where
     /// Evict the least recently used entry
     #[cfg(feature = "std")]
     fn evict_lru(&mut self) -> MemoryResult<()> {
-        if let Some((key, _)) = self.entries.iter().min_by_key(|(_, entry)| entry.last_accessed) {
+        if let Some((key, _)) = self
+            .entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_accessed)
+        {
             let key = key.clone();
             self.entries.remove(&key);
 
@@ -412,7 +431,11 @@ where
     /// LRU for no-std using access_order
     #[cfg(not(feature = "std"))]
     fn evict_lru(&mut self) -> MemoryResult<()> {
-        if let Some((key, _)) = self.entries.iter().min_by_key(|(_, entry)| entry.access_order) {
+        if let Some((key, _)) = self
+            .entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.access_order)
+        {
             let key = key.clone();
             self.entries.remove(&key);
         }
@@ -422,7 +445,11 @@ where
 
     /// Evict the least frequently used entry
     fn evict_lfu(&mut self) -> MemoryResult<()> {
-        if let Some((key, _)) = self.entries.iter().min_by_key(|(_, entry)| entry.access_count) {
+        if let Some((key, _)) = self
+            .entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.access_count)
+        {
             let key = key.clone();
             self.entries.remove(&key);
 
@@ -439,7 +466,11 @@ where
     /// Evict the oldest entry (FIFO)
     #[cfg(feature = "std")]
     fn evict_fifo(&mut self) -> MemoryResult<()> {
-        if let Some((key, _)) = self.entries.iter().min_by_key(|(_, entry)| entry.created_at) {
+        if let Some((key, _)) = self
+            .entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.created_at)
+        {
             let key = key.clone();
             self.entries.remove(&key);
 
@@ -456,7 +487,9 @@ where
     #[cfg(not(feature = "std"))]
     fn evict_fifo(&mut self) -> MemoryResult<()> {
         // In no-std, we use access_order as creation order approximation
-        if let Some((key, _)) = self.entries.iter()
+        if let Some((key, _)) = self
+            .entries
+            .iter()
             .min_by_key(|(_, entry)| (entry.access_order, entry.access_count))
         {
             let key = key.clone();
@@ -625,7 +658,9 @@ where
     }
 
     pub fn get_or_compute<F>(&self, key: K, compute_fn: F) -> CacheResult<V>
-    where F: FnOnce() -> Result<V, MemoryError> {
+    where
+        F: FnOnce() -> Result<V, MemoryError>,
+    {
         let mut cache = self.inner.lock().unwrap();
         cache.get_or_compute(key, compute_fn)
     }
@@ -722,9 +757,7 @@ mod tests {
         let mut cache = ComputeCache::<String, usize>::new(10);
 
         let keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
-        let results = cache.get_or_compute_batch(keys, |k| {
-            Ok(k.len())
-        });
+        let results = cache.get_or_compute_batch(keys, |k| Ok(k.len()));
 
         assert_eq!(results.len(), 3);
         assert!(results.iter().all(|r| r.is_ok()));
@@ -736,7 +769,10 @@ mod tests {
 
         // Error should be propagated
         let result =
-            cache.get_or_compute("error".to_string(), || Err(MemoryError::allocation_failed()));
+            cache.get_or_compute(
+                "error".to_string(),
+                || Err(MemoryError::allocation_failed()),
+            );
 
         assert!(result.is_err());
 

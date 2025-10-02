@@ -12,8 +12,8 @@ extern crate alloc;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex, RwLock,
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -61,7 +61,7 @@ impl TimeWindow {
 /// Percentile values for latency analysis
 #[derive(Debug, Clone, Copy)]
 pub struct Percentiles {
-    pub p50: f64,  // Median
+    pub p50: f64, // Median
     pub p75: f64,
     pub p90: f64,
     pub p95: f64,
@@ -139,7 +139,7 @@ pub struct CacheStats {
     pub cache_efficiency_score: f64, // 0.0 to 100.0
     pub memory_pressure: f64,        // 0.0 to 1.0
     pub fragmentation_ratio: f64,    // 0.0 to 1.0
-    pub load_factor: f64,           // 0.0 to 1.0
+    pub load_factor: f64,            // 0.0 to 1.0
 
     // Timing metadata
     #[cfg(feature = "std")]
@@ -174,9 +174,9 @@ pub struct SizeDistribution {
 pub struct AccessPattern {
     pub sequential_access_ratio: f64,
     pub random_access_ratio: f64,
-    pub hot_spot_ratio: f64,          // Percentage of keys accessed frequently
-    pub temporal_locality: f64,       // How often recently accessed items are re-accessed
-    pub spatial_locality: f64,        // How often nearby keys are accessed together
+    pub hot_spot_ratio: f64,    // Percentage of keys accessed frequently
+    pub temporal_locality: f64, // How often recently accessed items are re-accessed
+    pub spatial_locality: f64,  // How often nearby keys are accessed together
 }
 
 impl Default for CacheStats {
@@ -292,7 +292,7 @@ impl CacheStats {
     pub fn efficiency_score(&self) -> f64 {
         let hit_rate = self.hit_rate();
         let eviction_penalty = self.eviction_rate() * 10.0; // Penalize frequent evictions
-        let utilization_bonus = self.load_factor * 10.0;   // Bonus for good utilization
+        let utilization_bonus = self.load_factor * 10.0; // Bonus for good utilization
 
         let base_score = hit_rate * 100.0;
         let adjusted_score = base_score - eviction_penalty + utilization_bonus;
@@ -477,7 +477,8 @@ impl AtomicCacheStats {
             self.total_lookup_time_ns.fetch_add(time, Ordering::Relaxed);
         }
         if let Some(time) = compute_time_ns {
-            self.total_compute_time_ns.fetch_add(time, Ordering::Relaxed);
+            self.total_compute_time_ns
+                .fetch_add(time, Ordering::Relaxed);
         }
     }
 
@@ -485,7 +486,8 @@ impl AtomicCacheStats {
     pub fn record_insertion(&self, insertion_time_ns: Option<u64>) {
         self.insertions.fetch_add(1, Ordering::Relaxed);
         if let Some(time) = insertion_time_ns {
-            self.total_insertion_time_ns.fetch_add(time, Ordering::Relaxed);
+            self.total_insertion_time_ns
+                .fetch_add(time, Ordering::Relaxed);
         }
     }
 
@@ -493,7 +495,8 @@ impl AtomicCacheStats {
     pub fn record_eviction(&self, eviction_time_ns: Option<u64>) {
         self.evictions.fetch_add(1, Ordering::Relaxed);
         if let Some(time) = eviction_time_ns {
-            self.total_eviction_time_ns.fetch_add(time, Ordering::Relaxed);
+            self.total_eviction_time_ns
+                .fetch_add(time, Ordering::Relaxed);
         }
     }
 
@@ -653,8 +656,12 @@ impl AtomicCacheStats {
         let points: Vec<_> = history
             .iter()
             .filter(|point| {
-                point.timestamp >= cutoff &&
-                    point.metadata.as_ref().map(|m| m == metric_name).unwrap_or(false)
+                point.timestamp >= cutoff
+                    && point
+                        .metadata
+                        .as_ref()
+                        .map(|m| m == metric_name)
+                        .unwrap_or(false)
             })
             .collect();
 
@@ -670,13 +677,13 @@ impl AtomicCacheStats {
         let x_mean = x_values.iter().sum::<f64>() / n;
         let y_mean = y_values.iter().sum::<f64>() / n;
 
-        let numerator: f64 = x_values.iter().zip(y_values.iter())
+        let numerator: f64 = x_values
+            .iter()
+            .zip(y_values.iter())
             .map(|(x, y)| (x - x_mean) * (y - y_mean))
             .sum();
 
-        let denominator: f64 = x_values.iter()
-            .map(|x| (x - x_mean).powi(2))
-            .sum();
+        let denominator: f64 = x_values.iter().map(|x| (x - x_mean).powi(2)).sum();
 
         if denominator == 0.0 {
             return None;
@@ -694,17 +701,18 @@ impl AtomicCacheStats {
         };
 
         // Calculate confidence based on R-squared
-        let y_pred: Vec<f64> = x_values.iter()
+        let y_pred: Vec<f64> = x_values
+            .iter()
             .map(|x| y_mean + slope * (x - x_mean))
             .collect();
 
-        let ss_res: f64 = y_values.iter().zip(y_pred.iter())
+        let ss_res: f64 = y_values
+            .iter()
+            .zip(y_pred.iter())
             .map(|(y, y_pred)| (y - y_pred).powi(2))
             .sum();
 
-        let ss_tot: f64 = y_values.iter()
-            .map(|y| (y - y_mean).powi(2))
-            .sum();
+        let ss_tot: f64 = y_values.iter().map(|y| (y - y_mean).powi(2)).sum();
 
         let r_squared = if ss_tot > 0.0 {
             1.0 - (ss_res / ss_tot)
@@ -825,7 +833,11 @@ impl StatsCollector {
 
     /// Get trend analysis for a specific metric across all caches
     #[cfg(feature = "std")]
-    pub fn get_trend_analysis(&self, metric_name: &str, window: TimeWindow) -> Vec<(String, TrendAnalysis)> {
+    pub fn get_trend_analysis(
+        &self,
+        metric_name: &str,
+        window: TimeWindow,
+    ) -> Vec<(String, TrendAnalysis)> {
         let mut trends = Vec::new();
 
         for (cache_name, stats) in &self.caches {
@@ -840,7 +852,8 @@ impl StatsCollector {
     /// Generate a comprehensive performance report
     pub fn generate_report(&self) -> PerformanceReport {
         let combined_stats = self.get_combined_stats();
-        let cache_reports: Vec<_> = self.caches
+        let cache_reports: Vec<_> = self
+            .caches
             .iter()
             .map(|(name, stats)| (name.clone(), stats.get_stats()))
             .collect();
@@ -877,7 +890,9 @@ impl StatsCollector {
         // Error rate recommendations
         let total_ops = combined.hits + combined.misses + combined.insertions;
         let error_rate = if total_ops > 0 {
-            (combined.allocation_failures + combined.timeout_errors + combined.corruption_errors) as f64 / total_ops as f64
+            (combined.allocation_failures + combined.timeout_errors + combined.corruption_errors)
+                as f64
+                / total_ops as f64
         } else {
             0.0
         };
@@ -888,7 +903,10 @@ impl StatsCollector {
 
         // Efficiency recommendations
         if combined.efficiency_score() < 60.0 {
-            recommendations.push("Low efficiency score (<60%) - review cache configuration and access patterns".to_string());
+            recommendations.push(
+                "Low efficiency score (<60%) - review cache configuration and access patterns"
+                    .to_string(),
+            );
         }
 
         if recommendations.is_empty() {
@@ -1055,8 +1073,18 @@ mod tests {
         let report = collector.generate_report();
 
         // Should generate recommendations for low hit rate and high eviction rate
-        assert!(report.recommendations.iter().any(|r| r.contains("Hit rate is low")));
-        assert!(report.recommendations.iter().any(|r| r.contains("High eviction rate")));
+        assert!(
+            report
+                .recommendations
+                .iter()
+                .any(|r| r.contains("Hit rate is low"))
+        );
+        assert!(
+            report
+                .recommendations
+                .iter()
+                .any(|r| r.contains("High eviction rate"))
+        );
     }
 
     #[cfg(feature = "std")]

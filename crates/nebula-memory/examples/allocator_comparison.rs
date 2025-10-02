@@ -2,7 +2,9 @@
 //!
 //! Demonstrates when to use each allocator type
 
-use nebula_memory::allocator::{Allocator, BumpAllocator, PoolAllocator, PoolConfig, StackAllocator, StackConfig, StackFrame};
+use nebula_memory::allocator::{
+    Allocator, BumpAllocator, PoolAllocator, PoolConfig, StackAllocator, StackConfig, StackFrame,
+};
 use nebula_memory::core::traits::Resettable;
 use std::alloc::Layout;
 
@@ -39,7 +41,9 @@ fn demo_bump_allocator() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Reset after each request (fast!)
-        unsafe { allocator.reset(); }
+        unsafe {
+            allocator.reset();
+        }
         println!("  Reset allocator for next request\n");
     }
 

@@ -65,7 +65,7 @@ pub mod allocator;
 pub mod utils;
 
 // Re-export core types for convenience
-pub use crate::core::{MemoryError, MemoryErrorCode, MemoryResult, MemoryConfig};
+pub use crate::core::{MemoryConfig, MemoryError, MemoryErrorCode, MemoryResult};
 
 // Core features that depend on allocators
 #[cfg(feature = "arena")]
@@ -114,8 +114,8 @@ pub mod prelude {
     //! Convenient re-exports of commonly used types and traits.
 
     // Core types
-    pub use crate::core::{MemoryError, MemoryErrorCode, MemoryResult, MemoryConfig};
     pub use crate::core::traits::{MemoryManager, MemoryUsage, Resettable};
+    pub use crate::core::{MemoryConfig, MemoryError, MemoryErrorCode, MemoryResult};
 
     // Allocator types
     pub use crate::allocator::{AllocError, AllocResult, Allocator, GlobalAllocatorManager};
@@ -132,10 +132,10 @@ pub mod prelude {
     pub use crate::cache::{CacheConfig, CacheKey, ComputeCache};
 
     #[cfg(feature = "budget")]
-    pub use crate::budget::{BudgetConfig, MemoryBudget, BudgetState, BudgetMetrics};
+    pub use crate::budget::{BudgetConfig, BudgetMetrics, BudgetState, MemoryBudget};
 
     #[cfg(all(feature = "std", feature = "monitoring"))]
-    pub use crate::monitoring::{MemoryMonitor, MonitoringConfig, PressureAction, IntegratedStats};
+    pub use crate::monitoring::{IntegratedStats, MemoryMonitor, MonitoringConfig, PressureAction};
 
     // Utility traits for safe arithmetic
     pub use crate::utils::CheckedArithmetic;
@@ -145,7 +145,7 @@ pub mod prelude {
 pub use crate::allocator::{AllocError, AllocResult};
 
 #[cfg(feature = "logging")]
-use nebula_log::{info, debug};
+use nebula_log::{debug, info};
 
 /// Initialize the nebula-memory system with default configuration.
 ///

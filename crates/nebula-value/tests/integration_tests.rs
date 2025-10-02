@@ -3,8 +3,8 @@
 //! These tests verify that different modules work together correctly
 
 mod integration {
-    mod workflow_scenario;
     mod cross_module;
+    mod workflow_scenario;
 }
 
 // Re-export for test runner

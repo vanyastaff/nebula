@@ -63,11 +63,7 @@ impl ValueExt for Value {
         match self {
             Value::Integer(i) => {
                 let val = i.value();
-                if val >= 0 {
-                    Some(val as u64)
-                } else {
-                    None
-                }
+                if val >= 0 { Some(val as u64) } else { None }
             }
             Value::Float(f) => {
                 let val = f.value();

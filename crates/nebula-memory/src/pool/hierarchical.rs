@@ -11,9 +11,9 @@ use core::ops::{Deref, DerefMut};
 #[cfg(feature = "std")]
 use std::sync::{Arc, Mutex, Weak};
 
-use super::{ObjectPool, PoolConfig, Poolable};
 #[cfg(feature = "stats")]
 use super::PoolStats;
+use super::{ObjectPool, PoolConfig, Poolable};
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Hierarchical pool supporting parent-child relationships
@@ -45,7 +45,9 @@ pub struct HierarchicalPool<T: Poolable> {
 impl<T: Poolable> HierarchicalPool<T> {
     /// Create new root pool
     pub fn new<F>(capacity: usize, factory: F) -> Arc<Mutex<Self>>
-    where F: Fn() -> T + 'static {
+    where
+        F: Fn() -> T + 'static,
+    {
         Arc::new(Mutex::new(Self {
             local: ObjectPool::new(capacity, factory),
             parent: None,
@@ -57,7 +59,9 @@ impl<T: Poolable> HierarchicalPool<T> {
 
     /// Create pool with custom configuration
     pub fn with_config<F>(config: PoolConfig, factory: F) -> Arc<Mutex<Self>>
-    where F: Fn() -> T + 'static {
+    where
+        F: Fn() -> T + 'static,
+    {
         let max_borrow = config.initial_capacity / 2;
         Arc::new(Mutex::new(Self {
             local: ObjectPool::with_config(config, factory),

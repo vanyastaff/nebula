@@ -2,9 +2,9 @@
 //!
 //! Supports JSON path-like syntax: $.user.name, $.items[0]
 
+use crate::core::NebulaError;
 use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::value::Value;
-use crate::core::NebulaError;
 
 /// Path segment for navigating values
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,8 +43,9 @@ impl Value {
         // is complex with borrowed returns. Document limitation.
         match (self, &segments[0]) {
             #[cfg(feature = "serde")]
-            (Value::Object(_), PathSegment::Key(_)) |
-            (Value::Array(_), PathSegment::Index(_)) if segments.len() > 1 => {
+            (Value::Object(_), PathSegment::Key(_)) | (Value::Array(_), PathSegment::Index(_))
+                if segments.len() > 1 =>
+            {
                 return Err(NebulaError::validation(
                     "Multi-level path access not yet supported for Array/Object (requires owned return)",
                 ));
@@ -53,16 +54,14 @@ impl Value {
             // Single level access for non-collection types would work,
             // but Array/Object need conversion from serde_json::Value
             #[cfg(feature = "serde")]
-            (Value::Object(_), PathSegment::Key(_)) |
-            (Value::Array(_), PathSegment::Index(_)) => {
+            (Value::Object(_), PathSegment::Key(_)) | (Value::Array(_), PathSegment::Index(_)) => {
                 return Err(NebulaError::validation(
                     "Path access for Array/Object requires owned Value (not yet implemented)",
                 ));
             }
 
             #[cfg(not(feature = "serde"))]
-            (Value::Object(_), PathSegment::Key(_)) |
-            (Value::Array(_), PathSegment::Index(_)) => {
+            (Value::Object(_), PathSegment::Key(_)) | (Value::Array(_), PathSegment::Index(_)) => {
                 return Err(NebulaError::validation(
                     "Path access for collections requires 'serde' feature",
                 ));
@@ -75,22 +74,22 @@ impl Value {
         let current = self;
         for segment in segments {
             current = match (current, segment) {
-
                 // Type mismatch errors
                 (val, PathSegment::Key(key)) => {
-                    return Err(NebulaError::value_type_mismatch(
-                        "Object",
-                        val.kind().name(),
-                    )
-                    .with_details(format!("Cannot access key '{}' on {}", key, val.kind().name())));
+                    return Err(
+                        NebulaError::value_type_mismatch("Object", val.kind().name()).with_details(
+                            format!("Cannot access key '{}' on {}", key, val.kind().name()),
+                        ),
+                    );
                 }
 
                 (val, PathSegment::Index(idx)) => {
-                    return Err(NebulaError::value_type_mismatch(
-                        "Array",
-                        val.kind().name(),
-                    )
-                    .with_details(format!("Cannot access index {} on {}", idx, val.kind().name())));
+                    return Err(NebulaError::value_type_mismatch("Array", val.kind().name())
+                        .with_details(format!(
+                            "Cannot access index {} on {}",
+                            idx,
+                            val.kind().name()
+                        )));
                 }
             };
         }
@@ -109,7 +108,10 @@ impl Value {
     pub fn get_key(&self, key: &str) -> ValueResult<Option<serde_json::Value>> {
         match self {
             Value::Object(obj) => Ok(obj.get(key).cloned()),
-            _ => Err(NebulaError::value_type_mismatch("Object", self.kind().name())),
+            _ => Err(NebulaError::value_type_mismatch(
+                "Object",
+                self.kind().name(),
+            )),
         }
     }
 
@@ -117,7 +119,10 @@ impl Value {
     pub fn get_index(&self, index: usize) -> ValueResult<Option<serde_json::Value>> {
         match self {
             Value::Array(arr) => Ok(arr.get(index).cloned()),
-            _ => Err(NebulaError::value_type_mismatch("Array", self.kind().name())),
+            _ => Err(NebulaError::value_type_mismatch(
+                "Array",
+                self.kind().name(),
+            )),
         }
     }
 }
@@ -203,10 +208,7 @@ mod tests {
         let segments = parse_path("items[0]").unwrap();
         assert_eq!(
             segments,
-            vec![
-                PathSegment::Key("items".to_string()),
-                PathSegment::Index(0)
-            ]
+            vec![PathSegment::Key("items".to_string()), PathSegment::Index(0)]
         );
     }
 

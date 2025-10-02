@@ -25,8 +25,16 @@ impl Default for BumpConfig {
     fn default() -> Self {
         Self {
             track_stats: cfg!(debug_assertions),
-            alloc_pattern: if cfg!(debug_assertions) { Some(0xAA) } else { None },
-            dealloc_pattern: if cfg!(debug_assertions) { Some(0xDD) } else { None },
+            alloc_pattern: if cfg!(debug_assertions) {
+                Some(0xAA)
+            } else {
+                None
+            },
+            dealloc_pattern: if cfg!(debug_assertions) {
+                Some(0xDD)
+            } else {
+                None
+            },
             enable_prefetch: true,
             prefetch_distance: 4,
             min_alloc_size: 8,

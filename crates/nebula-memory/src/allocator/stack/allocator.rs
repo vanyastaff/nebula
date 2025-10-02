@@ -2,14 +2,14 @@
 
 use core::alloc::Layout;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicUsize, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use super::{StackConfig, StackMarker};
 use crate::allocator::{
-    AllocError, AllocErrorCode, AllocResult, Allocator,
-    AllocatorStats, MemoryUsage, Resettable, StatisticsProvider,
+    AllocError, AllocErrorCode, AllocResult, Allocator, AllocatorStats, MemoryUsage, Resettable,
+    StatisticsProvider,
 };
-use crate::utils::{align_up, Backoff, atomic_max};
+use crate::utils::{Backoff, align_up, atomic_max};
 
 /// Stack allocator that supports LIFO allocation and deallocation
 ///
@@ -141,7 +141,9 @@ impl StackAllocator {
     /// This marker can be used later to restore the stack to this position,
     /// effectively deallocating all allocations made after this point.
     pub fn mark(&self) -> StackMarker {
-        StackMarker { position: self.top.load(Ordering::Acquire) }
+        StackMarker {
+            position: self.top.load(Ordering::Acquire),
+        }
     }
 
     /// Restores the stack to a previous marker position
@@ -177,31 +179,33 @@ impl StackAllocator {
     /// # Safety
     /// - The pointer must have been allocated by this allocator
     /// - The layout must match the original allocation layout
-    pub unsafe fn try_pop(&self, ptr: NonNull<u8>, layout: Layout) -> bool { unsafe {
-        let current_top = self.top.load(Ordering::Acquire);
-        let expected_start = current_top.saturating_sub(layout.size());
+    pub unsafe fn try_pop(&self, ptr: NonNull<u8>, layout: Layout) -> bool {
+        unsafe {
+            let current_top = self.top.load(Ordering::Acquire);
+            let expected_start = current_top.saturating_sub(layout.size());
 
-        // Check if this pointer matches the most recent allocation
-        if ptr.as_ptr() as usize == align_up(expected_start, layout.align()) {
-            // Fill with dealloc pattern if debugging
-            if let Some(pattern) = self.config.dealloc_pattern {
-                ptr::write_bytes(ptr.as_ptr(), pattern, layout.size());
+            // Check if this pointer matches the most recent allocation
+            if ptr.as_ptr() as usize == align_up(expected_start, layout.align()) {
+                // Fill with dealloc pattern if debugging
+                if let Some(pattern) = self.config.dealloc_pattern {
+                    ptr::write_bytes(ptr.as_ptr(), pattern, layout.size());
+                }
+
+                // This is the most recent allocation, we can safely pop it
+                self.top.store(expected_start, Ordering::Release);
+
+                // Update statistics
+                if self.config.track_stats {
+                    self.total_deallocs.fetch_add(1, Ordering::Relaxed);
+                }
+
+                true
+            } else {
+                // Not the most recent allocation, cannot pop
+                false
             }
-
-            // This is the most recent allocation, we can safely pop it
-            self.top.store(expected_start, Ordering::Release);
-
-            // Update statistics
-            if self.config.track_stats {
-                self.total_deallocs.fetch_add(1, Ordering::Relaxed);
-            }
-
-            true
-        } else {
-            // Not the most recent allocation, cannot pop
-            false
         }
-    }}
+    }
 
     /// Aligns a size up to the specified alignment
     #[inline]
@@ -211,7 +215,11 @@ impl StackAllocator {
 
     /// Attempts to allocate memory with adaptive backoff and statistics tracking
     fn try_allocate(&self, size: usize, align: usize) -> Option<NonNull<u8>> {
-        let mut backoff = if self.config.use_backoff { Some(Backoff::new()) } else { None };
+        let mut backoff = if self.config.use_backoff {
+            Some(Backoff::new())
+        } else {
+            None
+        };
         let mut attempts = 0;
 
         loop {
@@ -231,7 +239,8 @@ impl StackAllocator {
 
             // Try to update the top atomically
             let result = if attempts == 0 {
-                self.top.compare_exchange(current_top, new_top, Ordering::AcqRel, Ordering::Acquire)
+                self.top
+                    .compare_exchange(current_top, new_top, Ordering::AcqRel, Ordering::Acquire)
             } else {
                 self.top.compare_exchange_weak(
                     current_top,
@@ -258,14 +267,14 @@ impl StackAllocator {
                     }
 
                     return Some(unsafe { NonNull::new_unchecked(aligned_addr as *mut u8) });
-                },
+                }
                 Err(_) => {
                     // Increment attempts and use backoff
                     attempts += 1;
                     if let Some(ref mut b) = backoff {
                         b.spin();
                     }
-                },
+                }
             }
         }
     }

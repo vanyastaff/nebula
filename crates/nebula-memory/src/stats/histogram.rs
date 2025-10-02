@@ -3,7 +3,7 @@
 #[cfg(not(feature = "std"))]
 use alloc::{string::String, vec::Vec};
 
-use super::{utils, HistogramConfig}; // Assuming 'utils' is in the same super module
+use super::{HistogramConfig, utils}; // Assuming 'utils' is in the same super module
 
 /// Memory allocation histogram
 #[derive(Debug, Clone)]
@@ -38,7 +38,13 @@ impl MemoryHistogram {
         } else {
             Self::create_linear_buckets(&config)
         };
-        Self { config, buckets, total_samples: 0, sum: 0, sum_squared: 0 }
+        Self {
+            config,
+            buckets,
+            total_samples: 0,
+            sum: 0,
+            sum_squared: 0,
+        }
     }
 
     /// Create logarithmic buckets
@@ -75,8 +81,11 @@ impl MemoryHistogram {
         let min = config.min_value.unwrap_or(0);
         let max = config.max_value.unwrap_or(1 << 20); // 1MB default max
         let range = max - min;
-        let bucket_size =
-            if config.bucket_count > 0 { range / config.bucket_count as u64 } else { 1 }; // Avoid division by zero
+        let bucket_size = if config.bucket_count > 0 {
+            range / config.bucket_count as u64
+        } else {
+            1
+        }; // Avoid division by zero
 
         let mut buckets = Vec::with_capacity(config.bucket_count);
 
@@ -170,7 +179,10 @@ impl MemoryHistogram {
         for &p in percentiles {
             let index = (p / 100.0 * (sorted_values.len() as f64 - 1.0)).round() as usize;
             let value = sorted_values.get(index).cloned().unwrap_or(0);
-            results.push(Percentile { percentile: p, value });
+            results.push(Percentile {
+                percentile: p,
+                value,
+            });
         }
         results
     }
@@ -341,8 +353,8 @@ mod tests {
 
         assert_eq!(hist.mean(), 20.0);
         assert!((hist.std_dev() - 8.16).abs() < 0.01); // sqrt((100+0+100)/3) =
-                                                       // sqrt(200/3) =
-                                                       // sqrt(66.66) ~ 8.16
+        // sqrt(200/3) =
+        // sqrt(66.66) ~ 8.16
     }
 
     #[test]

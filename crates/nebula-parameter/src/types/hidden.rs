@@ -2,8 +2,7 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    ParameterError, ParameterMetadata, ParameterValue, ParameterType,
-    HasValue, ParameterKind,
+    HasValue, ParameterError, ParameterKind, ParameterMetadata, ParameterType, ParameterValue,
 };
 
 /// Parameter that is hidden from the user interface but can store values
@@ -60,21 +59,26 @@ impl HasValue for HiddenParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+        self.value
+            .as_ref()
+            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Text(s)) => {
                 self.value = Some(s.to_string());
                 Ok(())
-            },
+            }
             ParameterValue::Expression(expr) => {
                 // Hidden parameters commonly use expressions for computed values
                 self.value = Some(expr);
                 Ok(())
-            },
+            }
             _ => {
                 // Hidden parameters are flexible and can store any value as string
                 self.value = Some(format!("{:?}", value));

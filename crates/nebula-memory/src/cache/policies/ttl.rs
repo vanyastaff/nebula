@@ -26,7 +26,8 @@ use crate::cache::compute::{CacheEntry, CacheKey};
 
 /// TTL (Time To Live) cache eviction policy
 pub struct TtlPolicy<K>
-where K: CacheKey
+where
+    K: CacheKey,
 {
     /// Default TTL for entries
     default_ttl: Duration,
@@ -38,7 +39,8 @@ where K: CacheKey
 }
 
 impl<K> TtlPolicy<K>
-where K: CacheKey
+where
+    K: CacheKey,
 {
     /// Create a new TTL policy with the given default TTL
     pub fn new(default_ttl: Duration) -> Self {
@@ -57,7 +59,10 @@ where K: CacheKey
 
     /// Get the TTL for a key
     pub fn get_ttl(&self, key: &K) -> Duration {
-        self.custom_ttls.get(key).cloned().unwrap_or(self.default_ttl)
+        self.custom_ttls
+            .get(key)
+            .cloned()
+            .unwrap_or(self.default_ttl)
     }
 
     /// Check if an entry has expired
@@ -80,7 +85,8 @@ where K: CacheKey
 
 /// Реализация VictimSelector для TTL policy
 impl<K, V> VictimSelector<K, V> for TtlPolicy<K>
-where K: CacheKey + Send + Sync
+where
+    K: CacheKey + Send + Sync,
 {
     fn select_victim<'a>(&self, entries: &[EvictionEntry<'a, K, V>]) -> Option<K> {
         if entries.is_empty() {
@@ -90,11 +96,11 @@ where K: CacheKey + Send + Sync
         #[cfg(feature = "std")]
         {
             let now = Instant::now();
-            
+
             // Сначала ищем просроченные записи
             let mut oldest_key = None;
             let mut oldest_time = now;
-            
+
             for &(key, _) in entries {
                 if let Some(insert_time) = self.insertion_times.get(key) {
                     let ttl = self.custom_ttls.get(key).unwrap_or(&self.default_ttl);
@@ -111,13 +117,13 @@ where K: CacheKey + Send + Sync
                     }
                 }
             }
-            
+
             // Если нашли хотя бы одну запись с временем вставки, возвращаем самую старую
             if let Some(key) = oldest_key {
                 return Some(key);
             }
         }
-        
+
         // Если нет просроченных записей или не поддерживается std,
         // используем запасную политику (temporarily stubbed)
         // TODO: Fix fallback policy integration - type mismatch with CacheEntry<()>
@@ -126,7 +132,8 @@ where K: CacheKey + Send + Sync
 }
 
 impl<K, V> EvictionPolicy<K, V> for TtlPolicy<K>
-where K: CacheKey + Send + Sync
+where
+    K: CacheKey + Send + Sync,
 {
     fn record_access(&mut self, key: &K) {
         // TTL policy doesn't change based on access
@@ -161,7 +168,6 @@ where K: CacheKey + Send + Sync
     fn name(&self) -> &str {
         "TTL"
     }
-
 }
 
 #[cfg(test)]
@@ -187,7 +193,8 @@ mod tests {
         thread::sleep(Duration::from_millis(150));
 
         // The expired key should be key1
-        let entries: Vec<(&String, &CacheEntry<i32>)> = vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)];
+        let entries: Vec<(&String, &CacheEntry<i32>)> =
+            vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)];
         let victim = policy.as_victim_selector().select_victim(&entries);
 
         assert_eq!(victim, Some("key1".to_string()));
@@ -196,7 +203,8 @@ mod tests {
         thread::sleep(Duration::from_millis(100));
 
         // Now both keys are expired, but key1 is older
-        let entries: Vec<(&String, &CacheEntry<i32>)> = vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)];
+        let entries: Vec<(&String, &CacheEntry<i32>)> =
+            vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)];
         let victim = policy.as_victim_selector().select_victim(&entries);
 
         assert_eq!(victim, Some("key1".to_string()));
@@ -224,7 +232,8 @@ mod tests {
         policy.record_access(&"key1".to_string());
 
         // No keys have expired, fallback returns None (fallback_policy was removed)
-        let entries: Vec<(&String, &CacheEntry<i32>)> = vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)];
+        let entries: Vec<(&String, &CacheEntry<i32>)> =
+            vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)];
         let victim = policy.as_victim_selector().select_victim(&entries);
 
         // TODO: Re-enable fallback policy support
@@ -250,7 +259,8 @@ mod tests {
         thread::sleep(Duration::from_millis(150));
 
         // Without clear(), keys are expired
-        let entries: Vec<(&String, &CacheEntry<i32>)> = vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)];
+        let entries: Vec<(&String, &CacheEntry<i32>)> =
+            vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)];
         let victim = policy.as_victim_selector().select_victim(&entries);
 
         // key1 should be expired

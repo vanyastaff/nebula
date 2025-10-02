@@ -68,8 +68,8 @@ impl AllocatorCapabilities {
         {
             Self {
                 huge_pages_supported: true, // Windows supports large pages
-                numa_supported: false, // Would need runtime detection
-                mlock_supported: true, // VirtualLock
+                numa_supported: false,      // Would need runtime detection
+                mlock_supported: true,      // VirtualLock
             }
         }
 
@@ -90,5 +90,3 @@ pub fn initialize() -> std::io::Result<()> {
     // In future: NUMA library init, huge pages setup, etc.
     Ok(())
 }
-
-

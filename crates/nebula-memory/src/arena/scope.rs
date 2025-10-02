@@ -26,7 +26,9 @@ pub struct ArenaScope {
 impl ArenaScope {
     /// Create a new arena scope with given configuration
     pub fn new(config: ArenaConfig) -> Self {
-        Self { arena: Arena::new(config) }
+        Self {
+            arena: Arena::new(config),
+        }
     }
 
     /// Create a new arena scope with default configuration

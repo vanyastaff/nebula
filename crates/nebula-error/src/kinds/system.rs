@@ -74,8 +74,8 @@ impl RetryableError for SystemError {
             SystemError::Database { .. } => true, // Database might recover
             SystemError::ExternalService { .. } => true,
             SystemError::FileSystem { .. } => false, // File system errors usually need manual intervention
-            SystemError::Memory { .. } => false, // Memory errors are usually fatal
-            SystemError::DiskSpace { .. } => false, // Disk space needs manual cleanup
+            SystemError::Memory { .. } => false,     // Memory errors are usually fatal
+            SystemError::DiskSpace { .. } => false,  // Disk space needs manual cleanup
             SystemError::Connection { .. } => true,
             SystemError::Ssl { .. } => false, // SSL errors usually indicate configuration issues
             SystemError::DnsResolution { .. } => true, // DNS might recover
@@ -231,13 +231,22 @@ mod tests {
     #[test]
     fn test_system_error_display() {
         let timeout_error = SystemError::timeout("database query", Duration::from_secs(30));
-        assert_eq!(timeout_error.to_string(), "Operation timed out: database query after 30s");
+        assert_eq!(
+            timeout_error.to_string(),
+            "Operation timed out: database query after 30s"
+        );
 
         let network_error = SystemError::network("Connection refused");
-        assert_eq!(network_error.to_string(), "Network error: Connection refused");
+        assert_eq!(
+            network_error.to_string(),
+            "Network error: Connection refused"
+        );
 
         let dns_error = SystemError::dns_resolution("example.com", "NXDOMAIN");
-        assert_eq!(dns_error.to_string(), "DNS resolution error: example.com - NXDOMAIN");
+        assert_eq!(
+            dns_error.to_string(),
+            "DNS resolution error: example.com - NXDOMAIN"
+        );
     }
 
     #[test]
@@ -259,6 +268,9 @@ mod tests {
     fn test_rate_limit_retry_delay() {
         let rate_limit_error = SystemError::rate_limit_exceeded(100, Duration::from_secs(60));
         assert!(rate_limit_error.is_retryable());
-        assert_eq!(rate_limit_error.retry_delay(), Some(Duration::from_secs(15))); // Quarter of period
+        assert_eq!(
+            rate_limit_error.retry_delay(),
+            Some(Duration::from_secs(15))
+        ); // Quarter of period
     }
 }

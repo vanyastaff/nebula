@@ -181,7 +181,10 @@ macro_rules! policy {
     ) => {
         $crate::ResiliencePolicy::named($name)
             .with_timeout($timeout)
-            .with_retry($crate::RetryStrategy::exponential($max_attempts, $base_delay))
+            .with_retry($crate::RetryStrategy::exponential(
+                $max_attempts,
+                $base_delay,
+            ))
             .with_circuit_breaker($crate::CircuitBreakerConfig {
                 failure_threshold: $threshold,
                 reset_timeout: $reset,

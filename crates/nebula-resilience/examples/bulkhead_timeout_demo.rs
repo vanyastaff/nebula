@@ -3,10 +3,13 @@
 //! This example demonstrates bulkhead isolation and timeout patterns with the
 //! performance optimizations and security improvements.
 
-use std::time::{Duration, Instant};
+use nebula_resilience::{
+    Bulkhead, BulkheadConfig, ResilienceConfig, ResilienceError, timeout,
+    timeout_with_original_error,
+};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
-use nebula_resilience::{Bulkhead, BulkheadConfig, timeout, timeout_with_original_error, ResilienceError, ResilienceConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,10 +26,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  🧪 Testing sequential operations...");
     for i in 1..=5 {
         let start = Instant::now();
-        let result = bulkhead.execute(|| async {
-            sleep(Duration::from_millis(50)).await;
-            Ok::<String, ResilienceError>(format!("Operation {}", i))
-        }).await;
+        let result = bulkhead
+            .execute(|| async {
+                sleep(Duration::from_millis(50)).await;
+                Ok::<String, ResilienceError>(format!("Operation {}", i))
+            })
+            .await;
 
         match result {
             Ok(value) => println!("    ✅ {} completed in {:?}", value, start.elapsed()),
@@ -46,12 +51,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let bulkhead = concurrent_bulkhead.clone();
         let handle = tokio::spawn(async move {
             let start = Instant::now();
-            let result = bulkhead.execute(|| async {
-                println!("    🔄 Operation {} started", i);
-                sleep(Duration::from_millis(300)).await;
-                println!("    ✅ Operation {} completed", i);
-                Ok::<String, ResilienceError>(format!("Concurrent operation {}", i))
-            }).await;
+            let result = bulkhead
+                .execute(|| async {
+                    println!("    🔄 Operation {} started", i);
+                    sleep(Duration::from_millis(300)).await;
+                    println!("    ✅ Operation {} completed", i);
+                    Ok::<String, ResilienceError>(format!("Concurrent operation {}", i))
+                })
+                .await;
 
             match result {
                 Ok(value) => println!("    📋 {} finished in {:?}", value, start.elapsed()),
@@ -77,8 +84,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Show initial stats
     let stats = stats_bulkhead.stats().await;
-    println!("  📊 Initial stats: max={}, active={}, available={}, at_capacity={}",
-             stats.max_concurrency, stats.active_operations, stats.available_permits, stats.is_at_capacity);
+    println!(
+        "  📊 Initial stats: max={}, active={}, available={}, at_capacity={}",
+        stats.max_concurrency,
+        stats.active_operations,
+        stats.available_permits,
+        stats.is_at_capacity
+    );
 
     // Start a long-running operation
     let stats_bulkhead_clone = stats_bulkhead.clone();
@@ -94,8 +106,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Show stats with active operation
     let stats = stats_bulkhead.stats().await;
-    println!("  📊 With active operation: max={}, active={}, available={}, at_capacity={}",
-             stats.max_concurrency, stats.active_operations, stats.available_permits, stats.is_at_capacity);
+    println!(
+        "  📊 With active operation: max={}, active={}, available={}, at_capacity={}",
+        stats.max_concurrency,
+        stats.active_operations,
+        stats.available_permits,
+        stats.is_at_capacity
+    );
 
     long_running.await?;
 
@@ -103,21 +120,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n📊 Test 4: Bulkhead Configuration Security Validation");
 
     let configs = vec![
-        ("Valid config", BulkheadConfig {
-            max_concurrency: 10,
-            queue_size: 100,
-            timeout: Some(Duration::from_secs(30)),
-        }),
-        ("Zero concurrency", BulkheadConfig {
-            max_concurrency: 0,
-            queue_size: 100,
-            timeout: Some(Duration::from_secs(30)),
-        }),
-        ("Zero queue size", BulkheadConfig {
-            max_concurrency: 10,
-            queue_size: 0,
-            timeout: Some(Duration::from_secs(30)),
-        }),
+        (
+            "Valid config",
+            BulkheadConfig {
+                max_concurrency: 10,
+                queue_size: 100,
+                timeout: Some(Duration::from_secs(30)),
+            },
+        ),
+        (
+            "Zero concurrency",
+            BulkheadConfig {
+                max_concurrency: 0,
+                queue_size: 100,
+                timeout: Some(Duration::from_secs(30)),
+            },
+        ),
+        (
+            "Zero queue size",
+            BulkheadConfig {
+                max_concurrency: 10,
+                queue_size: 0,
+                timeout: Some(Duration::from_secs(30)),
+            },
+        ),
     ];
 
     for (name, config) in configs {
@@ -135,7 +161,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = timeout(Duration::from_millis(200), async {
         sleep(Duration::from_millis(100)).await;
         Ok::<String, ResilienceError>("Fast operation".to_string())
-    }).await;
+    })
+    .await;
 
     match result {
         Ok(Ok(value)) => println!("    ✅ Operation succeeded: {}", value),
@@ -148,7 +175,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = timeout(Duration::from_millis(100), async {
         sleep(Duration::from_millis(200)).await;
         Ok::<String, ResilienceError>("Slow operation".to_string())
-    }).await;
+    })
+    .await;
 
     match result {
         Ok(Ok(value)) => println!("    ✅ Operation succeeded: {}", value),
@@ -165,7 +193,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             retryable: true,
             source: None,
         })
-    }).await;
+    })
+    .await;
 
     match result {
         Ok(value) => println!("    ✅ Operation succeeded: {}", value),
@@ -180,12 +209,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start a blocking operation
     let blocking_bulkhead = combined_bulkhead.clone();
     let blocking_task = tokio::spawn(async move {
-        let result = blocking_bulkhead.execute(|| async {
-            println!("    🔒 Blocking operation started");
-            sleep(Duration::from_secs(1)).await;
-            println!("    🔓 Blocking operation completed");
-            Ok::<String, ResilienceError>("Blocking operation".to_string())
-        }).await;
+        let result = blocking_bulkhead
+            .execute(|| async {
+                println!("    🔒 Blocking operation started");
+                sleep(Duration::from_secs(1)).await;
+                println!("    🔓 Blocking operation completed");
+                Ok::<String, ResilienceError>("Blocking operation".to_string())
+            })
+            .await;
         result
     });
 
@@ -198,8 +229,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Duration::from_millis(200),
         combined_bulkhead.execute(|| async {
             Ok::<String, ResilienceError>("Should timeout waiting for permit".to_string())
-        })
-    ).await;
+        }),
+    )
+    .await;
 
     match timeout_result {
         Ok(Ok(value)) => println!("    ✅ Unexpected success: {}", value),
@@ -220,11 +252,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 0..operations {
         let bulkhead = perf_bulkhead.clone();
         let handle = tokio::spawn(async move {
-            bulkhead.execute(|| async {
-                // Minimal work to test overhead
-                sleep(Duration::from_millis(1)).await;
-                Ok::<usize, ResilienceError>(i)
-            }).await
+            bulkhead
+                .execute(|| async {
+                    // Minimal work to test overhead
+                    sleep(Duration::from_millis(1)).await;
+                    Ok::<usize, ResilienceError>(i)
+                })
+                .await
         });
         perf_handles.push(handle);
     }
@@ -252,13 +286,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let error_bulkhead = Bulkhead::new(2);
 
     // Test operation that fails
-    let result = error_bulkhead.execute(|| async {
-        Err::<String, ResilienceError>(ResilienceError::Custom {
-            message: "Simulated failure".to_string(),
-            retryable: true,
-            source: None,
+    let result = error_bulkhead
+        .execute(|| async {
+            Err::<String, ResilienceError>(ResilienceError::Custom {
+                message: "Simulated failure".to_string(),
+                retryable: true,
+                source: None,
+            })
         })
-    }).await;
+        .await;
 
     match result {
         Ok(_) => println!("  ❌ Unexpected success"),
@@ -266,13 +302,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Test timeout within bulkhead operation
-    let result = error_bulkhead.execute_with_timeout(
-        Duration::from_millis(50),
-        || async {
+    let result = error_bulkhead
+        .execute_with_timeout(Duration::from_millis(50), || async {
             sleep(Duration::from_millis(100)).await;
             Ok::<String, ResilienceError>("Should timeout".to_string())
-        }
-    ).await;
+        })
+        .await;
 
     match result {
         Ok(_) => println!("  ❌ Unexpected success"),

@@ -133,7 +133,10 @@ impl ValueKind {
     /// Check if this kind is temporal (date/time related)
     #[cfg(feature = "temporal")]
     pub fn is_temporal(&self) -> bool {
-        matches!(self, Self::Date | Self::Time | Self::DateTime | Self::Duration)
+        matches!(
+            self,
+            Self::Date | Self::Time | Self::DateTime | Self::Duration
+        )
     }
 }
 

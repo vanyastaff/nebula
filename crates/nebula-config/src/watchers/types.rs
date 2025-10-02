@@ -1,7 +1,7 @@
 //! Watcher-specific types and events
 
 use crate::core::ConfigSource;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Configuration watch event

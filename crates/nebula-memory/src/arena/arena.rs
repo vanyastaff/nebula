@@ -1,6 +1,6 @@
 //! High-performance, thread-unsafe bump allocator arena
 
-use std::alloc::{alloc, dealloc, Layout};
+use std::alloc::{Layout, alloc, dealloc};
 use std::cell::{Cell, RefCell};
 use std::mem::{self, MaybeUninit};
 use std::ptr::{self, NonNull};
@@ -23,15 +23,17 @@ impl Chunk {
         // Ensure minimum chunk size to reduce fragmentation
         let size = size.max(64); // Minimum 64 bytes
 
-        let layout = Layout::from_size_align(size, 1)
-            .map_err(|_| MemoryError::invalid_layout())?;
+        let layout = Layout::from_size_align(size, 1).map_err(|_| MemoryError::invalid_layout())?;
 
         // Safety: Layout is non-zero size and properly aligned
         let ptr = unsafe { alloc(layout) };
-        let ptr =
-            NonNull::new(ptr).ok_or_else(|| MemoryError::out_of_memory(size, 0))?;
+        let ptr = NonNull::new(ptr).ok_or_else(|| MemoryError::out_of_memory(size, 0))?;
 
-        Ok(Self { ptr, capacity: size, next: None })
+        Ok(Self {
+            ptr,
+            capacity: size,
+            next: None,
+        })
     }
 
     #[inline]
@@ -48,7 +50,10 @@ impl Chunk {
 impl Drop for Chunk {
     fn drop(&mut self) {
         unsafe {
-            dealloc(self.ptr.as_ptr(), Layout::from_size_align_unchecked(self.capacity, 1));
+            dealloc(
+                self.ptr.as_ptr(),
+                Layout::from_size_align_unchecked(self.capacity, 1),
+            );
         }
     }
 }
@@ -138,7 +143,7 @@ impl Arena {
                 // Calculate next chunk size using growth factor
                 let new_size = (chunk.capacity as f64 * self.config.growth_factor) as usize;
                 new_size.max(min_size).min(self.config.max_chunk_size)
-            },
+            }
             None => self.config.initial_size.max(min_size),
         };
 
@@ -376,7 +381,9 @@ mod tests {
 
     #[test]
     fn chunk_growth() {
-        let config = ArenaConfig::default().with_initial_size(128).with_growth_factor(2.0);
+        let config = ArenaConfig::default()
+            .with_initial_size(128)
+            .with_growth_factor(2.0);
 
         let arena = Arena::new(config);
 

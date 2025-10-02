@@ -3,11 +3,11 @@
 use super::{ConfigError, ConfigResult, ConfigSource, SourceMetadata};
 use super::{ConfigLoader, ConfigValidator, ConfigWatcher};
 use dashmap::DashMap;
+use nebula_value::Value as NebulaValue;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use nebula_value::Value as NebulaValue;
 
 /// Main configuration container
 #[derive(Clone)]
@@ -62,11 +62,7 @@ impl Config {
     {
         let data = self.data.read().await;
         serde_json::from_value(data.clone()).map_err(|e| {
-            ConfigError::type_error(
-                e.to_string(),
-                std::any::type_name::<T>(),
-                "JSON value",
-            )
+            ConfigError::type_error(e.to_string(), std::any::type_name::<T>(), "JSON value")
         })
     }
 
@@ -78,11 +74,7 @@ impl Config {
         let data = self.data.read().await;
         let value = self.get_nested_value(&data, path)?;
         serde_json::from_value(value.clone()).map_err(|e| {
-            ConfigError::type_error(
-                e.to_string(),
-                std::any::type_name::<T>(),
-                "JSON value",
-            )
+            ConfigError::type_error(e.to_string(), std::any::type_name::<T>(), "JSON value")
         })
     }
 
@@ -157,7 +149,10 @@ impl Config {
 
     /// Reload configuration from all sources
     pub async fn reload(&self) -> ConfigResult<()> {
-        nebula_log::info!("Reloading configuration from {} sources", self.sources.len());
+        nebula_log::info!(
+            "Reloading configuration from {} sources",
+            self.sources.len()
+        );
 
         let mut merged_data = serde_json::Value::Object(serde_json::Map::new());
 
@@ -298,15 +293,16 @@ impl Config {
                 _ => {
                     let remaining_path = parts[i..].join(".");
                     return Err(ConfigError::path_error(
-                        format!("Cannot index into {} with '{}'",
-                                match current {
-                                    serde_json::Value::Null => "null",
-                                    serde_json::Value::Bool(_) => "boolean",
-                                    serde_json::Value::Number(_) => "number",
-                                    serde_json::Value::String(_) => "string",
-                                    _ => "value",
-                                },
-                                remaining_path
+                        format!(
+                            "Cannot index into {} with '{}'",
+                            match current {
+                                serde_json::Value::Null => "null",
+                                serde_json::Value::Bool(_) => "boolean",
+                                serde_json::Value::Number(_) => "number",
+                                serde_json::Value::String(_) => "string",
+                                _ => "value",
+                            },
+                            remaining_path
                         ),
                         path.to_string(),
                     ));
@@ -336,7 +332,8 @@ impl Config {
         for part in &parts[..parts.len() - 1] {
             match current {
                 serde_json::Value::Object(obj) => {
-                    current = obj.entry(part.to_string())
+                    current = obj
+                        .entry(part.to_string())
                         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
                 }
                 serde_json::Value::Array(arr) => {
@@ -356,7 +353,8 @@ impl Config {
                 }
                 _ => {
                     return Err(ConfigError::path_error(
-                        format!("Cannot navigate into {} type",
+                        format!(
+                            "Cannot navigate into {} type",
                             match current {
                                 serde_json::Value::Null => "null",
                                 serde_json::Value::Bool(_) => "boolean",
@@ -394,7 +392,8 @@ impl Config {
             }
             _ => {
                 return Err(ConfigError::path_error(
-                    format!("Cannot set value in {} type",
+                    format!(
+                        "Cannot set value in {} type",
                         match current {
                             serde_json::Value::Null => "null",
                             serde_json::Value::Bool(_) => "boolean",
@@ -543,17 +542,15 @@ fn value_to_json(value: NebulaValue) -> ConfigResult<serde_json::Value> {
         NebulaValue::Null => Ok(serde_json::Value::Null),
         NebulaValue::Boolean(b) => Ok(serde_json::Value::Bool(b)),
         NebulaValue::Integer(i) => Ok(serde_json::Value::Number(i.value().into())),
-        NebulaValue::Float(f) => {
-            serde_json::Number::from_f64(f.value())
-                .map(serde_json::Value::Number)
-                .ok_or_else(|| ConfigError::type_error("Invalid float value", "valid float", "NaN/Infinity"))
-        }
+        NebulaValue::Float(f) => serde_json::Number::from_f64(f.value())
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| {
+                ConfigError::type_error("Invalid float value", "valid float", "NaN/Infinity")
+            }),
         NebulaValue::Text(t) => Ok(serde_json::Value::String(t.to_string())),
         NebulaValue::Array(arr) => {
             // Array stores serde_json::Value internally
-            let items: Vec<_> = arr.iter()
-                .map(|v| v.clone())
-                .collect();
+            let items: Vec<_> = arr.iter().map(|v| v.clone()).collect();
             Ok(serde_json::Value::Array(items))
         }
         NebulaValue::Object(obj) => {
@@ -563,7 +560,11 @@ fn value_to_json(value: NebulaValue) -> ConfigResult<serde_json::Value> {
             }
             Ok(serde_json::Value::Object(map))
         }
-        _ => Err(ConfigError::type_error("Unsupported NebulaValue type for JSON conversion", "basic types", "complex type")),
+        _ => Err(ConfigError::type_error(
+            "Unsupported NebulaValue type for JSON conversion",
+            "basic types",
+            "complex type",
+        )),
     }
 }
 

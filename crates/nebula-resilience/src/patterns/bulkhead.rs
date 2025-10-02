@@ -1,11 +1,11 @@
 //! Bulkhead pattern for resource isolation and parallelism limits
 
+use nebula_log::debug;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
-use nebula_log::debug;
 
+use crate::core::config::{ConfigError, ConfigResult, ResilienceConfig};
 use crate::{ResilienceError, ResilienceResult};
-use crate::core::config::{ResilienceConfig, ConfigResult, ConfigError};
 
 /// Bulkhead configuration
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -38,7 +38,8 @@ pub struct Bulkhead {
 
 impl Bulkhead {
     /// Create a new bulkhead with default configuration
-    #[must_use] pub fn new(max_concurrency: usize) -> Self {
+    #[must_use]
+    pub fn new(max_concurrency: usize) -> Self {
         Self::with_config(BulkheadConfig {
             max_concurrency,
             ..Default::default()
@@ -46,7 +47,8 @@ impl Bulkhead {
     }
 
     /// Create a new bulkhead with custom configuration
-    #[must_use] pub fn with_config(config: BulkheadConfig) -> Self {
+    #[must_use]
+    pub fn with_config(config: BulkheadConfig) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(config.max_concurrency)),
             active_operations: Arc::new(tokio::sync::RwLock::new(0)),
@@ -65,7 +67,8 @@ impl Bulkhead {
     }
 
     /// Get the maximum concurrency limit
-    #[must_use] pub fn max_concurrency(&self) -> usize {
+    #[must_use]
+    pub fn max_concurrency(&self) -> usize {
         self.config.max_concurrency
     }
 
@@ -75,7 +78,8 @@ impl Bulkhead {
     }
 
     /// Try to acquire a permit without waiting
-    #[must_use] pub fn try_acquire(&self) -> Option<BulkheadPermit> {
+    #[must_use]
+    pub fn try_acquire(&self) -> Option<BulkheadPermit> {
         let permit = Arc::clone(&self.semaphore).try_acquire_owned().ok()?;
         Some(BulkheadPermit {
             permit,
@@ -212,7 +216,8 @@ pub struct BulkheadBuilder {
 
 impl BulkheadBuilder {
     /// Create a new bulkhead builder
-    #[must_use] pub fn new(max_concurrency: usize) -> Self {
+    #[must_use]
+    pub fn new(max_concurrency: usize) -> Self {
         Self {
             config: BulkheadConfig {
                 max_concurrency,
@@ -222,19 +227,22 @@ impl BulkheadBuilder {
     }
 
     /// Set the maximum queue size
-    #[must_use] pub fn with_queue_size(mut self, queue_size: usize) -> Self {
+    #[must_use]
+    pub fn with_queue_size(mut self, queue_size: usize) -> Self {
         self.config.queue_size = queue_size;
         self
     }
 
     /// Set the timeout for acquiring permits
-    #[must_use] pub fn with_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
         self.config.timeout = timeout;
         self
     }
 
     /// Build the bulkhead
-    #[must_use] pub fn build(self) -> Bulkhead {
+    #[must_use]
+    pub fn build(self) -> Bulkhead {
         Bulkhead::with_config(self.config)
     }
 }
@@ -318,16 +326,18 @@ mod tests {
         let start = std::time::Instant::now();
         let result = tokio::time::timeout(
             Duration::from_millis(100),
-            bulkhead.execute(|| async {
-                Ok::<&str, ResilienceError>("should timeout")
-            })
-        ).await;
+            bulkhead.execute(|| async { Ok::<&str, ResilienceError>("should timeout") }),
+        )
+        .await;
 
         // Should have timed out
         assert!(result.is_err(), "Operation should have timed out");
         let elapsed = start.elapsed();
-        assert!(elapsed >= Duration::from_millis(90) && elapsed <= Duration::from_millis(200),
-                "Should have timed out around 100ms, got {:?}", elapsed);
+        assert!(
+            elapsed >= Duration::from_millis(90) && elapsed <= Duration::from_millis(200),
+            "Should have timed out around 100ms, got {:?}",
+            elapsed
+        );
 
         // Wait for the long operation to complete
         let _ = handle.await;
@@ -359,7 +369,9 @@ mod tests {
 impl ResilienceConfig for BulkheadConfig {
     fn validate(&self) -> ConfigResult<()> {
         if self.max_concurrency == 0 {
-            return Err(ConfigError::validation("max_concurrency must be greater than 0"));
+            return Err(ConfigError::validation(
+                "max_concurrency must be greater than 0",
+            ));
         }
         if self.queue_size == 0 {
             return Err(ConfigError::validation("queue_size must be greater than 0"));

@@ -8,10 +8,10 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
-#[cfg(not(feature = "std"))]
-use {alloc::string::String, core::time::Duration};
 #[cfg(feature = "std")]
 use std::time::Duration;
+#[cfg(not(feature = "std"))]
+use {alloc::string::String, core::time::Duration};
 
 use crate::core::error::{MemoryError, MemoryResult};
 
@@ -80,7 +80,10 @@ impl Default for CacheConfig {
 impl CacheConfig {
     /// Create a new cache configuration
     pub fn new(max_entries: usize) -> Self {
-        Self { max_entries, ..Default::default() }
+        Self {
+            max_entries,
+            ..Default::default()
+        }
     }
 
     /// Set the eviction policy
@@ -243,7 +246,9 @@ impl CacheConfig {
             CacheScenario::Embedded => {
                 !self.track_metrics
                     && self.load_factor <= 0.6
-                    && self.initial_capacity.map_or(false, |cap| cap <= self.max_entries / 4)
+                    && self
+                        .initial_capacity
+                        .map_or(false, |cap| cap <= self.max_entries / 4)
             }
         }
     }

@@ -45,10 +45,10 @@
 //!     Ok(())
 //! }
 //! ```
-pub mod utils;
-pub mod prelude;
 pub mod core;
 pub mod info;
+pub mod prelude;
+pub mod utils;
 
 #[cfg(feature = "memory")]
 #[cfg_attr(docsrs, doc(cfg(feature = "memory")))]
@@ -71,7 +71,7 @@ pub mod network;
 pub mod disk;
 
 // Re-exports
-pub use core::{SystemError, SystemResult, SystemResultExt, NebulaError, NebulaResult, ResultExt};
+pub use core::{NebulaError, NebulaResult, ResultExt, SystemError, SystemResult, SystemResultExt};
 pub use info::SystemInfo;
 
 #[cfg(feature = "memory")]
@@ -92,5 +92,3 @@ pub fn init() -> SystemResult<()> {
 pub fn summary() -> String {
     info::summary()
 }
-
-

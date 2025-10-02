@@ -325,12 +325,25 @@ impl From<&PoolStats> for PoolStatsSnapshot {
 impl core::fmt::Display for PoolStatsSnapshot {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         writeln!(f, "Pool Statistics:")?;
-        writeln!(f, "  Gets: {} (hit rate: {:.2}%)", self.total_gets, self.hit_rate * 100.0)?;
+        writeln!(
+            f,
+            "  Gets: {} (hit rate: {:.2}%)",
+            self.total_gets,
+            self.hit_rate * 100.0
+        )?;
         writeln!(f, "  Returns: {}", self.total_returns)?;
         writeln!(f, "  Creates: {}", self.total_creates)?;
         writeln!(f, "  Destroys: {}", self.total_destroys)?;
-        writeln!(f, "  Current size: {} (peak: {})", self.current_size, self.peak_size)?;
-        writeln!(f, "  Memory: {} bytes (peak: {} bytes)", self.memory_usage, self.peak_memory)?;
+        writeln!(
+            f,
+            "  Current size: {} (peak: {})",
+            self.current_size, self.peak_size
+        )?;
+        writeln!(
+            f,
+            "  Memory: {} bytes (peak: {} bytes)",
+            self.memory_usage, self.peak_memory
+        )?;
 
         #[cfg(feature = "std")]
         writeln!(f, "  Uptime: {:?}", self.uptime)?;
@@ -338,7 +351,11 @@ impl core::fmt::Display for PoolStatsSnapshot {
         #[cfg(feature = "adaptive")]
         writeln!(f, "  Compression attempts: {}", self.compression_attempts)?;
         #[cfg(feature = "adaptive")]
-        writeln!(f, "  Compression success rate: {:.2}%", self.compression_success_rate * 100.0)?;
+        writeln!(
+            f,
+            "  Compression success rate: {:.2}%",
+            self.compression_success_rate * 100.0
+        )?;
         #[cfg(feature = "adaptive")]
         writeln!(f, "  Total memory saved: {} bytes", self.memory_saved)?;
 

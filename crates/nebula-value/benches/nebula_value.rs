@@ -2,8 +2,8 @@
 //
 // This file benchmarks all major performance-critical operations
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use nebula_value::{Value, Integer, Float, Text, Bytes, Array, Object};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use nebula_value::{Array, Bytes, Float, Integer, Object, Text, Value};
 use serde_json::json;
 
 // ===== INTEGER =====
@@ -138,12 +138,18 @@ fn bench_object(c: &mut Criterion) {
     }
 
     group.bench_function("insert", |b| {
-        let base = Object::from_iter(vec![("a".to_string(), json!(1)), ("b".to_string(), json!(2))]);
+        let base = Object::from_iter(vec![
+            ("a".to_string(), json!(1)),
+            ("b".to_string(), json!(2)),
+        ]);
         b.iter(|| base.insert("c".to_string(), black_box(json!(3))));
     });
 
     group.bench_function("merge", |b| {
-        let base = Object::from_iter(vec![("a".to_string(), json!(1)), ("b".to_string(), json!(2))]);
+        let base = Object::from_iter(vec![
+            ("a".to_string(), json!(1)),
+            ("b".to_string(), json!(2)),
+        ]);
         b.iter(|| base.merge(black_box(&base)));
     });
 

@@ -20,11 +20,17 @@ pub enum WorkflowError {
 
     /// Missing required workflow parameter
     #[error("Missing required parameter '{parameter}' in workflow '{workflow_id}'")]
-    MissingParameter { workflow_id: String, parameter: String },
+    MissingParameter {
+        workflow_id: String,
+        parameter: String,
+    },
 
     /// Invalid workflow version
     #[error("Invalid workflow version '{version}' for workflow '{workflow_id}'")]
-    InvalidVersion { workflow_id: String, version: String },
+    InvalidVersion {
+        workflow_id: String,
+        version: String,
+    },
 
     /// Workflow execution limit exceeded
     #[error("Workflow execution limit exceeded: {limit} executions in {period:?}")]
@@ -40,7 +46,11 @@ pub enum WorkflowError {
 
     /// Invalid workflow state transition
     #[error("Invalid state transition from '{from}' to '{to}' for workflow '{workflow_id}'")]
-    InvalidStateTransition { workflow_id: String, from: String, to: String },
+    InvalidStateTransition {
+        workflow_id: String,
+        from: String,
+        to: String,
+    },
 }
 
 /// Errors related to individual workflow nodes
@@ -76,7 +86,11 @@ pub enum NodeError {
 
     /// Node resource limit exceeded
     #[error("Resource limit exceeded for node '{node_id}': {resource} limit of {limit}")]
-    ResourceLimitExceeded { node_id: String, resource: String, limit: String },
+    ResourceLimitExceeded {
+        node_id: String,
+        resource: String,
+        limit: String,
+    },
 }
 
 /// Errors related to workflow triggers
@@ -108,7 +122,11 @@ pub enum TriggerError {
 
     /// Trigger rate limit exceeded
     #[error("Rate limit exceeded for trigger '{trigger_id}': {limit} triggers per {period:?}")]
-    RateLimitExceeded { trigger_id: String, limit: u32, period: Duration },
+    RateLimitExceeded {
+        trigger_id: String,
+        limit: u32,
+        period: Duration,
+    },
 }
 
 /// Errors related to external service connections
@@ -120,7 +138,11 @@ pub enum ConnectorError {
 
     /// API call to external service failed
     #[error("API call to '{service}' failed: {endpoint} returned {status}")]
-    ApiCallFailed { service: String, endpoint: String, status: u16 },
+    ApiCallFailed {
+        service: String,
+        endpoint: String,
+        status: u16,
+    },
 
     /// Service configuration invalid
     #[error("Invalid configuration for service '{service}': {reason}")]
@@ -156,11 +178,17 @@ pub enum CredentialError {
 
     /// Missing required credential fields
     #[error("Missing required fields in credentials '{credential_id}': {fields:?}")]
-    MissingFields { credential_id: String, fields: Vec<String> },
+    MissingFields {
+        credential_id: String,
+        fields: Vec<String>,
+    },
 
     /// Credential encryption/decryption failed
     #[error("Failed to decrypt credentials '{credential_id}': {reason}")]
-    DecryptionFailed { credential_id: String, reason: String },
+    DecryptionFailed {
+        credential_id: String,
+        reason: String,
+    },
 
     /// OAuth flow failed
     #[error("OAuth authentication failed for service '{service}': {reason}")]
@@ -384,7 +412,9 @@ impl ExecutionError {
             ExecutionError::DataSizeLimitExceeded { .. } => "EXECUTION_DATA_SIZE_LIMIT_EXCEEDED",
             ExecutionError::ConcurrencyLimitReached { .. } => "EXECUTION_CONCURRENCY_LIMIT_REACHED",
             ExecutionError::QueueFull { .. } => "EXECUTION_QUEUE_FULL",
-            ExecutionError::VariableResolutionFailed { .. } => "EXECUTION_VARIABLE_RESOLUTION_FAILED",
+            ExecutionError::VariableResolutionFailed { .. } => {
+                "EXECUTION_VARIABLE_RESOLUTION_FAILED"
+            }
         }
     }
 }
@@ -395,11 +425,16 @@ mod tests {
 
     #[test]
     fn test_workflow_error_classification() {
-        let error = WorkflowError::InvalidDefinition { reason: "missing nodes".to_string() };
+        let error = WorkflowError::InvalidDefinition {
+            reason: "missing nodes".to_string(),
+        };
         assert!(!error.is_retryable());
         assert_eq!(error.error_code(), "WORKFLOW_INVALID_DEFINITION");
 
-        let error = WorkflowError::ExecutionLimitExceeded { limit: 100, period: Duration::from_secs(3600) };
+        let error = WorkflowError::ExecutionLimitExceeded {
+            limit: 100,
+            period: Duration::from_secs(3600),
+        };
         assert!(error.is_retryable());
         assert_eq!(error.error_code(), "WORKFLOW_EXECUTION_LIMIT_EXCEEDED");
     }
@@ -408,14 +443,14 @@ mod tests {
     fn test_node_error_classification() {
         let error = NodeError::ExecutionFailed {
             node_id: "node-1".to_string(),
-            reason: "HTTP timeout".to_string()
+            reason: "HTTP timeout".to_string(),
         };
         assert!(error.is_retryable());
         assert_eq!(error.error_code(), "NODE_EXECUTION_FAILED");
 
         let error = NodeError::InvalidConfiguration {
             node_id: "node-1".to_string(),
-            reason: "missing API key".to_string()
+            reason: "missing API key".to_string(),
         };
         assert!(!error.is_retryable());
         assert_eq!(error.error_code(), "NODE_INVALID_CONFIGURATION");
@@ -426,25 +461,31 @@ mod tests {
         let error = ConnectorError::ApiCallFailed {
             service: "slack".to_string(),
             endpoint: "/api/chat.postMessage".to_string(),
-            status: 500
+            status: 500,
         };
         assert!(error.is_retryable()); // 5xx errors are retryable
 
         let error = ConnectorError::ApiCallFailed {
             service: "slack".to_string(),
             endpoint: "/api/chat.postMessage".to_string(),
-            status: 400
+            status: 400,
         };
         assert!(!error.is_retryable()); // 4xx errors are not retryable
     }
 
     #[test]
     fn test_execution_error_limits() {
-        let error = ExecutionError::MemoryLimitExceeded { used_mb: 512, limit_mb: 256 };
+        let error = ExecutionError::MemoryLimitExceeded {
+            used_mb: 512,
+            limit_mb: 256,
+        };
         assert!(!error.is_retryable());
         assert_eq!(error.error_code(), "EXECUTION_MEMORY_LIMIT_EXCEEDED");
 
-        let error = ExecutionError::QueueFull { queue_size: 1000, max_size: 1000 };
+        let error = ExecutionError::QueueFull {
+            queue_size: 1000,
+            max_size: 1000,
+        };
         assert!(error.is_retryable());
         assert_eq!(error.error_code(), "EXECUTION_QUEUE_FULL");
     }

@@ -1,7 +1,7 @@
 //! Statistics export example - demonstrates exporting stats in various formats
 
 #[cfg(feature = "stats")]
-use nebula_memory::stats::{GlobalStats, MemoryStats, StatsExporter, ExportFormat};
+use nebula_memory::stats::{ExportFormat, GlobalStats, MemoryStats, StatsExporter};
 
 #[cfg(feature = "stats")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -56,10 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", global_stats.to_json());
 
     println!("\nPrometheus (via to_prometheus()):");
-    let prom_lines: Vec<&str> = global_stats.to_prometheus()
-        .lines()
-        .take(5)
-        .collect();
+    let prom_lines: Vec<&str> = global_stats.to_prometheus().lines().take(5).collect();
     for line in prom_lines {
         println!("{}", line);
     }

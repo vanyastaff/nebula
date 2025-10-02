@@ -1,11 +1,11 @@
 //! Hedge request pattern for reducing tail latency
 
+use futures::FutureExt;
+use futures::future::{Either, select};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use futures::future::{select, Either};
-use futures::FutureExt;
 
 use crate::{ResilienceError, ResilienceResult};
 
@@ -81,7 +81,7 @@ impl HedgeExecutor {
                         // Calculate next hedge delay
                         if self.config.exponential_backoff {
                             hedge_delay = Duration::from_secs_f64(
-                                hedge_delay.as_secs_f64() * self.config.backoff_multiplier
+                                hedge_delay.as_secs_f64() * self.config.backoff_multiplier,
                             );
                         }
                     } else {
@@ -152,7 +152,8 @@ impl AdaptiveHedgeExecutor {
         // Get adaptive hedge delay based on historical latencies
         let hedge_delay = {
             let tracker = self.latency_tracker.lock().await;
-            tracker.percentile(self.target_percentile)
+            tracker
+                .percentile(self.target_percentile)
                 .unwrap_or(self.base_config.hedge_delay)
         };
 

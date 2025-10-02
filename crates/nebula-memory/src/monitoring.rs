@@ -8,9 +8,9 @@ use core::time::Duration;
 #[cfg(feature = "std")]
 use std::sync::{Arc, Mutex};
 
-use nebula_error::{NebulaError, ErrorKind, kinds::SystemError};
+use nebula_error::{ErrorKind, NebulaError, kinds::SystemError};
 #[cfg(feature = "logging")]
-use nebula_log::{debug, info, warn, error};
+use nebula_log::{debug, error, info, warn};
 use nebula_system::memory::{self, MemoryInfo, MemoryPressure};
 
 use crate::allocator::AllocatorStats;
@@ -277,9 +277,21 @@ impl core::fmt::Display for MonitoringStats {
         writeln!(f, "  Current pressure: {:?}", self.current_pressure)?;
         writeln!(f, "  Pressure changes: {}", self.pressure_changes)?;
         writeln!(f, "  Memory usage: {:.1}%", self.memory_usage_percent)?;
-        writeln!(f, "  Total memory: {}", memory::format_bytes(self.total_memory))?;
-        writeln!(f, "  Available memory: {}", memory::format_bytes(self.available_memory))?;
-        writeln!(f, "  Used memory: {}", memory::format_bytes(self.used_memory))?;
+        writeln!(
+            f,
+            "  Total memory: {}",
+            memory::format_bytes(self.total_memory)
+        )?;
+        writeln!(
+            f,
+            "  Available memory: {}",
+            memory::format_bytes(self.available_memory)
+        )?;
+        writeln!(
+            f,
+            "  Used memory: {}",
+            memory::format_bytes(self.used_memory)
+        )?;
         Ok(())
     }
 }
@@ -370,8 +382,16 @@ impl core::fmt::Display for IntegratedStats {
 
         // Combined metrics
         writeln!(f, "Combined Metrics:")?;
-        writeln!(f, "  Allocator to system ratio: {:.4}%", self.combined.allocator_to_system_ratio * 100.0)?;
-        writeln!(f, "  Estimated system impact: {:.4}%", self.combined.estimated_system_impact * 100.0)?;
+        writeln!(
+            f,
+            "  Allocator to system ratio: {:.4}%",
+            self.combined.allocator_to_system_ratio * 100.0
+        )?;
+        writeln!(
+            f,
+            "  Estimated system impact: {:.4}%",
+            self.combined.estimated_system_impact * 100.0
+        )?;
         writeln!(f, "  Health score: {:.2}/1.0", self.combined.health_score)?;
 
         Ok(())
@@ -418,9 +438,9 @@ mod tests {
             current_pressure: MemoryPressure::Low,
             pressure_changes: 5,
             memory_usage_percent: 30.0,
-            total_memory: 8 * 1024 * 1024 * 1024, // 8GB
+            total_memory: 8 * 1024 * 1024 * 1024,     // 8GB
             available_memory: 5 * 1024 * 1024 * 1024, // 5GB
-            used_memory: 3 * 1024 * 1024 * 1024, // 3GB
+            used_memory: 3 * 1024 * 1024 * 1024,      // 3GB
         };
 
         let integrated = IntegratedStats::new(allocator_stats, monitoring_stats);

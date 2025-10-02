@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use std::fmt::{self, Display};
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 use nebula_core::ParameterKey;
 
@@ -205,16 +205,21 @@ impl HasValue for RoutingParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|routing_val| ParameterValue::Routing(routing_val.clone()))
+        self.value
+            .as_ref()
+            .map(|routing_val| ParameterValue::Routing(routing_val.clone()))
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Routing(routing_value) => {
                 self.value = Some(routing_value);
                 Ok(())
-            },
+            }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Expected routing value for routing parameter".to_string(),
@@ -249,7 +254,12 @@ impl Displayable for RoutingParameter {
 
 impl RoutingParameter {
     /// Create a new routing parameter as a container
-    pub fn new(key: &str, name: &str, description: &str, child: Option<Box<dyn ParameterType>>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        key: &str,
+        name: &str,
+        description: &str,
+        child: Option<Box<dyn ParameterType>>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             metadata: ParameterMetadata {
                 key: ParameterKey::new(key)?,
@@ -301,7 +311,10 @@ impl RoutingParameter {
 
     /// Check if this parameter has a connection
     pub fn is_connected(&self) -> bool {
-        self.value.as_ref().map(|v| v.is_connected()).unwrap_or(false)
+        self.value
+            .as_ref()
+            .map(|v| v.is_connected())
+            .unwrap_or(false)
     }
 
     /// Get the connected node ID
@@ -356,7 +369,10 @@ impl RoutingParameter {
 
     /// Check if connection is required
     pub fn is_connection_required(&self) -> bool {
-        self.options.as_ref().map(|o| o.connection_required).unwrap_or(false)
+        self.options
+            .as_ref()
+            .map(|o| o.connection_required)
+            .unwrap_or(false)
     }
 
     /// Validate the routing parameter

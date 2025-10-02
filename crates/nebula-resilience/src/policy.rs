@@ -1,15 +1,13 @@
 //! Modern resilience policies for service configuration
 
-use std::time::Duration;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use crate::{
+    core::config::{ConfigError, ConfigResult, ResilienceConfig},
     patterns::{
-        circuit_breaker::CircuitBreakerConfig,
-        bulkhead::BulkheadConfig,
-        retry::RetryStrategy,
+        bulkhead::BulkheadConfig, circuit_breaker::CircuitBreakerConfig, retry::RetryStrategy,
     },
-    core::config::{ResilienceConfig, ConfigResult, ConfigError},
 };
 
 /// Modern resilience policy with type-safe configuration
@@ -356,8 +354,8 @@ mod tests {
     #[test]
     fn test_policy_merge() {
         let base = ResiliencePolicy::basic(Duration::from_secs(10), 3);
-        let override_policy = ResiliencePolicy::new("override")
-            .with_timeout(Duration::from_secs(20));
+        let override_policy =
+            ResiliencePolicy::new("override").with_timeout(Duration::from_secs(20));
 
         let merged = base.merge(override_policy);
         assert_eq!(merged.timeout, Some(Duration::from_secs(20)));

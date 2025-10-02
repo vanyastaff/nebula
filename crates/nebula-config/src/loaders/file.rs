@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 
 // Internal crates
-use crate::core::{ConfigError, ConfigFormat, ConfigLoader, ConfigResult, ConfigSource, SourceMetadata};
+use crate::core::{
+    ConfigError, ConfigFormat, ConfigLoader, ConfigResult, ConfigSource, SourceMetadata,
+};
 
 /// File-based configuration loader
 #[derive(Debug, Clone)]
@@ -55,29 +57,28 @@ impl FileLoader {
     }
 
     /// Parse configuration content based on format
-    fn parse_content(&self, content: &str, format: ConfigFormat, path: &Path) -> ConfigResult<serde_json::Value> {
+    fn parse_content(
+        &self,
+        content: &str,
+        format: ConfigFormat,
+        path: &Path,
+    ) -> ConfigResult<serde_json::Value> {
         match format {
-            ConfigFormat::Json => {
-                serde_json::from_str(content)
-                    .map_err(|e| ConfigError::parse_error(path, format!("JSON parse error: {}", e)))
-            }
-            ConfigFormat::Toml => {
-                toml::from_str::<toml::Value>(content)
-                    .map_err(|e| ConfigError::parse_error(path, format!("TOML parse error: {}", e)))
-                    .and_then(|value| {
-                        serde_json::to_value(value)
-                            .map_err(|e| ConfigError::parse_error(path, format!("TOML to JSON conversion error: {}", e)))
+            ConfigFormat::Json => serde_json::from_str(content)
+                .map_err(|e| ConfigError::parse_error(path, format!("JSON parse error: {}", e))),
+            ConfigFormat::Toml => toml::from_str::<toml::Value>(content)
+                .map_err(|e| ConfigError::parse_error(path, format!("TOML parse error: {}", e)))
+                .and_then(|value| {
+                    serde_json::to_value(value).map_err(|e| {
+                        ConfigError::parse_error(
+                            path,
+                            format!("TOML to JSON conversion error: {}", e),
+                        )
                     })
-            }
-            ConfigFormat::Yaml => {
-                self.parse_yaml(content, path)
-            }
-            ConfigFormat::Ini => {
-                self.parse_ini(content, path)
-            }
-            ConfigFormat::Properties => {
-                self.parse_properties(content, path)
-            }
+                }),
+            ConfigFormat::Yaml => self.parse_yaml(content, path),
+            ConfigFormat::Ini => self.parse_ini(content, path),
+            ConfigFormat::Properties => self.parse_properties(content, path),
             _ => Err(ConfigError::format_not_supported(format.to_string())),
         }
     }
@@ -110,9 +111,7 @@ impl FileLoader {
                 }
                 Ok(serde_json::Value::String(s.clone()))
             }
-            Yaml::Integer(i) => {
-                Ok(serde_json::Value::Number(serde_json::Number::from(*i)))
-            }
+            Yaml::Integer(i) => Ok(serde_json::Value::Number(serde_json::Number::from(*i))),
             Yaml::Boolean(b) => Ok(serde_json::Value::Bool(*b)),
             Yaml::Array(arr) => {
                 let mut json_arr = Vec::new();
@@ -139,9 +138,7 @@ impl FileLoader {
                 Ok(serde_json::Value::Object(json_obj))
             }
             Yaml::Null => Ok(serde_json::Value::Null),
-            Yaml::BadValue => {
-                Err(ConfigError::parse_error(path, "Bad YAML value encountered"))
-            }
+            Yaml::BadValue => Err(ConfigError::parse_error(path, "Bad YAML value encountered")),
             _ => Err(ConfigError::parse_error(path, "Unsupported YAML type")),
         }
     }
@@ -161,16 +158,19 @@ impl FileLoader {
 
             // Section header
             if line.starts_with('[') && line.ends_with(']') {
-                current_section = Some(line[1..line.len()-1].to_string());
+                current_section = Some(line[1..line.len() - 1].to_string());
                 if let Some(section) = &current_section {
                     if !result.contains_key(section) {
                         result.insert(
                             section.clone(),
-                            serde_json::Value::Object(serde_json::Map::new())
+                            serde_json::Value::Object(serde_json::Map::new()),
                         );
                     }
                 } else {
-                    return Err(ConfigError::parse_error(path, "Section header missing name"));
+                    return Err(ConfigError::parse_error(
+                        path,
+                        "Section header missing name",
+                    ));
                 }
                 continue;
             }
@@ -192,7 +192,7 @@ impl FileLoader {
             } else {
                 return Err(ConfigError::parse_error(
                     path,
-                    format!("Invalid INI format at line {}", line_num + 1)
+                    format!("Invalid INI format at line {}", line_num + 1),
                 ));
             }
         }
@@ -204,8 +204,9 @@ impl FileLoader {
     fn parse_ini_value(&self, value: &str) -> serde_json::Value {
         // Remove quotes if present
         let value = if (value.starts_with('"') && value.ends_with('"'))
-            || (value.starts_with('\'') && value.ends_with('\'')) {
-            &value[1..value.len()-1]
+            || (value.starts_with('\'') && value.ends_with('\''))
+        {
+            &value[1..value.len() - 1]
         } else {
             value
         };
@@ -255,7 +256,7 @@ impl FileLoader {
             } else if !line.is_empty() {
                 return Err(ConfigError::parse_error(
                     path,
-                    format!("Invalid properties format at line {}", line_num + 1)
+                    format!("Invalid properties format at line {}", line_num + 1),
                 ));
             }
         }
@@ -264,7 +265,12 @@ impl FileLoader {
     }
 
     /// Insert property with dot notation support
-    fn insert_property(&self, obj: &mut serde_json::Map<String, serde_json::Value>, key: &str, value: &str) {
+    fn insert_property(
+        &self,
+        obj: &mut serde_json::Map<String, serde_json::Value>,
+        key: &str,
+        value: &str,
+    ) {
         let parts: Vec<&str> = key.split('.').collect();
         self.insert_property_recursive(obj, &parts, value);
     }
@@ -320,7 +326,10 @@ impl ConfigLoader for FileLoader {
 
                 if !resolved_path.exists() {
                     if self.allow_missing {
-                        nebula_log::debug!("Configuration file not found, using empty config: {}", resolved_path.display());
+                        nebula_log::debug!(
+                            "Configuration file not found, using empty config: {}",
+                            resolved_path.display()
+                        );
                         return Ok(serde_json::Value::Object(serde_json::Map::new()));
                     }
                     return Err(ConfigError::file_not_found(&resolved_path));
@@ -333,9 +342,7 @@ impl ConfigLoader for FileLoader {
                 let format = ConfigFormat::from_path(&resolved_path);
                 self.parse_content(&content, format, &resolved_path)
             }
-            ConfigSource::Directory(dir_path) => {
-                self.load_directory(dir_path).await
-            }
+            ConfigSource::Directory(dir_path) => self.load_directory(dir_path).await,
             _ => Err(ConfigError::source_error(
                 "FileLoader does not support this source type",
                 source.name(),
@@ -386,11 +393,9 @@ impl ConfigLoader for FileLoader {
                             .unwrap_or_else(chrono::Utc::now),
                     ))
             }
-            ConfigSource::Directory(_path) => {
-                Ok(SourceMetadata::new(source.clone())
-                    .with_format(ConfigFormat::Unknown("directory".to_string()))
-                    .with_last_modified(chrono::Utc::now()))
-            }
+            ConfigSource::Directory(_path) => Ok(SourceMetadata::new(source.clone())
+                .with_format(ConfigFormat::Unknown("directory".to_string()))
+                .with_last_modified(chrono::Utc::now())),
             _ => Err(ConfigError::source_error(
                 "FileLoader does not support this source type",
                 source.name(),
@@ -416,9 +421,11 @@ impl FileLoader {
             .await
             .map_err(|e| ConfigError::file_read_error(&resolved_path, e.to_string()))?;
 
-        while let Some(entry) = entries.next_entry().await
-            .map_err(|e| ConfigError::file_read_error(&resolved_path, e.to_string()))? {
-
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| ConfigError::file_read_error(&resolved_path, e.to_string()))?
+        {
             let path = entry.path();
 
             // Skip directories and non-config files

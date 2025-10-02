@@ -8,14 +8,14 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::{
+    ResilienceError, ResilienceResult,
     patterns::{
-        circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
         bulkhead::{Bulkhead, BulkheadConfig},
+        circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
         retry::RetryStrategy,
         timeout::timeout,
     },
     policy::ResiliencePolicy,
-    ResilienceError, ResilienceResult,
 };
 
 /// Service operations that can be retried
@@ -154,7 +154,10 @@ impl ResilienceManager {
     pub fn with_defaults() -> Self {
         let default_policy = PolicyBuilder::new()
             .with_timeout(Duration::from_secs(30))
-            .with_retry(RetryStrategy::exponential_backoff(3, Duration::from_millis(100)))
+            .with_retry(RetryStrategy::exponential_backoff(
+                3,
+                Duration::from_millis(100),
+            ))
             .build();
         Self::new(default_policy)
     }
@@ -200,7 +203,8 @@ impl ResilienceManager {
         let mut context = ExecutionContext::new(service, operation_name);
         let policy = self.get_policy(service).await;
 
-        self.execute_with_policy(&mut context, &operation, &policy).await
+        self.execute_with_policy(&mut context, &operation, &policy)
+            .await
     }
 
     /// Execute with a specific policy override
@@ -216,7 +220,8 @@ impl ResilienceManager {
         T: Send,
     {
         let mut context = ExecutionContext::new(service, operation_name);
-        self.execute_with_policy(&mut context, &operation, &policy_override).await
+        self.execute_with_policy(&mut context, &operation, &policy_override)
+            .await
     }
 
     /// Get policy for service (or default)
@@ -263,7 +268,8 @@ impl ResilienceManager {
 
         // Execute with retry if configured
         let result = if let Some(ref retry_strategy) = policy.retry {
-            self.execute_with_retry(context, operation, retry_strategy, policy.timeout).await
+            self.execute_with_retry(context, operation, retry_strategy, policy.timeout)
+                .await
         } else {
             // Single execution with optional timeout
             self.execute_single(operation, policy.timeout).await
@@ -390,7 +396,7 @@ impl Default for ResilienceManager {
 pub struct ServiceMetrics {
     pub service_name: String,
     pub circuit_breaker: Option<()>, // TODO: Replace with actual metrics type
-    pub bulkhead: Option<()>, // TODO: Replace with actual metrics type
+    pub bulkhead: Option<()>,        // TODO: Replace with actual metrics type
 }
 
 /// Convenience macro for creating retryable operations
@@ -404,8 +410,8 @@ macro_rules! retryable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[tokio::test]
     async fn test_basic_execution() {
@@ -455,7 +461,9 @@ mod tests {
             }
         };
 
-        let result = manager.execute("retry-service", "retry-op", operation).await;
+        let result = manager
+            .execute("retry-service", "retry-op", operation)
+            .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 100);
         assert_eq!(counter.load(Ordering::SeqCst), 3); // Failed twice, succeeded on third

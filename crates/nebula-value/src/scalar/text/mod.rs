@@ -11,9 +11,9 @@ use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::sync::Arc;
 
+use crate::core::NebulaError;
 use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::limits::ValueLimits;
-use crate::core::NebulaError;
 
 /// UTF-8 text string with efficient cloning
 ///
@@ -344,14 +344,16 @@ mod tests {
         assert_eq!(map.get(&Text::from_str("key3")), None);
     }
 
-
     #[test]
     fn test_text_clone_efficiency() {
         let text1 = Text::from_str("hello");
         let text2 = text1.clone();
 
         // Both should point to the same Arc
-        assert_eq!(Arc::strong_count(&text1.inner), Arc::strong_count(&text2.inner));
+        assert_eq!(
+            Arc::strong_count(&text1.inner),
+            Arc::strong_count(&text2.inner)
+        );
         assert_eq!(text1, text2);
     }
 }

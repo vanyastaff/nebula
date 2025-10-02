@@ -2,9 +2,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
-    SelectOption,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, SelectOption, Validatable,
 };
 
 /// Parameter for selecting multiple options from a dropdown
@@ -105,14 +104,18 @@ impl HasValue for MultiSelectParameter {
     fn get_parameter_value(&self) -> Option<ParameterValue> {
         self.value.as_ref().map(|vec| {
             // Array uses serde_json::Value internally
-            let array: Vec<serde_json::Value> = vec.iter()
+            let array: Vec<serde_json::Value> = vec
+                .iter()
                 .map(|s| serde_json::Value::String(s.clone()))
                 .collect();
             ParameterValue::Value(nebula_value::Value::Array(nebula_value::Array::from(array)))
         })
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Array(arr)) => {
@@ -127,7 +130,9 @@ impl HasValue for MultiSelectParameter {
                         _ => {
                             return Err(ParameterError::InvalidValue {
                                 key: self.metadata.key.clone(),
-                                reason: "All array items must be strings for multi-select parameter".to_string(),
+                                reason:
+                                    "All array items must be strings for multi-select parameter"
+                                        .to_string(),
                             });
                         }
                     }
@@ -143,12 +148,12 @@ impl HasValue for MultiSelectParameter {
                         reason: "One or more selected values are not valid options".to_string(),
                     })
                 }
-            },
+            }
             ParameterValue::Expression(expr) => {
                 // For expressions, store as single-item array with the expression
                 self.value = Some(vec![expr]);
                 Ok(())
-            },
+            }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Expected array value for multi-select parameter".to_string(),
@@ -164,7 +169,10 @@ impl Validatable for MultiSelectParameter {
 
     fn value_to_json(&self, value: &Self::Value) -> serde_json::Value {
         serde_json::Value::Array(
-            value.iter().map(|s| serde_json::Value::String(s.clone())).collect()
+            value
+                .iter()
+                .map(|s| serde_json::Value::String(s.clone()))
+                .collect(),
         )
     }
 
@@ -187,7 +195,8 @@ impl MultiSelectParameter {
     /// Validate all selected values are valid options and meet constraints
     fn are_valid_selections(&self, selections: &[String]) -> Result<bool, ParameterError> {
         // Check if all selections are expressions
-        if selections.len() == 1 && selections[0].starts_with("{{") && selections[0].ends_with("}}") {
+        if selections.len() == 1 && selections[0].starts_with("{{") && selections[0].ends_with("}}")
+        {
             return Ok(true); // Allow expressions
         }
 
@@ -204,7 +213,11 @@ impl MultiSelectParameter {
                 if selections.len() < min {
                     return Err(ParameterError::InvalidValue {
                         key: self.metadata.key.clone(),
-                        reason: format!("Must select at least {} options, got {}", min, selections.len()),
+                        reason: format!(
+                            "Must select at least {} options, got {}",
+                            min,
+                            selections.len()
+                        ),
                     });
                 }
             }
@@ -212,7 +225,11 @@ impl MultiSelectParameter {
                 if selections.len() > max {
                     return Err(ParameterError::InvalidValue {
                         key: self.metadata.key.clone(),
-                        reason: format!("Must select at most {} options, got {}", max, selections.len()),
+                        reason: format!(
+                            "Must select at most {} options, got {}",
+                            max,
+                            selections.len()
+                        ),
                     });
                 }
             }
@@ -228,9 +245,9 @@ impl MultiSelectParameter {
         }
 
         // Check if value matches any option's value or key
-        self.options.iter().any(|option| {
-            option.value == value || option.key == value
-        })
+        self.options
+            .iter()
+            .any(|option| option.value == value || option.key == value)
     }
 
     /// Get option by value
@@ -246,7 +263,8 @@ impl MultiSelectParameter {
     /// Get display names for current selections
     pub fn get_display_names(&self) -> Vec<String> {
         if let Some(selections) = &self.value {
-            selections.iter()
+            selections
+                .iter()
                 .filter_map(|value| {
                     self.get_option_by_value(value)
                         .map(|option| option.name.clone())
@@ -310,7 +328,8 @@ impl MultiSelectParameter {
 
     /// Check if a value is currently selected
     pub fn is_selected(&self, value: &str) -> bool {
-        self.value.as_ref()
+        self.value
+            .as_ref()
             .map(|selections| selections.contains(&value.to_string()))
             .unwrap_or(false)
     }

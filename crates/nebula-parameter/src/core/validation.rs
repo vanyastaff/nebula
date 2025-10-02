@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use crate::core::ParameterValue;
+use crate::core::condition::ParameterCondition;
+use nebula_core::ParameterKey as Key;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::core::ParameterValue;
-use nebula_core::ParameterKey as Key;
-use crate::core::condition::ParameterCondition;
+use std::collections::HashMap;
 
 /// Validation configuration for parameters with improved encapsulation
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -163,73 +163,93 @@ impl ParameterValidationBuilder {
 
     /// Add a minimum length condition for strings
     pub fn min_length(mut self, min: usize) -> Self {
-        self.conditions.push(ParameterCondition::StringMinLength(min));
+        self.conditions
+            .push(ParameterCondition::StringMinLength(min));
         self
     }
 
     /// Add a maximum length condition for strings
     pub fn max_length(mut self, max: usize) -> Self {
-        self.conditions.push(ParameterCondition::StringMaxLength(max));
+        self.conditions
+            .push(ParameterCondition::StringMaxLength(max));
         self
     }
 
     /// Add a regex pattern condition (optimized string handling)
     pub fn match_regex(mut self, pattern: &str) -> Self {
-        self.conditions.push(ParameterCondition::Regex(ParameterValue::from(Value::String(pattern.to_owned()))));
+        self.conditions
+            .push(ParameterCondition::Regex(ParameterValue::from(
+                Value::String(pattern.to_owned()),
+            )));
         self
     }
 
     /// Add an equality condition
     pub fn equals(mut self, value: Value) -> Self {
-        self.conditions.push(ParameterCondition::Eq(ParameterValue::from(value)));
+        self.conditions
+            .push(ParameterCondition::Eq(ParameterValue::from(value)));
         self
     }
 
     /// Add a greater than condition
     pub fn greater_than(mut self, value: Value) -> Self {
-        self.conditions.push(ParameterCondition::Gt(ParameterValue::from(value)));
+        self.conditions
+            .push(ParameterCondition::Gt(ParameterValue::from(value)));
         self
     }
 
     /// Add a less than condition
     pub fn less_than(mut self, value: Value) -> Self {
-        self.conditions.push(ParameterCondition::Lt(ParameterValue::from(value)));
+        self.conditions
+            .push(ParameterCondition::Lt(ParameterValue::from(value)));
         self
     }
 
     /// Add a greater than or equal condition
     pub fn greater_than_or_equal(mut self, value: Value) -> Self {
-        self.conditions.push(ParameterCondition::Gte(ParameterValue::from(value)));
+        self.conditions
+            .push(ParameterCondition::Gte(ParameterValue::from(value)));
         self
     }
 
     /// Add a less than or equal condition
     pub fn less_than_or_equal(mut self, value: Value) -> Self {
-        self.conditions.push(ParameterCondition::Lte(ParameterValue::from(value)));
+        self.conditions
+            .push(ParameterCondition::Lte(ParameterValue::from(value)));
         self
     }
 
     /// Add a not equals condition
     pub fn not_equals(mut self, value: Value) -> Self {
-        self.conditions.push(ParameterCondition::NotEq(ParameterValue::from(value)));
+        self.conditions
+            .push(ParameterCondition::NotEq(ParameterValue::from(value)));
         self
     }
 
     /// Add a starts with condition for strings (optimized string handling)
     pub fn starts_with(mut self, prefix: &str) -> Self {
-        self.conditions.push(ParameterCondition::StartsWith(ParameterValue::from(Value::String(prefix.to_owned()))));
+        self.conditions
+            .push(ParameterCondition::StartsWith(ParameterValue::from(
+                Value::String(prefix.to_owned()),
+            )));
         self
     }
 
     /// Add an ends with condition for strings (optimized string handling)
     pub fn ends_with(mut self, suffix: &str) -> Self {
-        self.conditions.push(ParameterCondition::EndsWith(ParameterValue::from(Value::String(suffix.to_owned()))));
+        self.conditions
+            .push(ParameterCondition::EndsWith(ParameterValue::from(
+                Value::String(suffix.to_owned()),
+            )));
         self
     }
 
     /// Add a contains condition for strings (optimized string handling)
     pub fn contains(mut self, substring: &str) -> Self {
-        self.conditions.push(ParameterCondition::Contains(ParameterValue::from(Value::String(substring.to_owned()))));
+        self.conditions
+            .push(ParameterCondition::Contains(ParameterValue::from(
+                Value::String(substring.to_owned()),
+            )));
         self
     }
 
@@ -237,26 +257,25 @@ impl ParameterValidationBuilder {
     pub fn between(mut self, from: Value, to: Value) -> Self {
         self.conditions.push(ParameterCondition::Between {
             from: ParameterValue::from(from),
-            to: ParameterValue::from(to)
+            to: ParameterValue::from(to),
         });
         self
     }
 
     /// Add a condition that the value must be in the given set
     pub fn in_values(mut self, values: Vec<Value>) -> Self {
-        let param_values: Vec<ParameterValue> = values.into_iter()
-            .map(ParameterValue::from)
-            .collect();
+        let param_values: Vec<ParameterValue> =
+            values.into_iter().map(ParameterValue::from).collect();
         self.conditions.push(ParameterCondition::In(param_values));
         self
     }
 
     /// Add a condition that the value must not be in the given set
     pub fn not_in(mut self, values: Vec<Value>) -> Self {
-        let param_values: Vec<ParameterValue> = values.into_iter()
-            .map(ParameterValue::from)
-            .collect();
-        self.conditions.push(ParameterCondition::NotIn(param_values));
+        let param_values: Vec<ParameterValue> =
+            values.into_iter().map(ParameterValue::from).collect();
+        self.conditions
+            .push(ParameterCondition::NotIn(param_values));
         self
     }
 
@@ -381,10 +400,7 @@ impl CrossParameterValidation {
     /// Add a condition for a specific parameter (optimized)
     pub fn add_condition(&mut self, param: Key, condition: ParameterCondition) {
         self.add_parameter(param.clone());
-        self.conditions
-            .entry(param)
-            .or_default()
-            .push(condition);
+        self.conditions.entry(param).or_default().push(condition);
     }
 
     /// Validate the cross-parameter conditions (optimized with better error handling)
@@ -486,7 +502,7 @@ pub mod validators {
             .all(vec![
                 ParameterCondition::Regex(ParameterValue::from(serde_json::json!(r"[A-Z]"))), // Has uppercase
                 ParameterCondition::Regex(ParameterValue::from(serde_json::json!(r"[a-z]"))), // Has lowercase
-                ParameterCondition::Regex(ParameterValue::from(serde_json::json!(r"\d"))),    // Has digit
+                ParameterCondition::Regex(ParameterValue::from(serde_json::json!(r"\d"))), // Has digit
                 ParameterCondition::Regex(ParameterValue::from(serde_json::json!(r"[!@#$%^&*]"))), // Has special char
             ])
             .message("Password must contain uppercase, lowercase, digit, and special character")
@@ -512,9 +528,7 @@ pub mod validators {
 
     /// Optional field validation (allows empty values)
     pub fn optional() -> ParameterValidation {
-        ParameterValidation::builder()
-            .required(false)
-            .build()
+        ParameterValidation::builder().required(false).build()
     }
 
     /// String validation with optional constraints (similar to old implementation)

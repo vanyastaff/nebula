@@ -3,46 +3,32 @@
 //! This module provides the fundamental building blocks used throughout
 //! the library, including error types, traits, metrics, and configuration.
 
-mod error;
-mod result;
-mod traits;
-mod metrics;
 pub mod config;
 mod dynamic;
+mod error;
+mod metrics;
+mod result;
+mod traits;
 
 // Re-export primary types
-pub use error::{ResilienceError, ErrorClass, ErrorContext};
-pub use result::{ResilienceResult, ResultExt, AsyncResultExt, ErrorCollector};
-pub use traits::{
-    ResiliencePattern,
-    Executable,
-    Retryable,
-    PatternMetrics,
-    HealthCheck,
-    CircuitState,
-};
-pub use metrics::{
-    Metrics,
-    MetricsCollector,
-    MetricSnapshot,
-    MetricKind,
-};
 pub use config::{
-    ResilienceConfig,
     CommonConfig,
+    ConfigBuilder,
+    ConfigError,
+    ConfigResult,
+    ConfigSource,
     Configurable,
-    ResilienceConfigManager,
     // Re-export nebula-config types
     NebulaConfig,
-    ConfigBuilder,
-    ConfigSource,
-    ConfigResult,
-    ConfigError,
+    ResilienceConfig,
+    ResilienceConfigManager,
 };
-pub use dynamic::{
-    DynamicConfig,
-    DynamicConfigurable,
-    ResiliencePresets,
+pub use dynamic::{DynamicConfig, DynamicConfigurable, ResiliencePresets};
+pub use error::{ErrorClass, ErrorContext, ResilienceError};
+pub use metrics::{MetricKind, MetricSnapshot, Metrics, MetricsCollector};
+pub use result::{AsyncResultExt, ErrorCollector, ResilienceResult, ResultExt};
+pub use traits::{
+    CircuitState, Executable, HealthCheck, PatternMetrics, ResiliencePattern, Retryable,
 };
 
 /// Core constants

@@ -1,6 +1,6 @@
 //! Dimension and mathematical validation operations using the unified validator macro
 
-use crate::{validator, validator_fn, ValueExt};
+use crate::{ValueExt, validator, validator_fn};
 
 // ==================== MATHEMATICAL VALIDATORS ====================
 

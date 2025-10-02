@@ -12,9 +12,9 @@ use std::time::Duration;
 #[cfg(not(feature = "std"))]
 use spin::{Condvar, Mutex};
 
-use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
 #[cfg(feature = "stats")]
 use super::PoolStats;
+use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Thread-safe object pool using mutex
@@ -61,13 +61,23 @@ struct PoolInner<T> {
 impl<T: Poolable> ThreadSafePool<T> {
     /// Create new thread-safe pool
     pub fn new<F>(capacity: usize, factory: F) -> Self
-    where F: Fn() -> T + Send + Sync + 'static {
-        Self::with_config(PoolConfig { initial_capacity: capacity, ..Default::default() }, factory)
+    where
+        F: Fn() -> T + Send + Sync + 'static,
+    {
+        Self::with_config(
+            PoolConfig {
+                initial_capacity: capacity,
+                ..Default::default()
+            },
+            factory,
+        )
     }
 
     /// Create pool with custom configuration
     pub fn with_config<F>(config: PoolConfig, factory: F) -> Self
-    where F: Fn() -> T + Send + Sync + 'static {
+    where
+        F: Fn() -> T + Send + Sync + 'static,
+    {
         let mut objects = Vec::with_capacity(config.initial_capacity);
 
         #[cfg(feature = "stats")]
@@ -84,7 +94,10 @@ impl<T: Poolable> ThreadSafePool<T> {
         }
 
         Self {
-            inner: Mutex::new(PoolInner { objects, shutdown: false }),
+            inner: Mutex::new(PoolInner {
+                objects,
+                shutdown: false,
+            }),
             factory: Arc::new(factory),
             config,
             callbacks: Arc::new(NoOpCallbacks),
@@ -129,7 +142,10 @@ impl<T: Poolable> ThreadSafePool<T> {
             obj.reset();
             self.callbacks.on_checkout(&obj);
 
-            ThreadSafePooledValue { value: ManuallyDrop::new(obj), pool: self }
+            ThreadSafePooledValue {
+                value: ManuallyDrop::new(obj),
+                pool: self,
+            }
         })
     }
 
@@ -154,7 +170,10 @@ impl<T: Poolable> ThreadSafePool<T> {
             obj.reset();
             self.callbacks.on_checkout(&obj);
 
-            return Ok(ThreadSafePooledValue { value: ManuallyDrop::new(obj), pool: self });
+            return Ok(ThreadSafePooledValue {
+                value: ManuallyDrop::new(obj),
+                pool: self,
+            });
         }
 
         // Check if we can create new object
@@ -221,7 +240,10 @@ impl<T: Poolable> ThreadSafePool<T> {
             self.update_memory_stats();
         }
 
-        Ok(ThreadSafePooledValue { value: ManuallyDrop::new(obj), pool: self })
+        Ok(ThreadSafePooledValue {
+            value: ManuallyDrop::new(obj),
+            pool: self,
+        })
     }
 
     /// Get object with timeout (no-std version)
@@ -307,7 +329,8 @@ impl<T: Poolable> ThreadSafePool<T> {
                     let after_size = obj.memory_usage();
 
                     #[cfg(feature = "stats")]
-                    self.stats.record_compression_attempt(before_size, after_size, success);
+                    self.stats
+                        .record_compression_attempt(before_size, after_size, success);
                 }
 
                 #[cfg(feature = "stats")]
@@ -374,7 +397,11 @@ impl<T: Poolable> ThreadSafePool<T> {
             Ok(guard) => guard,
             Err(poison) => poison.into_inner(),
         };
-        let memory = inner.objects.iter().map(|obj| obj.memory_usage()).sum::<usize>()
+        let memory = inner
+            .objects
+            .iter()
+            .map(|obj| obj.memory_usage())
+            .sum::<usize>()
             + inner.objects.capacity() * core::mem::size_of::<T>();
 
         self.stats.update_memory(memory);
@@ -404,7 +431,8 @@ impl<T: Poolable> ThreadSafePool<T> {
             let after_size = obj.memory_usage();
 
             #[cfg(feature = "stats")]
-            self.stats.record_compression_attempt(before_size, after_size, success);
+            self.stats
+                .record_compression_attempt(before_size, after_size, success);
 
             if before_size > after_size {
                 total_saved += before_size - after_size;
@@ -591,11 +619,14 @@ mod tests {
         #[cfg(feature = "adaptive")]
         {
             config.pressure_threshold = 50; // 50% заполнения вызывает
-                                            // оптимизацию
+            // оптимизацию
         }
 
         let pool = Arc::new(ThreadSafePool::with_config(config, || {
-            let mut obj = CompressibleObject { data: Vec::with_capacity(1000), compressed: false };
+            let mut obj = CompressibleObject {
+                data: Vec::with_capacity(1000),
+                compressed: false,
+            };
             obj.data.extend_from_slice(&[1, 2, 3, 4, 5]);
             obj
         }));
@@ -668,7 +699,10 @@ mod tests {
         }
 
         let pool = Arc::new(ThreadSafePool::with_config(config, || {
-            let mut obj = CompressibleObject { data: Vec::with_capacity(1000), compressed: false };
+            let mut obj = CompressibleObject {
+                data: Vec::with_capacity(1000),
+                compressed: false,
+            };
             obj.data.extend_from_slice(&[1, 2, 3, 4, 5]);
             obj
         }));

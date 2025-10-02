@@ -206,11 +206,9 @@ where
         }
     }
 
-    Err(last_error.unwrap_or_else(|| {
-        ConfigError::SourceError {
-            message: "No sources provided".to_string(),
-            origin: "try_sources".to_string(),
-        }
+    Err(last_error.unwrap_or_else(|| ConfigError::SourceError {
+        message: "No sources provided".to_string(),
+        origin: "try_sources".to_string(),
     }))
 }
 
@@ -259,8 +257,14 @@ mod tests {
         let mut aggregator = ConfigResultAggregator::new();
 
         aggregator.add(Ok::<_, ConfigError>(42));
-        aggregator.add(Err::<i32, ConfigError>(ConfigError::validation_error("Test error 1", None)));
-        aggregator.add(Err::<i32, ConfigError>(ConfigError::validation_error("Test error 2", None)));
+        aggregator.add(Err::<i32, ConfigError>(ConfigError::validation_error(
+            "Test error 1",
+            None,
+        )));
+        aggregator.add(Err::<i32, ConfigError>(ConfigError::validation_error(
+            "Test error 2",
+            None,
+        )));
 
         assert!(aggregator.has_errors());
         assert_eq!(aggregator.error_count(), 2);

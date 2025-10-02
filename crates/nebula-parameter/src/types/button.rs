@@ -1,10 +1,7 @@
-use serde::{Deserialize, Serialize};
 use bon::Builder;
+use serde::{Deserialize, Serialize};
 
-use crate::core::{
-    ParameterDisplay, ParameterMetadata, ParameterType,
-    Displayable, ParameterKind,
-};
+use crate::core::{Displayable, ParameterDisplay, ParameterKind, ParameterMetadata, ParameterType};
 
 /// Parameter for button actions
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]

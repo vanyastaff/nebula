@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 
 /// Parameter for structured object data - acts as a container with named child parameters
@@ -192,7 +192,13 @@ impl std::fmt::Debug for ObjectParameter {
             .field("metadata", &self.metadata)
             .field("value", &self.value)
             .field("default", &self.default)
-            .field("children", &format!("HashMap<String, Box<dyn ParameterType>> (len: {})", self.children.len()))
+            .field(
+                "children",
+                &format!(
+                    "HashMap<String, Box<dyn ParameterType>> (len: {})",
+                    self.children.len()
+                ),
+            )
             .field("options", &self.options)
             .field("display", &self.display)
             .field("validation", &self.validation)
@@ -241,10 +247,15 @@ impl HasValue for ObjectParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|obj_val| ParameterValue::Object(obj_val.clone()))
+        self.value
+            .as_ref()
+            .map(|obj_val| ParameterValue::Object(obj_val.clone()))
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Object(obj_val) => {
@@ -257,7 +268,7 @@ impl HasValue for ObjectParameter {
                         reason: "Object value validation failed".to_string(),
                     })
                 }
-            },
+            }
             ParameterValue::Value(nebula_value::Value::Object(obj)) => {
                 let mut object_value = ObjectValue::new();
 
@@ -275,14 +286,14 @@ impl HasValue for ObjectParameter {
                         reason: "Object value validation failed".to_string(),
                     })
                 }
-            },
+            }
             ParameterValue::Expression(expr) => {
                 // For expressions, create an object with a single expression field
                 let mut object_value = ObjectValue::new();
                 object_value.set_field("_expression", serde_json::Value::String(expr));
                 self.value = Some(object_value);
                 Ok(())
-            },
+            }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Expected object value for object parameter".to_string(),
@@ -317,7 +328,11 @@ impl Displayable for ObjectParameter {
 
 impl ObjectParameter {
     /// Create a new object parameter as a container
-    pub fn new(key: &str, name: &str, description: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        key: &str,
+        name: &str,
+        description: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             metadata: ParameterMetadata {
                 key: nebula_core::ParameterKey::new(key)?,
@@ -403,7 +418,10 @@ impl ObjectParameter {
 
     /// Check if a child is required
     pub fn is_child_required(&self, key: &str) -> bool {
-        self.children.get(key).map(|c| c.metadata().required).unwrap_or(false)
+        self.children
+            .get(key)
+            .map(|c| c.metadata().required)
+            .unwrap_or(false)
     }
 
     /// Get default values for all children
@@ -447,12 +465,11 @@ impl ObjectParameter {
 
     /// Get visible children based on display conditions
     pub fn get_visible_children(&self) -> impl Iterator<Item = (&String, &Box<dyn ParameterType>)> {
-        self.children.iter()
-            .filter(|(_key, _child)| {
-                // TODO: Implement display condition evaluation based on current values
-                // For now, return all children
-                true
-            })
+        self.children.iter().filter(|(_key, _child)| {
+            // TODO: Implement display condition evaluation based on current values
+            // For now, return all children
+            true
+        })
     }
 
     /// Get children count
@@ -461,13 +478,21 @@ impl ObjectParameter {
     }
 
     /// Get all required children
-    pub fn get_required_children(&self) -> impl Iterator<Item = (&String, &Box<dyn ParameterType>)> {
-        self.children.iter().filter(|(_key, child)| child.metadata().required)
+    pub fn get_required_children(
+        &self,
+    ) -> impl Iterator<Item = (&String, &Box<dyn ParameterType>)> {
+        self.children
+            .iter()
+            .filter(|(_key, child)| child.metadata().required)
     }
 
     /// Get all optional children
-    pub fn get_optional_children(&self) -> impl Iterator<Item = (&String, &Box<dyn ParameterType>)> {
-        self.children.iter().filter(|(_key, child)| !child.metadata().required)
+    pub fn get_optional_children(
+        &self,
+    ) -> impl Iterator<Item = (&String, &Box<dyn ParameterType>)> {
+        self.children
+            .iter()
+            .filter(|(_key, child)| !child.metadata().required)
     }
 
     /// Check if all required children have values in the current ObjectValue
@@ -481,8 +506,18 @@ impl ObjectParameter {
     }
 
     /// Set a field value in the object
-    pub fn set_field_value(&mut self, key: &str, value: serde_json::Value) -> Result<(), ParameterError> {
-        if !self.has_child(key) && !self.options.as_ref().map(|o| o.allow_additional_properties).unwrap_or(false) {
+    pub fn set_field_value(
+        &mut self,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<(), ParameterError> {
+        if !self.has_child(key)
+            && !self
+                .options
+                .as_ref()
+                .map(|o| o.allow_additional_properties)
+                .unwrap_or(false)
+        {
             return Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: format!("Field '{}' is not defined in this object", key),

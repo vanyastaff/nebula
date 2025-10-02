@@ -1,15 +1,11 @@
 //! Configuration types and validation using nebula-config
 
-use std::time::Duration;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 // Re-export nebula-config types for convenience
 pub use nebula_config::{
-    Config as NebulaConfig,
-    ConfigBuilder,
-    ConfigSource,
-    ConfigResult,
-    ConfigError,
+    Config as NebulaConfig, ConfigBuilder, ConfigError, ConfigResult, ConfigSource,
 };
 
 /// Base configuration trait for resilience patterns
@@ -18,25 +14,31 @@ pub trait ResilienceConfig: Send + Sync + Serialize + for<'de> Deserialize<'de> 
     fn validate(&self) -> ConfigResult<()>;
 
     /// Get default configuration
-    fn default_config() -> Self where Self: Sized;
+    fn default_config() -> Self
+    where
+        Self: Sized;
 
     /// Merge with another configuration
-    fn merge(&mut self, other: Self) where Self: Sized;
+    fn merge(&mut self, other: Self)
+    where
+        Self: Sized;
 
     /// Convert to nebula-value for dynamic configuration
     fn to_value(&self) -> nebula_value::Value {
         // Serialize to JSON then convert using TryFrom trait (idiomatic Rust)
         match serde_json::to_value(self) {
             Ok(json_val) => {
-                nebula_value::Value::try_from(json_val)
-                    .unwrap_or(nebula_value::Value::Null)
+                nebula_value::Value::try_from(json_val).unwrap_or(nebula_value::Value::Null)
             }
-            Err(_) => nebula_value::Value::Null
+            Err(_) => nebula_value::Value::Null,
         }
     }
 
     /// Create from nebula-value
-    fn from_value(value: &nebula_value::Value) -> ConfigResult<Self> where Self: Sized {
+    fn from_value(value: &nebula_value::Value) -> ConfigResult<Self>
+    where
+        Self: Sized,
+    {
         // Convert using From trait (idiomatic Rust), then deserialize
         let json_val: serde_json::Value = value.clone().into();
         serde_json::from_value(json_val)
@@ -94,12 +96,20 @@ impl ResilienceConfig for CommonConfig {
 
         // Security: validate service name to prevent injection attacks
         if self.service_name.len() > 256 {
-            return Err(ConfigError::validation("Service name too long (max 256 chars)"));
+            return Err(ConfigError::validation(
+                "Service name too long (max 256 chars)",
+            ));
         }
 
         // Check for invalid characters in service name
-        if !self.service_name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.') {
-            return Err(ConfigError::validation("Service name contains invalid characters"));
+        if !self
+            .service_name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+        {
+            return Err(ConfigError::validation(
+                "Service name contains invalid characters",
+            ));
         }
 
         Ok(())
@@ -180,7 +190,11 @@ impl ResilienceConfigManager {
     }
 
     /// Update configuration for a pattern
-    pub async fn update_pattern_config<T: ResilienceConfig>(&mut self, path: &str, config: &T) -> ConfigResult<()> {
+    pub async fn update_pattern_config<T: ResilienceConfig>(
+        &mut self,
+        path: &str,
+        config: &T,
+    ) -> ConfigResult<()> {
         let value = config.to_value();
         self.config.set_value(path, value).await
     }

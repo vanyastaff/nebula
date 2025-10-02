@@ -2,8 +2,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind, ListValue,
+    Displayable, HasValue, ListValue, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 
 /// Parameter for lists - acts as a container with child parameters
@@ -127,7 +127,10 @@ impl std::fmt::Debug for ListParameter {
             .field("metadata", &self.metadata)
             .field("value", &self.value)
             .field("default", &self.default)
-            .field("children", &format!("Vec<Box<dyn ParameterType>> (len: {})", self.children.len()))
+            .field(
+                "children",
+                &format!("Vec<Box<dyn ParameterType>> (len: {})", self.children.len()),
+            )
             .field("item_template", &"Option<Box<dyn ParameterType>>")
             .field("options", &self.options)
             .field("display", &self.display)
@@ -177,26 +180,33 @@ impl HasValue for ListParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|list_val| ParameterValue::List(list_val.clone()))
+        self.value
+            .as_ref()
+            .map(|list_val| ParameterValue::List(list_val.clone()))
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::List(list_val) => {
                 self.value = Some(list_val);
                 Ok(())
-            },
+            }
             ParameterValue::Value(nebula_value::Value::Array(arr)) => {
                 // Array.to_vec() returns Vec<serde_json::Value>, we need Vec<nebula_value::Value>
                 // Convert through serde
-                let items: Vec<nebula_value::Value> = arr.to_vec().into_iter()
+                let items: Vec<nebula_value::Value> = arr
+                    .to_vec()
+                    .into_iter()
                     .filter_map(|v| serde_json::from_value(v).ok())
                     .collect();
                 let list_val = ListValue::new(items);
                 self.value = Some(list_val);
                 Ok(())
-            },
+            }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Expected list value for list parameter".to_string(),
@@ -212,9 +222,7 @@ impl Validatable for ListParameter {
 
     fn value_to_json(&self, value: &Self::Value) -> serde_json::Value {
         use nebula_value::ValueRefExt;
-        let json_array: Vec<serde_json::Value> = value.items.iter()
-            .map(|v| v.to_json())
-            .collect();
+        let json_array: Vec<serde_json::Value> = value.items.iter().map(|v| v.to_json()).collect();
         serde_json::Value::Array(json_array)
     }
 
@@ -235,7 +243,11 @@ impl Displayable for ListParameter {
 
 impl ListParameter {
     /// Create a new list parameter as a container
-    pub fn new(key: &str, name: &str, description: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        key: &str,
+        name: &str,
+        description: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             metadata: ParameterMetadata {
                 key: nebula_core::ParameterKey::new(key)?,

@@ -2,8 +2,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 
 /// Parameter for date and time selection
@@ -116,10 +116,15 @@ impl HasValue for DateTimeParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+        self.value
+            .as_ref()
+            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Text(s)) => {
@@ -131,15 +136,18 @@ impl HasValue for DateTimeParameter {
                 } else {
                     Err(ParameterError::InvalidValue {
                         key: self.metadata.key.clone(),
-                        reason: format!("Invalid datetime format or out of range: {}", datetime_string),
+                        reason: format!(
+                            "Invalid datetime format or out of range: {}",
+                            datetime_string
+                        ),
                     })
                 }
-            },
+            }
             ParameterValue::Expression(expr) => {
                 // Allow expressions for dynamic datetimes
                 self.value = Some(expr);
                 Ok(())
-            },
+            }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Expected string value for datetime parameter".to_string(),
@@ -214,7 +222,8 @@ impl DateTimeParameter {
         // YYYY-MM-DDTHH:mm:ssZ
 
         // Simple regex-like validation for basic ISO formats
-        if datetime.len() < 16 { // Minimum: "YYYY-MM-DD HH:mm"
+        if datetime.len() < 16 {
+            // Minimum: "YYYY-MM-DD HH:mm"
             return false;
         }
 
@@ -258,7 +267,10 @@ impl DateTimeParameter {
             time_part = &time_part[..time_part.len() - 1];
         } else if time_part.contains('+') || time_part.rfind('-').map_or(false, |pos| pos > 2) {
             // Handle timezone offsets like +03:00 or -05:00
-            if let Some(tz_pos) = time_part.rfind('+').or_else(|| time_part.rfind('-').filter(|&pos| pos > 2)) {
+            if let Some(tz_pos) = time_part
+                .rfind('+')
+                .or_else(|| time_part.rfind('-').filter(|&pos| pos > 2))
+            {
                 time_part = &time_part[..tz_pos];
             }
         }

@@ -5,8 +5,10 @@
 
 #![cfg(miri)]
 
-use nebula_memory::allocator::{Allocator, BumpAllocator, PoolAllocator, PoolConfig, StackAllocator, StackConfig};
 use nebula_memory::allocator::bump::BumpConfig;
+use nebula_memory::allocator::{
+    Allocator, BumpAllocator, PoolAllocator, PoolConfig, StackAllocator, StackConfig,
+};
 use nebula_memory::core::traits::Resettable;
 use std::alloc::Layout;
 

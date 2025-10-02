@@ -12,8 +12,8 @@ extern crate alloc;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Condvar, Mutex, RwLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime},
@@ -270,10 +270,7 @@ where
     /// Create a new scheduled cache
     #[cfg(feature = "std")]
     pub fn new(max_entries: usize) -> Self {
-        Self::with_configs(
-            CacheConfig::new(max_entries),
-            SchedulerConfig::default(),
-        )
+        Self::with_configs(CacheConfig::new(max_entries), SchedulerConfig::default())
     }
 
     /// Create a new scheduled cache with custom configurations
@@ -409,10 +406,7 @@ where
                             // Clone the task (this is a bit tricky with trait objects)
                             // In a real implementation, you'd need a way to clone tasks
                             // For now, we'll skip this limitation
-                            queue.push_back((
-                                Box::new(DummyTask::new(&task_name)),
-                                context,
-                            ));
+                            queue.push_back((Box::new(DummyTask::new(&task_name)), context));
                         }
                     }
 
@@ -479,7 +473,8 @@ where
                     // Update statistics
                     if track_metrics {
                         let mut stats_guard = stats.write().unwrap();
-                        let task_stats = stats_guard.task_stats
+                        let task_stats = stats_guard
+                            .task_stats
                             .entry(task_name)
                             .or_insert_with(TaskStats::default);
 
@@ -530,7 +525,10 @@ where
     #[cfg(feature = "std")]
     pub fn remove_task(&self, task_name: &str) -> bool {
         let mut tasks = self.tasks.lock().unwrap();
-        if let Some(pos) = tasks.iter().position(|entry| entry.task.name() == task_name) {
+        if let Some(pos) = tasks
+            .iter()
+            .position(|entry| entry.task.name() == task_name)
+        {
             tasks.remove(pos);
             true
         } else {
@@ -595,7 +593,9 @@ where
 
     /// Get a value from the cache, computing it if not present
     pub fn get_or_compute<F>(&self, key: K, compute_fn: F) -> CacheResult<V>
-    where F: FnOnce() -> Result<V, MemoryError> {
+    where
+        F: FnOnce() -> Result<V, MemoryError>,
+    {
         let mut cache = self.cache.write().unwrap();
         cache.get_or_compute(key, compute_fn)
     }
@@ -893,7 +893,10 @@ where
 
     fn should_run(&self, context: &TaskContext) -> bool {
         // Don't run health monitoring under high memory pressure
-        !matches!(context.memory_pressure, MemoryPressure::High | MemoryPressure::Critical)
+        !matches!(
+            context.memory_pressure,
+            MemoryPressure::High | MemoryPressure::Critical
+        )
     }
 }
 
@@ -931,7 +934,7 @@ mod tests {
         // Add cleanup task
         let cleanup_task = Box::new(
             ExpiredEntriesCleanupTask::new(Duration::from_millis(75))
-                .with_priority(TaskPriority::High)
+                .with_priority(TaskPriority::High),
         );
         cache.add_task(cleanup_task);
 
@@ -966,12 +969,10 @@ mod tests {
         // Add tasks with different priorities
         cache.add_task(Box::new(
             ExpiredEntriesCleanupTask::new(Duration::from_millis(100))
-                .with_priority(TaskPriority::Critical)
+                .with_priority(TaskPriority::Critical),
         ));
 
-        cache.add_task(Box::new(
-            HealthMonitorTask::new(Duration::from_millis(100))
-        ));
+        cache.add_task(Box::new(HealthMonitorTask::new(Duration::from_millis(100))));
 
         thread::sleep(Duration::from_millis(200));
 
@@ -1011,7 +1012,10 @@ mod tests {
         let pressure = ScheduledCache::assess_memory_pressure(&*cache_guard);
 
         // Should be low to medium pressure with 50% fill
-        assert!(matches!(pressure, MemoryPressure::Low | MemoryPressure::Medium));
+        assert!(matches!(
+            pressure,
+            MemoryPressure::Low | MemoryPressure::Medium
+        ));
 
         cache.stop();
     }

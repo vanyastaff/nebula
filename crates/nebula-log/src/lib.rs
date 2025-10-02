@@ -44,8 +44,8 @@ pub use core::{LogError, LogResult, LogResultExt, NebulaError, NebulaResult, Res
 /// Prelude for common imports
 pub mod prelude {
     pub use crate::{
-        Level, LogResult, LogError, LogResultExt, Timed, Timer, auto_init, debug, error, info, init, init_with, instrument,
-        span, trace, warn, NebulaError,
+        Level, LogError, LogResult, LogResultExt, NebulaError, Timed, Timer, auto_init, debug,
+        error, info, init, init_with, instrument, span, trace, warn,
     };
 
     pub use tracing::{Span, field};
@@ -53,7 +53,6 @@ pub mod prelude {
 
 // Re-export tracing macros
 pub use tracing::{debug, error, info, instrument, span, trace, warn};
-
 
 // Test initialization guard
 #[cfg(test)]

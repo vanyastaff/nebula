@@ -1,7 +1,6 @@
-
-use serde::{Deserialize, Serialize};
+use crate::types::{ExpirableValue, ModeValue, ObjectValue, RoutingValue};
 use nebula_value::Value;
-use crate::types::{RoutingValue, ModeValue, ExpirableValue, ObjectValue};
+use serde::{Deserialize, Serialize};
 
 /// Value for list parameters containing array of child parameter values
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -114,16 +113,17 @@ impl ParameterValue {
                     Value::Object(o) => o.is_empty(),
                     _ => false,
                 }
-            },
+            }
             ParameterValue::Expirable(exp_val) => {
-                exp_val.is_expired() || match &exp_val.value {
-                    Value::Text(s) => s.as_str().trim().is_empty(),
-                    Value::Null => true,
-                    Value::Array(a) => a.is_empty(),
-                    Value::Object(o) => o.is_empty(),
-                    _ => false,
-                }
-            },
+                exp_val.is_expired()
+                    || match &exp_val.value {
+                        Value::Text(s) => s.as_str().trim().is_empty(),
+                        Value::Null => true,
+                        Value::Array(a) => a.is_empty(),
+                        Value::Object(o) => o.is_empty(),
+                        _ => false,
+                    }
+            }
             ParameterValue::List(list_val) => list_val.is_empty(),
             ParameterValue::Object(obj_val) => obj_val.is_empty(),
         }
@@ -161,12 +161,12 @@ impl From<serde_json::Value> for ParameterValue {
                 } else {
                     Value::Null
                 }
-            },
+            }
             serde_json::Value::String(s) => Value::text(s),
             serde_json::Value::Array(arr) => {
                 // Array uses serde_json::Value internally
                 Value::Array(nebula_value::Array::from(arr))
-            },
+            }
             serde_json::Value::Object(obj) => {
                 // Object uses serde_json::Value internally, construct from iterator
                 let obj_iter = obj.into_iter();
@@ -190,19 +190,21 @@ impl From<ParameterValue> for Value {
                 } else {
                     exp_val.value.clone()
                 }
-            },
+            }
             ParameterValue::List(list_val) => {
                 // ListValue.items is Vec<nebula_value::Value> but Array needs Vec<serde_json::Value>
                 // We need to convert through serde
-                let json_items: Vec<serde_json::Value> = list_val.items.iter()
+                let json_items: Vec<serde_json::Value> = list_val
+                    .items
+                    .iter()
                     .filter_map(|v| serde_json::to_value(v).ok())
                     .collect();
                 Value::Array(nebula_value::Array::from(json_items))
-            },
+            }
             ParameterValue::Object(obj_val) => {
                 // Object uses serde_json::Value internally, construct from iterator
                 Value::Object(obj_val.values.clone().into_iter().collect())
-            },
+            }
         }
     }
 }

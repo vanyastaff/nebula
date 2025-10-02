@@ -12,9 +12,9 @@ use std::hash::{Hash, Hasher};
 use base64::Engine;
 use bytes::Bytes as BytesBuf;
 
+use crate::core::NebulaError;
 use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::limits::ValueLimits;
-use crate::core::NebulaError;
 
 /// Binary data with efficient cloning
 ///
@@ -65,10 +65,7 @@ impl Bytes {
     }
 
     /// Create from base64 with length validation
-    pub fn from_base64_with_limits(
-        encoded: &str,
-        limits: &ValueLimits,
-    ) -> ValueResult<Self> {
+    pub fn from_base64_with_limits(encoded: &str, limits: &ValueLimits) -> ValueResult<Self> {
         let bytes = Self::from_base64(encoded)?;
         limits.check_bytes_length(bytes.len())?;
         Ok(bytes)

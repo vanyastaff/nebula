@@ -15,25 +15,20 @@ use core::alloc::Layout;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
+mod checkpoint;
 mod config;
 mod cursor;
-mod checkpoint;
 
-pub use config::BumpConfig;
 pub use checkpoint::{BumpCheckpoint, BumpScope};
+pub use config::BumpConfig;
 use cursor::{AtomicCursor, CellCursor, Cursor};
 
 use crate::allocator::{
-    AllocError, AllocResult, Allocator,
-    BulkAllocator, MemoryUsage, OptionalStats, Resettable,
+    AllocError, AllocResult, Allocator, BulkAllocator, MemoryUsage, OptionalStats, Resettable,
     StatisticsProvider, ThreadSafeAllocator,
 };
 
-use crate::utils::{
-    PrefetchManager, MemoryOps,
-    atomic_max, Backoff,
-    cache_line_size, align_up,
-};
+use crate::utils::{Backoff, MemoryOps, PrefetchManager, align_up, atomic_max, cache_line_size};
 
 /// Production-ready bump allocator
 pub struct BumpAllocator {
@@ -133,7 +128,9 @@ impl BumpAllocator {
     /// Currently used memory
     #[inline]
     pub fn used(&self) -> usize {
-        self.cursor.load(Ordering::Relaxed).saturating_sub(self.start_addr)
+        self.cursor
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.start_addr)
     }
 
     /// Available memory
@@ -161,12 +158,16 @@ impl BumpAllocator {
     pub fn restore(&self, checkpoint: BumpCheckpoint) -> AllocResult<()> {
         let current_gen = self.generation.load(Ordering::Acquire);
         if checkpoint.generation != current_gen {
-            return Err(AllocError::invalid_input("checkpoint from different generation"));
+            return Err(AllocError::invalid_input(
+                "checkpoint from different generation",
+            ));
         }
 
         let current = self.cursor.load(Ordering::Acquire);
         if checkpoint.position < self.start_addr || checkpoint.position > self.end_addr {
-            return Err(AllocError::invalid_input("checkpoint position out of bounds"));
+            return Err(AllocError::invalid_input(
+                "checkpoint position out of bounds",
+            ));
         }
         if checkpoint.position > current {
             return Err(AllocError::invalid_input("checkpoint is in the future"));
@@ -178,10 +179,8 @@ impl BumpAllocator {
             let end = current - self.start_addr;
             if let Some(slice) = self.memory.get(start..end) {
                 unsafe {
-                    let slice_mut = core::slice::from_raw_parts_mut(
-                        slice.as_ptr() as *mut u8,
-                        slice.len()
-                    );
+                    let slice_mut =
+                        core::slice::from_raw_parts_mut(slice.as_ptr() as *mut u8, slice.len());
                     MemoryOps::secure_fill_slice(slice_mut, pattern);
                 }
             }
@@ -293,7 +292,8 @@ impl BumpAllocator {
 
 unsafe impl Allocator for BumpAllocator {
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
-        let ptr = self.try_bump(layout.size(), layout.align())
+        let ptr = self
+            .try_bump(layout.size(), layout.align())
             .ok_or_else(|| AllocError::out_of_memory_with_layout(layout))?;
 
         let slice = NonNull::slice_from_raw_parts(ptr, layout.size());

@@ -2,9 +2,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
-    SelectOption,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, SelectOption, Validatable,
 };
 
 /// Parameter for selecting a single option from radio buttons
@@ -99,10 +98,15 @@ impl HasValue for RadioParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+        self.value
+            .as_ref()
+            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Text(s)) => {
@@ -117,12 +121,12 @@ impl HasValue for RadioParameter {
                         reason: format!("Value '{}' is not a valid radio option", string_value),
                     })
                 }
-            },
+            }
             ParameterValue::Expression(expr) => {
                 // Allow expressions for dynamic selection
                 self.value = Some(expr);
                 Ok(())
-            },
+            }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Expected string value for radio parameter".to_string(),
@@ -168,9 +172,10 @@ impl RadioParameter {
         }
 
         // Check if value matches any option's value or key
-        let is_standard_option = self.options.iter().any(|option| {
-            option.value == value || option.key == value
-        });
+        let is_standard_option = self
+            .options
+            .iter()
+            .any(|option| option.value == value || option.key == value);
 
         if is_standard_option {
             return true;

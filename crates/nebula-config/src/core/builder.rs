@@ -2,8 +2,8 @@
 
 use super::{Config, ConfigError, ConfigResult, ConfigSource};
 use crate::loaders::CompositeLoader;
-use std::sync::Arc;
 use crate::{ConfigLoader, ConfigValidator, ConfigWatcher};
+use std::sync::Arc;
 
 /// Configuration builder
 pub struct ConfigBuilder {

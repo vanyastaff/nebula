@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 
 /// Parameter for grouping related data into a structured object
@@ -203,12 +203,15 @@ impl HasValue for GroupParameter {
         self.value.as_ref().map(|group_val| {
             // Object uses serde_json::Value internally, so we can just clone the values
             ParameterValue::Value(nebula_value::Value::Object(
-                group_val.values.clone().into_iter().collect()
+                group_val.values.clone().into_iter().collect(),
             ))
         })
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Object(obj)) => {
@@ -228,14 +231,14 @@ impl HasValue for GroupParameter {
                         reason: "Group value validation failed".to_string(),
                     })
                 }
-            },
+            }
             ParameterValue::Expression(expr) => {
                 // For expressions, create a group with a single expression field
                 let mut group_value = GroupValue::new();
                 group_value.set_field("_expression", serde_json::Value::String(expr));
                 self.value = Some(group_value);
                 Ok(())
-            },
+            }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Expected object value for group parameter".to_string(),
@@ -315,7 +318,7 @@ impl GroupParameter {
                 } else {
                     false
                 }
-            },
+            }
             GroupFieldType::Date | GroupFieldType::Email | GroupFieldType::Url => {
                 // Basic string validation - more specific validation could be added
                 value.is_string()

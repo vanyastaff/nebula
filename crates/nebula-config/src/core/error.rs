@@ -1,9 +1,9 @@
 //! Configuration error types
 
-use thiserror::Error;
+use nebula_error::NebulaError;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use nebula_error::NebulaError;
+use thiserror::Error;
 
 /// Configuration error type
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
@@ -12,7 +12,7 @@ pub enum ConfigError {
     #[error("Configuration file not found: {path}")]
     FileNotFound {
         /// Path to the configuration file
-        path: PathBuf
+        path: PathBuf,
     },
 
     /// Configuration file read error
@@ -21,7 +21,7 @@ pub enum ConfigError {
         /// Path to the configuration file
         path: PathBuf,
         /// Error message
-        message: String
+        message: String,
     },
 
     /// Configuration file parse error
@@ -30,7 +30,7 @@ pub enum ConfigError {
         /// Path to the configuration file
         path: PathBuf,
         /// Error message describing the parse failure
-        message: String
+        message: String,
     },
 
     /// Configuration validation error
@@ -48,14 +48,14 @@ pub enum ConfigError {
         /// Error message describing the source error
         message: String,
         /// Origin of the configuration source
-        origin: String
+        origin: String,
     },
 
     /// Environment variable not found
     #[error("Environment variable not found: {name}")]
     EnvVarNotFound {
         /// Name of the environment variable
-        name: String
+        name: String,
     },
 
     /// Environment variable parse error
@@ -64,28 +64,28 @@ pub enum ConfigError {
         /// Name of the environment variable
         name: String,
         /// Value that failed to parse
-        value: String
+        value: String,
     },
 
     /// Configuration reload error
     #[error("Failed to reload configuration: {message}")]
     ReloadError {
         /// Error message describing the reload failure
-        message: String
+        message: String,
     },
 
     /// Configuration watch error
     #[error("Configuration watch error: {message}")]
     WatchError {
         /// Error message describing the watch failure
-        message: String
+        message: String,
     },
 
     /// Configuration merge error
     #[error("Failed to merge configurations: {message}")]
     MergeError {
         /// Error message describing the merge failure
-        message: String
+        message: String,
     },
 
     /// Configuration type error
@@ -105,28 +105,28 @@ pub enum ConfigError {
         /// Error message describing the path issue
         message: String,
         /// Path that caused the error
-        path: String
+        path: String,
     },
 
     /// Configuration format not supported
     #[error("Configuration format not supported: {format}")]
     FormatNotSupported {
         /// Format that is not supported
-        format: String
+        format: String,
     },
 
     /// Configuration encryption error
     #[error("Configuration encryption error: {message}")]
     EncryptionError {
         /// Error message describing the encryption failure
-        message: String
+        message: String,
     },
 
     /// Configuration decryption error
     #[error("Configuration decryption error: {message}")]
     DecryptionError {
         /// Error message describing the decryption failure
-        message: String
+        message: String,
     },
 }
 
@@ -268,9 +268,7 @@ impl ConfigError {
             ConfigError::FileNotFound { .. } | ConfigError::EnvVarNotFound { .. } => {
                 ErrorCategory::NotFound
             }
-            ConfigError::FileReadError { .. } | ConfigError::WatchError { .. } => {
-                ErrorCategory::Io
-            }
+            ConfigError::FileReadError { .. } | ConfigError::WatchError { .. } => ErrorCategory::Io,
             ConfigError::ParseError { .. }
             | ConfigError::EnvVarParseError { .. }
             | ConfigError::FormatNotSupported { .. } => ErrorCategory::Parse,
@@ -353,28 +351,37 @@ impl From<ConfigError> for NebulaError {
             ConfigError::FileNotFound { path } => {
                 NebulaError::not_found("config_file", path.to_string_lossy())
             }
-            ConfigError::FileReadError { path, message } => {
-                NebulaError::internal(format!("Failed to read config file {}: {}", path.display(), message))
-            }
-            ConfigError::ParseError { path, message } => {
-                NebulaError::validation(format!("Failed to parse config file {}: {}", path.display(), message))
-            }
+            ConfigError::FileReadError { path, message } => NebulaError::internal(format!(
+                "Failed to read config file {}: {}",
+                path.display(),
+                message
+            )),
+            ConfigError::ParseError { path, message } => NebulaError::validation(format!(
+                "Failed to parse config file {}: {}",
+                path.display(),
+                message
+            )),
             ConfigError::ValidationError { message, field } => {
                 let msg = match field {
-                    Some(field) => format!("Configuration validation failed for field '{}': {}", field, message),
+                    Some(field) => format!(
+                        "Configuration validation failed for field '{}': {}",
+                        field, message
+                    ),
                     None => format!("Configuration validation failed: {}", message),
                 };
                 NebulaError::validation(msg)
             }
-            ConfigError::SourceError { message, origin } => {
-                NebulaError::internal(format!("Configuration source error from '{}': {}", origin, message))
-            }
+            ConfigError::SourceError { message, origin } => NebulaError::internal(format!(
+                "Configuration source error from '{}': {}",
+                origin, message
+            )),
             ConfigError::EnvVarNotFound { name } => {
                 NebulaError::not_found("environment_variable", name)
             }
-            ConfigError::EnvVarParseError { name, value } => {
-                NebulaError::validation(format!("Failed to parse environment variable {}: '{}'", name, value))
-            }
+            ConfigError::EnvVarParseError { name, value } => NebulaError::validation(format!(
+                "Failed to parse environment variable {}: '{}'",
+                name, value
+            )),
             ConfigError::ReloadError { message } => {
                 NebulaError::internal(format!("Configuration reload failed: {}", message))
             }
@@ -384,9 +391,14 @@ impl From<ConfigError> for NebulaError {
             ConfigError::MergeError { message } => {
                 NebulaError::internal(format!("Configuration merge failed: {}", message))
             }
-            ConfigError::TypeError { message, expected, actual } => {
-                NebulaError::validation(format!("Type error: {} (expected {}, got {})", message, expected, actual))
-            }
+            ConfigError::TypeError {
+                message,
+                expected,
+                actual,
+            } => NebulaError::validation(format!(
+                "Type error: {} (expected {}, got {})",
+                message, expected, actual
+            )),
             ConfigError::PathError { message, path } => {
                 NebulaError::validation(format!("Path error for '{}': {}", path, message))
             }
@@ -438,10 +450,7 @@ impl ConfigError {
         match resource_type_str.as_str() {
             "file" => Self::file_not_found(PathBuf::from(resource_id_str)),
             "env" => Self::env_var_not_found(resource_id_str),
-            _ => Self::source_error(
-                format!("{} not found", resource_type_str),
-                resource_id_str
-            ),
+            _ => Self::source_error(format!("{} not found", resource_type_str), resource_id_str),
         }
     }
 

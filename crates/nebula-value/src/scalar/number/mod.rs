@@ -5,12 +5,10 @@
 //! - `Float`: f64 without Eq (NaN-aware)
 //! - `HashableFloat`: Float wrapper with Eq/Hash for collections
 
-pub mod integer;
 pub mod float;
 pub mod hashable;
+pub mod integer;
 
-pub use integer::Integer;
 pub use float::Float;
 pub use hashable::HashableFloat;
-
-
+pub use integer::Integer;

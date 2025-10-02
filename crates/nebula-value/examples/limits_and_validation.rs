@@ -2,10 +2,10 @@
 //!
 //! Run with: cargo run --example limits_and_validation
 
-use nebula_value::prelude::*;
-use nebula_value::core::limits::ValueLimits;
 use nebula_value::collections::array::ArrayBuilder;
 use nebula_value::collections::object::ObjectBuilder;
+use nebula_value::core::limits::ValueLimits;
+use nebula_value::prelude::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Nebula Value Limits & Validation ===\n");
@@ -132,9 +132,10 @@ fn builder_validation() -> ValueResult<()> {
 
     // Key length validation
     println!("\n  Key length validation:");
-    let result = ObjectBuilder::new()
-        .with_limits(limits)
-        .try_insert("this_is_a_very_long_key_name_that_exceeds_the_limit", serde_json::json!(1));
+    let result = ObjectBuilder::new().with_limits(limits).try_insert(
+        "this_is_a_very_long_key_name_that_exceeds_the_limit",
+        serde_json::json!(1),
+    );
 
     match result {
         Ok(_) => println!("    Unexpected success"),

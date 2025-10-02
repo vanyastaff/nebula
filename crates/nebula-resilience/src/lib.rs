@@ -4,8 +4,8 @@
 #![warn(clippy::all, clippy::pedantic)]
 // Core module
 //! # Nebula Resilience
-pub mod helpers;
 pub mod core;
+pub mod helpers;
 
 // Patterns module
 pub mod patterns;
@@ -17,43 +17,43 @@ mod policy;
 
 // Re-exports from core
 pub use core::{
-    ResilienceError,
-    ResilienceResult,
+    ConfigError,
+    ConfigResult,
+    DynamicConfig,
+    DynamicConfigurable,
     ErrorClass,
-    ResiliencePattern,
     Executable,
     // Configuration types
     ResilienceConfig,
     ResilienceConfigManager,
-    DynamicConfig,
-    DynamicConfigurable,
+    ResilienceError,
+    ResiliencePattern,
     ResiliencePresets,
-    ConfigResult,
-    ConfigError,
+    ResilienceResult,
 };
 
 // Re-exports from patterns
 pub use patterns::{
+    AdaptiveRateLimiter,
+    LeakyBucket,
+    SlidingWindow,
+    TokenBucket,
     // Basic patterns
     bulkhead::{Bulkhead, BulkheadConfig},
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitState},
-    retry::{retry, RetryStrategy},
-    timeout::{timeout, timeout_with_original_error},
-    fallback::{FallbackStrategy, ValueFallback, AnyStringFallbackStrategy},
-    hedge::{HedgeExecutor, HedgeConfig},
+    fallback::{AnyStringFallbackStrategy, FallbackStrategy, ValueFallback},
+    hedge::{HedgeConfig, HedgeExecutor},
 
     // Rate limiting
-    rate_limiter::{RateLimiter, AnyRateLimiter},
-    TokenBucket,
-    LeakyBucket,
-    SlidingWindow,
-    AdaptiveRateLimiter,
+    rate_limiter::{AnyRateLimiter, RateLimiter},
+    retry::{RetryStrategy, retry},
+    timeout::{timeout, timeout_with_original_error},
 };
 
 // Re-export high-level abstractions
-pub use compose::{ResilienceChain, LayerBuilder, ResilienceLayer};
-pub use policy::{ResiliencePolicy, PolicyMetadata};
-pub use manager::{ResilienceManager, PolicyBuilder, RetryableOperation};
+pub use compose::{LayerBuilder, ResilienceChain, ResilienceLayer};
+pub use manager::{PolicyBuilder, ResilienceManager, RetryableOperation};
+pub use policy::{PolicyMetadata, ResiliencePolicy};
 
 /// Prelude
 pub mod prelude {
@@ -62,38 +62,24 @@ pub mod prelude {
 
     // Pattern primitives
     pub use crate::patterns::{
-        Bulkhead,
-        BulkheadConfig,
-        CircuitBreaker,
-        CircuitBreakerConfig,
-        CircuitState,
-        RetryStrategy,
-        timeout
+        Bulkhead, BulkheadConfig, CircuitBreaker, CircuitBreakerConfig, CircuitState,
+        RetryStrategy, timeout,
     };
 
     // High-level abstractions
-    pub use crate::{
-        ResiliencePolicy,
-        ResilienceManager,
-        ResilienceChain,
-    };
+    pub use crate::{ResilienceChain, ResilienceManager, ResiliencePolicy};
 
     // Configuration
     pub use crate::{
-        ResilienceConfig,
-        ResilienceConfigManager,
-        DynamicConfig,
+        ConfigError, ConfigResult, DynamicConfig, ResilienceConfig, ResilienceConfigManager,
         ResiliencePresets,
-        ConfigResult,
-        ConfigError,
     };
 
     // Re-export nebula ecosystem for convenience
-    pub use nebula_log::{debug, info, warn, error};
-    pub use nebula_value::Value;
     pub use nebula_config::ConfigSource;
+    pub use nebula_log::{debug, error, info, warn};
+    pub use nebula_value::Value;
 }
-
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

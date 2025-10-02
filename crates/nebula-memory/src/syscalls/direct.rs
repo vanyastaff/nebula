@@ -82,10 +82,10 @@ pub fn memory_map(
 ) -> io::Result<*mut u8> {
     #[cfg(unix)]
     {
-        use std::ptr;
         use libc::{
-            mmap, MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_HUGETLB, MAP_PRIVATE, MAP_SHARED,
+            MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_HUGETLB, MAP_PRIVATE, MAP_SHARED, mmap,
         };
+        use std::ptr;
 
         let prot = protection.to_unix_flags();
 
@@ -105,7 +105,7 @@ pub fn memory_map(
                     {
                         0 // Not supported on non-Linux Unix systems
                     }
-                },
+                }
             };
         }
 
@@ -145,7 +145,12 @@ pub fn memory_map(
         let addr_ptr = addr.unwrap_or(ptr::null_mut());
 
         let ptr = unsafe {
-            VirtualAlloc(addr_ptr as *mut winapi::ctypes::c_void, size, alloc_type, page_protection)
+            VirtualAlloc(
+                addr_ptr as *mut winapi::ctypes::c_void,
+                size,
+                alloc_type,
+                page_protection,
+            )
         };
 
         if ptr.is_null() {
@@ -163,7 +168,10 @@ pub fn memory_map(
 
         let ptr = unsafe { std::alloc::alloc(layout) };
         if ptr.is_null() {
-            Err(io::Error::new(io::ErrorKind::OutOfMemory, "Memory allocation failed"))
+            Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "Memory allocation failed",
+            ))
         } else {
             Ok(ptr)
         }
@@ -226,8 +234,14 @@ pub fn memory_protect(addr: *mut u8, size: usize, protection: MemoryProtection) 
         let prot = protection.to_windows_flags();
         let mut old_protect = 0;
 
-        let result =
-            unsafe { VirtualProtect(addr as *mut winapi::ctypes::c_void, size, prot, &mut old_protect) };
+        let result = unsafe {
+            VirtualProtect(
+                addr as *mut winapi::ctypes::c_void,
+                size,
+                prot,
+                &mut old_protect,
+            )
+        };
 
         if result == 0 {
             Err(io::Error::last_os_error())
@@ -289,7 +303,7 @@ pub fn memory_advise(addr: *mut u8, size: usize, advice: MemoryAdvice) -> io::Re
                 {
                     libc::MADV_DONTNEED
                 }
-            },
+            }
         };
 
         let result = unsafe { madvise(addr as *mut libc::c_void, size, advice_val) };
@@ -306,8 +320,8 @@ pub fn memory_advise(addr: *mut u8, size: usize, advice: MemoryAdvice) -> io::Re
         use winapi::um::winnt::MEM_DECOMMIT;
 
         let result = match advice {
-            MemoryAdvice::DontNeed | MemoryAdvice::Free => {
-                unsafe { VirtualFree(addr as *mut winapi::ctypes::c_void, size, MEM_DECOMMIT) }
+            MemoryAdvice::DontNeed | MemoryAdvice::Free => unsafe {
+                VirtualFree(addr as *mut winapi::ctypes::c_void, size, MEM_DECOMMIT)
             },
             _ => 1, // No-op for other advice types
         };
@@ -343,7 +357,7 @@ pub enum MemorySyncType {
 pub fn memory_sync(addr: *mut u8, size: usize, sync_type: MemorySyncType) -> io::Result<()> {
     #[cfg(unix)]
     {
-        use libc::{msync, MS_ASYNC, MS_INVALIDATE, MS_SYNC};
+        use libc::{MS_ASYNC, MS_INVALIDATE, MS_SYNC, msync};
 
         let flags = match sync_type {
             MemorySyncType::Sync => MS_SYNC,
@@ -470,8 +484,11 @@ pub fn get_memory_page_info(addr: *const u8) -> io::Result<MemoryPageInfo> {
                     ) {
                         if start <= page_addr && page_addr < end {
                             let perms = parts[1];
-                            let path =
-                                if parts.len() > 5 { parts[5..].join(" ") } else { String::new() };
+                            let path = if parts.len() > 5 {
+                                parts[5..].join(" ")
+                            } else {
+                                String::new()
+                            };
 
                             return Ok(MemoryPageInfo {
                                 address: page_addr as *const u8,
@@ -488,15 +505,18 @@ pub fn get_memory_page_info(addr: *const u8) -> io::Result<MemoryPageInfo> {
             }
         }
 
-        Err(io::Error::new(io::ErrorKind::NotFound, "Memory page not found"))
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Memory page not found",
+        ))
     }
 
     #[cfg(windows)]
     {
         use winapi::um::memoryapi::VirtualQuery;
         use winapi::um::winnt::{
-            MEMORY_BASIC_INFORMATION, PAGE_EXECUTE, PAGE_EXECUTE_READ,
-            PAGE_EXECUTE_READWRITE, PAGE_READONLY, PAGE_READWRITE,
+            MEMORY_BASIC_INFORMATION, PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
+            PAGE_READONLY, PAGE_READWRITE,
         };
 
         unsafe {

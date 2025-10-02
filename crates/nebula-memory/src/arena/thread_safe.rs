@@ -1,6 +1,6 @@
 //! High-performance thread-safe arena allocator
 
-use std::alloc::{alloc, dealloc, Layout};
+use std::alloc::{Layout, alloc, dealloc};
 use std::mem;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
@@ -26,10 +26,13 @@ impl ThreadSafeChunk {
 
         // Safety: Layout is non-zero and properly aligned
         let ptr = unsafe { alloc(layout) };
-        let ptr =
-            NonNull::new(ptr).ok_or_else(|| MemoryError::out_of_memory(size, 0))?;
+        let ptr = NonNull::new(ptr).ok_or_else(|| MemoryError::out_of_memory(size, 0))?;
 
-        Ok(Self { ptr, capacity: size, used: AtomicUsize::new(0) })
+        Ok(Self {
+            ptr,
+            capacity: size,
+            used: AtomicUsize::new(0),
+        })
     }
 
     /// Attempts to allocate from this chunk
@@ -61,7 +64,10 @@ impl ThreadSafeChunk {
 impl Drop for ThreadSafeChunk {
     fn drop(&mut self) {
         unsafe {
-            dealloc(self.ptr.as_ptr(), Layout::from_size_align_unchecked(self.capacity, 1));
+            dealloc(
+                self.ptr.as_ptr(),
+                Layout::from_size_align_unchecked(self.capacity, 1),
+            );
         }
     }
 }
@@ -194,7 +200,8 @@ impl ThreadSafeArena {
             let chunk = unsafe { &*current };
             if let Some(ptr) = chunk.try_alloc(size, align) {
                 if let Some(start) = start_time {
-                    self.stats.record_allocation(size, start.elapsed().as_nanos() as u64);
+                    self.stats
+                        .record_allocation(size, start.elapsed().as_nanos() as u64);
                 }
                 return Ok(ptr);
             }
@@ -206,12 +213,16 @@ impl ThreadSafeArena {
         // Try again with new chunk
         let current = self.current_chunk.load(Ordering::Acquire);
         let chunk = unsafe { &*current };
-        chunk.try_alloc(size, align).ok_or(MemoryError::allocation_failed()).map(|ptr| {
-            if let Some(start) = start_time {
-                self.stats.record_allocation(size, start.elapsed().as_nanos() as u64);
-            }
-            ptr
-        })
+        chunk
+            .try_alloc(size, align)
+            .ok_or(MemoryError::allocation_failed())
+            .map(|ptr| {
+                if let Some(start) = start_time {
+                    self.stats
+                        .record_allocation(size, start.elapsed().as_nanos() as u64);
+                }
+                ptr
+            })
     }
 
     /// Allocates and initializes a value (thread-safe)
@@ -350,8 +361,10 @@ mod tests {
 
     #[test]
     fn chunk_growth() {
-        let config =
-            ArenaConfig::default().with_initial_size(128).with_growth_factor(2.0).with_stats(true);
+        let config = ArenaConfig::default()
+            .with_initial_size(128)
+            .with_growth_factor(2.0)
+            .with_stats(true);
         let arena = ThreadSafeArena::new(config);
 
         // First allocation fits in initial chunk

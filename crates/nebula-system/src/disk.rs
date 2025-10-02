@@ -1,6 +1,6 @@
 //! Disk and filesystem information
 
-use crate::core::{SystemResult, SystemError, NebulaError};
+use crate::core::{NebulaError, SystemError, SystemResult};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};

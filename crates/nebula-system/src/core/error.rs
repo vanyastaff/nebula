@@ -49,7 +49,10 @@ impl SystemError for NebulaError {
 
     /// Create a feature not supported error
     fn system_not_supported(feature: impl Into<String>) -> Self {
-        Self::internal(format!("Feature not supported on this platform: {}", feature.into()))
+        Self::internal(format!(
+            "Feature not supported on this platform: {}",
+            feature.into()
+        ))
     }
 
     /// Create a resource not found error
@@ -64,12 +67,20 @@ impl SystemError for NebulaError {
 
     /// Create a memory operation error
     fn system_memory_error(operation: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::internal(format!("Memory operation '{}' failed: {}", operation.into(), reason.into()))
+        Self::internal(format!(
+            "Memory operation '{}' failed: {}",
+            operation.into(),
+            reason.into()
+        ))
     }
 
     /// Create a system information parsing error
     fn system_parse_error(data_type: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::validation(format!("Failed to parse {}: {}", data_type.into(), reason.into()))
+        Self::validation(format!(
+            "Failed to parse {}: {}",
+            data_type.into(),
+            reason.into()
+        ))
     }
 
     /// Create a timeout error
@@ -79,7 +90,11 @@ impl SystemError for NebulaError {
 
     /// Create a hardware detection error
     fn system_hardware_error(component: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::internal(format!("Hardware component '{}' error: {}", component.into(), reason.into()))
+        Self::internal(format!(
+            "Hardware component '{}' error: {}",
+            component.into(),
+            reason.into()
+        ))
     }
 }
 
@@ -99,7 +114,11 @@ mod tests {
 
         let error = NebulaError::system_memory_error("allocate", "out of memory");
         assert!(error.is_server_error());
-        assert!(error.user_message().contains("Memory operation 'allocate' failed"));
+        assert!(
+            error
+                .user_message()
+                .contains("Memory operation 'allocate' failed")
+        );
 
         let error = NebulaError::system_permission_denied("read /proc/stat");
         assert!(error.is_client_error());

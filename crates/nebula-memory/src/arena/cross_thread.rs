@@ -18,7 +18,9 @@ pub struct CrossThreadArena {
 impl CrossThreadArena {
     /// Create a new cross-thread arena
     pub fn new(config: ArenaConfig) -> Self {
-        CrossThreadArena { inner: Arc::new(Mutex::new(Arena::new(config))) }
+        CrossThreadArena {
+            inner: Arc::new(Mutex::new(Arena::new(config))),
+        }
     }
 
     /// Create with default configuration
@@ -28,12 +30,17 @@ impl CrossThreadArena {
 
     /// Lock the arena for exclusive access
     pub fn lock(&self) -> CrossThreadArenaGuard<'_> {
-        CrossThreadArenaGuard { guard: self.inner.lock().unwrap() }
+        CrossThreadArenaGuard {
+            guard: self.inner.lock().unwrap(),
+        }
     }
 
     /// Try to lock the arena without blocking
     pub fn try_lock(&self) -> Option<CrossThreadArenaGuard<'_>> {
-        self.inner.try_lock().ok().map(|guard| CrossThreadArenaGuard { guard })
+        self.inner
+            .try_lock()
+            .ok()
+            .map(|guard| CrossThreadArenaGuard { guard })
     }
 
     /// Reset the arena
@@ -61,7 +68,9 @@ impl CrossThreadArena {
 
 impl Clone for CrossThreadArena {
     fn clone(&self) -> Self {
-        CrossThreadArena { inner: Arc::clone(&self.inner) }
+        CrossThreadArena {
+            inner: Arc::clone(&self.inner),
+        }
     }
 }
 
@@ -86,7 +95,9 @@ impl<'a> CrossThreadArenaGuard<'a> {
 
     /// Allocate a slice
     pub fn alloc_slice<T>(&self, slice: &[T]) -> Result<&mut [T], MemoryError>
-    where T: Copy {
+    where
+        T: Copy,
+    {
         self.guard.alloc_slice(slice)
     }
 
@@ -111,7 +122,9 @@ impl<T> CrossThreadArenaRef<T> {
     ///
     /// This locks the arena for the duration of the access.
     pub fn with<F, R>(&self, f: F) -> R
-    where F: FnOnce(&T) -> R {
+    where
+        F: FnOnce(&T) -> R,
+    {
         let _guard = self.arena.lock().unwrap();
         unsafe {
             let ptr = *self.ptr.get();
@@ -123,7 +136,9 @@ impl<T> CrossThreadArenaRef<T> {
     ///
     /// This locks the arena for the duration of the access.
     pub fn with_mut<F, R>(&self, f: F) -> R
-    where F: FnOnce(&mut T) -> R {
+    where
+        F: FnOnce(&mut T) -> R,
+    {
         let _guard = self.arena.lock().unwrap();
         unsafe {
             let ptr = *self.ptr.get();
@@ -156,7 +171,9 @@ pub struct CrossThreadArenaBuilder {
 
 impl CrossThreadArenaBuilder {
     pub fn new() -> Self {
-        CrossThreadArenaBuilder { config: ArenaConfig::default() }
+        CrossThreadArenaBuilder {
+            config: ArenaConfig::default(),
+        }
     }
 
     pub fn initial_size(mut self, size: usize) -> Self {

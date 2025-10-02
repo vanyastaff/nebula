@@ -2,8 +2,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -107,10 +107,15 @@ impl HasValue for TextareaParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+        self.value
+            .as_ref()
+            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Text(s)) => {
@@ -121,7 +126,11 @@ impl HasValue for TextareaParameter {
                         if text.len() < min_len {
                             return Err(ParameterError::InvalidValue {
                                 key: self.metadata.key.clone(),
-                                reason: format!("Text too short: {} chars, minimum {}", text.len(), min_len),
+                                reason: format!(
+                                    "Text too short: {} chars, minimum {}",
+                                    text.len(),
+                                    min_len
+                                ),
                             });
                         }
                     }
@@ -129,19 +138,23 @@ impl HasValue for TextareaParameter {
                         if text.len() > max_len {
                             return Err(ParameterError::InvalidValue {
                                 key: self.metadata.key.clone(),
-                                reason: format!("Text too long: {} chars, maximum {}", text.len(), max_len),
+                                reason: format!(
+                                    "Text too long: {} chars, maximum {}",
+                                    text.len(),
+                                    max_len
+                                ),
                             });
                         }
                     }
                 }
                 self.value = Some(text);
                 Ok(())
-            },
+            }
             ParameterValue::Expression(expr) => {
                 // Allow expressions for dynamic text
                 self.value = Some(expr);
                 Ok(())
-            },
+            }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Expected string value for textarea parameter".to_string(),
@@ -185,17 +198,12 @@ impl TextareaParameter {
 
     /// Get the number of columns for display
     pub fn get_cols(&self) -> Option<u32> {
-        self.options
-            .as_ref()
-            .and_then(|opts| opts.cols)
+        self.options.as_ref().and_then(|opts| opts.cols)
     }
 
     /// Check if text wrapping is enabled
     pub fn should_wrap(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.wrap)
-            .unwrap_or(true)
+        self.options.as_ref().map(|opts| opts.wrap).unwrap_or(true)
     }
 
     /// Check if character count should be shown

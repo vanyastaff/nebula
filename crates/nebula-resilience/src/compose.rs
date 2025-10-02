@@ -4,14 +4,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{
-    patterns::{
-        bulkhead::Bulkhead,
-        circuit_breaker::CircuitBreaker,
-        retry::RetryStrategy,
-        timeout::timeout,
-    },
     ResilienceError, ResilienceResult,
     manager::RetryableOperation,
+    patterns::{
+        bulkhead::Bulkhead, circuit_breaker::CircuitBreaker, retry::RetryStrategy, timeout::timeout,
+    },
 };
 
 /// Operation wrapper that can be boxed
@@ -263,9 +260,7 @@ impl<T: Send + 'static> Default for LayerBuilder<T> {
 impl<T: Send + 'static> LayerBuilder<T> {
     /// Create new layer builder
     pub fn new() -> Self {
-        Self {
-            layers: Vec::new(),
-        }
+        Self { layers: Vec::new() }
     }
 
     /// Add timeout layer
@@ -282,7 +277,8 @@ impl<T: Send + 'static> LayerBuilder<T> {
 
     /// Add circuit breaker layer
     pub fn with_circuit_breaker(mut self, circuit_breaker: Arc<CircuitBreaker>) -> Self {
-        self.layers.push(Arc::new(CircuitBreakerLayer::new(circuit_breaker)));
+        self.layers
+            .push(Arc::new(CircuitBreakerLayer::new(circuit_breaker)));
         self
     }
 
@@ -305,10 +301,7 @@ impl<T: Send + 'static> LayerBuilder<T> {
 
         // Apply layers in reverse order (last added becomes outermost)
         for layer in self.layers.into_iter().rev() {
-            stack = Arc::new(ComposedStack {
-                layer,
-                next: stack,
-            });
+            stack = Arc::new(ComposedStack { layer, next: stack });
         }
 
         stack
@@ -340,8 +333,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[tokio::test]
     async fn test_layer_composition() {

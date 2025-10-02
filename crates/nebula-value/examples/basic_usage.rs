@@ -2,9 +2,9 @@
 //!
 //! Run with: cargo run --example basic_usage
 
-use nebula_value::prelude::*;
 use nebula_value::collections::array::ArrayBuilder;
 use nebula_value::collections::object::ObjectBuilder;
+use nebula_value::prelude::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Nebula Value Basic Usage ===\n");
@@ -123,8 +123,8 @@ fn using_builders() -> ValueResult<()> {
 }
 
 fn hashing_examples() {
-    use std::collections::HashMap;
     use nebula_value::core::hash::HashableValue;
+    use std::collections::HashMap;
 
     println!("5. Hashing & HashMap:");
 
@@ -136,7 +136,10 @@ fn hashing_examples() {
 
     println!("  HashMap size: {}", map.len());
     println!("  map[1]: {:?}", map.get(&HashableValue(Value::integer(1))));
-    println!("  map['key']: {:?}\n", map.get(&HashableValue(Value::text("key"))));
+    println!(
+        "  map['key']: {:?}\n",
+        map.get(&HashableValue(Value::text("key")))
+    );
 }
 
 fn serialization_examples() -> Result<(), Box<dyn std::error::Error>> {

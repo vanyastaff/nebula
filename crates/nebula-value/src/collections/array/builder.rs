@@ -3,9 +3,9 @@
 //! Provides a fluent API for building arrays with validation.
 
 use crate::collections::Array;
-use crate::core::limits::ValueLimits;
-use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::NebulaError;
+use crate::core::error::{ValueErrorExt, ValueResult};
+use crate::core::limits::ValueLimits;
 
 // TEMP: using serde_json::Value as placeholder
 type ValueItem = serde_json::Value;
@@ -97,7 +97,10 @@ impl ArrayBuilder {
     /// Insert an item at a specific index
     pub fn insert(mut self, index: usize, item: ValueItem) -> ValueResult<Self> {
         if index > self.items.len() {
-            return Err(NebulaError::value_index_out_of_bounds(index, self.items.len()));
+            return Err(NebulaError::value_index_out_of_bounds(
+                index,
+                self.items.len(),
+            ));
         }
 
         if let Some(ref limits) = self.limits {
@@ -111,7 +114,10 @@ impl ArrayBuilder {
     /// Remove an item at a specific index
     pub fn remove(mut self, index: usize) -> ValueResult<Self> {
         if index >= self.items.len() {
-            return Err(NebulaError::value_index_out_of_bounds(index, self.items.len()));
+            return Err(NebulaError::value_index_out_of_bounds(
+                index,
+                self.items.len(),
+            ));
         }
 
         self.items.remove(index);
@@ -250,8 +256,10 @@ mod tests {
 
         let result = ArrayBuilder::new()
             .with_limits(limits)
-            .try_push(serde_json::json!(1)).unwrap()
-            .try_push(serde_json::json!(2)).unwrap()
+            .try_push(serde_json::json!(1))
+            .unwrap()
+            .try_push(serde_json::json!(2))
+            .unwrap()
             .try_push(serde_json::json!(3));
 
         assert!(result.is_err());

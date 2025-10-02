@@ -9,23 +9,23 @@ pub enum CoreError {
     /// Validation expired
     #[error("Validation proof has expired")]
     ValidationExpired,
-    
+
     /// Invalid proof
     #[error("Invalid validation proof: {0}")]
     InvalidProof(String),
-    
+
     /// Recovery failed
     #[error("Failed to recover from invalid state: {0}")]
     RecoveryFailed(String),
-    
+
     /// Signature verification failed
     #[error("Signature verification failed: {0}")]
     SignatureVerificationFailed(String),
-    
+
     /// Context error
     #[error("Context error: {0}")]
     ContextError(String),
-    
+
     /// Type conversion error
     #[error("Type conversion failed: {0}")]
     TypeConversion(String),
@@ -33,15 +33,15 @@ pub enum CoreError {
     /// Conversion error
     #[error("Conversion error: {0}")]
     ConversionError(String),
-    
+
     /// Proof building error
     #[error("Failed to build proof: {0}")]
     ProofBuildError(String),
-    
+
     /// Serialization error
     #[error("Serialization error: {0}")]
     SerializationError(#[from] serde_json::Error),
-    
+
     /// Other errors
     #[error("Core error: {0}")]
     Other(String),
@@ -149,32 +149,32 @@ impl CoreError {
     pub fn expired() -> Self {
         CoreError::ValidationExpired
     }
-    
+
     /// Create an invalid proof error
     pub fn invalid_proof(message: impl Into<String>) -> Self {
         CoreError::InvalidProof(message.into())
     }
-    
+
     /// Create a recovery failed error
     pub fn recovery_failed(message: impl Into<String>) -> Self {
         CoreError::RecoveryFailed(message.into())
     }
-    
+
     /// Create a context error
     pub fn context(message: impl Into<String>) -> Self {
         CoreError::ContextError(message.into())
     }
-    
+
     /// Create a conversion error
     pub fn conversion(message: impl Into<String>) -> Self {
         CoreError::ConversionError(message.into())
     }
-    
+
     /// Check if this is an expiration error
     pub fn is_expired(&self) -> bool {
         matches!(self, CoreError::ValidationExpired)
     }
-    
+
     /// Check if this is a recovery error
     pub fn is_recovery_failed(&self) -> bool {
         matches!(self, CoreError::RecoveryFailed(_))
@@ -188,7 +188,9 @@ impl From<CoreError> for ValidationError {
             CoreError::ValidationExpired => "Validation has expired".to_string(),
             CoreError::InvalidProof(msg) => format!("Invalid proof: {}", msg),
             CoreError::RecoveryFailed(msg) => format!("Recovery failed: {}", msg),
-            CoreError::SignatureVerificationFailed(msg) => format!("Signature verification failed: {}", msg),
+            CoreError::SignatureVerificationFailed(msg) => {
+                format!("Signature verification failed: {}", msg)
+            }
             CoreError::ContextError(msg) => format!("Context error: {}", msg),
             CoreError::TypeConversion(msg) => format!("Type conversion failed: {}", msg),
             CoreError::ConversionError(msg) => format!("Conversion error: {}", msg),

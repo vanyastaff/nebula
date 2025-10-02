@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
-use crate::core::condition::ParameterCondition;
 use crate::core::ParameterValue;
+use crate::core::condition::ParameterCondition;
 use nebula_core::ParameterKey;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// UI mode for parameter display
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -29,13 +29,11 @@ pub struct DisplayContext {
     pub values: HashMap<ParameterKey, ParameterValue>,
 }
 
-
 impl DisplayContext {
     pub fn new(values: HashMap<ParameterKey, ParameterValue>) -> Self {
         Self { values }
     }
 }
-
 
 /// Display configuration for parameters
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -102,7 +100,10 @@ impl ParameterDisplay {
     }
 
     /// Validate display conditions and return detailed error if hidden
-    pub fn validate_display(&self, properties: &HashMap<ParameterKey, ParameterValue>) -> Result<(), ParameterDisplayError> {
+    pub fn validate_display(
+        &self,
+        properties: &HashMap<ParameterKey, ParameterValue>,
+    ) -> Result<(), ParameterDisplayError> {
         if !self.should_display(properties) {
             return Err(ParameterDisplayError::Hidden {
                 reason: "Display conditions not met".to_string(),
@@ -235,24 +236,42 @@ impl ParameterDisplayBuilder {
     }
 
     /// Add a hide condition
-    pub fn hide_when(mut self, property_key: impl Into<ParameterKey>, condition: ParameterCondition) -> Self {
-        self.display.add_hide_condition(property_key.into(), condition);
+    pub fn hide_when(
+        mut self,
+        property_key: impl Into<ParameterKey>,
+        condition: ParameterCondition,
+    ) -> Self {
+        self.display
+            .add_hide_condition(property_key.into(), condition);
         self
     }
 
     /// Add a show condition
-    pub fn show_when(mut self, property_key: impl Into<ParameterKey>, condition: ParameterCondition) -> Self {
-        self.display.add_show_condition(property_key.into(), condition);
+    pub fn show_when(
+        mut self,
+        property_key: impl Into<ParameterKey>,
+        condition: ParameterCondition,
+    ) -> Self {
+        self.display
+            .add_show_condition(property_key.into(), condition);
         self
     }
 
     /// Add a show condition with equality check
-    pub fn show_when_equals<T: Into<ParameterValue>>(self, property_key: impl Into<ParameterKey>, value: T) -> Self {
+    pub fn show_when_equals<T: Into<ParameterValue>>(
+        self,
+        property_key: impl Into<ParameterKey>,
+        value: T,
+    ) -> Self {
         self.show_when(property_key, ParameterCondition::Eq(value.into()))
     }
 
     /// Add a hide condition with equality check
-    pub fn hide_when_equals<T: Into<ParameterValue>>(self, property_key: impl Into<ParameterKey>, value: T) -> Self {
+    pub fn hide_when_equals<T: Into<ParameterValue>>(
+        self,
+        property_key: impl Into<ParameterKey>,
+        value: T,
+    ) -> Self {
         self.hide_when(property_key, ParameterCondition::Eq(value.into()))
     }
 
@@ -279,4 +298,3 @@ pub enum ParameterDisplayError {
     #[error("Display condition evaluation failed: {reason}")]
     EvaluationError { reason: String },
 }
-

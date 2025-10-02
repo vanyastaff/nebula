@@ -1,5 +1,6 @@
 extern crate alloc;
 
+use alloc::sync::Arc;
 use core::borrow::Borrow;
 use core::cmp::Ordering;
 use core::fmt;
@@ -7,7 +8,6 @@ use core::hash::{Hash, Hasher};
 use core::ops::{Add, AddAssign, Sub, SubAssign};
 use core::str::FromStr;
 use core::time::Duration as StdDuration;
-use alloc::sync::Arc;
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -146,11 +146,13 @@ impl DateTime {
 
         NaiveDateTime::from_timestamp_opt(seconds, nano_part)
             .map(|dt| Self::from_naive_datetime(dt))
-            .ok_or_else(|| NebulaError::value_out_of_range(
-                format!("{} nanos", nanos),
-                "valid timestamp range",
-                "valid timestamp range"
-            ))
+            .ok_or_else(|| {
+                NebulaError::value_out_of_range(
+                    format!("{} nanos", nanos),
+                    "valid timestamp range",
+                    "valid timestamp range",
+                )
+            })
     }
 
     /// Creates from SystemTime
@@ -165,7 +167,7 @@ impl DateTime {
             return Err(NebulaError::value_out_of_range(
                 "SystemTime",
                 "valid range",
-                format!("{} (too far in the future)", i64::MAX)
+                format!("{} (too far in the future)", i64::MAX),
             ));
         }
 
@@ -223,21 +225,30 @@ impl DateTime {
     pub fn parse_rfc3339(s: &str) -> ValueResult<Self> {
         chrono::DateTime::parse_from_rfc3339(s)
             .map(|dt| Self::from_naive_datetime(dt.naive_utc()))
-            .map_err(|e| NebulaError::value_parse_error("RFC 3339 datetime", format!("{}: {}", s, e)))
+            .map_err(|e| {
+                NebulaError::value_parse_error("RFC 3339 datetime", format!("{}: {}", s, e))
+            })
     }
 
     /// Parses from RFC 2822 string
     pub fn parse_rfc2822(s: &str) -> ValueResult<Self> {
         chrono::DateTime::parse_from_rfc2822(s)
             .map(|dt| Self::from_naive_datetime(dt.naive_utc()))
-            .map_err(|e| NebulaError::value_parse_error("RFC 2822 datetime", format!("{}: {}", s, e)))
+            .map_err(|e| {
+                NebulaError::value_parse_error("RFC 2822 datetime", format!("{}: {}", s, e))
+            })
     }
 
     /// Parses with custom format
     pub fn parse_from_str(s: &str, fmt: &str) -> ValueResult<Self> {
         NaiveDateTime::parse_from_str(s, fmt)
             .map(|dt| Self::from_naive_datetime(dt))
-            .map_err(|e| NebulaError::value_parse_error(format!("datetime with format '{}'", fmt), format!("{}: {}", s, e)))
+            .map_err(|e| {
+                NebulaError::value_parse_error(
+                    format!("datetime with format '{}'", fmt),
+                    format!("{}: {}", s, e),
+                )
+            })
     }
 
     // ==================== Basic Properties ====================
@@ -325,9 +336,9 @@ impl DateTime {
 
     /// Returns Unix timestamp in seconds
     pub fn timestamp(&self) -> i64 {
-        *self.timestamp_cache.get_or_init(|| {
-            self.inner.to_naive().timestamp()
-        })
+        *self
+            .timestamp_cache
+            .get_or_init(|| self.inner.to_naive().timestamp())
     }
 
     /// Returns Unix timestamp in milliseconds
@@ -688,20 +699,17 @@ impl From<DateTime> for SystemTime {
     }
 }
 
-
 impl From<NaiveDateTime> for DateTime {
     fn from(dt: NaiveDateTime) -> Self {
         Self::from_naive_datetime(dt)
     }
 }
 
-
 impl From<DateTime> for NaiveDateTime {
     fn from(dt: DateTime) -> Self {
         dt.to_naive()
     }
 }
-
 
 impl<Tz: TimeZone> From<chrono::DateTime<Tz>> for DateTime {
     fn from(dt: chrono::DateTime<Tz>) -> Self {

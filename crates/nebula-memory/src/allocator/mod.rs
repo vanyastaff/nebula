@@ -24,9 +24,9 @@ pub mod compressed;
 
 // Re-exports for convenience
 pub use bump::BumpAllocator;
-pub use pool::{PoolAllocator, PoolBox, PoolConfig};
 #[cfg(feature = "stats")]
 pub use pool::PoolStats;
+pub use pool::{PoolAllocator, PoolBox, PoolConfig};
 
 pub use error::{
     AllocError, AllocErrorCode, AllocResult, ErrorStats, ErrorStatsSnapshot, MemoryState,
@@ -34,7 +34,7 @@ pub use error::{
 pub use manager::{AllocatorId, AllocatorManager, GlobalAllocatorManager};
 #[cfg(all(feature = "std", feature = "monitoring"))]
 pub use monitored::{MonitoredAllocator, MonitoredConfig};
-pub use stack::{StackAllocator, StackFrame, StackMarker, StackConfig};
+pub use stack::{StackAllocator, StackConfig, StackFrame, StackMarker};
 pub use stats::{AllocatorStats, AtomicAllocatorStats, OptionalStats, StatisticsProvider};
 pub use system::SystemAllocator;
 pub use tracked::TrackedAllocator;

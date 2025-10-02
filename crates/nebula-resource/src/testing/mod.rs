@@ -118,7 +118,7 @@ pub trait TestableResource: Send + Sync {
 
     /// Simulate a health check
     fn mock_health_check(&self) -> HealthStatus {
-        HealthStatus::Healthy
+        HealthStatus::healthy()
     }
 }
 
@@ -217,7 +217,7 @@ impl Default for MockBehavior {
     fn default() -> Self {
         Self {
             creation_succeeds: true,
-            health_status: HealthStatus::Healthy,
+            health_status: HealthStatus::healthy(),
             operation_latency: std::time::Duration::from_millis(10),
             random_failures: false,
             failure_probability: 0.1,
@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(instance.lifecycle_state(), LifecycleState::Ready);
 
         let health = instance.health_check().await.unwrap();
-        assert_eq!(health, HealthStatus::Healthy);
+        assert_eq!(health.state, crate::core::traits::HealthState::Healthy);
     }
 
     #[tokio::test]

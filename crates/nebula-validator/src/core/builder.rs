@@ -1,6 +1,6 @@
 //! Simplified builder pattern for validation composition
 
-use crate::core::{Validator, ValidatorExt, ValidationContext, Valid, Invalid};
+use crate::core::{Invalid, Valid, ValidationContext, Validator, ValidatorExt};
 use async_trait::async_trait;
 use bon::Builder;
 
@@ -81,8 +81,14 @@ pub struct BuiltValidator<V: Validator> {
 
 #[async_trait]
 impl<V: Validator> Validator for BuiltValidator<V> {
-    async fn validate(&self, value: &nebula_value::Value, context: Option<&ValidationContext>) -> Result<Valid<()>, Invalid<()>> {
-        self.validator.validate(value, context).await
+    async fn validate(
+        &self,
+        value: &nebula_value::Value,
+        context: Option<&ValidationContext>,
+    ) -> Result<Valid<()>, Invalid<()>> {
+        self.validator
+            .validate(value, context)
+            .await
             .map_err(|invalid| invalid.with_validator_name(&self.name))
     }
 
@@ -104,9 +110,6 @@ pub fn validate<V: Validator>(validator: V) -> ValidationBuilder<V> {
 
 /// Create a validation builder with optional name using builder pattern
 #[bon::builder]
-pub fn build_validator<V: Validator>(
-    validator: V,
-    name: Option<String>
-) -> ValidationBuilder<V> {
+pub fn build_validator<V: Validator>(validator: V, name: Option<String>) -> ValidationBuilder<V> {
     ValidationBuilder { validator, name }
 }

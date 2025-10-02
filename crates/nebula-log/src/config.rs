@@ -321,4 +321,3 @@ impl Default for WriterConfig {
 fn default_non_blocking() -> bool {
     true
 }
-

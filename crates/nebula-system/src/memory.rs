@@ -128,12 +128,16 @@ pub mod management {
     /// Free allocated memory
     pub unsafe fn free(_ptr: *mut u8, _size: usize) -> SystemResult<()> {
         Err(NebulaError::system_not_supported(
-            "Manual free is not supported for region allocations; use RAII handle instead"
+            "Manual free is not supported for region allocations; use RAII handle instead",
         ))
     }
 
     /// Change memory protection
-    pub unsafe fn protect(ptr: *mut u8, size: usize, protection: MemoryProtection) -> SystemResult<()> {
+    pub unsafe fn protect(
+        ptr: *mut u8,
+        size: usize,
+        protection: MemoryProtection,
+    ) -> SystemResult<()> {
         unsafe {
             region::protect(ptr, size, protection)
                 .map_err(|e| NebulaError::system_memory_error("protect", e.to_string()))
@@ -149,13 +153,14 @@ pub mod management {
 
     /// Unlock memory pages
     pub unsafe fn unlock(ptr: *mut u8, size: usize) -> SystemResult<()> {
-        region::unlock(ptr, size).map_err(|e| NebulaError::system_memory_error("unlock", e.to_string()))
+        region::unlock(ptr, size)
+            .map_err(|e| NebulaError::system_memory_error("unlock", e.to_string()))
     }
 
     /// Query memory region information
     pub unsafe fn query(ptr: *const u8) -> SystemResult<MemoryRegion> {
-        let region =
-            region::query(ptr).map_err(|e| NebulaError::system_memory_error("query", e.to_string()))?;
+        let region = region::query(ptr)
+            .map_err(|e| NebulaError::system_memory_error("query", e.to_string()))?;
 
         Ok(MemoryRegion {
             // Base address is approximated by the queried pointer since region base may be inaccessible here

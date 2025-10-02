@@ -1,7 +1,7 @@
 //! LFU (Least Frequently Used) cache eviction policy
 //!
 //! This module provides a highly optimized implementation of the LFU cache eviction policy
-//! with advanced features like frequency aging, adaptive frequency tracking, and 
+//! with advanced features like frequency aging, adaptive frequency tracking, and
 //! efficient data structures for large-scale caching scenarios.
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -379,7 +379,8 @@ where
             }
             TieBreakingStrategy::LargestFirst => {
                 // Find the key with the largest size
-                bucket.keys
+                bucket
+                    .keys
                     .iter()
                     .max_by_key(|key| self.key_sizes.get(*key).unwrap_or(&0))
                     .cloned()
@@ -488,7 +489,10 @@ where
         let cutoff = now - self.config.time_window;
 
         // Get or create access history for this key
-        let history = self.access_history.entry(key.clone()).or_insert_with(VecDeque::new);
+        let history = self
+            .access_history
+            .entry(key.clone())
+            .or_insert_with(VecDeque::new);
 
         // Remove old accesses outside the window
         while let Some(front) = history.front() {
@@ -577,14 +581,15 @@ where
 
     /// Add key to frequency bucket
     fn add_to_bucket(&mut self, key: &K, frequency: u64) {
-        let bucket = self.frequency_buckets.entry(frequency).or_insert_with(|| {
-            FrequencyBucket {
+        let bucket = self
+            .frequency_buckets
+            .entry(frequency)
+            .or_insert_with(|| FrequencyBucket {
                 frequency,
                 keys: Vec::new(),
                 next: None,
                 prev: None,
-            }
-        });
+            });
 
         bucket.keys.push(key.clone());
         self.key_to_bucket.insert(key.clone(), frequency);
@@ -667,13 +672,18 @@ where
 
         // Calculate hot spot ratio (keys with high frequency)
         let high_freq_threshold = self.config.max_frequency / 4;
-        let hot_spots = self.frequencies.values().filter(|&&freq| freq > high_freq_threshold).count();
+        let hot_spots = self
+            .frequencies
+            .values()
+            .filter(|&&freq| freq > high_freq_threshold)
+            .count();
         self.access_pattern.hot_spot_ratio = hot_spots as f64 / total_keys as f64;
 
         // Update temporal locality based on recent access patterns
         if self.access_order.len() > 10 {
             let recent_accesses = self.access_order.len().min(100);
-            let unique_recent = self.access_order
+            let unique_recent = self
+                .access_order
                 .iter()
                 .rev()
                 .take(recent_accesses)
@@ -695,7 +705,8 @@ where
 
         self.frequency_distribution.min = frequencies.iter().min().copied().unwrap_or(0);
         self.frequency_distribution.max = frequencies.iter().max().copied().unwrap_or(0);
-        self.frequency_distribution.avg = frequencies.iter().sum::<u64>() as f64 / frequencies.len() as f64;
+        self.frequency_distribution.avg =
+            frequencies.iter().sum::<u64>() as f64 / frequencies.len() as f64;
         self.frequency_distribution.total_samples = frequencies.len() as u64;
 
         // Calculate median
@@ -795,7 +806,7 @@ mod tests {
         policy.record_access(&"key1".to_string(), None);
         assert_eq!(policy.get_frequency(&"key1".to_string()), Some(1));
 
-        // Second access: 1 * 0.5 + 1 = 1.5 -> 1  
+        // Second access: 1 * 0.5 + 1 = 1.5 -> 1
         policy.record_access(&"key1".to_string(), None);
         assert_eq!(policy.get_frequency(&"key1".to_string()), Some(1));
     }

@@ -7,9 +7,9 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
 
 #[cfg(feature = "async")]
-use crate::pool::{Poolable, PoolConfig};
-#[cfg(feature = "async")]
 use crate::core::error::{MemoryError, MemoryResult};
+#[cfg(feature = "async")]
+use crate::pool::{PoolConfig, Poolable};
 
 /// Async pooled value that returns to pool on drop
 #[cfg(feature = "async")]

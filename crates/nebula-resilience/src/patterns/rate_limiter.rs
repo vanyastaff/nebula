@@ -1,11 +1,11 @@
 //! Advanced rate limiting implementations
 
+use async_trait::async_trait;
+use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Semaphore};
-use std::collections::VecDeque;
-use std::future::Future;
-use async_trait::async_trait;
 
 use crate::{ResilienceError, ResilienceResult};
 
@@ -301,7 +301,8 @@ impl RateLimiter for SlidingWindow {
             Ok(())
         } else {
             // Calculate retry after based on oldest request
-            let retry_after = requests.front()
+            let retry_after = requests
+                .front()
                 .map(|&oldest| self.window_duration - oldest.elapsed())
                 .unwrap_or(Duration::from_secs(1));
 
@@ -361,7 +362,9 @@ impl AdaptiveRateLimiter {
         let token_bucket = TokenBucket::new(initial_rate as usize, initial_rate);
 
         Self {
-            inner: Arc::new(Mutex::new(AnyRateLimiter::TokenBucket(Arc::new(token_bucket)))),
+            inner: Arc::new(Mutex::new(AnyRateLimiter::TokenBucket(Arc::new(
+                token_bucket,
+            )))),
             success_count: Arc::new(Mutex::new(0)),
             error_count: Arc::new(Mutex::new(0)),
             stats_window: Duration::from_secs(60),

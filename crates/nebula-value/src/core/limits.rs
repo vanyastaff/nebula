@@ -40,11 +40,11 @@ pub struct ValueLimits {
 impl Default for ValueLimits {
     fn default() -> Self {
         Self {
-            max_array_length: 1_000_000,      // 1M elements
-            max_object_keys: 100_000,         // 100k keys
-            max_string_bytes: 10_000_000,     // 10MB
-            max_bytes_length: 100_000_000,    // 100MB
-            max_nesting_depth: 100,           // Same as path depth
+            max_array_length: 1_000_000,   // 1M elements
+            max_object_keys: 100_000,      // 100k keys
+            max_string_bytes: 10_000_000,  // 10MB
+            max_bytes_length: 100_000_000, // 100MB
+            max_nesting_depth: 100,        // Same as path depth
         }
     }
 }
@@ -66,8 +66,8 @@ impl ValueLimits {
         Self {
             max_array_length: 10_000,
             max_object_keys: 1_000,
-            max_string_bytes: 1_000_000,      // 1MB
-            max_bytes_length: 10_000_000,     // 10MB
+            max_string_bytes: 1_000_000,  // 1MB
+            max_bytes_length: 10_000_000, // 10MB
             max_nesting_depth: 50,
         }
     }

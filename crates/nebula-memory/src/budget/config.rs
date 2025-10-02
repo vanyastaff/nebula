@@ -11,13 +11,13 @@ use std::time::Duration;
 pub enum OvercommitPolicy {
     /// Never allow overcommitment
     None,
-    
+
     /// Allow overcommitment up to a percentage of the budget
     Percentage(u8),
-    
+
     /// Allow overcommitment up to a fixed amount
     Fixed(usize),
-    
+
     /// Allow unlimited overcommitment (dangerous)
     Unlimited,
 }
@@ -33,10 +33,10 @@ impl Default for OvercommitPolicy {
 pub enum ReservationMode {
     /// Strict reservations that guarantee memory availability
     Strict,
-    
+
     /// Best-effort reservations that may fail under pressure
     BestEffort,
-    
+
     /// Elastic reservations that can shrink under pressure
     Elastic,
 }
@@ -52,28 +52,28 @@ impl Default for ReservationMode {
 pub struct BudgetConfig {
     /// Name of the budget
     pub name: String,
-    
+
     /// Memory limit in bytes
     pub limit: usize,
-    
+
     /// Overcommit policy
     pub overcommit_policy: OvercommitPolicy,
-    
+
     /// Reservation mode
     pub reservation_mode: ReservationMode,
-    
+
     /// Minimum guaranteed memory (bytes)
     pub min_guaranteed: usize,
-    
+
     /// Time window for usage tracking (None for unlimited)
     pub tracking_window: Option<Duration>,
-    
+
     /// Enable adaptive behavior based on system pressure
     pub adaptive: bool,
-    
+
     /// Priority level (higher = more important)
     pub priority: u8,
-    
+
     /// Enable detailed statistics collection
     pub collect_stats: bool,
 }
@@ -93,74 +93,72 @@ impl BudgetConfig {
             collect_stats: true,
         }
     }
-    
+
     /// Set the overcommit policy
     pub fn with_overcommit(mut self, policy: OvercommitPolicy) -> Self {
         self.overcommit_policy = policy;
         self
     }
-    
+
     /// Set the reservation mode
     pub fn with_reservation_mode(mut self, mode: ReservationMode) -> Self {
         self.reservation_mode = mode;
         self
     }
-    
+
     /// Set the minimum guaranteed memory
     pub fn with_min_guaranteed(mut self, min: usize) -> Self {
         self.min_guaranteed = min;
         self
     }
-    
+
     /// Set the tracking window
     pub fn with_tracking_window(mut self, window: Option<Duration>) -> Self {
         self.tracking_window = window;
         self
     }
-    
+
     /// Enable or disable adaptive behavior
     pub fn with_adaptive(mut self, adaptive: bool) -> Self {
         self.adaptive = adaptive;
         self
     }
-    
+
     /// Set the priority level
     pub fn with_priority(mut self, priority: u8) -> Self {
         self.priority = priority;
         self
     }
-    
+
     /// Enable or disable statistics collection
     pub fn with_stats(mut self, collect_stats: bool) -> Self {
         self.collect_stats = collect_stats;
         self
     }
-    
+
     /// Calculate the effective limit including overcommitment
     pub fn effective_limit(&self) -> usize {
         match self.overcommit_policy {
             OvercommitPolicy::None => self.limit,
-            OvercommitPolicy::Percentage(pct) => {
-                self.limit + (self.limit * pct as usize / 100)
-            }
+            OvercommitPolicy::Percentage(pct) => self.limit + (self.limit * pct as usize / 100),
             OvercommitPolicy::Fixed(amount) => self.limit + amount,
             OvercommitPolicy::Unlimited => usize::MAX,
         }
     }
-    
+
     /// Validate the configuration
     pub fn validate(&self) -> Result<(), String> {
         if self.limit == 0 {
             return Err("Memory limit cannot be zero".to_string());
         }
-        
+
         if self.min_guaranteed > self.limit {
             return Err(format!(
                 "Minimum guaranteed memory ({}) cannot exceed limit ({})",
                 self.min_guaranteed, self.limit
             ));
         }
-        
+
         Ok(())
     }
 }
@@ -178,7 +176,7 @@ impl fmt::Display for BudgetConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_budget_config_defaults() {
         let config = BudgetConfig::new("test", 1024 * 1024);
@@ -192,33 +190,29 @@ mod tests {
         assert_eq!(config.priority, 50);
         assert!(config.collect_stats);
     }
-    
+
     #[test]
     fn test_effective_limit() {
-        let config = BudgetConfig::new("test", 1000)
-            .with_overcommit(OvercommitPolicy::Percentage(20));
+        let config =
+            BudgetConfig::new("test", 1000).with_overcommit(OvercommitPolicy::Percentage(20));
         assert_eq!(config.effective_limit(), 1200); // 1000 + 20%
-        
-        let config = BudgetConfig::new("test", 1000)
-            .with_overcommit(OvercommitPolicy::Fixed(500));
+
+        let config = BudgetConfig::new("test", 1000).with_overcommit(OvercommitPolicy::Fixed(500));
         assert_eq!(config.effective_limit(), 1500); // 1000 + 500
-        
-        let config = BudgetConfig::new("test", 1000)
-            .with_overcommit(OvercommitPolicy::None);
+
+        let config = BudgetConfig::new("test", 1000).with_overcommit(OvercommitPolicy::None);
         assert_eq!(config.effective_limit(), 1000); // No overcommit
     }
-    
+
     #[test]
     fn test_validation() {
         let config = BudgetConfig::new("test", 0);
         assert!(config.validate().is_err());
-        
-        let config = BudgetConfig::new("test", 1000)
-            .with_min_guaranteed(2000);
+
+        let config = BudgetConfig::new("test", 1000).with_min_guaranteed(2000);
         assert!(config.validate().is_err());
-        
-        let config = BudgetConfig::new("test", 1000)
-            .with_min_guaranteed(500);
+
+        let config = BudgetConfig::new("test", 1000).with_min_guaranteed(500);
         assert!(config.validate().is_ok());
     }
 }

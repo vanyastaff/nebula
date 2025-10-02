@@ -2,7 +2,7 @@
 //!
 //! Tests how nebula-value would be used in an actual workflow engine
 
-use nebula_value::{Value, Array, Object};
+use nebula_value::{Array, Object, Value};
 use serde_json::json;
 use std::convert::TryFrom;
 
@@ -67,11 +67,7 @@ fn test_workflow_array_processing() {
 #[test]
 fn test_value_arithmetic_in_workflow() {
     // Scenario: Calculate total cost from items
-    let item_costs = vec![
-        Value::integer(100),
-        Value::integer(250),
-        Value::integer(75),
-    ];
+    let item_costs = vec![Value::integer(100), Value::integer(250), Value::integer(75)];
 
     let mut total = Value::integer(0);
     for cost in item_costs {
@@ -99,20 +95,26 @@ fn test_value_arithmetic_in_workflow() {
 fn test_nested_object_access() {
     // Scenario: Access deeply nested configuration
     let config = Object::from_iter(vec![
-        ("app".to_string(), json!({
-            "name": "workflow-engine",
-            "version": "1.0.0",
-            "features": {
-                "logging": true,
-                "monitoring": true,
-                "cache_size": 1000
-            }
-        })),
-        ("database".to_string(), json!({
-            "host": "localhost",
-            "port": 5432,
-            "pool_size": 10
-        })),
+        (
+            "app".to_string(),
+            json!({
+                "name": "workflow-engine",
+                "version": "1.0.0",
+                "features": {
+                    "logging": true,
+                    "monitoring": true,
+                    "cache_size": 1000
+                }
+            }),
+        ),
+        (
+            "database".to_string(),
+            json!({
+                "host": "localhost",
+                "port": 5432,
+                "pool_size": 10
+            }),
+        ),
     ]);
 
     // Access nested values
@@ -134,12 +136,13 @@ fn test_value_merging_in_workflow() {
     ]));
 
     let user_config = Value::Object(Object::from_iter(vec![
-        ("timeout".to_string(), json!(60)),  // Override
-        ("custom_option".to_string(), json!(true)),  // New
+        ("timeout".to_string(), json!(60)),         // Override
+        ("custom_option".to_string(), json!(true)), // New
     ]));
 
     // Merge (user config overrides defaults)
-    let merged = default_config.merge(&user_config)
+    let merged = default_config
+        .merge(&user_config)
         .expect("Failed to merge configs");
 
     if let Value::Object(obj) = merged {
@@ -183,11 +186,14 @@ fn test_json_roundtrip_workflow() {
         ("workflow_id".to_string(), json!("wf-123")),
         ("status".to_string(), json!("running")),
         ("progress".to_string(), json!(0.75)),
-        ("tasks".to_string(), json!([
-            {"name": "init", "done": true},
-            {"name": "process", "done": true},
-            {"name": "finalize", "done": false}
-        ])),
+        (
+            "tasks".to_string(),
+            json!([
+                {"name": "init", "done": true},
+                {"name": "process", "done": true},
+                {"name": "finalize", "done": false}
+            ]),
+        ),
     ]));
 
     // Serialize to JSON
@@ -229,9 +235,7 @@ fn test_error_handling_workflow() {
 #[test]
 fn test_clone_efficiency() {
     // Scenario: Clone large structures efficiently (structural sharing)
-    let large_array = Array::from_vec(
-        (0..1000).map(|i| json!(i)).collect()
-    );
+    let large_array = Array::from_vec((0..1000).map(|i| json!(i)).collect());
 
     // Clone should be cheap (structural sharing)
     let cloned = large_array.clone();
@@ -242,5 +246,5 @@ fn test_clone_efficiency() {
     // Modifying clone doesn't affect original
     let modified = cloned.push(json!(9999));
     assert_eq!(modified.len(), 1001);
-    assert_eq!(large_array.len(), 1000);  // Original unchanged
+    assert_eq!(large_array.len(), 1000); // Original unchanged
 }

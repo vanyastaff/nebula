@@ -1,11 +1,11 @@
 //! Modern retry strategies for resilient operations
 
-use std::time::Duration;
-use std::future::Future;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::time::Duration;
 
 use crate::ResilienceError;
-use crate::core::config::{ResilienceConfig, ConfigResult, ConfigError};
+use crate::core::config::{ConfigError, ConfigResult, ResilienceConfig};
 
 /// Modern retry strategy with flexible backoff policies
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,7 +142,9 @@ impl RetryStrategy {
         match error {
             ResilienceError::Timeout { .. } => self.retry_condition.on_timeout,
             ResilienceError::RateLimitExceeded { .. } => self.retry_condition.on_rate_limit,
-            ResilienceError::CircuitBreakerOpen { .. } => self.retry_condition.on_circuit_breaker_open,
+            ResilienceError::CircuitBreakerOpen { .. } => {
+                self.retry_condition.on_circuit_breaker_open
+            }
             ResilienceError::Custom { retryable, .. } => {
                 *retryable && self.retry_condition.on_custom_retryable
             }
@@ -161,8 +163,12 @@ impl RetryStrategy {
 
         let base_delay = match &self.backoff {
             BackoffPolicy::Fixed { delay } => *delay,
-            BackoffPolicy::Linear { base_delay, max_delay } => {
-                let calculated = Duration::from_millis(base_delay.as_millis() as u64 * attempt as u64);
+            BackoffPolicy::Linear {
+                base_delay,
+                max_delay,
+            } => {
+                let calculated =
+                    Duration::from_millis(base_delay.as_millis() as u64 * attempt as u64);
                 std::cmp::min(calculated, *max_delay)
             }
             BackoffPolicy::Exponential {
@@ -171,7 +177,8 @@ impl RetryStrategy {
                 max_delay,
                 jitter,
             } => {
-                let calculated_ms = (base_delay.as_millis() as f64 * multiplier.powi(attempt as i32 - 1)) as u64;
+                let calculated_ms =
+                    (base_delay.as_millis() as f64 * multiplier.powi(attempt as i32 - 1)) as u64;
                 let calculated = Duration::from_millis(calculated_ms);
                 let capped = std::cmp::min(calculated, *max_delay);
 
@@ -260,7 +267,9 @@ impl RetryCondition {
 impl ResilienceConfig for RetryStrategy {
     fn validate(&self) -> ConfigResult<()> {
         if self.max_attempts == 0 {
-            return Err(ConfigError::validation("max_attempts must be greater than 0"));
+            return Err(ConfigError::validation(
+                "max_attempts must be greater than 0",
+            ));
         }
 
         match &self.backoff {
@@ -269,7 +278,10 @@ impl ResilienceConfig for RetryStrategy {
                     return Err(ConfigError::validation("Fixed delay cannot be zero"));
                 }
             }
-            BackoffPolicy::Linear { base_delay, max_delay } => {
+            BackoffPolicy::Linear {
+                base_delay,
+                max_delay,
+            } => {
                 if base_delay.is_zero() {
                     return Err(ConfigError::validation("Base delay cannot be zero"));
                 }
@@ -277,12 +289,19 @@ impl ResilienceConfig for RetryStrategy {
                     return Err(ConfigError::validation("Max delay must be >= base delay"));
                 }
             }
-            BackoffPolicy::Exponential { base_delay, multiplier, max_delay, .. } => {
+            BackoffPolicy::Exponential {
+                base_delay,
+                multiplier,
+                max_delay,
+                ..
+            } => {
                 if base_delay.is_zero() {
                     return Err(ConfigError::validation("Base delay cannot be zero"));
                 }
                 if *multiplier <= 1.0 {
-                    return Err(ConfigError::validation("Exponential multiplier must be > 1.0"));
+                    return Err(ConfigError::validation(
+                        "Exponential multiplier must be > 1.0",
+                    ));
                 }
                 if max_delay < base_delay {
                     return Err(ConfigError::validation("Max delay must be >= base delay"));
@@ -293,7 +312,9 @@ impl ResilienceConfig for RetryStrategy {
                     return Err(ConfigError::validation("Custom delays cannot be empty"));
                 }
                 if delays.len() != self.max_attempts {
-                    return Err(ConfigError::validation("Custom delays length must match max_attempts"));
+                    return Err(ConfigError::validation(
+                        "Custom delays length must match max_attempts",
+                    ));
                 }
             }
         }
@@ -355,8 +376,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[tokio::test]
     async fn test_fixed_delay_retry() {
@@ -378,7 +399,8 @@ mod tests {
                     Ok::<u32, ResilienceError>(42)
                 }
             }
-        }).await;
+        })
+        .await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 42);
@@ -414,8 +436,6 @@ mod tests {
         }));
 
         // Should not retry
-        assert!(!strategy.should_retry(&ResilienceError::Cancelled {
-            reason: None,
-        }));
+        assert!(!strategy.should_retry(&ResilienceError::Cancelled { reason: None }));
     }
 }

@@ -1,12 +1,12 @@
 extern crate alloc;
 
+use alloc::sync::Arc;
 use core::borrow::Borrow;
 use core::cmp::Ordering;
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::ops::{Add, Sub};
 use core::str::FromStr;
-use alloc::sync::Arc;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,10 @@ impl DateInner {
         // Validate day
         let max_day = Self::days_in_month(year, month);
         if day == 0 || day > max_day {
-            return Err(NebulaError::validation(format!("Invalid date: year={}, month={}, day={}", year, month, day)));
+            return Err(NebulaError::validation(format!(
+                "Invalid date: year={}, month={}, day={}",
+                year, month, day
+            )));
         }
 
         Ok(Self {
@@ -159,12 +162,18 @@ impl Date {
     /// Creates from day of year
     pub fn from_year_day(year: i32, day_of_year: u16) -> ValueResult<Self> {
         if day_of_year == 0 || day_of_year > 366 {
-            return Err(NebulaError::validation(format!("Invalid day_of_year: {}", day_of_year)));
+            return Err(NebulaError::validation(format!(
+                "Invalid day_of_year: {}",
+                day_of_year
+            )));
         }
 
         let is_leap = DateInner::is_leap_year(year);
         if !is_leap && day_of_year > 365 {
-            return Err(NebulaError::validation(format!("Invalid day_of_year: {}", day_of_year)));
+            return Err(NebulaError::validation(format!(
+                "Invalid day_of_year: {}",
+                day_of_year
+            )));
         }
 
         let mut remaining = day_of_year;
@@ -176,18 +185,29 @@ impl Date {
             remaining -= days_in_month;
         }
 
-        Err(NebulaError::validation(format!("Invalid day_of_year: {}", day_of_year)))
+        Err(NebulaError::validation(format!(
+            "Invalid day_of_year: {}",
+            day_of_year
+        )))
     }
 
     /// Creates from ISO week date (year, week, day)
     pub fn from_iso_week(year: i32, week: u32, weekday: u32) -> ValueResult<Self> {
         if week == 0 || week > 53 || weekday == 0 || weekday > 7 {
-            return Err(NebulaError::validation(format!("Invalid ISO week date: {}-W{:02}-{}", year, week, weekday)));
+            return Err(NebulaError::validation(format!(
+                "Invalid ISO week date: {}-W{:02}-{}",
+                year, week, weekday
+            )));
         }
 
         NaiveDate::from_isoywd_opt(year, week, Weekday::try_from((weekday - 1) as u8).unwrap())
             .map(|d| Self::from_naive_date(d))
-            .ok_or_else(|| NebulaError::validation(format!("Invalid ISO week date: {}-W{:02}-{}", year, week, weekday)))
+            .ok_or_else(|| {
+                NebulaError::validation(format!(
+                    "Invalid ISO week date: {}-W{:02}-{}",
+                    year, week, weekday
+                ))
+            })
     }
 
     /// Creates from chrono NaiveDate
@@ -203,14 +223,23 @@ impl Date {
     pub fn parse_iso(s: &str) -> ValueResult<Self> {
         let parts: Vec<&str> = s.split('-').collect();
         if parts.len() != 3 {
-            return Err(NebulaError::validation(format!("Invalid ISO date format: {}", s)));
+            return Err(NebulaError::validation(format!(
+                "Invalid ISO date format: {}",
+                s
+            )));
         }
 
-        let year = parts[0].parse::<i32>().map_err(|_| NebulaError::validation(format!("Invalid year: {}", parts[0])))?;
+        let year = parts[0]
+            .parse::<i32>()
+            .map_err(|_| NebulaError::validation(format!("Invalid year: {}", parts[0])))?;
 
-        let month = parts[1].parse::<u32>().map_err(|_| NebulaError::validation(format!("Invalid month: {}", parts[1])))?;
+        let month = parts[1]
+            .parse::<u32>()
+            .map_err(|_| NebulaError::validation(format!("Invalid month: {}", parts[1])))?;
 
-        let day = parts[2].parse::<u32>().map_err(|_| NebulaError::validation(format!("Invalid day: {}", parts[2])))?;
+        let day = parts[2]
+            .parse::<u32>()
+            .map_err(|_| NebulaError::validation(format!("Invalid day: {}", parts[2])))?;
 
         Self::new(year, month, day)
     }

@@ -1,7 +1,7 @@
 //! Common traits for error handling
 
-use crate::core::error::NebulaError;
 use crate::core::context::ErrorContext;
+use crate::core::error::NebulaError;
 
 /// Trait for types that can be converted into NebulaError
 pub trait IntoNebulaError {
@@ -69,7 +69,10 @@ mod tests {
         let nebula_error = io_error.into_nebula_error().with_context(context);
 
         assert!(nebula_error.context.is_some());
-        assert_eq!(nebula_error.context().unwrap().description, "Reading configuration file");
+        assert_eq!(
+            nebula_error.context().unwrap().description,
+            "Reading configuration file"
+        );
     }
 
     #[test]

@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 use nebula_core::ParameterKey;
 
@@ -122,7 +122,6 @@ impl ModeValue {
     }
 }
 
-
 impl ParameterType for ModeParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Mode
@@ -164,10 +163,15 @@ impl HasValue for ModeParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|mode_val| ParameterValue::Mode(mode_val.clone()))
+        self.value
+            .as_ref()
+            .map(|mode_val| ParameterValue::Mode(mode_val.clone()))
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Mode(mode_value) => {
@@ -212,10 +216,13 @@ impl Displayable for ModeParameter {
     }
 }
 
-
 impl ModeParameter {
     /// Create a new mode parameter
-    pub fn new(key: &str, name: &str, description: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        key: &str,
+        name: &str,
+        description: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             metadata: ParameterMetadata {
                 key: ParameterKey::new(key)?,
@@ -259,7 +266,10 @@ impl ModeParameter {
             self.modes.iter().find(|m| m.key == value.key)
         } else {
             // Return default mode or first mode
-            self.modes.iter().find(|m| m.default).or_else(|| self.modes.first())
+            self.modes
+                .iter()
+                .find(|m| m.default)
+                .or_else(|| self.modes.first())
         }
     }
 

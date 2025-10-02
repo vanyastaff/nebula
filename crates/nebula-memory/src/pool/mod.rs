@@ -9,8 +9,8 @@
 //! Object pooling for efficient memory reuse
 //! This module provides various object pool implementations for different use
 //! cases:
-pub mod health;
 mod batch;
+pub mod health;
 mod hierarchical;
 mod lockfree;
 mod object_pool;
@@ -117,7 +117,11 @@ impl PoolConfig {
 
     /// Create an unbounded pool configuration
     pub fn unbounded(initial_capacity: usize) -> Self {
-        Self { initial_capacity, max_capacity: None, ..Default::default() }
+        Self {
+            initial_capacity,
+            max_capacity: None,
+            ..Default::default()
+        }
     }
 
     /// Set time-to-live for objects
@@ -161,7 +165,10 @@ impl PoolConfig {
     #[cfg(feature = "adaptive")]
     /// Set memory pressure threshold
     pub fn with_pressure_threshold(mut self, threshold: u8) -> Self {
-        assert!(threshold <= 100, "Pressure threshold must be between 0 and 100");
+        assert!(
+            threshold <= 100,
+            "Pressure threshold must be between 0 and 100"
+        );
         self.pressure_threshold = threshold;
         self
     }
@@ -207,4 +214,3 @@ mod tests {
         assert_eq!(config.growth_strategy, GrowthStrategy::Double);
     }
 }
-

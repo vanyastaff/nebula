@@ -16,7 +16,10 @@ pub enum CompressionStrategy {
     Threshold(usize),
 
     /// Compress when memory pressure is high
-    OnPressure { threshold: usize, pressure_threshold: f64 },
+    OnPressure {
+        threshold: usize,
+        pressure_threshold: f64,
+    },
 
     /// Adaptive: compress based on past compression ratios
     Adaptive { min_size: usize, min_ratio: f64 },
@@ -35,13 +38,19 @@ impl CompressionStrategy {
             Self::Always => true,
             Self::Never => false,
             Self::Threshold(threshold) => size >= *threshold,
-            Self::OnPressure { threshold, pressure_threshold } => {
+            Self::OnPressure {
+                threshold,
+                pressure_threshold,
+            } => {
                 if size < *threshold {
                     return false;
                 }
                 stats.memory_pressure() >= *pressure_threshold
             }
-            Self::Adaptive { min_size, min_ratio } => {
+            Self::Adaptive {
+                min_size,
+                min_ratio,
+            } => {
                 if size < *min_size {
                     return false;
                 }
@@ -59,7 +68,7 @@ impl CompressionStrategy {
     pub fn on_pressure(threshold: usize, pressure: f64) -> Self {
         Self::OnPressure {
             threshold,
-            pressure_threshold: pressure.clamp(0.0, 1.0)
+            pressure_threshold: pressure.clamp(0.0, 1.0),
         }
     }
 
@@ -67,7 +76,7 @@ impl CompressionStrategy {
     pub fn adaptive(min_size: usize, min_ratio: f64) -> Self {
         Self::Adaptive {
             min_size,
-            min_ratio: min_ratio.clamp(0.0, 1.0)
+            min_ratio: min_ratio.clamp(0.0, 1.0),
         }
     }
 }
@@ -127,17 +136,26 @@ impl CompressionStats {
     }
 
     /// Record a compression operation
-    pub fn record_compression(&self, original_size: usize, compressed_size: usize, duration: Duration) {
+    pub fn record_compression(
+        &self,
+        original_size: usize,
+        compressed_size: usize,
+        duration: Duration,
+    ) {
         self.total_compressions.fetch_add(1, Ordering::Relaxed);
-        self.total_bytes_in.fetch_add(original_size as u64, Ordering::Relaxed);
-        self.total_bytes_out.fetch_add(compressed_size as u64, Ordering::Relaxed);
-        self.total_compression_time_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.total_bytes_in
+            .fetch_add(original_size as u64, Ordering::Relaxed);
+        self.total_bytes_out
+            .fetch_add(compressed_size as u64, Ordering::Relaxed);
+        self.total_compression_time_us
+            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
     /// Record a decompression operation
     pub fn record_decompression(&self, size: usize, duration: Duration) {
         self.total_decompressions.fetch_add(1, Ordering::Relaxed);
-        self.total_decompression_time_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.total_decompression_time_us
+            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
     /// Update memory usage

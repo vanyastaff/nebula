@@ -55,7 +55,7 @@ impl CompositeLoader {
 
     /// Create default composite loader with file and env loaders
     pub fn default_loaders() -> Self {
-        use super::{FileLoader, EnvLoader};
+        use super::{EnvLoader, FileLoader};
 
         Self::new()
             .add_loader(FileLoader::new())
@@ -64,9 +64,7 @@ impl CompositeLoader {
 
     /// Get the first loader that supports the source
     fn get_loader_for(&self, source: &ConfigSource) -> Option<&Arc<dyn ConfigLoader>> {
-        self.loaders
-            .iter()
-            .find(|loader| loader.supports(source))
+        self.loaders.iter().find(|loader| loader.supports(source))
     }
 
     /// Try all loaders until one succeeds
@@ -81,11 +79,7 @@ impl CompositeLoader {
             match loader.load(source).await {
                 Ok(value) => return Ok(value),
                 Err(e) => {
-                    nebula_log::debug!(
-                        "Loader failed for source {}: {}",
-                        source.name(),
-                        e
-                    );
+                    nebula_log::debug!("Loader failed for source {}: {}", source.name(), e);
                     last_error = Some(e);
 
                     if self.fail_fast {
@@ -155,7 +149,7 @@ impl ConfigLoader for CompositeLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::loaders::{FileLoader, EnvLoader};
+    use crate::loaders::{EnvLoader, FileLoader};
 
     #[test]
     fn test_composite_loader_creation() {

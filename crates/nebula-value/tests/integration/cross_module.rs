@@ -2,7 +2,7 @@
 //!
 //! Tests how different nebula-value modules interact
 
-use nebula_value::{Value, Integer, Float, Text, Bytes, Array, Object};
+use nebula_value::{Array, Bytes, Float, Integer, Object, Text, Value};
 use serde_json::json;
 
 #[test]
@@ -59,11 +59,17 @@ fn test_nested_collections() {
     // Object containing arrays and objects
     let nested = Object::from_iter(vec![
         ("numbers".to_string(), json!([1, 2, 3, 4, 5])),
-        ("config".to_string(), json!({
-            "enabled": true,
-            "level": 3
-        })),
-        ("tags".to_string(), json!(["rust", "workflow", "automation"])),
+        (
+            "config".to_string(),
+            json!({
+                "enabled": true,
+                "level": 3
+            }),
+        ),
+        (
+            "tags".to_string(),
+            json!(["rust", "workflow", "automation"]),
+        ),
     ]);
 
     assert_eq!(nested.len(), 3);
@@ -108,7 +114,7 @@ fn test_comparison_across_types() {
     // Different type comparison
     let int_val = Value::integer(10);
     let text_val = Value::text("10");
-    assert!(!int_val.eq(&text_val));  // Different types not equal
+    assert!(!int_val.eq(&text_val)); // Different types not equal
 }
 
 #[test]
@@ -129,9 +135,12 @@ fn test_builder_with_limits() {
     // Array builder with limits
     let array = ArrayBuilder::new()
         .with_limits(limits.clone())
-        .try_push(json!(1)).unwrap()
-        .try_push(json!(2)).unwrap()
-        .try_push(json!(3)).unwrap()
+        .try_push(json!(1))
+        .unwrap()
+        .try_push(json!(2))
+        .unwrap()
+        .try_push(json!(3))
+        .unwrap()
         .build()
         .unwrap();
 
@@ -140,8 +149,10 @@ fn test_builder_with_limits() {
     // Object builder with limits
     let object = ObjectBuilder::new()
         .with_limits(limits)
-        .try_insert("a", json!(1)).unwrap()
-        .try_insert("b", json!(2)).unwrap()
+        .try_insert("a", json!(1))
+        .unwrap()
+        .try_insert("b", json!(2))
+        .unwrap()
         .build()
         .unwrap();
 
@@ -212,9 +223,7 @@ fn test_persistent_data_structures() {
     assert_eq!(original_array.len(), 3);
     assert_eq!(modified_array.len(), 4);
 
-    let original_object = Object::from_iter(vec![
-        ("a".to_string(), json!(1)),
-    ]);
+    let original_object = Object::from_iter(vec![("a".to_string(), json!(1))]);
     let modified_object = original_object.insert("b".to_string(), json!(2));
 
     // Original unchanged

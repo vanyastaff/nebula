@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use crate::core::ParameterValue;
 use nebula_value::Value;
+use serde::{Deserialize, Serialize};
 
 /// Condition for parameter validation and display with enhanced functionality
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -12,7 +12,10 @@ pub enum ParameterCondition {
     Gte(ParameterValue),
     Lt(ParameterValue),
     Lte(ParameterValue),
-    Between { from: ParameterValue, to: ParameterValue },
+    Between {
+        from: ParameterValue,
+        to: ParameterValue,
+    },
 
     // String operations
     StartsWith(ParameterValue),
@@ -42,33 +45,45 @@ impl ParameterCondition {
         match self {
             ParameterCondition::Eq(expected) => value == expected,
             ParameterCondition::NotEq(expected) => value != expected,
-            ParameterCondition::Gt(expected) => Self::compare_numbers(value, expected, |a, b| a > b),
-            ParameterCondition::Gte(expected) => Self::compare_numbers(value, expected, |a, b| a >= b),
-            ParameterCondition::Lt(expected) => Self::compare_numbers(value, expected, |a, b| a < b),
-            ParameterCondition::Lte(expected) => Self::compare_numbers(value, expected, |a, b| a <= b),
+            ParameterCondition::Gt(expected) => {
+                Self::compare_numbers(value, expected, |a, b| a > b)
+            }
+            ParameterCondition::Gte(expected) => {
+                Self::compare_numbers(value, expected, |a, b| a >= b)
+            }
+            ParameterCondition::Lt(expected) => {
+                Self::compare_numbers(value, expected, |a, b| a < b)
+            }
+            ParameterCondition::Lte(expected) => {
+                Self::compare_numbers(value, expected, |a, b| a <= b)
+            }
             ParameterCondition::Between { from, to } => {
-                Self::compare_numbers(value, from, |a, b| a >= b) &&
-                Self::compare_numbers(value, to, |a, b| a <= b)
-            },
-            ParameterCondition::StartsWith(prefix) => Self::compare_strings(value, prefix, |s, p| s.starts_with(p)),
-            ParameterCondition::EndsWith(suffix) => Self::compare_strings(value, suffix, |s, suf| s.ends_with(suf)),
-            ParameterCondition::Contains(substring) => Self::compare_strings(value, substring, |s, sub| s.contains(sub)),
+                Self::compare_numbers(value, from, |a, b| a >= b)
+                    && Self::compare_numbers(value, to, |a, b| a <= b)
+            }
+            ParameterCondition::StartsWith(prefix) => {
+                Self::compare_strings(value, prefix, |s, p| s.starts_with(p))
+            }
+            ParameterCondition::EndsWith(suffix) => {
+                Self::compare_strings(value, suffix, |s, suf| s.ends_with(suf))
+            }
+            ParameterCondition::Contains(substring) => {
+                Self::compare_strings(value, substring, |s, sub| s.contains(sub))
+            }
             ParameterCondition::Regex(pattern) => Self::evaluate_regex(value, pattern),
-            ParameterCondition::StringMinLength(min_len) => Self::check_string_length(value, |len| len >= *min_len),
-            ParameterCondition::StringMaxLength(max_len) => Self::check_string_length(value, |len| len <= *max_len),
+            ParameterCondition::StringMinLength(min_len) => {
+                Self::check_string_length(value, |len| len >= *min_len)
+            }
+            ParameterCondition::StringMaxLength(max_len) => {
+                Self::check_string_length(value, |len| len <= *max_len)
+            }
             ParameterCondition::In(values) => values.contains(value),
             ParameterCondition::NotIn(values) => !values.contains(value),
             ParameterCondition::IsEmpty => value.is_empty(),
             ParameterCondition::IsNotEmpty => !value.is_empty(),
-            ParameterCondition::And(conditions) => {
-                conditions.iter().all(|c| c.evaluate(value))
-            },
-            ParameterCondition::Or(conditions) => {
-                conditions.iter().any(|c| c.evaluate(value))
-            },
-            ParameterCondition::Not(condition) => {
-                !condition.evaluate(value)
-            },
+            ParameterCondition::And(conditions) => conditions.iter().all(|c| c.evaluate(value)),
+            ParameterCondition::Or(conditions) => conditions.iter().any(|c| c.evaluate(value)),
+            ParameterCondition::Not(condition) => !condition.evaluate(value),
         }
     }
 
@@ -139,15 +154,9 @@ impl ParameterCondition {
             (Some(Value::Integer(a)), Some(Value::Integer(b))) => {
                 op(a.value() as f64, b.value() as f64)
             }
-            (Some(Value::Float(a)), Some(Value::Float(b))) => {
-                op(a.value(), b.value())
-            }
-            (Some(Value::Integer(a)), Some(Value::Float(b))) => {
-                op(a.value() as f64, b.value())
-            }
-            (Some(Value::Float(a)), Some(Value::Integer(b))) => {
-                op(a.value(), b.value() as f64)
-            }
+            (Some(Value::Float(a)), Some(Value::Float(b))) => op(a.value(), b.value()),
+            (Some(Value::Integer(a)), Some(Value::Float(b))) => op(a.value() as f64, b.value()),
+            (Some(Value::Float(a)), Some(Value::Integer(b))) => op(a.value(), b.value() as f64),
             _ => false,
         }
     }
@@ -183,37 +192,29 @@ impl ParameterCondition {
                 // Enhanced regex patterns for common validation cases
                 match p.as_str() {
                     // Email pattern
-                    r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$" => {
-                        Self::validate_email(s)
-                    },
+                    r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$" => Self::validate_email(s),
                     // URL patterns
                     r"^https?://[^\s/$.?#].[^\s]*$" => {
                         s.starts_with("http://") || s.starts_with("https://")
-                    },
-                    r"^https://[^\s/$.?#].[^\s]*$" => {
-                        s.starts_with("https://")
-                    },
+                    }
+                    r"^https://[^\s/$.?#].[^\s]*$" => s.starts_with("https://"),
                     // Phone number pattern
                     r"^\+?[\d\s\-\(\)]+$" => {
                         s.chars().all(|c| c.is_digit(10) || "+- ()".contains(c))
-                    },
+                    }
                     // Credit card pattern
-                    r"^\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}$" => {
-                        Self::validate_credit_card(s)
-                    },
+                    r"^\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}$" => Self::validate_credit_card(s),
                     // Password strength patterns
                     r"[A-Z]" => s.chars().any(|c| c.is_uppercase()),
                     r"[a-z]" => s.chars().any(|c| c.is_lowercase()),
                     r"\d" => s.chars().any(|c| c.is_digit(10)),
                     r"[!@#$%^&*]" => s.chars().any(|c| "!@#$%^&*".contains(c)),
                     // Simple patterns that can use contains
-                    _ if p.len() <= 10 && !p.contains("^") && !p.contains("$") => {
-                        s.contains(p)
-                    },
+                    _ if p.len() <= 10 && !p.contains("^") && !p.contains("$") => s.contains(p),
                     // For complex patterns, fall back to basic contains check
-                    _ => s.contains(p.trim_start_matches('^').trim_end_matches('$'))
+                    _ => s.contains(p.trim_start_matches('^').trim_end_matches('$')),
                 }
-            },
+            }
             _ => false,
         }
     }
@@ -237,7 +238,8 @@ impl ParameterCondition {
         }
 
         // Check for valid characters
-        s.chars().all(|c| c.is_alphanumeric() || "@._%+-".contains(c))
+        s.chars()
+            .all(|c| c.is_alphanumeric() || "@._%+-".contains(c))
     }
 
     /// Optimized credit card validation

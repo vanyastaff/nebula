@@ -33,5 +33,5 @@
 pub mod arena;
 pub mod pool;
 
-pub use arena::{AsyncArena, AsyncArenaScope, ArenaHandle};
+pub use arena::{ArenaHandle, AsyncArena, AsyncArenaScope};
 pub use pool::{AsyncPool, AsyncPooledValue};

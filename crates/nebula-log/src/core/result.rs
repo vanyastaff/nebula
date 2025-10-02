@@ -1,7 +1,7 @@
 //! Result type and extension traits for logging operations
 
 use crate::core::error::{LogError, LogResult};
-use nebula_error::{NebulaError, ErrorContext};
+use nebula_error::{ErrorContext, NebulaError};
 
 /// Extension trait for Result types (log-specific)
 pub trait LogResultExt<T> {
@@ -37,17 +37,17 @@ where
 
     fn with_component(self, component: impl Into<String>) -> LogResult<T> {
         self.map_err(|e| {
-            NebulaError::internal(format!("{}", e))
-                .with_context(ErrorContext::new("Logging operation failed")
-                    .with_component(component))
+            NebulaError::internal(format!("{}", e)).with_context(
+                ErrorContext::new("Logging operation failed").with_component(component),
+            )
         })
     }
 
     fn with_operation(self, operation: impl Into<String>) -> LogResult<T> {
         self.map_err(|e| {
-            NebulaError::internal(format!("{}", e))
-                .with_context(ErrorContext::new("Logging operation failed")
-                    .with_operation(operation))
+            NebulaError::internal(format!("{}", e)).with_context(
+                ErrorContext::new("Logging operation failed").with_operation(operation),
+            )
         })
     }
 }
@@ -85,16 +85,14 @@ impl LogIoResultExt for Result<(), std::io::Error> {
     fn with_component(self, component: impl Into<String>) -> LogResult<()> {
         self.map_err(|e| {
             NebulaError::log_writer_error("io", format!("{}", e))
-                .with_context(ErrorContext::new("IO operation failed")
-                    .with_component(component))
+                .with_context(ErrorContext::new("IO operation failed").with_component(component))
         })
     }
 
     fn with_operation(self, operation: impl Into<String>) -> LogResult<()> {
         self.map_err(|e| {
             NebulaError::log_writer_error("io", format!("{}", e))
-                .with_context(ErrorContext::new("IO operation failed")
-                    .with_operation(operation))
+                .with_context(ErrorContext::new("IO operation failed").with_operation(operation))
         })
     }
 }
@@ -123,6 +121,9 @@ mod tests {
         assert!(log_result.is_err());
         let error = log_result.unwrap_err();
         assert!(error.context().is_some());
-        assert_eq!(error.context().unwrap().component, Some("file-appender".to_string()));
+        assert_eq!(
+            error.context().unwrap().component,
+            Some("file-appender".to_string())
+        );
     }
 }

@@ -2,9 +2,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
-    SelectOption,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, SelectOption, Validatable,
 };
 
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -98,10 +97,15 @@ impl HasValue for SelectParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+        self.value
+            .as_ref()
+            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Text(s)) => {
@@ -116,12 +120,12 @@ impl HasValue for SelectParameter {
                         reason: format!("Value '{}' is not a valid option", string_value),
                     })
                 }
-            },
+            }
             ParameterValue::Expression(expr) => {
                 // Allow expressions for dynamic selection
                 self.value = Some(expr);
                 Ok(())
-            },
+            }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Expected string value for select parameter".to_string(),
@@ -167,9 +171,9 @@ impl SelectParameter {
         }
 
         // Check if value matches any option's value or key
-        self.options.iter().any(|option| {
-            option.value == value || option.key == value
-        })
+        self.options
+            .iter()
+            .any(|option| option.value == value || option.key == value)
     }
 
     /// Get option by value

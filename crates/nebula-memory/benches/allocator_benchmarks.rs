@@ -2,8 +2,10 @@
 //!
 //! Compares performance of different allocators across various workloads
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use nebula_memory::allocator::{Allocator, BumpAllocator, PoolAllocator, PoolConfig, StackAllocator, StackConfig};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use nebula_memory::allocator::{
+    Allocator, BumpAllocator, PoolAllocator, PoolConfig, StackAllocator, StackConfig,
+};
 use std::alloc::Layout;
 
 /// Benchmark single allocation/deallocation cycle
@@ -133,7 +135,8 @@ fn bench_allocation_sizes(c: &mut Criterion) {
         });
 
         group.bench_with_input(BenchmarkId::new("pool", size), size, |b, &size| {
-            let allocator = PoolAllocator::with_config(size, 8, 1024, PoolConfig::default()).unwrap();
+            let allocator =
+                PoolAllocator::with_config(size, 8, 1024, PoolConfig::default()).unwrap();
             let layout = Layout::from_size_align(size, 8).unwrap();
 
             b.iter(|| unsafe {
@@ -249,7 +252,8 @@ fn bench_large_allocations(c: &mut Criterion) {
 
     // 1MB stack
     group.bench_function("stack_1mb", |b| {
-        let allocator = StackAllocator::with_config(10 * 1024 * 1024, StackConfig::default()).unwrap();
+        let allocator =
+            StackAllocator::with_config(10 * 1024 * 1024, StackConfig::default()).unwrap();
         let layout = Layout::from_size_align(1024 * 1024, 8).unwrap();
 
         b.iter(|| unsafe {

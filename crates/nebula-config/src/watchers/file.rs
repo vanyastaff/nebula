@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::{RwLock, mpsc};
 
 /// File system watcher for configuration files
 pub struct FileWatcher {
@@ -82,10 +82,7 @@ impl FileWatcher {
 
         let path = event.paths.first().cloned();
 
-        Some(
-            ConfigWatchEvent::new(event_type, source.clone())
-                .with_path(path.unwrap_or_default())
-        )
+        Some(ConfigWatchEvent::new(event_type, source.clone()).with_path(path.unwrap_or_default()))
     }
 
     /// Start the event processing task
@@ -169,8 +166,8 @@ impl crate::core::ConfigWatcher for FileWatcher {
         let tx_clone = tx.clone();
         let path_mapping = Arc::clone(&self.path_to_source);
 
-        let mut fs_watcher = notify::recommended_watcher(
-            move |res: Result<Event, notify::Error>| {
+        let mut fs_watcher =
+            notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
                 match res {
                     Ok(event) => {
                         // Find the source for this path
@@ -213,8 +210,8 @@ impl crate::core::ConfigWatcher for FileWatcher {
                         let _ = tx_clone.blocking_send(error_event);
                     }
                 }
-            }
-        ).map_err(|e| ConfigError::watch_error(e.to_string()))?;
+            })
+            .map_err(|e| ConfigError::watch_error(e.to_string()))?;
 
         // Watch all paths
         for path in paths_to_watch {
@@ -231,13 +228,9 @@ impl crate::core::ConfigWatcher for FileWatcher {
                 &path
             };
 
-            fs_watcher
-                .watch(watch_path, mode)
-                .map_err(|e| ConfigError::watch_error(format!(
-                    "Failed to watch {}: {}",
-                    watch_path.display(),
-                    e
-                )))?;
+            fs_watcher.watch(watch_path, mode).map_err(|e| {
+                ConfigError::watch_error(format!("Failed to watch {}: {}", watch_path.display(), e))
+            })?;
 
             nebula_log::debug!("Watching path: {}", watch_path.display());
         }

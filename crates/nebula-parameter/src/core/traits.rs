@@ -1,12 +1,12 @@
 //! Core parameter traits
 
-use std::fmt::{Debug, Display};
-use crate::core::{ParameterError, ParameterKind, ParameterMetadata};
-use crate::core::display::{DisplayContext, ParameterDisplay, ParameterDisplayError, UiMode};
-use nebula_core::ParameterKey as Key;
-use crate::core::condition::ParameterCondition;
-use crate::core::validation::ParameterValidation;
 use crate::core::ParameterValue;
+use crate::core::condition::ParameterCondition;
+use crate::core::display::{DisplayContext, ParameterDisplay, ParameterDisplayError, UiMode};
+use crate::core::validation::ParameterValidation;
+use crate::core::{ParameterError, ParameterKind, ParameterMetadata};
+use nebula_core::ParameterKey as Key;
+use std::fmt::{Debug, Display};
 
 /// Base trait for all parameter types
 pub trait ParameterType {
@@ -61,7 +61,10 @@ pub trait HasValue: ParameterType + Debug + Display {
     fn get_parameter_value(&self) -> Option<ParameterValue>;
 
     /// Sets from generic ParameterValue or any type that converts to it
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError>;
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError>;
 
     // --- Default implementations (convenience methods) ---
 
@@ -264,13 +267,17 @@ pub trait Displayable: ParameterType {
         use serde_json::json;
 
         let condition = ParameterCondition::Or(
-            modes.into_iter()
+            modes
+                .into_iter()
                 .map(|mode| ParameterCondition::Eq(json!(mode).into()))
-                .collect()
+                .collect(),
         );
 
         let mut display = self.display().cloned().unwrap_or_default();
-        display.add_show_condition("ui_mode".parse().unwrap_or("ui_mode".parse().unwrap()), condition);
+        display.add_show_condition(
+            "ui_mode".parse().unwrap_or("ui_mode".parse().unwrap()),
+            condition,
+        );
         self.set_display(Some(display));
     }
 
@@ -283,7 +290,12 @@ pub trait Displayable: ParameterType {
     fn on_hide(&mut self, _context: &DisplayContext) {}
 
     /// Called when display conditions change
-    fn on_display_change(&mut self, old_visible: bool, new_visible: bool, context: &DisplayContext) {
+    fn on_display_change(
+        &mut self,
+        old_visible: bool,
+        new_visible: bool,
+        context: &DisplayContext,
+    ) {
         match (old_visible, new_visible) {
             (false, true) => self.on_show(context),
             (true, false) => self.on_hide(context),

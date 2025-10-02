@@ -1,6 +1,6 @@
 //! Compressed arena implementation for memory-efficient storage
 
-use std::alloc::{alloc, dealloc, Layout};
+use std::alloc::{Layout, alloc, dealloc};
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 
@@ -52,7 +52,11 @@ impl Block {
         let ptr = unsafe { alloc(layout) };
         let ptr = NonNull::new(ptr).ok_or(MemoryError::allocation_failed())?;
 
-        Ok(Self { ptr, capacity: size, used: 0 })
+        Ok(Self {
+            ptr,
+            capacity: size,
+            used: 0,
+        })
     }
 
     #[inline]
@@ -69,7 +73,10 @@ impl Block {
 impl Drop for Block {
     fn drop(&mut self) {
         unsafe {
-            dealloc(self.ptr.as_ptr(), Layout::from_size_align_unchecked(self.capacity, 1));
+            dealloc(
+                self.ptr.as_ptr(),
+                Layout::from_size_align_unchecked(self.capacity, 1),
+            );
         }
     }
 }
@@ -180,11 +187,13 @@ impl CompressedArena {
             uncompressed.to_vec()
         };
 
-        self.compressed_bytes.set(self.compressed_bytes.get() + compressed.len());
+        self.compressed_bytes
+            .set(self.compressed_bytes.get() + compressed.len());
 
-        self.compressed_blocks
-            .borrow_mut()
-            .push(CompressedBlock { data: compressed, uncompressed_size: block.used });
+        self.compressed_blocks.borrow_mut().push(CompressedBlock {
+            data: compressed,
+            uncompressed_size: block.used,
+        });
 
         Ok(())
     }

@@ -5,11 +5,13 @@ use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::allocator::{AllocError, AllocResult, Allocator};
 use crate::allocator::bump::BumpAllocator;
+use crate::allocator::{AllocError, AllocResult, Allocator};
 
+use super::comp_buffer::CompressedBuffer;
+use super::comp_stats::{CompressionStats, CompressionStrategy};
 #[cfg(feature = "compression")]
-use super::{compress, decompress}; use super::comp_buffer::CompressedBuffer; use super::comp_stats::{CompressionStats, CompressionStrategy};
+use super::{compress, decompress};
 
 /// Compressed bump allocator
 ///
@@ -87,11 +89,8 @@ impl CompressedBump {
         let buffer = CompressedBuffer::new(data);
         let duration = start.elapsed();
 
-        self.stats.record_compression(
-            buffer.original_size(),
-            buffer.compressed_size(),
-            duration,
-        );
+        self.stats
+            .record_compression(buffer.original_size(), buffer.compressed_size(), duration);
 
         // Only use compression if it actually saves space
         if buffer.compression_ratio() < 0.95 {
@@ -103,7 +102,9 @@ impl CompressedBump {
 
     /// Reset allocator and clear compressed buffers
     pub fn reset_allocator(&mut self) {
-        unsafe { self.bump.reset(); }
+        unsafe {
+            self.bump.reset();
+        }
         if let Ok(mut buffers) = self.buffers.lock() {
             buffers.clear();
         }
@@ -136,7 +137,6 @@ unsafe impl Allocator for CompressedBump {
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         self.bump.deallocate(ptr, layout)
     }
-
 }
 
 // Placeholder when compression feature is disabled
@@ -154,7 +154,9 @@ impl CompressedBump {
     }
 
     pub fn reset_allocator(&mut self) {
-        unsafe { self.bump.reset(); }
+        unsafe {
+            self.bump.reset();
+        }
     }
 }
 
@@ -167,7 +169,6 @@ unsafe impl Allocator for CompressedBump {
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         self.bump.deallocate(ptr, layout)
     }
-
 }
 
 #[cfg(all(test, feature = "compression"))]

@@ -1,12 +1,12 @@
 //! Compressed pool allocator
 
 use std::alloc::Layout;
+use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
 
-use crate::allocator::{AllocError, AllocResult, Allocator};
 use crate::allocator::pool::{PoolAllocator, PoolConfig};
+use crate::allocator::{AllocError, AllocResult, Allocator};
 
 #[cfg(feature = "compression")]
 use super::{CompressedBuffer, CompressionStats, CompressionStrategy};
@@ -110,7 +110,8 @@ impl CompressedPool {
         let decompressed = buffer.decompress().ok()?;
         let duration = start.elapsed();
 
-        self.stats.record_decompression(decompressed.len(), duration);
+        self.stats
+            .record_decompression(decompressed.len(), duration);
         Some(decompressed)
     }
 }
@@ -170,7 +171,6 @@ unsafe impl Allocator for CompressedPool {
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         self.pool.deallocate(ptr, layout)
     }
-
 }
 
 #[cfg(all(test, feature = "compression"))]

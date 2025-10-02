@@ -3,7 +3,6 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-
 /// Statistics for arena allocators
 #[derive(Debug)]
 pub struct ArenaStats {
@@ -155,7 +154,8 @@ impl ArenaStats {
     pub(crate) fn record_allocation(&self, bytes: usize, time_ns: u64) {
         self.bytes_used.fetch_add(bytes, Ordering::Relaxed);
         self.allocations.fetch_add(1, Ordering::Relaxed);
-        self.allocation_time_ns.fetch_add(time_ns, Ordering::Relaxed);
+        self.allocation_time_ns
+            .fetch_add(time_ns, Ordering::Relaxed);
     }
 
     pub(crate) fn record_deallocation(&self, bytes: usize) {
@@ -168,7 +168,8 @@ impl ArenaStats {
         self.chunks_allocated.fetch_add(1, Ordering::Relaxed);
 
         let prev_chunks = self.current_chunks.fetch_add(1, Ordering::Relaxed);
-        self.max_chunks.fetch_max(prev_chunks + 1, Ordering::Relaxed);
+        self.max_chunks
+            .fetch_max(prev_chunks + 1, Ordering::Relaxed);
     }
 
     pub(crate) fn record_chunk_deallocation(&self, bytes: usize) {
@@ -188,22 +189,34 @@ impl ArenaStats {
 
     /// Merges stats from another instance (for thread-local aggregation)
     pub fn merge(&self, other: &ArenaStats) {
-        self.bytes_allocated.fetch_add(other.bytes_allocated(), Ordering::Relaxed);
-        self.bytes_used.fetch_add(other.bytes_used(), Ordering::Relaxed);
-        self.bytes_wasted.fetch_add(other.bytes_wasted(), Ordering::Relaxed);
+        self.bytes_allocated
+            .fetch_add(other.bytes_allocated(), Ordering::Relaxed);
+        self.bytes_used
+            .fetch_add(other.bytes_used(), Ordering::Relaxed);
+        self.bytes_wasted
+            .fetch_add(other.bytes_wasted(), Ordering::Relaxed);
 
-        self.allocations.fetch_add(other.allocations(), Ordering::Relaxed);
-        self.deallocations.fetch_add(other.deallocations(), Ordering::Relaxed);
+        self.allocations
+            .fetch_add(other.allocations(), Ordering::Relaxed);
+        self.deallocations
+            .fetch_add(other.deallocations(), Ordering::Relaxed);
         self.resets.fetch_add(other.resets(), Ordering::Relaxed);
 
-        self.chunks_allocated.fetch_add(other.chunks_allocated(), Ordering::Relaxed);
-        self.current_chunks.fetch_add(other.current_chunks(), Ordering::Relaxed);
-        self.max_chunks.fetch_max(other.max_chunks(), Ordering::Relaxed);
+        self.chunks_allocated
+            .fetch_add(other.chunks_allocated(), Ordering::Relaxed);
+        self.current_chunks
+            .fetch_add(other.current_chunks(), Ordering::Relaxed);
+        self.max_chunks
+            .fetch_max(other.max_chunks(), Ordering::Relaxed);
 
-        self.allocation_time_ns
-            .fetch_add(other.allocation_time_ns.load(Ordering::Relaxed), Ordering::Relaxed);
-        self.reset_time_ns
-            .fetch_add(other.reset_time_ns.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.allocation_time_ns.fetch_add(
+            other.allocation_time_ns.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.reset_time_ns.fetch_add(
+            other.reset_time_ns.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
     }
 
     /// Creates a snapshot of current statistics
@@ -260,13 +273,25 @@ impl std::fmt::Display for ArenaStatsSnapshot {
         writeln!(f, "    Wasted: {} bytes", self.bytes_wasted)?;
         writeln!(f, "  Efficiency:")?;
         writeln!(f, "    Utilization: {:.1}%", self.utilization_ratio * 100.0)?;
-        writeln!(f, "    Fragmentation: {:.1}%", self.fragmentation_ratio * 100.0)?;
+        writeln!(
+            f,
+            "    Fragmentation: {:.1}%",
+            self.fragmentation_ratio * 100.0
+        )?;
         writeln!(f, "  Operations:")?;
         writeln!(f, "    Allocations: {}", self.allocations)?;
         writeln!(f, "    Deallocations: {}", self.deallocations)?;
         writeln!(f, "    Resets: {}", self.resets)?;
-        writeln!(f, "    Avg allocation size: {:.1} bytes", self.average_allocation_size)?;
-        writeln!(f, "    Avg allocation time: {:?}", self.average_allocation_time)?;
+        writeln!(
+            f,
+            "    Avg allocation size: {:.1} bytes",
+            self.average_allocation_size
+        )?;
+        writeln!(
+            f,
+            "    Avg allocation time: {:?}",
+            self.average_allocation_time
+        )?;
         writeln!(f, "    Avg reset time: {:?}", self.average_reset_time)?;
         writeln!(f, "  Chunks:")?;
         writeln!(f, "    Total allocated: {}", self.chunks_allocated)?;
@@ -280,15 +305,31 @@ impl std::fmt::Display for ArenaStatsSnapshot {
 impl From<ArenaStatsSnapshot> for ArenaStats {
     fn from(snapshot: ArenaStatsSnapshot) -> Self {
         let stats = ArenaStats::new();
-        stats.bytes_allocated.store(snapshot.bytes_allocated, Ordering::Relaxed);
-        stats.bytes_used.store(snapshot.bytes_used, Ordering::Relaxed);
-        stats.bytes_wasted.store(snapshot.bytes_wasted, Ordering::Relaxed);
-        stats.allocations.store(snapshot.allocations, Ordering::Relaxed);
-        stats.deallocations.store(snapshot.deallocations, Ordering::Relaxed);
+        stats
+            .bytes_allocated
+            .store(snapshot.bytes_allocated, Ordering::Relaxed);
+        stats
+            .bytes_used
+            .store(snapshot.bytes_used, Ordering::Relaxed);
+        stats
+            .bytes_wasted
+            .store(snapshot.bytes_wasted, Ordering::Relaxed);
+        stats
+            .allocations
+            .store(snapshot.allocations, Ordering::Relaxed);
+        stats
+            .deallocations
+            .store(snapshot.deallocations, Ordering::Relaxed);
         stats.resets.store(snapshot.resets, Ordering::Relaxed);
-        stats.chunks_allocated.store(snapshot.chunks_allocated, Ordering::Relaxed);
-        stats.current_chunks.store(snapshot.current_chunks, Ordering::Relaxed);
-        stats.max_chunks.store(snapshot.max_chunks, Ordering::Relaxed);
+        stats
+            .chunks_allocated
+            .store(snapshot.chunks_allocated, Ordering::Relaxed);
+        stats
+            .current_chunks
+            .store(snapshot.current_chunks, Ordering::Relaxed);
+        stats
+            .max_chunks
+            .store(snapshot.max_chunks, Ordering::Relaxed);
         // Note: Time values are not restored from snapshot
         stats
     }

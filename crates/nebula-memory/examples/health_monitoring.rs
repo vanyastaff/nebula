@@ -1,7 +1,7 @@
 //! Pool health monitoring example - demonstrates leak detection and health checks
 
 use nebula_memory::pool::{
-    ObjectPool, PoolConfig, Poolable, PoolHealth, PoolHealthMonitor, HealthConfig,
+    HealthConfig, ObjectPool, PoolConfig, PoolHealth, PoolHealthMonitor, Poolable,
 };
 use std::thread;
 use std::time::Duration;
@@ -44,8 +44,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("1. Basic Health Monitoring:");
     {
         let config = HealthConfig {
-            max_failure_rate: 0.2,  // 20% failures tolerated
-            max_leak_rate: 0.1,      // 10% leaks tolerated
+            max_failure_rate: 0.2, // 20% failures tolerated
+            max_leak_rate: 0.1,    // 10% leaks tolerated
             min_utilization: 0.1,
             max_utilization: 0.9,
             rate_window: Duration::from_secs(60),
@@ -64,11 +64,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let health = monitor.check_health();
         println!("   Pool health: {:?}", health);
-        println!("   Status: {}", if matches!(health, PoolHealth::Healthy) {
-            "✓ Healthy"
-        } else {
-            "⚠ Degraded or Critical"
-        });
+        println!(
+            "   Status: {}",
+            if matches!(health, PoolHealth::Healthy) {
+                "✓ Healthy"
+            } else {
+                "⚠ Degraded or Critical"
+            }
+        );
     }
 
     println!();
@@ -96,7 +99,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("   Leak rate: {:.1}%", leak_report.leak_rate * 100.0);
 
         if leak_report.has_leaks() {
-            println!("   ⚠ Warning: {} objects may have leaked!", leak_report.total_leaks());
+            println!(
+                "   ⚠ Warning: {} objects may have leaked!",
+                leak_report.total_leaks()
+            );
         }
     }
 

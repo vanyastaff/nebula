@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 // External dependencies
 use parking_lot::Mutex;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
+use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 // Internal crates
 use crate::core::LogResult;
@@ -58,11 +58,10 @@ impl LoggerBuilder {
         };
 
         // Create the filter
-        let filter =
-            EnvFilter::try_new(&self.config.level).map_err(|e| {
-                use crate::core::LogError;
-                nebula_error::NebulaError::log_filter_error(&self.config.level, e.to_string())
-            })?;
+        let filter = EnvFilter::try_new(&self.config.level).map_err(|e| {
+            use crate::core::LogError;
+            nebula_error::NebulaError::log_filter_error(&self.config.level, e.to_string())
+        })?;
 
         // Get writer for the format layer
         let (writer, _guards) = writer::make_writer(&self.config.writer)?;
@@ -481,8 +480,11 @@ impl ReloadHandle {
     #[allow(dead_code)]
     pub fn reload(&self, filter: &str) -> LogResult<()> {
         use crate::core::LogError;
-        let new_filter = EnvFilter::try_new(filter).map_err(|e| nebula_error::NebulaError::log_filter_error(filter, e.to_string()))?;
-        self.filter.reload(new_filter).map_err(|e| nebula_error::NebulaError::log_config_error(format!("Failed to reload filter: {}", e)))?;
+        let new_filter = EnvFilter::try_new(filter)
+            .map_err(|e| nebula_error::NebulaError::log_filter_error(filter, e.to_string()))?;
+        self.filter.reload(new_filter).map_err(|e| {
+            nebula_error::NebulaError::log_config_error(format!("Failed to reload filter: {}", e))
+        })?;
         *self.current_filter.lock() = filter.to_string();
         Ok(())
     }

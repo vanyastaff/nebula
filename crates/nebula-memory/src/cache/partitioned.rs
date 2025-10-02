@@ -12,8 +12,8 @@ extern crate alloc;
 use std::{
     hash::{Hash, Hasher},
     sync::{Arc, RwLock},
-    time::Instant,
     thread,
+    time::Instant,
 };
 
 #[cfg(not(feature = "std"))]
@@ -127,8 +127,7 @@ impl PartitionedConfig {
     /// Configure for memory efficiency
     pub fn for_memory_efficiency(max_entries: usize) -> Self {
         let partition_count = num_cpus().max(2).min(4);
-        Self::new(max_entries, partition_count)
-            .with_hash_strategy(HashStrategy::Modulo)
+        Self::new(max_entries, partition_count).with_hash_strategy(HashStrategy::Modulo)
     }
 
     /// Configure for balanced performance
@@ -215,16 +214,14 @@ impl PartitionedStats {
             return 0.0;
         }
 
-        let load_factors: Vec<f32> = self.partition_stats
-            .iter()
-            .map(|p| p.load_factor)
-            .collect();
+        let load_factors: Vec<f32> = self.partition_stats.iter().map(|p| p.load_factor).collect();
 
         let avg_load = load_factors.iter().sum::<f32>() / load_factors.len() as f32;
         let variance: f32 = load_factors
             .iter()
             .map(|&load| (load - avg_load).powi(2))
-            .sum::<f32>() / load_factors.len() as f32;
+            .sum::<f32>()
+            / load_factors.len() as f32;
 
         variance.sqrt() as f64
     }
@@ -275,10 +272,13 @@ where
 
     /// Create a new partitioned cache with configuration
     pub fn with_config(config: PartitionedConfig) -> Self {
-        config.validate().expect("Invalid partitioned cache configuration");
+        config
+            .validate()
+            .expect("Invalid partitioned cache configuration");
 
         let partition_count = config.partition_count;
-        let entries_per_partition = (config.cache_config.max_entries + partition_count - 1) / partition_count;
+        let entries_per_partition =
+            (config.cache_config.max_entries + partition_count - 1) / partition_count;
 
         // Create partition configurations
         let partition_config = CacheConfig {
@@ -370,7 +370,9 @@ where
 
     /// Get a value from the cache, computing it if not present
     pub fn get_or_compute<F>(&self, key: K, compute_fn: F) -> CacheResult<V>
-    where F: FnOnce() -> Result<V, MemoryError> {
+    where
+        F: FnOnce() -> Result<V, MemoryError>,
+    {
         let partition_idx = self.get_partition_index(&key);
         let partition = &self.partitions[partition_idx];
 
@@ -493,9 +495,7 @@ where
         K: Clone,
     {
         keys.into_iter()
-            .map(|key| {
-                self.get_or_compute(key.clone(), || compute_fn(&key))
-            })
+            .map(|key| self.get_or_compute(key.clone(), || compute_fn(&key)))
             .collect()
     }
 
@@ -512,12 +512,10 @@ where
 
     /// Check if the cache is empty
     pub fn is_empty(&self) -> bool {
-        self.partitions
-            .iter()
-            .all(|partition| {
-                let cache = partition.read().unwrap();
-                cache.is_empty()
-            })
+        self.partitions.iter().all(|partition| {
+            let cache = partition.read().unwrap();
+            cache.is_empty()
+        })
     }
 
     /// Clear all entries from the cache
@@ -644,10 +642,7 @@ where
             return false;
         }
 
-        let load_factors: Vec<f32> = partition_infos
-            .iter()
-            .map(|p| p.load_factor)
-            .collect();
+        let load_factors: Vec<f32> = partition_infos.iter().map(|p| p.load_factor).collect();
 
         let max_load = load_factors.iter().cloned().fold(0.0f32, f32::max);
         let min_load = load_factors.iter().cloned().fold(1.0f32, f32::min);
@@ -740,19 +735,26 @@ where
         let mut recommendations = Vec::new();
 
         if stats.hit_rate() < 0.7 {
-            recommendations.push("Overall hit rate is low - consider increasing cache size".to_string());
+            recommendations
+                .push("Overall hit rate is low - consider increasing cache size".to_string());
         }
 
         if stats.load_balance_score() > 0.3 {
-            recommendations.push("Poor load balancing - consider different hash strategy or rebalancing".to_string());
+            recommendations.push(
+                "Poor load balancing - consider different hash strategy or rebalancing".to_string(),
+            );
         }
 
         if stats.lock_contentions > stats.total_requests / 10 {
-            recommendations.push("High lock contention - consider increasing partition count".to_string());
+            recommendations
+                .push("High lock contention - consider increasing partition count".to_string());
         }
 
         if self.partition_count() < num_cpus() {
-            recommendations.push("Partition count is less than CPU count - consider increasing partitions".to_string());
+            recommendations.push(
+                "Partition count is less than CPU count - consider increasing partitions"
+                    .to_string(),
+            );
         }
 
         if self.partition_count() > num_cpus() * 4 {
@@ -850,7 +852,7 @@ mod tests {
 
         assert_eq!(batch_results.len(), 2);
         assert!(batch_results[0].1.is_some()); // key1 exists
-        assert!(batch_results[1].1.is_none());  // key4 doesn't exist
+        assert!(batch_results[1].1.is_none()); // key4 doesn't exist
     }
 
     #[test]
@@ -869,7 +871,11 @@ mod tests {
 
         // No partition should be empty (with 100 keys, very unlikely)
         for info in partition_infos {
-            assert!(info.size > 0, "Partition {} should have entries", info.index);
+            assert!(
+                info.size > 0,
+                "Partition {} should have entries",
+                info.index
+            );
         }
     }
 
@@ -936,9 +942,11 @@ mod tests {
         let cache = PartitionedCache::<String, usize>::new(10, 2);
 
         // Error should be propagated
-        let result = cache.get_or_compute("error".to_string(), || {
-            Err(MemoryError::allocation_failed())
-        });
+        let result =
+            cache.get_or_compute(
+                "error".to_string(),
+                || Err(MemoryError::allocation_failed()),
+            );
 
         assert!(result.is_err());
 

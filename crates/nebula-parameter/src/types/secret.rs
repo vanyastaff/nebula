@@ -2,8 +2,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 
 /// Parameter for password or sensitive inputs
@@ -90,21 +90,26 @@ impl HasValue for SecretParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+        self.value
+            .as_ref()
+            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Text(s)) => {
                 self.value = Some(s.to_string());
                 Ok(())
-            },
+            }
             ParameterValue::Expression(expr) => {
                 // Expressions are allowed for secrets (e.g., from environment variables)
                 self.value = Some(expr);
                 Ok(())
-            },
+            }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Expected string value for secret".to_string(),
@@ -151,6 +156,8 @@ impl SecretParameter {
 
     /// Create a masked representation of the value for display
     pub fn masked_value(&self) -> Option<String> {
-        self.value.as_ref().map(|v| "*".repeat(v.len().min(8).max(3)))
+        self.value
+            .as_ref()
+            .map(|v| "*".repeat(v.len().min(8).max(3)))
     }
 }

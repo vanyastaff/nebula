@@ -2,9 +2,9 @@
 //!
 //! Run with: cargo run --example operations
 
-use nebula_value::prelude::*;
 use nebula_value::collections::array::ArrayBuilder;
 use nebula_value::collections::object::ObjectBuilder;
+use nebula_value::prelude::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Nebula Value Operations ===\n");
@@ -123,8 +123,14 @@ fn merge_operations() -> ValueResult<()> {
         .build()?;
 
     let merged = Value::Object(obj1).merge(&Value::Object(obj2))?;
-    println!("  Merged object keys: {}",
-        if let Value::Object(o) = &merged { o.len() } else { 0 });
+    println!(
+        "  Merged object keys: {}",
+        if let Value::Object(o) = &merged {
+            o.len()
+        } else {
+            0
+        }
+    );
 
     // Merge arrays (concatenation)
     let arr1 = ArrayBuilder::new()
@@ -138,8 +144,14 @@ fn merge_operations() -> ValueResult<()> {
         .build()?;
 
     let merged_arr = Value::Array(arr1).merge(&Value::Array(arr2))?;
-    println!("  Merged array length: {}\n",
-        if let Value::Array(a) = &merged_arr { a.len() } else { 0 });
+    println!(
+        "  Merged array length: {}\n",
+        if let Value::Array(a) = &merged_arr {
+            a.len()
+        } else {
+            0
+        }
+    );
 
     Ok(())
 }

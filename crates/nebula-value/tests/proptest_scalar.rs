@@ -3,7 +3,7 @@
 //! These tests verify algebraic properties and invariants that should hold
 //! for all possible input values.
 
-use nebula_value::{Integer, Float, Text, Bytes};
+use nebula_value::{Bytes, Float, Integer, Text};
 use proptest::prelude::*;
 
 // ===== INTEGER PROPERTIES =====

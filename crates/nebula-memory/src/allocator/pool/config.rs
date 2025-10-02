@@ -21,8 +21,16 @@ impl Default for PoolConfig {
     fn default() -> Self {
         Self {
             track_stats: cfg!(debug_assertions),
-            alloc_pattern: if cfg!(debug_assertions) { Some(0xBB) } else { None },
-            dealloc_pattern: if cfg!(debug_assertions) { Some(0xDD) } else { None },
+            alloc_pattern: if cfg!(debug_assertions) {
+                Some(0xBB)
+            } else {
+                None
+            },
+            dealloc_pattern: if cfg!(debug_assertions) {
+                Some(0xDD)
+            } else {
+                None
+            },
             use_backoff: true,
             max_retries: 1000,
         }

@@ -95,51 +95,78 @@ impl ParameterKind {
 
         match self {
             // Input parameters - full capabilities
-            Self::Text | Self::Textarea | Self::Secret | Self::Number |
-            Self::Select | Self::MultiSelect | Self::Radio |
-            Self::DateTime | Self::Date | Self::Time |
-            Self::Code | Self::File | Self::Color | Self::Resource => {
-                &[HasValue, Editable, Validatable, Displayable, Requirable, SupportsExpressions, Serializable]
-            }
+            Self::Text
+            | Self::Textarea
+            | Self::Secret
+            | Self::Number
+            | Self::Select
+            | Self::MultiSelect
+            | Self::Radio
+            | Self::DateTime
+            | Self::Date
+            | Self::Time
+            | Self::Code
+            | Self::File
+            | Self::Color
+            | Self::Resource => &[
+                HasValue,
+                Editable,
+                Validatable,
+                Displayable,
+                Requirable,
+                SupportsExpressions,
+                Serializable,
+            ],
 
             // Boolean types - simpler
-            Self::Boolean | Self::Checkbox => {
-                &[HasValue, Editable, Displayable, Requirable, SupportsExpressions, Serializable]
-            }
+            Self::Boolean | Self::Checkbox => &[
+                HasValue,
+                Editable,
+                Displayable,
+                Requirable,
+                SupportsExpressions,
+                Serializable,
+            ],
 
             // Container parameters
-            Self::Group => {
-                &[HasValue, Container, Displayable, Serializable]
-            }
+            Self::Group => &[HasValue, Container, Displayable, Serializable],
 
-            Self::Object | Self::List => {
-                &[HasValue, Container, Validatable, Displayable, Requirable, SupportsExpressions, Serializable]
-            }
+            Self::Object | Self::List => &[
+                HasValue,
+                Container,
+                Validatable,
+                Displayable,
+                Requirable,
+                SupportsExpressions,
+                Serializable,
+            ],
 
-            Self::Routing => {
-                &[HasValue, Container, Editable, Displayable, Interactive, Serializable]
-            }
+            Self::Routing => &[
+                HasValue,
+                Container,
+                Editable,
+                Displayable,
+                Interactive,
+                Serializable,
+            ],
 
-            Self::Mode => {
-                &[HasValue, Container, Editable, Displayable, SupportsExpressions, Serializable]
-            }
+            Self::Mode => &[
+                HasValue,
+                Container,
+                Editable,
+                Displayable,
+                SupportsExpressions,
+                Serializable,
+            ],
 
             // Special parameters
-            Self::Hidden => {
-                &[HasValue, SupportsExpressions, Serializable]
-            }
+            Self::Hidden => &[HasValue, SupportsExpressions, Serializable],
 
-            Self::Notice => {
-                &[Displayable]
-            }
+            Self::Notice => &[Displayable],
 
-            Self::Button => {
-                &[Displayable, Interactive]
-            }
+            Self::Button => &[Displayable, Interactive],
 
-            Self::Expirable => {
-                &[HasValue, Container, SupportsExpressions, Serializable]
-            }
+            Self::Expirable => &[HasValue, Container, SupportsExpressions, Serializable],
         }
     }
 
@@ -187,7 +214,10 @@ impl ParameterKind {
 
     /// Check if this is a text-based input
     pub fn is_text_based(&self) -> bool {
-        matches!(self, Self::Text | Self::Textarea | Self::Secret | Self::Code)
+        matches!(
+            self,
+            Self::Text | Self::Textarea | Self::Secret | Self::Code
+        )
     }
 
     /// Check if this is a selection-based input
@@ -260,27 +290,64 @@ impl ParameterKind {
     /// Get all variants
     pub fn all() -> &'static [Self] {
         &[
-            Self::Text, Self::Textarea, Self::Secret, Self::Number,
-            Self::Boolean, Self::Checkbox, Self::Select, Self::MultiSelect,
-            Self::Radio, Self::DateTime, Self::Date, Self::Time,
-            Self::Code, Self::File, Self::Color, Self::Resource,
-            Self::Group, Self::Object, Self::List, Self::Routing,
-            Self::Mode, Self::Hidden, Self::Notice, Self::Button, Self::Expirable,
+            Self::Text,
+            Self::Textarea,
+            Self::Secret,
+            Self::Number,
+            Self::Boolean,
+            Self::Checkbox,
+            Self::Select,
+            Self::MultiSelect,
+            Self::Radio,
+            Self::DateTime,
+            Self::Date,
+            Self::Time,
+            Self::Code,
+            Self::File,
+            Self::Color,
+            Self::Resource,
+            Self::Group,
+            Self::Object,
+            Self::List,
+            Self::Routing,
+            Self::Mode,
+            Self::Hidden,
+            Self::Notice,
+            Self::Button,
+            Self::Expirable,
         ]
     }
 
     /// Get input kinds
     pub fn input_kinds() -> &'static [Self] {
         &[
-            Self::Text, Self::Textarea, Self::Secret, Self::Number,
-            Self::Boolean, Self::Checkbox, Self::Select, Self::MultiSelect,
-            Self::Radio, Self::DateTime, Self::Date, Self::Time,
-            Self::Code, Self::File, Self::Color, Self::Resource,
+            Self::Text,
+            Self::Textarea,
+            Self::Secret,
+            Self::Number,
+            Self::Boolean,
+            Self::Checkbox,
+            Self::Select,
+            Self::MultiSelect,
+            Self::Radio,
+            Self::DateTime,
+            Self::Date,
+            Self::Time,
+            Self::Code,
+            Self::File,
+            Self::Color,
+            Self::Resource,
         ]
     }
 
     /// Get container kinds
     pub fn container_kinds() -> &'static [Self] {
-        &[Self::Group, Self::Object, Self::List, Self::Routing, Self::Mode]
+        &[
+            Self::Group,
+            Self::Object,
+            Self::List,
+            Self::Routing,
+            Self::Mode,
+        ]
     }
 }

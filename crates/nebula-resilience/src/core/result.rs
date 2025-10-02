@@ -5,7 +5,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use super::error::{ResilienceError, ErrorClass};
+use super::error::{ErrorClass, ResilienceError};
 
 /// Result type for resilience operations
 pub type ResilienceResult<T> = Result<T, ResilienceError>;

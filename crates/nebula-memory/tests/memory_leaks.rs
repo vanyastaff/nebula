@@ -2,8 +2,10 @@
 //!
 //! These tests verify that allocators properly free memory and don't leak.
 
-use nebula_memory::allocator::{Allocator, BumpAllocator, PoolAllocator, PoolConfig, StackAllocator, StackConfig};
 use nebula_memory::allocator::bump::BumpConfig;
+use nebula_memory::allocator::{
+    Allocator, BumpAllocator, PoolAllocator, PoolConfig, StackAllocator, StackConfig,
+};
 use nebula_memory::core::traits::{MemoryUsage, Resettable};
 use std::alloc::Layout;
 
@@ -189,12 +191,21 @@ fn test_bump_allocator_mixed_sizes() {
         assert_eq!(initial_usage, 0);
 
         // Allocate different sizes
-        let small = allocator.allocate(Layout::from_size_align(16, 8).unwrap()).unwrap();
-        let medium = allocator.allocate(Layout::from_size_align(256, 8).unwrap()).unwrap();
-        let large = allocator.allocate(Layout::from_size_align(4096, 8).unwrap()).unwrap();
+        let small = allocator
+            .allocate(Layout::from_size_align(16, 8).unwrap())
+            .unwrap();
+        let medium = allocator
+            .allocate(Layout::from_size_align(256, 8).unwrap())
+            .unwrap();
+        let large = allocator
+            .allocate(Layout::from_size_align(4096, 8).unwrap())
+            .unwrap();
 
         let total_usage = allocator.used_memory();
-        assert!(total_usage >= 16 + 256 + 4096, "Should track all allocations");
+        assert!(
+            total_usage >= 16 + 256 + 4096,
+            "Should track all allocations"
+        );
 
         // Deallocate (BumpAllocator doesn't reuse)
         allocator.deallocate(small.cast(), Layout::from_size_align(16, 8).unwrap());

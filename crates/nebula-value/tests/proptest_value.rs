@@ -1,6 +1,6 @@
 //! Property-based tests for Value operations and conversions
 
-use nebula_value::{Value, Array, Object};
+use nebula_value::{Array, Object, Value};
 use proptest::prelude::*;
 use serde_json::json;
 use std::convert::TryFrom;

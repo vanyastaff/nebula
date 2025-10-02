@@ -8,7 +8,6 @@ pub mod random;
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
-
 #[cfg(not(feature = "std"))]
 use {
     alloc::{boxed::Box, vec::Vec},
@@ -62,10 +61,7 @@ pub trait EvictionPolicy<K, V>: Send + Sync {
 }
 
 /// Helper method to choose a victim using original iterator-based approach
-pub fn choose_victim<'a, K, V, I>(
-    selector: &dyn VictimSelector<K, V>,
-    entries: I,
-) -> Option<K>
+pub fn choose_victim<'a, K, V, I>(selector: &dyn VictimSelector<K, V>, entries: I) -> Option<K>
 where
     I: Iterator<Item = (&'a K, &'a CacheEntry<V>)>,
     K: 'a + Clone,
@@ -86,21 +82,24 @@ mod tests {
         // Test direct policy creation and name verification
         // TODO: These require K: Send + Sync bounds which String satisfies,
         // but the trait object coercion is failing
-        let lru: Box<dyn EvictionPolicy<String, usize>> = Box::new(LruPolicy::<String, usize>::new());
+        let lru: Box<dyn EvictionPolicy<String, usize>> =
+            Box::new(LruPolicy::<String, usize>::new());
         assert_eq!(lru.name(), "LRU");
 
-        let lfu: Box<dyn EvictionPolicy<String, usize>> = Box::new(LfuPolicy::<String, usize>::new());
+        let lfu: Box<dyn EvictionPolicy<String, usize>> =
+            Box::new(LfuPolicy::<String, usize>::new());
         assert_eq!(lfu.name(), "LFU");
 
-        let ttl: Box<dyn EvictionPolicy<String, usize>> = Box::new(TtlPolicy::<String>::new(std::time::Duration::from_secs(60)));
+        let ttl: Box<dyn EvictionPolicy<String, usize>> =
+            Box::new(TtlPolicy::<String>::new(std::time::Duration::from_secs(60)));
         assert_eq!(ttl.name(), "TTL");
 
-        let arc: Box<dyn EvictionPolicy<String, usize>> = Box::new(ArcPolicy::<String, usize>::new(100));
+        let arc: Box<dyn EvictionPolicy<String, usize>> =
+            Box::new(ArcPolicy::<String, usize>::new(100));
         assert_eq!(arc.name(), "ARC");
 
-        let adaptive: Box<dyn EvictionPolicy<String, usize>> = Box::new(AdaptivePolicy::<String, usize>::new(100));
+        let adaptive: Box<dyn EvictionPolicy<String, usize>> =
+            Box::new(AdaptivePolicy::<String, usize>::new(100));
         assert_eq!(adaptive.name(), "Adaptive");
     }
 }
-
-

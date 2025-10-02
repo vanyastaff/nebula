@@ -53,7 +53,7 @@ impl RetryableError for ServerError {
             ServerError::ServiceOverloaded { .. } => true,
             ServerError::Configuration { .. } => false, // Config errors need manual fixing
             ServerError::DependencyFailure { .. } => true, // Dependencies might recover
-            ServerError::Maintenance { .. } => true, // Maintenance should end eventually
+            ServerError::Maintenance { .. } => true,    // Maintenance should end eventually
             ServerError::NotImplemented { .. } => false, // Won't be fixed by retrying
             ServerError::VersionMismatch { .. } => false, // Version issues need manual fixing
         }
@@ -161,7 +161,8 @@ mod tests {
         assert_eq!(internal_error.error_code(), "INTERNAL_ERROR");
         assert!(!internal_error.is_retryable());
 
-        let service_error = ServerError::service_unavailable("database", "connection pool exhausted");
+        let service_error =
+            ServerError::service_unavailable("database", "connection pool exhausted");
         assert_eq!(service_error.error_code(), "SERVICE_UNAVAILABLE_ERROR");
         assert!(service_error.is_retryable());
 
@@ -173,13 +174,23 @@ mod tests {
     #[test]
     fn test_server_error_display() {
         let internal_error = ServerError::internal("Database connection failed");
-        assert_eq!(internal_error.to_string(), "Internal error: Database connection failed");
+        assert_eq!(
+            internal_error.to_string(),
+            "Internal error: Database connection failed"
+        );
 
-        let service_error = ServerError::service_unavailable("database", "connection pool exhausted");
-        assert_eq!(service_error.to_string(), "Service unavailable: database - connection pool exhausted");
+        let service_error =
+            ServerError::service_unavailable("database", "connection pool exhausted");
+        assert_eq!(
+            service_error.to_string(),
+            "Service unavailable: database - connection pool exhausted"
+        );
 
         let version_error = ServerError::version_mismatch("v2.0", "v1.0");
-        assert_eq!(version_error.to_string(), "Version mismatch: expected v2.0, got v1.0");
+        assert_eq!(
+            version_error.to_string(),
+            "Version mismatch: expected v2.0, got v1.0"
+        );
     }
 
     #[test]
@@ -194,6 +205,9 @@ mod tests {
 
         let overloaded_error = ServerError::service_overloaded("api", "too many requests");
         assert!(overloaded_error.is_retryable());
-        assert_eq!(overloaded_error.retry_delay(), Some(Duration::from_secs(10)));
+        assert_eq!(
+            overloaded_error.retry_delay(),
+            Some(Duration::from_secs(10))
+        );
     }
 }

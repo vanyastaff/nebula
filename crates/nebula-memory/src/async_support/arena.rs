@@ -1,9 +1,9 @@
 //! Async-friendly arena allocator with owned value API
 
 #[cfg(feature = "async")]
-use std::sync::Arc;
-#[cfg(feature = "async")]
 use std::any::Any;
+#[cfg(feature = "async")]
+use std::sync::Arc;
 
 #[cfg(feature = "async")]
 use tokio::sync::{RwLock, Semaphore};

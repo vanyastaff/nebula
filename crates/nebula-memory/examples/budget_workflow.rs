@@ -3,8 +3,8 @@
 //! This example shows how to use the budget module to control and limit
 //! memory usage during workflow execution.
 
-use std::sync::Arc;
 use nebula_memory::budget::{BudgetConfig, MemoryBudget, create_budget, create_child_budget};
+use std::sync::Arc;
 
 fn main() {
     println!("=== Memory Budget Example ===\n");
@@ -27,11 +27,7 @@ fn main() {
     }
 
     // Create a child budget for a subtask with 5MB limit
-    let subtask_budget = create_child_budget(
-        "subtask-1",
-        5 * 1024 * 1024,
-        workflow_budget.clone()
-    );
+    let subtask_budget = create_child_budget("subtask-1", 5 * 1024 * 1024, workflow_budget.clone());
 
     println!("\nStep 2: Created child budget for subtask");
     println!("  Subtask limit: {} bytes", subtask_budget.limit());

@@ -6,8 +6,8 @@ use std::alloc::Layout;
 #[test]
 fn test_pool_allocator_basic() {
     let config = PoolConfig::default();
-    let allocator = PoolAllocator::with_config(128, 8, 16, config)
-        .expect("Failed to create pool allocator");
+    let allocator =
+        PoolAllocator::with_config(128, 8, 16, config).expect("Failed to create pool allocator");
 
     unsafe {
         let layout = Layout::from_size_align(128, 8).unwrap();
@@ -25,8 +25,8 @@ fn test_pool_allocator_basic() {
 #[test]
 fn test_pool_allocator_reuse() {
     let config = PoolConfig::default();
-    let allocator = PoolAllocator::with_config(64, 8, 16, config)
-        .expect("Failed to create pool allocator");
+    let allocator =
+        PoolAllocator::with_config(64, 8, 16, config).expect("Failed to create pool allocator");
 
     unsafe {
         let layout = Layout::from_size_align(64, 8).unwrap();
@@ -39,7 +39,9 @@ fn test_pool_allocator_reuse() {
         allocator.deallocate(ptr1.cast(), layout);
 
         // Allocate again - should reuse the same block
-        let ptr2 = allocator.allocate(layout).expect("Second allocation failed");
+        let ptr2 = allocator
+            .allocate(layout)
+            .expect("Second allocation failed");
         let addr2 = ptr2.cast::<u8>().as_ptr() as usize;
 
         // Pool allocators typically reuse freed blocks
@@ -52,8 +54,8 @@ fn test_pool_allocator_reuse() {
 #[test]
 fn test_pool_allocator_multiple_blocks() {
     let config = PoolConfig::default();
-    let allocator = PoolAllocator::with_config(32, 8, 16, config)
-        .expect("Failed to create pool allocator");
+    let allocator =
+        PoolAllocator::with_config(32, 8, 16, config).expect("Failed to create pool allocator");
 
     unsafe {
         let layout = Layout::from_size_align(32, 8).unwrap();
@@ -120,7 +122,7 @@ fn test_pool_allocator_concurrent() {
 
     let config = PoolConfig::default();
     let allocator = Arc::new(
-        PoolAllocator::with_config(128, 8, 16, config).expect("Failed to create allocator")
+        PoolAllocator::with_config(128, 8, 16, config).expect("Failed to create allocator"),
     );
 
     let mut handles = vec![];
@@ -164,8 +166,8 @@ fn test_pool_allocator_concurrent() {
 #[test]
 fn test_pool_allocator_stress() {
     let config = PoolConfig::default();
-    let allocator = PoolAllocator::with_config(256, 8, 16, config)
-        .expect("Failed to create pool allocator");
+    let allocator =
+        PoolAllocator::with_config(256, 8, 16, config).expect("Failed to create pool allocator");
 
     unsafe {
         let layout = Layout::from_size_align(256, 8).unwrap();
@@ -198,8 +200,8 @@ fn test_pool_allocator_stress() {
 #[test]
 fn test_pool_allocator_partial_deallocation() {
     let config = PoolConfig::default();
-    let allocator = PoolAllocator::with_config(64, 8, 16, config)
-        .expect("Failed to create pool allocator");
+    let allocator =
+        PoolAllocator::with_config(64, 8, 16, config).expect("Failed to create pool allocator");
 
     unsafe {
         let layout = Layout::from_size_align(64, 8).unwrap();

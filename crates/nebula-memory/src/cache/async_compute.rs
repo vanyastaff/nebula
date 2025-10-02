@@ -14,8 +14,8 @@ use std::{
     hash::Hash,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Weak,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
@@ -189,9 +189,9 @@ enum ComputationState<V> {
 /// Circuit breaker state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CircuitBreakerState {
-    Closed,    // Normal operation
-    Open,      // Failing fast
-    HalfOpen,  // Testing recovery
+    Closed,   // Normal operation
+    Open,     // Failing fast
+    HalfOpen, // Testing recovery
 }
 
 /// Circuit breaker for computation failures
@@ -303,7 +303,8 @@ where
 /// Batch request for multiple keys
 pub struct BatchRequest<K, V> {
     pub keys: Vec<K>,
-    pub compute_fn: Box<dyn Fn(&K) -> Pin<Box<dyn Future<Output = AsyncCacheResult<V>> + Send>> + Send + Sync>,
+    pub compute_fn:
+        Box<dyn Fn(&K) -> Pin<Box<dyn Future<Output = AsyncCacheResult<V>> + Send>> + Send + Sync>,
 }
 
 /// Batch response containing results for multiple keys
@@ -359,7 +360,9 @@ where
 
     /// Create a new async compute cache with configuration
     pub fn with_config(config: AsyncCacheConfig) -> Self {
-        config.validate().expect("Invalid async cache configuration");
+        config
+            .validate()
+            .expect("Invalid async cache configuration");
 
         let inner = AsyncComputeCacheInner {
             cache: RwLock::new(ComputeCache::with_config(config.cache_config.clone())),
@@ -391,18 +394,23 @@ where
         {
             let mut cache = self.inner.cache.write().await;
             if let Some(value) = cache.get(&key_str) {
-                self.inner.stats.record_hit(Some(start_time.elapsed().as_nanos() as u64));
+                self.inner
+                    .stats
+                    .record_hit(Some(start_time.elapsed().as_nanos() as u64));
 
                 // Check if background refresh is needed
                 if self.inner.config.enable_background_refresh {
-                    self.maybe_schedule_background_refresh(&key_str, &value).await;
+                    self.maybe_schedule_background_refresh(&key_str, &value)
+                        .await;
                 }
 
                 return Ok(value);
             }
         }
 
-        self.inner.stats.record_miss(Some(start_time.elapsed().as_nanos() as u64), None);
+        self.inner
+            .stats
+            .record_miss(Some(start_time.elapsed().as_nanos() as u64), None);
 
         // Check if deduplication is enabled and computation is already in progress
         if self.inner.config.enable_deduplication {
@@ -440,13 +448,18 @@ where
         }
 
         // Acquire computation permit
-        let _permit = self.inner.computation_semaphore.acquire().await
+        let _permit = self
+            .inner
+            .computation_semaphore
+            .acquire()
+            .await
             .map_err(|_| MemoryError::allocation_failed())?;
 
         // Start computation
         let computation_start = Instant::now();
         let result = if let Some(timeout_duration) = self.inner.config.computation_timeout {
-            timeout(timeout_duration, compute_fn()).await
+            timeout(timeout_duration, compute_fn())
+                .await
                 .map_err(|_| MemoryError::allocation_failed())?
         } else {
             compute_fn().await
@@ -838,15 +851,21 @@ mod tests {
         let cache = AsyncComputeCache::<String, usize>::new(10);
 
         // First call should compute
-        let result1 = cache.get_or_compute("key1".to_string(), || async { Ok(42) }).await;
+        let result1 = cache
+            .get_or_compute("key1".to_string(), || async { Ok(42) })
+            .await;
         assert_eq!(result1.unwrap(), 42);
 
         // Second call should use cached value
-        let result2 = cache.get_or_compute("key1".to_string(), || async { Ok(99) }).await;
+        let result2 = cache
+            .get_or_compute("key1".to_string(), || async { Ok(99) })
+            .await;
         assert_eq!(result2.unwrap(), 42);
 
         // Different key should compute new value
-        let result3 = cache.get_or_compute("key2".to_string(), || async { Ok(99) }).await;
+        let result3 = cache
+            .get_or_compute("key2".to_string(), || async { Ok(99) })
+            .await;
         assert_eq!(result3.unwrap(), 99);
     }
 
@@ -855,9 +874,9 @@ mod tests {
         let cache = AsyncComputeCache::<String, usize>::new(10);
 
         let keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
-        let response = cache.get_or_compute_batch(keys, |key| async move {
-            Ok(key.len())
-        }).await;
+        let response = cache
+            .get_or_compute_batch(keys, |key| async move { Ok(key.len()) })
+            .await;
 
         assert_eq!(response.results.len(), 3);
         assert_eq!(response.cache_misses.len(), 3);
@@ -865,9 +884,9 @@ mod tests {
 
         // Second batch should hit cache
         let keys = vec!["key1".to_string(), "key2".to_string()];
-        let response = cache.get_or_compute_batch(keys, |key| async move {
-            Ok(key.len() * 2)
-        }).await;
+        let response = cache
+            .get_or_compute_batch(keys, |key| async move { Ok(key.len() * 2) })
+            .await;
 
         assert_eq!(response.cache_hits.len(), 2);
         assert_eq!(response.cache_misses.len(), 0);
@@ -877,15 +896,16 @@ mod tests {
     #[ignore] // TODO: Implement computation_timeout() method for AsyncCacheConfig
     async fn test_async_timeout() {
         let cache = AsyncComputeCache::<String, usize>::with_config(
-            AsyncCacheConfig::new(10)
-                // .computation_timeout(Some(Duration::from_millis(50)))
+            AsyncCacheConfig::new(10), // .computation_timeout(Some(Duration::from_millis(50)))
         );
 
         // This should timeout
-        let result = cache.get_or_compute("slow_key".to_string(), || async {
-            sleep(Duration::from_millis(100)).await;
-            Ok(42)
-        }).await;
+        let result = cache
+            .get_or_compute("slow_key".to_string(), || async {
+                sleep(Duration::from_millis(100)).await;
+                Ok(42)
+            })
+            .await;
 
         // TODO: Re-enable when timeout is implemented
         // assert!(result.is_err());
@@ -896,26 +916,30 @@ mod tests {
     #[ignore] // TODO: Implement enable_deduplication() method for AsyncCacheConfig
     async fn test_async_deduplication() {
         let cache = AsyncComputeCache::<String, usize>::with_config(
-            AsyncCacheConfig::new(10) // .enable_deduplication(true)
+            AsyncCacheConfig::new(10), // .enable_deduplication(true)
         );
 
         let counter = Arc::new(AtomicUsize::new(0));
 
         // Start multiple concurrent computations for the same key
-        let futures: Vec<_> = (0..5).map(|_| {
-            let cache = cache.clone();
-            let counter = Arc::clone(&counter);
-            async move {
-                cache.get_or_compute("key1".to_string(), || {
-                    let counter = Arc::clone(&counter);
-                    async move {
-                        counter.fetch_add(1, Ordering::SeqCst);
-                        sleep(Duration::from_millis(10)).await;
-                        Ok(42)
-                    }
-                }).await
-            }
-        }).collect();
+        let futures: Vec<_> = (0..5)
+            .map(|_| {
+                let cache = cache.clone();
+                let counter = Arc::clone(&counter);
+                async move {
+                    cache
+                        .get_or_compute("key1".to_string(), || {
+                            let counter = Arc::clone(&counter);
+                            async move {
+                                counter.fetch_add(1, Ordering::SeqCst);
+                                sleep(Duration::from_millis(10)).await;
+                                Ok(42)
+                            }
+                        })
+                        .await
+                }
+            })
+            .collect();
 
         let results = futures::future::join_all(futures).await;
 
@@ -935,10 +959,10 @@ mod tests {
         let cache = AsyncComputeCache::<String, usize>::new(10);
 
         // Test warm up
-        cache.warm_up(vec![
-            ("key1".to_string(), 100),
-            ("key2".to_string(), 200),
-        ]).await.unwrap();
+        cache
+            .warm_up(vec![("key1".to_string(), 100), ("key2".to_string(), 200)])
+            .await
+            .unwrap();
 
         assert_eq!(cache.len().await, 2);
         assert!(!cache.is_empty().await);
@@ -966,7 +990,9 @@ mod tests {
             .build();
 
         // Test basic functionality
-        let result = cache.get_or_compute("test".to_string(), || async { Ok(42) }).await;
+        let result = cache
+            .get_or_compute("test".to_string(), || async { Ok(42) })
+            .await;
         assert_eq!(result.unwrap(), 42);
     }
 
@@ -974,21 +1000,20 @@ mod tests {
     async fn test_preset_configurations() {
         // Test high throughput configuration
         let high_throughput = AsyncComputeCache::<String, usize>::with_config(
-            AsyncCacheConfig::for_high_throughput(1000)
+            AsyncCacheConfig::for_high_throughput(1000),
         );
         assert!(high_throughput.inner.config.enable_deduplication);
         assert!(high_throughput.inner.config.enable_background_refresh);
 
         // Test memory constrained configuration
         let memory_constrained = AsyncComputeCache::<String, usize>::with_config(
-            AsyncCacheConfig::for_memory_constrained(100)
+            AsyncCacheConfig::for_memory_constrained(100),
         );
         assert!(!memory_constrained.inner.config.enable_background_refresh);
 
         // Test low latency configuration
-        let low_latency = AsyncComputeCache::<String, usize>::with_config(
-            AsyncCacheConfig::for_low_latency(500)
-        );
+        let low_latency =
+            AsyncComputeCache::<String, usize>::with_config(AsyncCacheConfig::for_low_latency(500));
         assert!(low_latency.inner.config.enable_circuit_breaker);
         assert!(low_latency.inner.config.enable_request_coalescing);
     }

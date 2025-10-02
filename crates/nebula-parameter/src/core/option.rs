@@ -3,13 +3,13 @@
 //! This module provides types for handling static and dynamic options
 //! for select, multi-select, and radio button parameters.
 
-use std::borrow::Cow;
-use std::fmt::Debug;
 use bon::Builder;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+use std::fmt::Debug;
 
 /// Context for loading dynamic options
-/// 
+///
 /// This trait should be implemented by types that provide context
 /// for dynamic option loading, such as database connections,
 /// API clients, or other data sources.
@@ -64,7 +64,6 @@ pub struct OptionsResponse {
 pub enum SelectOptions {
     /// Static options defined at compile time
     Static(Vec<SelectOption>),
-
     // TODO: Add back when futures dependency is available
     // /// Dynamic options fetched from a function
     // Dynamic(DynamicOptions),
@@ -145,33 +144,37 @@ pub struct SelectOption {
     pub value: String,
 
     /// Optional description
-        #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<Cow<'static, str>>,
 
     /// Optional icon (icon name)
-        #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<Cow<'static, str>>,
 
     /// Whether this option is disabled
-        #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
 
     /// Group name for grouping options
-        #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<Cow<'static, str>>,
 
     /// Color hint (hex or named color)
-        #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<Cow<'static, str>>,
 
     /// Additional subtitle text
-        #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub subtitle: Option<String>,
 }
 
 impl SelectOption {
     /// Create a simple option with key, name, and value
-    pub fn new(key: impl Into<Cow<'static, str>>, name: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn new(
+        key: impl Into<Cow<'static, str>>,
+        name: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         Self {
             key: key.into(),
             name: name.into(),
@@ -193,10 +196,10 @@ impl SelectOption {
 
     /// Create an option with a description
     pub fn with_description(
-        key: impl Into<Cow<'static, str>>, 
-        name: impl Into<String>, 
+        key: impl Into<Cow<'static, str>>,
+        name: impl Into<String>,
         value: impl Into<String>,
-        description: impl Into<Cow<'static, str>>
+        description: impl Into<Cow<'static, str>>,
     ) -> Self {
         Self {
             key: key.into(),

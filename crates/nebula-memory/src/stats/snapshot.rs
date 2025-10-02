@@ -175,12 +175,18 @@ impl MemorySnapshot {
 
     /// Get components by type
     pub fn get_components_by_type(&self, component_type: ComponentType) -> Vec<&ComponentSnapshot> {
-        self.components.iter().filter(|c| c.component_type == component_type).collect()
+        self.components
+            .iter()
+            .filter(|c| c.component_type == component_type)
+            .collect()
     }
 
     /// Calculate total component memory
     pub fn total_component_memory(&self) -> usize {
-        self.components.iter().map(|c| c.metrics.current_allocated).sum()
+        self.components
+            .iter()
+            .map(|c| c.metrics.current_allocated)
+            .sum()
     }
 
     /// Format the snapshot in the specified format
@@ -219,7 +225,10 @@ impl MemorySnapshot {
             "  Peak Allocated: {}\n",
             utils::format_bytes(self.metrics.peak_allocated)
         ));
-        output.push_str(&format!("  Total Allocations: {}\n", self.metrics.allocations));
+        output.push_str(&format!(
+            "  Total Allocations: {}\n",
+            self.metrics.allocations
+        ));
         output.push_str(&format!(
             "  Fragmentation: {}\n",
             utils::format_percentage(self.metrics.fragmentation_ratio())
@@ -336,10 +345,22 @@ impl MemorySnapshot {
 
         // Overall metrics
         json.push_str("  \"metrics\": {\n");
-        json.push_str(&format!("    \"current_allocated\": {},\n", self.metrics.current_allocated));
-        json.push_str(&format!("    \"peak_allocated\": {},\n", self.metrics.peak_allocated));
-        json.push_str(&format!("    \"allocations\": {},\n", self.metrics.allocations));
-        json.push_str(&format!("    \"deallocations\": {},\n", self.metrics.deallocations));
+        json.push_str(&format!(
+            "    \"current_allocated\": {},\n",
+            self.metrics.current_allocated
+        ));
+        json.push_str(&format!(
+            "    \"peak_allocated\": {},\n",
+            self.metrics.peak_allocated
+        ));
+        json.push_str(&format!(
+            "    \"allocations\": {},\n",
+            self.metrics.allocations
+        ));
+        json.push_str(&format!(
+            "    \"deallocations\": {},\n",
+            self.metrics.deallocations
+        ));
         json.push_str(&format!(
             "    \"fragmentation_ratio\": {:.4},\n",
             self.metrics.fragmentation_ratio()
@@ -351,11 +372,20 @@ impl MemorySnapshot {
         if let Some(sys) = &self.system_info {
             json.push_str("  \"system_info\": {\n");
             json.push_str(&format!("    \"total_memory\": {},\n", sys.total_memory));
-            json.push_str(&format!("    \"available_memory\": {},\n", sys.available_memory));
-            json.push_str(&format!("    \"process_memory\": {},\n", sys.process_memory));
+            json.push_str(&format!(
+                "    \"available_memory\": {},\n",
+                sys.available_memory
+            ));
+            json.push_str(&format!(
+                "    \"process_memory\": {},\n",
+                sys.process_memory
+            ));
             json.push_str(&format!("    \"swap_used\": {},\n", sys.swap_used));
             json.push_str(&format!("    \"swap_total\": {},\n", sys.swap_total));
-            json.push_str(&format!("    \"memory_pressure\": {:.4}\n", sys.memory_pressure));
+            json.push_str(&format!(
+                "    \"memory_pressure\": {:.4}\n",
+                sys.memory_pressure
+            ));
             json.push_str("  },\n");
         } else {
             json.push_str("  \"system_info\": null,\n");
@@ -374,7 +404,10 @@ impl MemorySnapshot {
                 "      \"current_allocated\": {},\n",
                 comp.metrics.current_allocated
             ));
-            json.push_str(&format!("      \"peak_allocated\": {}\n", comp.metrics.peak_allocated));
+            json.push_str(&format!(
+                "      \"peak_allocated\": {}\n",
+                comp.metrics.peak_allocated
+            ));
             json.push_str("    }");
         }
         json.push_str("\n  ],\n");
@@ -397,7 +430,9 @@ impl MemorySnapshot {
 
     /// Format as CSV
     fn format_csv(&self) -> String {
-        let mut csv = String::from("component,type,current_usage,peak_usage,allocations,deallocations,fragmentation_ratio\n");
+        let mut csv = String::from(
+            "component,type,current_usage,peak_usage,allocations,deallocations,fragmentation_ratio\n",
+        );
 
         // Overall stats
         csv.push_str(&format!(
@@ -499,7 +534,12 @@ impl MemorySnapshot {
 impl ComponentSnapshot {
     /// Create new component snapshot
     pub fn new(name: String, component_type: ComponentType, metrics: MemoryMetrics) -> Self {
-        Self { name, component_type, metrics, details: HashMap::new() }
+        Self {
+            name,
+            component_type,
+            metrics,
+            details: HashMap::new(),
+        }
     }
 
     /// Add detail
@@ -527,7 +567,7 @@ impl ComponentDetail {
                 } else {
                     "No".to_string()
                 }
-            },
+            }
         }
     }
 }
@@ -608,7 +648,10 @@ impl SnapshotDiff {
 
         #[cfg(feature = "std")]
         {
-            output.push_str(&format!("Time Delta: {}\n", utils::format_duration(self.time_delta)));
+            output.push_str(&format!(
+                "Time Delta: {}\n",
+                utils::format_duration(self.time_delta)
+            ));
         }
 
         // Overall metrics changes
@@ -621,7 +664,10 @@ impl SnapshotDiff {
             "  Peak Usage: {}\n",
             format_bytes_delta(self.metrics_diff.peak_allocated_delta)
         ));
-        output.push_str(&format!("  Allocations: {:+}\n", self.metrics_diff.allocations_delta));
+        output.push_str(&format!(
+            "  Allocations: {:+}\n",
+            self.metrics_diff.allocations_delta
+        ));
         output.push_str(&format!(
             "  Fragmentation: {:+.2}%\n",
             self.metrics_diff.fragmentation_delta * 100.0
@@ -800,14 +846,22 @@ mod tests {
         // Component diffs: pool1 modified, pool2 added
         assert_eq!(diff.component_diffs.len(), 2);
 
-        let pool1_diff = diff.component_diffs.iter().find(|d| d.name == "pool1").unwrap();
+        let pool1_diff = diff
+            .component_diffs
+            .iter()
+            .find(|d| d.name == "pool1")
+            .unwrap();
         assert_eq!(pool1_diff.status, ComponentStatus::Modified);
         assert_eq!(pool1_diff.metrics_diff.current_allocated_delta, 100); // 600 - 500
 
-        let pool2_diff = diff.component_diffs.iter().find(|d| d.name == "pool2").unwrap();
+        let pool2_diff = diff
+            .component_diffs
+            .iter()
+            .find(|d| d.name == "pool2")
+            .unwrap();
         assert_eq!(pool2_diff.status, ComponentStatus::Added);
         assert_eq!(pool2_diff.metrics_diff.current_allocated_delta, 100); // 100
-                                                                          // - 0
+        // - 0
     }
 
     #[test]

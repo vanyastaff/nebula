@@ -202,8 +202,9 @@ impl RealTimeMonitor {
                     if let Some(rate_threshold) = alert_allocation_rate_threshold {
                         // Calculate allocation rate since last snapshot
                         let time_delta = now.duration_since(last_snapshot_time);
-                        let allocations_delta =
-                            current_metrics.allocations.saturating_sub(last_allocations_count);
+                        let allocations_delta = current_metrics
+                            .allocations
+                            .saturating_sub(last_allocations_count);
 
                         let current_rate = if !time_delta.is_zero() {
                             allocations_delta as f64 / time_delta.as_secs_f64()
@@ -290,8 +291,9 @@ impl RealTimeMonitor {
                         // Recalculate current rate for this specific check if needed, or use the
                         // one from above.
                         let time_delta = now.duration_since(last_snapshot_time);
-                        let allocations_delta =
-                            current_metrics.allocations.saturating_sub(last_allocations_count);
+                        let allocations_delta = current_metrics
+                            .allocations
+                            .saturating_sub(last_allocations_count);
                         let current_rate = if !time_delta.is_zero() {
                             allocations_delta as f64 / time_delta.as_secs_f64()
                         } else {
@@ -365,7 +367,7 @@ impl RealTimeMonitor {
                 let _ = handle.join();
             }
             *self.stop_signal.write().unwrap() = false; // Reset for potential
-                                                        // restart
+            // restart
         }
     }
 
@@ -418,7 +420,9 @@ mod tests {
         stats.total_allocated_bytes.store(0, Ordering::Relaxed);
         stats.total_deallocated_bytes.store(0, Ordering::Relaxed);
         #[cfg(feature = "std")]
-        stats.total_allocation_time_nanos.store(0, Ordering::Relaxed);
+        stats
+            .total_allocation_time_nanos
+            .store(0, Ordering::Relaxed);
 
         Arc::new(stats)
     }
@@ -465,7 +469,7 @@ mod tests {
         monitor.stop();
         assert!(!monitor.is_running());
         std::thread::sleep(Duration::from_millis(20)); // Give time for thread to truly stop
-                                                       // After stop, live data should be cleared by the monitoring thread.
+        // After stop, live data should be cleared by the monitoring thread.
         assert!(monitor.live_data.read().unwrap().is_none());
     }
 
@@ -548,14 +552,18 @@ mod tests {
         };
         let alert_config = AlertConfig::disabled();
         let stats = create_test_memory_stats();
-        let monitor_arc = Arc::new(RwLock::new(RealTimeMonitor::new(config, alert_config, stats)));
+        let monitor_arc = Arc::new(RwLock::new(RealTimeMonitor::new(
+            config,
+            alert_config,
+            stats,
+        )));
 
         {
             let mut monitor_guard = monitor_arc.write().unwrap();
             monitor_guard.start().unwrap();
             assert!(monitor_guard.is_running());
         } // `monitor_guard` goes out of scope here, but `monitor_arc` still holds a
-          // reference.
+        // reference.
 
         std::thread::sleep(Duration::from_millis(50)); // Give time for monitor to run
 
@@ -713,13 +721,22 @@ mod tests {
             // Здесь проверяем более мягко - требуем только чтобы список не был пустым
             if !data2_retry.active_alerts.is_empty() {
                 // Если оповещений несколько, проверяем наличие Error
-                if data2_retry.active_alerts.iter().any(|a| a.name == "Memory Alert: Error") {
+                if data2_retry
+                    .active_alerts
+                    .iter()
+                    .any(|a| a.name == "Memory Alert: Error")
+                {
                     // Тест пройден
                 }
             }
         } else {
             // Здесь можно проверить наличие Error оповещения
-            assert!(data2.active_alerts.iter().any(|a| a.name == "Memory Alert: Error"));
+            assert!(
+                data2
+                    .active_alerts
+                    .iter()
+                    .any(|a| a.name == "Memory Alert: Error")
+            );
         }
 
         monitor.stop();

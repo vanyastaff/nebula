@@ -4,9 +4,9 @@
 //! and facilitating allocation strategies with runtime switching.
 
 use core::alloc::Layout;
+use core::num::NonZeroUsize;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use core::num::NonZeroUsize;
 
 use super::{AllocError, AllocResult, Allocator, ThreadSafeAllocator};
 
@@ -137,7 +137,9 @@ impl AllocatorManager {
     ) -> Result<AllocatorId, &'static str> {
         let id = AllocatorId::new();
         let mut registry = self.allocators.write();
-        registry.insert(id, allocator).map_err(|_| "Registry full")?;
+        registry
+            .insert(id, allocator)
+            .map_err(|_| "Registry full")?;
         Ok(id)
     }
 
@@ -151,7 +153,8 @@ impl AllocatorManager {
 
         if exists {
             self.default_allocator = Some(allocator_id);
-            self.active_allocator.store(allocator_id.as_usize(), Ordering::SeqCst);
+            self.active_allocator
+                .store(allocator_id.as_usize(), Ordering::SeqCst);
             Ok(())
         } else {
             Err("Allocator ID not found")
@@ -168,7 +171,8 @@ impl AllocatorManager {
         let exists = self.allocators.read().contains_key(&allocator_id);
 
         if exists {
-            self.active_allocator.store(allocator_id.as_usize(), Ordering::SeqCst);
+            self.active_allocator
+                .store(allocator_id.as_usize(), Ordering::SeqCst);
             Ok(())
         } else {
             Err("Allocator ID not found")
@@ -190,7 +194,9 @@ impl AllocatorManager {
 
     /// Execute a function with access to specific allocator
     pub fn with_allocator_by_id<F, R>(&self, allocator_id: AllocatorId, f: F) -> Option<R>
-    where F: FnOnce(&dyn ManagedAllocator) -> R {
+    where
+        F: FnOnce(&dyn ManagedAllocator) -> R,
+    {
         #[cfg(feature = "std")]
         {
             let registry = self.allocators.read().unwrap();
@@ -206,7 +212,9 @@ impl AllocatorManager {
 
     /// Execute a function with the active allocator
     pub fn with_active_allocator<F, R>(&self, f: F) -> Option<R>
-    where F: FnOnce(&dyn ManagedAllocator) -> R {
+    where
+        F: FnOnce(&dyn ManagedAllocator) -> R,
+    {
         let id = self.get_active_allocator_id()?;
         self.with_allocator_by_id(id, f)
     }
@@ -214,14 +222,19 @@ impl AllocatorManager {
     /// Resets to the default allocator
     pub fn reset_to_default(&self) {
         if let Some(default_id) = self.default_allocator {
-            self.active_allocator.store(default_id.as_usize(), Ordering::SeqCst);
+            self.active_allocator
+                .store(default_id.as_usize(), Ordering::SeqCst);
         }
     }
 
     /// Executes a function with a specific allocator temporarily active
     pub fn with_allocator<F, R>(&self, allocator_id: AllocatorId, f: F) -> R
-    where F: FnOnce() -> R {
-        let previous = self.active_allocator.swap(allocator_id.as_usize(), Ordering::SeqCst);
+    where
+        F: FnOnce() -> R,
+    {
+        let previous = self
+            .active_allocator
+            .swap(allocator_id.as_usize(), Ordering::SeqCst);
         let result = f();
         self.active_allocator.store(previous, Ordering::SeqCst);
         result
@@ -232,13 +245,19 @@ impl AllocatorManager {
         #[cfg(feature = "std")]
         {
             let registry = self.allocators.read().unwrap();
-            registry.iter().map(|(&id, alloc)| (id, alloc.name())).collect()
+            registry
+                .iter()
+                .map(|(&id, alloc)| (id, alloc.name()))
+                .collect()
         }
 
         #[cfg(not(feature = "std"))]
         {
             let registry = self.allocators.read();
-            registry.iter().map(|(&id, &alloc)| (id, alloc.name())).collect()
+            registry
+                .iter()
+                .map(|(&id, &alloc)| (id, alloc.name()))
+                .collect()
         }
     }
 
@@ -314,9 +333,13 @@ impl GlobalAllocatorManager {
         #[cfg(not(feature = "std"))]
         {
             if !MANAGER_INIT.load(Ordering::SeqCst) {
-                panic!("Global allocator manager not initialized. Call GlobalAllocatorManager::init() first.");
+                panic!(
+                    "Global allocator manager not initialized. Call GlobalAllocatorManager::init() first."
+                );
             }
-            GLOBAL_MANAGER.get().expect("Global allocator manager not initialized")
+            GLOBAL_MANAGER
+                .get()
+                .expect("Global allocator manager not initialized")
         }
     }
 

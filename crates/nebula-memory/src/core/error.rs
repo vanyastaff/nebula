@@ -7,15 +7,11 @@ use core::alloc::Layout;
 use core::fmt;
 
 use nebula_error::{
-    core::traits::ErrorCode,
-    NebulaError,
-    ErrorContext,
-    ErrorKind,
-    kinds::SystemError,
+    ErrorContext, ErrorKind, NebulaError, core::traits::ErrorCode, kinds::SystemError,
 };
 
 #[cfg(feature = "logging")]
-use nebula_log::{error, warn, debug};
+use nebula_log::{debug, error, warn};
 
 // ============================================================================
 // Error Codes
@@ -148,16 +144,14 @@ impl ErrorCode for MemoryErrorCode {
             | MemoryErrorCode::InvalidCacheKey
             | MemoryErrorCode::CacheCorruption => "memory.cache",
 
-            MemoryErrorCode::BudgetExceeded
-            | MemoryErrorCode::InvalidBudget => "memory.budget",
+            MemoryErrorCode::BudgetExceeded | MemoryErrorCode::InvalidBudget => "memory.budget",
 
             MemoryErrorCode::InitializationFailed
             | MemoryErrorCode::InvalidState
             | MemoryErrorCode::ConcurrentAccess
             | MemoryErrorCode::ResourceLimit => "memory.system",
 
-            MemoryErrorCode::InvalidConfig
-            | MemoryErrorCode::ConfigNotFound => "memory.config",
+            MemoryErrorCode::InvalidConfig | MemoryErrorCode::ConfigNotFound => "memory.config",
         }
     }
 }
@@ -166,36 +160,44 @@ impl MemoryErrorCode {
     /// Convert to nebula error kind
     pub fn to_error_kind(self) -> ErrorKind {
         match self {
-            MemoryErrorCode::AllocationFailed => ErrorKind::System(SystemError::ResourceExhausted {
-                resource: "memory".to_string(),
-            }),
+            MemoryErrorCode::AllocationFailed => {
+                ErrorKind::System(SystemError::ResourceExhausted {
+                    resource: "memory".to_string(),
+                })
+            }
             MemoryErrorCode::InvalidLayout => ErrorKind::System(SystemError::ResourceExhausted {
                 resource: "invalid memory layout".to_string(),
             }),
             MemoryErrorCode::SizeOverflow => ErrorKind::System(SystemError::ResourceExhausted {
                 resource: "memory size calculation overflow".to_string(),
             }),
-            MemoryErrorCode::InvalidAlignment => ErrorKind::System(SystemError::ResourceExhausted {
-                resource: "invalid memory alignment".to_string(),
-            }),
+            MemoryErrorCode::InvalidAlignment => {
+                ErrorKind::System(SystemError::ResourceExhausted {
+                    resource: "invalid memory alignment".to_string(),
+                })
+            }
             MemoryErrorCode::ExceedsMaxSize => ErrorKind::System(SystemError::ResourceExhausted {
                 resource: "memory size exceeds maximum".to_string(),
             }),
             MemoryErrorCode::PoolExhausted => ErrorKind::System(SystemError::ResourceExhausted {
                 resource: "memory pool exhausted".to_string(),
             }),
-            MemoryErrorCode::InvalidPoolConfig => ErrorKind::System(SystemError::ResourceExhausted {
-                resource: "invalid pool configuration".to_string(),
-            }),
+            MemoryErrorCode::InvalidPoolConfig => {
+                ErrorKind::System(SystemError::ResourceExhausted {
+                    resource: "invalid pool configuration".to_string(),
+                })
+            }
             MemoryErrorCode::PoolCorruption => ErrorKind::System(SystemError::ResourceExhausted {
                 resource: "memory pool corruption".to_string(),
             }),
             MemoryErrorCode::ArenaExhausted => ErrorKind::System(SystemError::ResourceExhausted {
                 resource: "memory arena exhausted".to_string(),
             }),
-            MemoryErrorCode::InvalidArenaOperation => ErrorKind::System(SystemError::ResourceExhausted {
-                resource: "invalid arena operation".to_string(),
-            }),
+            MemoryErrorCode::InvalidArenaOperation => {
+                ErrorKind::System(SystemError::ResourceExhausted {
+                    resource: "invalid arena operation".to_string(),
+                })
+            }
             MemoryErrorCode::ArenaCorruption => ErrorKind::System(SystemError::ResourceExhausted {
                 resource: "memory arena corruption".to_string(),
             }),
@@ -217,15 +219,19 @@ impl MemoryErrorCode {
             MemoryErrorCode::InvalidBudget => ErrorKind::System(SystemError::ResourceExhausted {
                 resource: "invalid budget configuration".to_string(),
             }),
-            MemoryErrorCode::InitializationFailed => ErrorKind::System(SystemError::ResourceExhausted {
-                resource: "memory system initialization failed".to_string(),
-            }),
+            MemoryErrorCode::InitializationFailed => {
+                ErrorKind::System(SystemError::ResourceExhausted {
+                    resource: "memory system initialization failed".to_string(),
+                })
+            }
             MemoryErrorCode::InvalidState => ErrorKind::System(SystemError::ResourceExhausted {
                 resource: "invalid memory system state".to_string(),
             }),
-            MemoryErrorCode::ConcurrentAccess => ErrorKind::System(SystemError::ResourceExhausted {
-                resource: "concurrent access violation".to_string(),
-            }),
+            MemoryErrorCode::ConcurrentAccess => {
+                ErrorKind::System(SystemError::ResourceExhausted {
+                    resource: "concurrent access violation".to_string(),
+                })
+            }
             MemoryErrorCode::ResourceLimit => ErrorKind::System(SystemError::ResourceExhausted {
                 resource: "memory resource limit exceeded".to_string(),
             }),
@@ -241,11 +247,15 @@ impl MemoryErrorCode {
     pub fn message(&self) -> &'static str {
         match self {
             // Allocation errors
-            MemoryErrorCode::AllocationFailed => "Memory allocation failed due to insufficient memory",
+            MemoryErrorCode::AllocationFailed => {
+                "Memory allocation failed due to insufficient memory"
+            }
             MemoryErrorCode::InvalidLayout => "Memory layout parameters are invalid",
             MemoryErrorCode::SizeOverflow => "Memory size calculation overflowed",
             MemoryErrorCode::InvalidAlignment => "Memory alignment must be a power of two",
-            MemoryErrorCode::ExceedsMaxSize => "Memory allocation size exceeds maximum supported size",
+            MemoryErrorCode::ExceedsMaxSize => {
+                "Memory allocation size exceeds maximum supported size"
+            }
 
             // Pool errors
             MemoryErrorCode::PoolExhausted => "Object pool has no available objects",
@@ -376,8 +386,7 @@ impl MemoryError {
     pub fn with_layout(code: MemoryErrorCode, layout: Layout) -> Self {
         let mut error = Self::new(code);
         error.layout = Some(layout);
-        error.inner = error.inner
-;
+        error.inner = error.inner;
         error
     }
 
@@ -497,14 +506,12 @@ impl MemoryError {
 
     /// Creates an initialization failed error
     pub fn initialization_failed<T: fmt::Display>(details: T) -> Self {
-        Self::new(MemoryErrorCode::InitializationFailed)
-            .with_context("details", details)
+        Self::new(MemoryErrorCode::InitializationFailed).with_context("details", details)
     }
 
     /// Creates an invalid config error
     pub fn invalid_config<T: fmt::Display>(details: T) -> Self {
-        Self::new(MemoryErrorCode::InvalidConfig)
-            .with_context("details", details)
+        Self::new(MemoryErrorCode::InvalidConfig).with_context("details", details)
     }
 
     /// Creates an out of memory error
@@ -530,8 +537,7 @@ impl MemoryError {
 
     /// Creates an invalid argument error
     pub fn invalid_argument<T: fmt::Display>(details: T) -> Self {
-        Self::new(MemoryErrorCode::InvalidState)
-            .with_context("argument", details)
+        Self::new(MemoryErrorCode::InvalidState).with_context("argument", details)
     }
 
     /// Creates an invalid index error
@@ -543,20 +549,17 @@ impl MemoryError {
 
     /// Creates a not supported error
     pub fn not_supported<T: fmt::Display>(feature: T) -> Self {
-        Self::new(MemoryErrorCode::InvalidState)
-            .with_context("feature", feature)
+        Self::new(MemoryErrorCode::InvalidState).with_context("feature", feature)
     }
 
     /// Creates a decompression failed error
     pub fn decompression_failed<T: fmt::Display>(details: T) -> Self {
-        Self::new(MemoryErrorCode::InvalidState)
-            .with_context("decompression_error", details)
+        Self::new(MemoryErrorCode::InvalidState).with_context("decompression_error", details)
     }
 
     /// Creates a monitor error
     pub fn monitor_error<T: fmt::Display>(details: T) -> Self {
-        Self::new(MemoryErrorCode::InvalidState)
-            .with_context("monitor_error", details)
+        Self::new(MemoryErrorCode::InvalidState).with_context("monitor_error", details)
     }
 }
 
@@ -575,8 +578,13 @@ impl From<MemoryError> for NebulaError {
 impl fmt::Display for MemoryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(layout) = self.layout {
-            write!(f, "Memory error for {} bytes with {} alignment: {}",
-                   layout.size(), layout.align(), self.inner)
+            write!(
+                f,
+                "Memory error for {} bytes with {} alignment: {}",
+                layout.size(),
+                layout.align(),
+                self.inner
+            )
         } else if let Some(size) = self.size {
             write!(f, "Memory error for {} bytes: {}", size, self.inner)
         } else {
@@ -662,15 +670,27 @@ mod tests {
 
     #[test]
     fn test_error_categories() {
-        assert_eq!(MemoryErrorCode::AllocationFailed.error_category(), "memory.allocation");
-        assert_eq!(MemoryErrorCode::PoolExhausted.error_category(), "memory.pool");
-        assert_eq!(MemoryErrorCode::ArenaExhausted.error_category(), "memory.arena");
+        assert_eq!(
+            MemoryErrorCode::AllocationFailed.error_category(),
+            "memory.allocation"
+        );
+        assert_eq!(
+            MemoryErrorCode::PoolExhausted.error_category(),
+            "memory.pool"
+        );
+        assert_eq!(
+            MemoryErrorCode::ArenaExhausted.error_category(),
+            "memory.arena"
+        );
         assert_eq!(MemoryErrorCode::CacheMiss.error_category(), "memory.cache");
     }
 
     #[test]
     fn test_severity_levels() {
-        assert_eq!(MemoryErrorCode::AllocationFailed.severity(), Severity::Critical);
+        assert_eq!(
+            MemoryErrorCode::AllocationFailed.severity(),
+            Severity::Critical
+        );
         assert_eq!(MemoryErrorCode::InvalidLayout.severity(), Severity::Error);
         assert_eq!(MemoryErrorCode::PoolExhausted.severity(), Severity::Warning);
         assert_eq!(MemoryErrorCode::CacheMiss.severity(), Severity::Info);

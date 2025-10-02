@@ -57,8 +57,10 @@ impl AllocationSite {
                 .take(config.max_stack_depth)
                 .filter_map(|frame| {
                     frame.symbols().first().and_then(|symbol| {
-                        let symbol_name =
-                            symbol.name().and_then(|n| n.as_str()).unwrap_or("<unknown>");
+                        let symbol_name = symbol
+                            .name()
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("<unknown>");
                         let file_line = match (symbol.filename(), symbol.lineno()) {
                             (Some(f), Some(l)) => format!(" ({}:{})", f.display(), l),
                             (Some(f), None) => format!(" ({})", f.display()),
@@ -87,7 +89,12 @@ impl AllocationSite {
             stack_trace = Some(filtered_frames);
         }
 
-        AllocationSite { file, line, function, stack_trace }
+        AllocationSite {
+            file,
+            line,
+            function,
+            stack_trace,
+        }
     }
 
     /// A simplified constructor for testing or when `Backtrace` is not desired.
@@ -95,7 +102,11 @@ impl AllocationSite {
     /// `profiling` feature.
     #[cfg(not(all(feature = "std", feature = "profiling")))] // Used when std or profiling is NOT enabled
     pub fn new_manual(file: &str, line: u32, function: &str) -> Self {
-        AllocationSite { file: file.to_string(), line, function: function.to_string() }
+        AllocationSite {
+            file: file.to_string(),
+            line,
+            function: function.to_string(),
+        }
     }
     /// A simplified constructor for testing or when `Backtrace` is not desired.
     /// This version handles the `stack_trace` field for compilation with
@@ -283,7 +294,9 @@ impl MemoryProfiler {
                 let site = AllocationSite::new_manual("unknown", 0, "unknown_function");
 
                 let mut data = self.profiling_data.write();
-                data.entry(site).or_insert_with(ProfileEntry::new).record_allocation(size, latency);
+                data.entry(site)
+                    .or_insert_with(ProfileEntry::new)
+                    .record_allocation(size, latency);
 
                 self.total_profiler_sampled += 1;
             }
@@ -316,8 +329,10 @@ impl MemoryProfiler {
                 .take(self.tracking_config.max_stack_depth)
                 .filter_map(|frame| {
                     if let Some(symbol) = frame.symbols().first() {
-                        let symbol_name =
-                            symbol.name().and_then(|n| n.as_str()).unwrap_or("<unknown>");
+                        let symbol_name = symbol
+                            .name()
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("<unknown>");
 
                         let file_path = symbol
                             .filename()
@@ -349,7 +364,12 @@ impl MemoryProfiler {
             stack_trace = Some(filtered_frames);
         }
 
-        AllocationSite { file, line, function, stack_trace }
+        AllocationSite {
+            file,
+            line,
+            function,
+            stack_trace,
+        }
     }
 
     /// Records a deallocation event for the specified allocation site.
@@ -451,13 +471,48 @@ impl MemoryProfiler {
     /// Helper to build a size histogram from a snapshot.
     fn build_size_histogram_from_snapshot(snapshot: &ProfileSnapshot) -> Vec<SizeBucket> {
         let mut buckets = vec![
-            SizeBucket { min_size: 0, max_size: 64, count: 0, total_size: 0 },
-            SizeBucket { min_size: 64, max_size: 256, count: 0, total_size: 0 },
-            SizeBucket { min_size: 256, max_size: 1024, count: 0, total_size: 0 },
-            SizeBucket { min_size: 1024, max_size: 4096, count: 0, total_size: 0 },
-            SizeBucket { min_size: 4096, max_size: 16384, count: 0, total_size: 0 },
-            SizeBucket { min_size: 16384, max_size: 65536, count: 0, total_size: 0 },
-            SizeBucket { min_size: 65536, max_size: usize::MAX, count: 0, total_size: 0 },
+            SizeBucket {
+                min_size: 0,
+                max_size: 64,
+                count: 0,
+                total_size: 0,
+            },
+            SizeBucket {
+                min_size: 64,
+                max_size: 256,
+                count: 0,
+                total_size: 0,
+            },
+            SizeBucket {
+                min_size: 256,
+                max_size: 1024,
+                count: 0,
+                total_size: 0,
+            },
+            SizeBucket {
+                min_size: 1024,
+                max_size: 4096,
+                count: 0,
+                total_size: 0,
+            },
+            SizeBucket {
+                min_size: 4096,
+                max_size: 16384,
+                count: 0,
+                total_size: 0,
+            },
+            SizeBucket {
+                min_size: 16384,
+                max_size: 65536,
+                count: 0,
+                total_size: 0,
+            },
+            SizeBucket {
+                min_size: 65536,
+                max_size: usize::MAX,
+                count: 0,
+                total_size: 0,
+            },
         ];
 
         for (site, entry) in &snapshot.entries {
@@ -663,13 +718,17 @@ mod tests {
             let mut entries: Vec<&ProfileEntry> = data.values().collect();
             entries.sort_by_key(|e| e.total_allocated_bytes);
 
-            let entry_smaller_alloc =
-                entries.iter().find(|&e| e.total_allocated_bytes == 50).unwrap();
+            let entry_smaller_alloc = entries
+                .iter()
+                .find(|&e| e.total_allocated_bytes == 50)
+                .unwrap();
             assert_eq!(entry_smaller_alloc.total_allocations, 1);
             assert_eq!(entry_smaller_alloc.current_allocated_bytes, 50);
 
-            let entry_larger_alloc =
-                entries.iter().find(|&e| e.total_allocated_bytes == 300).unwrap();
+            let entry_larger_alloc = entries
+                .iter()
+                .find(|&e| e.total_allocated_bytes == 300)
+                .unwrap();
             assert_eq!(entry_larger_alloc.total_allocations, 2);
             assert_eq!(entry_larger_alloc.current_allocated_bytes, 300);
             assert_eq!(entry_larger_alloc.peak_allocated_bytes, 300);
@@ -716,24 +775,52 @@ mod tests {
                 entry
             });
             assert_eq!(
-                profiler.profiling_data.read().get(&site).unwrap().current_allocated_bytes,
+                profiler
+                    .profiling_data
+                    .read()
+                    .get(&site)
+                    .unwrap()
+                    .current_allocated_bytes,
                 300
             );
 
             profiler.record_deallocation_event(50, site.clone());
             assert_eq!(
-                profiler.profiling_data.read().get(&site).unwrap().current_allocated_bytes,
+                profiler
+                    .profiling_data
+                    .read()
+                    .get(&site)
+                    .unwrap()
+                    .current_allocated_bytes,
                 250
             );
 
             profiler.record_deallocation_event(300, site.clone()); // Деаллокация больше, чем живые данные
             assert_eq!(
-                profiler.profiling_data.read().get(&site).unwrap().current_allocated_bytes,
+                profiler
+                    .profiling_data
+                    .read()
+                    .get(&site)
+                    .unwrap()
+                    .current_allocated_bytes,
                 0
             ); // Должно насыщаться на 0
-            assert_eq!(profiler.profiling_data.read().get(&site).unwrap().total_deallocations, 2);
             assert_eq!(
-                profiler.profiling_data.read().get(&site).unwrap().total_deallocated_bytes,
+                profiler
+                    .profiling_data
+                    .read()
+                    .get(&site)
+                    .unwrap()
+                    .total_deallocations,
+                2
+            );
+            assert_eq!(
+                profiler
+                    .profiling_data
+                    .read()
+                    .get(&site)
+                    .unwrap()
+                    .total_deallocated_bytes,
                 350
             );
         }
@@ -800,8 +887,12 @@ mod tests {
 
             // Из-за простого PRNG точное количество не гарантируется, но должно быть
             // примерно 1-2
-            let sampled_count =
-                profiler.profiling_data.read().values().map(|e| e.total_allocations).sum::<u64>();
+            let sampled_count = profiler
+                .profiling_data
+                .read()
+                .values()
+                .map(|e| e.total_allocations)
+                .sum::<u64>();
             // Используем диапазон для проверок из-за природы простого семплирования
             assert!(sampled_count >= 1 && sampled_count <= 3); // Минимум 1, максимум 3 если все семплированы
             assert_eq!(profiler.total_profiler_sampled, sampled_count);
@@ -872,8 +963,11 @@ mod tests {
             assert_eq!(report.hot_spots.len(), 2); // Должно найти два горячих места (func_a, func_b)
 
             // Находим горячее место func_a
-            let hotspot_a =
-                report.hot_spots.iter().find(|h| h.location.contains("hotspot_func_a")).unwrap();
+            let hotspot_a = report
+                .hot_spots
+                .iter()
+                .find(|h| h.location.contains("hotspot_func_a"))
+                .unwrap();
             assert_eq!(hotspot_a.count, 3);
             assert_eq!(hotspot_a.total_size, 100 + 200 + 150); // 450 байт
             assert!((hotspot_a.average_size - (450.0 / 3.0)).abs() < 0.01);
@@ -881,8 +975,11 @@ mod tests {
             assert!(hotspot_a.stack_trace.is_some());
 
             // Находим горячее место func_b
-            let hotspot_b =
-                report.hot_spots.iter().find(|h| h.location.contains("hotspot_func_b")).unwrap();
+            let hotspot_b = report
+                .hot_spots
+                .iter()
+                .find(|h| h.location.contains("hotspot_func_b"))
+                .unwrap();
             assert_eq!(hotspot_b.count, 2);
             assert_eq!(hotspot_b.total_size, 500 + 1000); // 1500 байт
             assert!((hotspot_b.average_size - (1500.0 / 2.0)).abs() < 0.01);
@@ -898,13 +995,19 @@ mod tests {
             // Проверяем гистограмму
             assert!(!report.allocation_histogram.is_empty());
             let total_hist_allocs: u64 = report.allocation_histogram.iter().map(|b| b.count).sum();
-            let total_hist_bytes: u64 =
-                report.allocation_histogram.iter().map(|b| b.total_size).sum();
+            let total_hist_bytes: u64 = report
+                .allocation_histogram
+                .iter()
+                .map(|b| b.total_size)
+                .sum();
 
             // Общее количество аллокаций и байт в гистограмме должно совпадать с общим из
             // горячих мест
             assert_eq!(total_hist_allocs, hotspot_a.count + hotspot_b.count);
-            assert_eq!(total_hist_bytes, hotspot_a.total_size + hotspot_b.total_size);
+            assert_eq!(
+                total_hist_bytes,
+                hotspot_a.total_size + hotspot_b.total_size
+            );
         }
         #[cfg(not(feature = "profiling"))]
         {

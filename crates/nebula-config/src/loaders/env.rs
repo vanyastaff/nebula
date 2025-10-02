@@ -1,6 +1,8 @@
 //! Environment variable configuration loader
 
-use crate::core::{ConfigError, ConfigFormat, ConfigResult, ConfigSource, SourceMetadata, ConfigLoader};
+use crate::core::{
+    ConfigError, ConfigFormat, ConfigLoader, ConfigResult, ConfigSource, SourceMetadata,
+};
 use async_trait::async_trait;
 use std::collections::HashMap;
 
@@ -158,7 +160,8 @@ impl EnvLoader {
 
         // Try to parse as JSON (for arrays and objects)
         if (value.starts_with('{') && value.ends_with('}'))
-            || (value.starts_with('[') && value.ends_with(']')) {
+            || (value.starts_with('[') && value.ends_with(']'))
+        {
             if let Ok(json_val) = serde_json::from_str(value) {
                 return json_val;
             }
@@ -243,7 +246,11 @@ impl ConfigLoader for EnvLoader {
                 if vars.is_empty() {
                     nebula_log::debug!("No environment variables found with prefix: {}", prefix);
                 } else {
-                    nebula_log::debug!("Loaded {} environment variables with prefix: {}", vars.len(), prefix);
+                    nebula_log::debug!(
+                        "Loaded {} environment variables with prefix: {}",
+                        vars.len(),
+                        prefix
+                    );
                 }
 
                 Ok(self.env_to_json(vars))
@@ -283,14 +290,24 @@ mod tests {
         let loader = EnvLoader::new();
 
         // Test boolean parsing
-        assert_eq!(loader.parse_env_value("true"), serde_json::Value::Bool(true));
-        assert_eq!(loader.parse_env_value("FALSE"), serde_json::Value::Bool(false));
+        assert_eq!(
+            loader.parse_env_value("true"),
+            serde_json::Value::Bool(true)
+        );
+        assert_eq!(
+            loader.parse_env_value("FALSE"),
+            serde_json::Value::Bool(false)
+        );
 
         // Test number parsing
-        assert_eq!(loader.parse_env_value("42"), serde_json::Value::Number(42.into()));
-        assert_eq!(loader.parse_env_value("3.14"), serde_json::Value::Number(
-            serde_json::Number::from_f64(3.14).unwrap()
-        ));
+        assert_eq!(
+            loader.parse_env_value("42"),
+            serde_json::Value::Number(42.into())
+        );
+        assert_eq!(
+            loader.parse_env_value("3.14"),
+            serde_json::Value::Number(serde_json::Number::from_f64(3.14).unwrap())
+        );
 
         // Test array parsing
         let array_val = loader.parse_env_value("one,two,three");

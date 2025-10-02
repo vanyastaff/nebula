@@ -17,7 +17,10 @@ pub struct CompositeValidator {
 impl std::fmt::Debug for CompositeValidator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CompositeValidator")
-            .field("validators", &format!("{} validators", self.validators.len()))
+            .field(
+                "validators",
+                &format!("{} validators", self.validators.len()),
+            )
             .field("fail_fast", &self.fail_fast)
             .field("parallel", &self.parallel)
             .finish()
@@ -86,7 +89,8 @@ impl CompositeValidator {
 
     /// Run validators in parallel
     async fn validate_parallel(&self, data: &serde_json::Value) -> ConfigResult<()> {
-        let futures: Vec<_> = self.validators
+        let futures: Vec<_> = self
+            .validators
             .iter()
             .map(|validator| {
                 let validator = Arc::clone(validator);
@@ -140,10 +144,7 @@ impl ConfigValidator for CompositeValidator {
 
     fn schema(&self) -> Option<serde_json::Value> {
         // Return combined schemas if all validators have schemas
-        let schemas: Vec<_> = self.validators
-            .iter()
-            .filter_map(|v| v.schema())
-            .collect();
+        let schemas: Vec<_> = self.validators.iter().filter_map(|v| v.schema()).collect();
 
         if schemas.len() == self.validators.len() && !schemas.is_empty() {
             // Combine schemas using allOf

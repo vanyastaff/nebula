@@ -1,6 +1,6 @@
 //! Cache usage example - demonstrates multi-level caching with eviction policies
 
-use nebula_memory::cache::{ComputeCache, CacheConfig};
+use nebula_memory::cache::{CacheConfig, ComputeCache};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== nebula-memory Cache Usage Example ===\n");
@@ -27,10 +27,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("   Inserted: key4 (evicted key2 - least recent)");
 
         // Check what's in cache
-        println!("   Cache contains key1: {}", cache.contains(&"key1".to_string()));
-        println!("   Cache contains key2: {}", cache.contains(&"key2".to_string())); // false
-        println!("   Cache contains key3: {}", cache.contains(&"key3".to_string()));
-        println!("   Cache contains key4: {}", cache.contains(&"key4".to_string()));
+        println!(
+            "   Cache contains key1: {}",
+            cache.contains(&"key1".to_string())
+        );
+        println!(
+            "   Cache contains key2: {}",
+            cache.contains(&"key2".to_string())
+        ); // false
+        println!(
+            "   Cache contains key3: {}",
+            cache.contains(&"key3".to_string())
+        );
+        println!(
+            "   Cache contains key4: {}",
+            cache.contains(&"key4".to_string())
+        );
     }
 
     println!();
@@ -58,10 +70,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache.insert("d".to_string(), 4);
         println!("   Inserted: d (evicted 'a' - first in, regardless of access)");
 
-        println!("   Cache contains 'a': {}", cache.contains(&"a".to_string())); // false
-        println!("   Cache contains 'b': {}", cache.contains(&"b".to_string()));
-        println!("   Cache contains 'c': {}", cache.contains(&"c".to_string()));
-        println!("   Cache contains 'd': {}", cache.contains(&"d".to_string()));
+        println!(
+            "   Cache contains 'a': {}",
+            cache.contains(&"a".to_string())
+        ); // false
+        println!(
+            "   Cache contains 'b': {}",
+            cache.contains(&"b".to_string())
+        );
+        println!(
+            "   Cache contains 'c': {}",
+            cache.contains(&"c".to_string())
+        );
+        println!(
+            "   Cache contains 'd': {}",
+            cache.contains(&"d".to_string())
+        );
     }
 
     println!();

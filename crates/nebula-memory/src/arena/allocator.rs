@@ -53,24 +53,28 @@ impl<A: ArenaAllocate> ArenaAllocator<A> {
     /// # Safety
     ///
     /// The caller must ensure the memory is properly initialized before use
-    pub unsafe fn allocate(&self, layout: Layout) -> Result<NonNull<u8>, MemoryError> { unsafe {
-        let ptr = self.arena.alloc_bytes(layout.size(), layout.align())?;
-        NonNull::new(ptr).ok_or_else(|| MemoryError::allocation_failed())
-    }}
+    pub unsafe fn allocate(&self, layout: Layout) -> Result<NonNull<u8>, MemoryError> {
+        unsafe {
+            let ptr = self.arena.alloc_bytes(layout.size(), layout.align())?;
+            NonNull::new(ptr).ok_or_else(|| MemoryError::allocation_failed())
+        }
+    }
 
     /// Allocate a slice of memory with the given layout
     ///
     /// # Safety
     ///
     /// The caller must ensure the memory is properly initialized before use
-    pub unsafe fn allocate_slice(&self, layout: Layout) -> Result<NonNull<[u8]>, MemoryError> { unsafe {
-        let ptr = self.arena.alloc_bytes(layout.size(), layout.align())?;
+    pub unsafe fn allocate_slice(&self, layout: Layout) -> Result<NonNull<[u8]>, MemoryError> {
+        unsafe {
+            let ptr = self.arena.alloc_bytes(layout.size(), layout.align())?;
 
-        // Create a slice from the allocated memory
-        let slice = std::slice::from_raw_parts_mut(ptr, layout.size());
+            // Create a slice from the allocated memory
+            let slice = std::slice::from_raw_parts_mut(ptr, layout.size());
 
-        Ok(NonNull::from(slice))
-    }}
+            Ok(NonNull::from(slice))
+        }
+    }
 
     /// Allocate and initialize a value
     pub fn alloc<T>(&self, value: T) -> Result<&mut T, MemoryError> {
@@ -122,7 +126,9 @@ impl ArenaAllocator<ThreadSafeArena> {
 
 impl<A> Clone for ArenaAllocator<A> {
     fn clone(&self) -> Self {
-        ArenaAllocator { arena: Arc::clone(&self.arena) }
+        ArenaAllocator {
+            arena: Arc::clone(&self.arena),
+        }
     }
 }
 
@@ -159,7 +165,13 @@ pub struct ArenaBackedVec<T, A: ArenaAllocate> {
 impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
     /// Create a new empty vector
     pub fn new(allocator: Arc<A>) -> Self {
-        Self { data: std::ptr::null_mut(), len: 0, capacity: 0, allocator, _marker: PhantomData }
+        Self {
+            data: std::ptr::null_mut(),
+            len: 0,
+            capacity: 0,
+            allocator,
+            _marker: PhantomData,
+        }
     }
 
     /// Create a new vector with the given capacity
@@ -168,12 +180,17 @@ impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
             return Ok(Self::new(allocator));
         }
 
-        let layout = Layout::array::<T>(capacity)
-            .map_err(|_| MemoryError::invalid_layout())?;
+        let layout = Layout::array::<T>(capacity).map_err(|_| MemoryError::invalid_layout())?;
 
         let ptr = unsafe { allocator.alloc_bytes(layout.size(), layout.align())? };
 
-        Ok(Self { data: ptr as *mut T, len: 0, capacity, allocator, _marker: PhantomData })
+        Ok(Self {
+            data: ptr as *mut T,
+            len: 0,
+            capacity,
+            allocator,
+            _marker: PhantomData,
+        })
     }
 
     /// Push a value onto the vector

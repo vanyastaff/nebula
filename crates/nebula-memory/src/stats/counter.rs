@@ -30,12 +30,18 @@ pub struct Counter {
 impl Counter {
     /// Создает новый счетчик указанного типа
     pub fn new(counter_type: CounterType) -> Self {
-        Self { value: AtomicI64::new(0), counter_type }
+        Self {
+            value: AtomicI64::new(0),
+            counter_type,
+        }
     }
 
     /// Создает новый счетчик указанного типа с начальным значением
     pub fn with_value(counter_type: CounterType, initial_value: i64) -> Self {
-        Self { value: AtomicI64::new(initial_value), counter_type }
+        Self {
+            value: AtomicI64::new(initial_value),
+            counter_type,
+        }
     }
 
     /// Возвращает текущее значение счетчика

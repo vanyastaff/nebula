@@ -2,7 +2,7 @@
 //!
 //! Benchmarks that simulate actual usage patterns
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use nebula_memory::allocator::{Allocator, BumpAllocator, PoolAllocator, PoolConfig};
 use nebula_memory::core::traits::Resettable;
 use std::alloc::Layout;
@@ -67,9 +67,15 @@ fn bench_temporary_buffers(c: &mut Criterion) {
 
         b.iter(|| unsafe {
             // Allocate various temporary buffers
-            let buf1 = allocator.allocate(Layout::from_size_align(512, 8).unwrap()).unwrap();
-            let buf2 = allocator.allocate(Layout::from_size_align(1024, 8).unwrap()).unwrap();
-            let buf3 = allocator.allocate(Layout::from_size_align(256, 8).unwrap()).unwrap();
+            let buf1 = allocator
+                .allocate(Layout::from_size_align(512, 8).unwrap())
+                .unwrap();
+            let buf2 = allocator
+                .allocate(Layout::from_size_align(1024, 8).unwrap())
+                .unwrap();
+            let buf3 = allocator
+                .allocate(Layout::from_size_align(256, 8).unwrap())
+                .unwrap();
 
             // Use buffers
             std::ptr::write_bytes(buf1.cast::<u8>().as_ptr(), 1, 512);
@@ -149,15 +155,25 @@ fn bench_mixed_sizes(c: &mut Criterion) {
 
         b.iter(|| unsafe {
             // Small
-            let s1 = allocator.allocate(Layout::from_size_align(16, 8).unwrap()).unwrap();
-            let s2 = allocator.allocate(Layout::from_size_align(32, 8).unwrap()).unwrap();
+            let s1 = allocator
+                .allocate(Layout::from_size_align(16, 8).unwrap())
+                .unwrap();
+            let s2 = allocator
+                .allocate(Layout::from_size_align(32, 8).unwrap())
+                .unwrap();
 
             // Medium
-            let m1 = allocator.allocate(Layout::from_size_align(256, 8).unwrap()).unwrap();
-            let m2 = allocator.allocate(Layout::from_size_align(512, 8).unwrap()).unwrap();
+            let m1 = allocator
+                .allocate(Layout::from_size_align(256, 8).unwrap())
+                .unwrap();
+            let m2 = allocator
+                .allocate(Layout::from_size_align(512, 8).unwrap())
+                .unwrap();
 
             // Large
-            let l1 = allocator.allocate(Layout::from_size_align(4096, 8).unwrap()).unwrap();
+            let l1 = allocator
+                .allocate(Layout::from_size_align(4096, 8).unwrap())
+                .unwrap();
 
             black_box((s1, s2, m1, m2, l1));
 

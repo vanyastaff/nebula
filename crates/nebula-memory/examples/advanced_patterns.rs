@@ -123,7 +123,12 @@ fn thread_local_pattern() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- Thread-Local Allocators ---");
     println!("Each thread has its own allocator\n");
 
-    let allocator = Arc::new(PoolAllocator::with_config(128, 8, 100, PoolConfig::default())?);
+    let allocator = Arc::new(PoolAllocator::with_config(
+        128,
+        8,
+        100,
+        PoolConfig::default(),
+    )?);
     let mut handles = Vec::new();
 
     // Spawn worker threads

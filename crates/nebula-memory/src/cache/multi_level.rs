@@ -213,7 +213,8 @@ impl MultiLevelStats {
             return 0.0;
         }
 
-        let weighted_depth: f64 = self.level_hits
+        let weighted_depth: f64 = self
+            .level_hits
             .iter()
             .enumerate()
             .map(|(level, &hits)| (level + 1) as f64 * hits as f64)
@@ -457,7 +458,9 @@ where
     #[cfg(feature = "std")]
     fn start_background_cleanup(&mut self) {
         if let Some(interval) = self.config.cleanup_interval {
-            let levels_clone = self.levels.iter()
+            let levels_clone = self
+                .levels
+                .iter()
                 .map(|level| level.name().to_string())
                 .collect::<Vec<_>>();
 
@@ -497,9 +500,10 @@ where
                 }
 
                 // Update access count
-                if matches!(self.config.promotion_policy,
-                    PromotionPolicy::AfterNAccesses(_) | PromotionPolicy::FrequencyBased(_))
-                {
+                if matches!(
+                    self.config.promotion_policy,
+                    PromotionPolicy::AfterNAccesses(_) | PromotionPolicy::FrequencyBased(_)
+                ) {
                     let mut access_counts = self.access_counts.write().unwrap();
                     *access_counts.entry(key.clone()).or_insert(0) += 1;
                 }
@@ -522,7 +526,9 @@ where
 
     /// Get a value from the cache, computing it if not present in any level
     pub fn get_or_compute<F>(&self, key: K, compute_fn: F) -> CacheResult<V>
-    where F: FnOnce() -> Result<V, MemoryError> {
+    where
+        F: FnOnce() -> Result<V, MemoryError>,
+    {
         // Try to get from cache first
         if let Some(value) = self.get(&key) {
             return Ok(value);
@@ -569,9 +575,7 @@ where
         K: Clone,
     {
         keys.into_iter()
-            .map(|key| {
-                self.get_or_compute(key.clone(), || compute_fn(&key))
-            })
+            .map(|key| self.get_or_compute(key.clone(), || compute_fn(&key)))
             .collect()
     }
 
@@ -602,9 +606,10 @@ where
         }
 
         // Also remove from access counts
-        if matches!(self.config.promotion_policy,
-            PromotionPolicy::AfterNAccesses(_) | PromotionPolicy::FrequencyBased(_))
-        {
+        if matches!(
+            self.config.promotion_policy,
+            PromotionPolicy::AfterNAccesses(_) | PromotionPolicy::FrequencyBased(_)
+        ) {
             let mut access_counts = self.access_counts.write().unwrap();
             access_counts.remove(key);
         }
@@ -660,12 +665,18 @@ where
             let mut stats = self.stats.read().unwrap().clone();
 
             // Update efficiency metrics
-            let level_metrics: Vec<_> = self.levels.iter()
+            let level_metrics: Vec<_> = self
+                .levels
+                .iter()
                 .map(|level| {
                     #[cfg(feature = "std")]
-                    { level.metrics() }
+                    {
+                        level.metrics()
+                    }
                     #[cfg(not(feature = "std"))]
-                    { None }
+                    {
+                        None
+                    }
                 })
                 .collect();
 
@@ -705,7 +716,8 @@ where
     /// Clean up expired entries in all levels
     #[cfg(feature = "std")]
     pub fn cleanup_expired(&self) -> usize {
-        self.levels.iter()
+        self.levels
+            .iter()
             .map(|level| level.cleanup_expired())
             .sum()
     }
@@ -735,15 +747,19 @@ where
         let mut recommendations = Vec::new();
 
         if stats.overall_hit_rate() < 0.7 {
-            recommendations.push("Overall hit rate is low - consider increasing cache sizes".to_string());
+            recommendations
+                .push("Overall hit rate is low - consider increasing cache sizes".to_string());
         }
 
         if stats.avg_access_depth() > 2.0 {
-            recommendations.push("High average access depth - optimize promotion policy".to_string());
+            recommendations
+                .push("High average access depth - optimize promotion policy".to_string());
         }
 
         if stats.promotion_rate() > 0.3 {
-            recommendations.push("High promotion rate - consider more conservative promotion policy".to_string());
+            recommendations.push(
+                "High promotion rate - consider more conservative promotion policy".to_string(),
+            );
         }
 
         if let Some(most_effective) = stats.most_effective_level() {
@@ -783,8 +799,10 @@ where
             PromotionPolicy::Always => true,
             PromotionPolicy::AfterNAccesses(threshold) => {
                 let access_counts = self.access_counts.read().unwrap();
-                access_counts.get(key).map_or(false, |&count| count >= threshold)
-            },
+                access_counts
+                    .get(key)
+                    .map_or(false, |&count| count >= threshold)
+            }
             PromotionPolicy::FrequencyBased(threshold) => {
                 let access_counts = self.access_counts.read().unwrap();
                 let count = access_counts.get(key).copied().unwrap_or(0);
@@ -794,13 +812,13 @@ where
                 } else {
                     false
                 }
-            },
+            }
             PromotionPolicy::Never => false,
             PromotionPolicy::Adaptive => {
                 // Simple adaptive logic: promote if cache hit rate in current level is high
                 let stats = self.stats.read().unwrap();
                 stats.level_hit_rate(found_level) > 0.8
-            },
+            }
         };
 
         if should_promote {
@@ -818,7 +836,10 @@ where
                 break;
             }
 
-            if self.levels[level].insert(key.clone(), value.clone()).is_ok() {
+            if self.levels[level]
+                .insert(key.clone(), value.clone())
+                .is_ok()
+            {
                 promotions += 1;
 
                 if self.config.track_stats {
@@ -829,7 +850,10 @@ where
         }
 
         // Reset access count after promotion
-        if matches!(self.config.promotion_policy, PromotionPolicy::AfterNAccesses(_)) {
+        if matches!(
+            self.config.promotion_policy,
+            PromotionPolicy::AfterNAccesses(_)
+        ) {
             let mut access_counts = self.access_counts.write().unwrap();
             if let Some(count) = access_counts.get_mut(key) {
                 *count = 0;
@@ -991,7 +1015,8 @@ impl<K, V> CacheLevelExt<K, V> for ComputeCacheLevel<K, V>
 where
     K: CacheKey + Send + Sync,
     V: Clone + Send + Sync,
-{}
+{
+}
 
 #[cfg(test)]
 mod tests {
@@ -1002,17 +1027,14 @@ mod tests {
         let l2 = ComputeCacheLevel::with_capacity("L2", 1, 100);
         let l3 = ComputeCacheLevel::with_capacity("L3", 2, 1000);
 
-        let levels: Vec<Box<dyn CacheLevel<String, usize>>> = vec![
-            Box::new(l1),
-            Box::new(l2),
-            Box::new(l3),
-        ];
+        let levels: Vec<Box<dyn CacheLevel<String, usize>>> =
+            vec![Box::new(l1), Box::new(l2), Box::new(l3)];
 
         MultiLevelCache::with_config(
             levels,
             MultiLevelConfig::new()
                 .with_promotion_policy(PromotionPolicy::Always)
-                .with_stats()
+                .with_stats(),
         )
     }
 
@@ -1044,16 +1066,13 @@ mod tests {
         let l1 = ComputeCacheLevel::with_capacity("L1", 0, 10);
         let l2 = ComputeCacheLevel::with_capacity("L2", 1, 100);
 
-        let levels: Vec<Box<dyn CacheLevel<String, usize>>> = vec![
-            Box::new(l1),
-            Box::new(l2),
-        ];
+        let levels: Vec<Box<dyn CacheLevel<String, usize>>> = vec![Box::new(l1), Box::new(l2)];
 
         let cache = MultiLevelCache::with_config(
             levels,
             MultiLevelConfig::new()
                 .with_promotion_policy(PromotionPolicy::AfterNAccesses(2))
-                .with_stats()
+                .with_stats(),
         );
 
         // Insert only in L2
@@ -1075,16 +1094,13 @@ mod tests {
         let l1 = ComputeCacheLevel::with_capacity("L1", 0, 10);
         let l2 = ComputeCacheLevel::with_capacity("L2", 1, 100);
 
-        let levels: Vec<Box<dyn CacheLevel<String, usize>>> = vec![
-            Box::new(l1),
-            Box::new(l2),
-        ];
+        let levels: Vec<Box<dyn CacheLevel<String, usize>>> = vec![Box::new(l1), Box::new(l2)];
 
         let cache = MultiLevelCache::with_config(
             levels,
             MultiLevelConfig::new()
                 .with_promotion_policy(PromotionPolicy::FrequencyBased(0.5))
-                .with_stats()
+                .with_stats(),
         );
 
         // Insert only in L2
@@ -1115,7 +1131,7 @@ mod tests {
 
         assert_eq!(batch_results.len(), 2);
         assert!(batch_results[0].1.is_some()); // key1 exists
-        assert!(batch_results[1].1.is_none());  // key4 doesn't exist
+        assert!(batch_results[1].1.is_none()); // key4 doesn't exist
     }
 
     #[test]

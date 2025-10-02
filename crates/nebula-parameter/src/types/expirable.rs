@@ -1,10 +1,10 @@
-use chrono::{DateTime, Duration, Utc};
 use bon::Builder;
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 
 // Default Time-To-Live in seconds (1 hour)
@@ -155,11 +155,13 @@ impl ExpirableValue {
             ParameterValue::Expirable(exp_val) => exp_val.value.clone(),
             ParameterValue::List(list_val) => {
                 // Convert Vec<nebula_value::Value> to Vec<serde_json::Value> for Array
-                let json_items: Vec<serde_json::Value> = list_val.items.iter()
+                let json_items: Vec<serde_json::Value> = list_val
+                    .items
+                    .iter()
                     .filter_map(|v| serde_json::to_value(v).ok())
                     .collect();
                 nebula_value::Value::Array(nebula_value::Array::from(json_items))
-            },
+            }
             ParameterValue::Object(_obj_val) => nebula_value::Value::text("object_value"),
         };
         Self::new(nebula_val, ttl)
@@ -249,10 +251,15 @@ impl HasValue for ExpirableParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|exp_val| ParameterValue::Expirable(exp_val.clone()))
+        self.value
+            .as_ref()
+            .map(|exp_val| ParameterValue::Expirable(exp_val.clone()))
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Expirable(exp_val) => {
@@ -277,13 +284,14 @@ impl Validatable for ExpirableParameter {
     }
 
     fn is_empty_value(&self, value: &Self::Value) -> bool {
-        value.is_expired() || match &value.value {
-            nebula_value::Value::Text(s) => s.as_str().trim().is_empty(),
-            nebula_value::Value::Null => true,
-            nebula_value::Value::Array(a) => a.is_empty(),
-            nebula_value::Value::Object(o) => o.is_empty(),
-            _ => false,
-        }
+        value.is_expired()
+            || match &value.value {
+                nebula_value::Value::Text(s) => s.as_str().trim().is_empty(),
+                nebula_value::Value::Null => true,
+                nebula_value::Value::Array(a) => a.is_empty(),
+                nebula_value::Value::Object(o) => o.is_empty(),
+                _ => false,
+            }
     }
 }
 
@@ -299,7 +307,12 @@ impl Displayable for ExpirableParameter {
 
 impl ExpirableParameter {
     /// Create a new expirable parameter
-    pub fn new(key: &str, name: &str, description: &str, child: Option<Box<dyn ParameterType>>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        key: &str,
+        name: &str,
+        description: &str,
+        child: Option<Box<dyn ParameterType>>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             metadata: ParameterMetadata {
                 key: nebula_core::ParameterKey::new(key)?,
@@ -335,13 +348,9 @@ impl ExpirableParameter {
 
     /// Get the remaining TTL in seconds
     pub fn ttl(&self) -> Option<u64> {
-        self.value.as_ref().and_then(|v| {
-            if v.is_expired() {
-                None
-            } else {
-                Some(v.ttl())
-            }
-        })
+        self.value
+            .as_ref()
+            .and_then(|v| if v.is_expired() { None } else { Some(v.ttl()) })
     }
 
     /// Get the age of the current value in seconds
@@ -393,4 +402,3 @@ impl ExpirableParameter {
         self.options.as_ref().map(|o| o.ttl).unwrap_or(DEFAULT_TTL)
     }
 }
-

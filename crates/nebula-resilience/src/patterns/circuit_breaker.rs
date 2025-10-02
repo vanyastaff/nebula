@@ -1,11 +1,11 @@
 //! Circuit breaker pattern for automatic failure detection and recovery
 
+use nebula_log::{debug, info, warn};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use nebula_log::{debug, info, warn};
 
-use crate::{ResilienceError, ResilienceResult, ResilienceConfig, ConfigResult, ConfigError};
+use crate::{ConfigError, ConfigResult, ResilienceConfig, ResilienceError, ResilienceResult};
 use serde::{Deserialize, Serialize};
 
 /// Circuit breaker states
@@ -56,30 +56,42 @@ impl Default for CircuitBreakerConfig {
 impl ResilienceConfig for CircuitBreakerConfig {
     fn validate(&self) -> ConfigResult<()> {
         if self.failure_threshold == 0 {
-            return Err(ConfigError::validation("failure_threshold must be greater than 0"));
+            return Err(ConfigError::validation(
+                "failure_threshold must be greater than 0",
+            ));
         }
 
         // Security: prevent extremely high thresholds that could mask problems
         if self.failure_threshold > 10_000 {
-            return Err(ConfigError::validation("failure_threshold too high (max 10,000)"));
+            return Err(ConfigError::validation(
+                "failure_threshold too high (max 10,000)",
+            ));
         }
 
         if self.reset_timeout.as_millis() == 0 {
-            return Err(ConfigError::validation("reset_timeout must be greater than 0"));
+            return Err(ConfigError::validation(
+                "reset_timeout must be greater than 0",
+            ));
         }
 
         // Security: prevent extremely long reset timeouts
         if self.reset_timeout.as_secs() > 3600 {
-            return Err(ConfigError::validation("reset_timeout cannot exceed 1 hour"));
+            return Err(ConfigError::validation(
+                "reset_timeout cannot exceed 1 hour",
+            ));
         }
 
         if self.half_open_max_operations == 0 {
-            return Err(ConfigError::validation("half_open_max_operations must be greater than 0"));
+            return Err(ConfigError::validation(
+                "half_open_max_operations must be greater than 0",
+            ));
         }
 
         // Security: prevent resource exhaustion
         if self.half_open_max_operations > 1000 {
-            return Err(ConfigError::validation("half_open_max_operations too high (max 1,000)"));
+            return Err(ConfigError::validation(
+                "half_open_max_operations too high (max 1,000)",
+            ));
         }
 
         Ok(())
@@ -109,12 +121,14 @@ pub struct CircuitBreaker {
 
 impl CircuitBreaker {
     /// Create a new circuit breaker with default configuration
-    #[must_use] pub fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self::with_config(CircuitBreakerConfig::default())
     }
 
     /// Create a new circuit breaker with custom configuration
-    #[must_use] pub fn with_config(config: CircuitBreakerConfig) -> Self {
+    #[must_use]
+    pub fn with_config(config: CircuitBreakerConfig) -> Self {
         Self {
             config,
             state: Arc::new(RwLock::new(CircuitState::Closed)),

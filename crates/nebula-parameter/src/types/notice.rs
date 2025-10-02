@@ -1,10 +1,7 @@
 use bon::Builder;
 use serde::{Deserialize, Serialize};
 
-use crate::core::{
-    ParameterDisplay, ParameterMetadata, ParameterType,
-    Displayable, ParameterKind,
-};
+use crate::core::{Displayable, ParameterDisplay, ParameterKind, ParameterMetadata, ParameterType};
 
 /// Parameter for displaying a notice or information to the user
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]

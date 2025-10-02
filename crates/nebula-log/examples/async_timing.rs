@@ -1,6 +1,6 @@
+use anyhow::Result;
 use nebula_log::prelude::*;
 use nebula_log::{async_timed, measure, with_context};
-use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {

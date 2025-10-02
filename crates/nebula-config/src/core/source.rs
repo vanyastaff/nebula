@@ -39,7 +39,7 @@ pub enum ConfigSource {
         /// Key-value store connection URL
         url: String,
         /// Bucket or namespace for configuration data
-        bucket: String
+        bucket: String,
     },
 
     /// Default values

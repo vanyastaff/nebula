@@ -39,12 +39,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let too_short = Value::text("hi");
         let too_long = Value::text("hello world!");
 
-        println!("   Validating 'hello' (5 chars): {}",
-            if validator.validate(&valid, None).await.is_ok() { "✓" } else { "✗" });
-        println!("   Validating 'hi' (2 chars): {}",
-            if validator.validate(&too_short, None).await.is_ok() { "✓" } else { "✗ (too short)" });
-        println!("   Validating 'hello world!' (12 chars): {}",
-            if validator.validate(&too_long, None).await.is_ok() { "✓" } else { "✗ (too long)" });
+        println!(
+            "   Validating 'hello' (5 chars): {}",
+            if validator.validate(&valid, None).await.is_ok() {
+                "✓"
+            } else {
+                "✗"
+            }
+        );
+        println!(
+            "   Validating 'hi' (2 chars): {}",
+            if validator.validate(&too_short, None).await.is_ok() {
+                "✓"
+            } else {
+                "✗ (too short)"
+            }
+        );
+        println!(
+            "   Validating 'hello world!' (12 chars): {}",
+            if validator.validate(&too_long, None).await.is_ok() {
+                "✓"
+            } else {
+                "✗ (too long)"
+            }
+        );
     }
 
     println!();
@@ -58,12 +76,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let negative = Value::float(-10.0);
         let too_high = Value::float(150.0);
 
-        println!("   Validating 50.0: {}",
-            if validator.validate(&valid, None).await.is_ok() { "✓ (in range)" } else { "✗" });
-        println!("   Validating -10.0: {}",
-            if validator.validate(&negative, None).await.is_ok() { "✓" } else { "✗ (below min)" });
-        println!("   Validating 150.0: {}",
-            if validator.validate(&too_high, None).await.is_ok() { "✓" } else { "✗ (above max)" });
+        println!(
+            "   Validating 50.0: {}",
+            if validator.validate(&valid, None).await.is_ok() {
+                "✓ (in range)"
+            } else {
+                "✗"
+            }
+        );
+        println!(
+            "   Validating -10.0: {}",
+            if validator.validate(&negative, None).await.is_ok() {
+                "✓"
+            } else {
+                "✗ (below min)"
+            }
+        );
+        println!(
+            "   Validating 150.0: {}",
+            if validator.validate(&too_high, None).await.is_ok() {
+                "✓"
+            } else {
+                "✗ (above max)"
+            }
+        );
     }
 
     println!();
@@ -79,18 +115,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let num_value = Value::integer(42);
         let bool_value = Value::boolean(true);
 
-        println!("   String validator on 'hello': {}",
-            if string_validator.validate(&text_value, None).await.is_ok() { "✓" } else { "✗" });
-        println!("   String validator on 42: {}",
-            if string_validator.validate(&num_value, None).await.is_ok() { "✓" } else { "✗ (wrong type)" });
+        println!(
+            "   String validator on 'hello': {}",
+            if string_validator.validate(&text_value, None).await.is_ok() {
+                "✓"
+            } else {
+                "✗"
+            }
+        );
+        println!(
+            "   String validator on 42: {}",
+            if string_validator.validate(&num_value, None).await.is_ok() {
+                "✓"
+            } else {
+                "✗ (wrong type)"
+            }
+        );
 
-        println!("   Number validator on 42: {}",
-            if number_validator.validate(&num_value, None).await.is_ok() { "✓" } else { "✗" });
-        println!("   Number validator on true: {}",
-            if number_validator.validate(&bool_value, None).await.is_ok() { "✓" } else { "✗ (wrong type)" });
+        println!(
+            "   Number validator on 42: {}",
+            if number_validator.validate(&num_value, None).await.is_ok() {
+                "✓"
+            } else {
+                "✗"
+            }
+        );
+        println!(
+            "   Number validator on true: {}",
+            if number_validator.validate(&bool_value, None).await.is_ok() {
+                "✓"
+            } else {
+                "✗ (wrong type)"
+            }
+        );
 
-        println!("   Boolean validator on true: {}",
-            if boolean_validator.validate(&bool_value, None).await.is_ok() { "✓" } else { "✗" });
+        println!(
+            "   Boolean validator on true: {}",
+            if boolean_validator.validate(&bool_value, None).await.is_ok() {
+                "✓"
+            } else {
+                "✗"
+            }
+        );
     }
 
     println!();
@@ -98,24 +164,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Example 5: Pattern matching
     {
         println!("5. Pattern Matching:");
-        let email_validator = string_contains("@".to_string())
-            .and(string_contains(".".to_string()));
+        let email_validator =
+            string_contains("@".to_string()).and(string_contains(".".to_string()));
 
         let valid_email = Value::text("user@example.com");
         let invalid_email = Value::text("user-at-example");
 
-        println!("   Validating 'user@example.com': {}",
+        println!(
+            "   Validating 'user@example.com': {}",
             if email_validator.validate(&valid_email, None).await.is_ok() {
                 "✓ (contains @ and .)"
             } else {
                 "✗"
-            });
-        println!("   Validating 'user-at-example': {}",
+            }
+        );
+        println!(
+            "   Validating 'user-at-example': {}",
             if email_validator.validate(&invalid_email, None).await.is_ok() {
                 "✓"
             } else {
                 "✗ (missing @ or .)"
-            });
+            }
+        );
     }
 
     println!();
@@ -135,14 +205,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let invalid_short = Value::text("ab");
         let invalid_special = Value::text("alice@123");
 
-        println!("   Validating 'alice123': {}",
-            if username_validator.validate(&valid, None).await.is_ok() { "✓" } else { "✗" });
-        println!("   Validating 'Alice123': {}",
-            if username_validator.validate(&invalid_caps, None).await.is_ok() { "✓" } else { "✗ (not lowercase)" });
-        println!("   Validating 'ab': {}",
-            if username_validator.validate(&invalid_short, None).await.is_ok() { "✓" } else { "✗ (too short)" });
-        println!("   Validating 'alice@123': {}",
-            if username_validator.validate(&invalid_special, None).await.is_ok() { "✓" } else { "✗ (special chars)" });
+        println!(
+            "   Validating 'alice123': {}",
+            if username_validator.validate(&valid, None).await.is_ok() {
+                "✓"
+            } else {
+                "✗"
+            }
+        );
+        println!(
+            "   Validating 'Alice123': {}",
+            if username_validator
+                .validate(&invalid_caps, None)
+                .await
+                .is_ok()
+            {
+                "✓"
+            } else {
+                "✗ (not lowercase)"
+            }
+        );
+        println!(
+            "   Validating 'ab': {}",
+            if username_validator
+                .validate(&invalid_short, None)
+                .await
+                .is_ok()
+            {
+                "✓"
+            } else {
+                "✗ (too short)"
+            }
+        );
+        println!(
+            "   Validating 'alice@123': {}",
+            if username_validator
+                .validate(&invalid_special, None)
+                .await
+                .is_ok()
+            {
+                "✓"
+            } else {
+                "✗ (special chars)"
+            }
+        );
     }
 
     println!("\n=== All examples completed! ===");

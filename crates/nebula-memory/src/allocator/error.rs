@@ -11,11 +11,7 @@ use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use nebula_error::{
-    core::traits::ErrorCode,
-    NebulaError,
-    ErrorContext,
-    ErrorKind,
-    kinds::SystemError,
+    ErrorContext, ErrorKind, NebulaError, core::traits::ErrorCode, kinds::SystemError,
 };
 
 #[cfg(feature = "std")]
@@ -25,7 +21,7 @@ use std::collections::HashMap;
 use std::backtrace::Backtrace;
 
 #[cfg(feature = "logging")]
-use nebula_log::{error, warn, debug};
+use nebula_log::{debug, error, warn};
 
 // ============================================================================
 // Error Codes for Allocator Module
@@ -383,7 +379,10 @@ impl AllocError {
             inner: {
                 #[cfg(feature = "std")]
                 {
-                    let layout_context = Self::create_context("layout", format!("size: {}, align: {}", layout.size(), layout.align()));
+                    let layout_context = Self::create_context(
+                        "layout",
+                        format!("size: {}, align: {}", layout.size(), layout.align()),
+                    );
                     NebulaError::new(code.to_error_kind()).with_context(layout_context)
                 }
                 #[cfg(not(feature = "std"))]
@@ -404,17 +403,22 @@ impl AllocError {
         let mut error = NebulaError::new(code.to_error_kind());
 
         if let Some(layout) = layout {
-            let layout_context = Self::create_context("layout", format!("size: {}, align: {}", layout.size(), layout.align()));
+            let layout_context = Self::create_context(
+                "layout",
+                format!("size: {}, align: {}", layout.size(), layout.align()),
+            );
             error = error.with_context(layout_context);
         }
 
         if let Some(ref state) = memory_state {
             if let Some(available) = state.available {
-                let mem_context = Self::create_context("memory_state", format!("available: {}", available));
+                let mem_context =
+                    Self::create_context("memory_state", format!("available: {}", available));
                 error = error.with_context(mem_context);
             }
             if let Some(total) = state.total {
-                let total_context = Self::create_context("memory_total", format!("total: {}", total));
+                let total_context =
+                    Self::create_context("memory_total", format!("total: {}", total));
                 error = error.with_context(total_context);
             }
         }
@@ -612,8 +616,13 @@ impl From<AllocError> for NebulaError {
 impl fmt::Display for AllocError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(layout) = self.layout {
-            write!(f, "Allocation failed for {} bytes with {} alignment: {}",
-                   layout.size(), layout.align(), self.inner)
+            write!(
+                f,
+                "Allocation failed for {} bytes with {} alignment: {}",
+                layout.size(),
+                layout.align(),
+                self.inner
+            )
         } else {
             write!(f, "Allocation failed: {}", self.inner)
         }
@@ -626,7 +635,6 @@ impl std::error::Error for AllocError {
         Some(&self.inner)
     }
 }
-
 
 // ============================================================================
 // Result Type and Utilities

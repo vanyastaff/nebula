@@ -21,7 +21,9 @@ use thiserror::Error;
 pub use client::ClientError;
 pub use server::ServerError;
 pub use system::SystemError;
-pub use workflow::{WorkflowError, NodeError, TriggerError, ConnectorError, CredentialError, ExecutionError};
+pub use workflow::{
+    ConnectorError, CredentialError, ExecutionError, NodeError, TriggerError, WorkflowError,
+};
 
 use crate::core::traits::{ErrorClassification, ErrorCode, RetryableError};
 
@@ -140,22 +142,22 @@ impl ErrorCode for ErrorKind {
 }
 
 // Backwards compatibility - keep the old error variants as type aliases
-pub use client::ClientError::Validation;
-pub use client::ClientError::NotFound;
-pub use client::ClientError::InvalidInput;
-pub use client::ClientError::PermissionDenied;
 pub use client::ClientError::Authentication;
 pub use client::ClientError::Authorization;
+pub use client::ClientError::InvalidInput;
+pub use client::ClientError::NotFound;
+pub use client::ClientError::PermissionDenied;
+pub use client::ClientError::Validation;
 
 pub use server::ServerError::Internal;
 pub use server::ServerError::ServiceUnavailable;
 
-pub use system::SystemError::Timeout;
-pub use system::SystemError::Network;
 pub use system::SystemError::Database;
 pub use system::SystemError::ExternalService;
+pub use system::SystemError::Network;
 pub use system::SystemError::RateLimitExceeded;
 pub use system::SystemError::ResourceExhausted;
+pub use system::SystemError::Timeout;
 
 #[cfg(test)]
 mod tests {
@@ -164,21 +166,21 @@ mod tests {
     #[test]
     fn test_error_classification() {
         let client_error = ErrorKind::Client(ClientError::Validation {
-            message: "Invalid input".to_string()
+            message: "Invalid input".to_string(),
         });
         assert!(client_error.is_client_error());
         assert!(!client_error.is_server_error());
         assert!(!client_error.is_system_error());
 
         let server_error = ErrorKind::Server(ServerError::Internal {
-            message: "Database connection failed".to_string()
+            message: "Database connection failed".to_string(),
         });
         assert!(!server_error.is_client_error());
         assert!(server_error.is_server_error());
         assert!(!server_error.is_system_error());
 
         let system_error = ErrorKind::System(SystemError::Network {
-            message: "Connection timeout".to_string()
+            message: "Connection timeout".to_string(),
         });
         assert!(!system_error.is_client_error());
         assert!(!system_error.is_server_error());
@@ -188,7 +190,7 @@ mod tests {
     #[test]
     fn test_retry_behavior() {
         let validation_error = ErrorKind::Client(ClientError::Validation {
-            message: "Invalid input".to_string()
+            message: "Invalid input".to_string(),
         });
         assert!(!validation_error.is_retryable());
 
@@ -202,13 +204,13 @@ mod tests {
     #[test]
     fn test_error_codes() {
         let validation_error = ErrorKind::Client(ClientError::Validation {
-            message: "Invalid input".to_string()
+            message: "Invalid input".to_string(),
         });
         assert_eq!(validation_error.error_code(), "VALIDATION_ERROR");
         assert_eq!(validation_error.error_category(), "CLIENT");
 
         let internal_error = ErrorKind::Server(ServerError::Internal {
-            message: "Server error".to_string()
+            message: "Server error".to_string(),
         });
         assert_eq!(internal_error.error_code(), "INTERNAL_ERROR");
         assert_eq!(internal_error.error_category(), "SERVER");

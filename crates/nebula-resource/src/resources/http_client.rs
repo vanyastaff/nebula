@@ -291,15 +291,12 @@ impl HealthCheckable for HttpClientInstance {
         // Perform a simple health check (e.g., HEAD request to base URL)
         if let Some(ref base_url) = self.config.base_url {
             match self.client.head(base_url).await {
-                Ok(_) => Ok(HealthStatus::Healthy),
-                Err(e) => Ok(HealthStatus::Unhealthy {
-                    reason: format!("Health check failed: {}", e),
-                    recoverable: true,
-                }),
+                Ok(_) => Ok(HealthStatus::healthy()),
+                Err(e) => Ok(HealthStatus::unhealthy(format!("Health check failed: {}", e))),
             }
         } else {
             // No base URL configured, assume healthy
-            Ok(HealthStatus::Healthy)
+            Ok(HealthStatus::healthy())
         }
     }
 

@@ -3,8 +3,8 @@
 //! Provides a fluent API for building objects with validation.
 
 use crate::collections::Object;
-use crate::core::limits::ValueLimits;
 use crate::core::error::ValueResult;
+use crate::core::limits::ValueLimits;
 
 // TEMP: using serde_json::Value as placeholder
 type ValueItem = serde_json::Value;
@@ -255,8 +255,10 @@ mod tests {
 
         let result = ObjectBuilder::new()
             .with_limits(limits)
-            .try_insert("a", serde_json::json!(1)).unwrap()
-            .try_insert("b", serde_json::json!(2)).unwrap()
+            .try_insert("a", serde_json::json!(1))
+            .unwrap()
+            .try_insert("b", serde_json::json!(2))
+            .unwrap()
             .try_insert("c", serde_json::json!(3));
 
         assert!(result.is_err());
@@ -292,11 +294,9 @@ mod tests {
 
     #[test]
     fn test_builder_merge() {
-        let builder1 = ObjectBuilder::new()
-            .insert("a", serde_json::json!(1));
+        let builder1 = ObjectBuilder::new().insert("a", serde_json::json!(1));
 
-        let builder2 = ObjectBuilder::new()
-            .insert("b", serde_json::json!(2));
+        let builder2 = ObjectBuilder::new().insert("b", serde_json::json!(2));
 
         let object = builder1.merge(builder2).build().unwrap();
 
@@ -307,8 +307,7 @@ mod tests {
 
     #[test]
     fn test_builder_contains_key() {
-        let builder = ObjectBuilder::new()
-            .insert("name", serde_json::json!("Alice"));
+        let builder = ObjectBuilder::new().insert("name", serde_json::json!("Alice"));
 
         assert!(builder.contains_key("name"));
         assert!(!builder.contains_key("age"));

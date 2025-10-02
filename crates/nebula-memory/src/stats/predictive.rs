@@ -32,7 +32,7 @@ impl From<MLModelType> for PredictionModel {
             MLModelType::LinearRegression => PredictionModel::Linear,
             MLModelType::ExponentialSmoothing => {
                 PredictionModel::ExponentialSmoothing { alpha: 0.5 }
-            }, // Default alpha
+            } // Default alpha
             MLModelType::ARIMA => PredictionModel::Linear, // ARIMA is more complex, fallback to
             // Linear for now
             MLModelType::NeuralNetwork => PredictionModel::Linear, /* Neural Network is more
@@ -81,7 +81,11 @@ pub struct PredictiveAnalytics {
 impl PredictiveAnalytics {
     /// Create new predictive analytics engine
     pub fn new(model: PredictionModel, max_history: usize) -> Self {
-        Self { model, history: VecDeque::with_capacity(max_history), max_history }
+        Self {
+            model,
+            history: VecDeque::with_capacity(max_history),
+            max_history,
+        }
     }
 
     /// Add data point
@@ -142,7 +146,11 @@ impl PredictiveAnalytics {
             .map(|(x, y)| (y - (slope * x + intercept)).powi(2))
             .sum();
 
-        let r_squared = if ss_tot > 0.0 { 1.0 - (ss_res / ss_tot) } else { 0.0 };
+        let r_squared = if ss_tot > 0.0 {
+            1.0 - (ss_res / ss_tot)
+        } else {
+            0.0
+        };
 
         // Determine trend type
         let volatility = self.calculate_volatility(&y_values);
@@ -158,7 +166,12 @@ impl PredictiveAnalytics {
             TrendType::Shrinking
         };
 
-        Some(MemoryTrend { slope, intercept, r_squared, trend_type })
+        Some(MemoryTrend {
+            slope,
+            intercept,
+            r_squared,
+            trend_type,
+        })
     }
 
     /// Calculate volatility (coefficient of variation)
@@ -185,10 +198,10 @@ impl PredictiveAnalytics {
             PredictionModel::Linear => self.predict_linear(future_time),
             PredictionModel::ExponentialSmoothing { alpha } => {
                 self.predict_exponential_smoothing(alpha, future_time)
-            },
+            }
             PredictionModel::MovingAverage { window } => {
                 self.predict_moving_average(window, future_time)
-            },
+            }
             PredictionModel::Seasonal { period } => self.predict_seasonal(period, future_time),
         }
     }
@@ -289,13 +302,24 @@ impl PredictiveAnalytics {
             return None;
         }
 
-        let sum: f64 = self.history.iter().rev().take(window).map(|dp| dp.value).sum();
+        let sum: f64 = self
+            .history
+            .iter()
+            .rev()
+            .take(window)
+            .map(|dp| dp.value)
+            .sum();
         let predicted_value = sum / window as f64;
         let prediction_time = self.history.back()?.timestamp + future_time;
 
         // Confidence approximation
-        let historical_values: Vec<f64> =
-            self.history.iter().rev().take(window).map(|dp| dp.value).collect();
+        let historical_values: Vec<f64> = self
+            .history
+            .iter()
+            .rev()
+            .take(window)
+            .map(|dp| dp.value)
+            .collect();
         let std_dev_historical = self.calculate_std_dev_of_values(&historical_values);
         let margin = 2.0 * std_dev_historical;
 
@@ -336,16 +360,24 @@ impl PredictiveAnalytics {
         }
 
         // Calculate de-seasonalized trend (simple average of last period)
-        let last_period_values: Vec<f64> =
-            self.history.iter().rev().take(period).map(|dp| dp.value).collect();
+        let last_period_values: Vec<f64> = self
+            .history
+            .iter()
+            .rev()
+            .take(period)
+            .map(|dp| dp.value)
+            .collect();
         let trend_component =
             last_period_values.iter().sum::<f64>() / last_period_values.len() as f64;
 
         // Determine the season index for the prediction time
-        let total_time_since_start =
-            (self.history.back()?.timestamp.duration_since(self.history.front()?.timestamp)
-                + future_time)
-                .as_secs_f64();
+        let total_time_since_start = (self
+            .history
+            .back()?
+            .timestamp
+            .duration_since(self.history.front()?.timestamp)
+            + future_time)
+            .as_secs_f64();
         let predicted_season_index =
             (total_time_since_start / (self.history.len() as f64 / period as f64)).round() as usize
                 % period; // Heuristic for index
@@ -519,7 +551,11 @@ mod tests {
 
         // Заполняем данными с четким линейным трендом
         let base_time = Instant::now();
-        analytics.add_data_point(DataPoint { timestamp: base_time, value: 10.0, metadata: None });
+        analytics.add_data_point(DataPoint {
+            timestamp: base_time,
+            value: 10.0,
+            metadata: None,
+        });
         analytics.add_data_point(DataPoint {
             timestamp: base_time + Duration::from_secs(1),
             value: 20.0,
@@ -601,7 +637,7 @@ mod tests {
 
         let prediction = analytics.predict(Duration::from_secs(1)).unwrap();
         assert!((prediction.value - 112.5).abs() < 0.01); // Predicted value is
-                                                          // last smoothed value
+        // last smoothed value
     }
 
     #[test]
@@ -654,7 +690,11 @@ mod tests {
         // Создаем сезонные данные с ярко выраженной структурой
         // Позиции с четными индексами (0, 2, 4) имеют низкие значения
         // Позиции с нечетными индексами (1, 3, 5) имеют высокие значения
-        analytics.add_data_point(DataPoint { timestamp: base_time, value: 10.0, metadata: None });
+        analytics.add_data_point(DataPoint {
+            timestamp: base_time,
+            value: 10.0,
+            metadata: None,
+        });
         analytics.add_data_point(DataPoint {
             timestamp: base_time + Duration::from_secs(1),
             value: 30.0,
@@ -692,7 +732,7 @@ mod tests {
         // 2. Сезонные компоненты:
         // - индекс 0: среднее значение для позиций 0, 2, 4 = (10 + 12 + 14) / 3 = 12
         let seasonal_0 = (10.0 + 12.0 + 14.0) / 3.0; // = 12.0
-                                                     // - индекс 1: среднее значение для позиций 1, 3, 5 = (30 + 32 + 34) / 3 = 32
+        // - индекс 1: среднее значение для позиций 1, 3, 5 = (30 + 32 + 34) / 3 = 32
         let _seasonal_1 = (30.0 + 32.0 + 34.0) / 3.0; // = 32.0
 
         // 3. Предсказание на 1 секунду вперед:

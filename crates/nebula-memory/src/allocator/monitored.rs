@@ -10,16 +10,16 @@ use core::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "logging")]
-use nebula_log::{debug, warn, error};
+use nebula_log::{debug, error, warn};
 
 use crate::allocator::{
-    AllocError, AllocErrorCode, AllocResult, Allocator, AllocatorStats,
-    AtomicAllocatorStats, StatisticsProvider,
+    AllocError, AllocErrorCode, AllocResult, Allocator, AllocatorStats, AtomicAllocatorStats,
+    StatisticsProvider,
 };
 use crate::core::error::{MemoryError, MemoryResult};
 
 #[cfg(feature = "std")]
-use crate::monitoring::{MemoryMonitor, MonitoringConfig, PressureAction, IntegratedStats};
+use crate::monitoring::{IntegratedStats, MemoryMonitor, MonitoringConfig, PressureAction};
 
 /// Allocator wrapper that monitors system memory pressure and adjusts behavior
 #[derive(Debug)]
@@ -51,7 +51,7 @@ pub struct MonitoredConfig {
 impl Default for MonitoredConfig {
     fn default() -> Self {
         Self {
-            max_high_pressure_alloc: 64 * 1024, // 64KB
+            max_high_pressure_alloc: 64 * 1024,    // 64KB
             max_critical_pressure_alloc: 4 * 1024, // 4KB
             detailed_logging: true,
             fail_on_critical: false,
@@ -99,8 +99,9 @@ where
     #[cfg(feature = "std")]
     pub fn integrated_stats(&self) -> MemoryResult<IntegratedStats> {
         let allocator_stats = self.stats.snapshot();
-        let monitor = self.monitor.lock()
-            .map_err(|e| MemoryError::initialization_failed(format!("Monitor lock failed: {}", e)))?;
+        let monitor = self.monitor.lock().map_err(|e| {
+            MemoryError::initialization_failed(format!("Monitor lock failed: {}", e))
+        })?;
         let monitoring_stats = monitor.get_stats();
 
         Ok(IntegratedStats::new(allocator_stats, monitoring_stats))
@@ -109,8 +110,9 @@ where
     /// Check if allocation should be allowed based on size and system pressure
     #[cfg(feature = "std")]
     fn should_allow_allocation(&self, layout: Layout) -> MemoryResult<bool> {
-        let mut monitor = self.monitor.lock()
-            .map_err(|e| MemoryError::initialization_failed(format!("Monitor lock failed: {}", e)))?;
+        let mut monitor = self.monitor.lock().map_err(|e| {
+            MemoryError::initialization_failed(format!("Monitor lock failed: {}", e))
+        })?;
 
         // Check if large allocation should be allowed
         if !monitor.should_allow_large_allocation(layout.size())? {
@@ -257,10 +259,7 @@ where
                 // Monitor error - log and allow allocation
                 #[cfg(feature = "logging")]
                 if self.config.detailed_logging {
-                    warn!(
-                        "Monitor error, allowing allocation: {}",
-                        monitor_error
-                    );
+                    warn!("Monitor error, allowing allocation: {}", monitor_error);
                 }
 
                 match self.inner.allocate(layout) {
@@ -299,18 +298,17 @@ where
     ) -> AllocResult<NonNull<[u8]>> {
         // Check if the new size should be allowed
         match self.should_allow_allocation(new_layout) {
-            Ok(true) => {
-                match self.inner.grow(ptr, old_layout, new_layout) {
-                    Ok(new_ptr) => {
-                        self.stats.record_reallocation(old_layout.size(), new_layout.size());
-                        Ok(new_ptr)
-                    }
-                    Err(err) => {
-                        self.stats.record_allocation_failure();
-                        Err(err)
-                    }
+            Ok(true) => match self.inner.grow(ptr, old_layout, new_layout) {
+                Ok(new_ptr) => {
+                    self.stats
+                        .record_reallocation(old_layout.size(), new_layout.size());
+                    Ok(new_ptr)
                 }
-            }
+                Err(err) => {
+                    self.stats.record_allocation_failure();
+                    Err(err)
+                }
+            },
             Ok(false) => {
                 self.stats.record_allocation_failure();
                 Err(AllocError::with_layout(
@@ -322,7 +320,8 @@ where
                 // Monitor error - allow growth
                 match self.inner.grow(ptr, old_layout, new_layout) {
                     Ok(new_ptr) => {
-                        self.stats.record_reallocation(old_layout.size(), new_layout.size());
+                        self.stats
+                            .record_reallocation(old_layout.size(), new_layout.size());
                         Ok(new_ptr)
                     }
                     Err(err) => {
@@ -342,7 +341,8 @@ where
     ) -> AllocResult<NonNull<[u8]>> {
         match self.inner.shrink(ptr, old_layout, new_layout) {
             Ok(new_ptr) => {
-                self.stats.record_reallocation(old_layout.size(), new_layout.size());
+                self.stats
+                    .record_reallocation(old_layout.size(), new_layout.size());
                 Ok(new_ptr)
             }
             Err(err) => {

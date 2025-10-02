@@ -4,13 +4,17 @@ use async_trait::async_trait;
 use nebula_value::Value;
 use std::collections::HashMap;
 
-use super::{Valid, Invalid};
+use super::{Invalid, Valid};
 
 /// Main validation trait - the core interface for all validators
 #[async_trait]
 pub trait Validator: Send + Sync {
     /// Validate a value with optional context for cross-field validation
-    async fn validate(&self, value: &Value, context: Option<&ValidationContext>) -> Result<Valid<()>, Invalid<()>>;
+    async fn validate(
+        &self,
+        value: &Value,
+        context: Option<&ValidationContext>,
+    ) -> Result<Valid<()>, Invalid<()>>;
 
     /// Get the validator name/identifier
     fn name(&self) -> &str;
@@ -116,7 +120,11 @@ impl ValidationContext {
     }
 
     /// Create a lightweight reference-based child context (more efficient)
-    pub fn child_context_ref<'a>(&'a self, _field_name: &'a str, full_path: &'a str) -> ValidationContextRef<'a> {
+    pub fn child_context_ref<'a>(
+        &'a self,
+        _field_name: &'a str,
+        full_path: &'a str,
+    ) -> ValidationContextRef<'a> {
         ValidationContextRef {
             root_object: &self.root_object,
             current_path: full_path,
@@ -225,7 +233,11 @@ impl<L: Validator, R: Validator> AndValidator<L, R> {
 
 #[async_trait]
 impl<L: Validator, R: Validator> Validator for AndValidator<L, R> {
-    async fn validate(&self, value: &Value, context: Option<&ValidationContext>) -> Result<Valid<()>, Invalid<()>> {
+    async fn validate(
+        &self,
+        value: &Value,
+        context: Option<&ValidationContext>,
+    ) -> Result<Valid<()>, Invalid<()>> {
         // Both must pass - collect all errors
         let left_result = self.left.validate(value, context).await;
         let right_result = self.right.validate(value, context).await;
@@ -234,9 +246,10 @@ impl<L: Validator, R: Validator> Validator for AndValidator<L, R> {
             (Ok(_), Ok(_)) => Ok(Valid::simple(())),
             (Err(left_invalid), Err(right_invalid)) => {
                 // Combine errors from both validators
-                Err(left_invalid.combine(right_invalid)
+                Err(left_invalid
+                    .combine(right_invalid)
                     .with_validator_name(&self.name))
-            },
+            }
             (Err(invalid), _) => Err(invalid.with_validator_name(&self.name)),
             (_, Err(invalid)) => Err(invalid.with_validator_name(&self.name)),
         }
@@ -271,7 +284,11 @@ impl<L: Validator, R: Validator> OrValidator<L, R> {
 
 #[async_trait]
 impl<L: Validator, R: Validator> Validator for OrValidator<L, R> {
-    async fn validate(&self, value: &Value, context: Option<&ValidationContext>) -> Result<Valid<()>, Invalid<()>> {
+    async fn validate(
+        &self,
+        value: &Value,
+        context: Option<&ValidationContext>,
+    ) -> Result<Valid<()>, Invalid<()>> {
         // Try both - if either passes, succeed; if both fail, combine errors
         let left_result = self.left.validate(value, context).await;
         let right_result = self.right.validate(value, context).await;
@@ -280,7 +297,8 @@ impl<L: Validator, R: Validator> Validator for OrValidator<L, R> {
             (Ok(valid), _) | (_, Ok(valid)) => Ok(valid),
             (Err(left_invalid), Err(right_invalid)) => {
                 // Both failed - combine errors with context
-                Err(left_invalid.combine(right_invalid)
+                Err(left_invalid
+                    .combine(right_invalid)
                     .with_context("All OR conditions failed")
                     .with_validator_name(&self.name))
             }
@@ -315,16 +333,23 @@ impl<V: Validator> NotValidator<V> {
 
 #[async_trait]
 impl<V: Validator> Validator for NotValidator<V> {
-    async fn validate(&self, value: &Value, context: Option<&ValidationContext>) -> Result<Valid<()>, Invalid<()>> {
+    async fn validate(
+        &self,
+        value: &Value,
+        context: Option<&ValidationContext>,
+    ) -> Result<Valid<()>, Invalid<()>> {
         match self.validator.validate(value, context).await {
             Ok(_) => {
                 // Validator passed, so NOT fails
-                Err(Invalid::simple(format!("NOT condition failed: {} should not be valid", self.validator.name())))
-            },
+                Err(Invalid::simple(format!(
+                    "NOT condition failed: {} should not be valid",
+                    self.validator.name()
+                )))
+            }
             Err(_) => {
                 // Validator failed, so NOT passes
                 Ok(Valid::simple(()))
-            },
+            }
         }
     }
 
@@ -351,13 +376,21 @@ where
 impl<V: Validator, C: Validator> ConditionalValidator<V, C> {
     pub fn new(validator: V, condition: C) -> Self {
         let name = format!("{} WHEN {}", validator.name(), condition.name());
-        Self { validator, condition, name }
+        Self {
+            validator,
+            condition,
+            name,
+        }
     }
 }
 
 #[async_trait]
 impl<V: Validator, C: Validator> Validator for ConditionalValidator<V, C> {
-    async fn validate(&self, value: &Value, context: Option<&ValidationContext>) -> Result<Valid<()>, Invalid<()>> {
+    async fn validate(
+        &self,
+        value: &Value,
+        context: Option<&ValidationContext>,
+    ) -> Result<Valid<()>, Invalid<()>> {
         // Check condition first
         if self.condition.validate(value, context).await.is_ok() {
             // Condition passed, run the actual validator
@@ -373,7 +406,9 @@ impl<V: Validator, C: Validator> Validator for ConditionalValidator<V, C> {
     }
 
     fn complexity(&self) -> ValidationComplexity {
-        self.validator.complexity().combine(self.condition.complexity())
+        self.validator
+            .complexity()
+            .combine(self.condition.complexity())
     }
 }
 

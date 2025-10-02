@@ -39,48 +39,22 @@ pub mod watchers;
 
 // Re-export main types from core
 pub use core::{
-    Config,
-    ConfigBuilder,
-    ConfigError,
-    ConfigResult,
-    ConfigSource,
-    ConfigFormat,
-    SourceMetadata,
-    ConfigResultExt,
-    ConfigResultAggregator,
-    try_sources,
+    Config, ConfigBuilder, ConfigError, ConfigFormat, ConfigResult, ConfigResultAggregator,
+    ConfigResultExt, ConfigSource, SourceMetadata, try_sources,
 };
 
 // Re-export traits
 pub use core::{
-    ConfigLoader,
-    ConfigValidator,
-    ConfigWatcher,
-    Validatable,
-    Configurable,
-    AsyncConfigurable,
+    AsyncConfigurable, ConfigLoader, ConfigValidator, ConfigWatcher, Configurable, Validatable,
 };
 
 // Re-export concrete implementations
-pub use loaders::{
-    CompositeLoader,
-    EnvLoader,
-    FileLoader,
-};
+pub use loaders::{CompositeLoader, EnvLoader, FileLoader};
 
-pub use validators::{
-    CompositeValidator,
-    NoOpValidator,
-    SchemaValidator,
-    FunctionValidator,
-};
+pub use validators::{CompositeValidator, FunctionValidator, NoOpValidator, SchemaValidator};
 
 pub use watchers::{
-    FileWatcher,
-    PollingWatcher,
-    NoOpWatcher,
-    ConfigWatchEvent,
-    ConfigWatchEventType,
+    ConfigWatchEvent, ConfigWatchEventType, FileWatcher, NoOpWatcher, PollingWatcher,
 };
 
 /// Prelude module for convenient imports
@@ -94,50 +68,29 @@ pub mod prelude {
 
     // Core types
     pub use crate::core::{
-        Config,
-        ConfigBuilder,
-        ConfigError,
-        ConfigResult,
-        ConfigSource,
-        ConfigFormat,
-        SourceMetadata,
-        ConfigResultExt,
+        Config, ConfigBuilder, ConfigError, ConfigFormat, ConfigResult, ConfigResultExt,
+        ConfigSource, SourceMetadata,
     };
 
     // Re-export nebula ecosystem types for convenience
-    pub use nebula_value::Value as NebulaValue;
     pub use nebula_error::NebulaError;
-    pub use nebula_log::{debug, info, warn, error};
+    pub use nebula_log::{debug, error, info, warn};
+    pub use nebula_value::Value as NebulaValue;
 
     // Traits
     pub use crate::core::{
-        ConfigLoader,
-        ConfigValidator,
-        ConfigWatcher,
-        Validatable,
-        Configurable,
-        AsyncConfigurable,
+        AsyncConfigurable, ConfigLoader, ConfigValidator, ConfigWatcher, Configurable, Validatable,
     };
 
     // Common loaders
-    pub use crate::loaders::{
-        CompositeLoader,
-        EnvLoader,
-        FileLoader,
-    };
+    pub use crate::loaders::{CompositeLoader, EnvLoader, FileLoader};
 
     // Common validators
-    pub use crate::validators::{
-        NoOpValidator,
-        SchemaValidator,
-    };
+    pub use crate::validators::{NoOpValidator, SchemaValidator};
 
     // Common watchers
     pub use crate::watchers::{
-        FileWatcher,
-        PollingWatcher,
-        ConfigWatchEvent,
-        ConfigWatchEventType,
+        ConfigWatchEvent, ConfigWatchEventType, FileWatcher, PollingWatcher,
     };
 }
 
@@ -146,7 +99,7 @@ pub mod builders {
     //! Builder utilities for configuration
 
     use crate::core::{ConfigBuilder, ConfigSource};
-    use crate::loaders::{FileLoader, EnvLoader};
+    use crate::loaders::{EnvLoader, FileLoader};
     use crate::validators::SchemaValidator;
     use crate::watchers::FileWatcher;
     use std::path::PathBuf;
@@ -210,7 +163,7 @@ pub mod builders {
 pub mod utils {
     //! Utility functions for configuration management
 
-    use crate::core::{ConfigResult, ConfigError};
+    use crate::core::{ConfigError, ConfigResult};
     use std::path::Path;
 
     /// Check if a configuration file exists and is readable
@@ -221,18 +174,13 @@ pub mod utils {
 
         match tokio::fs::metadata(path).await {
             Ok(metadata) if metadata.is_file() => Ok(()),
-            Ok(_) => Err(ConfigError::file_read_error(
-                path,
-                "Path is not a file"
-            )),
+            Ok(_) => Err(ConfigError::file_read_error(path, "Path is not a file")),
             Err(e) => Err(ConfigError::file_read_error(path, e.to_string())),
         }
     }
 
     /// Merge multiple JSON values
-    pub fn merge_json_values(
-        values: Vec<serde_json::Value>,
-    ) -> ConfigResult<serde_json::Value> {
+    pub fn merge_json_values(values: Vec<serde_json::Value>) -> ConfigResult<serde_json::Value> {
         if values.is_empty() {
             return Ok(serde_json::Value::Object(serde_json::Map::new()));
         }
@@ -266,25 +214,24 @@ pub mod utils {
         format: crate::ConfigFormat,
     ) -> ConfigResult<serde_json::Value> {
         match format {
-            crate::ConfigFormat::Json => {
-                serde_json::from_str(content).map_err(Into::into)
-            }
-            crate::ConfigFormat::Toml => {
-                toml::from_str::<toml::Value>(content)?
-                    .try_into()
-                    .map_err(|e| ConfigError::parse_error(
+            crate::ConfigFormat::Json => serde_json::from_str(content).map_err(Into::into),
+            crate::ConfigFormat::Toml => toml::from_str::<toml::Value>(content)?
+                .try_into()
+                .map_err(|e| {
+                    ConfigError::parse_error(
                         std::path::PathBuf::from("string"),
-                        format!("TOML conversion error: {}", e)
-                    ))
-            }
+                        format!("TOML conversion error: {}", e),
+                    )
+                }),
             crate::ConfigFormat::Yaml => {
                 // Parse YAML using yaml_rust and convert to JSON
                 use yaml_rust::YamlLoader;
-                let docs = YamlLoader::load_from_str(content)
-                    .map_err(|e| ConfigError::parse_error(
+                let docs = YamlLoader::load_from_str(content).map_err(|e| {
+                    ConfigError::parse_error(
                         std::path::PathBuf::from("string"),
-                        format!("YAML parse error: {:?}", e)
-                    ))?;
+                        format!("YAML parse error: {:?}", e),
+                    )
+                })?;
                 if docs.is_empty() {
                     return Ok(serde_json::Value::Null);
                 }
@@ -355,10 +302,11 @@ pub mod utils {
                         continue;
                     }
                     if line.starts_with('[') && line.ends_with(']') {
-                        current_section = Some(line[1..line.len()-1].to_string());
+                        current_section = Some(line[1..line.len() - 1].to_string());
                         if let Some(section) = &current_section {
-                            result.entry(section.clone())
-                                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                            result.entry(section.clone()).or_insert_with(|| {
+                                serde_json::Value::Object(serde_json::Map::new())
+                            });
                         }
                         continue;
                     }
@@ -366,8 +314,10 @@ pub mod utils {
                         let key = line[..eq_pos].trim();
                         let mut value = line[eq_pos + 1..].trim();
                         // Remove quotes if present
-                        if (value.starts_with('"') && value.ends_with('"')) || (value.starts_with('\'') && value.ends_with('\'')) {
-                            value = &value[1..value.len()-1];
+                        if (value.starts_with('"') && value.ends_with('"'))
+                            || (value.starts_with('\'') && value.ends_with('\''))
+                        {
+                            value = &value[1..value.len() - 1];
                         }
                         // Parse value similar to FileLoader::parse_ini_value
                         let parsed_value = if value.eq_ignore_ascii_case("true") {
@@ -386,7 +336,9 @@ pub mod utils {
                             serde_json::Value::String(value.to_string())
                         };
                         if let Some(ref section) = current_section {
-                            if let Some(serde_json::Value::Object(section_obj)) = result.get_mut(section) {
+                            if let Some(serde_json::Value::Object(section_obj)) =
+                                result.get_mut(section)
+                            {
                                 section_obj.insert(key.to_string(), parsed_value);
                             }
                         } else {
@@ -395,7 +347,7 @@ pub mod utils {
                     } else {
                         return Err(ConfigError::parse_error(
                             std::path::PathBuf::from("string"),
-                            format!("Invalid INI format at line {}", line_num + 1)
+                            format!("Invalid INI format at line {}", line_num + 1),
                         ));
                     }
                 }
@@ -433,7 +385,9 @@ pub mod utils {
                         parts: &[&str],
                         value: &str,
                     ) {
-                        if parts.is_empty() { return; }
+                        if parts.is_empty() {
+                            return;
+                        }
                         if parts.len() == 1 {
                             obj.insert(parts[0].to_string(), parse_value(value));
                             return;
@@ -457,7 +411,7 @@ pub mod utils {
                     if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
                         continue;
                     }
-                    let separator_pos = line.find('=') .or_else(|| line.find(':'));
+                    let separator_pos = line.find('=').or_else(|| line.find(':'));
                     if let Some(pos) = separator_pos {
                         let key = line[..pos].trim();
                         let value = line[pos + 1..].trim();
@@ -465,7 +419,7 @@ pub mod utils {
                     } else {
                         return Err(ConfigError::parse_error(
                             std::path::PathBuf::from("string"),
-                            format!("Invalid properties format at line {}", line_num + 1)
+                            format!("Invalid properties format at line {}", line_num + 1),
                         ));
                     }
                 }
@@ -498,8 +452,8 @@ mod tests {
 
     #[test]
     fn test_parse_config_string_yaml() {
-        use crate::utils::parse_config_string;
         use crate::core::source::ConfigFormat;
+        use crate::utils::parse_config_string;
 
         let yaml = r#"
         server:
@@ -519,8 +473,8 @@ mod tests {
 
     #[test]
     fn test_parse_config_string_ini() {
-        use crate::utils::parse_config_string;
         use crate::core::source::ConfigFormat;
+        use crate::utils::parse_config_string;
 
         let ini = r#"
         [server]
@@ -536,15 +490,16 @@ mod tests {
 
     #[test]
     fn test_parse_config_string_properties() {
-        use crate::utils::parse_config_string;
         use crate::core::source::ConfigFormat;
+        use crate::utils::parse_config_string;
 
         let properties = r#"
         server.port=8081
         server.host=localhost
         enabled=false
         "#;
-        let value = parse_config_string(properties, ConfigFormat::Properties).expect("Properties should parse");
+        let value = parse_config_string(properties, ConfigFormat::Properties)
+            .expect("Properties should parse");
         assert_eq!(value["server"]["port"], 8081);
         assert_eq!(value["server"]["host"], "localhost");
         assert_eq!(value["enabled"], false);
@@ -567,16 +522,25 @@ mod tests {
             .await
             .expect("build ok");
 
-        let name: String = config.get_path("arr.1.name").await.expect("should get string");
+        let name: String = config
+            .get_path("arr.1.name")
+            .await
+            .expect("should get string");
         assert_eq!(name, "b");
 
         // invalid index
-        let err = config.get_path::<String>("arr.x").await.expect_err("should error");
+        let err = config
+            .get_path::<String>("arr.x")
+            .await
+            .expect_err("should error");
         let msg = format!("{}", err);
         assert!(msg.contains("Invalid array index"));
 
         // out of bounds
-        let err2 = config.get_path::<String>("arr.5.name").await.expect_err("should error");
+        let err2 = config
+            .get_path::<String>("arr.5.name")
+            .await
+            .expect_err("should error");
         let msg2 = format!("{}", err2);
         assert!(msg2.contains("out of bounds"));
     }

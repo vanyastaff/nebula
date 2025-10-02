@@ -109,23 +109,20 @@ pub mod core;
 pub mod kinds;
 
 // Re-export core types
-pub use core::{NebulaError, Result, ResultExt, NebulaResultExt};
+pub use core::{NebulaError, NebulaResultExt, Result, ResultExt};
 pub use kinds::ErrorKind;
 
 // Re-export utilities from core
 pub use core::{
-    ErrorContext, ErrorContextBuilder,
-    IntoNebulaError,
-    RetryStrategy, Retryable, retry, retry_with_timeout
+    ErrorContext, ErrorContextBuilder, IntoNebulaError, RetryStrategy, Retryable, retry,
+    retry_with_timeout,
 };
 
 /// Common prelude for error handling
 pub mod prelude {
     pub use super::{
-        NebulaError, Result, ResultExt, ErrorKind,
-        ErrorContext, ErrorContextBuilder,
-        RetryStrategy, Retryable, retry, retry_with_timeout,
-        IntoNebulaError,
+        ErrorContext, ErrorContextBuilder, ErrorKind, IntoNebulaError, NebulaError, Result,
+        ResultExt, RetryStrategy, Retryable, retry, retry_with_timeout,
     };
     pub use thiserror::Error as ThisError;
 }

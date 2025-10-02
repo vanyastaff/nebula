@@ -39,22 +39,38 @@ impl LogError for NebulaError {
 
     /// Create a filter parsing error
     fn log_filter_error(filter: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::validation(format!("Invalid filter '{}': {}", filter.into(), reason.into()))
+        Self::validation(format!(
+            "Invalid filter '{}': {}",
+            filter.into(),
+            reason.into()
+        ))
     }
 
     /// Create a writer initialization error
     fn log_writer_error(writer: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::internal(format!("Writer '{}' error: {}", writer.into(), reason.into()))
+        Self::internal(format!(
+            "Writer '{}' error: {}",
+            writer.into(),
+            reason.into()
+        ))
     }
 
     /// Create a telemetry setup error
     fn log_telemetry_error(service: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::internal(format!("Telemetry service '{}' error: {}", service.into(), reason.into()))
+        Self::internal(format!(
+            "Telemetry service '{}' error: {}",
+            service.into(),
+            reason.into()
+        ))
     }
 
     /// Create a log format error
     fn log_format_error(format: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::validation(format!("Format '{}' error: {}", format.into(), reason.into()))
+        Self::validation(format!(
+            "Format '{}' error: {}",
+            format.into(),
+            reason.into()
+        ))
     }
 
     /// Create a log rotation error

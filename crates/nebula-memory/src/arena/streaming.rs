@@ -1,6 +1,6 @@
 //! Streaming arena implementation for sequential data processing
 
-use std::alloc::{alloc, dealloc, Layout};
+use std::alloc::{Layout, alloc, dealloc};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::marker::PhantomData;
@@ -55,7 +55,11 @@ impl StreamBuffer {
         let ptr = unsafe { alloc(layout) };
 
         match NonNull::new(ptr) {
-            Some(ptr) => Ok(StreamBuffer { ptr, capacity: size, used: Cell::new(0) }),
+            Some(ptr) => Ok(StreamBuffer {
+                ptr,
+                capacity: size,
+                used: Cell::new(0),
+            }),
             None => Err(MemoryError::allocation_failed()),
         }
     }
@@ -171,8 +175,11 @@ impl<T> StreamingArena<T> {
             return Err(MemoryError::allocation_too_large(0));
         }
 
-        let start_time =
-            if self.options.track_stats { Some(std::time::Instant::now()) } else { None };
+        let start_time = if self.options.track_stats {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
 
         // Try current buffer
         if let Some(index) = *self.current_buffer.borrow() {
@@ -205,7 +212,7 @@ impl<T> StreamingArena<T> {
                     self.stats.record_allocation(size, elapsed);
                 }
                 Ok(ptr)
-            },
+            }
             None => Err(MemoryError::allocation_failed()),
         }
     }
@@ -221,12 +228,17 @@ impl<T> StreamingArena<T> {
             ptr.write(value);
         }
 
-        Ok(StreamingArenaRef { ptr, _phantom: PhantomData })
+        Ok(StreamingArenaRef {
+            ptr,
+            _phantom: PhantomData,
+        })
     }
 
     /// Allocate a slice
     pub fn alloc_slice<U>(&self, slice: &[U]) -> Result<StreamingArenaRef<[U]>, MemoryError>
-    where U: Copy {
+    where
+        U: Copy,
+    {
         if slice.is_empty() {
             return Ok(StreamingArenaRef {
                 ptr: slice as *const [U] as *mut [U],
@@ -243,7 +255,10 @@ impl<T> StreamingArena<T> {
             std::ptr::copy_nonoverlapping(slice.as_ptr(), ptr, slice.len());
             let slice_ptr = std::slice::from_raw_parts_mut(ptr, slice.len());
 
-            Ok(StreamingArenaRef { ptr: slice_ptr as *mut [U], _phantom: PhantomData })
+            Ok(StreamingArenaRef {
+                ptr: slice_ptr as *mut [U],
+                _phantom: PhantomData,
+            })
         }
     }
 
@@ -424,7 +439,10 @@ mod tests {
 
     #[test]
     fn test_large_allocation_fails() {
-        let options = StreamOptions { buffer_size: 100, ..Default::default() };
+        let options = StreamOptions {
+            buffer_size: 100,
+            ..Default::default()
+        };
 
         let arena: StreamingArena = StreamingArena::new(options);
 

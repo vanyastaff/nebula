@@ -21,12 +21,8 @@ fn json_to_value(json: serde_json::Value) -> Value {
             }
         }
         serde_json::Value::String(s) => Value::text(s),
-        serde_json::Value::Array(arr) => {
-            Value::Array(nebula_value::Array::from(arr))
-        }
-        serde_json::Value::Object(obj) => {
-            Value::Object(obj.into_iter().collect())
-        }
+        serde_json::Value::Array(arr) => Value::Array(nebula_value::Array::from(arr)),
+        serde_json::Value::Object(obj) => Value::Object(obj.into_iter().collect()),
     }
 }
 
@@ -44,58 +40,100 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .and(string_contains("@".to_string()));
 
         println!("   AND validator (string + min 5 chars + contains @):");
-        println!("     'user@example' (11 chars): {}",
-            if and_validator.validate(&Value::text("user@example"), None).await.is_ok() {
+        println!(
+            "     'user@example' (11 chars): {}",
+            if and_validator
+                .validate(&Value::text("user@example"), None)
+                .await
+                .is_ok()
+            {
                 "✓"
             } else {
                 "✗"
-            });
-        println!("     'user' (4 chars): {}",
-            if and_validator.validate(&Value::text("user"), None).await.is_ok() {
+            }
+        );
+        println!(
+            "     'user' (4 chars): {}",
+            if and_validator
+                .validate(&Value::text("user"), None)
+                .await
+                .is_ok()
+            {
                 "✓"
             } else {
                 "✗ (too short, no @)"
-            });
+            }
+        );
 
         // OR: must satisfy at least one condition
         let or_validator = string().or(number());
 
         println!("   OR validator (string OR number):");
-        println!("     'hello': {}",
-            if or_validator.validate(&Value::text("hello"), None).await.is_ok() {
+        println!(
+            "     'hello': {}",
+            if or_validator
+                .validate(&Value::text("hello"), None)
+                .await
+                .is_ok()
+            {
                 "✓ (string)"
             } else {
                 "✗"
-            });
-        println!("     42: {}",
-            if or_validator.validate(&Value::integer(42), None).await.is_ok() {
+            }
+        );
+        println!(
+            "     42: {}",
+            if or_validator
+                .validate(&Value::integer(42), None)
+                .await
+                .is_ok()
+            {
                 "✓ (number)"
             } else {
                 "✗"
-            });
-        println!("     true: {}",
-            if or_validator.validate(&Value::boolean(true), None).await.is_ok() {
+            }
+        );
+        println!(
+            "     true: {}",
+            if or_validator
+                .validate(&Value::boolean(true), None)
+                .await
+                .is_ok()
+            {
                 "✓"
             } else {
                 "✗ (neither string nor number)"
-            });
+            }
+        );
 
         // NOT: must NOT satisfy condition
         let not_validator = string().not();
 
         println!("   NOT validator (NOT string):");
-        println!("     42: {}",
-            if not_validator.validate(&Value::integer(42), None).await.is_ok() {
+        println!(
+            "     42: {}",
+            if not_validator
+                .validate(&Value::integer(42), None)
+                .await
+                .is_ok()
+            {
                 "✓ (not a string)"
             } else {
                 "✗"
-            });
-        println!("     'hello': {}",
-            if not_validator.validate(&Value::text("hello"), None).await.is_ok() {
+            }
+        );
+        println!(
+            "     'hello': {}",
+            if not_validator
+                .validate(&Value::text("hello"), None)
+                .await
+                .is_ok()
+            {
                 "✓"
             } else {
                 "✗ (is a string)"
-            });
+            }
+        );
     }
 
     println!();
@@ -112,24 +150,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .call();
 
         println!("   String constraints (8-20 chars, alphanumeric, no spaces):");
-        println!("     'MyPassword123': {}",
-            if string_validator.validate(&Value::text("MyPassword123"), None).await.is_ok() {
+        println!(
+            "     'MyPassword123': {}",
+            if string_validator
+                .validate(&Value::text("MyPassword123"), None)
+                .await
+                .is_ok()
+            {
                 "✓"
             } else {
                 "✗"
-            });
-        println!("     'short': {}",
-            if string_validator.validate(&Value::text("short"), None).await.is_ok() {
+            }
+        );
+        println!(
+            "     'short': {}",
+            if string_validator
+                .validate(&Value::text("short"), None)
+                .await
+                .is_ok()
+            {
                 "✓"
             } else {
                 "✗ (too short)"
-            });
-        println!("     'My Password 123': {}",
-            if string_validator.validate(&Value::text("My Password 123"), None).await.is_ok() {
+            }
+        );
+        println!(
+            "     'My Password 123': {}",
+            if string_validator
+                .validate(&Value::text("My Password 123"), None)
+                .await
+                .is_ok()
+            {
                 "✓"
             } else {
                 "✗ (contains spaces)"
-            });
+            }
+        );
 
         let number_validator = number_constraints()
             .min_val(0.0)
@@ -138,18 +194,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .call();
 
         println!("   Number constraints (0-100, positive only):");
-        println!("     50: {}",
-            if number_validator.validate(&Value::integer(50), None).await.is_ok() {
+        println!(
+            "     50: {}",
+            if number_validator
+                .validate(&Value::integer(50), None)
+                .await
+                .is_ok()
+            {
                 "✓"
             } else {
                 "✗"
-            });
-        println!("     -5: {}",
-            if number_validator.validate(&Value::integer(-5), None).await.is_ok() {
+            }
+        );
+        println!(
+            "     -5: {}",
+            if number_validator
+                .validate(&Value::integer(-5), None)
+                .await
+                .is_ok()
+            {
                 "✓"
             } else {
                 "✗ (negative)"
-            });
+            }
+        );
     }
 
     println!();
@@ -158,54 +226,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         println!("3. Collection Validation:");
 
-        let array_validator = array()
-            .and(min_size(1))
-            .and(max_size(5));
+        let array_validator = array().and(min_size(1)).and(max_size(5));
 
         let valid_array = json_to_value(json!([1, 2, 3]));
         let empty_array = json_to_value(json!([]));
         let large_array = json_to_value(json!([1, 2, 3, 4, 5, 6]));
 
         println!("   Array validator (1-5 elements):");
-        println!("     [1,2,3]: {}",
+        println!(
+            "     [1,2,3]: {}",
             if array_validator.validate(&valid_array, None).await.is_ok() {
                 "✓"
             } else {
                 "✗"
-            });
-        println!("     []: {}",
+            }
+        );
+        println!(
+            "     []: {}",
             if array_validator.validate(&empty_array, None).await.is_ok() {
                 "✓"
             } else {
                 "✗ (empty)"
-            });
-        println!("     [1,2,3,4,5,6]: {}",
+            }
+        );
+        println!(
+            "     [1,2,3,4,5,6]: {}",
             if array_validator.validate(&large_array, None).await.is_ok() {
                 "✓"
             } else {
                 "✗ (too many)"
-            });
+            }
+        );
 
         // Object key validation
-        let object_validator = object()
-            .and(has_all_keys(vec!["name".to_string(), "age".to_string()]));
+        let object_validator =
+            object().and(has_all_keys(vec!["name".to_string(), "age".to_string()]));
 
         let valid_obj = json_to_value(json!({"name": "Alice", "age": 30}));
         let invalid_obj = json_to_value(json!({"name": "Bob"}));
 
         println!("   Object validator (must have 'name' and 'age' keys):");
-        println!("     {{name: Alice, age: 30}}: {}",
+        println!(
+            "     {{name: Alice, age: 30}}: {}",
             if object_validator.validate(&valid_obj, None).await.is_ok() {
                 "✓"
             } else {
                 "✗"
-            });
-        println!("     {{name: Bob}}: {}",
+            }
+        );
+        println!(
+            "     {{name: Bob}}: {}",
             if object_validator.validate(&invalid_obj, None).await.is_ok() {
                 "✓"
             } else {
                 "✗ (missing 'age')"
-            });
+            }
+        );
     }
 
     println!();
@@ -225,24 +301,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let short = Value::text("Pass1");
 
         println!("   Password rules: 8-20 chars, not common password");
-        println!("     'SecurePass123': {}",
+        println!(
+            "     'SecurePass123': {}",
             if password_validator.validate(&strong, None).await.is_ok() {
                 "✓ (strong)"
             } else {
                 "✗"
-            });
-        println!("     'password': {}",
+            }
+        );
+        println!(
+            "     'password': {}",
             if password_validator.validate(&weak, None).await.is_ok() {
                 "✓"
             } else {
                 "✗ (too common)"
-            });
-        println!("     'Pass1': {}",
+            }
+        );
+        println!(
+            "     'Pass1': {}",
             if password_validator.validate(&short, None).await.is_ok() {
                 "✓"
             } else {
                 "✗ (too short)"
-            });
+            }
+        );
     }
 
     println!();

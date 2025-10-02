@@ -25,11 +25,9 @@ impl ValueRefExt for Value {
             Value::Null => serde_json::Value::Null,
             Value::Boolean(b) => serde_json::Value::Bool(*b),
             Value::Integer(i) => serde_json::Value::Number(i.value().into()),
-            Value::Float(f) => {
-                serde_json::Number::from_f64(f.value())
-                    .map(serde_json::Value::Number)
-                    .unwrap_or(serde_json::Value::Null)
-            }
+            Value::Float(f) => serde_json::Number::from_f64(f.value())
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
             Value::Decimal(d) => serde_json::Value::String(d.to_string()),
             Value::Text(t) => serde_json::Value::String(t.as_str().to_string()),
             Value::Bytes(b) => {
@@ -38,14 +36,10 @@ impl ValueRefExt for Value {
                 serde_json::Value::String(encoded)
             }
             // Array and Object already store serde_json::Value, so we collect their iterators
-            Value::Array(arr) => {
-                serde_json::Value::Array(arr.iter().cloned().collect())
-            }
-            Value::Object(obj) => {
-                serde_json::Value::Object(
-                    obj.entries().map(|(k, v)| (k.clone(), v.clone())).collect()
-                )
-            }
+            Value::Array(arr) => serde_json::Value::Array(arr.iter().cloned().collect()),
+            Value::Object(obj) => serde_json::Value::Object(
+                obj.entries().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            ),
             #[cfg(feature = "temporal")]
             Value::Date(d) => serde_json::Value::String(d.to_iso_string().to_string()),
             #[cfg(feature = "temporal")]

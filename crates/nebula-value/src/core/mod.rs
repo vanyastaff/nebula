@@ -32,27 +32,27 @@
 //! The central [`Value`] enum represents any data value in the Nebula ecosystem.
 //! This module contains the fundamental types and utilities that power the value system:
 //! module provides direct access for advanced use cases.
-pub mod convert;
-pub mod hash;
 pub mod conversions;
+pub mod convert;
 pub mod display;
-pub mod kind;
-pub mod path;
-pub mod ops;
-pub mod value;
 pub mod error;
+pub mod hash;
+pub mod kind;
 pub mod limits;
+pub mod ops;
+pub mod path;
+pub mod value;
 
 #[cfg(feature = "serde")]
 pub mod serde;
 
+pub use conversions::ValueConversion;
 /// Convenient re-exports of the most commonly used core types.
-pub use error::{ValueResult, ValueErrorExt, ValueResultExt};
+pub use error::{ValueErrorExt, ValueResult, ValueResultExt};
+pub use hash::{HashableValue, HashableValueExt};
 pub use kind::ValueKind;
 pub use path::PathSegment;
 pub use value::Value;
-pub use conversions::ValueConversion;
-pub use hash::{HashableValue, HashableValueExt};
 
 /// Re-export NebulaError for unified error handling
 pub use nebula_error::{NebulaError, Result as NebulaResult, ResultExt};
@@ -62,12 +62,8 @@ pub type DynResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 /// A small prelude to import frequently used types in one go.
 pub mod prelude {
-    pub use super::{NebulaError, NebulaResult, PathSegment, Value, ValueResult, ValueErrorExt, ValueResultExt};
-    pub use nebula_error::{ResultExt, ErrorContext};
+    pub use super::{
+        NebulaError, NebulaResult, PathSegment, Value, ValueErrorExt, ValueResult, ValueResultExt,
+    };
+    pub use nebula_error::{ErrorContext, ResultExt};
 }
-
-
-
-
-
-

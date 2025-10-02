@@ -2,14 +2,14 @@
 
 use core::alloc::Layout;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicPtr, AtomicUsize, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 use super::{PoolConfig, PoolStats};
 use crate::allocator::{
-    AllocError, AllocErrorCode, AllocResult, Allocator,
-    AllocatorStats, MemoryUsage, Resettable, StatisticsProvider,
+    AllocError, AllocErrorCode, AllocResult, Allocator, AllocatorStats, MemoryUsage, Resettable,
+    StatisticsProvider,
 };
-use crate::utils::{align_up, is_power_of_two, Backoff, atomic_max};
+use crate::utils::{Backoff, align_up, atomic_max, is_power_of_two};
 
 /// Pool allocator for fixed-size blocks
 ///
@@ -168,8 +168,17 @@ impl PoolAllocator {
     }
 
     /// Creates a pool allocator with production config - optimized for performance
-    pub fn production(block_size: usize, block_align: usize, block_count: usize) -> AllocResult<Self> {
-        Self::with_config(block_size, block_align, block_count, PoolConfig::production())
+    pub fn production(
+        block_size: usize,
+        block_align: usize,
+        block_count: usize,
+    ) -> AllocResult<Self> {
+        Self::with_config(
+            block_size,
+            block_align,
+            block_count,
+            PoolConfig::production(),
+        )
     }
 
     /// Creates a pool allocator with debug config - optimized for debugging
@@ -178,8 +187,17 @@ impl PoolAllocator {
     }
 
     /// Creates a pool allocator with performance config - minimal overhead
-    pub fn performance(block_size: usize, block_align: usize, block_count: usize) -> AllocResult<Self> {
-        Self::with_config(block_size, block_align, block_count, PoolConfig::performance())
+    pub fn performance(
+        block_size: usize,
+        block_align: usize,
+        block_count: usize,
+    ) -> AllocResult<Self> {
+        Self::with_config(
+            block_size,
+            block_align,
+            block_count,
+            PoolConfig::performance(),
+        )
     }
 
     /// Creates a production pool for a specific type
@@ -292,7 +310,11 @@ impl PoolAllocator {
 
     /// Attempts to allocate a block from the free list
     fn try_allocate_block(&self) -> Option<NonNull<u8>> {
-        let mut backoff = if self.config.use_backoff { Some(Backoff::new()) } else { None };
+        let mut backoff = if self.config.use_backoff {
+            Some(Backoff::new())
+        } else {
+            None
+        };
         let mut attempts = 0;
 
         loop {
@@ -330,7 +352,7 @@ impl PoolAllocator {
                     }
 
                     return Some(unsafe { NonNull::new_unchecked(head as *mut u8) });
-                },
+                }
                 Err(_) => {
                     // Another thread modified the list, backoff and retry
                     attempts += 1;
@@ -338,7 +360,7 @@ impl PoolAllocator {
                         b.spin();
                     }
                     continue;
-                },
+                }
             }
         }
     }
@@ -364,7 +386,11 @@ impl PoolAllocator {
         }
 
         let block = ptr.as_ptr() as *mut FreeBlock;
-        let mut backoff = if self.config.use_backoff { Some(Backoff::new()) } else { None };
+        let mut backoff = if self.config.use_backoff {
+            Some(Backoff::new())
+        } else {
+            None
+        };
 
         loop {
             let head = self.free_head.load(Ordering::Acquire);
@@ -388,15 +414,15 @@ impl PoolAllocator {
                         self.total_deallocs.fetch_add(1, Ordering::Relaxed);
                     }
 
-                    return true
-                },
+                    return true;
+                }
                 Err(_) => {
                     // Retry with backoff
                     if let Some(ref mut b) = backoff {
                         b.spin();
                     }
                     continue;
-                },
+                }
             }
         }
     }
@@ -423,7 +449,10 @@ unsafe impl Allocator for PoolAllocator {
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
         // Check if the requested layout matches our pool configuration
         if layout.size() > self.block_size || layout.align() > self.block_align {
-            return Err(AllocError::with_layout(AllocErrorCode::InvalidLayout, layout));
+            return Err(AllocError::with_layout(
+                AllocErrorCode::InvalidLayout,
+                layout,
+            ));
         }
 
         // Handle zero-sized allocations
@@ -547,8 +576,10 @@ impl StatisticsProvider for PoolAllocator {
             deallocation_count: self.total_deallocs.load(Ordering::Relaxed) as usize,
             reallocation_count: 0,
             failed_allocations: 0,
-            total_bytes_allocated: self.total_allocs.load(Ordering::Relaxed) as usize * self.block_size,
-            total_bytes_deallocated: self.total_deallocs.load(Ordering::Relaxed) as usize * self.block_size,
+            total_bytes_allocated: self.total_allocs.load(Ordering::Relaxed) as usize
+                * self.block_size,
+            total_bytes_deallocated: self.total_deallocs.load(Ordering::Relaxed) as usize
+                * self.block_size,
         }
     }
 

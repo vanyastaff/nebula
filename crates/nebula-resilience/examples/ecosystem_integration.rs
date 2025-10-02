@@ -45,23 +45,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         count_timeouts: true,
     });
 
-    let db_result = circuit_breaker.execute(|| async {
-        info!(operation = "database_query", "Executing database query");
+    let db_result = circuit_breaker
+        .execute(|| async {
+            info!(operation = "database_query", "Executing database query");
 
-        // Simulate database operation
-        sleep(Duration::from_millis(100)).await;
+            // Simulate database operation
+            sleep(Duration::from_millis(100)).await;
 
-        // Simulate occasional failures for demonstration
-        if rand::random::<f64>() > 0.7 {
-            return Err(ResilienceError::Custom {
-                message: "Database connection timeout".to_string(),
-                retryable: true,
-                source: None,
-            });
-        }
+            // Simulate occasional failures for demonstration
+            if rand::random::<f64>() > 0.7 {
+                return Err(ResilienceError::Custom {
+                    message: "Database connection timeout".to_string(),
+                    retryable: true,
+                    source: None,
+                });
+            }
 
-        Ok("Database result".to_string())
-    }).await;
+            Ok("Database result".to_string())
+        })
+        .await;
 
     log_result!(db_result, "database_query", "Database operation");
 
@@ -69,27 +71,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("=== HTTP API Example ===");
 
     let retry_strategy = RetryStrategy::exponential_backoff(3, Duration::from_millis(500));
-    let api_result = retry_strategy.execute(|| async {
-        info!(operation = "api_call", endpoint = "/users", "Making HTTP API call");
+    let api_result = retry_strategy
+        .execute(|| async {
+            info!(
+                operation = "api_call",
+                endpoint = "/users",
+                "Making HTTP API call"
+            );
 
-        // Simulate HTTP call
-        sleep(Duration::from_millis(200)).await;
+            // Simulate HTTP call
+            sleep(Duration::from_millis(200)).await;
 
-        // Simulate network issues
-        if rand::random::<f64>() > 0.8 {
-            return Err(ResilienceError::Timeout {
-                duration: Duration::from_secs(10),
-                context: Some("HTTP request timeout".to_string()),
-            });
-        }
+            // Simulate network issues
+            if rand::random::<f64>() > 0.8 {
+                return Err(ResilienceError::Timeout {
+                    duration: Duration::from_secs(10),
+                    context: Some("HTTP request timeout".to_string()),
+                });
+            }
 
-        Ok(serde_json::json!({
-            "users": [
-                {"id": 1, "name": "Alice"},
-                {"id": 2, "name": "Bob"}
-            ]
-        }))
-    }).await;
+            Ok(serde_json::json!({
+                "users": [
+                    {"id": 1, "name": "Alice"},
+                    {"id": 2, "name": "Bob"}
+                ]
+            }))
+        })
+        .await;
 
     log_result!(api_result, "api_call", "HTTP API operation");
 
@@ -114,7 +122,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             sleep(Duration::from_millis(50 * i)).await;
 
             Ok(format!("Processed file_{}.txt", i))
-        }).await;
+        })
+        .await;
 
         match file_result {
             Ok(Ok(result)) => info!(result = %result, "File processed successfully"),
@@ -132,11 +141,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timeout: Some(Duration::from_secs(2)),
     });
 
-    let cache_result = bulkhead.execute(|| async {
-        info!(operation = "cache_get", key = "user:123", "Getting from cache");
-        sleep(Duration::from_millis(10)).await;
-        Ok("cached_value".to_string())
-    }).await?;
+    let cache_result = bulkhead
+        .execute(|| async {
+            info!(
+                operation = "cache_get",
+                key = "user:123",
+                "Getting from cache"
+            );
+            sleep(Duration::from_millis(10)).await;
+            Ok("cached_value".to_string())
+        })
+        .await?;
 
     info!(cached_value = %cache_result, "Retrieved from cache");
 

@@ -2,14 +2,13 @@
 //!
 //! This is the central type that represents any value in nebula-value.
 
-
-use crate::core::error::{ValueErrorExt, ValueResult};
-use crate::core::NebulaError;
-use crate::core::kind::ValueKind;
-use crate::scalar::{Integer, Float, Text, Bytes};
 use crate::collections::{Array, Object};
+use crate::core::NebulaError;
+use crate::core::error::{ValueErrorExt, ValueResult};
+use crate::core::kind::ValueKind;
+use crate::scalar::{Bytes, Float, Integer, Text};
 #[cfg(feature = "temporal")]
-use crate::temporal::{Date, Time, DateTime, Duration};
+use crate::temporal::{Date, DateTime, Duration, Time};
 
 // Decimal (rust_decimal)
 use rust_decimal::Decimal;
@@ -323,11 +322,10 @@ impl Value {
                 }
             }
             Self::Boolean(b) => Ok(if *b { 1 } else { 0 }),
-            Self::Text(t) => {
-                t.as_str()
-                    .parse::<i64>()
-                    .map_err(|_| NebulaError::value_conversion_error("Text", "Integer"))
-            }
+            Self::Text(t) => t
+                .as_str()
+                .parse::<i64>()
+                .map_err(|_| NebulaError::value_conversion_error("Text", "Integer")),
             _ => Err(NebulaError::value_conversion_error(
                 self.kind().name(),
                 "Integer",
@@ -341,11 +339,10 @@ impl Value {
             Self::Float(f) => Ok(f.value()),
             Self::Integer(i) => Ok(i.value() as f64),
             Self::Boolean(b) => Ok(if *b { 1.0 } else { 0.0 }),
-            Self::Text(t) => {
-                t.as_str()
-                    .parse::<f64>()
-                    .map_err(|_| NebulaError::value_conversion_error("Text", "Float"))
-            }
+            Self::Text(t) => t
+                .as_str()
+                .parse::<f64>()
+                .map_err(|_| NebulaError::value_conversion_error("Text", "Float")),
             _ => Err(NebulaError::value_conversion_error(
                 self.kind().name(),
                 "Float",

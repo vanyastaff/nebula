@@ -20,8 +20,14 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // Check error properties
     println!("\n🔍 Error properties:");
-    println!("   Validation is client error: {}", validation_err.is_client_error());
-    println!("   Internal is server error: {}", internal_err.is_server_error());
+    println!(
+        "   Validation is client error: {}",
+        validation_err.is_client_error()
+    );
+    println!(
+        "   Internal is server error: {}",
+        internal_err.is_server_error()
+    );
 
     // Function that returns an error
     match risky_function() {

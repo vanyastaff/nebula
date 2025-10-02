@@ -10,9 +10,9 @@ use core::ops::{Deref, DerefMut};
 #[cfg(feature = "std")]
 use std::collections::BinaryHeap;
 
-use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
 #[cfg(feature = "stats")]
 use super::PoolStats;
+use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Object pool that maintains objects based on priority
@@ -74,13 +74,23 @@ impl<T> Ord for PriorityWrapper<T> {
 impl<T: Poolable> PriorityPool<T> {
     /// Create new priority pool
     pub fn new<F>(capacity: usize, factory: F) -> Self
-    where F: Fn() -> T + 'static {
-        Self::with_config(PoolConfig { initial_capacity: capacity, ..Default::default() }, factory)
+    where
+        F: Fn() -> T + 'static,
+    {
+        Self::with_config(
+            PoolConfig {
+                initial_capacity: capacity,
+                ..Default::default()
+            },
+            factory,
+        )
     }
 
     /// Create pool with custom configuration
     pub fn with_config<F>(config: PoolConfig, factory: F) -> Self
-    where F: Fn() -> T + 'static {
+    where
+        F: Fn() -> T + 'static,
+    {
         let mut objects = BinaryHeap::with_capacity(config.initial_capacity);
 
         #[cfg(feature = "stats")]
@@ -93,7 +103,10 @@ impl<T: Poolable> PriorityPool<T> {
                 let priority = obj.priority();
                 #[cfg(feature = "stats")]
                 stats.record_creation();
-                objects.push(PriorityWrapper { value: obj, priority });
+                objects.push(PriorityWrapper {
+                    value: obj,
+                    priority,
+                });
             }
         }
 
@@ -151,7 +164,10 @@ impl<T: Poolable> PriorityPool<T> {
             obj
         };
 
-        Ok(PriorityPooledValue { value: ManuallyDrop::new(obj), pool: self as *mut _ })
+        Ok(PriorityPooledValue {
+            value: ManuallyDrop::new(obj),
+            pool: self as *mut _,
+        })
     }
 
     /// Get object with minimum priority
@@ -185,7 +201,10 @@ impl<T: Poolable> PriorityPool<T> {
             obj.reset();
             self.callbacks.on_checkout(&obj);
 
-            Ok(PriorityPooledValue { value: ManuallyDrop::new(obj), pool: self as *mut _ })
+            Ok(PriorityPooledValue {
+                value: ManuallyDrop::new(obj),
+                pool: self as *mut _,
+            })
         } else {
             // Create new object
             #[cfg(feature = "stats")]
@@ -208,7 +227,10 @@ impl<T: Poolable> PriorityPool<T> {
             #[cfg(feature = "stats")]
             self.stats.record_creation();
 
-            Ok(PriorityPooledValue { value: ManuallyDrop::new(obj), pool: self as *mut _ })
+            Ok(PriorityPooledValue {
+                value: ManuallyDrop::new(obj),
+                pool: self as *mut _,
+            })
         }
     }
 
@@ -255,7 +277,10 @@ impl<T: Poolable> PriorityPool<T> {
         }
 
         obj.reset();
-        self.objects.push(PriorityWrapper { value: obj, priority });
+        self.objects.push(PriorityWrapper {
+            value: obj,
+            priority,
+        });
     }
 
     /// Shrink pool by removing lowest priority objects
@@ -359,12 +384,24 @@ mod tests {
 
     #[test]
     fn test_priority_order() {
-        let mut pool = PriorityPool::new(10, || TestObject { value: 0, priority: 50 });
+        let mut pool = PriorityPool::new(10, || TestObject {
+            value: 0,
+            priority: 50,
+        });
 
         // Return objects with different priorities
-        let obj1 = TestObject { value: 1, priority: 100 };
-        let obj2 = TestObject { value: 2, priority: 50 };
-        let obj3 = TestObject { value: 3, priority: 150 };
+        let obj1 = TestObject {
+            value: 1,
+            priority: 100,
+        };
+        let obj2 = TestObject {
+            value: 2,
+            priority: 50,
+        };
+        let obj3 = TestObject {
+            value: 3,
+            priority: 150,
+        };
 
         pool.return_object(obj1);
         pool.return_object(obj2);
@@ -378,14 +415,26 @@ mod tests {
     #[test]
     fn test_priority_eviction() {
         let config = PoolConfig::bounded(2);
-        let mut pool = PriorityPool::with_config(config, || TestObject { value: 0, priority: 50 });
+        let mut pool = PriorityPool::with_config(config, || TestObject {
+            value: 0,
+            priority: 50,
+        });
 
         // Fill pool
-        pool.return_object(TestObject { value: 1, priority: 100 });
-        pool.return_object(TestObject { value: 2, priority: 50 });
+        pool.return_object(TestObject {
+            value: 1,
+            priority: 100,
+        });
+        pool.return_object(TestObject {
+            value: 2,
+            priority: 50,
+        });
 
         // Try to add higher priority - should evict lowest
-        pool.return_object(TestObject { value: 3, priority: 150 });
+        pool.return_object(TestObject {
+            value: 3,
+            priority: 150,
+        });
         assert_eq!(pool.available(), 2);
 
         // Highest priorities should remain

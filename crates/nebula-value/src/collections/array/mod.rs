@@ -15,9 +15,9 @@ use std::ops::Index;
 
 use im::Vector;
 
+use crate::core::NebulaError;
 use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::limits::ValueLimits;
-use crate::core::NebulaError;
 
 // Forward declaration - will be replaced with actual Value type
 // For now, use a placeholder that can hold any value
@@ -94,9 +94,7 @@ impl Array {
     /// Pop last element (returns new Array and popped value)
     pub fn pop(&self) -> Option<(Self, ValueItem)> {
         let mut new_vec = self.inner.clone();
-        new_vec.pop_back().map(|val| {
-            (Self { inner: new_vec }, val)
-        })
+        new_vec.pop_back().map(|val| (Self { inner: new_vec }, val))
     }
 
     /// Set element at index (returns new Array)
@@ -159,7 +157,8 @@ impl Array {
             ));
         }
 
-        let slice: Vector<ValueItem> = self.inner
+        let slice: Vector<ValueItem> = self
+            .inner
             .iter()
             .skip(start)
             .take(end - start)

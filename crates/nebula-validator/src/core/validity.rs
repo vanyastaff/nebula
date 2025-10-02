@@ -1,7 +1,7 @@
 //! Valid and Invalid type definitions
 
-use std::fmt::{self, Debug, Display};
 use super::error::ValidationError;
+use std::fmt::{self, Debug, Display};
 
 /// A valid value
 #[derive(Debug, Clone)]

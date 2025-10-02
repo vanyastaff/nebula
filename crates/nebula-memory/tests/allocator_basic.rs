@@ -72,10 +72,14 @@ fn test_bump_allocator_reset() {
         std::ptr::write_bytes(ptr1.cast::<u8>().as_ptr(), 0x11, 128);
 
         // Reset allocator
-        unsafe { allocator.reset(); }
+        unsafe {
+            allocator.reset();
+        }
 
         // Second allocation after reset - should reuse space
-        let ptr2 = allocator.allocate(layout).expect("Second allocation failed");
+        let ptr2 = allocator
+            .allocate(layout)
+            .expect("Second allocation failed");
 
         // After reset, the allocator reuses memory from the beginning
         // So ptr2 might equal ptr1 (implementation-dependent)
@@ -97,9 +101,15 @@ fn test_bump_allocator_alignment() {
         let layout_16 = Layout::from_size_align(64, 16).unwrap();
         let layout_32 = Layout::from_size_align(64, 32).unwrap();
 
-        let ptr_8 = allocator.allocate(layout_8).expect("8-byte alignment failed");
-        let ptr_16 = allocator.allocate(layout_16).expect("16-byte alignment failed");
-        let ptr_32 = allocator.allocate(layout_32).expect("32-byte alignment failed");
+        let ptr_8 = allocator
+            .allocate(layout_8)
+            .expect("8-byte alignment failed");
+        let ptr_16 = allocator
+            .allocate(layout_16)
+            .expect("16-byte alignment failed");
+        let ptr_32 = allocator
+            .allocate(layout_32)
+            .expect("32-byte alignment failed");
 
         // Check alignments
         assert_eq!(ptr_8.cast::<u8>().as_ptr() as usize % 8, 0);

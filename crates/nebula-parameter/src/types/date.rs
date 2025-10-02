@@ -2,8 +2,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 
 /// Parameter for date selection
@@ -96,10 +96,15 @@ impl HasValue for DateParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+        self.value
+            .as_ref()
+            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Text(s)) => {
@@ -114,12 +119,12 @@ impl HasValue for DateParameter {
                         reason: format!("Invalid date format or out of range: {}", date_string),
                     })
                 }
-            },
+            }
             ParameterValue::Expression(expr) => {
                 // Allow expressions for dynamic dates
                 self.value = Some(expr);
                 Ok(())
-            },
+            }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Expected string value for date parameter".to_string(),
@@ -166,7 +171,8 @@ impl DateParameter {
 
         // Basic date validation - in a real implementation you'd use a proper date library
         // This is a simplified check for ISO date format (YYYY-MM-DD)
-        if date.len() == 10 && date.chars().nth(4) == Some('-') && date.chars().nth(7) == Some('-') {
+        if date.len() == 10 && date.chars().nth(4) == Some('-') && date.chars().nth(7) == Some('-')
+        {
             let parts: Vec<&str> = date.split('-').collect();
             if parts.len() == 3 {
                 if let (Ok(year), Ok(month), Ok(day)) = (

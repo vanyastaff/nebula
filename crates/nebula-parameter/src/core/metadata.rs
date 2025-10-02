@@ -1,9 +1,8 @@
+use crate::core::ParameterError;
 use bon::bon;
+use nebula_core::ParameterKey;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
-use nebula_core::ParameterKey;
-use crate::core::ParameterError;
-
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -39,8 +38,7 @@ impl ParameterMetadata {
         key: impl Into<String>,
         name: impl Into<String>,
         description: impl Into<String>,
-        #[builder(default = false)]
-        required: bool,
+        #[builder(default = false)] required: bool,
         placeholder: Option<String>,
         hint: Option<String>,
     ) -> Result<Self, ParameterError> {

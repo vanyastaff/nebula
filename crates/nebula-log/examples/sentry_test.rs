@@ -1,8 +1,8 @@
 //! Sentry integration test example
 
+use anyhow::Result;
 use nebula_log::prelude::*;
 use std::env;
-use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {

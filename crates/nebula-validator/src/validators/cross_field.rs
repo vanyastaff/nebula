@@ -1,6 +1,6 @@
 //! Cross-field validation operations using the unified validator macro
 
-use crate::{validator, validator_fn, ValueExt};
+use crate::{ValueExt, validator, validator_fn};
 use nebula_value::Value;
 
 // ==================== CROSS-FIELD VALIDATORS ====================

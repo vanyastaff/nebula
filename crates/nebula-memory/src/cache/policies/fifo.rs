@@ -190,10 +190,9 @@ where
         }
 
         // Find the entry with the oldest insertion order
-        entries.iter()
-            .filter_map(|(key, _entry)| {
-                self.key_set.get(*key).map(|&order| (*key, order))
-            })
+        entries
+            .iter()
+            .filter_map(|(key, _entry)| self.key_set.get(*key).map(|&order| (*key, order)))
             .min_by_key(|(_, order)| *order)
             .map(|(key, _)| key.clone())
     }

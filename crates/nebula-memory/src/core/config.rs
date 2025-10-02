@@ -14,7 +14,7 @@ use core::time::Duration;
 use super::error::{MemoryError, MemoryResult};
 
 #[cfg(feature = "logging")]
-use nebula_log::{info, debug, warn};
+use nebula_log::{debug, info, warn};
 
 // ============================================================================
 // Core Configuration Types
@@ -147,30 +147,35 @@ impl MemoryConfig {
             debug!("Validating memory configuration");
         }
 
-        self.allocator.validate()
+        self.allocator
+            .validate()
             .map_err(|e| MemoryError::invalid_config(format!("allocator: {}", e)))?;
 
         #[cfg(feature = "pool")]
         {
-            self.pool.validate()
+            self.pool
+                .validate()
                 .map_err(|e| MemoryError::invalid_config(format!("pool: {}", e)))?;
         }
 
         #[cfg(feature = "arena")]
         {
-            self.arena.validate()
+            self.arena
+                .validate()
                 .map_err(|e| MemoryError::invalid_config(format!("arena: {}", e)))?;
         }
 
         #[cfg(feature = "cache")]
         {
-            self.cache.validate()
+            self.cache
+                .validate()
                 .map_err(|e| MemoryError::invalid_config(format!("cache: {}", e)))?;
         }
 
         #[cfg(feature = "budget")]
         {
-            self.budget.validate()
+            self.budget
+                .validate()
                 .map_err(|e| MemoryError::invalid_config(format!("budget: {}", e)))?;
         }
 
@@ -256,7 +261,9 @@ impl AllocatorConfig {
     /// Validate allocator configuration
     pub fn validate(&self) -> MemoryResult<()> {
         if self.max_allocation_size == 0 {
-            return Err(MemoryError::invalid_config("max_allocation_size cannot be zero"));
+            return Err(MemoryError::invalid_config(
+                "max_allocation_size cannot be zero",
+            ));
         }
 
         if !self.max_allocation_size.is_power_of_two() {
@@ -390,11 +397,15 @@ impl PoolConfig {
     /// Validate pool configuration
     pub fn validate(&self) -> MemoryResult<()> {
         if self.default_capacity == 0 {
-            return Err(MemoryError::invalid_config("default_capacity cannot be zero"));
+            return Err(MemoryError::invalid_config(
+                "default_capacity cannot be zero",
+            ));
         }
 
         if self.max_capacity < self.default_capacity {
-            return Err(MemoryError::invalid_config("max_capacity must be >= default_capacity"));
+            return Err(MemoryError::invalid_config(
+                "max_capacity must be >= default_capacity",
+            ));
         }
 
         Ok(())
@@ -449,7 +460,7 @@ pub struct ArenaConfig {
 impl Default for ArenaConfig {
     fn default() -> Self {
         Self {
-            default_size: 64 * 1024, // 64KB
+            default_size: 64 * 1024,    // 64KB
             max_size: 16 * 1024 * 1024, // 16MB
             enable_stats: cfg!(feature = "stats"),
             growth_strategy: ArenaGrowthStrategy::Double,
@@ -463,7 +474,7 @@ impl ArenaConfig {
     /// Production configuration - optimized for maximum performance
     pub fn production() -> Self {
         Self {
-            default_size: 1024 * 1024, // 1MB
+            default_size: 1024 * 1024,   // 1MB
             max_size: 256 * 1024 * 1024, // 256MB
             enable_stats: false,
             growth_strategy: ArenaGrowthStrategy::Fixed(2 * 1024 * 1024), // 2MB
@@ -474,7 +485,7 @@ impl ArenaConfig {
     /// Debug configuration - optimized for debugging and error detection
     pub fn debug() -> Self {
         Self {
-            default_size: 64 * 1024, // 64KB
+            default_size: 64 * 1024,    // 64KB
             max_size: 16 * 1024 * 1024, // 16MB
             enable_stats: true,
             growth_strategy: ArenaGrowthStrategy::Double,
@@ -491,7 +502,7 @@ impl ArenaConfig {
     pub fn low_memory() -> Self {
         Self {
             default_size: 4 * 1024, // 4KB
-            max_size: 1024 * 1024, // 1MB
+            max_size: 1024 * 1024,  // 1MB
             enable_stats: true,
             growth_strategy: ArenaGrowthStrategy::Linear(4 * 1024), // 4KB
             enable_compression: true,
@@ -505,7 +516,9 @@ impl ArenaConfig {
         }
 
         if self.max_size < self.default_size {
-            return Err(MemoryError::invalid_config("max_size must be >= default_size"));
+            return Err(MemoryError::invalid_config(
+                "max_size must be >= default_size",
+            ));
         }
 
         if !self.default_size.is_power_of_two() {
@@ -607,11 +620,15 @@ impl CacheConfig {
     /// Validate cache configuration
     pub fn validate(&self) -> MemoryResult<()> {
         if self.default_capacity == 0 {
-            return Err(MemoryError::invalid_config("default_capacity cannot be zero"));
+            return Err(MemoryError::invalid_config(
+                "default_capacity cannot be zero",
+            ));
         }
 
         if self.max_capacity < self.default_capacity {
-            return Err(MemoryError::invalid_config("max_capacity must be >= default_capacity"));
+            return Err(MemoryError::invalid_config(
+                "max_capacity must be >= default_capacity",
+            ));
         }
 
         Ok(())
@@ -668,7 +685,9 @@ impl BudgetConfig {
     pub fn validate(&self) -> MemoryResult<()> {
         if let (Some(global), Some(operation)) = (self.global_budget, self.operation_budget) {
             if operation > global {
-                return Err(MemoryError::invalid_config("operation_budget cannot exceed global_budget"));
+                return Err(MemoryError::invalid_config(
+                    "operation_budget cannot exceed global_budget",
+                ));
             }
         }
 
@@ -718,13 +737,15 @@ impl MemoryConfig {
 
         // Load allocator config from env
         if let Ok(max_size) = std::env::var("NEBULA_MEMORY_MAX_ALLOCATION_SIZE") {
-            config.allocator.max_allocation_size = max_size.parse()
-                .map_err(|_| MemoryError::invalid_config("Invalid NEBULA_MEMORY_MAX_ALLOCATION_SIZE"))?;
+            config.allocator.max_allocation_size = max_size.parse().map_err(|_| {
+                MemoryError::invalid_config("Invalid NEBULA_MEMORY_MAX_ALLOCATION_SIZE")
+            })?;
         }
 
         if let Ok(tracking) = std::env::var("NEBULA_MEMORY_ENABLE_TRACKING") {
-            config.allocator.enable_tracking = tracking.parse()
-                .map_err(|_| MemoryError::invalid_config("Invalid NEBULA_MEMORY_ENABLE_TRACKING"))?;
+            config.allocator.enable_tracking = tracking.parse().map_err(|_| {
+                MemoryError::invalid_config("Invalid NEBULA_MEMORY_ENABLE_TRACKING")
+            })?;
         }
 
         // Add more environment variable parsing as needed

@@ -132,17 +132,19 @@ impl<T> TypedArena<T> {
         let index = self.current_index.get();
 
         // Check if we need a new chunk
-        let needs_chunk = self
-            .current_chunk
-            .borrow()
-            .map_or(true, |chunk| unsafe { index >= (*chunk.as_ptr()).capacity() });
+        let needs_chunk = self.current_chunk.borrow().map_or(true, |chunk| unsafe {
+            index >= (*chunk.as_ptr()).capacity()
+        });
 
         if needs_chunk {
             self.allocate_chunk()?;
         }
 
         // Get current chunk
-        let chunk_ptr = self.current_chunk.borrow().expect("Should have chunk after allocation");
+        let chunk_ptr = self
+            .current_chunk
+            .borrow()
+            .expect("Should have chunk after allocation");
 
         // Get pointer to element
         let elem_ptr = unsafe {
@@ -169,17 +171,19 @@ impl<T> TypedArena<T> {
         let index = self.current_index.get();
 
         // Check if we need a new chunk
-        let needs_chunk = self
-            .current_chunk
-            .borrow()
-            .map_or(true, |chunk| unsafe { index >= (*chunk.as_ptr()).capacity() });
+        let needs_chunk = self.current_chunk.borrow().map_or(true, |chunk| unsafe {
+            index >= (*chunk.as_ptr()).capacity()
+        });
 
         if needs_chunk {
             self.allocate_chunk()?;
         }
 
         // Get current chunk
-        let chunk_ptr = self.current_chunk.borrow().expect("Should have chunk after allocation");
+        let chunk_ptr = self
+            .current_chunk
+            .borrow()
+            .expect("Should have chunk after allocation");
 
         // Get pointer to element
         let elem_ptr = unsafe {
@@ -198,7 +202,9 @@ impl<T> TypedArena<T> {
 
     /// Allocate multiple values at once
     pub fn alloc_slice(&self, values: &[T]) -> Result<&mut [T], MemoryError>
-    where T: Copy {
+    where
+        T: Copy,
+    {
         if values.is_empty() {
             return Ok(&mut []);
         }
@@ -221,7 +227,9 @@ impl<T> TypedArena<T> {
 
     /// Allocate an iterator of values
     pub fn alloc_iter<I>(&self, iter: I) -> Result<Vec<&mut T>, MemoryError>
-    where I: IntoIterator<Item = T> {
+    where
+        I: IntoIterator<Item = T>,
+    {
         let mut result = Vec::new();
 
         for value in iter {
@@ -352,7 +360,9 @@ mod tests {
         let arena = TypedArena::<String>::new();
 
         let strings = vec!["hello", "world", "rust"];
-        let allocated: Vec<_> = arena.alloc_iter(strings.iter().map(|s| s.to_string())).unwrap();
+        let allocated: Vec<_> = arena
+            .alloc_iter(strings.iter().map(|s| s.to_string()))
+            .unwrap();
 
         assert_eq!(allocated.len(), strings.len());
         for (i, s) in allocated.iter().enumerate() {
@@ -400,9 +410,19 @@ mod tests {
     fn test_complex_type() {
         let arena = TypedArena::<TestStruct>::new();
 
-        let obj1 = arena.alloc(TestStruct { id: 1, name: "First".to_string() }).unwrap();
+        let obj1 = arena
+            .alloc(TestStruct {
+                id: 1,
+                name: "First".to_string(),
+            })
+            .unwrap();
 
-        let obj2 = arena.alloc(TestStruct { id: 2, name: "Second".to_string() }).unwrap();
+        let obj2 = arena
+            .alloc(TestStruct {
+                id: 2,
+                name: "Second".to_string(),
+            })
+            .unwrap();
 
         assert_eq!(obj1.id, 1);
         assert_eq!(obj2.name, "Second");

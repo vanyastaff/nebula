@@ -1,8 +1,7 @@
+use nebula_core::{KeyParseError, ParameterKey};
 use nebula_error::Error;
-use nebula_core::{ParameterKey, KeyParseError};
 #[derive(Debug, Error)]
 pub enum ParameterError {
-
     /// Invalid format or content for a parameter key string.
     #[error("Invalid key format: {0}")]
     InvalidKeyFormat(#[from] KeyParseError),

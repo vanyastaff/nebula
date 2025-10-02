@@ -51,10 +51,10 @@ pub mod profiler;
 #[cfg(all(feature = "stats", feature = "std"))]
 pub use aggregator::{AggregatedStats, Aggregator, HistoricalMetricsSummary};
 pub use collector::GlobalStats;
-#[cfg(all(feature = "stats", feature = "std"))]
-pub use collector::StatsCollector;
 #[cfg(feature = "stats")]
 pub use collector::HistogramStats;
+#[cfg(all(feature = "stats", feature = "std"))]
+pub use collector::StatsCollector;
 pub use config::{
     AlertConfig, HistogramConfig, MonitoringConfig, PerformanceImpact, StatsConfig, TrackedMetric,
     TrackingConfig, TrackingLevel,
@@ -99,5 +99,3 @@ mod tests {
         let _stats = MemoryStats::default();
     }
 }
-
-

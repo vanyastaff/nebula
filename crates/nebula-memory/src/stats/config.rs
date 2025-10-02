@@ -118,7 +118,12 @@ pub struct HistogramConfig {
 
 impl Default for HistogramConfig {
     fn default() -> Self {
-        Self { bucket_count: 50, min_value: None, max_value: None, logarithmic: true }
+        Self {
+            bucket_count: 50,
+            min_value: None,
+            max_value: None,
+            logarithmic: true,
+        }
     }
 }
 
@@ -222,19 +227,22 @@ impl core::fmt::Display for ConfigError {
             Self::InvalidAdaptiveRange => write!(f, "Invalid adaptive sampling rate range"),
             Self::ZeroMonitoringInterval => {
                 write!(f, "Monitoring interval cannot be zero when enabled")
-            },
+            }
             Self::InvalidAllocationRate => write!(f, "Allocation rate threshold must be positive"),
             Self::HistoryTooLarge => write!(f, "History size too large (max 1,000,000)"),
             Self::ZeroHistoryWithTrackedMetrics => {
-                write!(f, "History size cannot be zero if tracked metrics are enabled")
-            },
+                write!(
+                    f,
+                    "History size cannot be zero if tracked metrics are enabled"
+                )
+            }
             Self::TooManyHistogramBuckets => write!(f, "Too many histogram buckets (max 1,000)"),
             Self::InsufficientHistoryForPredictions => {
                 write!(f, "Insufficient history for predictions (min 100 entries)")
-            },
+            }
             Self::InvalidConfidenceThreshold => {
                 write!(f, "Confidence threshold must be between 0.0 and 1.0")
-            },
+            }
             Self::ZeroTrainingWindowSize => write!(f, "Training window size cannot be zero"),
         }
     }
@@ -568,31 +576,47 @@ impl TrackingConfig {
 
 impl SamplingConfig {
     pub const fn disabled() -> Self {
-        Self { rate: 0.0, adaptive: false, strategy: SamplingStrategy::Random }
+        Self {
+            rate: 0.0,
+            adaptive: false,
+            strategy: SamplingStrategy::Random,
+        }
     }
 
     pub const fn light() -> Self {
-        Self { rate: 0.001, adaptive: true, strategy: SamplingStrategy::Adaptive }
+        Self {
+            rate: 0.001,
+            adaptive: true,
+            strategy: SamplingStrategy::Adaptive,
+        }
     }
 
     pub const fn balanced() -> Self {
-        Self { rate: 0.01, adaptive: true, strategy: SamplingStrategy::Adaptive }
+        Self {
+            rate: 0.01,
+            adaptive: true,
+            strategy: SamplingStrategy::Adaptive,
+        }
     }
 
     pub const fn detailed() -> Self {
-        Self { rate: 0.1, adaptive: false, strategy: SamplingStrategy::Random }
+        Self {
+            rate: 0.1,
+            adaptive: false,
+            strategy: SamplingStrategy::Random,
+        }
     }
 
     pub const fn full() -> Self {
-        Self { rate: 1.0, adaptive: false, strategy: SamplingStrategy::Random }
+        Self {
+            rate: 1.0,
+            adaptive: false,
+            strategy: SamplingStrategy::Random,
+        }
     }
 
     pub const fn memory_usage(&self) -> usize {
-        if self.adaptive {
-            512
-        } else {
-            64
-        }
+        if self.adaptive { 512 } else { 64 }
     }
 
     pub fn impact_score(&self) -> u8 {
@@ -677,8 +701,11 @@ impl MonitoringConfig {
             return 0;
         }
 
-        let histogram_overhead =
-            if self.collect_histograms { self.histogram_buckets * 8 } else { 0 };
+        let histogram_overhead = if self.collect_histograms {
+            self.histogram_buckets * 8
+        } else {
+            0
+        };
         let component_overhead = if self.component_tracking { 1024 } else { 0 };
         histogram_overhead + component_overhead
     }
@@ -752,11 +779,7 @@ impl AlertConfig {
     }
 
     pub const fn memory_usage(&self) -> usize {
-        if self.enabled {
-            256
-        } else {
-            0
-        }
+        if self.enabled { 256 } else { 0 }
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {

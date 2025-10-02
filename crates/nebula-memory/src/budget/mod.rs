@@ -22,21 +22,18 @@
 //! println!("Used: {} / {} bytes", metrics.used, metrics.limit);
 //! ```
 
-mod config;
 mod budget;
+mod config;
 
+pub use budget::{BudgetMetrics, BudgetState, MemoryBudget};
 pub use config::{BudgetConfig, OvercommitPolicy, ReservationMode};
-pub use budget::{MemoryBudget, BudgetState, BudgetMetrics};
 
 use std::sync::Arc;
 
 /// Create a new memory budget with the given configuration
 ///
 /// This is a convenience function for creating budgets without a parent.
-pub fn create_budget(
-    name: impl Into<String>,
-    limit: usize,
-) -> Arc<MemoryBudget> {
+pub fn create_budget(name: impl Into<String>, limit: usize) -> Arc<MemoryBudget> {
     let config = BudgetConfig::new(name, limit);
     MemoryBudget::new(config)
 }
@@ -95,8 +92,3 @@ mod tests {
         assert_eq!(metrics.allocations, 1);
     }
 }
-
-
-
-
-

@@ -106,7 +106,7 @@ impl GlobalStats {
                 0.0
             },
             median_allocation_size: 0, // Would need histogram data
-            allocation_rate: 0.0, // Would need time-based tracking
+            allocation_rate: 0.0,      // Would need time-based tracking
             deallocation_rate: 0.0,
         }
     }
@@ -170,35 +170,40 @@ impl HistogramStats {
 
     /// Get p50 (median)
     pub fn p50(&self) -> Option<u64> {
-        self.percentiles.iter()
+        self.percentiles
+            .iter()
             .find(|p| (p.percentile - 0.5).abs() < 0.01)
             .map(|p| p.value)
     }
 
     /// Get p90 (90th percentile)
     pub fn p90(&self) -> Option<u64> {
-        self.percentiles.iter()
+        self.percentiles
+            .iter()
             .find(|p| (p.percentile - 0.90).abs() < 0.01)
             .map(|p| p.value)
     }
 
     /// Get p95 (95th percentile)
     pub fn p95(&self) -> Option<u64> {
-        self.percentiles.iter()
+        self.percentiles
+            .iter()
             .find(|p| (p.percentile - 0.95).abs() < 0.01)
             .map(|p| p.value)
     }
 
     /// Get p99 (99th percentile)
     pub fn p99(&self) -> Option<u64> {
-        self.percentiles.iter()
+        self.percentiles
+            .iter()
             .find(|p| (p.percentile - 0.99).abs() < 0.01)
             .map(|p| p.value)
     }
 
     /// Get custom percentile
     pub fn percentile(&self, p: f64) -> Option<u64> {
-        self.percentiles.iter()
+        self.percentiles
+            .iter()
             .find(|percentile| (percentile.percentile - p).abs() < 0.01)
             .map(|percentile| percentile.value)
     }
@@ -241,8 +246,8 @@ mod tests {
     #[test]
     #[cfg(feature = "stats")]
     fn test_histogram_stats_percentiles() {
-        use super::super::histogram::MemoryHistogram;
         use super::super::config::HistogramConfig;
+        use super::super::histogram::MemoryHistogram;
 
         let config = HistogramConfig {
             enabled: true,

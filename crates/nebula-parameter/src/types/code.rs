@@ -2,8 +2,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 
 /// Parameter for code input with syntax highlighting and validation
@@ -206,10 +206,15 @@ impl HasValue for CodeParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+        self.value
+            .as_ref()
+            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Text(s)) => {
@@ -224,12 +229,12 @@ impl HasValue for CodeParameter {
                         reason: "Code contains syntax errors".to_string(),
                     })
                 }
-            },
+            }
             ParameterValue::Expression(expr) => {
                 // Allow expressions for dynamic code
                 self.value = Some(expr);
                 Ok(())
-            },
+            }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Expected string value for code parameter".to_string(),
@@ -291,15 +296,15 @@ impl CodeParameter {
             CodeLanguage::Json => {
                 // Try to parse as JSON
                 serde_json::from_str::<serde_json::Value>(code).is_ok()
-            },
+            }
             CodeLanguage::JavaScript | CodeLanguage::TypeScript => {
                 // Basic JS/TS validation - check for unclosed braces/brackets
                 self.validate_balanced_brackets(code)
-            },
+            }
             CodeLanguage::Python => {
                 // Basic Python validation - check indentation consistency
                 self.validate_python_indentation(code)
-            },
+            }
             _ => {
                 // For other languages, just check balanced brackets
                 self.validate_balanced_brackets(code)
@@ -349,7 +354,7 @@ impl CodeParameter {
                     if stack.pop() != Some(ch) {
                         return false;
                     }
-                },
+                }
                 _ => {}
             }
         }
@@ -420,10 +425,7 @@ impl CodeParameter {
 
     /// Get tab size
     pub fn get_tab_size(&self) -> u32 {
-        self.options
-            .as_ref()
-            .map(|opts| opts.tab_size)
-            .unwrap_or(4)
+        self.options.as_ref().map(|opts| opts.tab_size).unwrap_or(4)
     }
 
     /// Check if word wrap is enabled
@@ -452,9 +454,7 @@ impl CodeParameter {
 
     /// Get the maximum number of lines before scrolling
     pub fn get_max_lines(&self) -> Option<u32> {
-        self.options
-            .as_ref()
-            .and_then(|opts| opts.max_lines)
+        self.options.as_ref().and_then(|opts| opts.max_lines)
     }
 
     /// Count lines in current code

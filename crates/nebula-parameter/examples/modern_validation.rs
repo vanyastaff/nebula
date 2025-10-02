@@ -3,7 +3,7 @@
 //! This example shows how to use the new modern validation system
 //! that replaces the legacy condition-based validation.
 
-use nebula_parameter::{ModernParameterValidation, HasModernValidation, RoutingParameter};
+use nebula_parameter::{HasModernValidation, ModernParameterValidation, RoutingParameter};
 use serde_json::json;
 
 #[tokio::main]
@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "api_endpoint",
         "API Endpoint",
         "Routing endpoint for API calls",
-        None
+        None,
     )?;
 
     // Add connection validation

@@ -3,11 +3,11 @@
 //! This example demonstrates various rate limiting strategies including security features
 //! and shows the DoS protection mechanisms implemented in the rate limiters.
 
-use std::time::{Duration, Instant};
 use nebula_resilience::{
-    TokenBucket, LeakyBucket, SlidingWindow, AdaptiveRateLimiter,
-    AnyRateLimiter, RateLimiter, ResilienceError
+    AdaptiveRateLimiter, AnyRateLimiter, LeakyBucket, RateLimiter, ResilienceError, SlidingWindow,
+    TokenBucket,
 };
+use std::time::{Duration, Instant};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -55,8 +55,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let elapsed = start.elapsed();
-    println!("  📊 Results: {} successful, {} rate-limited in {:?}",
-             successful_ops, rate_limited_ops, elapsed);
+    println!(
+        "  📊 Results: {} successful, {} rate-limited in {:?}",
+        successful_ops, rate_limited_ops, elapsed
+    );
 
     // Test 2: Leaky Bucket
     println!("\n📊 Test 2: Leaky Bucket Pattern");
@@ -96,14 +98,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let test_start = Instant::now();
 
     for round in 1..=3 {
-        println!("  📅 Round {} (t={:.1}s):", round, test_start.elapsed().as_secs_f64());
+        println!(
+            "  📅 Round {} (t={:.1}s):",
+            round,
+            test_start.elapsed().as_secs_f64()
+        );
 
         for i in 1..=7 {
             match sliding_window.acquire().await {
                 Ok(()) => print!("✅"),
                 Err(ResilienceError::RateLimitExceeded { retry_after, .. }) => {
                     print!("🚫");
-                    if i == 6 { // Show retry_after for the first rejection
+                    if i == 6 {
+                        // Show retry_after for the first rejection
                         if let Some(delay) = retry_after {
                             println!(" (retry after {:?})", delay);
                         }
@@ -126,37 +133,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Simulate success scenario
     println!("  🧪 Simulating successful operations...");
     for _ in 1..=20 {
-        let result = adaptive.execute(|| async {
-            // Simulate successful operation
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            Ok::<String, ResilienceError>("Success".to_string())
-        }).await;
+        let result = adaptive
+            .execute(|| async {
+                // Simulate successful operation
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                Ok::<String, ResilienceError>("Success".to_string())
+            })
+            .await;
 
         match result {
             Ok(_) => print!("✅"),
             Err(_) => print!("❌"),
         }
     }
-    println!("\n  📈 Current adaptive rate: {:.2}", adaptive.current_rate().await);
+    println!(
+        "\n  📈 Current adaptive rate: {:.2}",
+        adaptive.current_rate().await
+    );
 
     // Simulate failure scenario
     println!("  💥 Simulating failing operations...");
     for _ in 1..=10 {
-        let result = adaptive.execute(|| async {
-            // Simulate failing operation
-            Err::<String, ResilienceError>(ResilienceError::Custom {
-                message: "Simulated failure".to_string(),
-                retryable: true,
-                source: None,
+        let result = adaptive
+            .execute(|| async {
+                // Simulate failing operation
+                Err::<String, ResilienceError>(ResilienceError::Custom {
+                    message: "Simulated failure".to_string(),
+                    retryable: true,
+                    source: None,
+                })
             })
-        }).await;
+            .await;
 
         match result {
             Ok(_) => print!("✅"),
             Err(_) => print!("❌"),
         }
     }
-    println!("\n  📉 Current adaptive rate: {:.2}", adaptive.current_rate().await);
+    println!(
+        "\n  📉 Current adaptive rate: {:.2}",
+        adaptive.current_rate().await
+    );
 
     // Test 5: Security and DoS Protection
     println!("\n📊 Test 5: Security and DoS Protection");
@@ -165,8 +182,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rate_limiters: Vec<AnyRateLimiter> = vec![
         AnyRateLimiter::TokenBucket(std::sync::Arc::new(TokenBucket::new(5, 2.0))),
         AnyRateLimiter::LeakyBucket(std::sync::Arc::new(LeakyBucket::new(5, 2.0))),
-        AnyRateLimiter::SlidingWindow(std::sync::Arc::new(SlidingWindow::new(Duration::from_secs(1), 5))),
-        AnyRateLimiter::Adaptive(std::sync::Arc::new(AdaptiveRateLimiter::new(5.0, 1.0, 10.0))),
+        AnyRateLimiter::SlidingWindow(std::sync::Arc::new(SlidingWindow::new(
+            Duration::from_secs(1),
+            5,
+        ))),
+        AnyRateLimiter::Adaptive(std::sync::Arc::new(AdaptiveRateLimiter::new(
+            5.0, 1.0, 10.0,
+        ))),
     ];
 
     let rate_limiter_names = ["TokenBucket", "LeakyBucket", "SlidingWindow", "Adaptive"];
@@ -199,8 +221,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let effective_rate = success_count as f64 / elapsed.as_secs_f64();
 
         println!();
-        println!("    📊 {}: {} success, {} rejected, {:.2} ops/sec effective rate",
-                 name, success_count, rejection_count, effective_rate);
+        println!(
+            "    📊 {}: {} success, {} rejected, {:.2} ops/sec effective rate",
+            name, success_count, rejection_count, effective_rate
+        );
 
         // Reset for next test
         limiter.reset().await;
@@ -215,25 +239,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  🧪 Testing execute method with different scenarios...");
 
     // Successful operation
-    let result = bucket.execute(|| async {
-        Ok::<String, ResilienceError>("Success".to_string())
-    }).await;
+    let result = bucket
+        .execute(|| async { Ok::<String, ResilienceError>("Success".to_string()) })
+        .await;
     println!("  ✅ Successful operation: {:?}", result.is_ok());
 
     // Operation that fails after rate limit check
-    let result = bucket.execute(|| async {
-        Err::<String, ResilienceError>(ResilienceError::Custom {
-            message: "Operation failed".to_string(),
-            retryable: false,
-            source: None,
+    let result = bucket
+        .execute(|| async {
+            Err::<String, ResilienceError>(ResilienceError::Custom {
+                message: "Operation failed".to_string(),
+                retryable: false,
+                source: None,
+            })
         })
-    }).await;
+        .await;
     println!("  ❌ Failed operation: {:?}", result.is_err());
 
     // Rate limited operation
-    let result = bucket.execute(|| async {
-        Ok::<String, ResilienceError>("Should be rate limited".to_string())
-    }).await;
+    let result = bucket
+        .execute(|| async { Ok::<String, ResilienceError>("Should be rate limited".to_string()) })
+        .await;
     println!("  🚫 Rate limited operation: {:?}", result.is_err());
 
     // Test 7: Performance Benchmark
@@ -250,7 +276,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = start.elapsed();
     let throughput = operations as f64 / elapsed.as_secs_f64();
 
-    println!("  ⚡ Completed {} rate limit checks in {:?}", operations, elapsed);
+    println!(
+        "  ⚡ Completed {} rate limit checks in {:?}",
+        operations, elapsed
+    );
     println!("  📈 Throughput: {:.2} checks/second", throughput);
 
     println!("\n🎉 Rate Limiter Demo Completed Successfully!");

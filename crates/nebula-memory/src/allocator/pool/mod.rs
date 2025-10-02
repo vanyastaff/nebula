@@ -18,4 +18,3 @@ pub use allocator::PoolAllocator;
 pub use config::PoolConfig;
 pub use pool_box::PoolBox;
 pub use stats::PoolStats;
-

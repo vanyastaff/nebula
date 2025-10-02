@@ -11,11 +11,7 @@
 extern crate alloc;
 
 #[cfg(feature = "std")]
-use std::{
-    collections::HashSet,
-    hash::Hash,
-    marker::PhantomData,
-};
+use std::{collections::HashSet, hash::Hash, marker::PhantomData};
 
 #[cfg(not(feature = "std"))]
 use {
@@ -96,10 +92,7 @@ where
 
     /// Create a seeded random policy for reproducible behavior
     pub fn with_seed(seed: u64) -> Self {
-        Self::with_config(RandomConfig {
-            seeded: true,
-            seed,
-        })
+        Self::with_config(RandomConfig { seeded: true, seed })
     }
 
     /// Get the number of tracked keys
@@ -218,9 +211,7 @@ mod tests {
         let policy = RandomPolicy::<String, i32>::new();
         let entry = CacheEntry::new(42);
 
-        let entries: Vec<EvictionEntry<String, i32>> = vec![
-            (&"only_key".to_string(), &entry),
-        ];
+        let entries: Vec<EvictionEntry<String, i32>> = vec![(&"only_key".to_string(), &entry)];
 
         let victim = policy.as_victim_selector().select_victim(&entries);
         assert_eq!(victim, Some("only_key".to_string()));

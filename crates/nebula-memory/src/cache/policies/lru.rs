@@ -85,7 +85,7 @@ impl Default for LruConfig {
             enable_aging: true,
             aging_factor: 0.9,
             aging_interval: Duration::from_secs(300), // 5 minutes
-            protection_ratio: 0.2, // Protect top 20%
+            protection_ratio: 0.2,                    // Protect top 20%
             track_frequency: true,
             max_tracked_items: 10000,
             size_aware: false,
@@ -297,9 +297,9 @@ where
     }
 
     fn get_lru_candidate(&self) -> Option<K> {
-        self.list.tail.map(|tail_ptr| unsafe {
-            (*tail_ptr.as_ptr()).key.clone()
-        })
+        self.list
+            .tail
+            .map(|tail_ptr| unsafe { (*tail_ptr.as_ptr()).key.clone() })
     }
 
     fn should_promote(&self, key: &K) -> bool {
@@ -331,19 +331,23 @@ where
 {
     fn new(capacity: usize) -> Self {
         Self {
-            items: vec![ClockItem {
-                key: None,
-                reference_bit: false,
-                frequency: 0,
-                size: 0,
-            }; capacity],
+            items: vec![
+                ClockItem {
+                    key: None,
+                    reference_bit: false,
+                    frequency: 0,
+                    size: 0,
+                };
+                capacity
+            ],
             hand: 0,
             capacity,
         }
     }
 
     fn find_victim(&mut self) -> Option<K> {
-        for _ in 0..(self.capacity * 2) { // Maximum two full rotations
+        for _ in 0..(self.capacity * 2) {
+            // Maximum two full rotations
             let current = &mut self.items[self.hand];
 
             if let Some(ref key) = current.key {
@@ -471,13 +475,14 @@ where
                     .map(|i| LruSegment::new(segment_capacity, (i + 1) as u64 * 2))
                     .collect();
                 LruStrategyImpl::Segmented { segments }
-            },
+            }
             LruStrategy::Clock => LruStrategyImpl::Clock {
                 clock: ClockHand::new(config.max_tracked_items),
                 key_positions: HashMap::new(),
             },
             LruStrategy::Adaptive => {
-                let hot_capacity = (config.max_tracked_items as f64 * config.protection_ratio) as usize;
+                let hot_capacity =
+                    (config.max_tracked_items as f64 * config.protection_ratio) as usize;
                 LruStrategyImpl::Adaptive {
                     hot_list: DoublyLinkedList::new(),
                     cold_list: DoublyLinkedList::new(),
@@ -485,7 +490,7 @@ where
                     cold_map: HashMap::new(),
                     hot_capacity,
                 }
-            },
+            }
             LruStrategy::MultiQueue => {
                 let queue_count = 8; // Number of frequency-based queues
                 LruStrategyImpl::MultiQueue {
@@ -493,7 +498,7 @@ where
                     queue_map: HashMap::new(),
                     lifetimes: HashMap::new(),
                 }
-            },
+            }
         };
 
         Self {
@@ -588,27 +593,38 @@ where
             LruStrategyImpl::Classic { list, node_map } => {
                 // TODO: Refactor classic_insert to avoid borrow checker issues
                 let _ = (list, node_map, key, size);
-            },
+            }
             LruStrategyImpl::Segmented { segments } => {
                 // Insert into first segment
                 if !segments.is_empty() {
                     segments[0].insert(key.clone(), size);
                 }
-            },
-            LruStrategyImpl::Clock { clock, key_positions } => {
+            }
+            LruStrategyImpl::Clock {
+                clock,
+                key_positions,
+            } => {
                 clock.insert(key.clone(), size);
-            },
-            LruStrategyImpl::Adaptive { cold_list, cold_map, .. } => {
+            }
+            LruStrategyImpl::Adaptive {
+                cold_list,
+                cold_map,
+                ..
+            } => {
                 // TODO: Refactor adaptive_insert to avoid borrow checker issues
                 let _ = (cold_list, cold_map, key, size);
-            },
-            LruStrategyImpl::MultiQueue { queues, queue_map, lifetimes } => {
+            }
+            LruStrategyImpl::MultiQueue {
+                queues,
+                queue_map,
+                lifetimes,
+            } => {
                 if !queues.is_empty() {
                     queues[0].push_back(key.clone());
                     queue_map.insert(key.clone(), 0);
                     lifetimes.insert(key.clone(), self.total_accesses);
                 }
-            },
+            }
         }
 
         // Update size distribution
@@ -623,29 +639,45 @@ where
             LruStrategyImpl::Classic { list, node_map } => {
                 if let Some(node_ptr) = node_map.remove(key) {
                     list.remove_node(node_ptr);
-                    unsafe { Box::from_raw(node_ptr.as_ptr()); }
+                    unsafe {
+                        Box::from_raw(node_ptr.as_ptr());
+                    }
                 }
-            },
+            }
             LruStrategyImpl::Segmented { segments } => {
                 for segment in segments {
                     if segment.remove(key) {
                         break;
                     }
                 }
-            },
+            }
             LruStrategyImpl::Clock { key_positions, .. } => {
                 key_positions.remove(key);
-            },
-            LruStrategyImpl::Adaptive { hot_list, cold_list, hot_map, cold_map, .. } => {
+            }
+            LruStrategyImpl::Adaptive {
+                hot_list,
+                cold_list,
+                hot_map,
+                cold_map,
+                ..
+            } => {
                 if let Some(node_ptr) = hot_map.remove(key) {
                     hot_list.remove_node(node_ptr);
-                    unsafe { Box::from_raw(node_ptr.as_ptr()); }
+                    unsafe {
+                        Box::from_raw(node_ptr.as_ptr());
+                    }
                 } else if let Some(node_ptr) = cold_map.remove(key) {
                     cold_list.remove_node(node_ptr);
-                    unsafe { Box::from_raw(node_ptr.as_ptr()); }
+                    unsafe {
+                        Box::from_raw(node_ptr.as_ptr());
+                    }
                 }
-            },
-            LruStrategyImpl::MultiQueue { queues, queue_map, lifetimes } => {
+            }
+            LruStrategyImpl::MultiQueue {
+                queues,
+                queue_map,
+                lifetimes,
+            } => {
                 if let Some(queue_idx) = queue_map.remove(key) {
                     if let Some(queue) = queues.get_mut(queue_idx) {
                         if let Some(pos) = queue.iter().position(|k| k == key) {
@@ -654,18 +686,16 @@ where
                     }
                 }
                 lifetimes.remove(key);
-            },
+            }
         }
     }
 
     /// Select a victim for eviction
     pub fn select_victim(&self) -> Option<K> {
         match &self.strategy_impl {
-            LruStrategyImpl::Classic { list, .. } => {
-                list.tail.map(|tail_ptr| unsafe {
-                    (*tail_ptr.as_ptr()).key.clone()
-                })
-            },
+            LruStrategyImpl::Classic { list, .. } => list
+                .tail
+                .map(|tail_ptr| unsafe { (*tail_ptr.as_ptr()).key.clone() }),
             LruStrategyImpl::Segmented { segments } => {
                 // Try to find victim from least priority segment
                 for segment in segments.iter().rev() {
@@ -676,22 +706,27 @@ where
                     }
                 }
                 None
-            },
-            LruStrategyImpl::Clock {  .. } => {
+            }
+            LruStrategyImpl::Clock { .. } => {
                 // This is a mutable operation, so we'd need to handle it differently
                 // For now, return None and handle in actual eviction
                 None
-            },
-            LruStrategyImpl::Adaptive { cold_list, hot_list, .. } => {
+            }
+            LruStrategyImpl::Adaptive {
+                cold_list,
+                hot_list,
+                ..
+            } => {
                 // Prefer evicting from cold list
-                cold_list.tail.map(|tail_ptr| unsafe {
-                    (*tail_ptr.as_ptr()).key.clone()
-                }).or_else(|| {
-                    hot_list.tail.map(|tail_ptr| unsafe {
-                        (*tail_ptr.as_ptr()).key.clone()
+                cold_list
+                    .tail
+                    .map(|tail_ptr| unsafe { (*tail_ptr.as_ptr()).key.clone() })
+                    .or_else(|| {
+                        hot_list
+                            .tail
+                            .map(|tail_ptr| unsafe { (*tail_ptr.as_ptr()).key.clone() })
                     })
-                })
-            },
+            }
             LruStrategyImpl::MultiQueue { queues, .. } => {
                 // Find victim from the lowest priority queue
                 for queue in queues {
@@ -702,7 +737,7 @@ where
                     }
                 }
                 None
-            },
+            }
         }
     }
 
@@ -723,14 +758,17 @@ where
                 // Properly deallocate all nodes
                 while list.pop_back().is_some() {}
                 node_map.clear();
-            },
+            }
             LruStrategyImpl::Segmented { segments } => {
                 for segment in segments {
                     while segment.list.pop_back().is_some() {}
                     segment.node_map.clear();
                 }
-            },
-            LruStrategyImpl::Clock { clock, key_positions } => {
+            }
+            LruStrategyImpl::Clock {
+                clock,
+                key_positions,
+            } => {
                 for item in &mut clock.items {
                     item.key = None;
                     item.reference_bit = false;
@@ -738,20 +776,30 @@ where
                 }
                 clock.hand = 0;
                 key_positions.clear();
-            },
-            LruStrategyImpl::Adaptive { hot_list, cold_list, hot_map, cold_map, .. } => {
+            }
+            LruStrategyImpl::Adaptive {
+                hot_list,
+                cold_list,
+                hot_map,
+                cold_map,
+                ..
+            } => {
                 while hot_list.pop_back().is_some() {}
                 while cold_list.pop_back().is_some() {}
                 hot_map.clear();
                 cold_map.clear();
-            },
-            LruStrategyImpl::MultiQueue { queues, queue_map, lifetimes } => {
+            }
+            LruStrategyImpl::MultiQueue {
+                queues,
+                queue_map,
+                lifetimes,
+            } => {
                 for queue in queues {
                     queue.clear();
                 }
                 queue_map.clear();
                 lifetimes.clear();
-            },
+            }
         }
 
         self.protected_keys.clear();
@@ -766,7 +814,13 @@ where
 
     // Implementation methods for different strategies
 
-    fn classic_access(&mut self, list: &mut DoublyLinkedList<K>, node_map: &mut HashMap<K, NonNull<LruNode<K>>>, key: &K, size_hint: Option<usize>) {
+    fn classic_access(
+        &mut self,
+        list: &mut DoublyLinkedList<K>,
+        node_map: &mut HashMap<K, NonNull<LruNode<K>>>,
+        key: &K,
+        size_hint: Option<usize>,
+    ) {
         if let Some(&node_ptr) = node_map.get(key) {
             unsafe {
                 (*node_ptr.as_ptr()).access_count += 1;
@@ -782,7 +836,13 @@ where
         }
     }
 
-    fn classic_insert(&mut self, list: &mut DoublyLinkedList<K>, node_map: &mut HashMap<K, NonNull<LruNode<K>>>, key: &K, size: usize) -> Option<K> {
+    fn classic_insert(
+        &mut self,
+        list: &mut DoublyLinkedList<K>,
+        node_map: &mut HashMap<K, NonNull<LruNode<K>>>,
+        key: &K,
+        size: usize,
+    ) -> Option<K> {
         let mut node = Box::new(LruNode::new(key.clone()));
         node.size = size;
         let node_ptr = list.push_front(node);
@@ -790,7 +850,12 @@ where
         None
     }
 
-    fn segmented_access(&mut self, segments: &mut Vec<LruSegment<K>>, key: &K, size_hint: Option<usize>) {
+    fn segmented_access(
+        &mut self,
+        segments: &mut Vec<LruSegment<K>>,
+        key: &K,
+        size_hint: Option<usize>,
+    ) {
         // Find the segment containing the key and potentially promote
         let segments_len = segments.len();
         for (i, segment) in segments.iter_mut().enumerate() {
@@ -807,11 +872,25 @@ where
         }
     }
 
-    fn clock_access(&mut self, clock: &mut ClockHand<K>, _key_positions: &mut HashMap<K, usize>, key: &K) {
+    fn clock_access(
+        &mut self,
+        clock: &mut ClockHand<K>,
+        _key_positions: &mut HashMap<K, usize>,
+        key: &K,
+    ) {
         clock.access(key);
     }
 
-    fn adaptive_access(&mut self, hot_list: &mut DoublyLinkedList<K>, cold_list: &mut DoublyLinkedList<K>, hot_map: &mut HashMap<K, NonNull<LruNode<K>>>, cold_map: &mut HashMap<K, NonNull<LruNode<K>>>, hot_capacity: usize, key: &K, size_hint: Option<usize>) {
+    fn adaptive_access(
+        &mut self,
+        hot_list: &mut DoublyLinkedList<K>,
+        cold_list: &mut DoublyLinkedList<K>,
+        hot_map: &mut HashMap<K, NonNull<LruNode<K>>>,
+        cold_map: &mut HashMap<K, NonNull<LruNode<K>>>,
+        hot_capacity: usize,
+        key: &K,
+        size_hint: Option<usize>,
+    ) {
         // Check if in hot list
         if let Some(&node_ptr) = hot_map.get(key) {
             unsafe {
@@ -844,14 +923,26 @@ where
         }
     }
 
-    fn adaptive_insert(&mut self, cold_list: &mut DoublyLinkedList<K>, cold_map: &mut HashMap<K, NonNull<LruNode<K>>>, key: &K, size: usize) {
+    fn adaptive_insert(
+        &mut self,
+        cold_list: &mut DoublyLinkedList<K>,
+        cold_map: &mut HashMap<K, NonNull<LruNode<K>>>,
+        key: &K,
+        size: usize,
+    ) {
         let mut node = Box::new(LruNode::new(key.clone()));
         node.size = size;
         let node_ptr = cold_list.push_front(node);
         cold_map.insert(key.clone(), node_ptr);
     }
 
-    fn multi_queue_access(&mut self, queues: &mut Vec<VecDeque<K>>, queue_map: &mut HashMap<K, usize>, lifetimes: &mut HashMap<K, u64>, key: &K) {
+    fn multi_queue_access(
+        &mut self,
+        queues: &mut Vec<VecDeque<K>>,
+        queue_map: &mut HashMap<K, usize>,
+        lifetimes: &mut HashMap<K, u64>,
+        key: &K,
+    ) {
         if let Some(&current_queue) = queue_map.get(key) {
             // Remove from current queue
             if let Some(queue) = queues.get_mut(current_queue) {
@@ -890,7 +981,9 @@ where
     }
 
     fn is_protected(&self, key: &K) -> bool {
-        self.protected_keys.get(key).map_or(false, |&score| score > 5)
+        self.protected_keys
+            .get(key)
+            .map_or(false, |&score| score > 5)
     }
 
     fn update_access_pattern(&mut self) {
@@ -961,11 +1054,11 @@ where
             LruStrategyImpl::Classic { node_map, .. } => node_map.len(),
             LruStrategyImpl::Segmented { segments } => {
                 segments.iter().map(|s| s.node_map.len()).sum()
-            },
+            }
             LruStrategyImpl::Clock { key_positions, .. } => key_positions.len(),
-            LruStrategyImpl::Adaptive { hot_map, cold_map, .. } => {
-                hot_map.len() + cold_map.len()
-            },
+            LruStrategyImpl::Adaptive {
+                hot_map, cold_map, ..
+            } => hot_map.len() + cold_map.len(),
             LruStrategyImpl::MultiQueue { queue_map, .. } => queue_map.len(),
         };
 

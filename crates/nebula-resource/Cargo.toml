@@ -35,6 +35,9 @@ credentials = ["nebula-credential"]
 # Pooling strategies (using custom implementation)
 pooling = []
 
+# Database support
+postgres = ["dep:sqlx"]
+
 # Testing utilities
 testing = ["dep:mockall", "dep:test-case"]
 
@@ -82,6 +85,9 @@ metrics-exporter-prometheus = { version = "0.12", optional = true }
 # Time and scheduling
 chrono = { version = "0.4", features = ["serde"] }
 
+# Database drivers
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono"], optional = true }
+
 # Resource pooling (custom implementation)
 # Note: deadpool and bb8 removed - we use custom pool implementation
 
@@ -100,6 +106,8 @@ proptest = "1.2"
 test-case = "3.2"
 mockall = "0.11"
 tempfile = "3.7"
+testcontainers = "0.15"
+testcontainers-modules = { version = "0.3", features = ["postgres"] }
 
 
 [lints]

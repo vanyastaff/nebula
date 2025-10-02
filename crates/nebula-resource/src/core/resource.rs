@@ -16,6 +16,7 @@ use super::{
     lifecycle::LifecycleState,
     scoping::ResourceScope,
     traits::{HealthStatus, HealthCheckable},
+    versioning::Version,
 };
 
 /// Unique identifier for a resource type
@@ -61,6 +62,23 @@ impl ResourceId {
     pub fn unique_key(&self) -> String {
         format!("{}:{}", self.full_name(), self.version)
     }
+
+    /// Parse the version string as a semantic version
+    pub fn parse_version(&self) -> ResourceResult<Version> {
+        self.version.parse()
+    }
+
+    /// Check if this resource is compatible with another version
+    pub fn is_compatible_with(&self, other: &ResourceId) -> ResourceResult<bool> {
+        if self.name != other.name || self.namespace != other.namespace {
+            return Ok(false);
+        }
+
+        let this_version = self.parse_version()?;
+        let other_version = other.parse_version()?;
+
+        Ok(this_version.is_compatible_with(&other_version))
+    }
 }
 
 impl fmt::Display for ResourceId {
@@ -89,6 +107,10 @@ pub struct ResourceMetadata {
     pub dependencies: Vec<ResourceId>,
     /// Default scope for this resource type
     pub default_scope: ResourceScope,
+    /// Minimum compatible version (for migration compatibility)
+    pub min_compatible_version: Option<String>,
+    /// Deprecated versions
+    pub deprecated_versions: Vec<String>,
 }
 
 impl ResourceMetadata {
@@ -103,6 +125,8 @@ impl ResourceMetadata {
             stateful: false,
             dependencies: Vec::new(),
             default_scope: ResourceScope::default(),
+            min_compatible_version: None,
+            deprecated_versions: Vec::new(),
         }
     }
 
@@ -144,6 +168,47 @@ impl ResourceMetadata {
     pub fn with_default_scope(mut self, scope: ResourceScope) -> Self {
         self.default_scope = scope;
         self
+    }
+
+    /// Set minimum compatible version
+    pub fn with_min_compatible_version(mut self, version: impl Into<String>) -> Self {
+        self.min_compatible_version = Some(version.into());
+        self
+    }
+
+    /// Add a deprecated version
+    pub fn with_deprecated_version(mut self, version: impl Into<String>) -> Self {
+        self.deprecated_versions.push(version.into());
+        self
+    }
+
+    /// Check if a version is deprecated
+    pub fn is_version_deprecated(&self, version: &str) -> bool {
+        self.deprecated_versions.iter().any(|v| v == version)
+    }
+
+    /// Validate version compatibility
+    pub fn validate_version(&self, version: &Version) -> ResourceResult<Option<String>> {
+        // Check if deprecated
+        if self.is_version_deprecated(&version.to_string()) {
+            return Ok(Some(format!(
+                "Version {} of {} is deprecated",
+                version, self.id.name
+            )));
+        }
+
+        // Check minimum compatible version if specified
+        if let Some(ref min_ver_str) = self.min_compatible_version {
+            let min_ver = min_ver_str.parse::<Version>()?;
+            if version < &min_ver {
+                return Err(ResourceError::configuration(format!(
+                    "Version {} is below minimum compatible version {}",
+                    version, min_ver
+                )));
+            }
+        }
+
+        Ok(None)
     }
 }
 

@@ -3,9 +3,9 @@
 //! Provides allocators that automatically compress allocated data to save memory.
 //! Uses LZ4 compression for fast compression/decompression with good ratios.
 
+use crate::allocator::{AllocError, AllocResult, Allocator};
 #[cfg(feature = "compression")]
 use lz4_flex::{compress_prepend_size, decompress_size_prepended};
-use crate::allocator::{AllocError, AllocResult, Allocator};
 use std::alloc::Layout;
 use std::ptr::NonNull;
 

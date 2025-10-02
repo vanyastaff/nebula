@@ -66,7 +66,8 @@ impl MemoryStats {
     #[inline]
     pub fn record_allocation(&self, size: usize) {
         self.allocations.fetch_add(1, Ordering::Relaxed);
-        self.total_allocated_bytes.fetch_add(size, Ordering::Relaxed);
+        self.total_allocated_bytes
+            .fetch_add(size, Ordering::Relaxed);
         let current = self.allocated_bytes.fetch_add(size, Ordering::Relaxed) + size;
 
         // Update peak if necessary
@@ -88,14 +89,16 @@ impl MemoryStats {
     #[cfg(feature = "std")]
     #[inline]
     pub fn record_allocation_time(&self, duration: Duration) {
-        self.total_allocation_time_nanos.fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
+        self.total_allocation_time_nanos
+            .fetch_add(duration.as_nanos() as u64, Ordering::Relaxed);
     }
 
     /// Record a deallocation
     #[inline]
     pub fn record_deallocation(&self, size: usize) {
         self.deallocations.fetch_add(1, Ordering::Relaxed);
-        self.total_deallocated_bytes.fetch_add(size, Ordering::Relaxed);
+        self.total_deallocated_bytes
+            .fetch_add(size, Ordering::Relaxed);
         self.allocated_bytes.fetch_sub(size, Ordering::Relaxed);
     }
 
@@ -344,7 +347,11 @@ impl fmt::Display for MemoryMetrics {
         writeln!(f, "Memory Metrics:")?;
         writeln!(f, "  Current: {} bytes", self.current_allocated)?;
         writeln!(f, "  Peak: {} bytes", self.peak_allocated)?;
-        writeln!(f, "  Allocations: {} ({} failed)", self.allocations, self.allocation_failures)?;
+        writeln!(
+            f,
+            "  Allocations: {} ({} failed)",
+            self.allocations, self.allocation_failures
+        )?;
         writeln!(f, "  Hit Rate: {:.2}%", self.hit_rate * 100.0)?;
 
         if self.oom_errors > 0 {
@@ -355,7 +362,11 @@ impl fmt::Display for MemoryMetrics {
         {
             if self.elapsed_secs > 0.0 {
                 writeln!(f, "  Alloc Rate: {:.2} ops/sec", self.allocation_rate())?;
-                writeln!(f, "  Avg Latency: {:.2} ns", self.avg_allocation_latency_nanos())?;
+                writeln!(
+                    f,
+                    "  Avg Latency: {:.2} ns",
+                    self.avg_allocation_latency_nanos()
+                )?;
             }
         }
 

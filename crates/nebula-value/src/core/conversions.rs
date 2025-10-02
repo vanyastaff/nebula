@@ -2,11 +2,11 @@
 //!
 //! This module provides TryFrom implementations for extracting native types from Value.
 
-use crate::core::value::Value;
-use crate::core::error::{ValueErrorExt, ValueResult};
-use crate::core::NebulaError;
-use crate::scalar::{Integer, Float, Text, Bytes};
 use crate::collections::{Array, Object};
+use crate::core::NebulaError;
+use crate::core::error::{ValueErrorExt, ValueResult};
+use crate::core::value::Value;
+use crate::scalar::{Bytes, Float, Integer, Text};
 use rust_decimal::Decimal;
 
 // ==================== TryFrom<Value> for primitives ====================
@@ -17,7 +17,10 @@ impl TryFrom<Value> for bool {
     fn try_from(value: Value) -> ValueResult<Self> {
         match value {
             Value::Boolean(b) => Ok(b),
-            _ => Err(NebulaError::value_type_mismatch("Boolean", value.kind().name())),
+            _ => Err(NebulaError::value_type_mismatch(
+                "Boolean",
+                value.kind().name(),
+            )),
         }
     }
 }
@@ -26,7 +29,8 @@ impl TryFrom<&Value> for bool {
     type Error = NebulaError;
 
     fn try_from(value: &Value) -> ValueResult<Self> {
-        value.as_boolean()
+        value
+            .as_boolean()
             .ok_or_else(|| NebulaError::value_type_mismatch("Boolean", value.kind().name()))
     }
 }
@@ -50,7 +54,10 @@ impl TryFrom<Value> for i64 {
                     Err(NebulaError::value_conversion_error("Float", "i64"))
                 }
             }
-            _ => Err(NebulaError::value_type_mismatch("Integer", value.kind().name())),
+            _ => Err(NebulaError::value_type_mismatch(
+                "Integer",
+                value.kind().name(),
+            )),
         }
     }
 }
@@ -59,7 +66,8 @@ impl TryFrom<&Value> for i64 {
     type Error = NebulaError;
 
     fn try_from(value: &Value) -> ValueResult<Self> {
-        value.as_integer()
+        value
+            .as_integer()
             .ok_or_else(|| NebulaError::value_type_mismatch("Integer", value.kind().name()))
     }
 }
@@ -69,8 +77,7 @@ impl TryFrom<Value> for i32 {
 
     fn try_from(value: Value) -> ValueResult<Self> {
         let i64_val = i64::try_from(value)?;
-        i32::try_from(i64_val)
-            .map_err(|_| NebulaError::value_conversion_error("i64", "i32"))
+        i32::try_from(i64_val).map_err(|_| NebulaError::value_conversion_error("i64", "i32"))
     }
 }
 
@@ -79,8 +86,7 @@ impl TryFrom<Value> for u32 {
 
     fn try_from(value: Value) -> ValueResult<Self> {
         let i64_val = i64::try_from(value)?;
-        u32::try_from(i64_val)
-            .map_err(|_| NebulaError::value_conversion_error("i64", "u32"))
+        u32::try_from(i64_val).map_err(|_| NebulaError::value_conversion_error("i64", "u32"))
     }
 }
 
@@ -109,7 +115,10 @@ impl TryFrom<Value> for f64 {
                 d.to_f64()
                     .ok_or_else(|| NebulaError::value_conversion_error("Decimal", "f64"))
             }
-            _ => Err(NebulaError::value_type_mismatch("Float", value.kind().name())),
+            _ => Err(NebulaError::value_type_mismatch(
+                "Float",
+                value.kind().name(),
+            )),
         }
     }
 }
@@ -118,7 +127,8 @@ impl TryFrom<&Value> for f64 {
     type Error = NebulaError;
 
     fn try_from(value: &Value) -> ValueResult<Self> {
-        value.as_float()
+        value
+            .as_float()
             .ok_or_else(|| NebulaError::value_type_mismatch("Float", value.kind().name()))
     }
 }
@@ -138,7 +148,10 @@ impl TryFrom<Value> for String {
     fn try_from(value: Value) -> ValueResult<Self> {
         match value {
             Value::Text(t) => Ok(t.to_string()),
-            _ => Err(NebulaError::value_type_mismatch("Text", value.kind().name())),
+            _ => Err(NebulaError::value_type_mismatch(
+                "Text",
+                value.kind().name(),
+            )),
         }
     }
 }
@@ -147,7 +160,8 @@ impl TryFrom<&Value> for String {
     type Error = NebulaError;
 
     fn try_from(value: &Value) -> ValueResult<Self> {
-        value.as_str()
+        value
+            .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| NebulaError::value_type_mismatch("Text", value.kind().name()))
     }
@@ -159,7 +173,10 @@ impl TryFrom<Value> for Vec<u8> {
     fn try_from(value: Value) -> ValueResult<Self> {
         match value {
             Value::Bytes(b) => Ok(b.to_vec()),
-            _ => Err(NebulaError::value_type_mismatch("Bytes", value.kind().name())),
+            _ => Err(NebulaError::value_type_mismatch(
+                "Bytes",
+                value.kind().name(),
+            )),
         }
     }
 }
@@ -171,11 +188,12 @@ impl TryFrom<Value> for Decimal {
         match value {
             Value::Decimal(d) => Ok(d),
             Value::Integer(i) => Ok(Decimal::from(i.value())),
-            Value::Float(f) => {
-                Decimal::try_from(f.value())
-                    .map_err(|_| NebulaError::value_conversion_error("Float", "Decimal"))
-            }
-            _ => Err(NebulaError::value_type_mismatch("Decimal", value.kind().name())),
+            Value::Float(f) => Decimal::try_from(f.value())
+                .map_err(|_| NebulaError::value_conversion_error("Float", "Decimal")),
+            _ => Err(NebulaError::value_type_mismatch(
+                "Decimal",
+                value.kind().name(),
+            )),
         }
     }
 }
@@ -188,7 +206,10 @@ impl TryFrom<Value> for Integer {
     fn try_from(value: Value) -> ValueResult<Self> {
         match value {
             Value::Integer(i) => Ok(i),
-            _ => Err(NebulaError::value_type_mismatch("Integer", value.kind().name())),
+            _ => Err(NebulaError::value_type_mismatch(
+                "Integer",
+                value.kind().name(),
+            )),
         }
     }
 }
@@ -200,7 +221,10 @@ impl TryFrom<Value> for Float {
         match value {
             Value::Float(f) => Ok(f),
             Value::Integer(i) => Ok(Float::new(i.value() as f64)),
-            _ => Err(NebulaError::value_type_mismatch("Float", value.kind().name())),
+            _ => Err(NebulaError::value_type_mismatch(
+                "Float",
+                value.kind().name(),
+            )),
         }
     }
 }
@@ -211,7 +235,10 @@ impl TryFrom<Value> for Text {
     fn try_from(value: Value) -> ValueResult<Self> {
         match value {
             Value::Text(t) => Ok(t),
-            _ => Err(NebulaError::value_type_mismatch("Text", value.kind().name())),
+            _ => Err(NebulaError::value_type_mismatch(
+                "Text",
+                value.kind().name(),
+            )),
         }
     }
 }
@@ -222,7 +249,10 @@ impl TryFrom<Value> for Bytes {
     fn try_from(value: Value) -> ValueResult<Self> {
         match value {
             Value::Bytes(b) => Ok(b),
-            _ => Err(NebulaError::value_type_mismatch("Bytes", value.kind().name())),
+            _ => Err(NebulaError::value_type_mismatch(
+                "Bytes",
+                value.kind().name(),
+            )),
         }
     }
 }
@@ -235,7 +265,10 @@ impl TryFrom<Value> for Array {
     fn try_from(value: Value) -> ValueResult<Self> {
         match value {
             Value::Array(a) => Ok(a),
-            _ => Err(NebulaError::value_type_mismatch("Array", value.kind().name())),
+            _ => Err(NebulaError::value_type_mismatch(
+                "Array",
+                value.kind().name(),
+            )),
         }
     }
 }
@@ -246,7 +279,10 @@ impl TryFrom<Value> for Object {
     fn try_from(value: Value) -> ValueResult<Self> {
         match value {
             Value::Object(o) => Ok(o),
-            _ => Err(NebulaError::value_type_mismatch("Object", value.kind().name())),
+            _ => Err(NebulaError::value_type_mismatch(
+                "Object",
+                value.kind().name(),
+            )),
         }
     }
 }

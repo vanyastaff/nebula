@@ -6,8 +6,8 @@
 //! (due to NaN != NaN in IEEE 754). HashableValue treats all NaN values as equal.
 
 use crate::core::value::Value;
-use std::hash::{Hash, Hasher};
 use std::cmp::Ordering;
+use std::hash::{Hash, Hasher};
 
 /// Wrapper for Value that can be used as HashMap key
 ///
@@ -49,8 +49,6 @@ impl HashableValue {
 
 impl Hash for HashableValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        
-
         // Hash the type discriminant first
         self.0.kind().hash(state);
 
@@ -274,7 +272,10 @@ mod tests {
         map.insert(nan2.clone(), "second");
 
         assert_eq!(map.len(), 1);
-        assert_eq!(map.get(&HashableValue(Value::float(f64::NAN))), Some(&"second"));
+        assert_eq!(
+            map.get(&HashableValue(Value::float(f64::NAN))),
+            Some(&"second")
+        );
     }
 
     #[test]

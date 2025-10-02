@@ -122,7 +122,11 @@ impl core::fmt::Display for AllocatorStats {
             writeln!(f, "  Average allocation size: {:.2} bytes", avg)?;
         }
 
-        writeln!(f, "  Allocation efficiency: {:.2}%", self.allocation_efficiency() * 100.0)?;
+        writeln!(
+            f,
+            "  Allocation efficiency: {:.2}%",
+            self.allocation_efficiency() * 100.0
+        )?;
 
         if let Some(turnover) = self.memory_turnover_rate() {
             writeln!(f, "  Memory turnover rate: {:.2}x", turnover)?;
@@ -182,7 +186,8 @@ impl AtomicAllocatorStats {
     /// Record a successful allocation
     pub fn record_allocation(&self, size: usize) {
         self.allocation_count.fetch_add(1, Ordering::Relaxed);
-        self.total_bytes_allocated.fetch_add(size, Ordering::Relaxed);
+        self.total_bytes_allocated
+            .fetch_add(size, Ordering::Relaxed);
 
         // Overflow-safe update of allocated_bytes using CAS
         let new_allocated;
@@ -196,7 +201,10 @@ impl AtomicAllocatorStats {
                         Ordering::Relaxed,
                         Ordering::Relaxed,
                     ) {
-                        Ok(_) => { new_allocated = next; break; }
+                        Ok(_) => {
+                            new_allocated = next;
+                            break;
+                        }
                         Err(_) => continue,
                     }
                 }
@@ -227,7 +235,8 @@ impl AtomicAllocatorStats {
     /// Record a successful deallocation
     pub fn record_deallocation(&self, size: usize) {
         self.deallocation_count.fetch_add(1, Ordering::Relaxed);
-        self.total_bytes_deallocated.fetch_add(size, Ordering::Relaxed);
+        self.total_bytes_deallocated
+            .fetch_add(size, Ordering::Relaxed);
         self.allocated_bytes.fetch_sub(size, Ordering::Relaxed);
     }
 
@@ -238,11 +247,13 @@ impl AtomicAllocatorStats {
         if new_size > old_size {
             let diff = new_size - old_size;
             self.allocated_bytes.fetch_add(diff, Ordering::Relaxed);
-            self.total_bytes_allocated.fetch_add(diff, Ordering::Relaxed);
+            self.total_bytes_allocated
+                .fetch_add(diff, Ordering::Relaxed);
         } else if old_size > new_size {
             let diff = old_size - new_size;
             self.allocated_bytes.fetch_sub(diff, Ordering::Relaxed);
-            self.total_bytes_deallocated.fetch_add(diff, Ordering::Relaxed);
+            self.total_bytes_deallocated
+                .fetch_add(diff, Ordering::Relaxed);
         }
 
         // Update peak if necessary
@@ -310,14 +321,38 @@ impl Default for AtomicAllocatorStats {
 impl core::fmt::Debug for AtomicAllocatorStats {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AtomicAllocatorStats")
-            .field("allocated_bytes", &self.allocated_bytes.load(Ordering::Relaxed))
-            .field("peak_allocated_bytes", &self.peak_allocated_bytes.load(Ordering::Relaxed))
-            .field("allocation_count", &self.allocation_count.load(Ordering::Relaxed))
-            .field("deallocation_count", &self.deallocation_count.load(Ordering::Relaxed))
-            .field("reallocation_count", &self.reallocation_count.load(Ordering::Relaxed))
-            .field("failed_allocations", &self.failed_allocations.load(Ordering::Relaxed))
-            .field("total_bytes_allocated", &self.total_bytes_allocated.load(Ordering::Relaxed))
-            .field("total_bytes_deallocated", &self.total_bytes_deallocated.load(Ordering::Relaxed))
+            .field(
+                "allocated_bytes",
+                &self.allocated_bytes.load(Ordering::Relaxed),
+            )
+            .field(
+                "peak_allocated_bytes",
+                &self.peak_allocated_bytes.load(Ordering::Relaxed),
+            )
+            .field(
+                "allocation_count",
+                &self.allocation_count.load(Ordering::Relaxed),
+            )
+            .field(
+                "deallocation_count",
+                &self.deallocation_count.load(Ordering::Relaxed),
+            )
+            .field(
+                "reallocation_count",
+                &self.reallocation_count.load(Ordering::Relaxed),
+            )
+            .field(
+                "failed_allocations",
+                &self.failed_allocations.load(Ordering::Relaxed),
+            )
+            .field(
+                "total_bytes_allocated",
+                &self.total_bytes_allocated.load(Ordering::Relaxed),
+            )
+            .field(
+                "total_bytes_deallocated",
+                &self.total_bytes_deallocated.load(Ordering::Relaxed),
+            )
             .finish()
     }
 }
@@ -345,7 +380,9 @@ pub struct OptionalStats {
 impl OptionalStats {
     /// Create new optional stats (enabled)
     pub fn enabled() -> Self {
-        Self { stats: Some(AtomicAllocatorStats::new()) }
+        Self {
+            stats: Some(AtomicAllocatorStats::new()),
+        }
     }
 
     /// Create new optional stats (disabled)

@@ -3,8 +3,8 @@
 //! This module provides conversion utilities to transform external error types
 //! into NebulaError instances with appropriate categorization and context.
 
-use crate::core::{NebulaError, Result};
 use crate::core::context::ErrorContext;
+use crate::core::{NebulaError, Result};
 use crate::kinds::{ClientError, ErrorKind, ServerError, SystemError};
 use std::time::Duration;
 
@@ -51,13 +51,29 @@ where
 impl IntoNebulaError for std::io::Error {
     fn into_nebula_error(self) -> NebulaError {
         let kind = match self.kind() {
-            std::io::ErrorKind::NotFound => ErrorKind::Client(ClientError::not_found("File", "unknown")),
-            std::io::ErrorKind::PermissionDenied => ErrorKind::Client(ClientError::permission_denied("read", "file")),
-            std::io::ErrorKind::TimedOut => ErrorKind::System(SystemError::timeout("I/O operation", Duration::from_secs(30))),
-            std::io::ErrorKind::ConnectionRefused => ErrorKind::System(SystemError::connection("unknown", "connection refused")),
-            std::io::ErrorKind::ConnectionReset => ErrorKind::System(SystemError::network("connection reset")),
-            std::io::ErrorKind::BrokenPipe => ErrorKind::System(SystemError::network("broken pipe")),
-            std::io::ErrorKind::WouldBlock => ErrorKind::System(SystemError::timeout("I/O operation", Duration::from_millis(100))),
+            std::io::ErrorKind::NotFound => {
+                ErrorKind::Client(ClientError::not_found("File", "unknown"))
+            }
+            std::io::ErrorKind::PermissionDenied => {
+                ErrorKind::Client(ClientError::permission_denied("read", "file"))
+            }
+            std::io::ErrorKind::TimedOut => ErrorKind::System(SystemError::timeout(
+                "I/O operation",
+                Duration::from_secs(30),
+            )),
+            std::io::ErrorKind::ConnectionRefused => {
+                ErrorKind::System(SystemError::connection("unknown", "connection refused"))
+            }
+            std::io::ErrorKind::ConnectionReset => {
+                ErrorKind::System(SystemError::network("connection reset"))
+            }
+            std::io::ErrorKind::BrokenPipe => {
+                ErrorKind::System(SystemError::network("broken pipe"))
+            }
+            std::io::ErrorKind::WouldBlock => ErrorKind::System(SystemError::timeout(
+                "I/O operation",
+                Duration::from_millis(100),
+            )),
             _ => ErrorKind::System(SystemError::file_system("I/O operation", self.to_string())),
         };
         NebulaError::new(kind)
@@ -72,25 +88,37 @@ impl IntoNebulaError for std::fmt::Error {
 
 impl IntoNebulaError for std::num::ParseIntError {
     fn into_nebula_error(self) -> NebulaError {
-        NebulaError::new(ErrorKind::Client(ClientError::validation(format!("Integer parsing error: {}", self))))
+        NebulaError::new(ErrorKind::Client(ClientError::validation(format!(
+            "Integer parsing error: {}",
+            self
+        ))))
     }
 }
 
 impl IntoNebulaError for std::num::ParseFloatError {
     fn into_nebula_error(self) -> NebulaError {
-        NebulaError::new(ErrorKind::Client(ClientError::validation(format!("Float parsing error: {}", self))))
+        NebulaError::new(ErrorKind::Client(ClientError::validation(format!(
+            "Float parsing error: {}",
+            self
+        ))))
     }
 }
 
 impl IntoNebulaError for std::str::Utf8Error {
     fn into_nebula_error(self) -> NebulaError {
-        NebulaError::new(ErrorKind::Client(ClientError::validation(format!("UTF-8 error: {}", self))))
+        NebulaError::new(ErrorKind::Client(ClientError::validation(format!(
+            "UTF-8 error: {}",
+            self
+        ))))
     }
 }
 
 impl IntoNebulaError for std::string::FromUtf8Error {
     fn into_nebula_error(self) -> NebulaError {
-        NebulaError::new(ErrorKind::Client(ClientError::validation(format!("UTF-8 conversion error: {}", self))))
+        NebulaError::new(ErrorKind::Client(ClientError::validation(format!(
+            "UTF-8 conversion error: {}",
+            self
+        ))))
     }
 }
 
@@ -101,10 +129,18 @@ impl IntoNebulaError for std::string::FromUtf8Error {
 impl IntoNebulaError for serde_json::Error {
     fn into_nebula_error(self) -> NebulaError {
         let kind = match self.classify() {
-            serde_json::error::Category::Io => ErrorKind::System(SystemError::file_system("JSON I/O", self.to_string())),
-            serde_json::error::Category::Syntax => ErrorKind::Client(ClientError::validation("Invalid JSON syntax")),
-            serde_json::error::Category::Data => ErrorKind::Client(ClientError::validation("Invalid JSON data")),
-            serde_json::error::Category::Eof => ErrorKind::Client(ClientError::validation("Unexpected end of JSON input")),
+            serde_json::error::Category::Io => {
+                ErrorKind::System(SystemError::file_system("JSON I/O", self.to_string()))
+            }
+            serde_json::error::Category::Syntax => {
+                ErrorKind::Client(ClientError::validation("Invalid JSON syntax"))
+            }
+            serde_json::error::Category::Data => {
+                ErrorKind::Client(ClientError::validation("Invalid JSON data"))
+            }
+            serde_json::error::Category::Eof => {
+                ErrorKind::Client(ClientError::validation("Unexpected end of JSON input"))
+            }
         };
         NebulaError::new(kind)
     }
@@ -112,37 +148,55 @@ impl IntoNebulaError for serde_json::Error {
 
 impl IntoNebulaError for bincode::Error {
     fn into_nebula_error(self) -> NebulaError {
-        NebulaError::new(ErrorKind::Client(ClientError::deserialization(format!("Bincode error: {}", self))))
+        NebulaError::new(ErrorKind::Client(ClientError::deserialization(format!(
+            "Bincode error: {}",
+            self
+        ))))
     }
 }
 
 impl IntoNebulaError for uuid::Error {
     fn into_nebula_error(self) -> NebulaError {
-        NebulaError::new(ErrorKind::Client(ClientError::validation(format!("UUID error: {}", self))))
+        NebulaError::new(ErrorKind::Client(ClientError::validation(format!(
+            "UUID error: {}",
+            self
+        ))))
     }
 }
 
 impl IntoNebulaError for chrono::ParseError {
     fn into_nebula_error(self) -> NebulaError {
-        NebulaError::new(ErrorKind::Client(ClientError::validation(format!("Date/time parsing error: {}", self))))
+        NebulaError::new(ErrorKind::Client(ClientError::validation(format!(
+            "Date/time parsing error: {}",
+            self
+        ))))
     }
 }
 
 impl IntoNebulaError for anyhow::Error {
     fn into_nebula_error(self) -> NebulaError {
-        NebulaError::new(ErrorKind::Server(ServerError::internal(format!("Anyhow error: {}", self))))
+        NebulaError::new(ErrorKind::Server(ServerError::internal(format!(
+            "Anyhow error: {}",
+            self
+        ))))
     }
 }
 
 impl IntoNebulaError for tokio::time::error::Elapsed {
     fn into_nebula_error(self) -> NebulaError {
-        NebulaError::new(ErrorKind::System(SystemError::timeout("operation", Duration::from_secs(30))))
+        NebulaError::new(ErrorKind::System(SystemError::timeout(
+            "operation",
+            Duration::from_secs(30),
+        )))
     }
 }
 
 impl IntoNebulaError for serde::de::value::Error {
     fn into_nebula_error(self) -> NebulaError {
-        NebulaError::new(ErrorKind::Client(ClientError::deserialization(format!("Deserialization error: {}", self))))
+        NebulaError::new(ErrorKind::Client(ClientError::deserialization(format!(
+            "Deserialization error: {}",
+            self
+        ))))
     }
 }
 
@@ -203,7 +257,10 @@ impl IntoNebulaError for NebulaError {
 
 /// Convert any error that implements Display to NebulaError
 pub fn from_display_error<E: std::fmt::Display>(error: E) -> NebulaError {
-    NebulaError::new(ErrorKind::Server(ServerError::internal(format!("Error: {}", error))))
+    NebulaError::new(ErrorKind::Server(ServerError::internal(format!(
+        "Error: {}",
+        error
+    ))))
 }
 
 /// Convert any error that implements Display to NebulaError with context
@@ -216,7 +273,10 @@ pub fn from_display_error_with_context<E: std::fmt::Display>(
 
 /// Convert any error that implements std::error::Error to NebulaError
 pub fn from_std_error<E: std::error::Error>(error: E) -> NebulaError {
-    NebulaError::new(ErrorKind::Server(ServerError::internal(format!("Standard error: {}", error))))
+    NebulaError::new(ErrorKind::Server(ServerError::internal(format!(
+        "Standard error: {}",
+        error
+    ))))
 }
 
 /// Convert any error that implements std::error::Error to NebulaError with context

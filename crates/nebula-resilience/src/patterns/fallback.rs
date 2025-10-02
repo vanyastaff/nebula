@@ -1,10 +1,10 @@
 //! Fallback strategies for graceful degradation
 
+use async_trait::async_trait;
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
-use std::collections::HashMap;
 use tokio::sync::RwLock;
-use async_trait::async_trait;
 
 use crate::{ResilienceError, ResilienceResult};
 
@@ -191,11 +191,7 @@ impl<T> PriorityFallback<T> {
     }
 
     /// Register fallback for specific error type
-    pub fn register(
-        mut self,
-        error_type: &str,
-        fallback: Arc<dyn FallbackStrategy<T>>,
-    ) -> Self {
+    pub fn register(mut self, error_type: &str, fallback: Arc<dyn FallbackStrategy<T>>) -> Self {
         self.fallbacks.insert(error_type.to_string(), fallback);
         self
     }

@@ -80,8 +80,8 @@ pub use self::cross_thread::{
     CrossThreadArena, CrossThreadArenaBuilder, CrossThreadArenaGuard, CrossThreadArenaRef,
 };
 pub use self::local::{
-    alloc_local, local_arena, reset_local_arena, with_local_arena, with_local_arena_mut,
-    LocalArena, LocalRef, LocalRefMut,
+    LocalArena, LocalRef, LocalRefMut, alloc_local, local_arena, reset_local_arena,
+    with_local_arena, with_local_arena_mut,
 };
 pub use self::scope::ArenaScope;
 pub use self::stats::{ArenaStats, ArenaStatsSnapshot};
@@ -214,27 +214,27 @@ impl ArenaConfig {
     /// Production configuration - optimized for maximum performance
     pub fn production() -> Self {
         Self {
-            initial_size: 64 * 1024, // 64KB - larger initial size
-            growth_factor: 1.5,      // Slower growth to reduce fragmentation
+            initial_size: 64 * 1024,           // 64KB - larger initial size
+            growth_factor: 1.5,                // Slower growth to reduce fragmentation
             max_chunk_size: 256 * 1024 * 1024, // 256MB
-            track_stats: false,      // No stats overhead
-            zero_memory: false,      // No zeroing overhead
-            default_alignment: 16,   // Cache-line friendly
+            track_stats: false,                // No stats overhead
+            zero_memory: false,                // No zeroing overhead
+            default_alignment: 16,             // Cache-line friendly
             #[cfg(feature = "numa-aware")]
             numa_aware: true,
             #[cfg(feature = "numa-aware")]
-            numa_node: -1,          // Auto-select
+            numa_node: -1, // Auto-select
         }
     }
 
     /// Debug configuration - optimized for debugging and error detection
     pub fn debug() -> Self {
         Self {
-            initial_size: 4096,     // 4KB - small chunks for catching errors
-            growth_factor: 2.0,     // Standard growth
+            initial_size: 4096,               // 4KB - small chunks for catching errors
+            growth_factor: 2.0,               // Standard growth
             max_chunk_size: 16 * 1024 * 1024, // 16MB
-            track_stats: true,      // Full statistics
-            zero_memory: true,      // Zero for detecting use-after-free
+            track_stats: true,                // Full statistics
+            zero_memory: true,                // Zero for detecting use-after-free
             default_alignment: 8,
             #[cfg(feature = "numa-aware")]
             numa_aware: false,
@@ -267,8 +267,8 @@ impl ArenaConfig {
     /// Small objects configuration - for frequent small allocations
     pub fn small_objects() -> Self {
         Self {
-            initial_size: 8 * 1024,  // 8KB
-            growth_factor: 2.0,      // Fast growth
+            initial_size: 8 * 1024,           // 8KB
+            growth_factor: 2.0,               // Fast growth
             max_chunk_size: 32 * 1024 * 1024, // 32MB
             track_stats: false,
             zero_memory: false,
@@ -283,12 +283,12 @@ impl ArenaConfig {
     /// Large objects configuration - for infrequent large allocations
     pub fn large_objects() -> Self {
         Self {
-            initial_size: 256 * 1024, // 256KB
-            growth_factor: 1.3,       // Slow growth
+            initial_size: 256 * 1024,          // 256KB
+            growth_factor: 1.3,                // Slow growth
             max_chunk_size: 512 * 1024 * 1024, // 512MB
             track_stats: true,
             zero_memory: false,
-            default_alignment: 64,    // Page-aligned
+            default_alignment: 64, // Page-aligned
             #[cfg(feature = "numa-aware")]
             numa_aware: true,
             #[cfg(feature = "numa-aware")]
@@ -357,7 +357,9 @@ impl ArenaConfig {
     /// Validates the configuration
     pub fn validate(&self) -> Result<(), MemoryError> {
         if self.initial_size == 0 {
-            return Err(MemoryError::invalid_config("Initial size must be greater than 0"));
+            return Err(MemoryError::invalid_config(
+                "Initial size must be greater than 0",
+            ));
         }
 
         if self.growth_factor < 1.0 {
@@ -365,11 +367,15 @@ impl ArenaConfig {
         }
 
         if !self.default_alignment.is_power_of_two() {
-            return Err(MemoryError::invalid_config("Default alignment must be power of 2"));
+            return Err(MemoryError::invalid_config(
+                "Default alignment must be power of 2",
+            ));
         }
 
         if self.max_chunk_size < self.initial_size {
-            return Err(MemoryError::invalid_config("Max chunk size must be >= initial size"));
+            return Err(MemoryError::invalid_config(
+                "Max chunk size must be >= initial size",
+            ));
         }
 
         Ok(())
@@ -457,31 +463,31 @@ pub fn apply_hints(mut config: ArenaConfig, hints: &[ArenaHint]) -> ArenaConfig 
             ArenaHint::Sequential => {
                 // Larger chunks for sequential access
                 config.initial_size = config.initial_size.max(64 * 1024);
-            },
+            }
             ArenaHint::Random => {
                 // Smaller chunks to reduce waste
                 config.initial_size = config.initial_size.min(16 * 1024);
-            },
+            }
             ArenaHint::Temporary => {
                 // Don't zero memory for temporary allocations
                 config.zero_memory = false;
                 // Disable stats for performance
                 config.track_stats = false;
-            },
+            }
             ArenaHint::LongLived => {
                 // Enable stats for monitoring
                 config.track_stats = true;
-            },
+            }
             ArenaHint::SmallObjects => {
                 // Smaller initial size, faster growth
                 config.initial_size = config.initial_size.min(8 * 1024);
                 config.growth_factor = config.growth_factor.max(2.0);
-            },
+            }
             ArenaHint::LargeObjects => {
                 // Larger initial size, slower growth
                 config.initial_size = config.initial_size.max(256 * 1024);
                 config.growth_factor = config.growth_factor.min(1.5);
-            },
+            }
         }
     }
     config
@@ -526,10 +532,16 @@ mod tests {
 
     #[test]
     fn test_config_validation() {
-        let invalid_config = ArenaConfig { initial_size: 0, ..Default::default() };
+        let invalid_config = ArenaConfig {
+            initial_size: 0,
+            ..Default::default()
+        };
         assert!(invalid_config.validate().is_err());
 
-        let invalid_growth = ArenaConfig { growth_factor: 0.5, ..Default::default() };
+        let invalid_growth = ArenaConfig {
+            growth_factor: 0.5,
+            ..Default::default()
+        };
         assert!(invalid_growth.validate().is_err());
 
         let invalid_align = ArenaConfig {
@@ -582,4 +594,3 @@ mod tests {
         assert_eq!(config.numa_node, 0);
     }
 }
-

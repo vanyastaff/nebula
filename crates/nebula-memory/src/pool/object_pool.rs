@@ -8,9 +8,9 @@ use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
-use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
 #[cfg(feature = "stats")]
 use super::PoolStats;
+use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Single-threaded object pool for efficient memory reuse
@@ -41,13 +41,23 @@ pub struct ObjectPool<T: Poolable> {
 impl<T: Poolable> ObjectPool<T> {
     /// Create new pool with factory function
     pub fn new<F>(capacity: usize, factory: F) -> Self
-    where F: Fn() -> T + 'static {
-        Self::with_config(PoolConfig { initial_capacity: capacity, ..Default::default() }, factory)
+    where
+        F: Fn() -> T + 'static,
+    {
+        Self::with_config(
+            PoolConfig {
+                initial_capacity: capacity,
+                ..Default::default()
+            },
+            factory,
+        )
     }
 
     /// Create pool with custom configuration
     pub fn with_config<F>(config: PoolConfig, factory: F) -> Self
-    where F: Fn() -> T + 'static {
+    where
+        F: Fn() -> T + 'static,
+    {
         let mut objects = Vec::with_capacity(config.initial_capacity);
 
         #[cfg(feature = "stats")]
@@ -278,7 +288,11 @@ impl<T: Poolable> ObjectPool<T> {
     /// Update memory statistics
     #[cfg(feature = "stats")]
     fn update_memory_stats(&self) {
-        let memory = self.objects.iter().map(|obj| obj.memory_usage()).sum::<usize>()
+        let memory = self
+            .objects
+            .iter()
+            .map(|obj| obj.memory_usage())
+            .sum::<usize>()
             + self.objects.capacity() * core::mem::size_of::<T>();
 
         self.stats.update_memory(memory);
@@ -300,7 +314,8 @@ impl<T: Poolable> ObjectPool<T> {
             let after_size = obj.memory_usage();
 
             #[cfg(feature = "stats")]
-            self.stats.record_compression_attempt(before_size, after_size, success);
+            self.stats
+                .record_compression_attempt(before_size, after_size, success);
 
             if before_size > after_size {
                 total_saved += before_size - after_size;
@@ -309,7 +324,8 @@ impl<T: Poolable> ObjectPool<T> {
 
         #[cfg(feature = "stats")]
         if self.objects.len() > 0 {
-            self.stats.update_memory(self.objects.iter().map(|o| o.memory_usage()).sum());
+            self.stats
+                .update_memory(self.objects.iter().map(|o| o.memory_usage()).sum());
         }
 
         total_saved
@@ -420,7 +436,10 @@ mod tests {
 
     #[test]
     fn test_basic_pool_operations() {
-        let mut pool = ObjectPool::new(10, || TestObject { value: 42, resets: 0 });
+        let mut pool = ObjectPool::new(10, || TestObject {
+            value: 42,
+            resets: 0,
+        });
 
         // Get object
         let mut obj = pool.get().unwrap();
@@ -438,7 +457,10 @@ mod tests {
     #[test]
     fn test_pool_exhaustion() {
         let config = PoolConfig::bounded(2);
-        let mut pool = ObjectPool::with_config(config, || TestObject { value: 0, resets: 0 });
+        let mut pool = ObjectPool::with_config(config, || TestObject {
+            value: 0,
+            resets: 0,
+        });
 
         let _obj1 = pool.get().unwrap();
         let _obj2 = pool.get().unwrap();
@@ -449,7 +471,10 @@ mod tests {
 
     #[test]
     fn test_detach() {
-        let mut pool = ObjectPool::new(10, || TestObject { value: 42, resets: 0 });
+        let mut pool = ObjectPool::new(10, || TestObject {
+            value: 42,
+            resets: 0,
+        });
 
         let obj = pool.get().unwrap();
         let detached = obj.detach();
@@ -500,7 +525,10 @@ mod tests {
         }
 
         let mut pool = ObjectPool::with_config(config, || {
-            let mut obj = CompressibleObject { data: Vec::with_capacity(1000), compressed: false };
+            let mut obj = CompressibleObject {
+                data: Vec::with_capacity(1000),
+                compressed: false,
+            };
             obj.data.extend_from_slice(&[1, 2, 3, 4, 5]);
             obj
         });
@@ -566,7 +594,10 @@ mod tests {
         }
 
         let mut pool = ObjectPool::with_config(config, || {
-            let mut obj = CompressibleObject { data: Vec::with_capacity(1000), compressed: false };
+            let mut obj = CompressibleObject {
+                data: Vec::with_capacity(1000),
+                compressed: false,
+            };
             obj.data.extend_from_slice(&[1, 2, 3, 4, 5]);
             obj
         });
@@ -593,9 +624,24 @@ mod tests {
         {
             let stats = pool.stats();
             // Check that compression stats were recorded
-            assert!(stats.compression_attempts.load(core::sync::atomic::Ordering::Relaxed) > 0);
-            assert!(stats.successful_compressions.load(core::sync::atomic::Ordering::Relaxed) > 0);
-            assert!(stats.memory_saved.load(core::sync::atomic::Ordering::Relaxed) > 0);
+            assert!(
+                stats
+                    .compression_attempts
+                    .load(core::sync::atomic::Ordering::Relaxed)
+                    > 0
+            );
+            assert!(
+                stats
+                    .successful_compressions
+                    .load(core::sync::atomic::Ordering::Relaxed)
+                    > 0
+            );
+            assert!(
+                stats
+                    .memory_saved
+                    .load(core::sync::atomic::Ordering::Relaxed)
+                    > 0
+            );
         }
     }
 }

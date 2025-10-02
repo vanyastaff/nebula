@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::core::{
-    ParameterDisplay, ParameterError, ParameterMetadata, ParameterValidation,
-    ParameterValue, ParameterType, HasValue, Validatable, Displayable, ParameterKind,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 
 /// Represents a file reference with metadata
@@ -157,11 +157,16 @@ impl HasValue for FileParameter {
     fn get_parameter_value(&self) -> Option<ParameterValue> {
         self.value.as_ref().map(|file_ref| {
             // Convert FileReference to a simple string representation (path)
-            ParameterValue::Value(nebula_value::Value::text(file_ref.path.to_string_lossy().to_string()))
+            ParameterValue::Value(nebula_value::Value::text(
+                file_ref.path.to_string_lossy().to_string(),
+            ))
         })
     }
 
-    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn set_parameter_value(
+        &mut self,
+        value: impl Into<ParameterValue>,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Text(s)) => {
@@ -176,13 +181,13 @@ impl HasValue for FileParameter {
                         reason: "File path is not valid".to_string(),
                     })
                 }
-            },
+            }
             ParameterValue::Expression(expr) => {
                 // Create a file reference with the expression as path
                 let file_ref = FileReference::new(&expr, expr.clone());
                 self.value = Some(file_ref);
                 Ok(())
-            },
+            }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Expected string value for file parameter".to_string(),
@@ -232,7 +237,10 @@ impl FileParameter {
                     if size > max_size {
                         return Err(ParameterError::InvalidValue {
                             key: self.metadata.key.clone(),
-                            reason: format!("File size {} bytes exceeds maximum {} bytes", size, max_size),
+                            reason: format!(
+                                "File size {} bytes exceeds maximum {} bytes",
+                                size, max_size
+                            ),
                         });
                     }
                 }
@@ -240,7 +248,10 @@ impl FileParameter {
                     if size < min_size {
                         return Err(ParameterError::InvalidValue {
                             key: self.metadata.key.clone(),
-                            reason: format!("File size {} bytes is below minimum {} bytes", size, min_size),
+                            reason: format!(
+                                "File size {} bytes is below minimum {} bytes",
+                                size, min_size
+                            ),
                         });
                     }
                 }
@@ -356,9 +367,7 @@ impl FileParameter {
 
     /// Get maximum file size
     pub fn get_max_size(&self) -> Option<u64> {
-        self.options
-            .as_ref()
-            .and_then(|opts| opts.max_size)
+        self.options.as_ref().and_then(|opts| opts.max_size)
     }
 
     /// Format file size for display

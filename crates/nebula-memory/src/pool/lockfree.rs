@@ -11,9 +11,9 @@ use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 #[cfg(feature = "std")]
 use std::sync::Arc;
 
-use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
 #[cfg(feature = "stats")]
 use super::PoolStats;
+use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
 use crate::core::error::{MemoryError, MemoryResult};
 
 /// Lock-free object pool using atomic operations
@@ -61,13 +61,23 @@ struct Node<T> {
 impl<T: Poolable> LockFreePool<T> {
     /// Create new lock-free pool
     pub fn new<F>(capacity: usize, factory: F) -> Self
-    where F: Fn() -> T + Send + Sync + 'static {
-        Self::with_config(PoolConfig { initial_capacity: capacity, ..Default::default() }, factory)
+    where
+        F: Fn() -> T + Send + Sync + 'static,
+    {
+        Self::with_config(
+            PoolConfig {
+                initial_capacity: capacity,
+                ..Default::default()
+            },
+            factory,
+        )
     }
 
     /// Create pool with custom configuration
     pub fn with_config<F>(config: PoolConfig, factory: F) -> Self
-    where F: Fn() -> T + Send + Sync + 'static {
+    where
+        F: Fn() -> T + Send + Sync + 'static,
+    {
         // Сначала сохраним значение, которое нам понадобится после перемещения config
         let initial_capacity = config.initial_capacity;
         let pre_warm = config.pre_warm;
@@ -97,8 +107,10 @@ impl<T: Poolable> LockFreePool<T> {
 
     /// Push object onto the lock-free stack
     fn push_node(&self, obj: T) {
-        let node =
-            Box::into_raw(Box::new(Node { value: ManuallyDrop::new(obj), next: ptr::null_mut() }));
+        let node = Box::into_raw(Box::new(Node {
+            value: ManuallyDrop::new(obj),
+            next: ptr::null_mut(),
+        }));
 
         loop {
             let head = self.head.load(Ordering::Acquire);
@@ -106,12 +118,14 @@ impl<T: Poolable> LockFreePool<T> {
                 (*node).next = head;
             }
 
-            match self.head.compare_exchange_weak(head, node, Ordering::Release, Ordering::Acquire)
+            match self
+                .head
+                .compare_exchange_weak(head, node, Ordering::Release, Ordering::Acquire)
             {
                 Ok(_) => {
                     self.size.fetch_add(1, Ordering::Relaxed);
                     break;
-                },
+                }
                 Err(_) => continue,
             }
         }
@@ -127,13 +141,15 @@ impl<T: Poolable> LockFreePool<T> {
 
             let next = unsafe { (*head).next };
 
-            match self.head.compare_exchange_weak(head, next, Ordering::Release, Ordering::Acquire)
+            match self
+                .head
+                .compare_exchange_weak(head, next, Ordering::Release, Ordering::Acquire)
             {
                 Ok(_) => {
                     self.size.fetch_sub(1, Ordering::Relaxed);
                     let node = unsafe { Box::from_raw(head) };
                     return Some(ManuallyDrop::into_inner(node.value));
-                },
+                }
                 Err(_) => continue,
             }
         }
@@ -152,7 +168,10 @@ impl<T: Poolable> LockFreePool<T> {
             obj.reset();
             self.callbacks.on_checkout(&obj);
 
-            return Ok(LockFreePooledValue { value: ManuallyDrop::new(obj), pool: self });
+            return Ok(LockFreePooledValue {
+                value: ManuallyDrop::new(obj),
+                pool: self,
+            });
         }
 
         // Stack is empty, create new object
@@ -177,7 +196,10 @@ impl<T: Poolable> LockFreePool<T> {
         #[cfg(feature = "stats")]
         self.stats.record_creation();
 
-        Ok(LockFreePooledValue { value: ManuallyDrop::new(obj), pool: self })
+        Ok(LockFreePooledValue {
+            value: ManuallyDrop::new(obj),
+            pool: self,
+        })
     }
 
     /// Try to get object without creating new one
@@ -192,7 +214,10 @@ impl<T: Poolable> LockFreePool<T> {
             obj.reset();
             self.callbacks.on_checkout(&obj);
 
-            LockFreePooledValue { value: ManuallyDrop::new(obj), pool: self }
+            LockFreePooledValue {
+                value: ManuallyDrop::new(obj),
+                pool: self,
+            }
         })
     }
 
@@ -339,7 +364,8 @@ impl<T: Poolable> LockFreePool<T> {
             let after_size = unsafe { (*node.value).memory_usage() };
 
             #[cfg(feature = "stats")]
-            self.stats.record_compression_attempt(before_size, after_size, success);
+            self.stats
+                .record_compression_attempt(before_size, after_size, success);
 
             if before_size > after_size {
                 total_saved += before_size - after_size;
@@ -363,11 +389,11 @@ impl<T: Poolable> LockFreePool<T> {
                         // Предотвращаем drop для узла (теперь он в пуле)
                         core::mem::forget(node);
                         break;
-                    },
+                    }
                     Err(new_head) => {
                         // Кто-то изменил head, пробуем снова
                         head = new_head;
-                    },
+                    }
                 }
             }
         }
@@ -567,11 +593,14 @@ mod tests {
         #[cfg(feature = "adaptive")]
         {
             config.pressure_threshold = 50; // 50% заполнения вызывает
-                                            // оптимизацию
+            // оптимизацию
         }
 
         let pool = Arc::new(LockFreePool::with_config(config, || {
-            let mut obj = CompressibleObject { data: Vec::with_capacity(1000), compressed: false };
+            let mut obj = CompressibleObject {
+                data: Vec::with_capacity(1000),
+                compressed: false,
+            };
             obj.data.extend_from_slice(&[1, 2, 3, 4, 5]);
             obj
         }));
@@ -639,7 +668,10 @@ mod tests {
         }
 
         let pool = Arc::new(LockFreePool::with_config(config, || {
-            let mut obj = CompressibleObject { data: Vec::with_capacity(1000), compressed: false };
+            let mut obj = CompressibleObject {
+                data: Vec::with_capacity(1000),
+                compressed: false,
+            };
             obj.data.extend_from_slice(&[1, 2, 3, 4, 5]);
             obj
         }));

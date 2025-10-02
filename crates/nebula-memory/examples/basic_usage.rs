@@ -2,9 +2,9 @@
 //!
 //! This example demonstrates the fundamental usage patterns for different allocators.
 
-use std::alloc::Layout;
-use nebula_memory::prelude::*;
 use nebula_memory::allocator::{BumpAllocator, PoolAllocator, StackAllocator};
+use nebula_memory::prelude::*;
+use std::alloc::Layout;
 
 fn main() {
     println!("=== nebula-memory Basic Usage Examples ===\n");

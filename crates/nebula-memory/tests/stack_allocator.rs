@@ -1,14 +1,14 @@
 //! Integration tests for Stack allocator
 
 use nebula_memory::allocator::{Allocator, StackAllocator, StackConfig, StackMarker};
-use std::alloc::Layout;
 use nebula_memory::core::traits::Resettable;
+use std::alloc::Layout;
 
 #[test]
 fn test_stack_allocator_basic() {
     let config = StackConfig::default();
-    let allocator = StackAllocator::with_config(4096, config)
-        .expect("Failed to create stack allocator");
+    let allocator =
+        StackAllocator::with_config(4096, config).expect("Failed to create stack allocator");
 
     unsafe {
         let layout = Layout::from_size_align(128, 8).unwrap();
@@ -24,8 +24,8 @@ fn test_stack_allocator_basic() {
 #[test]
 fn test_stack_allocator_lifo() {
     let config = StackConfig::default();
-    let allocator = StackAllocator::with_config(4096, config)
-        .expect("Failed to create stack allocator");
+    let allocator =
+        StackAllocator::with_config(4096, config).expect("Failed to create stack allocator");
 
     unsafe {
         let layout = Layout::from_size_align(64, 8).unwrap();
@@ -54,8 +54,8 @@ fn test_stack_allocator_lifo() {
 #[test]
 fn test_stack_allocator_reset() {
     let config = StackConfig::default();
-    let allocator = StackAllocator::with_config(4096, config)
-        .expect("Failed to create stack allocator");
+    let allocator =
+        StackAllocator::with_config(4096, config).expect("Failed to create stack allocator");
 
     unsafe {
         let layout = Layout::from_size_align(128, 8).unwrap();
@@ -67,7 +67,9 @@ fn test_stack_allocator_reset() {
         let addr1 = ptr1.cast::<u8>().as_ptr() as usize;
 
         // Reset
-        unsafe { allocator.reset(); };
+        unsafe {
+            allocator.reset();
+        };
 
         // Allocate after reset
         let ptr3 = allocator.allocate(layout).expect("Allocation 3 failed");
@@ -83,17 +85,23 @@ fn test_stack_allocator_reset() {
 #[test]
 fn test_stack_allocator_alignment() {
     let config = StackConfig::default();
-    let allocator = StackAllocator::with_config(4096, config)
-        .expect("Failed to create stack allocator");
+    let allocator =
+        StackAllocator::with_config(4096, config).expect("Failed to create stack allocator");
 
     unsafe {
         let layout_8 = Layout::from_size_align(64, 8).unwrap();
         let layout_16 = Layout::from_size_align(64, 16).unwrap();
         let layout_32 = Layout::from_size_align(64, 32).unwrap();
 
-        let ptr_8 = allocator.allocate(layout_8).expect("8-byte alignment failed");
-        let ptr_16 = allocator.allocate(layout_16).expect("16-byte alignment failed");
-        let ptr_32 = allocator.allocate(layout_32).expect("32-byte alignment failed");
+        let ptr_8 = allocator
+            .allocate(layout_8)
+            .expect("8-byte alignment failed");
+        let ptr_16 = allocator
+            .allocate(layout_16)
+            .expect("16-byte alignment failed");
+        let ptr_32 = allocator
+            .allocate(layout_32)
+            .expect("32-byte alignment failed");
 
         assert_eq!(ptr_8.cast::<u8>().as_ptr() as usize % 8, 0);
         assert_eq!(ptr_16.cast::<u8>().as_ptr() as usize % 16, 0);
@@ -110,8 +118,8 @@ fn test_stack_allocator_frame() {
     use nebula_memory::allocator::StackFrame;
 
     let config = StackConfig::default();
-    let allocator = StackAllocator::with_config(4096, config)
-        .expect("Failed to create stack allocator");
+    let allocator =
+        StackAllocator::with_config(4096, config).expect("Failed to create stack allocator");
 
     unsafe {
         let layout = Layout::from_size_align(64, 8).unwrap();
@@ -135,8 +143,8 @@ fn test_stack_allocator_multiple_frames() {
     use nebula_memory::allocator::StackFrame;
 
     let config = StackConfig::default();
-    let allocator = StackAllocator::with_config(4096, config)
-        .expect("Failed to create stack allocator");
+    let allocator =
+        StackAllocator::with_config(4096, config).expect("Failed to create stack allocator");
 
     unsafe {
         let layout = Layout::from_size_align(32, 8).unwrap();
@@ -169,8 +177,8 @@ fn test_stack_allocator_multiple_frames() {
 #[test]
 fn test_stack_allocator_large_allocation() {
     let config = StackConfig::default();
-    let allocator = StackAllocator::with_config(1024 * 1024, config)
-        .expect("Failed to create stack allocator");
+    let allocator =
+        StackAllocator::with_config(1024 * 1024, config).expect("Failed to create stack allocator");
 
     unsafe {
         // Allocate 512KB
@@ -184,4 +192,3 @@ fn test_stack_allocator_large_allocation() {
         allocator.deallocate(ptr.cast(), layout);
     }
 }
-

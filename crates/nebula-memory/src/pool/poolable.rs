@@ -1,6 +1,5 @@
 //! Trait for objects that can be pooled
 
-
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 

@@ -50,7 +50,7 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
                 Some(Rolling::Size(_)) => {
                     use crate::core::LogError;
                     return Err(nebula_error::NebulaError::log_config_error(
-                        "Size-based rolling is not yet implemented. Use Daily or Hourly."
+                        "Size-based rolling is not yet implemented. Use Daily or Hourly.",
                     ));
                 }
                 _ => tracing_appender::rolling::never(".", path),
@@ -70,7 +70,9 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
             // TODO: Implement proper multi-writer
             if writers.is_empty() {
                 use crate::core::LogError;
-                return Err(nebula_error::NebulaError::log_config_error("Multi writer needs at least one writer"));
+                return Err(nebula_error::NebulaError::log_config_error(
+                    "Multi writer needs at least one writer",
+                ));
             }
             return make_writer(&writers[0]);
         }
@@ -78,4 +80,3 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
 
     Ok((writer, guards))
 }
-

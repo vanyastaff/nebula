@@ -17,16 +17,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Example 1: log_result macro ===");
 
     let operation_result = simulate_operation(true).await;
-    log_result!(operation_result, "successful_operation", "Simulated successful operation");
+    log_result!(
+        operation_result,
+        "successful_operation",
+        "Simulated successful operation"
+    );
 
     let failed_result = simulate_operation(false).await;
-    log_result!(failed_result, "failed_operation", "Simulated failed operation");
+    log_result!(
+        failed_result,
+        "failed_operation",
+        "Simulated failed operation"
+    );
 
     // Example 2: Using print_result macro for console output
     println!("\n=== Example 2: print_result macro ===");
 
     let result1 = simulate_operation(true).await;
-    print_result!(result1, "Operation 1 completed successfully with result: {:?}", result1);
+    print_result!(
+        result1,
+        "Operation 1 completed successfully with result: {:?}",
+        result1
+    );
 
     let result2 = simulate_operation(false).await;
     print_result!(result2, "Operation 2 attempted");
@@ -46,9 +58,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let circuit_breaker = CircuitBreaker::default();
 
     for i in 1..=5 {
-        let result = circuit_breaker.execute(|| async {
-            simulate_operation(i % 2 == 0).await
-        }).await;
+        let result = circuit_breaker
+            .execute(|| async { simulate_operation(i % 2 == 0).await })
+            .await;
 
         print_result!(result, "CircuitBreaker operation {} result", i);
     }

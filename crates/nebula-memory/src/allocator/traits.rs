@@ -23,7 +23,7 @@ use core::ptr::NonNull;
 use super::{AllocError, AllocErrorCode, AllocResult};
 
 // Re-export core traits for convenience
-pub use crate::core::traits::{MemoryUsage, Resettable, BasicMemoryUsage};
+pub use crate::core::traits::{BasicMemoryUsage, MemoryUsage, Resettable};
 
 /// Validation of layout parameters
 ///
@@ -33,7 +33,10 @@ pub use crate::core::traits::{MemoryUsage, Resettable, BasicMemoryUsage};
 fn validate_layout(layout: Layout) -> AllocResult<()> {
     // Check that alignment is a power of two
     if !layout.align().is_power_of_two() {
-        return Err(AllocError::with_layout(AllocErrorCode::InvalidAlignment, layout));
+        return Err(AllocError::with_layout(
+            AllocErrorCode::InvalidAlignment,
+            layout,
+        ));
     }
 
     // Check for zero-sized allocations (they're valid but need special handling)
@@ -43,7 +46,10 @@ fn validate_layout(layout: Layout) -> AllocResult<()> {
 
     // Check for potential overflow when adding padding
     if layout.size() > isize::MAX as usize - (layout.align() - 1) {
-        return Err(AllocError::with_layout(AllocErrorCode::SizeOverflow, layout));
+        return Err(AllocError::with_layout(
+            AllocErrorCode::SizeOverflow,
+            layout,
+        ));
     }
 
     Ok(())
@@ -128,7 +134,7 @@ pub unsafe trait Allocator {
                     // Need to reallocate for stricter alignment
                     unsafe { self.grow(ptr, old_layout, new_layout) }
                 }
-            },
+            }
         };
 
         result
@@ -272,13 +278,17 @@ pub unsafe trait BulkAllocator: Allocator {
         }
 
         // Check for overflow when multiplying size by count
-        let total_size = layout.size().checked_mul(count).ok_or_else(|| {
-            AllocError::with_layout(AllocErrorCode::SizeOverflow, layout)
-        })?;
+        let total_size = layout
+            .size()
+            .checked_mul(count)
+            .ok_or_else(|| AllocError::with_layout(AllocErrorCode::SizeOverflow, layout))?;
 
         // Check against maximum allocation size
         if total_size > Self::max_allocation_size() {
-            return Err(AllocError::with_layout(AllocErrorCode::ExceedsMaxSize, layout));
+            return Err(AllocError::with_layout(
+                AllocErrorCode::ExceedsMaxSize,
+                layout,
+            ));
         }
 
         // Create layout for the total allocation
@@ -337,13 +347,15 @@ pub unsafe trait BulkAllocator: Allocator {
         }
 
         // Calculate old and new total layouts
-        let old_total_size = layout.size().checked_mul(old_count).ok_or_else(|| {
-            AllocError::with_layout(AllocErrorCode::SizeOverflow, layout)
-        })?;
+        let old_total_size = layout
+            .size()
+            .checked_mul(old_count)
+            .ok_or_else(|| AllocError::with_layout(AllocErrorCode::SizeOverflow, layout))?;
 
-        let new_total_size = layout.size().checked_mul(new_count).ok_or_else(|| {
-            AllocError::with_layout(AllocErrorCode::SizeOverflow, layout)
-        })?;
+        let new_total_size = layout
+            .size()
+            .checked_mul(new_count)
+            .ok_or_else(|| AllocError::with_layout(AllocErrorCode::SizeOverflow, layout))?;
 
         let old_layout = Layout::from_size_align(old_total_size, layout.align())
             .map_err(|_| AllocError::with_layout(AllocErrorCode::InvalidLayout, layout))?;

@@ -2,9 +2,9 @@
 //!
 //! Instead of importing serde_json::json!, you can use nebula_value::json!
 
-use nebula_value::prelude::*;
 use nebula_value::collections::array::ArrayBuilder;
 use nebula_value::collections::object::ObjectBuilder;
+use nebula_value::prelude::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Use json! macro from nebula_value (re-exported from serde_json)
@@ -31,15 +31,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Nested structures
     let config = ObjectBuilder::new()
         .insert("version", json!("1.0.0"))
-        .insert("settings", json!({
-            "timeout": 30,
-            "retries": 3,
-            "verbose": true
-        }))
-        .insert("endpoints", json!([
-            "https://api.example.com",
-            "https://backup.example.com"
-        ]))
+        .insert(
+            "settings",
+            json!({
+                "timeout": 30,
+                "retries": 3,
+                "verbose": true
+            }),
+        )
+        .insert(
+            "endpoints",
+            json!(["https://api.example.com", "https://backup.example.com"]),
+        )
         .build()?;
 
     println!("Config: {:?}", config);

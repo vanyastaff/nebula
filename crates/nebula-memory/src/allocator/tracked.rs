@@ -7,8 +7,8 @@ use core::alloc::Layout;
 use core::ptr::NonNull;
 
 use super::{
-    AllocResult, Allocator, AllocatorStats, AtomicAllocatorStats, BasicMemoryUsage,
-    BulkAllocator, MemoryUsage, Resettable, StatisticsProvider, ThreadSafeAllocator,
+    AllocResult, Allocator, AllocatorStats, AtomicAllocatorStats, BasicMemoryUsage, BulkAllocator,
+    MemoryUsage, Resettable, StatisticsProvider, ThreadSafeAllocator,
 };
 
 /// A wrapper allocator that tracks memory usage statistics
@@ -31,7 +31,10 @@ pub struct TrackedAllocator<A> {
 impl<A> TrackedAllocator<A> {
     /// Creates a new TrackedAllocator wrapping the provided allocator
     pub fn new(allocator: A) -> Self {
-        Self { inner: allocator, stats: AtomicAllocatorStats::new() }
+        Self {
+            inner: allocator,
+            stats: AtomicAllocatorStats::new(),
+        }
     }
 
     /// Gets a reference to the underlying allocator
@@ -93,7 +96,9 @@ impl<A> TrackedAllocator<A> {
     /// Get the number of potentially leaked allocations
     pub fn potential_leaks(&self) -> usize {
         let stats = self.stats.snapshot();
-        stats.allocation_count.saturating_sub(stats.deallocation_count)
+        stats
+            .allocation_count
+            .saturating_sub(stats.deallocation_count)
     }
 }
 
@@ -105,12 +110,12 @@ unsafe impl<A: Allocator> Allocator for TrackedAllocator<A> {
                 // Record successful allocation
                 self.stats.record_allocation(layout.size());
                 Ok(ptr)
-            },
+            }
             Err(err) => {
                 // Record failed allocation
                 self.stats.record_allocation_failure();
                 Err(err)
-            },
+            }
         }
     }
 
@@ -132,14 +137,15 @@ unsafe impl<A: Allocator> Allocator for TrackedAllocator<A> {
         match unsafe { self.inner.reallocate(ptr, old_layout, new_layout) } {
             Ok(new_ptr) => {
                 // Record successful reallocation
-                self.stats.record_reallocation(old_layout.size(), new_layout.size());
+                self.stats
+                    .record_reallocation(old_layout.size(), new_layout.size());
                 Ok(new_ptr)
-            },
+            }
             Err(err) => {
                 // Record failed reallocation as failed allocation
                 self.stats.record_allocation_failure();
                 Err(err)
-            },
+            }
         }
     }
 
@@ -165,11 +171,11 @@ unsafe impl<A: BulkAllocator> BulkAllocator for TrackedAllocator<A> {
             Ok(ptr) => {
                 self.stats.record_allocation(total_size);
                 Ok(ptr)
-            },
+            }
             Err(err) => {
                 self.stats.record_allocation_failure();
                 Err(err)
-            },
+            }
         }
     }
 
@@ -190,15 +196,19 @@ unsafe impl<A: BulkAllocator> BulkAllocator for TrackedAllocator<A> {
         let old_total_size = layout.size().saturating_mul(old_count);
         let new_total_size = layout.size().saturating_mul(new_count);
 
-        match unsafe { self.inner.reallocate_contiguous(ptr, layout, old_count, new_count) } {
+        match unsafe {
+            self.inner
+                .reallocate_contiguous(ptr, layout, old_count, new_count)
+        } {
             Ok(new_ptr) => {
-                self.stats.record_reallocation(old_total_size, new_total_size);
+                self.stats
+                    .record_reallocation(old_total_size, new_total_size);
                 Ok(new_ptr)
-            },
+            }
             Err(err) => {
                 self.stats.record_allocation_failure();
                 Err(err)
-            },
+            }
         }
     }
 }
