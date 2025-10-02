@@ -23,14 +23,14 @@ pub trait Credential: Send + Sync + 'static {
     async fn initialize(
         &self,
         input: &Self::Input,
-        ctx: &mut CredentialContext,
+        _ctx: &mut CredentialContext,
     ) -> Result<(Self::State, Option<AccessToken>), CredentialError>;
 
     /// Refresh the credential
     async fn refresh(
         &self,
-        state: &mut Self::State,
-        ctx: &mut CredentialContext,
+        _state: &mut Self::State,
+        _ctx: &mut CredentialContext,
     ) -> Result<AccessToken, CredentialError> {
         Err(CredentialError::refresh_not_supported(
             Self::TYPE_NAME.to_string(),
@@ -40,8 +40,8 @@ pub trait Credential: Send + Sync + 'static {
     /// Revoke the credential (optional)
     async fn revoke(
         &self,
-        state: &mut Self::State,
-        ctx: &mut CredentialContext,
+        _state: &mut Self::State,
+        _ctx: &mut CredentialContext,
     ) -> Result<(), CredentialError> {
         Ok(())
     }
@@ -49,8 +49,8 @@ pub trait Credential: Send + Sync + 'static {
     /// Validate the credential state
     async fn validate(
         &self,
-        state: &Self::State,
-        ctx: &CredentialContext,
+        _state: &Self::State,
+        _ctx: &CredentialContext,
     ) -> Result<bool, CredentialError> {
         Ok(true)
     }

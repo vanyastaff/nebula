@@ -35,6 +35,10 @@ pub struct ActionId(String);
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ResourceId(String);
 
+/// Unique identifier for a credential
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CredentialId(String);
+
 impl ExecutionId {
     /// Create a new random execution ID
     pub fn new() -> Self {
@@ -160,6 +164,34 @@ impl ResourceId {
     }
 }
 
+impl CredentialId {
+    /// Create a new random credential ID
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    /// Create a credential ID from a string
+    pub fn from_string(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// Get the underlying string
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Convert to owned string
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl Default for CredentialId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // Implement Display for all ID types
 impl fmt::Display for ExecutionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -198,6 +230,12 @@ impl fmt::Display for ActionId {
 }
 
 impl fmt::Display for ResourceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl fmt::Display for CredentialId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -277,6 +315,18 @@ impl From<String> for ResourceId {
 }
 
 impl From<&str> for ResourceId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<String> for CredentialId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for CredentialId {
     fn from(s: &str) -> Self {
         Self(s.to_string())
     }

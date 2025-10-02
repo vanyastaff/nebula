@@ -17,20 +17,28 @@
 #![deny(unsafe_code)]
 #![forbid(unsafe_code)]
 
+/// Authentication strategies and composable authenticators
 pub mod authenticator;
+/// Core types, errors, and primitives
 pub mod core;
+/// Credential manager and refresh policies
 pub mod manager;
+/// State migration support
 pub mod migration;
+/// Credential type registry and factories
 pub mod registry;
+pub mod storage;
+pub mod cache;
 mod testing;
+/// Core traits for credentials, storage, caching, and locking
 pub mod traits;
 
 /// Commonly used types and traits
 pub mod prelude {
     pub use crate::authenticator::{ChainAuthenticator, ClientAuthenticator};
     pub use crate::core::{
-        AccessToken, CredentialContext, CredentialError, CredentialMetadata, CredentialState,
-        Ephemeral, SecureString,
+        AccessToken, CredentialContext, CredentialError, CredentialId, CredentialMetadata,
+        CredentialState, Ephemeral, SecureString,
     };
     pub use crate::manager::{CredentialManager, ManagerBuilder, RefreshPolicy};
     pub use crate::traits::{
