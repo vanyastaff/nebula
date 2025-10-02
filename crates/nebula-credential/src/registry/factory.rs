@@ -1,6 +1,9 @@
 use crate::core::{AccessToken, CredentialContext, CredentialError, CredentialMetadata};
+use crate::traits::{bridge::CredentialAdapter, Credential};
 use async_trait::async_trait;
 use dashmap::DashMap;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -52,6 +55,32 @@ impl CredentialRegistry {
     /// Register a credential factory
     pub fn register(&self, factory: Arc<dyn CredentialFactory>) {
         self.factories.insert(factory.type_name(), factory);
+    }
+
+    /// Register a Credential directly (auto-wraps in CredentialAdapter)
+    ///
+    /// This is a convenience method for registering type-safe `Credential` implementations.
+    /// The credential is automatically wrapped in `CredentialAdapter` to make it compatible
+    /// with the factory registry.
+    ///
+    /// # Example
+    /// ```ignore
+    /// use nebula_credential::{CredentialRegistry, Credential};
+    ///
+    /// struct MyCredential;
+    /// impl Credential for MyCredential { /* ... */ }
+    ///
+    /// let registry = CredentialRegistry::new();
+    /// registry.register_credential(MyCredential);
+    /// ```
+    pub fn register_credential<C>(&self, credential: C)
+    where
+        C: Credential,
+        C::Input: Serialize + DeserializeOwned + Send + Sync + 'static,
+        C::State: Serialize + DeserializeOwned + Send + Sync + 'static,
+    {
+        let adapter = CredentialAdapter::new(credential);
+        self.register(Arc::new(adapter));
     }
 
     /// Get factory by type name
