@@ -49,7 +49,7 @@ impl TestResourceManager {
         T: Send + Sync + 'static,
     {
         let resources = self.resources.lock().unwrap();
-        let resource = resources
+        let testable = resources
             .get(resource_id)
             .ok_or_else(|| ResourceError::unavailable(resource_id, "Mock resource not found", false))?;
 
@@ -65,9 +65,23 @@ impl TestResourceManager {
         // Simulate resource acquisition
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-        // In a real implementation, this would be a proper downcast
-        // For testing purposes, we'll return a placeholder
-        Ok(Arc::new(unsafe { std::mem::zeroed() }))
+        // Try to downcast the mock to the requested type
+        let mock_any = testable.create_mock();
+        let mock_arc = mock_any
+            .downcast::<T>()
+            .map(|boxed| Arc::new(*boxed))
+            .map_err(|_| {
+                ResourceError::internal(
+                    resource_id,
+                    format!(
+                        "Mock resource type mismatch: expected {}, got {}",
+                        std::any::type_name::<T>(),
+                        testable.type_name()
+                    ),
+                )
+            })?;
+
+        Ok(mock_arc)
     }
 
     /// Get call history for verification

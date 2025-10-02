@@ -19,7 +19,7 @@ std = ["tokio/rt", "tracing/std"]
 alloc = []
 
 # Runtime features
-tokio = ["dep:tokio", "dep:tokio-util"]
+tokio = ["dep:tokio"]
 async-std = ["dep:async-std"]
 
 # Serialization
@@ -32,8 +32,8 @@ tracing = ["dep:tracing", "dep:tracing-opentelemetry", "dep:opentelemetry"]
 # Security
 credentials = ["nebula-credential"]
 
-# Pooling strategies
-pooling = ["dep:deadpool", "dep:bb8"]
+# Pooling strategies (using custom implementation)
+pooling = []
 
 # Testing utilities
 testing = ["dep:mockall", "dep:test-case"]
@@ -53,7 +53,6 @@ nebula-credential = { path = "../nebula-credential", optional = true }
 
 # Async runtime
 tokio = { version = "1.0", features = ["rt-multi-thread", "time", "sync", "macros"], optional = true }
-tokio-util = { version = "0.7", features = ["rt"], optional = true }
 async-std = { version = "1.12", optional = true }
 futures = "0.3"
 
@@ -72,7 +71,6 @@ serde_yaml = { version = "0.9", optional = true }
 dashmap = "5.5"
 parking_lot = "0.12"
 crossbeam = "0.8"
-arc-swap = "1.6"
 
 # Observability
 tracing = { version = "0.1", optional = true }
@@ -84,9 +82,8 @@ metrics-exporter-prometheus = { version = "0.12", optional = true }
 # Time and scheduling
 chrono = { version = "0.4", features = ["serde"] }
 
-# Resource pooling
-deadpool = { version = "0.10", optional = true }
-bb8 = { version = "0.8", optional = true }
+# Resource pooling (custom implementation)
+# Note: deadpool and bb8 removed - we use custom pool implementation
 
 # Configuration and validation
 config = "0.13"
