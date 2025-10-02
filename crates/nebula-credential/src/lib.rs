@@ -44,7 +44,8 @@ pub mod prelude {
     };
     pub use crate::manager::{CredentialManager, ManagerBuilder, RefreshPolicy};
     pub use crate::traits::{
-        Credential, DistributedLock, LockError, LockGuard, StateStore, TokenCache,
+        bridge::CredentialAdapter, Credential, DistributedLock, LockError, LockGuard, StateStore,
+        TokenCache,
     };
     pub use async_trait::async_trait;
     pub use serde::{Deserialize, Serialize};
