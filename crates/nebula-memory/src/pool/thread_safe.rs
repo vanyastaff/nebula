@@ -4,7 +4,6 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "std")]
 use std::sync::{Arc, Condvar, Mutex};
 #[cfg(feature = "std")]
@@ -13,8 +12,10 @@ use std::time::Duration;
 #[cfg(not(feature = "std"))]
 use spin::{Condvar, Mutex};
 
-use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, PoolStats, Poolable};
-use crate::error::{MemoryError, MemoryResult};
+use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
+#[cfg(feature = "stats")]
+use super::PoolStats;
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Thread-safe object pool using mutex
 ///
@@ -170,10 +171,7 @@ impl<T: Poolable> ThreadSafePool<T> {
                     while inner.objects.is_empty() && !inner.shutdown {
                         let remaining = timeout.saturating_sub(start.elapsed());
                         if remaining.is_zero() {
-                            return Err(MemoryError::PoolExhausted {
-                                type_name: std::any::type_name::<T>(),
-                                pool_size: max
-                            });
+                            return Err(MemoryError::pool_exhausted());
                         }
 
                         // Корректная обработка результата wait_timeout
@@ -185,10 +183,7 @@ impl<T: Poolable> ThreadSafePool<T> {
                     }
 
                     if inner.shutdown {
-                        return Err(MemoryError::PoolExhausted {
-                            type_name: std::any::type_name::<T>(),
-                            pool_size: max
-                        });
+                        return Err(MemoryError::pool_exhausted());
                     }
 
                     if let Some(mut obj) = inner.objects.pop() {
@@ -207,10 +202,7 @@ impl<T: Poolable> ThreadSafePool<T> {
                     }
                 }
 
-                return Err(MemoryError::PoolExhausted {
-                    type_name: std::any::type_name::<T>(),
-                    pool_size: max
-                });
+                return Err(MemoryError::pool_exhausted());
             }
         }
 
@@ -239,10 +231,7 @@ impl<T: Poolable> ThreadSafePool<T> {
         _timeout: Option<Duration>,
     ) -> MemoryResult<ThreadSafePooledValue<T>> {
         // Without std, we can't do timed waits
-        self.try_get().ok_or(MemoryError::PoolExhausted {
-            type_name: std::any::type_name::<T>(),
-            pool_size: self.config.max_capacity.unwrap_or(0)
-        })
+        self.try_get().ok_or(MemoryError::pool_exhausted())
     }
 
     /// Return object to pool

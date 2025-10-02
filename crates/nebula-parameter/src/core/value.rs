@@ -98,17 +98,26 @@ impl ParameterValue {
         match self {
             ParameterValue::Value(value) => match value {
                 Value::Null => true,
-                Value::String(s) => s.is_empty(),
+                Value::Text(s) => s.is_empty(),
                 Value::Array(a) => a.is_empty(),
                 Value::Object(o) => o.is_empty(),
                 _ => false,
             },
             ParameterValue::Expression(expr) => expr.is_empty(),
             ParameterValue::Routing(_) => false, // Routing values are never considered empty
-            ParameterValue::Mode(mode_val) => mode_val.value.is_empty(),
+            ParameterValue::Mode(mode_val) => {
+                // Check if mode value is empty
+                match &mode_val.value {
+                    Value::Null => true,
+                    Value::Text(s) => s.as_str().trim().is_empty(),
+                    Value::Array(a) => a.is_empty(),
+                    Value::Object(o) => o.is_empty(),
+                    _ => false,
+                }
+            },
             ParameterValue::Expirable(exp_val) => {
                 exp_val.is_expired() || match &exp_val.value {
-                    Value::String(s) => s.as_str().trim().is_empty(),
+                    Value::Text(s) => s.as_str().trim().is_empty(),
                     Value::Null => true,
                     Value::Array(a) => a.is_empty(),
                     Value::Object(o) => o.is_empty(),
@@ -143,38 +152,25 @@ impl From<serde_json::Value> for ParameterValue {
     fn from(json_value: serde_json::Value) -> Self {
         let nebula_value = match json_value {
             serde_json::Value::Null => Value::Null,
-            serde_json::Value::Bool(b) => Value::Bool(b.into()),
+            serde_json::Value::Bool(b) => Value::boolean(b),
             serde_json::Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
-                    Value::Int(i.into())
+                    Value::integer(i)
                 } else if let Some(f) = n.as_f64() {
-                    Value::Float(f.into())
+                    Value::float(f)
                 } else {
                     Value::Null
                 }
             },
-            serde_json::Value::String(s) => Value::String(s.into()),
+            serde_json::Value::String(s) => Value::text(s),
             serde_json::Value::Array(arr) => {
-                let nebula_arr: Vec<Value> = arr.into_iter()
-                    .map(|v| ParameterValue::from(v).into())
-                    .filter_map(|pv| match pv {
-                        ParameterValue::Value(v) => Some(v),
-                        _ => None,
-                    })
-                    .collect();
-                Value::Array(nebula_arr.into())
+                // Array uses serde_json::Value internally
+                Value::Array(nebula_value::Array::from(arr))
             },
             serde_json::Value::Object(obj) => {
-                let nebula_obj: Vec<(String, Value)> = obj.into_iter()
-                    .filter_map(|(k, v)| {
-                        if let ParameterValue::Value(nv) = ParameterValue::from(v) {
-                            Some((k, nv))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                Value::Object(nebula_obj.into())
+                // Object uses serde_json::Value internally, construct from iterator
+                let obj_iter = obj.into_iter();
+                Value::Object(obj_iter.collect())
             }
         };
         ParameterValue::Value(nebula_value)
@@ -185,8 +181,8 @@ impl From<ParameterValue> for Value {
     fn from(param_value: ParameterValue) -> Self {
         match param_value {
             ParameterValue::Value(v) => v,
-            ParameterValue::Expression(expr) => Value::String(expr.into()),
-            ParameterValue::Routing(_) => Value::String("routing_value".into()),
+            ParameterValue::Expression(expr) => Value::text(expr),
+            ParameterValue::Routing(_) => Value::text("routing_value"),
             ParameterValue::Mode(mode_val) => mode_val.value.clone(),
             ParameterValue::Expirable(exp_val) => {
                 if exp_val.is_expired() {
@@ -196,13 +192,16 @@ impl From<ParameterValue> for Value {
                 }
             },
             ParameterValue::List(list_val) => {
-                Value::Array(list_val.items.clone().into())
+                // ListValue.items is Vec<nebula_value::Value> but Array needs Vec<serde_json::Value>
+                // We need to convert through serde
+                let json_items: Vec<serde_json::Value> = list_val.items.iter()
+                    .filter_map(|v| serde_json::to_value(v).ok())
+                    .collect();
+                Value::Array(nebula_value::Array::from(json_items))
             },
             ParameterValue::Object(obj_val) => {
-                let obj_map: Vec<(String, Value)> = obj_val.values.iter()
-                    .map(|(k, v)| (k.clone(), convert_json_to_nebula_value(v)))
-                    .collect();
-                Value::Object(obj_map.into())
+                // Object uses serde_json::Value internally, construct from iterator
+                Value::Object(obj_val.values.clone().into_iter().collect())
             },
         }
     }
@@ -238,32 +237,73 @@ impl From<ObjectValue> for ParameterValue {
     }
 }
 
-// Helper function to convert serde_json::Value to nebula_value::Value
-fn convert_json_to_nebula_value(json_value: &serde_json::Value) -> nebula_value::Value {
-    match json_value {
-        serde_json::Value::Null => nebula_value::Value::Null,
-        serde_json::Value::Bool(b) => nebula_value::Value::Bool((*b).into()),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                nebula_value::Value::Int(i.into())
-            } else if let Some(f) = n.as_f64() {
-                nebula_value::Value::Float(f.into())
-            } else {
-                nebula_value::Value::Null
-            }
-        },
-        serde_json::Value::String(s) => nebula_value::Value::String(s.clone().into()),
-        serde_json::Value::Array(arr) => {
-            let nebula_arr: Vec<nebula_value::Value> = arr.iter()
-                .map(convert_json_to_nebula_value)
-                .collect();
-            nebula_value::Value::Array(nebula_arr.into())
-        },
-        serde_json::Value::Object(obj) => {
-            let nebula_obj: Vec<(String, nebula_value::Value)> = obj.iter()
-                .map(|(k, v)| (k.clone(), convert_json_to_nebula_value(v)))
-                .collect();
-            nebula_value::Value::Object(nebula_obj.into())
-        }
+// Convenient Into implementations for common types
+impl From<bool> for ParameterValue {
+    fn from(b: bool) -> Self {
+        ParameterValue::Value(Value::boolean(b))
     }
 }
+
+impl From<i64> for ParameterValue {
+    fn from(i: i64) -> Self {
+        ParameterValue::Value(Value::integer(i))
+    }
+}
+
+impl From<i32> for ParameterValue {
+    fn from(i: i32) -> Self {
+        ParameterValue::Value(Value::integer(i as i64))
+    }
+}
+
+impl From<f64> for ParameterValue {
+    fn from(f: f64) -> Self {
+        ParameterValue::Value(Value::float(f))
+    }
+}
+
+impl From<f32> for ParameterValue {
+    fn from(f: f32) -> Self {
+        ParameterValue::Value(Value::float(f as f64))
+    }
+}
+
+// nebula_value scalar types
+impl From<nebula_value::Text> for ParameterValue {
+    fn from(t: nebula_value::Text) -> Self {
+        ParameterValue::Value(Value::Text(t))
+    }
+}
+
+impl From<nebula_value::Integer> for ParameterValue {
+    fn from(i: nebula_value::Integer) -> Self {
+        ParameterValue::Value(Value::Integer(i))
+    }
+}
+
+impl From<nebula_value::Float> for ParameterValue {
+    fn from(f: nebula_value::Float) -> Self {
+        ParameterValue::Value(Value::Float(f))
+    }
+}
+
+impl From<nebula_value::Bytes> for ParameterValue {
+    fn from(b: nebula_value::Bytes) -> Self {
+        ParameterValue::Value(Value::Bytes(b))
+    }
+}
+
+impl From<nebula_value::Array> for ParameterValue {
+    fn from(a: nebula_value::Array) -> Self {
+        ParameterValue::Value(Value::Array(a))
+    }
+}
+
+impl From<nebula_value::Object> for ParameterValue {
+    fn from(o: nebula_value::Object) -> Self {
+        ParameterValue::Value(Value::Object(o))
+    }
+}
+
+// Note: Conversion functions removed - use nebula_value::JsonValueExt trait instead
+// Import with: use nebula_value::JsonValueExt;

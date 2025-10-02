@@ -84,7 +84,7 @@ impl ModeValue {
     pub fn text(key: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             key: key.into(),
-            value: nebula_value::Value::String(value.into().into()),
+            value: nebula_value::Value::text(value.into()),
         }
     }
 
@@ -92,7 +92,7 @@ impl ModeValue {
     pub fn boolean(key: impl Into<String>, value: bool) -> Self {
         Self {
             key: key.into(),
-            value: nebula_value::Value::Bool(value.into()),
+            value: nebula_value::Value::boolean(value),
         }
     }
 
@@ -100,7 +100,7 @@ impl ModeValue {
     pub fn integer(key: impl Into<String>, value: i64) -> Self {
         Self {
             key: key.into(),
-            value: nebula_value::Value::Int(value.into()),
+            value: nebula_value::Value::integer(value),
         }
     }
 
@@ -108,12 +108,12 @@ impl ModeValue {
     pub fn from_parameter_value(key: impl Into<String>, param_value: &ParameterValue) -> Self {
         let nebula_val = match param_value {
             ParameterValue::Value(v) => v.clone(),
-            ParameterValue::Expression(expr) => nebula_value::Value::String(expr.clone().into()),
-            ParameterValue::Routing(_) => nebula_value::Value::String("routing_value".into()),
+            ParameterValue::Expression(expr) => nebula_value::Value::text(expr.clone()),
+            ParameterValue::Routing(_) => nebula_value::Value::text("routing_value"),
             ParameterValue::Mode(mode_val) => mode_val.value.clone(),
             ParameterValue::Expirable(exp_val) => exp_val.value.clone(),
-            ParameterValue::List(_list_val) => nebula_value::Value::String("list_value".into()),
-            ParameterValue::Object(_obj_val) => nebula_value::Value::String("object_value".into()),
+            ParameterValue::List(_list_val) => nebula_value::Value::text("list_value"),
+            ParameterValue::Object(_obj_val) => nebula_value::Value::text("object_value"),
         };
         Self {
             key: key.into(),
@@ -167,7 +167,8 @@ impl HasValue for ModeParameter {
         self.value.as_ref().map(|mode_val| ParameterValue::Mode(mode_val.clone()))
     }
 
-    fn set_parameter_value(&mut self, value: ParameterValue) -> Result<(), ParameterError> {
+    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+        let value = value.into();
         match value {
             ParameterValue::Mode(mode_value) => {
                 self.value = Some(mode_value);
@@ -192,7 +193,7 @@ impl Validatable for ModeParameter {
 
     fn is_empty_value(&self, value: &Self::Value) -> bool {
         match &value.value {
-            nebula_value::Value::String(s) => s.as_str().trim().is_empty(),
+            nebula_value::Value::Text(s) => s.as_str().trim().is_empty(),
             nebula_value::Value::Null => true,
             nebula_value::Value::Array(a) => a.is_empty(),
             nebula_value::Value::Object(o) => o.is_empty(),

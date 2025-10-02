@@ -3,8 +3,10 @@
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec::Vec};
 
-use super::{ObjectPool, PoolConfig, PoolStats, Poolable};
-use crate::error::{MemoryError, MemoryResult};
+use super::{ObjectPool, PoolConfig, Poolable};
+#[cfg(feature = "stats")]
+use super::PoolStats;
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Batch allocator for efficient bulk operations
 ///
@@ -88,10 +90,7 @@ impl<T: Poolable> BatchAllocator<T> {
                 },
                 Err(_) if objects.is_empty() => {
                     // First object failed - propagate error
-                    return Err(MemoryError::PoolExhausted {
-                        type_name: std::any::type_name::<T>(),
-                        pool_size: self.pool.capacity()
-                    });
+                    return Err(MemoryError::pool_exhausted());
                 },
                 Err(_) => {
                     // Partial batch is ok

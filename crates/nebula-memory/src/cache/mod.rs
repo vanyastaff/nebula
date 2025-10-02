@@ -35,7 +35,7 @@ mod async_compute;
 #[cfg(feature = "async")]
 pub use async_compute::{AsyncCacheResult, AsyncComputeCache};
 #[cfg(feature = "std")]
-pub use scheduled::{ExpiredEntriesCleanupTask, RefreshEntriesTask};
+pub use scheduled::ExpiredEntriesCleanupTask;
 
 #[cfg(test)]
 mod tests {

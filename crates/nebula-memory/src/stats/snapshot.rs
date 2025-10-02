@@ -9,7 +9,7 @@ use alloc::{collections::BTreeMap as HashMap, format, string::String, vec::Vec};
 use std::{collections::HashMap, time::Instant};
 
 use super::memory_stats::MemoryMetrics;
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::error::{MemoryError, MemoryResult};
 use crate::utils;
 
 /// Snapshot format for serialization
@@ -189,10 +189,7 @@ impl MemorySnapshot {
             SnapshotFormat::Text => Ok(self.format_text()),
             SnapshotFormat::Json => self.format_json(),
             SnapshotFormat::Csv => Ok(self.format_csv()),
-            SnapshotFormat::Binary => Err(MemoryError::NotSupported {
-                feature: "binary format",
-                context: Some("Binary serialization not implemented".to_string()),
-            }),
+            SnapshotFormat::Binary => Err(MemoryError::not_supported("not supported")),
         }
     }
 

@@ -11,8 +11,10 @@ use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 #[cfg(feature = "std")]
 use std::sync::Arc;
 
-use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, PoolStats, Poolable};
-use crate::error::{MemoryError, MemoryResult};
+use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
+#[cfg(feature = "stats")]
+use super::PoolStats;
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Lock-free object pool using atomic operations
 ///
@@ -165,10 +167,7 @@ impl<T: Poolable> LockFreePool<T> {
             let created = self.size.load(Ordering::Relaxed);
 
             if created >= max {
-                return Err(MemoryError::PoolExhausted {
-                    type_name: std::any::type_name::<T>(),
-                    pool_size: max
-                });
+                return Err(MemoryError::pool_exhausted());
             }
         }
 

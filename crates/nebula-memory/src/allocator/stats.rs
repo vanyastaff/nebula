@@ -185,7 +185,7 @@ impl AtomicAllocatorStats {
         self.total_bytes_allocated.fetch_add(size, Ordering::Relaxed);
 
         // Overflow-safe update of allocated_bytes using CAS
-        let mut new_allocated;
+        let new_allocated;
         loop {
             let current = self.allocated_bytes.load(Ordering::Relaxed);
             match current.checked_add(size) {

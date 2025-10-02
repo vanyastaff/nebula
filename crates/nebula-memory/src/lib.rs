@@ -1,103 +1,198 @@
-//! High-performance memory management for Nebula workflow automation
+//! # nebula-memory
 //!
-//! This crate provides efficient memory management primitives optimized
-//! for workflow automation scenarios, including:
+//! High-performance memory management for the Nebula workflow automation ecosystem.
 //!
-//! - Cross-platform system information
-//! - Memory pools and arenas
-//! - Cache-aware data structures
-//! - Memory pressure monitoring
-//! - Memory budgeting and limits
+//! This crate provides zero-cost abstractions for memory management including:
+//! - Custom allocators optimized for workflow execution
+//! - Memory pools for object reuse
+//! - Memory arenas for fast allocation/deallocation
+//! - Multi-level caching systems
+//! - Memory usage tracking and optimization
+//! - Lock-free data structures for high concurrency
 //!
-//! # Features
+//! ## Quick Start
 //!
-//! - `std` (default): Enables standard library support
-//! - `sysinfo` (default): Enables detailed system information gathering
-//! - `pool`: Object pooling support
-//! - `arena`: Arena allocation support
-//! - `cache`: Caching support
-//! - `stats`: Statistics collection
-//! - `budget`: Memory budgeting
+//! ```rust
+//! use nebula_memory::prelude::*;
 //!
-//! # Example
+//! // Use a memory pool for object reuse
+//! let pool = ObjectPool::new();
+//! let item = pool.acquire()?;
+//! // item is automatically returned to pool when dropped
 //!
-//! ```no_run
-//! use nebula_memory::system;
-//!
-//! fn main() -> nebula_memory::error::Result<()> {
-//!     // Initialize the memory subsystem
-//!     system::init()?;
-//!
-//!     // Get system information
-//!     let info = system::SystemInfo::get();
-//!     println!("Total memory: {}", system::SystemInfo::format_bytes(info.total_memory));
-//!     println!("CPU cores: {}", info.cpu_count);
-//!
-//!     // Check memory pressure
-//!     let pressure = system::get_memory_pressure();
-//!     println!("Memory pressure: {:?}", pressure);
-//!
-//!     Ok(())
-//! }
+//! // Use an arena for fast bulk allocation
+//! let arena = Arena::new();
+//! let data = arena.alloc_slice::<u64>(1000);
+//! // entire arena is freed at once when dropped
 //! ```
+//!
+//! ## Features
+//!
+//! - `std` (default): Enable standard library features
+//! - `arena`: Memory arena allocators
+//! - `pool`: Object pooling system
+//! - `cache`: Multi-level caching
+//! - `stats`: Memory usage statistics
+//! - `streaming`: Streaming data optimizations
+//! - `logging`: Integration with nebula-log
+//! - `full`: Enable all features
+//!
+//! ## Architecture
+//!
+//! nebula-memory follows the Nebula ecosystem patterns:
+//! - Consistent error handling via [`nebula_error`]
+//! - Structured logging via [`nebula_log`]
+//! - System integration via [`nebula_system`]
+//! - Performance monitoring and metrics
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![allow(incomplete_features)]
 #![warn(missing_docs)]
+#![warn(clippy::all)]
+#![warn(rust_2018_idioms)]
 
-#[cfg(feature = "alloc")]
+#[cfg(not(feature = "std"))]
 extern crate alloc;
 
-#[cfg(feature = "std")]
-extern crate std;
+// Core functionality - foundational types and traits
+pub mod core;
 
-// Core modules
-pub mod error;
+// Memory allocators - the heart of nebula-memory
+pub mod allocator;
+
+// Utility functions and helpers
 pub mod utils;
 
-// Re-export nebula-system as `system` for system information utilities
+// Re-export core types for convenience
+pub use crate::core::{MemoryError, MemoryErrorCode, MemoryResult, MemoryConfig};
+
+// Core features that depend on allocators
+#[cfg(feature = "arena")]
+#[cfg_attr(docsrs, doc(cfg(feature = "arena")))]
+pub mod arena;
+
+#[cfg(feature = "pool")]
+#[cfg_attr(docsrs, doc(cfg(feature = "pool")))]
+pub mod pool;
+
+#[cfg(feature = "cache")]
+#[cfg_attr(docsrs, doc(cfg(feature = "cache")))]
+pub mod cache;
+
+// Advanced features
+#[cfg(feature = "stats")]
+#[cfg_attr(docsrs, doc(cfg(feature = "stats")))]
+pub mod stats;
+
+#[cfg(feature = "budget")]
+#[cfg_attr(docsrs, doc(cfg(feature = "budget")))]
+pub mod budget;
+
+// Async support
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+pub mod async_support;
+
+// Streaming module not yet implemented
+// #[cfg(feature = "streaming")]
+// #[cfg_attr(docsrs, doc(cfg(feature = "streaming")))]
+// pub mod streaming;
+
+// Low-level system calls for allocators
 #[cfg(feature = "std")]
-pub use nebula_system as system;
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod syscalls;
 
-// Re-export common types for convenience
-pub use error::{MemoryError, Result};
+// System integration
+#[cfg(all(feature = "std", feature = "monitoring"))]
+#[cfg_attr(docsrs, doc(cfg(feature = "monitoring")))]
+pub mod monitoring;
 
-/// Library version
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+// Public API exports
+pub mod prelude {
+    //! Convenient re-exports of commonly used types and traits.
 
-/// Initialize the memory subsystem
+    // Core types
+    pub use crate::core::{MemoryError, MemoryErrorCode, MemoryResult, MemoryConfig};
+    pub use crate::core::traits::{MemoryManager, MemoryUsage, Resettable};
+
+    // Allocator types
+    pub use crate::allocator::{AllocError, AllocResult, Allocator, GlobalAllocatorManager};
+    #[cfg(all(feature = "std", feature = "monitoring"))]
+    pub use crate::allocator::{MonitoredAllocator, MonitoredConfig};
+
+    #[cfg(feature = "arena")]
+    pub use crate::arena::{Arena, TypedArena};
+
+    #[cfg(feature = "pool")]
+    pub use crate::pool::{ObjectPool, PooledValue};
+
+    #[cfg(feature = "cache")]
+    pub use crate::cache::{CacheConfig, CacheKey, ComputeCache};
+
+    #[cfg(feature = "budget")]
+    pub use crate::budget::{BudgetConfig, MemoryBudget, BudgetState, BudgetMetrics};
+
+    #[cfg(all(feature = "std", feature = "monitoring"))]
+    pub use crate::monitoring::{MemoryMonitor, MonitoringConfig, PressureAction, IntegratedStats};
+
+    // Utility traits for safe arithmetic
+    pub use crate::utils::CheckedArithmetic;
+}
+
+// Re-export allocator types at crate root for convenience
+pub use crate::allocator::{AllocError, AllocResult};
+
+#[cfg(feature = "logging")]
+use nebula_log::{info, debug};
+
+/// Initialize the nebula-memory system with default configuration.
 ///
-/// This should be called once at program startup.
-/// It initializes system information caches and prepares
-/// the memory management subsystem.
+/// This should be called once at application startup to set up
+/// global memory management components.
 ///
-/// # Example
+/// # Examples
 ///
-/// ```no_run
-/// fn main() -> nebula_memory::Result<()> {
+/// ```rust
+/// use nebula_memory;
+///
+/// fn main() -> nebula_memory::MemoryResult<()> {
 ///     nebula_memory::init()?;
+///
 ///     // Your application code here
+///
 ///     Ok(())
 /// }
 /// ```
-#[cfg(feature = "std")]
-pub fn init() -> Result<()> {
-    system::init()?;
+pub fn init() -> MemoryResult<()> {
+    #[cfg(feature = "logging")]
+    {
+        debug!("Initializing nebula-memory system");
+    }
+
+    // Initialize global allocator manager
+    crate::allocator::GlobalAllocatorManager::init()
+        .map_err(|e| MemoryError::initialization_failed(e))?;
+
+    #[cfg(feature = "logging")]
+    {
+        info!("nebula-memory system initialized successfully");
+    }
+
     Ok(())
 }
 
-/// Get a formatted summary of system information
+/// Shutdown the nebula-memory system and cleanup resources.
 ///
-/// Returns a human-readable string with system details including
-/// OS, CPU, memory, and current memory pressure.
-///
-/// # Example
-///
-/// ```no_run
-/// # nebula_memory::init().unwrap();
-/// println!("{}", nebula_memory::info());
-/// ```
-#[cfg(feature = "std")]
-pub fn info() -> String {
-    system::summary()
+/// This should be called before application exit to ensure
+/// proper cleanup of global resources.
+pub fn shutdown() -> MemoryResult<()> {
+    #[cfg(feature = "logging")]
+    {
+        debug!("Shutting down nebula-memory system");
+        info!("nebula-memory system shutdown complete");
+    }
+
+    Ok(())
 }

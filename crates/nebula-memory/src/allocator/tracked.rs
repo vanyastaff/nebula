@@ -7,7 +7,7 @@ use core::alloc::Layout;
 use core::ptr::NonNull;
 
 use super::{
-    AllocError, AllocResult, Allocator, AllocatorStats, AtomicAllocatorStats, BasicMemoryUsage,
+    AllocResult, Allocator, AllocatorStats, AtomicAllocatorStats, BasicMemoryUsage,
     BulkAllocator, MemoryUsage, Resettable, StatisticsProvider, ThreadSafeAllocator,
 };
 

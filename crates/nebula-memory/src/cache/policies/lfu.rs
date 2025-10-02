@@ -13,13 +13,14 @@ extern crate alloc;
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     hash::Hash,
+    marker::PhantomData,
     time::{Duration, Instant},
 };
 
 #[cfg(not(feature = "std"))]
 use {
     alloc::{collections::BTreeMap, vec::Vec},
-    core::{hash::Hash, time::Duration},
+    core::{hash::Hash, marker::PhantomData, time::Duration},
     hashbrown::HashMap,
 };
 
@@ -27,7 +28,6 @@ use crate::cache::{
     compute::{CacheEntry, CacheKey},
     stats::{AccessPattern, SizeDistribution},
 };
-use crate::error::MemoryResult;
 
 /// Frequency tracking modes for different scenarios
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +132,8 @@ pub struct LfuPolicy<K, V>
 where
     K: CacheKey,
 {
+    /// Phantom data for unused type parameter V
+    _phantom: PhantomData<V>,
     /// Configuration
     config: LfuConfig,
     /// Frequency counts for each key
@@ -174,6 +176,7 @@ where
     /// Create a new LFU policy with custom configuration
     pub fn with_config(config: LfuConfig) -> Self {
         Self {
+            _phantom: PhantomData,
             config,
             frequencies: HashMap::new(),
             key_to_bucket: HashMap::new(),
@@ -560,9 +563,16 @@ where
     }
 
     /// Simple hash function for probabilistic operations
-    fn simple_hash(&self, key: &K) -> u64 {
-        // Simplified hash - in production you'd use a proper hash function
-        format!("{:?}", key).len() as u64 * 2654435761
+    fn simple_hash(&self, key: &K) -> u64
+    where
+        K: core::hash::Hash,
+    {
+        use core::hash::{Hash as _, Hasher};
+        use std::collections::hash_map::RandomState;
+        use std::hash::BuildHasher;
+        let mut hasher = RandomState::new().build_hasher();
+        key.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Add key to frequency bucket

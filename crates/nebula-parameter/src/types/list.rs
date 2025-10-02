@@ -180,14 +180,20 @@ impl HasValue for ListParameter {
         self.value.as_ref().map(|list_val| ParameterValue::List(list_val.clone()))
     }
 
-    fn set_parameter_value(&mut self, value: ParameterValue) -> Result<(), ParameterError> {
+    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+        let value = value.into();
         match value {
             ParameterValue::List(list_val) => {
                 self.value = Some(list_val);
                 Ok(())
             },
             ParameterValue::Value(nebula_value::Value::Array(arr)) => {
-                let list_val = ListValue::new(arr.into_iter().collect());
+                // Array.to_vec() returns Vec<serde_json::Value>, we need Vec<nebula_value::Value>
+                // Convert through serde
+                let items: Vec<nebula_value::Value> = arr.to_vec().into_iter()
+                    .filter_map(|v| serde_json::from_value(v).ok())
+                    .collect();
+                let list_val = ListValue::new(items);
                 self.value = Some(list_val);
                 Ok(())
             },
@@ -205,8 +211,9 @@ impl Validatable for ListParameter {
     }
 
     fn value_to_json(&self, value: &Self::Value) -> serde_json::Value {
+        use nebula_value::ValueRefExt;
         let json_array: Vec<serde_json::Value> = value.items.iter()
-            .map(convert_nebula_value_to_json)
+            .map(|v| v.to_json())
             .collect();
         serde_json::Value::Array(json_array)
     }
@@ -347,10 +354,10 @@ impl ListParameter {
         if let Some(template) = &self.item_template {
             // Create a default value based on the template parameter type
             let default_val = match template.kind() {
-                ParameterKind::Text => nebula_value::Value::String("".into()),
-                ParameterKind::Number => nebula_value::Value::Int(0.into()),
-                ParameterKind::Boolean => nebula_value::Value::Bool(false.into()),
-                _ => nebula_value::Value::String("template_value".into()),
+                ParameterKind::Text => nebula_value::Value::text(""),
+                ParameterKind::Number => nebula_value::Value::integer(0),
+                ParameterKind::Boolean => nebula_value::Value::boolean(false),
+                _ => nebula_value::Value::text("template_value"),
             };
             Ok(default_val)
         } else {
@@ -359,30 +366,5 @@ impl ListParameter {
     }
 }
 
-// Helper function to convert nebula_value::Value to serde_json::Value
-fn convert_nebula_value_to_json(nebula_value: &nebula_value::Value) -> serde_json::Value {
-    match nebula_value {
-        nebula_value::Value::String(s) => serde_json::Value::String(s.to_string()),
-        nebula_value::Value::Int(i) => serde_json::Value::Number(i.value().into()),
-        nebula_value::Value::Float(f) => {
-            serde_json::Number::from_f64(f.value())
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null)
-        },
-        nebula_value::Value::Bool(b) => serde_json::Value::Bool(b.value()),
-        nebula_value::Value::Null => serde_json::Value::Null,
-        nebula_value::Value::Array(arr) => {
-            let json_array: Vec<serde_json::Value> = arr.iter()
-                .map(convert_nebula_value_to_json)
-                .collect();
-            serde_json::Value::Array(json_array)
-        },
-        nebula_value::Value::Object(obj) => {
-            let json_obj: serde_json::Map<String, serde_json::Value> = obj.iter()
-                .map(|(k, v)| (k.to_string(), convert_nebula_value_to_json(v)))
-                .collect();
-            serde_json::Value::Object(json_obj)
-        }
-        _ => serde_json::Value::String(nebula_value.to_string()),
-    }
-}
+// Note: Conversion function removed - use nebula_value::ValueRefExt trait instead
+// The trait provides .to_json() method for ergonomic conversions

@@ -1,543 +1,778 @@
-//! Global configuration for nebula-memory
+//! # Configuration for nebula-memory
 //!
-//! This module provides configuration structures and initialization
-//! for the memory management system.
+//! This module provides comprehensive configuration management for all memory
+//! components in the nebula-memory crate, following nebula patterns.
 
-#[cfg(all(not(feature = "std"), feature = "alloc"))]
-extern crate alloc;
-#[cfg(all(not(feature = "std"), feature = "alloc"))]
-use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-#[cfg(feature = "std")]
-use std::sync::OnceLock;
-#[cfg(feature = "std")]
-use std::time::Duration;
+use core::fmt;
+use core::time::Duration;
 
-#[cfg(not(feature = "std"))]
-use once_cell::race::OnceBox;
+use crate::core::error::{MemoryError, MemoryErrorCode, MemoryResult};
 
-/// Global memory configuration
+#[cfg(feature = "logging")]
+use nebula_log::{info, debug, warn};
+
+// ============================================================================
+// Core Configuration Types
+// ============================================================================
+
+/// Global memory system configuration
 #[derive(Debug, Clone)]
 pub struct MemoryConfig {
-    /// Enable global memory tracking
-    pub enable_tracking: bool,
-
-    /// Enable memory leak detection
-    pub enable_leak_detection: bool,
-
-    /// Global memory limit in bytes (None for unlimited)
-    pub global_memory_limit: Option<usize>,
-
-    /// Default pool configuration
-    pub default_pool_config: DefaultPoolConfig,
-
-    /// Default arena configuration
-    pub default_arena_config: DefaultArenaConfig,
-
-    /// Default cache configuration
-    pub default_cache_config: DefaultCacheConfig,
-
-    /// Platform-specific optimizations
-    pub platform_optimizations: PlatformOptimizations,
-
-    /// Memory pressure thresholds
-    pub pressure_thresholds: PressureThresholds,
-
-    /// Profiling configuration
-    #[cfg(feature = "profiling")]
-    pub profiling: ProfilingConfig,
-}
-
-/// Default configuration for object pools
-#[derive(Debug, Clone)]
-pub struct DefaultPoolConfig {
-    /// Initial capacity for new pools
-    pub initial_capacity: usize,
-
-    /// Enable statistics by default
-    pub enable_stats: bool,
-
-    /// Validate objects on return by default
-    pub validate_on_return: bool,
-
-    /// Pre-warm pools on creation
-    pub pre_warm: bool,
-
-    /// Default growth strategy
-    pub growth_factor: f32,
-}
-
-/// Default configuration for arenas
-#[derive(Debug, Clone)]
-pub struct DefaultArenaConfig {
-    /// Default chunk size in bytes
-    pub chunk_size: usize,
-
-    /// Maximum chunk size
-    pub max_chunk_size: usize,
-
-    /// Chunk growth factor
-    pub growth_factor: f32,
-
-    /// Enable deallocation tracking
-    pub track_deallocations: bool,
-}
-
-/// Default configuration for caches
-#[derive(Debug, Clone)]
-pub struct DefaultCacheConfig {
-    /// Default eviction policy
-    pub eviction_policy: EvictionPolicy,
-
-    /// Default capacity
-    pub default_capacity: usize,
-
-    /// Enable statistics
-    pub enable_stats: bool,
-
-    /// TTL for cached items
-    #[cfg(feature = "std")]
-    pub default_ttl: Option<Duration>,
-}
-
-/// Memory eviction policies
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EvictionPolicy {
-    /// Least Recently Used
-    LRU,
-    /// Least Frequently Used
-    LFU,
-    /// First In First Out
-    FIFO,
-    /// Adaptive Replacement Cache
-    ARC,
-    /// Time-based eviction
-    TTL,
-}
-
-/// Platform-specific optimizations
-#[derive(Debug, Clone)]
-pub struct PlatformOptimizations {
-    /// Use huge pages when available
-    pub use_huge_pages: bool,
-
-    /// Enable NUMA awareness
-    pub numa_aware: bool,
-
-    /// Preferred NUMA node (-1 for any)
-    pub preferred_numa_node: i32,
-
-    /// Use platform-specific allocators
-    pub use_platform_allocator: bool,
-
-    /// Page size hint
-    pub page_size: usize,
-
-    /// CPU cache line size
-    pub cache_line_size: usize,
-}
-
-/// Memory pressure thresholds
-#[derive(Debug, Clone)]
-pub struct PressureThresholds {
-    /// Low pressure threshold (percentage)
-    pub low: u8,
-
-    /// Medium pressure threshold (percentage)
-    pub medium: u8,
-
-    /// High pressure threshold (percentage)
-    pub high: u8,
-
-    /// Critical pressure threshold (percentage)
-    pub critical: u8,
-}
-
-/// Profiling configuration
-#[cfg(feature = "profiling")]
-#[derive(Debug, Clone)]
-pub struct ProfilingConfig {
-    /// Enable allocation tracking
-    pub track_allocations: bool,
-
-    /// Enable call stack recording
-    pub record_callstacks: bool,
-
-    /// Maximum callstack depth
-    pub max_callstack_depth: usize,
-
-    /// Enable heap profiling
-    pub heap_profiling: bool,
-
-    /// Sampling rate (1 in N allocations)
-    pub sampling_rate: usize,
+    /// Allocator configuration
+    pub allocator: AllocatorConfig,
+    /// Pool configuration
+    #[cfg(feature = "pool")]
+    pub pool: PoolConfig,
+    /// Arena configuration
+    #[cfg(feature = "arena")]
+    pub arena: ArenaConfig,
+    /// Cache configuration
+    #[cfg(feature = "cache")]
+    pub cache: CacheConfig,
+    /// Budget configuration
+    #[cfg(feature = "budget")]
+    pub budget: BudgetConfig,
+    /// Statistics configuration
+    #[cfg(feature = "stats")]
+    pub stats: StatsConfig,
 }
 
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            enable_tracking: cfg!(feature = "stats"),
-            enable_leak_detection: cfg!(debug_assertions),
-            global_memory_limit: None,
-            default_pool_config: DefaultPoolConfig::default(),
-            default_arena_config: DefaultArenaConfig::default(),
-            default_cache_config: DefaultCacheConfig::default(),
-            platform_optimizations: PlatformOptimizations::default(),
-            pressure_thresholds: PressureThresholds::default(),
-            #[cfg(feature = "profiling")]
-            profiling: ProfilingConfig::default(),
+            allocator: AllocatorConfig::default(),
+            #[cfg(feature = "pool")]
+            pool: PoolConfig::default(),
+            #[cfg(feature = "arena")]
+            arena: ArenaConfig::default(),
+            #[cfg(feature = "cache")]
+            cache: CacheConfig::default(),
+            #[cfg(feature = "budget")]
+            budget: BudgetConfig::default(),
+            #[cfg(feature = "stats")]
+            stats: StatsConfig::default(),
         }
     }
 }
 
-impl Default for DefaultPoolConfig {
+impl MemoryConfig {
+    /// Create a new configuration with default values
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a configuration optimized for high-performance scenarios
+    pub fn high_performance() -> Self {
+        let mut config = Self::default();
+        config.allocator = AllocatorConfig::high_performance();
+
+        #[cfg(feature = "pool")]
+        {
+            config.pool = PoolConfig::high_performance();
+        }
+
+        #[cfg(feature = "arena")]
+        {
+            config.arena = ArenaConfig::high_performance();
+        }
+
+        #[cfg(feature = "cache")]
+        {
+            config.cache = CacheConfig::high_performance();
+        }
+
+        config
+    }
+
+    /// Create a configuration optimized for low memory usage
+    pub fn low_memory() -> Self {
+        let mut config = Self::default();
+        config.allocator = AllocatorConfig::low_memory();
+
+        #[cfg(feature = "pool")]
+        {
+            config.pool = PoolConfig::low_memory();
+        }
+
+        #[cfg(feature = "arena")]
+        {
+            config.arena = ArenaConfig::low_memory();
+        }
+
+        #[cfg(feature = "cache")]
+        {
+            config.cache = CacheConfig::low_memory();
+        }
+
+        config
+    }
+
+    /// Validate the configuration
+    pub fn validate(&self) -> MemoryResult<()> {
+        #[cfg(feature = "logging")]
+        {
+            debug!("Validating memory configuration");
+        }
+
+        self.allocator.validate()
+            .map_err(|e| MemoryError::invalid_config(format!("allocator: {}", e)))?;
+
+        #[cfg(feature = "pool")]
+        {
+            self.pool.validate()
+                .map_err(|e| MemoryError::invalid_config(format!("pool: {}", e)))?;
+        }
+
+        #[cfg(feature = "arena")]
+        {
+            self.arena.validate()
+                .map_err(|e| MemoryError::invalid_config(format!("arena: {}", e)))?;
+        }
+
+        #[cfg(feature = "cache")]
+        {
+            self.cache.validate()
+                .map_err(|e| MemoryError::invalid_config(format!("cache: {}", e)))?;
+        }
+
+        #[cfg(feature = "budget")]
+        {
+            self.budget.validate()
+                .map_err(|e| MemoryError::invalid_config(format!("budget: {}", e)))?;
+        }
+
+        #[cfg(feature = "logging")]
+        {
+            info!("Memory configuration validation successful");
+        }
+
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Allocator Configuration
+// ============================================================================
+
+/// Configuration for memory allocators
+#[derive(Debug, Clone)]
+pub struct AllocatorConfig {
+    /// Default allocator type to use
+    pub default_allocator: AllocatorType,
+    /// Maximum allocation size
+    pub max_allocation_size: usize,
+    /// Enable allocation tracking
+    pub enable_tracking: bool,
+    /// Enable safety checks (may impact performance)
+    pub enable_safety_checks: bool,
+    /// Memory alignment preference
+    pub alignment_preference: AlignmentPreference,
+}
+
+impl Default for AllocatorConfig {
     fn default() -> Self {
         Self {
-            initial_capacity: 128,
+            default_allocator: AllocatorType::System,
+            max_allocation_size: 1 << 30, // 1GB
+            enable_tracking: cfg!(debug_assertions),
+            enable_safety_checks: cfg!(debug_assertions),
+            alignment_preference: AlignmentPreference::Natural,
+        }
+    }
+}
+
+impl AllocatorConfig {
+    /// Configuration optimized for high performance
+    pub fn high_performance() -> Self {
+        Self {
+            default_allocator: AllocatorType::Bump,
+            max_allocation_size: 1 << 32, // 4GB
+            enable_tracking: false,
+            enable_safety_checks: false,
+            alignment_preference: AlignmentPreference::CacheLine,
+        }
+    }
+
+    /// Configuration optimized for low memory usage
+    pub fn low_memory() -> Self {
+        Self {
+            default_allocator: AllocatorType::System,
+            max_allocation_size: 1 << 26, // 64MB
+            enable_tracking: true,
+            enable_safety_checks: true,
+            alignment_preference: AlignmentPreference::Natural,
+        }
+    }
+
+    /// Validate allocator configuration
+    pub fn validate(&self) -> MemoryResult<()> {
+        if self.max_allocation_size == 0 {
+            return Err(MemoryError::invalid_config("max_allocation_size cannot be zero"));
+        }
+
+        if !self.max_allocation_size.is_power_of_two() {
+            #[cfg(feature = "logging")]
+            {
+                warn!("max_allocation_size is not a power of two, this may impact performance");
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Available allocator types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllocatorType {
+    /// System allocator (malloc/free)
+    System,
+    /// Bump allocator for sequential allocation
+    Bump,
+    /// Stack allocator with markers
+    Stack,
+    /// Pool allocator for object reuse
+    Pool,
+    /// Tracked allocator with statistics
+    Tracked,
+}
+
+impl fmt::Display for AllocatorType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AllocatorType::System => write!(f, "system"),
+            AllocatorType::Bump => write!(f, "bump"),
+            AllocatorType::Stack => write!(f, "stack"),
+            AllocatorType::Pool => write!(f, "pool"),
+            AllocatorType::Tracked => write!(f, "tracked"),
+        }
+    }
+}
+
+/// Memory alignment preferences
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlignmentPreference {
+    /// Use natural alignment for the type
+    Natural,
+    /// Align to cache line boundaries (typically 64 bytes)
+    CacheLine,
+    /// Custom alignment value
+    Custom(usize),
+}
+
+// ============================================================================
+// Pool Configuration
+// ============================================================================
+
+#[cfg(feature = "pool")]
+/// Configuration for object pools
+#[derive(Debug, Clone)]
+pub struct PoolConfig {
+    /// Default pool capacity
+    pub default_capacity: usize,
+    /// Maximum pool capacity
+    pub max_capacity: usize,
+    /// Enable pool statistics
+    pub enable_stats: bool,
+    /// Pool growth strategy
+    pub growth_strategy: PoolGrowthStrategy,
+    /// Pool shrink strategy
+    pub shrink_strategy: PoolShrinkStrategy,
+    /// Cleanup interval for unused pools
+    pub cleanup_interval: Option<Duration>,
+}
+
+#[cfg(feature = "pool")]
+impl Default for PoolConfig {
+    fn default() -> Self {
+        Self {
+            default_capacity: 32,
+            max_capacity: 1024,
             enable_stats: cfg!(feature = "stats"),
-            validate_on_return: cfg!(debug_assertions),
-            pre_warm: true,
-            growth_factor: 2.0,
+            growth_strategy: PoolGrowthStrategy::Double,
+            shrink_strategy: PoolShrinkStrategy::Lazy,
+            cleanup_interval: Some(Duration::from_secs(60)),
         }
     }
 }
 
-impl Default for DefaultArenaConfig {
-    fn default() -> Self {
+#[cfg(feature = "pool")]
+impl PoolConfig {
+    /// Configuration optimized for high performance
+    pub fn high_performance() -> Self {
         Self {
-            chunk_size: 64 * 1024,            // 64 KB
-            max_chunk_size: 16 * 1024 * 1024, // 16 MB
-            growth_factor: 2.0,
-            track_deallocations: false,
+            default_capacity: 128,
+            max_capacity: 4096,
+            enable_stats: false,
+            growth_strategy: PoolGrowthStrategy::Fixed(256),
+            shrink_strategy: PoolShrinkStrategy::Never,
+            cleanup_interval: None,
         }
+    }
+
+    /// Configuration optimized for low memory usage
+    pub fn low_memory() -> Self {
+        Self {
+            default_capacity: 8,
+            max_capacity: 128,
+            enable_stats: true,
+            growth_strategy: PoolGrowthStrategy::Linear(4),
+            shrink_strategy: PoolShrinkStrategy::Aggressive,
+            cleanup_interval: Some(Duration::from_secs(30)),
+        }
+    }
+
+    /// Validate pool configuration
+    pub fn validate(&self) -> MemoryResult<()> {
+        if self.default_capacity == 0 {
+            return Err(MemoryError::invalid_config("default_capacity cannot be zero"));
+        }
+
+        if self.max_capacity < self.default_capacity {
+            return Err(MemoryError::invalid_config("max_capacity must be >= default_capacity"));
+        }
+
+        Ok(())
     }
 }
 
-impl Default for DefaultCacheConfig {
+#[cfg(feature = "pool")]
+/// Pool growth strategies
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolGrowthStrategy {
+    /// Double the pool size
+    Double,
+    /// Add a fixed number of objects
+    Fixed(usize),
+    /// Add a linear increment
+    Linear(usize),
+}
+
+#[cfg(feature = "pool")]
+/// Pool shrink strategies
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolShrinkStrategy {
+    /// Never shrink
+    Never,
+    /// Shrink when idle for a while
+    Lazy,
+    /// Shrink aggressively
+    Aggressive,
+}
+
+// ============================================================================
+// Arena Configuration
+// ============================================================================
+
+#[cfg(feature = "arena")]
+/// Configuration for memory arenas
+#[derive(Debug, Clone)]
+pub struct ArenaConfig {
+    /// Default arena size
+    pub default_size: usize,
+    /// Maximum arena size
+    pub max_size: usize,
+    /// Enable arena statistics
+    pub enable_stats: bool,
+    /// Arena growth strategy
+    pub growth_strategy: ArenaGrowthStrategy,
+    /// Enable compression for large arenas
+    pub enable_compression: bool,
+}
+
+#[cfg(feature = "arena")]
+impl Default for ArenaConfig {
     fn default() -> Self {
         Self {
-            eviction_policy: EvictionPolicy::LRU,
-            default_capacity: 1000,
+            default_size: 64 * 1024, // 64KB
+            max_size: 16 * 1024 * 1024, // 16MB
             enable_stats: cfg!(feature = "stats"),
-            #[cfg(feature = "std")]
+            growth_strategy: ArenaGrowthStrategy::Double,
+            enable_compression: false,
+        }
+    }
+}
+
+#[cfg(feature = "arena")]
+impl ArenaConfig {
+    /// Configuration optimized for high performance
+    pub fn high_performance() -> Self {
+        Self {
+            default_size: 1024 * 1024, // 1MB
+            max_size: 256 * 1024 * 1024, // 256MB
+            enable_stats: false,
+            growth_strategy: ArenaGrowthStrategy::Fixed(2 * 1024 * 1024), // 2MB
+            enable_compression: false,
+        }
+    }
+
+    /// Configuration optimized for low memory usage
+    pub fn low_memory() -> Self {
+        Self {
+            default_size: 4 * 1024, // 4KB
+            max_size: 1024 * 1024, // 1MB
+            enable_stats: true,
+            growth_strategy: ArenaGrowthStrategy::Linear(4 * 1024), // 4KB
+            enable_compression: true,
+        }
+    }
+
+    /// Validate arena configuration
+    pub fn validate(&self) -> MemoryResult<()> {
+        if self.default_size == 0 {
+            return Err(MemoryError::invalid_config("default_size cannot be zero"));
+        }
+
+        if self.max_size < self.default_size {
+            return Err(MemoryError::invalid_config("max_size must be >= default_size"));
+        }
+
+        if !self.default_size.is_power_of_two() {
+            #[cfg(feature = "logging")]
+            {
+                warn!("Arena default_size is not a power of two, this may impact performance");
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(feature = "arena")]
+/// Arena growth strategies
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArenaGrowthStrategy {
+    /// Double the arena size
+    Double,
+    /// Add a fixed amount
+    Fixed(usize),
+    /// Add a linear increment
+    Linear(usize),
+}
+
+// ============================================================================
+// Cache Configuration
+// ============================================================================
+
+#[cfg(feature = "cache")]
+/// Configuration for caches
+#[derive(Debug, Clone)]
+pub struct CacheConfig {
+    /// Default cache capacity
+    pub default_capacity: usize,
+    /// Maximum cache capacity
+    pub max_capacity: usize,
+    /// Cache eviction policy
+    pub eviction_policy: EvictionPolicy,
+    /// Enable cache statistics
+    pub enable_stats: bool,
+    /// TTL for cache entries
+    pub default_ttl: Option<Duration>,
+}
+
+#[cfg(feature = "cache")]
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            default_capacity: 256,
+            max_capacity: 4096,
+            eviction_policy: EvictionPolicy::Lru,
+            enable_stats: cfg!(feature = "stats"),
             default_ttl: None,
         }
     }
 }
 
-impl Default for PlatformOptimizations {
-    fn default() -> Self {
+#[cfg(feature = "cache")]
+impl CacheConfig {
+    /// Configuration optimized for high performance
+    pub fn high_performance() -> Self {
         Self {
-            use_huge_pages: false,
-            numa_aware: cfg!(target_os = "linux"),
-            preferred_numa_node: -1,
-            use_platform_allocator: true,
-            page_size: 4096,
-            cache_line_size: 64,
+            default_capacity: 1024,
+            max_capacity: 16384,
+            eviction_policy: EvictionPolicy::Lfu,
+            enable_stats: false,
+            default_ttl: None,
         }
     }
-}
 
-impl Default for PressureThresholds {
-    fn default() -> Self {
-        Self { low: 50, medium: 70, high: 85, critical: 95 }
-    }
-}
-
-#[cfg(feature = "profiling")]
-impl Default for ProfilingConfig {
-    fn default() -> Self {
+    /// Configuration optimized for low memory usage
+    pub fn low_memory() -> Self {
         Self {
-            track_allocations: true,
-            record_callstacks: cfg!(debug_assertions),
-            max_callstack_depth: 32,
-            heap_profiling: false,
-            sampling_rate: 100,
+            default_capacity: 64,
+            max_capacity: 512,
+            eviction_policy: EvictionPolicy::Fifo,
+            enable_stats: true,
+            default_ttl: Some(Duration::from_secs(300)), // 5 minutes
         }
     }
-}
 
-// Global configuration instance
-#[cfg(feature = "std")]
-static GLOBAL_CONFIG: OnceLock<MemoryConfig> = OnceLock::new();
-
-#[cfg(not(feature = "std"))]
-static GLOBAL_CONFIG: OnceBox<MemoryConfig> = OnceBox::new();
-
-// Runtime state
-static INITIALIZED: AtomicBool = AtomicBool::new(false);
-static TOTAL_ALLOCATED: AtomicUsize = AtomicUsize::new(0);
-static ACTIVE_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-
-/// Initialize the memory system with configuration
-pub fn initialize(config: MemoryConfig) -> Result<(), ConfigError> {
-    if INITIALIZED.load(Ordering::Acquire) {
-        return Err(ConfigError::AlreadyInitialized);
-    }
-
-    // Validate configuration
-    config.validate()?;
-
-    // Set global configuration
-    #[cfg(feature = "std")]
-    {
-        GLOBAL_CONFIG.set(config).map_err(|_| ConfigError::AlreadyInitialized)?;
-    }
-
-    #[cfg(not(feature = "std"))]
-    {
-        GLOBAL_CONFIG.set(Box::new(config)).map_err(|_| ConfigError::AlreadyInitialized)?;
-    }
-
-    // Initialize platform-specific features
-    #[cfg(all(feature = "platform", feature = "std"))]
-    if let Err(e) = crate::platform::initialize() {
-        return Err(ConfigError::InitializationError(format!(
-            "Platform initialization failed: {}",
-            e
-        )));
-    }
-
-    INITIALIZED.store(true, Ordering::Release);
-    Ok(())
-}
-
-/// Get the global configuration
-pub fn get() -> &'static MemoryConfig {
-    #[cfg(feature = "std")]
-    {
-        GLOBAL_CONFIG.get().unwrap_or_else(|| {
-            // Initialize with defaults if not set
-            let _ = initialize(MemoryConfig::default());
-            GLOBAL_CONFIG.get().unwrap()
-        })
-    }
-
-    #[cfg(not(feature = "std"))]
-    {
-        GLOBAL_CONFIG.get().unwrap_or_else(|| {
-            // For no_std, panic if not initialized
-            panic!("Memory system not initialized");
-        })
-    }
-}
-
-/// Check if the memory system is initialized
-pub fn is_initialized() -> bool {
-    INITIALIZED.load(Ordering::Acquire)
-}
-
-/// Update total allocated memory
-pub fn add_allocation(size: usize) {
-    TOTAL_ALLOCATED.fetch_add(size, Ordering::Relaxed);
-    ACTIVE_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Update total allocated memory
-pub fn remove_allocation(size: usize) {
-    TOTAL_ALLOCATED.fetch_sub(size, Ordering::Relaxed);
-    ACTIVE_ALLOCATIONS.fetch_sub(1, Ordering::Relaxed);
-}
-
-/// Get total allocated memory
-pub fn total_allocated() -> usize {
-    TOTAL_ALLOCATED.load(Ordering::Relaxed)
-}
-
-/// Get number of active allocations
-pub fn active_allocations() -> usize {
-    ACTIVE_ALLOCATIONS.load(Ordering::Relaxed)
-}
-
-/// Configuration errors
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfigError {
-    /// System already initialized
-    AlreadyInitialized,
-    /// Invalid configuration value
-    InvalidValue(&'static str),
-    /// Platform error
-    PlatformError(&'static str),
-    /// Initialization error
-    InitializationError(String),
-}
-
-impl core::fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::AlreadyInitialized => write!(f, "Memory system already initialized"),
-            Self::InvalidValue(msg) => write!(f, "Invalid configuration: {}", msg),
-            Self::PlatformError(msg) => write!(f, "Platform error: {}", msg),
-            Self::InitializationError(msg) => write!(f, "Initialization error: {}", msg),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for ConfigError {}
-
-impl MemoryConfig {
-    /// Validate configuration
-    pub fn validate(&self) -> Result<(), ConfigError> {
-        // Validate pool config
-        if self.default_pool_config.growth_factor < 1.0 {
-            return Err(ConfigError::InvalidValue("Pool growth factor must be >= 1.0"));
+    /// Validate cache configuration
+    pub fn validate(&self) -> MemoryResult<()> {
+        if self.default_capacity == 0 {
+            return Err(MemoryError::invalid_config("default_capacity cannot be zero"));
         }
 
-        // Validate arena config
-        if self.default_arena_config.chunk_size == 0 {
-            return Err(ConfigError::InvalidValue("Arena chunk size must be > 0"));
-        }
-
-        if self.default_arena_config.max_chunk_size < self.default_arena_config.chunk_size {
-            return Err(ConfigError::InvalidValue("Max chunk size must be >= chunk size"));
-        }
-
-        // Validate pressure thresholds
-        if self.pressure_thresholds.low >= self.pressure_thresholds.medium {
-            return Err(ConfigError::InvalidValue("Low threshold must be < medium"));
-        }
-
-        if self.pressure_thresholds.medium >= self.pressure_thresholds.high {
-            return Err(ConfigError::InvalidValue("Medium threshold must be < high"));
-        }
-
-        if self.pressure_thresholds.high >= self.pressure_thresholds.critical {
-            return Err(ConfigError::InvalidValue("High threshold must be < critical"));
-        }
-
-        if self.pressure_thresholds.critical > 100 {
-            return Err(ConfigError::InvalidValue("Critical threshold must be <= 100"));
+        if self.max_capacity < self.default_capacity {
+            return Err(MemoryError::invalid_config("max_capacity must be >= default_capacity"));
         }
 
         Ok(())
     }
+}
 
-    /// Create a builder for configuration
-    pub fn builder() -> ConfigBuilder {
-        ConfigBuilder::new()
+#[cfg(feature = "cache")]
+/// Cache eviction policies
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvictionPolicy {
+    /// Least Recently Used
+    Lru,
+    /// Least Frequently Used
+    Lfu,
+    /// First In, First Out
+    Fifo,
+    /// Adaptive Replacement Cache
+    Arc,
+}
+
+// ============================================================================
+// Budget Configuration
+// ============================================================================
+
+#[cfg(feature = "budget")]
+/// Configuration for memory budgets
+#[derive(Debug, Clone)]
+pub struct BudgetConfig {
+    /// Global memory budget in bytes
+    pub global_budget: Option<usize>,
+    /// Per-operation budget in bytes
+    pub operation_budget: Option<usize>,
+    /// Enable budget enforcement
+    pub enforce_budgets: bool,
+    /// Budget check interval
+    pub check_interval: Duration,
+}
+
+#[cfg(feature = "budget")]
+impl Default for BudgetConfig {
+    fn default() -> Self {
+        Self {
+            global_budget: None,
+            operation_budget: Some(64 * 1024 * 1024), // 64MB
+            enforce_budgets: true,
+            check_interval: Duration::from_millis(100),
+        }
     }
 }
 
-/// Builder for memory configuration
-pub struct ConfigBuilder {
+#[cfg(feature = "budget")]
+impl BudgetConfig {
+    /// Validate budget configuration
+    pub fn validate(&self) -> MemoryResult<()> {
+        if let (Some(global), Some(operation)) = (self.global_budget, self.operation_budget) {
+            if operation > global {
+                return Err(MemoryError::invalid_config("operation_budget cannot exceed global_budget"));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Statistics Configuration
+// ============================================================================
+
+#[cfg(feature = "stats")]
+/// Configuration for statistics collection
+#[derive(Debug, Clone)]
+pub struct StatsConfig {
+    /// Enable detailed statistics
+    pub enable_detailed: bool,
+    /// Statistics collection interval
+    pub collection_interval: Duration,
+    /// Maximum history to keep
+    pub max_history: usize,
+    /// Enable real-time monitoring
+    pub enable_realtime: bool,
+}
+
+#[cfg(feature = "stats")]
+impl Default for StatsConfig {
+    fn default() -> Self {
+        Self {
+            enable_detailed: false,
+            collection_interval: Duration::from_secs(1),
+            max_history: 1000,
+            enable_realtime: false,
+        }
+    }
+}
+
+// ============================================================================
+// Configuration Loading and Saving
+// ============================================================================
+
+impl MemoryConfig {
+    /// Load configuration from environment variables
+    #[cfg(feature = "std")]
+    pub fn from_env() -> MemoryResult<Self> {
+        let mut config = Self::default();
+
+        // Load allocator config from env
+        if let Ok(max_size) = std::env::var("NEBULA_MEMORY_MAX_ALLOCATION_SIZE") {
+            config.allocator.max_allocation_size = max_size.parse()
+                .map_err(|_| MemoryError::invalid_config("Invalid NEBULA_MEMORY_MAX_ALLOCATION_SIZE"))?;
+        }
+
+        if let Ok(tracking) = std::env::var("NEBULA_MEMORY_ENABLE_TRACKING") {
+            config.allocator.enable_tracking = tracking.parse()
+                .map_err(|_| MemoryError::invalid_config("Invalid NEBULA_MEMORY_ENABLE_TRACKING"))?;
+        }
+
+        // Add more environment variable parsing as needed
+
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Create a builder for the configuration
+    pub fn builder() -> MemoryConfigBuilder {
+        MemoryConfigBuilder::new()
+    }
+}
+
+// ============================================================================
+// Configuration Builder
+// ============================================================================
+
+/// Builder for MemoryConfig
+#[derive(Debug, Default)]
+pub struct MemoryConfigBuilder {
     config: MemoryConfig,
 }
 
-impl ConfigBuilder {
-    /// Create new builder with defaults
+impl MemoryConfigBuilder {
+    /// Create a new configuration builder
     pub fn new() -> Self {
-        Self { config: MemoryConfig::default() }
+        Self {
+            config: MemoryConfig::default(),
+        }
     }
 
-    /// Enable or disable memory tracking
+    /// Set allocator configuration
+    pub fn allocator(mut self, allocator: AllocatorConfig) -> Self {
+        self.config.allocator = allocator;
+        self
+    }
+
+    /// Set the default allocator type
+    pub fn default_allocator(mut self, allocator_type: AllocatorType) -> Self {
+        self.config.allocator.default_allocator = allocator_type;
+        self
+    }
+
+    /// Set maximum allocation size
+    pub fn max_allocation_size(mut self, size: usize) -> Self {
+        self.config.allocator.max_allocation_size = size;
+        self
+    }
+
+    /// Enable or disable allocation tracking
     pub fn enable_tracking(mut self, enable: bool) -> Self {
-        self.config.enable_tracking = enable;
+        self.config.allocator.enable_tracking = enable;
         self
     }
 
-    /// Enable or disable leak detection
-    pub fn enable_leak_detection(mut self, enable: bool) -> Self {
-        self.config.enable_leak_detection = enable;
+    #[cfg(feature = "pool")]
+    /// Set pool configuration
+    pub fn pool(mut self, pool: PoolConfig) -> Self {
+        self.config.pool = pool;
         self
     }
 
-    /// Set global memory limit
-    pub fn global_memory_limit(mut self, limit: Option<usize>) -> Self {
-        self.config.global_memory_limit = limit;
+    #[cfg(feature = "arena")]
+    /// Set arena configuration
+    pub fn arena(mut self, arena: ArenaConfig) -> Self {
+        self.config.arena = arena;
         self
     }
 
-    /// Set default pool capacity
-    pub fn default_pool_capacity(mut self, capacity: usize) -> Self {
-        self.config.default_pool_config.initial_capacity = capacity;
-        self
-    }
-
-    /// Set default arena chunk size
-    pub fn default_arena_chunk_size(mut self, size: usize) -> Self {
-        self.config.default_arena_config.chunk_size = size;
-        self
-    }
-
-    /// Set default cache capacity
-    pub fn default_cache_capacity(mut self, capacity: usize) -> Self {
-        self.config.default_cache_config.default_capacity = capacity;
-        self
-    }
-
-    /// Set default eviction policy
-    pub fn default_eviction_policy(mut self, policy: EvictionPolicy) -> Self {
-        self.config.default_cache_config.eviction_policy = policy;
-        self
-    }
-
-    /// Enable huge pages
-    pub fn use_huge_pages(mut self, enable: bool) -> Self {
-        self.config.platform_optimizations.use_huge_pages = enable;
-        self
-    }
-
-    /// Enable NUMA awareness
-    pub fn numa_aware(mut self, enable: bool) -> Self {
-        self.config.platform_optimizations.numa_aware = enable;
-        self
-    }
-
-    /// Set preferred NUMA node
-    pub fn preferred_numa_node(mut self, node: i32) -> Self {
-        self.config.platform_optimizations.preferred_numa_node = node;
-        self
-    }
-
-    /// Set memory pressure thresholds
-    pub fn pressure_thresholds(mut self, low: u8, medium: u8, high: u8, critical: u8) -> Self {
-        self.config.pressure_thresholds = PressureThresholds { low, medium, high, critical };
+    #[cfg(feature = "cache")]
+    /// Set cache configuration
+    pub fn cache(mut self, cache: CacheConfig) -> Self {
+        self.config.cache = cache;
         self
     }
 
     /// Build the configuration
-    pub fn build(self) -> Result<MemoryConfig, ConfigError> {
+    pub fn build(self) -> MemoryResult<MemoryConfig> {
         self.config.validate()?;
         Ok(self.config)
     }
 }
 
-impl Default for ConfigBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_config_validation() {
+    fn test_default_config() {
         let config = MemoryConfig::default();
         assert!(config.validate().is_ok());
+    }
 
-        // Test invalid pressure thresholds
-        let mut bad_config = config.clone();
-        bad_config.pressure_thresholds.low = 80;
-        bad_config.pressure_thresholds.medium = 70;
-        assert!(bad_config.validate().is_err());
+    #[test]
+    fn test_high_performance_config() {
+        let config = MemoryConfig::high_performance();
+        assert!(config.validate().is_ok());
+        assert_eq!(config.allocator.default_allocator, AllocatorType::Bump);
+    }
+
+    #[test]
+    fn test_low_memory_config() {
+        let config = MemoryConfig::low_memory();
+        assert!(config.validate().is_ok());
+        assert!(config.allocator.enable_tracking);
     }
 
     #[test]
     fn test_config_builder() {
         let config = MemoryConfig::builder()
+            .default_allocator(AllocatorType::Pool)
+            .max_allocation_size(1024 * 1024)
             .enable_tracking(true)
-            .global_memory_limit(Some(1024 * 1024 * 1024))
-            .default_pool_capacity(256)
-            .use_huge_pages(true)
             .build()
             .unwrap();
 
-        assert!(config.enable_tracking);
-        assert_eq!(config.global_memory_limit, Some(1024 * 1024 * 1024));
-        assert_eq!(config.default_pool_config.initial_capacity, 256);
-        assert!(config.platform_optimizations.use_huge_pages);
+        assert_eq!(config.allocator.default_allocator, AllocatorType::Pool);
+        assert_eq!(config.allocator.max_allocation_size, 1024 * 1024);
+        assert!(config.allocator.enable_tracking);
+    }
+
+    #[test]
+    fn test_invalid_config() {
+        let mut config = MemoryConfig::default();
+        config.allocator.max_allocation_size = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[cfg(feature = "pool")]
+    #[test]
+    fn test_pool_config_validation() {
+        let mut config = PoolConfig::default();
+        config.max_capacity = config.default_capacity - 1;
+        assert!(config.validate().is_err());
+    }
+
+    #[cfg(feature = "arena")]
+    #[test]
+    fn test_arena_config_validation() {
+        let mut config = ArenaConfig::default();
+        config.max_size = config.default_size - 1;
+        assert!(config.validate().is_err());
     }
 }

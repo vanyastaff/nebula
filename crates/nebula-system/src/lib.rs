@@ -1,16 +1,20 @@
-//! Cross-platform system information and utilities for Nebula ecosystem
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
+//! # Nebula System
+//!
+//! Cross-platform system information and utilities for Nebula ecosystem.
 //!
 //! This crate provides a unified interface for:
 //! - System information (CPU, memory, OS)
-//! - Memory management utilities
-//! - Process information
 //! - Hardware detection
+//! - Memory management utilities
 //! - Performance monitoring
+//! - Process information
 //!
-//! # Features
+//! ## Features
 //!
-//! - `sysinfo` (default): System information gathering
 //! - `memory` (default): Memory management utilities
+//! - `sysinfo` (default): System information gathering
 //! - `process`: Process information and management
 //! - `network`: Network interface information
 //! - `disk`: Disk and filesystem information
@@ -18,7 +22,7 @@
 //! - `metrics`: Performance metrics collection
 //! - `serde`: Serialization support
 //!
-//! # Example
+//! ## Example
 //!
 //! ```no_run
 //! use nebula_system::{SystemInfo, MemoryPressure};
@@ -41,10 +45,8 @@
 //!     Ok(())
 //! }
 //! ```
-
-#![warn(missing_docs)]
-#![cfg_attr(docsrs, feature(doc_cfg))]
-
+pub mod utils;
+pub mod prelude;
 pub mod core;
 pub mod info;
 
@@ -90,3 +92,5 @@ pub fn init() -> SystemResult<()> {
 pub fn summary() -> String {
     info::summary()
 }
+
+

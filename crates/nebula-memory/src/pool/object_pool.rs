@@ -8,8 +8,10 @@ use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
-use super::{GrowthStrategy, NoOpCallbacks, PoolCallbacks, PoolConfig, PoolStats, Poolable};
-use crate::error::{MemoryError, MemoryResult};
+use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
+#[cfg(feature = "stats")]
+use super::PoolStats;
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Single-threaded object pool for efficient memory reuse
 ///
@@ -59,7 +61,7 @@ impl<T: Poolable> ObjectPool<T> {
                 {
                     stats.record_creation();
                     stats.update_memory(
-                        objects.iter().map(|o| o.memory_usage()).sum::<usize>()
+                        objects.iter().map(|o: &T| o.memory_usage()).sum::<usize>()
                             + obj.memory_usage(),
                     );
                 }
@@ -109,10 +111,7 @@ impl<T: Poolable> ObjectPool<T> {
                 let created = 0;
 
                 if created >= max {
-                    return Err(MemoryError::PoolExhausted {
-                        type_name: std::any::type_name::<T>(),
-                        pool_size: max
-                    });
+                    return Err(MemoryError::pool_exhausted());
                 }
             }
 
@@ -209,7 +208,7 @@ impl<T: Poolable> ObjectPool<T> {
             let current = self.objects.len();
             let new_total = current.saturating_add(additional);
             if new_total > max {
-                return Err(MemoryError::BudgetExceeded { limit: max, requested: new_total });
+                return Err(MemoryError::budget_exceeded());
             }
         }
 
@@ -270,15 +269,10 @@ impl<T: Poolable> ObjectPool<T> {
     }
 
     /// Get pool statistics
+    /// Note: This method is only available with the "stats" feature enabled
     #[cfg(feature = "stats")]
     pub fn stats(&self) -> &PoolStats {
         &self.stats
-    }
-
-    /// Get pool statistics (empty stats when feature is disabled)
-    #[cfg(not(feature = "stats"))]
-    pub fn stats(&self) -> PoolStats {
-        PoolStats::default()
     }
 
     /// Update memory statistics
@@ -373,13 +367,13 @@ impl<T: Poolable> Deref for PooledValue<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &self.value
+        &*self.value
     }
 }
 
 impl<T: Poolable> DerefMut for PooledValue<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.value
+        &mut *self.value
     }
 }
 
@@ -411,7 +405,7 @@ unsafe impl<T: Poolable + Send> Send for PooledValue<T> {}
 mod tests {
     use super::*;
 
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq)]
     struct TestObject {
         value: i32,
         resets: usize,
@@ -430,7 +424,7 @@ mod tests {
 
         // Get object
         let mut obj = pool.get().unwrap();
-        assert_eq!(*obj.value, 0); // Should be reset
+        assert_eq!(obj.value, 0); // Should be reset
         obj.value = 100;
 
         // Return happens on drop

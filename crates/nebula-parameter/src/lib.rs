@@ -1,5 +1,5 @@
-mod core;
-mod types;
+pub mod core;
+pub mod types;
 
 // Re-export core functionality
 pub use core::*;

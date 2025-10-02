@@ -13,7 +13,7 @@ use {alloc::string::String, core::time::Duration};
 #[cfg(feature = "std")]
 use std::time::Duration;
 
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Eviction policy for cache entries
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,47 +168,35 @@ impl CacheConfig {
     /// Validate the configuration
     pub fn validate(&self) -> MemoryResult<()> {
         if self.max_entries == 0 {
-            return Err(MemoryError::InvalidConfig {
-                reason: "max_entries must be greater than 0".to_string(),
-            });
+            return Err(MemoryError::invalid_config("configuration error"));
         }
 
         if !(0.1..=0.95).contains(&self.load_factor) {
-            return Err(MemoryError::InvalidConfig {
-                reason: "load_factor must be between 0.1 and 0.95".to_string(),
-            });
+            return Err(MemoryError::invalid_config("configuration error"));
         }
 
         #[cfg(feature = "std")]
         if let Some(ttl) = self.ttl {
             if ttl.as_nanos() == 0 {
-                return Err(MemoryError::InvalidConfig {
-                    reason: "TTL must be greater than 0".to_string(),
-                });
+                return Err(MemoryError::invalid_config("configuration error"));
             }
         }
 
         if let Some(initial) = self.initial_capacity {
             if initial > self.max_entries {
-                return Err(MemoryError::InvalidConfig {
-                    reason: "initial_capacity cannot exceed max_entries".to_string(),
-                });
+                return Err(MemoryError::invalid_config("configuration error"));
             }
         }
 
         #[cfg(feature = "std")]
         if let Some(cleanup_interval) = self.cleanup_interval {
             if cleanup_interval.as_nanos() == 0 {
-                return Err(MemoryError::InvalidConfig {
-                    reason: "cleanup_interval must be greater than 0".to_string(),
-                });
+                return Err(MemoryError::invalid_config("configuration error"));
             }
 
             if let Some(ttl) = self.ttl {
                 if cleanup_interval >= ttl {
-                    return Err(MemoryError::InvalidConfig {
-                        reason: "cleanup_interval should be less than TTL".to_string(),
-                    });
+                    return Err(MemoryError::invalid_config("configuration error"));
                 }
             }
         }
@@ -217,9 +205,7 @@ impl CacheConfig {
         match self.policy {
             EvictionPolicy::TTL => {
                 if self.ttl.is_none() {
-                    return Err(MemoryError::InvalidConfig {
-                        reason: "TTL eviction policy requires TTL to be set".to_string(),
-                    });
+                    return Err(MemoryError::invalid_config("configuration error"));
                 }
             }
             _ => {}

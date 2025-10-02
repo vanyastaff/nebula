@@ -14,22 +14,39 @@ readme = "README.md"
 categories = ["memory-management", "data-structures", "caching", "no-std"]
 
 [features]
-default = ["std"]
+# Default: Core functionality without stats/monitoring
+default = ["std", "pool", "arena", "cache", "budget", "logging"]
 
-# Core features
-std = ["once_cell", "parking_lot", "libc"]
+# Core runtime
+std = ["once_cell", "parking_lot", "libc", "chrono"]
 alloc = []
 
-# Memory management features
+# Major feature groups (простые, понятные)
 pool = ["std", "crossbeam-queue"]
 arena = ["std"]
-cache = ["std", "hashbrown"]
+cache = ["std", "hashbrown", "rand"]
 stats = ["std"]
-budget = ["stats"]
+budget = ["std"]
 streaming = ["alloc"]
+logging = ["std", "nebula-log"]
 
-# Full feature set
-full = ["std", "pool", "arena", "cache", "stats", "budget", "streaming"]
+# Platform optimization
+numa-aware = ["libc"]
+linux-optimizations = ["libc"]
+
+# Development/debugging (объединены)
+monitoring = ["std", "stats"]
+profiling = ["std", "stats"]
+adaptive = ["stats"]
+
+# Optional
+compression = ["lz4_flex"]
+async = ["std", "tokio", "futures-core", "futures"]
+nightly = []
+backtrace-feature = ["std", "backtrace"]
+
+# Convenience sets (для удобства пользователей)
+full = ["std", "pool", "arena", "cache", "stats", "budget", "streaming", "monitoring", "logging"]
 
 [dependencies]
 # Collections
@@ -38,15 +55,41 @@ hashbrown = { version = "0.15", optional = true, default-features = false }
 
 # Core dependencies
 cfg-if = "1.0"
+dyn-clone = "1.0"
+spin = "0.9"
+chrono = { version = "0.4", optional = true, default-features = false, features = ["clock"] }
+
+# No-std collections
+heapless = "0.8"
 
 # Platform-specific
 libc = { version = "0.2", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["memoryapi", "sysinfoapi", "libloaderapi"] }
+
+# Linux NUMA support is available through libc
 
 # Synchronization
 once_cell = { version = "1.21", optional = true }
 parking_lot = { version = "0.12", optional = true }
 
+# Async runtime (optional)
+tokio = { version = "1.0", optional = true, default-features = false, features = ["sync", "time"] }
+futures-core = { version = "0.3", optional = true, default-features = false }
+futures = { version = "0.3", optional = true, default-features = false, features = ["alloc"] }
+
+# Compression (optional)
+lz4_flex = { version = "0.11", optional = true, default-features = false }
+
+# Debug tools (optional)
+backtrace = { version = "0.3", optional = true }
+rand = { version = "0.8", optional = true }
+
 # Internal crates
+nebula-core = { path = "..\\nebula-core" }
+nebula-error = { path = "..\\nebula-error" }
+nebula-log = { path = "..\\nebula-log", optional = true }
 nebula-system = { path = "..\\nebula-system" }
 
 [dev-dependencies]

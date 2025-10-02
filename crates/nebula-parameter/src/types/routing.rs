@@ -208,7 +208,8 @@ impl HasValue for RoutingParameter {
         self.value.as_ref().map(|routing_val| ParameterValue::Routing(routing_val.clone()))
     }
 
-    fn set_parameter_value(&mut self, value: ParameterValue) -> Result<(), ParameterError> {
+    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+        let value = value.into();
         match value {
             ParameterValue::Routing(routing_value) => {
                 self.value = Some(routing_value);

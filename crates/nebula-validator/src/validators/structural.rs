@@ -1,6 +1,6 @@
 //! Structural validation operations using the unified validator macro
 
-use crate::{validator, validator_fn};
+use crate::{validator, validator_fn, ValueExt};
 
 // ==================== STRUCTURAL VALIDATORS ====================
 
@@ -75,7 +75,7 @@ validator! {
         fn check(value: &Value, allowed_keys: &Vec<String>) -> bool {
             {
                 if let Some(object) = value.as_object() {
-                    object.keys().iter().all(|key| allowed_keys.contains(key))
+                    object.keys().all(|key| allowed_keys.contains(key))
                 } else {
                     false
                 }

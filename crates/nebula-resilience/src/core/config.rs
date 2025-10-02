@@ -25,16 +25,19 @@ pub trait ResilienceConfig: Send + Sync + Serialize + for<'de> Deserialize<'de> 
 
     /// Convert to nebula-value for dynamic configuration
     fn to_value(&self) -> nebula_value::Value {
-        // Use serde_json as intermediate format for now
+        // Serialize to JSON then convert using TryFrom trait (idiomatic Rust)
         match serde_json::to_value(self) {
-            Ok(json_val) => nebula_value::Value::from(json_val),
-            Err(_) => nebula_value::Value::default()
+            Ok(json_val) => {
+                nebula_value::Value::try_from(json_val)
+                    .unwrap_or(nebula_value::Value::Null)
+            }
+            Err(_) => nebula_value::Value::Null
         }
     }
 
     /// Create from nebula-value
     fn from_value(value: &nebula_value::Value) -> ConfigResult<Self> where Self: Sized {
-        // Convert to serde_json::Value first, then deserialize
+        // Convert using From trait (idiomatic Rust), then deserialize
         let json_val: serde_json::Value = value.clone().into();
         serde_json::from_value(json_val)
             .map_err(|e| ConfigError::validation(format!("Failed to deserialize config: {}", e)))

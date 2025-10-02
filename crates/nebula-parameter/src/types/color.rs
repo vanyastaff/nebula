@@ -106,14 +106,15 @@ impl HasValue for ColorParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|s| ParameterValue::Value(nebula_value::Value::String(s.clone().into())))
+        self.value.as_ref().map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
     }
 
-    fn set_parameter_value(&mut self, value: ParameterValue) -> Result<(), ParameterError> {
+    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+        let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::String(s)) => {
+            ParameterValue::Value(nebula_value::Value::Text(s)) => {
                 // Validate color format
-                if self.is_valid_color(&s.to_string()) {
+                if self.is_valid_color(s.as_str()) {
                     self.value = Some(s.to_string());
                     Ok(())
                 } else {

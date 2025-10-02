@@ -45,7 +45,7 @@ pub struct WindowStats {
 pub struct MemoryTracker {
     config: TrackingConfig,
     history: RwLock<VecDeque<MemoryMetrics>>,
-    metric_history: RwLock<hashbrown::HashMap<TrackedMetric, VecDeque<DataPoint>>>,
+    metric_history: RwLock<std::collections::HashMap<TrackedMetric, VecDeque<DataPoint>>>,
     last_sample: RwLock<Instant>,
 }
 
@@ -53,7 +53,7 @@ pub struct MemoryTracker {
 impl MemoryTracker {
     /// Create new memory tracker
     pub fn new(config: TrackingConfig) -> Self {
-        let mut metric_history = hashbrown::HashMap::new();
+        let mut metric_history = std::collections::HashMap::new();
         let max_history = config.max_history;
 
         // Initialize history for each tracked metric
@@ -102,7 +102,7 @@ impl MemoryTracker {
                     TrackedMetric::Custom(_) => 0.0, // Placeholder for custom metrics
                 };
 
-                if let Some(history) = metric_history.get_mut(&metric_type) {
+                if let Some(history) = (*metric_history).get_mut(&metric_type) {
                     if history.len() >= self.config.max_history && self.config.max_history > 0 {
                         history.pop_front();
                     }
@@ -134,8 +134,8 @@ impl MemoryTracker {
 
     /// Get history for a specific metric
     pub fn get_metric_history(&self, metric: TrackedMetric) -> Vec<DataPoint> {
-        self.metric_history
-            .read()
+        let guard = self.metric_history.read();
+        (*guard)
             .get(&metric)
             .map(|deque| deque.iter().cloned().collect())
             .unwrap_or_default()

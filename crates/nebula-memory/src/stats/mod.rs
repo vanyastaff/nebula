@@ -1,9 +1,8 @@
-//! Statistics and monitoring for memory management
+#![cfg_attr(not(feature = "std"), no_std)]
 //!
+//! Statistics and monitoring for memory management
 //! This module provides comprehensive memory statistics collection,
 //! tracking, and analysis capabilities with minimal overhead.
-
-#![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
@@ -12,6 +11,13 @@ extern crate alloc;
 pub mod config;
 pub mod counter;
 pub mod memory_stats;
+
+// Collection and global stats (always available)
+pub mod collector;
+
+// Export formats
+#[cfg(feature = "stats")]
+pub mod export;
 
 // Historical tracking
 #[cfg(feature = "stats")]
@@ -44,11 +50,18 @@ pub mod profiler;
 // Re-exports for convenience
 #[cfg(all(feature = "stats", feature = "std"))]
 pub use aggregator::{AggregatedStats, Aggregator, HistoricalMetricsSummary};
+pub use collector::GlobalStats;
+#[cfg(all(feature = "stats", feature = "std"))]
+pub use collector::StatsCollector;
+#[cfg(feature = "stats")]
+pub use collector::HistogramStats;
 pub use config::{
     AlertConfig, HistogramConfig, MonitoringConfig, PerformanceImpact, StatsConfig, TrackedMetric,
     TrackingConfig, TrackingLevel,
 };
 pub use counter::{Counter, CounterType};
+#[cfg(feature = "stats")]
+pub use export::{ExportFormat, StatsExporter};
 #[cfg(feature = "stats")]
 pub use histogram::{HistogramData, MemoryHistogram, Percentile};
 pub use memory_stats::{MemoryMetrics, MemoryStats};
@@ -64,10 +77,10 @@ pub use snapshot::{MemorySnapshot, SnapshotDiff, SnapshotFormat};
 pub use tracker::{DataPoint, MemoryTracker, WindowStats};
 
 /// Initialize global statistics system
-pub fn initialize(config: StatsConfig) -> crate::error::MemoryResult<()> {
+pub fn initialize(config: StatsConfig) -> crate::core::error::MemoryResult<()> {
     config
         .validate()
-        .map_err(|e| crate::error::MemoryError::InvalidConfig { reason: e.to_string() })?;
+        .map_err(|e| crate::core::error::MemoryError::invalid_config("invalid config"))?;
     // Initialize any global state if needed
     Ok(())
 }
@@ -86,3 +99,5 @@ mod tests {
         let _stats = MemoryStats::default();
     }
 }
+
+

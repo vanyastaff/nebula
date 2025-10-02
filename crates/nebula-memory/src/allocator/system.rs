@@ -15,7 +15,7 @@ use std::alloc::System;
 compile_error!("SystemAllocator requires either 'std' or 'alloc' feature to be enabled");
 
 use super::{
-    AllocError, AllocErrorKind, AllocResult, Allocator, BulkAllocator, MemoryUsage,
+    AllocError, AllocErrorCode, AllocResult, Allocator, BulkAllocator, MemoryUsage,
     ThreadSafeAllocator,
 };
 
@@ -75,11 +75,7 @@ unsafe impl Allocator for SystemAllocator {
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
         if layout.size() == 0 {
             // Handle zero-sized allocations by returning a well-aligned dangling pointer
-            #[cfg(feature = "nightly")]
-            let ptr = layout.dangling();
-            #[cfg(not(feature = "nightly"))]
             let ptr = NonNull::<u8>::dangling();
-
             return Ok(NonNull::slice_from_raw_parts(ptr, 0));
         }
 
@@ -87,7 +83,7 @@ unsafe impl Allocator for SystemAllocator {
         let ptr = unsafe { System.alloc(layout) };
 
         if ptr.is_null() {
-            Err(AllocError::with_kind_and_layout(AllocErrorKind::OutOfMemory, layout))
+            Err(AllocError::with_layout(AllocErrorCode::OutOfMemory, layout))
         } else {
             let non_null = unsafe { NonNull::new_unchecked(ptr) };
             Ok(NonNull::slice_from_raw_parts(non_null, layout.size()))

@@ -9,8 +9,10 @@ use std::collections::VecDeque;
 #[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 
-use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, PoolStats, Poolable};
-use crate::error::{MemoryError, MemoryResult};
+use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
+#[cfg(feature = "stats")]
+use super::PoolStats;
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Object pool with time-to-live for pooled objects
 ///
@@ -157,10 +159,7 @@ impl<T: Poolable> TtlPool<T> {
                 let created = 0;
 
                 if created >= max {
-                    return Err(MemoryError::PoolExhausted {
-                        type_name: std::any::type_name::<T>(),
-                        pool_size: max
-                    });
+                    return Err(MemoryError::pool_exhausted());
                 }
             }
 
@@ -306,7 +305,7 @@ mod tests {
 
     use super::*;
 
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq)]
     struct TestObject {
         value: i32,
     }
@@ -348,7 +347,7 @@ mod tests {
 
         // Should get newest object first (LIFO within TTL)
         let obj = pool.get().unwrap();
-        assert_eq!(*obj.value, 0); // Reset value
+        assert_eq!(obj.value, 0); // Reset value
 
         // Age should be minimal for newest
         assert!(pool.oldest_age().unwrap() >= Duration::from_millis(10));

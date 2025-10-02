@@ -1,53 +1,53 @@
-//! High-performance arena allocation module for nebula-memory
 //!
-//! This module provides various arena allocators optimized for different use
-//! cases:
 //!
-//! # Arena Types
 //!
-//! - [`Arena`]: Basic single-threaded bump allocator for general use
-//! - [`TypedArena<T>`]: Type-safe arena for homogeneous allocations
-//! - [`ThreadSafeArena`]: Lock-free arena with atomic operations for concurrent
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!     *value
+//!     let value = arena_clone.alloc(100).unwrap();
 //!   access
-//! - [`LocalArena`]: Thread-local arena for maximum performance
-//! - [`CrossThreadArena`]: Arena that can be moved between threads (exclusive
 //!   access)
-//! - [`CompressedArena`]: Arena with transparent compression support
-//! - [`StreamingArena`]: Arena optimized for streaming/sequential allocation
 //!   patterns
-//!
+//! # Arena Types
 //! # Examples
-//!
+//! - [`Arena`]: Basic single-threaded bump allocator for general use
+//! - [`CompressedArena`]: Arena with transparent compression support
+//! - [`CrossThreadArena`]: Arena that can be moved between threads (exclusive
+//! - [`LocalArena`]: Thread-local arena for maximum performance
+//! - [`StreamingArena`]: Arena optimized for streaming/sequential allocation
+//! - [`ThreadSafeArena`]: Lock-free arena with atomic operations for concurrent
+//! - [`TypedArena<T>`]: Type-safe arena for homogeneous allocations
 //! Basic usage:
-//! ```rust
-//! use nebula_memory::arena::{Arena, ArenaConfig};
-//!
-//! let arena = Arena::new(ArenaConfig::default());
-//! let value = arena.alloc(42).unwrap();
-//! assert_eq!(*value, 42);
-//! ```
-//!
+//! High-performance arena allocation module for nebula-memory
+//! This module provides various arena allocators optimized for different use
 //! Thread-safe usage:
+//! ```
+//! ```
 //! ```rust
+//! ```rust
+//! assert_eq!(*value, 42);
+//! assert_eq!(handle.join().unwrap(), 100);
+//! cases:
+//! let arena = Arc::new(ThreadSafeArena::new(ArenaConfig::default()));
+//! let arena = Arena::new(ArenaConfig::default());
+//! let arena_clone = Arc::clone(&arena);
+//! let handle = thread::spawn(move || {
+//! let value = arena.alloc(42).unwrap();
+//! use nebula_memory::arena::{Arena, ArenaConfig};
+//! use nebula_memory::arena::{ArenaConfig, ThreadSafeArena};
 //! use std::sync::Arc;
 //! use std::thread;
-//!
-//! use nebula_memory::arena::{ArenaConfig, ThreadSafeArena};
-//!
-//! let arena = Arc::new(ThreadSafeArena::new(ArenaConfig::default()));
-//! let arena_clone = Arc::clone(&arena);
-//!
-//! let handle = thread::spawn(move || {
-//!     let value = arena_clone.alloc(100).unwrap();
-//!     *value
 //! });
-//!
-//! assert_eq!(handle.join().unwrap(), 100);
-//! ```
-
+pub mod scope;
 use std::alloc::Layout;
 
-use crate::error::MemoryError;
+use crate::core::error::MemoryError;
 
 // Core arena implementations
 mod allocator;
@@ -83,6 +83,7 @@ pub use self::local::{
     alloc_local, local_arena, reset_local_arena, with_local_arena, with_local_arena_mut,
     LocalArena, LocalRef, LocalRefMut,
 };
+pub use self::scope::ArenaScope;
 pub use self::stats::{ArenaStats, ArenaStatsSnapshot};
 #[cfg(feature = "streaming")]
 pub use self::streaming::{StreamCheckpoint, StreamOptions, StreamingArena, StreamingArenaRef};
@@ -210,20 +211,95 @@ impl ArenaConfig {
         }
     }
 
-    /// Creates config from global memory configuration
-    pub fn from_memory_config(config: &crate::config::MemoryConfig) -> Self {
+    /// Production configuration - optimized for maximum performance
+    pub fn production() -> Self {
         Self {
-            initial_size: config.default_arena_config.chunk_size,
-            growth_factor: config.default_arena_config.growth_factor as f64,
-            max_chunk_size: config.default_arena_config.max_chunk_size,
-            track_stats: config.enable_tracking,
-            zero_memory: false, // Not directly mapped from current config
-            default_alignment: config.platform_optimizations.cache_line_size.min(8),
+            initial_size: 64 * 1024, // 64KB - larger initial size
+            growth_factor: 1.5,      // Slower growth to reduce fragmentation
+            max_chunk_size: 256 * 1024 * 1024, // 256MB
+            track_stats: false,      // No stats overhead
+            zero_memory: false,      // No zeroing overhead
+            default_alignment: 16,   // Cache-line friendly
             #[cfg(feature = "numa-aware")]
-            numa_aware: config.platform_optimizations.numa_aware,
+            numa_aware: true,
             #[cfg(feature = "numa-aware")]
-            numa_node: config.platform_optimizations.preferred_numa_node,
+            numa_node: -1,          // Auto-select
         }
+    }
+
+    /// Debug configuration - optimized for debugging and error detection
+    pub fn debug() -> Self {
+        Self {
+            initial_size: 4096,     // 4KB - small chunks for catching errors
+            growth_factor: 2.0,     // Standard growth
+            max_chunk_size: 16 * 1024 * 1024, // 16MB
+            track_stats: true,      // Full statistics
+            zero_memory: true,      // Zero for detecting use-after-free
+            default_alignment: 8,
+            #[cfg(feature = "numa-aware")]
+            numa_aware: false,
+            #[cfg(feature = "numa-aware")]
+            numa_node: -1,
+        }
+    }
+
+    /// Performance configuration (alias for production)
+    pub fn performance() -> Self {
+        Self::production()
+    }
+
+    /// Conservative configuration - balanced between performance and safety
+    pub fn conservative() -> Self {
+        Self {
+            initial_size: 16 * 1024, // 16KB
+            growth_factor: 1.8,
+            max_chunk_size: 64 * 1024 * 1024, // 64MB
+            track_stats: true,
+            zero_memory: false,
+            default_alignment: 16,
+            #[cfg(feature = "numa-aware")]
+            numa_aware: false,
+            #[cfg(feature = "numa-aware")]
+            numa_node: -1,
+        }
+    }
+
+    /// Small objects configuration - for frequent small allocations
+    pub fn small_objects() -> Self {
+        Self {
+            initial_size: 8 * 1024,  // 8KB
+            growth_factor: 2.0,      // Fast growth
+            max_chunk_size: 32 * 1024 * 1024, // 32MB
+            track_stats: false,
+            zero_memory: false,
+            default_alignment: 8,
+            #[cfg(feature = "numa-aware")]
+            numa_aware: false,
+            #[cfg(feature = "numa-aware")]
+            numa_node: -1,
+        }
+    }
+
+    /// Large objects configuration - for infrequent large allocations
+    pub fn large_objects() -> Self {
+        Self {
+            initial_size: 256 * 1024, // 256KB
+            growth_factor: 1.3,       // Slow growth
+            max_chunk_size: 512 * 1024 * 1024, // 512MB
+            track_stats: true,
+            zero_memory: false,
+            default_alignment: 64,    // Page-aligned
+            #[cfg(feature = "numa-aware")]
+            numa_aware: true,
+            #[cfg(feature = "numa-aware")]
+            numa_node: -1,
+        }
+    }
+
+    /// Creates config from global memory configuration
+    pub fn from_memory_config(_config: &crate::core::config::MemoryConfig) -> Self {
+        // TODO: Proper mapping between core::config::ArenaConfig and arena::ArenaConfig
+        Self::default()
     }
 
     /// Sets initial chunk size
@@ -281,25 +357,19 @@ impl ArenaConfig {
     /// Validates the configuration
     pub fn validate(&self) -> Result<(), MemoryError> {
         if self.initial_size == 0 {
-            return Err(MemoryError::InvalidLayout {
-                reason: "Initial size must be greater than 0",
-            });
+            return Err(MemoryError::invalid_config("Initial size must be greater than 0"));
         }
 
         if self.growth_factor < 1.0 {
-            return Err(MemoryError::InvalidLayout { reason: "Growth factor must be >= 1.0" });
+            return Err(MemoryError::invalid_config("Growth factor must be >= 1.0"));
         }
 
         if !self.default_alignment.is_power_of_two() {
-            return Err(MemoryError::InvalidLayout {
-                reason: "Default alignment must be power of 2",
-            });
+            return Err(MemoryError::invalid_config("Default alignment must be power of 2"));
         }
 
         if self.max_chunk_size < self.initial_size {
-            return Err(MemoryError::InvalidLayout {
-                reason: "Max chunk size must be >= initial size",
-            });
+            return Err(MemoryError::invalid_config("Max chunk size must be >= initial size"));
         }
 
         Ok(())
@@ -512,3 +582,4 @@ mod tests {
         assert_eq!(config.numa_node, 0);
     }
 }
+

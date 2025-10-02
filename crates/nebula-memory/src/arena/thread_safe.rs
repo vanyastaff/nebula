@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use super::{ArenaAllocate, ArenaConfig, ArenaStats};
-use crate::error::MemoryError;
+use crate::core::error::MemoryError;
 use crate::utils::align_up;
 
 /// Thread-safe memory chunk with atomic bump pointer
@@ -22,14 +22,12 @@ impl ThreadSafeChunk {
     /// Creates a new chunk with specified size (minimum 64 bytes)
     fn new(size: usize) -> Result<Self, MemoryError> {
         let size = size.max(64); // Minimum chunk size to reduce overhead
-        let layout = Layout::from_size_align(size, 1).map_err(|_| MemoryError::InvalidLayout {
-            reason: "invalid layout in ThreadSafeChunk::new",
-        })?;
+        let layout = Layout::from_size_align(size, 1).map_err(|_| MemoryError::invalid_layout())?;
 
         // Safety: Layout is non-zero and properly aligned
         let ptr = unsafe { alloc(layout) };
         let ptr =
-            NonNull::new(ptr).ok_or(MemoryError::OutOfMemory { requested: size, available: 0 })?;
+            NonNull::new(ptr).ok_or_else(|| MemoryError::out_of_memory(size, 0))?;
 
         Ok(Self { ptr, capacity: size, used: AtomicUsize::new(0) })
     }
@@ -92,6 +90,46 @@ impl ThreadSafeArena {
         }
     }
 
+    /// Creates arena with production config - optimized for performance
+    pub fn production(capacity: usize) -> Self {
+        Self::new(ArenaConfig::production().with_initial_size(capacity))
+    }
+
+    /// Creates arena with debug config - optimized for debugging
+    pub fn debug(capacity: usize) -> Self {
+        Self::new(ArenaConfig::debug().with_initial_size(capacity))
+    }
+
+    /// Creates arena with performance config (alias for production)
+    pub fn performance(capacity: usize) -> Self {
+        Self::production(capacity)
+    }
+
+    /// Creates arena with conservative config - balanced
+    pub fn conservative(capacity: usize) -> Self {
+        Self::new(ArenaConfig::conservative().with_initial_size(capacity))
+    }
+
+    /// Creates a tiny thread-safe arena (4KB)
+    pub fn tiny() -> Self {
+        Self::new(ArenaConfig::small_objects().with_initial_size(4 * 1024))
+    }
+
+    /// Creates a small thread-safe arena (64KB)
+    pub fn small() -> Self {
+        Self::new(ArenaConfig::default().with_initial_size(64 * 1024))
+    }
+
+    /// Creates a medium thread-safe arena (1MB)
+    pub fn medium() -> Self {
+        Self::new(ArenaConfig::default().with_initial_size(1024 * 1024))
+    }
+
+    /// Creates a large thread-safe arena (16MB)
+    pub fn large() -> Self {
+        Self::new(ArenaConfig::large_objects().with_initial_size(16 * 1024 * 1024))
+    }
+
     /// Allocates a new chunk when needed
     fn allocate_chunk(&self, min_size: usize) -> Result<(), MemoryError> {
         let _lock = self.chunk_mutex.lock().unwrap();
@@ -117,7 +155,7 @@ impl ThreadSafeArena {
         drop(chunks);
 
         // Create and initialize new chunk
-        let mut chunk = ThreadSafeChunk::new(chunk_size)?;
+        let chunk = ThreadSafeChunk::new(chunk_size)?;
         if self.config.zero_memory {
             unsafe {
                 ptr::write_bytes(chunk.ptr.as_ptr(), 0, chunk_size);
@@ -145,7 +183,7 @@ impl ThreadSafeArena {
     /// Allocates aligned memory block (thread-safe)
     pub fn alloc_bytes_aligned(&self, size: usize, align: usize) -> Result<*mut u8, MemoryError> {
         if !align.is_power_of_two() {
-            return Err(MemoryError::InvalidAlignment { required: align, actual: 0 });
+            return Err(MemoryError::invalid_alignment(align, 0));
         }
 
         let start_time = self.config.track_stats.then(Instant::now);
@@ -168,7 +206,7 @@ impl ThreadSafeArena {
         // Try again with new chunk
         let current = self.current_chunk.load(Ordering::Acquire);
         let chunk = unsafe { &*current };
-        chunk.try_alloc(size, align).ok_or(MemoryError::AllocationFailed).map(|ptr| {
+        chunk.try_alloc(size, align).ok_or(MemoryError::allocation_failed()).map(|ptr| {
             if let Some(start) = start_time {
                 self.stats.record_allocation(size, start.elapsed().as_nanos() as u64);
             }
@@ -301,7 +339,7 @@ mod tests {
             let arena = Arc::clone(&arena);
             handles.push(thread::spawn(move || {
                 let val = arena.alloc(i).unwrap();
-                assert_eq!(**val, i);
+                assert_eq!(*val, i);
             }));
         }
 
@@ -340,6 +378,6 @@ mod tests {
     fn string_allocation() {
         let arena = ThreadSafeArena::new(ArenaConfig::default());
         let s = arena.alloc_str("test").unwrap();
-        assert_eq!(*s, "test");
+        assert_eq!(s, "test");
     }
 }

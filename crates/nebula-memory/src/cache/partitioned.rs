@@ -10,10 +10,9 @@ extern crate alloc;
 
 #[cfg(feature = "std")]
 use std::{
-    collections::HashMap,
     hash::{Hash, Hasher},
     sync::{Arc, RwLock},
-    time::{Duration, Instant},
+    time::Instant,
     thread,
 };
 
@@ -25,9 +24,9 @@ use {
     spin::RwLock,
 };
 
-use super::compute::{CacheEntry, CacheKey, CacheResult, ComputeCache};
-use super::config::{CacheConfig, CacheMetrics, EvictionPolicy};
-use crate::error::{MemoryError, MemoryResult};
+use super::compute::{CacheKey, CacheResult, ComputeCache};
+use super::config::{CacheConfig, CacheMetrics};
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Hash function strategy for partitioning
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -146,15 +145,11 @@ impl PartitionedConfig {
         self.cache_config.validate()?;
 
         if self.partition_count == 0 {
-            return Err(MemoryError::InvalidConfig {
-                reason: "partition_count must be greater than 0".to_string(),
-            });
+            return Err(MemoryError::invalid_config("configuration error"));
         }
 
         if !(0.1..=1.0).contains(&self.rebalance_threshold) {
-            return Err(MemoryError::InvalidConfig {
-                reason: "rebalance_threshold must be between 0.1 and 1.0".to_string(),
-            });
+            return Err(MemoryError::invalid_config("configuration error"));
         }
 
         Ok(())
@@ -384,7 +379,7 @@ where
 
         // Try read lock first for cache hit
         {
-            let mut cache = partition.read().unwrap();
+            let mut cache = partition.write().unwrap();
             if let Some(value) = cache.get(&key) {
                 #[cfg(feature = "std")]
                 if self.config.partition_metrics {
@@ -432,7 +427,7 @@ where
         let partition_idx = self.get_partition_index(key);
         let partition = &self.partitions[partition_idx];
 
-        let mut cache = partition.read().unwrap();
+        let mut cache = partition.write().unwrap();
         let result = cache.get(key);
 
         #[cfg(feature = "std")]
@@ -499,8 +494,7 @@ where
     {
         keys.into_iter()
             .map(|key| {
-                let key_ref = &key;
-                self.get_or_compute(key, || compute_fn(key_ref))
+                self.get_or_compute(key.clone(), || compute_fn(&key))
             })
             .collect()
     }
@@ -943,7 +937,7 @@ mod tests {
 
         // Error should be propagated
         let result = cache.get_or_compute("error".to_string(), || {
-            Err(MemoryError::AllocationFailed)
+            Err(MemoryError::allocation_failed())
         });
 
         assert!(result.is_err());

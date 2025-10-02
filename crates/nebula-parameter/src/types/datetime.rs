@@ -116,12 +116,13 @@ impl HasValue for DateTimeParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value.as_ref().map(|s| ParameterValue::Value(nebula_value::Value::String(s.clone().into())))
+        self.value.as_ref().map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
     }
 
-    fn set_parameter_value(&mut self, value: ParameterValue) -> Result<(), ParameterError> {
+    fn set_parameter_value(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+        let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::String(s)) => {
+            ParameterValue::Value(nebula_value::Value::Text(s)) => {
                 let datetime_string = s.to_string();
                 // Validate datetime format and range
                 if self.is_valid_datetime(&datetime_string) {

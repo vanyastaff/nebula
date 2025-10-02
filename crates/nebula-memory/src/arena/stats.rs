@@ -3,7 +3,6 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::error::MemoryResult;
 
 /// Statistics for arena allocators
 #[derive(Debug)]

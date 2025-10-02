@@ -6,7 +6,7 @@ use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
 use super::ArenaStats;
-use crate::error::MemoryError;
+use crate::core::error::MemoryError;
 
 /// Capacity of each chunk in number of elements
 const DEFAULT_CHUNK_CAPACITY: usize = 64;
@@ -61,9 +61,44 @@ impl<T> TypedArena<T> {
 
     /// Create a new typed arena with initial capacity
     pub fn with_capacity(capacity: usize) -> Self {
-        let mut arena = Self::new();
+        let arena = Self::new();
         arena.chunk_capacity.set(capacity);
         arena
+    }
+
+    /// Creates typed arena optimized for production (capacity = 256 elements)
+    pub fn production() -> Self {
+        Self::with_capacity(256)
+    }
+
+    /// Creates typed arena optimized for debugging (capacity = 16 elements)
+    pub fn debug() -> Self {
+        Self::with_capacity(16)
+    }
+
+    /// Creates typed arena with performance config (alias for production)
+    pub fn performance() -> Self {
+        Self::production()
+    }
+
+    /// Creates a tiny typed arena (4 elements)
+    pub fn tiny() -> Self {
+        Self::with_capacity(4)
+    }
+
+    /// Creates a small typed arena (32 elements)
+    pub fn small() -> Self {
+        Self::with_capacity(32)
+    }
+
+    /// Creates a medium typed arena (128 elements)
+    pub fn medium() -> Self {
+        Self::with_capacity(128)
+    }
+
+    /// Creates a large typed arena (1024 elements)
+    pub fn large() -> Self {
+        Self::with_capacity(1024)
     }
 
     /// Allocate a new chunk

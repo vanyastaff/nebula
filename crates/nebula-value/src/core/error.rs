@@ -15,6 +15,9 @@ pub trait ValueErrorExt {
     /// Create a value type mismatch error
     fn value_type_mismatch(expected: impl Into<String>, actual: impl Into<String>) -> Self;
 
+    /// Create a value limit exceeded error
+    fn value_limit_exceeded(limit: &str, max: usize, actual: usize) -> Self;
+
     /// Create a value conversion error
     fn value_conversion_error(from: impl Into<String>, to: impl Into<String>) -> Self;
 
@@ -32,12 +35,39 @@ pub trait ValueErrorExt {
 
     /// Create a value operation not supported error
     fn value_operation_not_supported(operation: impl Into<String>, value_type: impl Into<String>) -> Self;
+
+    /// Create a numeric overflow error
+    fn value_overflow(operation: impl Into<String>, value: impl Into<String>) -> Self;
+
+    /// Create a feature not enabled error
+    fn value_feature_not_enabled(feature: impl Into<String>, operation: impl Into<String>) -> Self;
+
+    /// Create a format error with detailed context
+    fn value_format_error(format_type: impl Into<String>, input: impl Into<String>, position: Option<usize>) -> Self;
+
+    /// Create a value range error
+    fn value_out_of_range(value: impl Into<String>, min: impl Into<String>, max: impl Into<String>) -> Self;
+
+    /// Create an error with path context
+    fn value_error_at_path(base_error: Self, path: impl Into<String>) -> Self;
+
+    /// Create an error with object key context
+    fn value_error_at_key(base_error: Self, key: impl Into<String>) -> Self;
+
+    /// Create an error with array index context
+    fn value_error_at_index(base_error: Self, index: usize) -> Self;
 }
 
 impl ValueErrorExt for NebulaError {
     /// Create a value type mismatch error
     fn value_type_mismatch(expected: impl Into<String>, actual: impl Into<String>) -> Self {
         Self::validation(format!("Type mismatch: expected {}, got {}", expected.into(), actual.into()))
+    }
+
+    /// Create a value limit exceeded error
+    fn value_limit_exceeded(limit: &str, max: usize, actual: usize) -> Self {
+        Self::validation(format!("{} exceeded: {} > {} (limit: {}, max: {}, actual: {})",
+            limit, actual, max, limit, max, actual))
     }
 
     /// Create a value conversion error
@@ -69,6 +99,45 @@ impl ValueErrorExt for NebulaError {
     /// Create a value operation not supported error
     fn value_operation_not_supported(operation: impl Into<String>, value_type: impl Into<String>) -> Self {
         Self::validation(format!("Operation '{}' not supported for {}", operation.into(), value_type.into()))
+    }
+
+    /// Create a numeric overflow error
+    fn value_overflow(operation: impl Into<String>, value: impl Into<String>) -> Self {
+        Self::validation(format!("Numeric overflow in {}: value {}", operation.into(), value.into()))
+    }
+
+    /// Create a feature not enabled error
+    fn value_feature_not_enabled(feature: impl Into<String>, operation: impl Into<String>) -> Self {
+        Self::validation(format!("Feature '{}' not enabled for operation: {}", feature.into(), operation.into()))
+    }
+
+    /// Create a format error with detailed context
+    fn value_format_error(format_type: impl Into<String>, input: impl Into<String>, position: Option<usize>) -> Self {
+        let base_msg = format!("Invalid {} format: {}", format_type.into(), input.into());
+        match position {
+            Some(pos) => Self::validation(format!("{} (at position {})", base_msg, pos)),
+            None => Self::validation(base_msg),
+        }
+    }
+
+    /// Create a value range error
+    fn value_out_of_range(value: impl Into<String>, min: impl Into<String>, max: impl Into<String>) -> Self {
+        Self::validation(format!("Value {} out of range [{}, {}]", value.into(), min.into(), max.into()))
+    }
+
+    /// Create an error with path context
+    fn value_error_at_path(base_error: Self, path: impl Into<String>) -> Self {
+        base_error.with_details(format!("at path: {}", path.into()))
+    }
+
+    /// Create an error with object key context
+    fn value_error_at_key(base_error: Self, key: impl Into<String>) -> Self {
+        base_error.with_details(format!("at key: '{}'", key.into()))
+    }
+
+    /// Create an error with array index context
+    fn value_error_at_index(base_error: Self, index: usize) -> Self {
+        base_error.with_details(format!("at index: {}", index))
     }
 }
 
@@ -118,6 +187,15 @@ mod tests {
         let error = NebulaError::value_operation_not_supported("add", "boolean");
         assert!(error.is_client_error());
         assert_eq!(error.error_code(), "VALIDATION_ERROR");
+    }
+
+    #[test]
+    fn test_value_limit_exceeded() {
+        let error = NebulaError::value_limit_exceeded("max_array_length", 1000, 1500);
+        assert!(error.is_client_error());
+        assert!(error.to_string().contains("exceeded"));
+        assert!(error.to_string().contains("1000"));
+        assert!(error.to_string().contains("1500"));
     }
 
     #[test]

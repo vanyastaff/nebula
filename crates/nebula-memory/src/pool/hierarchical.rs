@@ -11,8 +11,10 @@ use core::ops::{Deref, DerefMut};
 #[cfg(feature = "std")]
 use std::sync::{Arc, Mutex, Weak};
 
-use super::{NoOpCallbacks, ObjectPool, PoolCallbacks, PoolConfig, PoolStats, Poolable};
-use crate::error::{MemoryError, MemoryResult};
+use super::{ObjectPool, PoolConfig, Poolable};
+#[cfg(feature = "stats")]
+use super::PoolStats;
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Hierarchical pool supporting parent-child relationships
 ///
@@ -136,10 +138,7 @@ impl<T: Poolable> HierarchicalPool<T> {
             });
         }
 
-        Err(MemoryError::PoolExhausted {
-            type_name: std::any::type_name::<T>(),
-            pool_size: 0 // Используем 0, так как здесь нет конкретного размера пула
-        })
+        Err(MemoryError::pool_exhausted())
     }
 
     /// Return object to pool
@@ -160,6 +159,7 @@ impl<T: Poolable> HierarchicalPool<T> {
     }
 
     /// Get statistics for entire hierarchy
+    #[cfg(feature = "stats")]
     pub fn hierarchy_stats(&self) -> HierarchyStats {
         // Получаем ссылку на stats для преобразования
         let stats = self.local.stats();
@@ -207,6 +207,7 @@ pub struct PoolStatsSnapshot {
     pub hit_rate: f64,
 }
 
+#[cfg(feature = "stats")]
 impl From<&PoolStats> for PoolStatsSnapshot {
     fn from(_stats: &PoolStats) -> Self {
         Self {
@@ -217,6 +218,7 @@ impl From<&PoolStats> for PoolStatsSnapshot {
     }
 }
 
+#[cfg(feature = "stats")]
 impl From<PoolStats> for PoolStatsSnapshot {
     fn from(stats: PoolStats) -> Self {
         Self::from(&stats)
@@ -293,7 +295,7 @@ impl<T: Poolable + 'static> HierarchicalPoolExt<T> for Arc<Mutex<HierarchicalPoo
 mod tests {
     use super::*;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq)]
     struct TestObject {
         value: i32,
     }
@@ -322,7 +324,7 @@ mod tests {
         {
             let mut parent_guard = parent.lock().unwrap();
             let obj = parent_guard.get().unwrap();
-            assert_eq!(*obj.value, 0); // Reset
+            assert_eq!(obj.value, 0); // Reset
             assert!(!obj.is_borrowed());
         }
 

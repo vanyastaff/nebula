@@ -6,7 +6,7 @@ use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
 use super::{Arena, ArenaAllocate, ArenaConfig};
-use crate::error::MemoryError;
+use crate::core::error::MemoryError;
 
 thread_local! {
     static LOCAL_ARENA: RefCell<LocalArena> = RefCell::new(LocalArena::new());

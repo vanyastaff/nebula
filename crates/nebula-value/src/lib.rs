@@ -1,81 +1,45 @@
-//!
-//! Nebula Value
-//! ==================
-//!
-//! A lightweight, fast, and expressive value model used across the Nebula ecosystem.
-//! It provides a dynamically typed [`Value`] with a precise [`ValueKind`], rich
-//! error types, and utilities for conversion, inspection, and manipulation.
-//! The crate is designed to be `no_std` friendly and integrates well with other
-//! Nebula crates.
-//!
-//! ## Features
-//! - Unified [`Value`] enum with support for:
-//!   - Primitive types: booleans, text, bytes
-//!   - Numeric types: integers, floats, decimals (optional)
-//!   - Collection types: arrays, objects
-//!   - Temporal types: dates, times, datetimes, durations
-//! - [`ValueKind`] helpers for type classification and compatibility checks
-//! - Comprehensive error types in [`core::error`]
-//! - Path-based navigation for nested values
-//! - Optional features for extended functionality
-//!
-//! ## Quick start
-//! ```rust
-//! use nebula_value::{Value, ValueKind, NebulaError, ValueResult};
-//!
-//! let v = Value::from(42);
-//! assert_eq!(ValueKind::from_value(&v), ValueKind::Integer);
-//!
-//! // Type-aware operations
-//! assert!(ValueKind::Integer.is_numeric());
-//! assert_eq!(ValueKind::Integer.code(), 'i');
-//!
-//! // Error handling with NebulaError
-//! fn parse_value(input: &str) -> ValueResult<Value> {
-//!     if input.is_empty() {
-//!         return Err(NebulaError::validation("Input cannot be empty"));
-//!     }
-//!     Ok(Value::from(input))
-//! }
-//! ```
-//!
-//! ## Working with collections
-//! ```rust
-//! use nebula_value::{Value, Array, Object};
-//!
-//! // Arrays
-//! let arr = Value::Array(Array::from(vec![Value::from(1), Value::from(2)]));
-//!
-//! // Objects
-//! let mut obj = Object::new();
-//! obj.insert("key".to_string(), Value::from("value"));
-//! let obj_val = Value::Object(obj);
-//! ```
-//!
-//! See the [`core`] and [`types`] modules for more details.
-#![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(missing_docs)]
-#![warn(clippy::all)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(feature = "std"), no_std)]
+#![warn(clippy::all)]
 extern crate alloc;
-
 pub mod core;
-pub mod types;
-
+pub mod scalar;
+pub mod collections;
+#[cfg(feature = "temporal")]
+pub mod temporal;
+pub mod validation;
 // Re-export core types
 pub use core::{
     error::{ValueResult, ValueErrorExt, ValueResultExt},
-    kind::{TypeCompatibility, ValueKind},
-    path::{PathSegment, ValuePath},
+    limits::ValueLimits,
     value::Value,
-    NebulaError, NebulaResult, ResultExt, // Unified error handling
+    NebulaError, NebulaResult, ResultExt,
 };
+// Re-export scalar and collection types
+pub use scalar::{Integer, Float, Text, Bytes};
+pub use collections::{Array, Object};
 
-// Re-export type implementations
-pub use types::*;
+// Re-export temporal types
+#[cfg(feature = "temporal")]
+pub use temporal::{Date, Time, DateTime, Duration};
+
+// Re-export serde_json::json! macro for convenience
+#[cfg(feature = "serde")]
+pub use serde_json::json;
+
+// Re-export conversion extension traits for ergonomic usage
+#[cfg(feature = "serde")]
+pub use core::convert::{ValueRefExt, JsonValueExt};
 
 /// Prelude for common imports
 pub mod prelude {
-    pub use crate::core::prelude::*;
-    pub use crate::{Value, ValueKind, NebulaError, ValueResult, ValueErrorExt, ValueResultExt};
+    pub use crate::{Value, ValueResult, ValueErrorExt, ValueResultExt, NebulaError};
+    pub use crate::{Integer, Float, Text, Bytes, Array, Object};
+
+    #[cfg(feature = "temporal")]
+    pub use crate::{Date, Time, DateTime, Duration};
+
+    #[cfg(feature = "serde")]
+    pub use serde_json::json;
 }

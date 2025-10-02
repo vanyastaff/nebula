@@ -14,13 +14,14 @@ extern crate alloc;
 use std::{
     collections::HashMap,
     hash::Hash,
+    marker::PhantomData,
     time::{Duration, Instant},
 };
 
 #[cfg(not(feature = "std"))]
 use {
     alloc::{boxed::Box, vec::Vec},
-    core::hash::Hash,
+    core::{hash::Hash, marker::PhantomData},
     hashbrown::HashMap,
 };
 
@@ -174,6 +175,8 @@ pub struct AdaptivePolicy<K, V>
 where
     K: CacheKey,
 {
+    /// Phantom data for unused type parameter V
+    _phantom: PhantomData<V>,
     /// Currently active policy
     active_policy: PolicyType,
     /// LRU policy instance
@@ -225,6 +228,7 @@ where
         shadow_misses.insert(PolicyType::ARC, 0);
 
         Self {
+            _phantom: PhantomData,
             active_policy: PolicyType::LRU,
             lru: LruPolicy::new(),
             lfu: LfuPolicy::new(),
@@ -247,8 +251,6 @@ where
     /// Create with capacity
     pub fn with_capacity(capacity: usize) -> Self {
         let mut policy = Self::new();
-        policy.lru = LruPolicy::with_capacity(capacity);
-        policy.lfu = LfuPolicy::with_capacity(capacity);
         policy.arc = ArcPolicy::with_capacity(capacity);
         policy
     }
@@ -409,11 +411,11 @@ impl<K, V> VictimSelector<K, V> for AdaptivePolicy<K, V>
 where
     K: CacheKey,
 {
-    fn select_victim(&self, entries: &[EvictionEntry<K, V>]) -> Option<K> {
+    fn select_victim(&self, _entries: &[EvictionEntry<K, V>]) -> Option<K> {
         match self.active_policy {
-            PolicyType::LRU => self.lru.select_victim(entries),
-            PolicyType::LFU => self.lfu.select_victim(entries),
-            PolicyType::ARC => self.arc.select_victim(entries),
+            PolicyType::LRU => self.lru.select_victim(),
+            PolicyType::LFU => self.lfu.select_victim(),
+            PolicyType::ARC => self.arc.select_victim(),
         }
     }
 }

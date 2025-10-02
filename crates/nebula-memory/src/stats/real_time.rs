@@ -17,7 +17,7 @@ use std::time::Instant;
 use super::config::{AlertConfig, HistogramConfig, MonitoringConfig};
 use super::histogram::{HistogramData, MemoryHistogram};
 use super::memory_stats::{MemoryMetrics, MemoryStats};
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Represents a single active memory alert.
 #[derive(Debug, Clone, PartialEq)]
@@ -67,7 +67,7 @@ pub struct RealTimeMonitor {
     stop_signal: Arc<RwLock<bool>>,
     // State to track if an alert is currently active to respect cooldowns.
     // Maps alert name to last triggered Instant.
-    last_alert_triggered: Arc<RwLock<hashbrown::HashMap<String, Instant>>>,
+    last_alert_triggered: Arc<RwLock<std::collections::HashMap<String, Instant>>>,
 }
 
 #[cfg(feature = "std")]
@@ -105,7 +105,7 @@ impl RealTimeMonitor {
             histogram: Arc::new(RwLock::new(histogram)),
             monitor_handle: None,
             stop_signal: Arc::new(RwLock::new(false)),
-            last_alert_triggered: Arc::new(RwLock::new(hashbrown::HashMap::new())),
+            last_alert_triggered: Arc::new(RwLock::new(std::collections::HashMap::new())),
         }
     }
 
@@ -120,9 +120,7 @@ impl RealTimeMonitor {
         }
 
         if self.config.interval.is_zero() {
-            return Err(MemoryError::MonitorError {
-                message: "Monitoring interval cannot be zero when enabled".to_string(),
-            });
+            return Err(MemoryError::monitor_error("monitor error"));
         }
 
         let monitored_stats = Arc::clone(&self.monitored_stats);

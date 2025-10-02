@@ -2,10 +2,12 @@
 
 use crate::core::{Validator, ValidatorExt, ValidationContext, Valid, Invalid};
 use async_trait::async_trait;
+use bon::Builder;
 
 // ==================== Validation Builder ====================
 
 /// Simple builder for creating validation chains
+#[derive(Builder)]
 pub struct ValidationBuilder<V: Validator> {
     validator: V,
     name: Option<String>,
@@ -98,4 +100,13 @@ impl<V: Validator> Validator for BuiltValidator<V> {
 /// Create a validation builder
 pub fn validate<V: Validator>(validator: V) -> ValidationBuilder<V> {
     ValidationBuilder::new(validator)
+}
+
+/// Create a validation builder with optional name using builder pattern
+#[bon::builder]
+pub fn build_validator<V: Validator>(
+    validator: V,
+    name: Option<String>
+) -> ValidationBuilder<V> {
+    ValidationBuilder { validator, name }
 }

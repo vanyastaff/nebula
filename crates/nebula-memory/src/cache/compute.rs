@@ -25,7 +25,7 @@ use {
 };
 
 use super::config::{CacheConfig, CacheMetrics, EvictionPolicy};
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Trait for cache keys
 pub trait CacheKey: Hash + Eq + Clone {}
@@ -215,7 +215,7 @@ where
         }
 
         // Insert the new entry
-        let mut entry = CacheEntry::new(value.clone());
+        let entry = CacheEntry::new(value.clone());
 
         #[cfg(not(feature = "std"))]
         {
@@ -273,7 +273,7 @@ where
             self.evict_entry()?;
         }
 
-        let mut entry = CacheEntry::new(value);
+        let entry = CacheEntry::new(value);
 
         #[cfg(not(feature = "std"))]
         {
@@ -334,8 +334,7 @@ where
     where F: Fn(&K) -> Result<V, MemoryError> {
         keys.into_iter()
             .map(|key| {
-                let key_ref = &key;
-                self.get_or_compute(key, || compute_fn(key_ref))
+                self.get_or_compute(key.clone(), || compute_fn(&key))
             })
             .collect()
     }
@@ -345,8 +344,7 @@ where
     where F: Fn(&K) -> Result<V, MemoryError> {
         for key in keys {
             if !self.contains_key(&key) {
-                let key_ref = &key;
-                self.get_or_compute(key, || compute_fn(key_ref))?;
+                self.get_or_compute(key.clone(), || compute_fn(&key))?;
             }
         }
         Ok(())
@@ -477,7 +475,7 @@ where
         #[cfg(feature = "std")]
         {
             // True random using thread_rng
-            use rand::seq::IteratorRandom;
+            use rand::seq::SliceRandom;
             let keys: Vec<_> = self.entries.keys().cloned().collect();
             if let Some(key) = keys.choose(&mut rand::thread_rng()) {
                 self.entries.remove(key);
@@ -738,7 +736,7 @@ mod tests {
 
         // Error should be propagated
         let result =
-            cache.get_or_compute("error".to_string(), || Err(MemoryError::AllocationFailed));
+            cache.get_or_compute("error".to_string(), || Err(MemoryError::allocation_failed()));
 
         assert!(result.is_err());
 

@@ -1,21 +1,22 @@
-//! Object pooling for efficient memory reuse
 //!
+//! - `BatchAllocator`: Batch allocation optimization
+//! - `HierarchicalPool`: Multi-level pool hierarchy
+//! - `LockFreePool`: Lock-free pool for high concurrency
+//! - `ObjectPool`: Basic single-threaded pool
+//! - `PriorityPool`: Pool with priority-based retention
+//! - `ThreadSafePool`: Multi-threaded pool with mutex
+//! - `TtlPool`: Pool with time-to-live for objects
+//! Object pooling for efficient memory reuse
 //! This module provides various object pool implementations for different use
 //! cases:
-//! - `ObjectPool`: Basic single-threaded pool
-//! - `ThreadSafePool`: Multi-threaded pool with mutex
-//! - `LockFreePool`: Lock-free pool for high concurrency
-//! - `PriorityPool`: Pool with priority-based retention
-//! - `TtlPool`: Pool with time-to-live for objects
-//! - `HierarchicalPool`: Multi-level pool hierarchy
-//! - `BatchAllocator`: Batch allocation optimization
-
+pub mod health;
 mod batch;
 mod hierarchical;
 mod lockfree;
 mod object_pool;
 mod poolable;
 mod priority;
+#[cfg(feature = "stats")]
 mod stats;
 mod thread_safe;
 mod ttl;
@@ -24,14 +25,19 @@ mod ttl;
 use std::time::Duration;
 
 pub use batch::BatchAllocator;
+pub use health::{HealthConfig, HealthMetrics, LeakDetectionReport, PoolHealth, PoolHealthMonitor};
 pub use hierarchical::HierarchicalPool;
 pub use lockfree::LockFreePool;
 pub use object_pool::{ObjectPool, PooledValue};
 pub use poolable::Poolable;
 pub use priority::PriorityPool;
+#[cfg(feature = "stats")]
 pub use stats::PoolStats;
 pub use thread_safe::ThreadSafePool;
 pub use ttl::TtlPool;
+
+/// Type alias for ROADMAP compatibility - PooledObject is same as PooledValue
+pub type PooledObject<T> = PooledValue<T>;
 
 /// Configuration for object pools
 #[derive(Debug, Clone)]
@@ -201,3 +207,4 @@ mod tests {
         assert_eq!(config.growth_strategy, GrowthStrategy::Double);
     }
 }
+

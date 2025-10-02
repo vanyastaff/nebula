@@ -10,8 +10,10 @@ use core::ops::{Deref, DerefMut};
 #[cfg(feature = "std")]
 use std::collections::BinaryHeap;
 
-use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, PoolStats, Poolable};
-use crate::error::{MemoryError, MemoryResult};
+use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
+#[cfg(feature = "stats")]
+use super::PoolStats;
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Object pool that maintains objects based on priority
 ///
@@ -136,10 +138,7 @@ impl<T: Poolable> PriorityPool<T> {
                 let created = 0;
 
                 if created >= max {
-                    return Err(MemoryError::PoolExhausted {
-                        type_name: std::any::type_name::<T>(),
-                        pool_size: max
-                    });
+                    return Err(MemoryError::pool_exhausted());
                 }
             }
 
@@ -199,10 +198,7 @@ impl<T: Poolable> PriorityPool<T> {
                 let created = 0;
 
                 if created >= max {
-                    return Err(MemoryError::PoolExhausted {
-                        type_name: std::any::type_name::<T>(),
-                        pool_size: max
-                    });
+                    return Err(MemoryError::pool_exhausted());
                 }
             }
 

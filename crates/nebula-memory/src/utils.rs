@@ -1,407 +1,499 @@
 //! Utility functions and helpers for nebula-memory
 //!
-//! This module provides high-performance utilities for memory management
-//! with safe abstractions over platform-specific operations.
+//! This module provides common utilities used throughout the crate:
+//! - Memory alignment helpers
+//! - Size formatting utilities
+//! - Platform-specific helpers
+//! - Performance measurement tools
+//! - Checked arithmetic operations
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering, compiler_fence, fence};
-use core::{hint, ptr};
-
-#[cfg(feature = "std")]
-use std::sync::LazyLock;
+use core::sync::atomic::{compiler_fence, fence, Ordering};
+use core::ptr;
 #[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 
-// ============================================================================
-// Safe Prefetch Abstraction (как в предыдущем ответе)
-// ============================================================================
+use crate::allocator::{AllocError, AllocResult};
 
-pub struct PrefetchManager {
-    _private: (),
+/// Aligns a value up to the nearest multiple of alignment
+///
+/// # Examples
+/// ```
+/// use nebula_memory::utils::align_up;
+///
+/// assert_eq!(align_up(7, 8), 8);
+/// assert_eq!(align_up(8, 8), 8);
+/// assert_eq!(align_up(9, 8), 16);
+/// ```
+#[inline(always)]
+pub const fn align_up(value: usize, alignment: usize) -> usize {
+    debug_assert!(alignment.is_power_of_two());
+    (value + alignment - 1) & !(alignment - 1)
 }
 
-impl Default for PrefetchManager {
-    fn default() -> Self {
-        Self::new()
+/// Aligns a value down to the nearest multiple of alignment
+///
+/// # Examples
+/// ```
+/// use nebula_memory::utils::align_down;
+///
+/// assert_eq!(align_down(7, 8), 0);
+/// assert_eq!(align_down(8, 8), 8);
+/// assert_eq!(align_down(9, 8), 8);
+/// ```
+#[inline(always)]
+pub const fn align_down(value: usize, alignment: usize) -> usize {
+    debug_assert!(alignment.is_power_of_two());
+    value & !(alignment - 1)
+}
+
+/// Checks if a value is aligned to the given alignment
+///
+/// # Examples
+/// ```
+/// use nebula_memory::utils::is_aligned;
+///
+/// assert!(is_aligned(16, 8));
+/// assert!(is_aligned(32, 16));
+/// assert!(!is_aligned(17, 8));
+/// ```
+#[inline(always)]
+pub const fn is_aligned(value: usize, alignment: usize) -> bool {
+    debug_assert!(alignment.is_power_of_two());
+    value & (alignment - 1) == 0
+}
+
+/// Calculates padding needed to align a value
+///
+/// # Examples
+/// ```
+/// use nebula_memory::utils::padding_needed;
+///
+/// assert_eq!(padding_needed(7, 8), 1);
+/// assert_eq!(padding_needed(8, 8), 0);
+/// assert_eq!(padding_needed(9, 8), 7);
+/// ```
+#[inline(always)]
+pub const fn padding_needed(value: usize, alignment: usize) -> usize {
+    align_up(value, alignment) - value
+}
+
+/// Rounds up to the next power of two
+///
+/// # Examples
+/// ```
+/// use nebula_memory::utils::next_power_of_two;
+///
+/// assert_eq!(next_power_of_two(7), 8);
+/// assert_eq!(next_power_of_two(8), 8);
+/// assert_eq!(next_power_of_two(9), 16);
+/// ```
+#[inline]
+pub const fn next_power_of_two(mut value: usize) -> usize {
+    if value == 0 {
+        return 1;
+    }
+    value -= 1;
+    value |= value >> 1;
+    value |= value >> 2;
+    value |= value >> 4;
+    value |= value >> 8;
+    value |= value >> 16;
+    #[cfg(target_pointer_width = "64")]
+    {
+        value |= value >> 32;
+    }
+    value + 1
+}
+
+/// Check if a pointer is properly aligned
+#[inline(always)]
+pub fn is_aligned_ptr<T>(ptr: *const T, alignment: usize) -> bool {
+    is_aligned(ptr as usize, alignment)
+}
+
+/// Format bytes into human-readable string
+///
+/// Re-exported from nebula-system for convenience and consistency across the ecosystem.
+///
+/// # Examples
+/// ```
+/// use nebula_memory::utils::format_bytes;
+///
+/// assert_eq!(format_bytes(1024), "1.00 KB");
+/// assert_eq!(format_bytes(1536), "1.50 KB");
+/// assert_eq!(format_bytes(1048576), "1.00 MB");
+/// ```
+#[cfg(feature = "std")]
+pub use nebula_system::utils::format_bytes_usize as format_bytes;
+
+/// Format duration into human-readable string
+///
+/// Re-exported from nebula-system for consistency.
+#[cfg(feature = "std")]
+pub use nebula_system::utils::format_duration;
+
+/// Format percentage
+///
+/// Re-exported from nebula-system for consistency.
+pub use nebula_system::utils::format_percentage;
+
+/// Format rate (per second)
+///
+/// Re-exported from nebula-system for consistency.
+pub use nebula_system::utils::format_rate;
+
+/// Get cache line size for current platform
+///
+/// Re-exported from nebula-system for consistency.
+pub use nebula_system::utils::cache_line_size;
+
+/// Memory barrier for synchronization
+#[inline(always)]
+pub fn memory_barrier() {
+    fence(Ordering::SeqCst);
+}
+
+/// Securely zero memory
+#[inline]
+pub fn secure_zero(ptr: *mut u8, len: usize) {
+    if len == 0 {
+        return;
+    }
+
+    unsafe {
+        ptr::write_bytes(ptr, 0, len);
+    }
+    compiler_fence(Ordering::SeqCst);
+}
+
+/// Platform-specific prefetch for read
+#[inline]
+#[cfg(target_arch = "x86_64")]
+pub fn prefetch_read<T>(ptr: *const T) {
+    use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+    unsafe {
+        _mm_prefetch::<_MM_HINT_T0>(ptr.cast());
     }
 }
 
-impl PrefetchManager {
-    pub const fn new() -> Self {
-        Self { _private: () }
-    }
+#[inline]
+#[cfg(not(target_arch = "x86_64"))]
+pub fn prefetch_read<T>(_ptr: *const T) {}
 
-    #[inline(always)]
-    pub fn prefetch_read<T>(&self, data: &T) {
-        let ptr = data as *const T;
-        unsafe { self.prefetch_read_raw(ptr) }
+/// Platform-specific prefetch for write
+#[inline]
+#[cfg(target_arch = "x86_64")]
+pub fn prefetch_write<T>(ptr: *mut T) {
+    use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T1};
+    unsafe {
+        _mm_prefetch::<_MM_HINT_T1>(ptr.cast());
     }
+}
 
-    #[inline(always)]
-    pub fn prefetch_write<T>(&self, data: &mut T) {
-        let ptr = data as *mut T;
-        unsafe { self.prefetch_write_raw(ptr) }
+#[inline]
+#[cfg(not(target_arch = "x86_64"))]
+pub fn prefetch_write<T>(_ptr: *mut T) {}
+
+/// Timer for performance measurements
+#[cfg(feature = "std")]
+#[derive(Debug)]
+pub struct Timer {
+    start: Instant,
+    name: &'static str,
+}
+
+#[cfg(feature = "std")]
+impl Timer {
+    #[inline]
+    pub fn new(name: &'static str) -> Self {
+        Self { start: Instant::now(), name }
     }
 
     #[inline]
-    pub fn prefetch_slice_read<T>(&self, slice: &[T]) {
-        if slice.is_empty() {
-            return;
-        }
-
-        let ptr = slice.as_ptr();
-        let len = size_of_val(slice);
-        unsafe { self.prefetch_range_read_raw(ptr.cast::<u8>(), len) }
+    pub fn elapsed(&self) -> Duration {
+        self.start.elapsed()
     }
 
-    #[inline]
-    pub fn prefetch_slice_write<T>(&self, slice: &mut [T]) {
-        if slice.is_empty() {
-            return;
-        }
-
-        let ptr = slice.as_mut_ptr();
-        let len = size_of_val(slice);
-        unsafe { self.prefetch_range_write_raw(ptr.cast::<u8>(), len) }
-    }
-
-    #[inline(always)]
-    unsafe fn prefetch_read_raw<T>(&self, ptr: *const T) {
-        #[cfg(target_arch = "x86_64")]
-        {
-            use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-            unsafe { _mm_prefetch::<_MM_HINT_T0>(ptr.cast::<i8>()) }
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            unsafe { core::arch::aarch64::__prefetch(ptr.cast(), 0, 3) }
-        }
-
-        #[cfg(target_arch = "arm")]
-        {
-            unsafe { core::arch::arm::__pld(ptr.cast()) }
-        }
-
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm")))]
-        {
-            let _ = ptr;
-        }
-    }
-
-    #[inline(always)]
-    unsafe fn prefetch_write_raw<T>(&self, ptr: *mut T) {
-        #[cfg(target_arch = "x86_64")]
-        {
-            use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-            unsafe { _mm_prefetch::<_MM_HINT_T0>(ptr as *const i8) }
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        {
-            unsafe { core::arch::aarch64::__prefetch(ptr.cast(), 1, 3) }
-        }
-
-        #[cfg(target_arch = "arm")]
-        {
-            unsafe { core::arch::arm::__pldw(ptr.cast()) }
-        }
-
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "arm")))]
-        {
-            let _ = ptr;
-        }
-    }
-
-    unsafe fn prefetch_range_read_raw(&self, start: *const u8, len: usize) {
-        let cache_line = cache_line_size();
-        let mut addr = start as usize;
-        let end = addr + len;
-
-        let max_prefetch = cache_line * 16;
-        let prefetch_end = end.min(addr + max_prefetch);
-
-        while addr < prefetch_end {
-            unsafe { self.prefetch_read_raw(addr as *const u8) }
-            addr += cache_line;
-        }
-    }
-
-    unsafe fn prefetch_range_write_raw(&self, start: *mut u8, len: usize) {
-        let cache_line = cache_line_size();
-        let mut addr = start as usize;
-        let end = addr + len;
-
-        let max_prefetch = cache_line * 16;
-        let prefetch_end = end.min(addr + max_prefetch);
-
-        while addr < prefetch_end {
-            unsafe { self.prefetch_write_raw(addr as *mut u8) }
-            addr += cache_line;
-        }
+    pub fn print(&self) {
+        println!("{}: {}", self.name, format_duration(self.elapsed()));
     }
 }
 
 #[cfg(feature = "std")]
-pub static PREFETCH: LazyLock<PrefetchManager> = LazyLock::new(PrefetchManager::new);
-
-// ============================================================================
-// Safe Memory Operations
-// ============================================================================
-
-pub struct MemoryOps {
-    _private: (),
-}
-
-impl Default for MemoryOps {
-    fn default() -> Self {
-        Self::new()
+impl Drop for Timer {
+    fn drop(&mut self) {
+        self.print();
     }
 }
+
+// ============================================================================
+// Checked Arithmetic for Overflow Safety
+// ============================================================================
+
+/// Extension trait for checked arithmetic operations that return AllocResult
+///
+/// This trait provides a consistent way to handle overflow/underflow in
+/// memory-related calculations throughout the crate.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_memory::utils::CheckedArithmetic;
+///
+/// let a: usize = 10;
+/// let b: usize = 20;
+///
+/// assert_eq!(a.try_add(b).unwrap(), 30);
+/// assert!(usize::MAX.try_add(1).is_err());
+/// ```
+pub trait CheckedArithmetic: Sized {
+    /// Checked addition. Returns AllocError on overflow.
+    fn try_add(self, rhs: Self) -> AllocResult<Self>;
+
+    /// Checked subtraction. Returns AllocError on underflow.
+    fn try_sub(self, rhs: Self) -> AllocResult<Self>;
+
+    /// Checked multiplication. Returns AllocError on overflow.
+    fn try_mul(self, rhs: Self) -> AllocResult<Self>;
+
+    /// Checked division. Returns AllocError on division by zero.
+    fn try_div(self, rhs: Self) -> AllocResult<Self>;
+}
+
+impl CheckedArithmetic for usize {
+    #[inline]
+    fn try_add(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_add(rhs)
+            .ok_or_else(|| AllocError::size_overflow())
+    }
+
+    #[inline]
+    fn try_sub(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_sub(rhs)
+            .ok_or_else(|| AllocError::size_overflow())
+    }
+
+    #[inline]
+    fn try_mul(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_mul(rhs)
+            .ok_or_else(|| AllocError::size_overflow())
+    }
+
+    #[inline]
+    fn try_div(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_div(rhs)
+            .ok_or_else(|| AllocError::invalid_input("division by zero"))
+    }
+}
+
+impl CheckedArithmetic for isize {
+    #[inline]
+    fn try_add(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_add(rhs)
+            .ok_or_else(|| AllocError::size_overflow())
+    }
+
+    #[inline]
+    fn try_sub(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_sub(rhs)
+            .ok_or_else(|| AllocError::size_overflow())
+    }
+
+    #[inline]
+    fn try_mul(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_mul(rhs)
+            .ok_or_else(|| AllocError::size_overflow())
+    }
+
+    #[inline]
+    fn try_div(self, rhs: Self) -> AllocResult<Self> {
+        self.checked_div(rhs)
+            .ok_or_else(|| AllocError::invalid_input("division by zero"))
+    }
+}
+
+// ============================================================================
+// Platform Information
+// ============================================================================
+
+/// Platform information
+///
+/// Re-exported from nebula-system for consistency across the ecosystem.
+pub use nebula_system::utils::PlatformInfo;
+
+/// Get system page size
+///
+/// Uses actual syscall-based detection via syscalls module instead of hardcoded values
+#[inline]
+pub fn page_size() -> usize {
+    crate::syscalls::get_page_size()
+}
+
+/// Check if a number is power of two
+///
+/// Re-exported from nebula-system for consistency.
+pub use nebula_system::utils::is_power_of_two;
+
+/// Atomically update maximum value
+#[inline]
+pub fn atomic_max(current: &core::sync::atomic::AtomicUsize, value: usize) {
+    let mut max = current.load(core::sync::atomic::Ordering::Relaxed);
+    loop {
+        if value <= max {
+            break;
+        }
+        match current.compare_exchange_weak(
+            max,
+            value,
+            core::sync::atomic::Ordering::Relaxed,
+            core::sync::atomic::Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(x) => max = x,
+        }
+    }
+}
+
+/// Memory barrier types for advanced synchronization
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarrierType {
+    /// Load-load barrier
+    LoadLoad,
+    /// Store-store barrier
+    StoreStore,
+    /// Load-store barrier
+    LoadStore,
+    /// Store-load barrier
+    StoreLoad,
+    /// Release barrier
+    Release,
+    /// Acquire barrier
+    Acquire,
+    /// Full barrier
+    Full,
+}
+
+/// Extended memory barrier with specific ordering
+#[inline(always)]
+pub fn memory_barrier_ex(barrier_type: BarrierType) {
+    match barrier_type {
+        BarrierType::LoadLoad => fence(Ordering::Acquire),
+        BarrierType::StoreStore => fence(Ordering::Release),
+        BarrierType::LoadStore => fence(Ordering::AcqRel),
+        BarrierType::StoreLoad => fence(Ordering::SeqCst),
+        BarrierType::Release => fence(Ordering::Release),
+        BarrierType::Acquire => fence(Ordering::Acquire),
+        BarrierType::Full => fence(Ordering::SeqCst),
+    }
+}
+
+/// Memory operations utilities
+pub struct MemoryOps;
 
 impl MemoryOps {
-    pub const fn new() -> Self {
-        Self { _private: () }
+    /// Create new MemoryOps instance
+    #[inline]
+    pub fn new() -> Self {
+        Self
     }
-
-    pub fn secure_zero_slice(&self, slice: &mut [u8]) {
-        if slice.is_empty() {
+    /// Copy memory with prefetching
+    #[inline]
+    pub unsafe fn copy_with_prefetch(dst: *mut u8, src: *const u8, len: usize) {
+        if len == 0 {
             return;
         }
 
-        let ptr = slice.as_mut_ptr();
-        let len = slice.len();
-        unsafe { self.secure_zero_raw(ptr, len) }
-    }
-
-    pub fn secure_fill_slice(&self, slice: &mut [u8], pattern: u8) {
-        if slice.is_empty() {
-            return;
-        }
-
-        let ptr = slice.as_mut_ptr();
-        let len = slice.len();
-        unsafe { self.secure_fill_raw(ptr, len, pattern) }
-    }
-
-    pub fn copy_slices(&self, src: &[u8], dst: &mut [u8]) -> Result<(), CopyError> {
-        if src.len() != dst.len() {
-            return Err(CopyError::LengthMismatch);
-        }
-
-        if src.is_empty() {
-            return Ok(());
-        }
-
-        unsafe { self.fast_copy_raw(src.as_ptr(), dst.as_mut_ptr(), src.len()) }
-
-        Ok(())
-    }
-
-    pub fn move_slices(&self, src: &[u8], dst: &mut [u8]) -> Result<(), CopyError> {
-        if src.len() != dst.len() {
-            return Err(CopyError::LengthMismatch);
-        }
-
-        if src.is_empty() {
-            return Ok(());
-        }
-
-        unsafe { self.fast_move_raw(src.as_ptr(), dst.as_mut_ptr(), src.len()) }
-
-        Ok(())
-    }
-
-    unsafe fn secure_zero_raw(&self, ptr: *mut u8, len: usize) {
-        debug_assert!(!ptr.is_null());
-
-        unsafe {
-            for i in 0..len {
-                ptr::write_volatile(ptr.add(i), 0);
-            }
-        }
-        compiler_fence(Ordering::SeqCst);
-    }
-
-    unsafe fn secure_fill_raw(&self, ptr: *mut u8, len: usize, pattern: u8) {
-        debug_assert!(!ptr.is_null());
-
-        unsafe {
-            for i in 0..len {
-                ptr::write_volatile(ptr.add(i), pattern);
-            }
-        }
-        compiler_fence(Ordering::SeqCst);
-    }
-
-    unsafe fn fast_copy_raw(&self, src: *const u8, dst: *mut u8, len: usize) {
-        debug_assert!(!src.is_null() && !dst.is_null());
-
-        #[cfg(feature = "std")]
-        if len > cache_line_size() * 4 {
+        // Prefetch source data
+        prefetch_read(src);
+        if len > cache_line_size() {
             unsafe {
-                PREFETCH.prefetch_range_read_raw(src, len.min(2048));
+                prefetch_read(src.add(cache_line_size()));
             }
         }
 
+        // Use platform-optimized copy
         unsafe {
             ptr::copy_nonoverlapping(src, dst, len);
         }
     }
 
-    unsafe fn fast_move_raw(&self, src: *const u8, dst: *mut u8, len: usize) {
-        debug_assert!(!src.is_null() && !dst.is_null());
-
+    /// Zero memory with optimization
+    #[inline]
+    pub unsafe fn zero_optimized(ptr: *mut u8, len: usize) {
+        if len == 0 {
+            return;
+        }
         unsafe {
-            ptr::copy(src, dst, len);
+            ptr::write_bytes(ptr, 0, len);
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum CopyError {
-    LengthMismatch,
-}
-
-#[cfg(feature = "std")]
-pub static MEMORY: LazyLock<MemoryOps> = LazyLock::new(MemoryOps::new);
-
-// ============================================================================
-// Memory Barriers - Safe Abstraction
-// ============================================================================
-
-#[derive(Debug, Clone, Copy)]
-pub enum BarrierType {
-    Full,
-    Acquire,
-    Release,
-    Compiler,
-}
-
-pub struct BarrierOps;
-
-impl BarrierOps {
-    #[inline(always)]
-    pub fn barrier(&self, barrier_type: BarrierType) {
-        match barrier_type {
-            BarrierType::Full => fence(Ordering::SeqCst),
-            BarrierType::Acquire => fence(Ordering::Acquire),
-            BarrierType::Release => fence(Ordering::Release),
-            BarrierType::Compiler => compiler_fence(Ordering::SeqCst),
-        }
+        compiler_fence(Ordering::SeqCst);
     }
 
-    #[inline(always)]
-    pub fn full_barrier(&self) {
-        fence(Ordering::SeqCst);
-    }
-}
-
-pub const BARRIER: BarrierOps = BarrierOps;
-
-// Convenience functions
-#[inline(always)]
-pub fn memory_barrier() {
-    BARRIER.full_barrier();
-}
-
-#[inline(always)]
-pub fn memory_barrier_ex(barrier: BarrierType) {
-    BARRIER.barrier(barrier);
-}
-
-// ============================================================================
-// Atomic Operations - Safe Wrappers
-// ============================================================================
-
-pub struct AtomicOps;
-
-impl AtomicOps {
+    /// Secure fill slice with pattern
     #[inline]
-    pub fn max(&self, atomic: &AtomicUsize, value: usize) -> usize {
-        atomic.fetch_max(value, Ordering::AcqRel)
-    }
-
-    #[inline]
-    pub fn min(&self, atomic: &AtomicUsize, value: usize) -> usize {
-        atomic.fetch_min(value, Ordering::AcqRel)
-    }
-}
-
-pub const ATOMIC: AtomicOps = AtomicOps;
-
-// Convenience functions
-#[inline]
-pub fn atomic_max(atomic: &AtomicUsize, value: usize) -> usize {
-    ATOMIC.max(atomic, value)
-}
-
-#[inline]
-pub fn atomic_min(atomic: &AtomicUsize, value: usize) -> usize {
-    ATOMIC.min(atomic, value)
-}
-
-// Atomic statistics tracker remains the same as it's already safe
-#[derive(Debug)]
-pub struct AtomicStats {
-    pub count: AtomicU64,
-    pub sum: AtomicU64,
-    pub max: AtomicUsize,
-    pub min: AtomicUsize,
-}
-
-impl Default for AtomicStats {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl AtomicStats {
-    pub const fn new() -> Self {
-        Self {
-            count: AtomicU64::new(0),
-            sum: AtomicU64::new(0),
-            max: AtomicUsize::new(0),
-            min: AtomicUsize::new(usize::MAX),
+    pub unsafe fn secure_fill_slice(slice: &mut [u8], pattern: u8) {
+        unsafe {
+            ptr::write_bytes(slice.as_mut_ptr(), pattern, slice.len());
         }
-    }
-
-    #[inline]
-    pub fn record(&self, value: usize) {
-        self.count.fetch_add(1, Ordering::Relaxed);
-        self.sum.fetch_add(value as u64, Ordering::Relaxed);
-        atomic_max(&self.max, value);
-        atomic_min(&self.min, value);
-    }
-
-    pub fn average(&self) -> f64 {
-        let count = self.count.load(Ordering::Relaxed);
-        if count == 0 {
-            0.0
-        } else {
-            self.sum.load(Ordering::Relaxed) as f64 / count as f64
-        }
-    }
-
-    pub fn reset(&self) {
-        self.count.store(0, Ordering::Relaxed);
-        self.sum.store(0, Ordering::Relaxed);
-        self.max.store(0, Ordering::Relaxed);
-        self.min.store(usize::MAX, Ordering::Relaxed);
+        compiler_fence(Ordering::SeqCst);
     }
 }
 
-// ============================================================================
-// Spin Loop & Backoff - Already Safe
-// ============================================================================
-
-#[inline(always)]
-pub fn spin_loop() {
-    hint::spin_loop();
-}
-
+/// Backoff utility for spin loops
+#[derive(Debug, Clone)]
 pub struct Backoff {
-    step: u32,
-    max_spin: u32,
+    current: u32,
+    max: u32,
+}
+
+impl Backoff {
+    /// Create new backoff with default parameters
+    #[inline]
+    pub fn new() -> Self {
+        Self { current: 1, max: 64 }
+    }
+
+    /// Create backoff with custom maximum
+    #[inline]
+    pub fn with_max(max: u32) -> Self {
+        Self { current: 1, max }
+    }
+
+    /// Create backoff with custom maximum spin (alias for with_max)
+    #[inline]
+    pub fn with_max_spin(max: u32) -> Self {
+        Self::with_max(max)
+    }
+
+    /// Perform backoff
+    #[inline]
+    pub fn spin(&mut self) {
+        for _ in 0..self.current {
+            core::hint::spin_loop();
+        }
+        if self.current < self.max {
+            self.current *= 2;
+        }
+    }
+
+    /// Reset backoff
+    #[inline]
+    pub fn reset(&mut self) {
+        self.current = 1;
+    }
+
+    /// Spin or yield depending on iteration count
+    #[inline]
+    pub fn spin_or_yield(&mut self) {
+        if self.current < 8 {
+            self.spin();
+        } else {
+            #[cfg(feature = "std")]
+            std::thread::yield_now();
+            #[cfg(not(feature = "std"))]
+            core::hint::spin_loop();
+        }
+    }
 }
 
 impl Default for Backoff {
@@ -410,622 +502,103 @@ impl Default for Backoff {
     }
 }
 
-impl Backoff {
+/// Prefetch manager for optimized memory access
+pub struct PrefetchManager {
+    distance: usize,
+    enabled: bool,
+}
+
+impl PrefetchManager {
+    /// Create new prefetch manager
     #[inline]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            step: 0,
-            max_spin: 6,
+            distance: cache_line_size() * 2,
+            enabled: true,
         }
     }
 
+    /// Set prefetch distance
     #[inline]
-    pub const fn with_max_spin(max_spin: u32) -> Self {
-        Self { step: 0, max_spin }
+    pub fn set_distance(&mut self, distance: usize) {
+        self.distance = distance;
     }
 
+    /// Enable/disable prefetching
     #[inline]
-    pub fn reset(&mut self) {
-        self.step = 0;
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
     }
 
+    /// Prefetch for read at current + distance
     #[inline]
-    pub fn spin(&mut self) {
-        for _ in 0..(1 << self.step.min(self.max_spin)) {
-            hint::spin_loop();
-        }
-
-        if self.step <= self.max_spin {
-            self.step += 1;
+    pub fn prefetch_read_ahead<T>(&self, current: *const T) {
+        if self.enabled {
+            prefetch_read(unsafe { current.cast::<u8>().add(self.distance) });
         }
     }
 
+    /// Prefetch for write at current + distance
     #[inline]
-    pub fn spin_or_yield(&mut self) {
-        if self.step <= self.max_spin {
-            self.spin();
-        } else {
-            #[cfg(feature = "std")]
-            std::thread::yield_now();
-            #[cfg(not(feature = "std"))]
-            self.spin();
+    pub fn prefetch_write_ahead<T>(&self, current: *mut T) {
+        if self.enabled {
+            prefetch_write(unsafe { current.cast::<u8>().add(self.distance) });
         }
     }
 
+    /// Prefetch slice for read
     #[inline]
-    pub fn is_completed(&self) -> bool {
-        self.step > self.max_spin
-    }
-}
-
-// ============================================================================
-// Memory Alignment - Safe Operations
-// ============================================================================
-
-pub struct AlignmentOps;
-
-impl AlignmentOps {
-    #[inline(always)]
-    pub const fn align_up(&self, value: usize, alignment: usize) -> usize {
-        debug_assert!(alignment.is_power_of_two());
-
-        if value == usize::MAX {
-            return usize::MAX;
-        }
-
-        let added = value.saturating_add(alignment - 1);
-        added & !(alignment - 1)
-    }
-
-    /// Unsafe unchecked version for hot paths
-    ///
-    /// # Safety
-    /// Caller must ensure that `value + alignment - 1` doesn't overflow
-    #[inline(always)]
-    pub const unsafe fn align_up_unchecked(&self, value: usize, alignment: usize) -> usize {
-        debug_assert!(alignment.is_power_of_two());
-        (value + alignment - 1) & !(alignment - 1)
-    }
-
-    #[inline(always)]
-    pub const fn try_align_up(&self, value: usize, alignment: usize) -> Option<usize> {
-        debug_assert!(alignment.is_power_of_two());
-
-        match value.checked_add(alignment - 1) {
-            Some(added) => Some(added & !(alignment - 1)),
-            None => None,
-        }
-    }
-
-    #[inline(always)]
-    pub const fn align_down(&self, value: usize, alignment: usize) -> usize {
-        debug_assert!(alignment.is_power_of_two());
-        value & !(alignment - 1)
-    }
-
-    #[inline(always)]
-    pub const fn is_aligned(&self, value: usize, alignment: usize) -> bool {
-        debug_assert!(alignment.is_power_of_two());
-        value & (alignment - 1) == 0
-    }
-
-    #[inline(always)]
-    pub fn is_aligned_ref<T>(&self, reference: &T, alignment: usize) -> bool {
-        let ptr = reference as *const T;
-        self.is_aligned(ptr as usize, alignment)
-    }
-
-    #[inline(always)]
-    pub fn align_ref_up<T>(&self, reference: &T, alignment: usize) -> usize {
-        let addr = ptr::from_ref::<T>(reference) as usize;
-        self.align_up(addr, alignment)
-    }
-
-    #[inline(always)]
-    pub fn align_ref_down<T>(&self, reference: &T, alignment: usize) -> usize {
-        let addr = ptr::from_ref::<T>(reference) as usize;
-        self.align_down(addr, alignment)
-    }
-
-    #[inline(always)]
-    pub const fn alignment_for_type<T>(&self) -> usize {
-        align_of::<T>()
-    }
-
-    #[inline(always)]
-    pub const fn padding_needed(&self, value: usize, alignment: usize) -> usize {
-        let aligned = self.align_up(value, alignment);
-        aligned.saturating_sub(value)
-    }
-}
-
-pub const ALIGN: AlignmentOps = AlignmentOps;
-
-// Convenience functions
-#[inline(always)]
-pub const fn align_up(value: usize, alignment: usize) -> usize {
-    ALIGN.align_up(value, alignment)
-}
-
-/// Unsafe version for hot paths
-///
-/// # Safety
-/// Caller must ensure that `value + alignment - 1` doesn't overflow
-#[inline(always)]
-pub const unsafe fn align_up_unchecked(value: usize, alignment: usize) -> usize {
-    // SAFETY: Caller guarantees no overflow
-    unsafe { ALIGN.align_up_unchecked(value, alignment) }
-}
-
-#[inline(always)]
-pub const fn try_align_up(value: usize, alignment: usize) -> Option<usize> {
-    ALIGN.try_align_up(value, alignment)
-}
-
-#[inline(always)]
-pub const fn align_down(value: usize, alignment: usize) -> usize {
-    ALIGN.align_down(value, alignment)
-}
-
-#[inline(always)]
-pub const fn is_aligned(value: usize, alignment: usize) -> bool {
-    ALIGN.is_aligned(value, alignment)
-}
-
-#[inline(always)]
-pub fn is_aligned_ptr<T>(ptr: *const T, alignment: usize) -> bool {
-    ALIGN.is_aligned(ptr as usize, alignment)
-}
-
-// Safe pointer alignment functions using references
-#[inline(always)]
-pub fn align_ptr_up<T>(ptr: *const T, alignment: usize) -> *const T {
-    let addr = ptr as usize;
-    let aligned = align_up(addr, alignment);
-    aligned as *const T
-}
-
-#[inline(always)]
-pub fn align_ptr_down<T>(ptr: *const T, alignment: usize) -> *const T {
-    let addr = ptr as usize;
-    let aligned = align_down(addr, alignment);
-    aligned as *const T
-}
-
-#[inline(always)]
-pub fn align_ptr_up_mut<T>(ptr: *mut T, alignment: usize) -> *mut T {
-    align_ptr_up(ptr.cast_const(), alignment).cast_mut()
-}
-
-#[inline(always)]
-pub const fn alignment_for_type<T>() -> usize {
-    align_of::<T>()
-}
-
-#[inline(always)]
-pub const fn padding_needed(value: usize, alignment: usize) -> usize {
-    ALIGN.padding_needed(value, alignment)
-}
-
-// ============================================================================
-// Power of Two Operations - Already Safe
-// ============================================================================
-
-#[inline]
-pub const fn next_power_of_two(value: usize) -> usize {
-    match value.checked_next_power_of_two() {
-        Some(v) => v,
-        None => usize::MAX / 2 + 1,
-    }
-}
-
-#[inline(always)]
-pub const fn is_power_of_two(value: usize) -> bool {
-    value != 0 && value.is_power_of_two()
-}
-
-#[inline(always)]
-pub const fn log2_power_of_two(value: usize) -> u32 {
-    debug_assert!(is_power_of_two(value));
-    value.trailing_zeros()
-}
-
-// ============================================================================
-// Platform Information - Safe Cached Access
-// ============================================================================
-
-#[derive(Debug, Clone)]
-pub struct PlatformInfo {
-    pub page_size: usize,
-    pub cache_line_size: usize,
-    pub pointer_width: usize,
-    pub huge_page_size: Option<usize>,
-    pub numa_nodes: usize,
-    pub cpu_count: usize,
-    pub total_memory: Option<usize>,
-}
-
-impl PlatformInfo {
-    #[cfg(feature = "std")]
-    pub fn current() -> &'static Self {
-        static PLATFORM_INFO: LazyLock<PlatformInfo> = LazyLock::new(PlatformInfo::detect);
-        &PLATFORM_INFO
-    }
-
-    #[cfg(not(feature = "std"))]
-    pub const fn current() -> Self {
-        Self {
-            page_size: 4096,
-            cache_line_size: 64,
-            pointer_width: mem::size_of::<usize>() * 8,
-            huge_page_size: None,
-            numa_nodes: 1,
-            cpu_count: 1,
-            total_memory: None,
-        }
-    }
-
-    #[cfg(feature = "std")]
-    fn detect() -> Self {
-        Self {
-            page_size: page_size(),
-            cache_line_size: cache_line_size(),
-            pointer_width: usize::BITS as usize,
-            huge_page_size: detect_huge_page_size(),
-            numa_nodes: detect_numa_nodes(),
-            cpu_count: num_cpus(),
-            total_memory: total_memory(),
+    pub fn prefetch_slice_read<T>(&self, slice: &[T]) {
+        if self.enabled && !slice.is_empty() {
+            prefetch_read(slice.as_ptr());
         }
     }
 }
 
-// Platform detection functions
-#[cfg(all(feature = "std", unix))]
-pub fn page_size() -> usize {
-    // SAFETY: sysconf is thread-safe
-    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
-}
-
-#[cfg(all(feature = "std", windows))]
-pub fn page_size() -> usize {
-    4096
-}
-
-#[cfg(not(feature = "std"))]
-pub const fn page_size() -> usize {
-    4096
-}
-
-#[cfg(feature = "std")]
-pub fn cache_line_size() -> usize {
-    static CACHE_LINE_SIZE: LazyLock<usize> = LazyLock::new(detect_cache_line_size);
-    *CACHE_LINE_SIZE
-}
-
-#[cfg(not(feature = "std"))]
-pub const fn cache_line_size() -> usize {
-    64
-}
-
-#[cfg(feature = "std")]
-fn detect_cache_line_size() -> usize {
-    #[cfg(all(target_os = "linux"))]
-    {
-        if let Ok(size) =
-            std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cache/index0/coherency_line_size")
-        {
-            if let Ok(size) = size.trim().parse::<usize>() {
-                return size;
-            }
-        }
-    }
-
-    #[cfg(all(target_os = "macos"))]
-    {
-        // SAFETY: sysctlbyname is safe with proper parameters
-        unsafe {
-            let mut size: usize = 0;
-            let mut len = mem::size_of::<usize>();
-            let res = libc::sysctlbyname(
-                "hw.cachelinesize\0".as_ptr() as *const _,
-                &mut size as *mut _ as *mut _,
-                &mut len,
-                ptr::null_mut(),
-                0,
-            );
-            if res == 0 && size > 0 {
-                return size;
-            }
-        }
-    }
-
-    64
-}
-
-#[cfg(feature = "std")]
-fn num_cpus() -> usize {
-    std::thread::available_parallelism()
-        .map(std::num::NonZero::get)
-        .unwrap_or(1)
-}
-
-#[cfg(all(feature = "std", target_os = "linux"))]
-fn total_memory() -> Option<usize> {
-    // SAFETY: sysconf is thread-safe
-    unsafe {
-        let pages = libc::sysconf(libc::_SC_PHYS_PAGES);
-        let page_size = libc::sysconf(libc::_SC_PAGESIZE);
-
-        if pages > 0 && page_size > 0 {
-            Some((pages * page_size) as usize)
-        } else {
-            None
-        }
+impl Default for PrefetchManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-#[cfg(not(all(feature = "std", target_os = "linux")))]
-fn total_memory() -> Option<usize> {
-    None
-}
-
-#[cfg(all(feature = "std", target_os = "linux"))]
-fn detect_huge_page_size() -> Option<usize> {
-    if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
-        for line in content.lines() {
-            if line.starts_with("Hugepagesize:") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    if let Ok(size) = parts[1].parse::<usize>() {
-                        return Some(size * 1024);
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-#[cfg(all(feature = "std", windows))]
-fn detect_huge_page_size() -> Option<usize> {
-    Some(2 * 1024 * 1024)
-}
-
-#[cfg(not(all(feature = "std", any(target_os = "linux", windows))))]
-fn detect_huge_page_size() -> Option<usize> {
-    None
-}
-
-#[cfg(all(feature = "std", target_os = "linux"))]
-fn detect_numa_nodes() -> usize {
-    if let Ok(entries) = std::fs::read_dir("/sys/devices/system/node/") {
-        let count = entries
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_str()
-                    .map(|s| s.starts_with("node"))
-                    .unwrap_or(false)
-            })
-            .count();
-
-        if count > 0 {
-            return count;
-        }
-    }
-    1
-}
-
-#[cfg(not(all(feature = "std", target_os = "linux")))]
-fn detect_numa_nodes() -> usize {
-    1
-}
-
-// ============================================================================
-// Formatting Utilities
-// ============================================================================
-
-#[cfg(feature = "std")]
-pub fn format_bytes(bytes: usize) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
-    const THRESHOLD: f64 = 1000.0;
-
-    if bytes == 0 {
-        return "0 B".to_string();
-    }
-
-    let mut size = bytes as f64;
-    let mut unit_index = 0;
-
-    while size >= THRESHOLD && unit_index < UNITS.len() - 1 {
-        size /= THRESHOLD;
-        unit_index += 1;
-    }
-
-    if unit_index == 0 {
-        format!("{} {}", bytes, UNITS[0])
-    } else {
-        format!("{:.2} {}", size, UNITS[unit_index])
-    }
-}
-
-#[cfg(feature = "std")]
-pub fn format_bytes_binary(bytes: usize) -> String {
-    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"];
-    const THRESHOLD: f64 = 1024.0;
-
-    if bytes == 0 {
-        return "0 B".to_string();
-    }
-
-    let mut size = bytes as f64;
-    let mut unit_index = 0;
-
-    while size >= THRESHOLD && unit_index < UNITS.len() - 1 {
-        size /= THRESHOLD;
-        unit_index += 1;
-    }
-
-    if unit_index == 0 {
-        format!("{} {}", bytes, UNITS[0])
-    } else {
-        format!("{:.2} {}", size, UNITS[unit_index])
-    }
-}
-
-#[cfg(feature = "std")]
-pub fn format_duration(duration: Duration) -> String {
-    let nanos = duration.as_nanos();
-
-    if nanos == 0 {
-        "0ns".to_string()
-    } else if nanos < 1_000 {
-        format!("{nanos}ns")
-    } else if nanos < 1_000_000 {
-        format!("{:.2}μs", nanos as f64 / 1_000.0)
-    } else if nanos < 1_000_000_000 {
-        format!("{:.2}ms", nanos as f64 / 1_000_000.0)
-    } else {
-        let secs = duration.as_secs();
-        if secs < 60 {
-            format!("{:.2}s", duration.as_secs_f64())
-        } else if secs < 3600 {
-            let mins = secs / 60;
-            let secs = secs % 60;
-            if secs > 0 {
-                format!("{mins}m {secs}s")
-            } else {
-                format!("{mins}m")
-            }
-        } else if secs < 86400 {
-            let hours = secs / 3600;
-            let mins = (secs % 3600) / 60;
-            if mins > 0 {
-                format!("{hours}h {mins}m")
-            } else {
-                format!("{hours}h")
-            }
-        } else {
-            let days = secs / 86400;
-            let hours = (secs % 86400) / 3600;
-            if hours > 0 {
-                format!("{days}d {hours}h")
-            } else {
-                format!("{days}d")
-            }
-        }
-    }
-}
-
-// ============================================================================
-// Performance Measurement
-// ============================================================================
-
+/// Performance measurement utilities
 #[cfg(feature = "std")]
 pub mod perf {
     use super::*;
 
-    #[derive(Debug)]
-    pub struct Timer {
-        start: Instant,
-        name: &'static str,
-        auto_print: bool,
-        operations: Option<u64>,
-    }
-
-    impl Timer {
-        #[inline]
-        pub fn new(name: &'static str) -> Self {
-            Self {
-                start: Instant::now(),
-                name,
-                auto_print: true,
-                operations: None,
-            }
-        }
-
-        #[inline]
-        pub fn silent(name: &'static str) -> Self {
-            Self {
-                start: Instant::now(),
-                name,
-                auto_print: false,
-                operations: None,
-            }
-        }
-
-        #[inline]
-        pub fn with_operations(name: &'static str, operations: u64) -> Self {
-            Self {
-                start: Instant::now(),
-                name,
-                auto_print: true,
-                operations: Some(operations),
-            }
-        }
-
-        #[inline]
-        pub fn elapsed(&self) -> Duration {
-            self.start.elapsed()
-        }
-
-        pub fn print(&self) {
-            let elapsed = self.elapsed();
-
-            match self.operations {
-                Some(ops) => {
-                    let throughput = calculate_throughput(ops, elapsed);
-                    println!(
-                        "{}: {} ({} ops, {})",
-                        self.name,
-                        format_duration(elapsed),
-                        ops,
-                        format_throughput(throughput)
-                    );
-                }
-                None => {
-                    println!("{}: {}", self.name, format_duration(elapsed));
-                }
-            }
-        }
-    }
-
-    impl Drop for Timer {
-        fn drop(&mut self) {
-            if self.auto_print {
-                self.print();
-            }
-        }
-    }
-
-    #[inline]
+    /// Measures the execution time of a closure
+    ///
+    /// # Examples
+    /// ```
+    /// use nebula_memory::utils::perf::measure_time;
+    ///
+    /// let (result, duration) = measure_time(|| {
+    ///     // Some computation
+    ///     42
+    /// });
+    /// assert_eq!(result, 42);
+    /// ```
     pub fn measure_time<F, R>(f: F) -> (R, Duration)
-    where
-        F: FnOnce() -> R,
-    {
+    where F: FnOnce() -> R {
         let start = Instant::now();
         let result = f();
         let duration = start.elapsed();
         (result, duration)
     }
 
-    #[inline]
+    /// Measures throughput in operations per second
     pub fn calculate_throughput(operations: u64, duration: Duration) -> f64 {
-        let secs = duration.as_secs_f64();
-        if secs == 0.0 {
-            f64::INFINITY
+        if duration.as_secs_f64() == 0.0 {
+            0.0
         } else {
-            operations as f64 / secs
+            operations as f64 / duration.as_secs_f64()
         }
     }
 
+    /// Formats throughput as human-readable string
     pub fn format_throughput(ops_per_sec: f64) -> String {
-        if ops_per_sec == f64::INFINITY {
-            "∞ ops/s".to_string()
-        } else if ops_per_sec < 1.0 {
-            format!("{ops_per_sec:.3} ops/s")
-        } else if ops_per_sec < 1_000.0 {
-            format!("{ops_per_sec:.2} ops/s")
+        if ops_per_sec < 1_000.0 {
+            format!("{:.2} ops/s", ops_per_sec)
         } else if ops_per_sec < 1_000_000.0 {
             format!("{:.2}K ops/s", ops_per_sec / 1_000.0)
         } else if ops_per_sec < 1_000_000_000.0 {
@@ -1036,174 +609,65 @@ pub mod perf {
     }
 }
 
-// ============================================================================
-// Debug Utilities
-// ============================================================================
-
-#[inline(always)]
-pub fn debug_assert_aligned<T>(ptr: *const T) {
-    debug_assert!(
-        is_aligned_ptr(ptr, align_of::<T>()),
-        "Pointer {:p} is not aligned for type {} (requires {} byte alignment)",
-        ptr,
-        core::any::type_name::<T>(),
-        align_of::<T>()
-    );
-}
-
-// Safe version using references
-#[inline(always)]
-pub fn debug_assert_aligned_ref<T>(reference: &T) {
-    let ptr = reference as *const T;
-    debug_assert_aligned(ptr);
-}
-
-#[cfg(feature = "std")]
-pub fn hexdump(data: &[u8], offset: usize) -> String {
-    use std::fmt::Write;
-
-    let mut result = String::with_capacity(data.len() * 4);
-
-    for (i, chunk) in data.chunks(16).enumerate() {
-        let _ = write!(&mut result, "{:08x}  ", offset + i * 16);
-
-        for (j, byte) in chunk.iter().enumerate() {
-            if j == 8 {
-                result.push(' ');
-            }
-            let _ = write!(&mut result, "{byte:02x} ");
-        }
-
-        if chunk.len() < 16 {
-            for j in chunk.len()..16 {
-                if j == 8 {
-                    result.push(' ');
-                }
-                result.push_str("   ");
-            }
-        }
-
-        result.push_str(" |");
-
-        for byte in chunk {
-            if byte.is_ascii_graphic() || *byte == b' ' {
-                result.push(*byte as char);
-            } else {
-                result.push('.');
-            }
-        }
-
-        result.push_str("|\n");
-    }
-
-    result
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::mem;
 
     #[test]
-    fn test_alignment_saturating() {
+    fn test_alignment_functions() {
+        assert_eq!(align_up(0, 8), 0);
+        assert_eq!(align_up(1, 8), 8);
         assert_eq!(align_up(7, 8), 8);
         assert_eq!(align_up(8, 8), 8);
-        assert_eq!(align_up(usize::MAX - 5, 8), usize::MAX - 7);
-        assert_eq!(align_up(usize::MAX - 7, 8), usize::MAX - 7);
-        assert_eq!(align_up(usize::MAX, 8), usize::MAX);
+        assert_eq!(align_up(9, 8), 16);
+
+        assert_eq!(align_down(0, 8), 0);
+        assert_eq!(align_down(1, 8), 0);
+        assert_eq!(align_down(7, 8), 0);
+        assert_eq!(align_down(8, 8), 8);
+        assert_eq!(align_down(15, 8), 8);
+
+        assert!(is_aligned(0, 8));
+        assert!(is_aligned(8, 8));
+        assert!(is_aligned(16, 8));
+        assert!(!is_aligned(7, 8));
+        assert!(!is_aligned(9, 8));
+
+        assert_eq!(padding_needed(0, 8), 0);
+        assert_eq!(padding_needed(1, 8), 7);
+        assert_eq!(padding_needed(8, 8), 0);
     }
 
     #[test]
-    fn test_try_align_up() {
-        assert_eq!(try_align_up(7, 8), Some(8));
-        assert_eq!(try_align_up(usize::MAX - 5, 8), None);
-        assert_eq!(try_align_up(usize::MAX - 7, 8), Some(usize::MAX - 7));
+    fn test_power_of_two() {
+        assert_eq!(next_power_of_two(0), 1);
+        assert_eq!(next_power_of_two(1), 1);
+        assert_eq!(next_power_of_two(3), 4);
+        assert_eq!(next_power_of_two(63), 64);
     }
 
-    #[test]
-    fn test_atomic_stats() {
-        let stats = AtomicStats::new();
+    // Tests for format_bytes and format_duration are now in nebula-system
 
-        stats.record(10);
-        stats.record(20);
-        stats.record(5);
-
-        assert_eq!(stats.count.load(Ordering::Relaxed), 3);
-        assert_eq!(stats.sum.load(Ordering::Relaxed), 35);
-        assert_eq!(stats.max.load(Ordering::Relaxed), 20);
-        assert_eq!(stats.min.load(Ordering::Relaxed), 5);
-        assert!((stats.average() - 11.67).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_backoff() {
-        let mut backoff = Backoff::new();
-
-        for _ in 0..5 {
-            backoff.spin();
-        }
-        assert!(!backoff.is_completed());
-
-        let mut backoff = Backoff::with_max_spin(2);
-        for _ in 0..10 {
-            backoff.spin();
-        }
-        assert!(backoff.is_completed());
-    }
+    // Test for cache_line_size is now in nebula-system
 
     #[cfg(feature = "std")]
     #[test]
-    fn test_formatting() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(1000), "1.00 KB");
-        assert_eq!(format_bytes_binary(1024), "1.00 KiB");
+    fn test_perf_utils() {
+        let (result, duration) = perf::measure_time(|| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            42
+        });
 
-        assert_eq!(format_duration(Duration::from_nanos(500)), "500ns");
-        assert_eq!(format_duration(Duration::from_secs(90)), "1m 30s");
-        assert_eq!(format_duration(Duration::from_secs(3661)), "1h 1m");
-        assert_eq!(format_duration(Duration::from_secs(90000)), "1d 1h");
+        assert_eq!(result, 42);
+        assert!(duration.as_millis() >= 10);
+
+        let throughput = perf::calculate_throughput(1000, Duration::from_secs(1));
+        assert_eq!(throughput, 1000.0);
+
+        assert_eq!(perf::format_throughput(500.0), "500.00 ops/s");
+        assert_eq!(perf::format_throughput(1500.0), "1.50K ops/s");
+        assert_eq!(perf::format_throughput(1_500_000.0), "1.50M ops/s");
     }
 
-    #[test]
-    fn test_safe_prefetch() {
-        let data = vec![1, 2, 3, 4, 5];
-        let prefetch = PrefetchManager::new();
-
-        prefetch.prefetch_read(&data[0]);
-        prefetch.prefetch_slice_read(&data);
-    }
-
-    #[test]
-    fn test_safe_memory_ops() {
-        let memory = MemoryOps::new();
-        let mut buffer = vec![1u8; 100];
-
-        memory.secure_zero_slice(&mut buffer);
-        assert!(buffer.iter().all(|&b| b == 0));
-
-        memory.secure_fill_slice(&mut buffer, 0xFF);
-        assert!(buffer.iter().all(|&b| b == 0xFF));
-    }
-
-    #[test]
-    fn test_safe_alignment_checks() {
-        let data = 42u64;
-        assert!(ALIGN.is_aligned_ref(&data, mem::align_of::<u64>()));
-
-        let aligned_addr = ALIGN.align_ref_up(&data, 128);
-        assert!(ALIGN.is_aligned(aligned_addr, 128));
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn test_hexdump() {
-        let data = b"Hello, World!";
-        let dump = hexdump(data, 0);
-        assert!(dump.contains("48 65 6c 6c 6f"));
-        assert!(dump.contains("|Hello, World!|"));
-    }
+    // Test for PlatformInfo is now in nebula-system
 }

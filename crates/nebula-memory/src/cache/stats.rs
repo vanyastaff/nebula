@@ -29,7 +29,7 @@ use {
     spin::{Mutex, RwLock},
 };
 
-use crate::error::{MemoryError, MemoryResult};
+use crate::core::error::{MemoryError, MemoryResult};
 
 /// Time window for statistics aggregation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -612,7 +612,7 @@ impl AtomicCacheStats {
 
         // Calculate windowed statistics
         // This is a simplified implementation - in production you'd want more sophisticated aggregation
-        let mut windowed_stats = CacheStats::new();
+        let windowed_stats = CacheStats::new();
 
         // For demonstration, just use the latest values
         // In a real implementation, you'd aggregate the data points properly
@@ -904,9 +904,7 @@ impl StatsCollector {
             stats.reset();
             Ok(())
         } else {
-            Err(MemoryError::InvalidArgument {
-                reason: format!("Cache '{}' not found", name),
-            })
+            Err(MemoryError::invalid_argument("cache not found"))
         }
     }
 
