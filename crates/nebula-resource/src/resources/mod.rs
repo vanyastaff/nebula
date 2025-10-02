@@ -1,6 +1,12 @@
 //! Built-in resource implementations
 
 /// Database resources
+#[cfg(feature = "postgres")]
+pub mod postgres;
+#[cfg(feature = "mysql")]
+pub mod mysql;
+#[cfg(feature = "mongodb")]
+pub mod mongodb;
 pub mod database;
 
 /// Cache resources
@@ -30,7 +36,13 @@ pub mod storage;
 pub mod observability;
 
 // Re-exports for convenience
-pub use database::{DatabaseResource, MySqlResource};
+pub use database::DatabaseResource;
+#[cfg(feature = "postgres")]
+pub use postgres::PostgresResource;
+#[cfg(feature = "mysql")]
+pub use mysql::MySqlResource;
+#[cfg(feature = "mongodb")]
+pub use mongodb::MongoDbResource;
 pub use cache::CacheResource;
 pub use memory_cache::MemoryCacheResource;
 #[cfg(feature = "redis")]
@@ -41,5 +53,8 @@ pub use message_queue::MessageQueueResource;
 pub use kafka::{KafkaProducerResource, KafkaConsumerResource};
 pub use storage::StorageResource;
 pub use observability::{LoggerResource, MetricsResource, TracerResource};
+
+
+
 
 

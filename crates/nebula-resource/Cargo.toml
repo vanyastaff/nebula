@@ -38,6 +38,7 @@ pooling = []
 # Database support
 postgres = ["dep:sqlx"]
 mysql = ["dep:sqlx"]
+mongodb = ["dep:mongodb"]
 redis = ["dep:redis"]
 
 # HTTP client support
@@ -96,6 +97,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Database drivers
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "mysql", "uuid", "chrono"], optional = true }
+mongodb = { version = "3.1", optional = true }
 redis = { version = "0.24", features = ["tokio-comp", "connection-manager"], optional = true }
 
 # HTTP client
