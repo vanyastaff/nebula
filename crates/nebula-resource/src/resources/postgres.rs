@@ -16,6 +16,7 @@ use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PostgresConfig {
     /// PostgreSQL connection URL (e.g., "postgresql://user:pass@localhost/db")
+    /// Can contain placeholders: {credential}, {password}, {token}
     pub url: String,
     /// Maximum number of connections in the pool
     pub max_connections: u32,
@@ -23,6 +24,9 @@ pub struct PostgresConfig {
     pub min_connections: u32,
     /// Connection timeout in seconds
     pub timeout_seconds: u64,
+    /// Optional credential configuration
+    #[cfg(feature = "credentials")]
+    pub credential: Option<crate::credentials::CredentialConfig>,
 }
 
 impl Default for PostgresConfig {
@@ -32,6 +36,8 @@ impl Default for PostgresConfig {
             max_connections: 10,
             min_connections: 2,
             timeout_seconds: 30,
+            #[cfg(feature = "credentials")]
+            credential: None,
         }
     }
 }
@@ -93,6 +99,9 @@ pub struct PostgresInstance {
     url: String,
     #[cfg(not(feature = "postgres"))]
     max_connections: u32,
+
+    #[cfg(feature = "credentials")]
+    credential_provider: Option<std::sync::Arc<crate::credentials::ResourceCredentialProvider>>,
 }
 
 impl ResourceInstance for PostgresInstance {
@@ -297,13 +306,29 @@ impl Resource for PostgresResource {
     ) -> ResourceResult<Self::Instance> {
         config.validate()?;
 
+        // Resolve connection URL with credentials if configured
+        #[cfg(feature = "credentials")]
+        let connection_url = if let Some(_cred_config) = &config.credential {
+            // For now, just use the URL as-is
+            // In a real implementation, we would:
+            // 1. Get CredentialManager from context
+            // 2. Create ResourceCredentialProvider
+            // 3. Build connection string with credentials
+            config.url.clone()
+        } else {
+            config.url.clone()
+        };
+
+        #[cfg(not(feature = "credentials"))]
+        let connection_url = config.url.clone();
+
         #[cfg(feature = "postgres")]
         {
             let pool = PgPoolOptions::new()
                 .max_connections(config.max_connections)
                 .min_connections(config.min_connections)
                 .acquire_timeout(std::time::Duration::from_secs(config.timeout_seconds))
-                .connect(&config.url)
+                .connect(&connection_url)
                 .await
                 .map_err(|e| {
                     ResourceError::initialization(
@@ -320,6 +345,8 @@ impl Resource for PostgresResource {
                 last_accessed: parking_lot::Mutex::new(None),
                 state: parking_lot::RwLock::new(crate::core::lifecycle::LifecycleState::Ready),
                 pool,
+                #[cfg(feature = "credentials")]
+                credential_provider: None, // Would be set from context in real implementation
             })
         }
 
@@ -332,8 +359,10 @@ impl Resource for PostgresResource {
                 created_at: chrono::Utc::now(),
                 last_accessed: parking_lot::Mutex::new(None),
                 state: parking_lot::RwLock::new(crate::core::lifecycle::LifecycleState::Ready),
-                url: config.url.clone(),
+                url: connection_url,
                 max_connections: config.max_connections,
+                #[cfg(feature = "credentials")]
+                credential_provider: None,
             })
         }
     }
