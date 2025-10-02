@@ -120,6 +120,7 @@ impl Resource for RedisCacheResource {
 
         #[cfg(not(feature = "redis"))]
         {
+            let _ = (config, context);
             Err(ResourceError::configuration(
                 "Redis feature not enabled. Enable 'redis' feature to use Redis cache",
             ))
@@ -175,6 +176,9 @@ pub struct RedisCacheInstance {
 
     #[cfg(feature = "redis")]
     key_prefix: Option<String>,
+
+    #[cfg(not(feature = "redis"))]
+    _dummy: (),
 }
 
 impl ResourceInstance for RedisCacheInstance {
