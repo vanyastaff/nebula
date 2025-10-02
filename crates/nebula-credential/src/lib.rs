@@ -37,7 +37,7 @@ pub mod traits;
 
 /// Commonly used types and traits
 pub mod prelude {
-    pub use crate::authenticator::{ChainAuthenticator, ClientAuthenticator};
+    pub use crate::authenticator::{AuthenticateWith, ChainAuthenticator, ClientAuthenticator};
     pub use crate::core::{
         AccessToken, CredentialContext, CredentialError, CredentialId, CredentialMetadata,
         CredentialState, Ephemeral, SecureString,
