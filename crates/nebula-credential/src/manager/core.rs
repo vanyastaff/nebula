@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 /// Wrapper for any distributed lock implementation
-pub struct AnyLock {
+pub(crate) struct AnyLock {
     inner: Arc<dyn AnyDistributedLock>,
 }
 
@@ -254,37 +254,32 @@ impl CredentialManager {
                         );
                     }
 
-                    match self
+                    // Save new state with CAS
+                    let save_result = self
                         .store
                         .save(credential_id.as_str(), version, &new_state_json)
-                        .await
-                    {
-                        Ok(_) => {
-                            // Cache the new token
-                            if let Some(cache) = &self.cache {
-                                let ttl = token.ttl().unwrap_or(Duration::from_secs(300));
-                                let _ = cache.put(credential_id.as_str(), &token, ttl).await;
-                            }
+                        .await;
 
-                            // Clear negative cache
-                            self.negative_cache.remove(credential_id.as_str());
-
-                            return Ok(token);
-                        }
+                    match save_result {
                         Err(CredentialError::CasConflict) => {
                             // Retry with fresh state
                             continue;
                         }
                         Err(e) => return Err(e),
+                        Ok(_) => {
+                            // Success: cache token and clear negative cache
+                            self.cache_token_if_available(credential_id.as_str(), &token)
+                                .await;
+                            self.negative_cache.remove(credential_id.as_str());
+                            return Ok(token);
+                        }
                     }
                 }
                 Err(e) if e.is_retryable() && attempt < self.policy.max_retries - 1 => {
                     last_error = Some(e);
 
-                    // Calculate backoff
+                    // Calculate backoff and sleep
                     let backoff = self.calculate_backoff(attempt);
-
-                    #[cfg(feature = "runtime")]
                     tokio::time::sleep(backoff).await;
                 }
                 Err(e) => {
@@ -313,6 +308,13 @@ impl CredentialManager {
         Err(error)
     }
 
+    async fn cache_token_if_available(&self, credential_id: &str, token: &AccessToken) {
+        if let Some(cache) = &self.cache {
+            let ttl = token.ttl().unwrap_or(Duration::from_secs(300));
+            let _ = cache.put(credential_id, token, ttl).await;
+        }
+    }
+
     fn calculate_backoff(&self, attempt: u32) -> Duration {
         let base = self.policy.backoff_base.as_millis() as u64;
         let factor = self.policy.backoff_factor;
@@ -321,16 +323,10 @@ impl CredentialManager {
         let backoff_ms = (base as f64 * factor.powi(attempt as i32)) as u64;
         let clamped = backoff_ms.min(max);
 
-        // Add jitter
-        #[cfg(feature = "runtime")]
-        {
-            use rand::Rng;
-            let jitter = rand::thread_rng().gen_range(0..clamped / 4);
-            Duration::from_millis(clamped + jitter)
-        }
-
-        #[cfg(not(feature = "runtime"))]
-        Duration::from_millis(clamped)
+        // Add jitter to avoid thundering herd
+        use rand::Rng;
+        let jitter = rand::thread_rng().gen_range(0..clamped / 4);
+        Duration::from_millis(clamped + jitter)
     }
 
     fn should_refresh(&self, token: &AccessToken) -> bool {
@@ -352,5 +348,15 @@ impl CredentialManager {
         } else {
             false
         }
+    }
+
+    /// Get reference to the registry (for testing)
+    pub fn registry(&self) -> &Arc<CredentialRegistry> {
+        &self.registry
+    }
+
+    /// Get reference to the cache (for testing)
+    pub fn cache(&self) -> Option<&Arc<dyn TokenCache>> {
+        self.cache.as_ref()
     }
 }

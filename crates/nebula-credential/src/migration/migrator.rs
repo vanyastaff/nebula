@@ -8,6 +8,7 @@ pub trait StateMigrator: Send + Sync {
     fn kind(&self) -> &'static str;
 
     /// Source version
+    #[allow(clippy::wrong_self_convention)]
     fn from_version(&self) -> u16;
 
     /// Target version

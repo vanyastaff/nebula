@@ -28,7 +28,7 @@ fn main() {
 
     // 3. Secure string handling
     println!("3. Secure string example...");
-    let password = SecureString::from("super-secret-password");
+    let _password = SecureString::new("super-secret-password");
     println!("   ✓ Created secure string (auto-zeroized on drop)");
     println!("   - SecureString protects sensitive data");
     println!();
@@ -36,22 +36,22 @@ fn main() {
     // 4. Credential metadata
     println!("4. Credential metadata...");
     let metadata = CredentialMetadata {
-        id: cred_id_2.clone(),
-        name: "Database Credentials".to_string(),
-        description: Some("PostgreSQL production database".to_string()),
+        id: "postgres-db",
+        name: "Database Credentials",
+        description: "PostgreSQL production database",
+        supports_refresh: true,
+        requires_interaction: false,
     };
 
     println!("   ✓ Metadata created:");
     println!("     - ID: {}", metadata.id);
     println!("     - Name: {}", metadata.name);
-    if let Some(desc) = &metadata.description {
-        println!("     - Description: {}", desc);
-    }
+    println!("     - Description: {}", metadata.description);
     println!();
 
     // 5. Credential context
     println!("5. Credential context...");
-    let context = CredentialContext::new();
+    let _context = CredentialContext::new();
     println!("   ✓ Context created for credential operations");
     println!("   - Used for tracing and audit logging");
     println!();

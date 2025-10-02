@@ -13,8 +13,15 @@ impl KeyDomain for CredentialDomain {
     }
 }
 
+/// Type-safe key for credential identifiers
 pub type CredentialKey = Key<CredentialDomain>;
 
+/// Create a compile-time validated credential key
+///
+/// # Example
+/// ```ignore
+/// let key = credential_key!("my_credential");
+/// ```
 #[macro_export]
 macro_rules! credential_key {
     ($param_name:literal) => {

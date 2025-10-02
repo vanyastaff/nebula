@@ -64,3 +64,79 @@ impl std::fmt::Debug for SecureString {
         write!(f, "SecureString[REDACTED]")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_secure_string_creation() {
+        let secret = SecureString::new("my-secret");
+        assert_eq!(secret.expose(), "my-secret");
+    }
+
+    #[test]
+    fn test_secure_string_expose() {
+        let secret = SecureString::new("password123");
+        assert_eq!(secret.expose(), "password123");
+    }
+
+    #[test]
+    fn test_secure_string_with_exposed() {
+        let secret = SecureString::new("test-value");
+        let result = secret.with_exposed(|s| s.len());
+        assert_eq!(result, 10);
+    }
+
+    #[test]
+    fn test_secure_string_constant_time_eq() {
+        let s1 = SecureString::new("same-value");
+        let s2 = SecureString::new("same-value");
+        let s3 = SecureString::new("different");
+
+        assert!(s1.eq_ct(&s2));
+        assert!(!s1.eq_ct(&s3));
+    }
+
+    #[test]
+    fn test_secure_string_debug_does_not_leak() {
+        let secret = SecureString::new("super-secret-password");
+        let debug_str = format!("{:?}", secret);
+
+        assert!(!debug_str.contains("super-secret"));
+        assert!(!debug_str.contains("password"));
+        assert!(debug_str.contains("REDACTED"));
+    }
+
+    #[test]
+    fn test_secure_string_serialization() {
+        let original = SecureString::new("test-secret");
+        let json = serde_json::to_string(&original).expect("serialization should work");
+
+        // Should be base64 encoded
+        assert!(!json.contains("test-secret"));
+
+        let deserialized: SecureString =
+            serde_json::from_str(&json).expect("deserialization should work");
+        assert_eq!(deserialized.expose(), "test-secret");
+    }
+
+    #[test]
+    fn test_secure_string_clone() {
+        let original = SecureString::new("cloneable");
+        let cloned = original.clone();
+        assert_eq!(original.expose(), cloned.expose());
+    }
+
+    #[test]
+    fn test_secure_string_empty() {
+        let empty = SecureString::new("");
+        assert_eq!(empty.expose(), "");
+    }
+
+    #[test]
+    fn test_secure_string_unicode() {
+        let unicode = SecureString::new("こんにちは🎌");
+        assert_eq!(unicode.expose(), "こんにちは🎌");
+    }
+}

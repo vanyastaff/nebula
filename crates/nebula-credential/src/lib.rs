@@ -19,6 +19,7 @@
 
 /// Authentication strategies and composable authenticators
 pub mod authenticator;
+pub mod cache;
 /// Core types, errors, and primitives
 pub mod core;
 /// Credential manager and refresh policies
@@ -28,8 +29,9 @@ pub mod migration;
 /// Credential type registry and factories
 pub mod registry;
 pub mod storage;
-pub mod cache;
-mod testing;
+/// Testing utilities and mocks
+#[cfg_attr(test, allow(dead_code))]
+pub mod testing;
 /// Core traits for credentials, storage, caching, and locking
 pub mod traits;
 
@@ -51,3 +53,7 @@ pub mod prelude {
 // Re-export commonly used external types
 pub use chrono::{DateTime, Utc};
 pub use uuid::Uuid;
+
+// Re-export top-level types for convenience
+pub use crate::manager::CredentialManager;
+pub use crate::registry::CredentialRegistry;
