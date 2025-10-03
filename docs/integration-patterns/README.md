@@ -8,16 +8,58 @@ This directory contains integration patterns and best practices for combining Ne
 
 **Status:** ✅ Stable
 
-Integration pattern for `nebula-credential` + `nebula-resource` to create secure, multi-authentication resources.
+Integration pattern for `nebula-credential` + `nebula-resource` to create secure, authenticated resources.
+
+Supports **two patterns**:
+1. **Single-Auth** - Service with ONE authentication method (simpler)
+2. **Multi-Auth** - Service with MULTIPLE authentication methods (more flexible)
 
 **Key Features:**
-- ✅ Multiple authentication methods (API Key, OAuth2, Basic Auth, Bearer Token)
+- ✅ Single OR multiple authentication methods
 - ✅ Type-safe credential access
 - ✅ Simplified configuration (NO AuthMethod field needed!)
-- ✅ Pattern matching for all auth variants
+- ✅ Pattern matching for multi-auth (optional for single-auth)
 - ✅ Automatic credential refresh and rotation
 
-**Quick Start:**
+**Quick Start (Single-Auth):**
+
+```rust
+// 1. Define credential struct (not enum!)
+pub struct ApiKeyState {
+    pub key: SecureString,
+    pub header_name: String,
+}
+
+// 2. Implement Credential trait
+#[async_trait]
+impl Credential for ApiKeyCredential {
+    type Input = ApiKeyInput;
+    type State = ApiKeyState;
+    // ... implement initialize, refresh, validate
+}
+
+// 3. Simple authenticator - no pattern matching!
+#[async_trait]
+impl StatefulAuthenticator<ApiKeyCredential> for ApiKeyAuthenticator {
+    async fn authenticate(&self, config: Config, state: &ApiKeyState) -> Result<Client> {
+        // Direct access to state fields
+        let client = HttpClient::new(config.base_url);
+        client.header(&state.header_name, state.key.expose())
+    }
+}
+
+// 4. Use it!
+let config = ServiceConfig {
+    endpoint: "https://api.stripe.com".into(),
+    credential_id: cred_id.to_string(), // That's it!
+};
+
+let client = config
+    .authenticate_with_state(&authenticator, &state)
+    .await?;
+```
+
+**Quick Start (Multi-Auth):**
 
 ```rust
 // 1. Define credential enum
@@ -27,15 +69,8 @@ pub enum ServiceCredentials {
     BasicAuth { username: String, password: SecureString },
 }
 
-// 2. Implement Credential trait
-#[async_trait]
-impl Credential for ServiceCredential {
-    type Input = ServiceCredentialsInput;
-    type State = ServiceCredentialsState;
-    // ... implement initialize, refresh, validate
-}
-
-// 3. Create authenticator with pattern matching
+// 2. Implement Credential trait (same as single-auth)
+// 3. Authenticator with pattern matching
 #[async_trait]
 impl StatefulAuthenticator<ServiceCredential> for HttpClientAuthenticator {
     async fn authenticate(&self, config: Config, state: &State) -> Result<Client> {
@@ -46,27 +81,22 @@ impl StatefulAuthenticator<ServiceCredential> for HttpClientAuthenticator {
         }
     }
 }
-
-// 4. Use it!
-let config = ServiceConfig {
-    endpoint: "https://api.example.com".into(),
-    credential_id: cred_id.to_string(), // That's it!
-};
-
-let client = config
-    .authenticate_with_state(&authenticator, &state)
-    .await?;
 ```
 
 **Examples:**
+- [single_auth_service.rs](../../crates/nebula-credential/examples/single_auth_service.rs) - **Single-auth** (API Key, OAuth2 separately)
+- [multi_auth_service.rs](../../crates/nebula-credential/examples/multi_auth_service.rs) - **Multi-auth** (all methods in one service)
 - [multi_auth_http_client.rs](../../crates/nebula-resource/examples/multi_auth_http_client.rs) - HTTP client with multi-auth
-- [multi_auth_service.rs](../../crates/nebula-credential/examples/multi_auth_service.rs) - Service credentials
 
-**When to use:**
-- Building resources that need authentication
-- Supporting multiple authentication methods
-- Need type-safe access to credential fields (not just tokens)
-- Want automatic credential refresh/rotation
+**When to use Single-Auth:**
+- Service supports ONLY ONE authentication method (e.g., Stripe API Key only)
+- Simpler code, no pattern matching needed
+- Can upgrade to multi-auth later if needed
+
+**When to use Multi-Auth:**
+- Service supports MULTIPLE authentication methods (e.g., AWS supports multiple auth types)
+- Need flexibility for users to choose auth method
+- More complex but more powerful
 
 ---
 
