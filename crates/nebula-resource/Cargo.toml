@@ -112,6 +112,7 @@ rdkafka = { version = "0.36", features = ["tokio"], optional = true }
 # Configuration and validation
 config = "0.13"
 validator = { version = "0.16", features = ["derive"] }
+base64 = "0.22"
 
 # Development and testing
 mockall = { version = "0.11", optional = true }

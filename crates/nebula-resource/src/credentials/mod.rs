@@ -1,8 +1,8 @@
-//! Credential integration for secure resource authentication
 //!
+//! Credential integration for secure resource authentication
 //! This module provides integration with nebula-credential for secure
 //! credential management, automatic token refresh, and credential rotation.
-
+pub mod stateful;
 #[cfg(feature = "credentials")]
 use nebula_credential::prelude::*;
 
@@ -333,3 +333,4 @@ mod tests {
         scheduler.stop().await;
     }
 }
+
