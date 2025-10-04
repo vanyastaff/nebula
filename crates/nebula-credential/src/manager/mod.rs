@@ -1,4 +1,3 @@
-pub mod manager;
 mod builder;
 mod core;
 mod negative_cache;
