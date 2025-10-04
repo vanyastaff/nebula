@@ -1,4 +1,5 @@
 //! Core traits for credential system
+pub mod bridge;
 mod cache;
 mod credential;
 mod lock;

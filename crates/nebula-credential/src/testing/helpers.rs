@@ -1,8 +1,8 @@
 //! Helper functions for testing
 
-use crate::core::*;
-use crate::manager::*;
-use crate::registry::*;
+use crate::core::{CredentialError, CredentialId, Result};
+use crate::manager::CredentialManager;
+use crate::registry::CredentialRegistry;
 use crate::testing::{MockLock, MockStateStore, MockTokenCache};
 use std::future::Future;
 use std::sync::Arc;

@@ -5,42 +5,78 @@ use thiserror::Error;
 pub enum CredentialError {
     /// Credential not found
     #[error("Credential not found: {id}")]
-    NotFound { id: String },
+    NotFound {
+        /// The credential ID
+        id: String,
+    },
 
     /// Credential has expired and cannot be refreshed
     #[error("Credential expired: {id}")]
-    Expired { id: String },
+    Expired {
+        /// The credential ID
+        id: String,
+    },
 
+    /// Invalid key format error
     #[error("Credential invalid key: {0}")]
     InvalidKey(#[from] domain_key::KeyParseError),
 
     /// Refresh operation is not supported for this credential type
     #[error("Refresh not supported for credential type: {credential_type}")]
-    RefreshNotSupported { credential_type: String },
+    RefreshNotSupported {
+        /// The credential type
+        credential_type: String,
+    },
 
     /// Failed to refresh credential
     #[error("Failed to refresh credential {id}: {reason}")]
-    RefreshFailed { id: String, reason: String },
+    RefreshFailed {
+        /// The credential ID
+        id: String,
+        /// The failure reason
+        reason: String,
+    },
 
     /// Authentication failed
     #[error("Authentication failed: {reason}")]
-    AuthenticationFailed { reason: String },
+    AuthenticationFailed {
+        /// The failure reason
+        reason: String,
+    },
 
     /// Invalid credential configuration
     #[error("Invalid credential configuration: {reason}")]
-    InvalidConfiguration { reason: String },
+    InvalidConfiguration {
+        /// The configuration issue
+        reason: String,
+    },
 
     /// Storage operation failed
     #[error("Storage operation failed: {operation}: {reason}")]
-    StorageFailed { operation: String, reason: String },
+    StorageFailed {
+        /// The storage operation
+        operation: String,
+        /// The failure reason
+        reason: String,
+    },
 
     /// Cache operation failed
     #[error("Cache operation failed: {operation}: {reason}")]
-    CacheFailed { operation: String, reason: String },
+    CacheFailed {
+        /// The cache operation
+        operation: String,
+        /// The failure reason
+        reason: String,
+    },
 
     /// Lock acquisition failed
     #[error("Failed to acquire lock: {resource}: {reason}")]
-    LockFailed { resource: String, reason: String },
+    LockFailed {
+        /// The locked resource
+        resource: String,
+        /// The failure reason
+        reason: String,
+    },
 
     /// Serialization error
     #[error("Serialization error: {0}")]
@@ -56,23 +92,42 @@ pub enum CredentialError {
 
     /// Timeout occurred
     #[error("Operation timed out: {operation}")]
-    Timeout { operation: String },
+    Timeout {
+        /// The operation that timed out
+        operation: String,
+    },
 
     /// Invalid input provided
     #[error("Invalid input: {field}: {reason}")]
-    InvalidInput { field: String, reason: String },
+    InvalidInput {
+        /// The invalid field
+        field: String,
+        /// The validation error
+        reason: String,
+    },
 
     /// Credential type not registered
     #[error("Credential type not registered: {credential_type}")]
-    TypeNotRegistered { credential_type: String },
+    TypeNotRegistered {
+        /// The unregistered credential type
+        credential_type: String,
+    },
 
     /// Credential already exists
     #[error("Credential already exists: {id}")]
-    AlreadyExists { id: String },
+    AlreadyExists {
+        /// The credential ID
+        id: String,
+    },
 
     /// Permission denied
     #[error("Permission denied: {operation}: {reason}")]
-    PermissionDenied { operation: String, reason: String },
+    PermissionDenied {
+        /// The denied operation
+        operation: String,
+        /// The denial reason
+        reason: String,
+    },
 
     /// Internal error
     #[error("Internal error: {0}")]
@@ -80,7 +135,10 @@ pub enum CredentialError {
 
     /// Custom error from credential implementation
     #[error("Credential error: {message}")]
-    Custom { message: String },
+    Custom {
+        /// The error message
+        message: String,
+    },
 
     /// Compare-and-swap conflict
     #[error("Compare-and-swap conflict during credential update")]
@@ -192,5 +250,137 @@ impl From<serde_json::Error> for CredentialError {
         } else {
             Self::SerializationFailed(error.to_string())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_not_found() {
+        let err = CredentialError::not_found("test-id");
+        assert!(matches!(err, CredentialError::NotFound { .. }));
+        assert_eq!(err.to_string(), "Credential not found: test-id");
+    }
+
+    #[test]
+    fn test_error_expired() {
+        let err = CredentialError::expired("expired-id");
+        assert!(matches!(err, CredentialError::Expired { .. }));
+        assert_eq!(err.to_string(), "Credential expired: expired-id");
+    }
+
+    #[test]
+    fn test_error_refresh_not_supported() {
+        let err = CredentialError::refresh_not_supported("static_key");
+        assert!(matches!(err, CredentialError::RefreshNotSupported { .. }));
+        assert!(err.to_string().contains("static_key"));
+    }
+
+    #[test]
+    fn test_error_auth_failed() {
+        let err = CredentialError::auth_failed("invalid credentials");
+        assert!(matches!(err, CredentialError::AuthenticationFailed { .. }));
+        assert!(err.to_string().contains("invalid credentials"));
+    }
+
+    #[test]
+    fn test_error_storage_failed() {
+        let err = CredentialError::storage_failed("save", "connection lost");
+        assert!(matches!(err, CredentialError::StorageFailed { .. }));
+        assert!(err.to_string().contains("save"));
+        assert!(err.to_string().contains("connection lost"));
+    }
+
+    #[test]
+    fn test_error_invalid_input() {
+        let err = CredentialError::invalid_input("username", "cannot be empty");
+        assert!(matches!(err, CredentialError::InvalidInput { .. }));
+        assert!(err.to_string().contains("username"));
+    }
+
+    #[test]
+    fn test_error_internal() {
+        let err = CredentialError::internal("panic occurred");
+        assert!(matches!(err, CredentialError::Internal(_)));
+        assert!(err.to_string().contains("panic occurred"));
+    }
+
+    #[test]
+    fn test_error_needs_refresh() {
+        assert!(CredentialError::expired("id").needs_refresh());
+        assert!(CredentialError::auth_failed("reason").needs_refresh());
+        assert!(!CredentialError::not_found("id").needs_refresh());
+        assert!(!CredentialError::internal("msg").needs_refresh());
+    }
+
+    #[test]
+    fn test_error_category() {
+        assert_eq!(CredentialError::not_found("id").category(), "not_found");
+        assert_eq!(CredentialError::expired("id").category(), "expired");
+        assert_eq!(
+            CredentialError::auth_failed("x").category(),
+            "authentication_failed"
+        );
+        assert_eq!(
+            CredentialError::storage_failed("op", "x").category(),
+            "storage_failed"
+        );
+        assert_eq!(CredentialError::CasConflict.category(), "cas_conflict");
+    }
+
+    #[test]
+    fn test_error_is_retryable() {
+        assert!(CredentialError::NetworkFailed("timeout".to_string()).is_retryable());
+        assert!(CredentialError::Timeout {
+            operation: "fetch".to_string()
+        }
+        .is_retryable());
+        assert!(CredentialError::storage_failed("save", "db down").is_retryable());
+
+        assert!(!CredentialError::not_found("id").is_retryable());
+        assert!(!CredentialError::expired("id").is_retryable());
+        assert!(!CredentialError::auth_failed("bad creds").is_retryable());
+    }
+
+    #[test]
+    fn test_error_clone() {
+        let original = CredentialError::not_found("test-id");
+        let cloned = original.clone();
+
+        assert_eq!(original.to_string(), cloned.to_string());
+        assert_eq!(original.category(), cloned.category());
+    }
+
+    #[test]
+    fn test_error_from_serde_json() {
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid json");
+        assert!(json_err.is_err());
+
+        let cred_err: CredentialError = json_err.unwrap_err().into();
+        assert!(matches!(
+            cred_err,
+            CredentialError::DeserializationFailed(_)
+        ));
+    }
+
+    #[test]
+    fn test_error_display_implementation() {
+        let err = CredentialError::RefreshFailed {
+            id: "cred-123".to_string(),
+            reason: "network error".to_string(),
+        };
+        let display_str = err.to_string();
+        assert!(display_str.contains("cred-123"));
+        assert!(display_str.contains("network error"));
+    }
+
+    #[test]
+    fn test_error_cas_conflict() {
+        let err = CredentialError::CasConflict;
+        assert_eq!(err.category(), "cas_conflict");
+        assert!(!err.is_retryable());
+        assert!(!err.needs_refresh());
     }
 }

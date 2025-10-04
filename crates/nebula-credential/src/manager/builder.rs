@@ -1,4 +1,4 @@
-use crate::manager::manager::AnyLock;
+use crate::manager::core::AnyLock;
 use crate::manager::{CredentialManager, RefreshPolicy};
 use crate::registry::CredentialRegistry;
 use crate::traits::{DistributedLock, StateStore, TokenCache};

@@ -35,6 +35,7 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 
 # Internal crates
 nebula-error = { path = "../nebula-error" }
+nebula-log = { path = "../nebula-log" }
 
 [dev-dependencies]
 # Testing

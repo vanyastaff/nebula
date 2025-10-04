@@ -3,7 +3,7 @@ use std::time::SystemTime;
 
 /// Negative cache entry
 #[derive(Clone)]
-pub(super) struct NegativeCache {
-    pub until: SystemTime,
-    pub error: CredentialError,
+pub(crate) struct NegativeCache {
+    pub(crate) until: SystemTime,
+    pub(crate) error: CredentialError,
 }

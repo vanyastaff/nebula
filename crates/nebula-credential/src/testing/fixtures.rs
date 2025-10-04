@@ -1,7 +1,10 @@
 //! Test fixtures and data generators
 
-use crate::core::*;
-use crate::prelude::Credential;
+use crate::core::{
+    AccessToken, CredentialContext, CredentialError, CredentialMetadata, CredentialState, Result,
+    SecureString, TokenType,
+};
+use crate::traits::Credential;
 use async_trait::async_trait;
 use std::time::{Duration, SystemTime};
 
@@ -128,5 +131,61 @@ impl Credential for TestCredential {
 
         state.refresh_count += 1;
         Ok(test_token())
+    }
+}
+
+/// Factory for creating test credentials
+pub struct TestCredentialFactory {
+    credential: TestCredential,
+}
+
+impl TestCredentialFactory {
+    /// Create new factory with default test credential
+    pub fn new() -> Self {
+        Self {
+            credential: TestCredential::default(),
+        }
+    }
+
+    /// Create factory with custom credential behavior
+    pub fn with_credential(credential: TestCredential) -> Self {
+        Self { credential }
+    }
+}
+
+impl Default for TestCredentialFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl crate::registry::CredentialFactory for TestCredentialFactory {
+    fn type_name(&self) -> &'static str {
+        "test_credential"
+    }
+
+    async fn create_and_init(
+        &self,
+        input_json: serde_json::Value,
+        cx: &mut CredentialContext,
+    ) -> Result<(Box<dyn erased_serde::Serialize>, Option<AccessToken>)> {
+        let input: TestCredentialInput = serde_json::from_value(input_json)
+            .map_err(|e| CredentialError::DeserializationFailed(e.to_string()))?;
+
+        let (state, token) = self.credential.initialize(&input, cx).await?;
+        Ok((Box::new(state), token))
+    }
+
+    async fn refresh(
+        &self,
+        state_json: serde_json::Value,
+        cx: &mut CredentialContext,
+    ) -> Result<(Box<dyn erased_serde::Serialize>, AccessToken)> {
+        let mut state: TestCredentialState = serde_json::from_value(state_json)
+            .map_err(|e| CredentialError::DeserializationFailed(e.to_string()))?;
+
+        let token = self.credential.refresh(&mut state, cx).await?;
+        Ok((Box::new(state), token))
     }
 }

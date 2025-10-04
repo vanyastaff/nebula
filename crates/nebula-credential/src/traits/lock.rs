@@ -5,12 +5,15 @@ use thiserror::Error;
 /// Error type for lock operations
 #[derive(Error, Debug, Clone)]
 pub enum LockError {
+    /// Lock is already held by another process
     #[error("lock is contended")]
     Contended,
 
+    /// Lock was lost unexpectedly
     #[error("lock was lost")]
     Lost,
 
+    /// Backend-specific error
     #[error("backend error: {0}")]
     Backend(String),
 }
