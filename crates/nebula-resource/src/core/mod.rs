@@ -7,7 +7,6 @@ pub mod resource;
 pub mod scoping;
 pub mod traits;
 pub mod versioning;
-
 // Re-exports
 pub use context::ResourceContext;
 pub use dependency::DependencyGraph;

@@ -1,5 +1,6 @@
 //! Core types for credential management
-
+pub mod key;
+pub mod id;
 mod context;
 mod ephemeral;
 mod error;
@@ -21,3 +22,5 @@ pub use secure::SecureString;
 pub use state::CredentialState;
 pub use time::{from_unix_timestamp, to_unix_timestamp, unix_now};
 pub use token::{AccessToken, TokenType};
+
+
