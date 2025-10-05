@@ -47,10 +47,10 @@ pub struct ListParameter {
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<ListValue>,
+    pub value: Option<nebula_value::Array>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<ListValue>,
+    pub default: Option<nebula_value::Array>,
 
     /// Child parameters in this list
     #[serde(skip)]
@@ -141,7 +141,7 @@ impl std::fmt::Display for ListParameter {
 }
 
 impl HasValue for ListParameter {
-    type Value = ListValue;
+    type Value = nebula_value::Array;
 
     fn get_value(&self) -> Option<&Self::Value> {
         self.value.as_ref()
@@ -167,7 +167,7 @@ impl HasValue for ListParameter {
     fn get_parameter_value(&self) -> Option<ParameterValue> {
         self.value
             .as_ref()
-            .map(|list_val| ParameterValue::List(list_val.clone()))
+            .map(|arr| ParameterValue::Value(nebula_value::Value::Array(arr.clone())))
     }
 
     fn set_parameter_value(
@@ -176,25 +176,13 @@ impl HasValue for ListParameter {
     ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::List(list_val) => {
-                self.value = Some(list_val);
-                Ok(())
-            }
             ParameterValue::Value(nebula_value::Value::Array(arr)) => {
-                // Array.to_vec() returns Vec<serde_json::Value>, we need Vec<nebula_value::Value>
-                // Convert through serde
-                let items: Vec<nebula_value::Value> = arr
-                    .to_vec()
-                    .into_iter()
-                    .filter_map(|v| serde_json::from_value(v).ok())
-                    .collect();
-                let list_val = ListValue::new(items);
-                self.value = Some(list_val);
+                self.value = Some(arr);
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
-                reason: "Expected list value for list parameter".to_string(),
+                reason: "Expected array value for list parameter".to_string(),
             }),
         }
     }
@@ -206,7 +194,7 @@ impl Validatable for ListParameter {
     }
 
     fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::Array(nebula_value::Array::from_nebula_values(value.items.clone()))
+        nebula_value::Value::Array(value.clone())
     }
 
     fn is_empty_value(&self, value: &Self::Value) -> bool {

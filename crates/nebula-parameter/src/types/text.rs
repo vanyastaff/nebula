@@ -11,10 +11,10 @@ pub struct TextParameter {
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
+    pub value: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<String>,
+    pub default: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<TextParameterOptions>,
@@ -55,7 +55,7 @@ impl std::fmt::Display for TextParameter {
 }
 
 impl HasValue for TextParameter {
-    type Value = String;
+    type Value = nebula_value::Text;
 
     fn get_value(&self) -> Option<&Self::Value> {
         self.value.as_ref()
@@ -81,7 +81,7 @@ impl HasValue for TextParameter {
     fn get_parameter_value(&self) -> Option<ParameterValue> {
         self.value
             .as_ref()
-            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+            .map(|s| ParameterValue::Value(nebula_value::Value::Text(s.clone())))
     }
 
     fn set_parameter_value(
@@ -91,13 +91,13 @@ impl HasValue for TextParameter {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Text(s)) => {
-                self.value = Some(s.to_string());
+                self.value = Some(s);
                 Ok(())
             }
             ParameterValue::Expression(expr) => {
                 // For now, treat expressions as literal strings
                 // In a full implementation, you'd evaluate the expression
-                self.value = Some(expr);
+                self.value = Some(nebula_value::Text::from(expr));
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {

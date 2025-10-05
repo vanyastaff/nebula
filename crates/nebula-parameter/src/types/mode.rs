@@ -112,8 +112,6 @@ impl ModeValue {
             ParameterValue::Routing(_) => nebula_value::Value::text("routing_value"),
             ParameterValue::Mode(mode_val) => mode_val.value.clone(),
             ParameterValue::Expirable(exp_val) => exp_val.value.clone(),
-            ParameterValue::List(_list_val) => nebula_value::Value::text("list_value"),
-            ParameterValue::Object(_obj_val) => nebula_value::Value::text("object_value"),
         };
         Self {
             key: key.into(),

@@ -153,16 +153,6 @@ impl ExpirableValue {
             ParameterValue::Routing(_) => nebula_value::Value::text("routing_value"),
             ParameterValue::Mode(mode_val) => mode_val.value.clone(),
             ParameterValue::Expirable(exp_val) => exp_val.value.clone(),
-            ParameterValue::List(list_val) => {
-                // Convert Vec<nebula_value::Value> to Vec<serde_json::Value> for Array
-                let json_items: Vec<serde_json::Value> = list_val
-                    .items
-                    .iter()
-                    .filter_map(|v| serde_json::to_value(v).ok())
-                    .collect();
-                nebula_value::Value::Array(nebula_value::Array::from(json_items))
-            }
-            ParameterValue::Object(_obj_val) => nebula_value::Value::text("object_value"),
         };
         Self::new(nebula_val, ttl)
     }

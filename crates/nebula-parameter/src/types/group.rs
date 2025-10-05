@@ -76,14 +76,14 @@ pub struct GroupParameterOptions {}
 /// Value container for group parameter
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GroupValue {
-    /// Field values as an Object
-    pub values: nebula_value::Object,
+    /// Field values as a Map
+    pub values: serde_json::Map<String, serde_json::Value>,
 }
 
 impl GroupValue {
     pub fn new() -> Self {
         Self {
-            values: nebula_value::Object::new(),
+            values: serde_json::Map::new(),
         }
     }
 
