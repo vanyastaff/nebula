@@ -9,7 +9,7 @@ use nebula_core::ParameterKey as Key;
 use std::fmt::{Debug, Display};
 
 /// Base trait for all parameter types
-pub trait ParameterType {
+pub trait ParameterType: Send + Sync {
     /// Get the kind of this parameter
     fn kind(&self) -> ParameterKind;
 
@@ -163,16 +163,17 @@ pub trait HasValue: ParameterType + Debug + Display {
 }
 
 /// Trait for parameters that support validation
-pub trait Validatable: HasValue {
-    /// Validates a value for this parameter
+#[async_trait::async_trait]
+pub trait Validatable: HasValue + Send + Sync {
+    /// Validates a value for this parameter (async)
     ///
     /// Default implementation provides common validation pattern.
     /// Override this method for custom validation logic.
-    fn validate(&self, value: &Self::Value) -> Result<(), ParameterError> {
+    async fn validate(&self, value: &Self::Value) -> Result<(), ParameterError> {
         // Use custom validation if available
         if let Some(validation) = self.validation() {
-            let json_value = self.value_to_json(value);
-            if let Err(validation_error) = validation.validate(&json_value) {
+            let nebula_value = self.value_to_nebula_value(value);
+            if let Err(validation_error) = validation.validate(&nebula_value, None).await {
                 return Err(ParameterError::InvalidValue {
                     key: self.metadata().key.clone(),
                     reason: format!("{}", validation_error),
@@ -195,9 +196,9 @@ pub trait Validatable: HasValue {
         None
     }
 
-    /// Convert value to JSON for validation (default: null)
-    fn value_to_json(&self, _value: &Self::Value) -> serde_json::Value {
-        serde_json::Value::Null
+    /// Convert value to nebula_value::Value for validation (default: null)
+    fn value_to_nebula_value(&self, _value: &Self::Value) -> nebula_value::Value {
+        nebula_value::Value::Null
     }
 
     /// Check if a value is considered empty (default: false)

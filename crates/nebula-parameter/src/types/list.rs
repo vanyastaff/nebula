@@ -205,7 +205,7 @@ impl Validatable for ListParameter {
         self.validation.as_ref()
     }
 
-    fn value_to_json(&self, value: &Self::Value) -> serde_json::Value {
+    fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
         use nebula_value::ValueRefExt;
         let json_array: Vec<serde_json::Value> = value.items.iter().map(|v| v.to_json()).collect();
         serde_json::Value::Array(json_array)

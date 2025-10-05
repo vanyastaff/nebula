@@ -115,7 +115,7 @@ impl Validatable for SecretParameter {
         self.validation.as_ref()
     }
 
-    fn value_to_json(&self, _value: &Self::Value) -> serde_json::Value {
+    fn value_to_nebula_value(&self, _value: &Self::Value) -> serde_json::Value {
         // Never expose the actual secret value in JSON
         serde_json::Value::String("***REDACTED***".to_string())
     }

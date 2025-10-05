@@ -228,8 +228,8 @@ impl Validatable for RoutingParameter {
         self.validation.as_ref()
     }
 
-    fn value_to_json(&self, value: &Self::Value) -> serde_json::Value {
-        serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
+    fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
+        crate::core::json_to_nebula(&serde_json::to_value(value).unwrap()).unwrap_or(serde_json::Value::Null)
     }
 
     fn is_empty_value(&self, value: &Self::Value) -> bool {

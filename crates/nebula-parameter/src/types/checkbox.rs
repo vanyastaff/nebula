@@ -111,8 +111,8 @@ impl Validatable for CheckboxParameter {
         self.validation.as_ref()
     }
 
-    fn value_to_json(&self, value: &Self::Value) -> serde_json::Value {
-        serde_json::Value::Bool(*value)
+    fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
+        nebula_value::Value::boolean(*value)
     }
 
     fn is_empty_value(&self, _value: &Self::Value) -> bool {

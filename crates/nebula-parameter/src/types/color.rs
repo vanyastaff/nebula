@@ -143,7 +143,7 @@ impl Validatable for ColorParameter {
         self.validation.as_ref()
     }
 
-    fn value_to_json(&self, value: &Self::Value) -> serde_json::Value {
+    fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
         serde_json::Value::String(value.clone())
     }
 
