@@ -1,6 +1,5 @@
 use bon::Builder;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 use crate::core::{
     Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
@@ -75,7 +74,7 @@ pub enum GroupFieldType {
 pub struct GroupParameterOptions {}
 
 /// Value container for group parameter
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GroupValue {
     /// Field values as an Object
     pub values: nebula_value::Object,
@@ -193,7 +192,7 @@ impl HasValue for GroupParameter {
             ParameterValue::Expression(expr) => {
                 // For expressions, create a group with a single expression field
                 let mut group_value = GroupValue::new();
-                group_value.set_field("_expression", serde_json::Value::String(expr));
+                group_value.set_field("_expression", nebula_value::Value::text(expr));
                 self.value = Some(group_value);
                 Ok(())
             }
@@ -233,8 +232,8 @@ impl GroupParameter {
     /// Validate if a group value is valid for this parameter
     fn is_valid_group_value(&self, group_value: &GroupValue) -> Result<bool, ParameterError> {
         // Check for expression values
-        if let Some(serde_json::Value::String(expr)) = group_value.get_field("_expression") {
-            if expr.starts_with("{{") && expr.ends_with("}}") {
+        if let Some(nebula_value::Value::Text(expr)) = group_value.get_field("_expression") {
+            if expr.as_str().starts_with("{{") && expr.as_str().ends_with("}}") {
                 return Ok(true); // Allow expressions
             }
         }

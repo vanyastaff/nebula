@@ -1,4 +1,4 @@
-use crate::types::{ExpirableValue, ListValue, ModeValue, ObjectValue, RoutingValue};
+use crate::types::{ExpirableValue, ModeValue, RoutingValue};
 use nebula_value::Value;
 use serde::{Deserialize, Serialize};
 
@@ -10,8 +10,6 @@ pub enum ParameterValue {
     Routing(RoutingValue),
     Mode(ModeValue),
     Expirable(ExpirableValue),
-    List(ListValue),
-    Object(ObjectValue),
 }
 
 impl ParameterValue {
@@ -23,8 +21,6 @@ impl ParameterValue {
             ParameterValue::Routing(_) => None,
             ParameterValue::Mode(_) => None,
             ParameterValue::Expirable(exp_val) => Some(&exp_val.value),
-            ParameterValue::List(_) => None,
-            ParameterValue::Object(_) => None,
         }
     }
 
@@ -48,15 +44,6 @@ impl ParameterValue {
         matches!(self, ParameterValue::Expirable(_))
     }
 
-    /// Check if this is a list value
-    pub fn is_list(&self) -> bool {
-        matches!(self, ParameterValue::List(_))
-    }
-
-    /// Check if this is an object value
-    pub fn is_object(&self) -> bool {
-        matches!(self, ParameterValue::Object(_))
-    }
 
     /// Check if this parameter value is considered "empty"
     pub fn is_empty(&self) -> bool {
@@ -90,8 +77,6 @@ impl ParameterValue {
                         _ => false,
                     }
             }
-            ParameterValue::List(list_val) => list_val.is_empty(),
-            ParameterValue::Object(obj_val) => obj_val.is_empty(),
         }
     }
 }
@@ -133,14 +118,6 @@ impl From<ParameterValue> for Value {
                     exp_val.value.clone()
                 }
             }
-            ParameterValue::List(list_val) => {
-                // Convert Vec<nebula_value::Value> to Array using from_nebula_values
-                Value::Array(nebula_value::Array::from_nebula_values(list_val.items.clone()))
-            }
-            ParameterValue::Object(obj_val) => {
-                // Object uses serde_json::Value internally, construct from iterator
-                Value::Object(obj_val.values.clone().into_iter().collect())
-            }
         }
     }
 }
@@ -163,17 +140,6 @@ impl From<ExpirableValue> for ParameterValue {
     }
 }
 
-impl From<ListValue> for ParameterValue {
-    fn from(list_value: ListValue) -> Self {
-        ParameterValue::List(list_value)
-    }
-}
-
-impl From<ObjectValue> for ParameterValue {
-    fn from(object_value: ObjectValue) -> Self {
-        ParameterValue::Object(object_value)
-    }
-}
 
 // Convenient Into implementations for common types
 impl From<bool> for ParameterValue {

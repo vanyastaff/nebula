@@ -19,7 +19,7 @@ pub struct ResourceContext<'a> {
     pub pagination: Option<Pagination>,
 
     /// Additional context data
-    pub data: Option<serde_json::Value>,
+    pub data: Option<nebula_value::Value>,
 }
 
 impl<'a> ResourceContext<'a> {
@@ -42,7 +42,7 @@ impl<'a> ResourceContext<'a> {
         self
     }
 
-    pub fn with_data(mut self, data: serde_json::Value) -> Self {
+    pub fn with_data(mut self, data: nebula_value::Value) -> Self {
         self.data = Some(data);
         self
     }

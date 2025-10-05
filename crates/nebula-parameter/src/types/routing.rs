@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fmt::{self, Display};
 
 use crate::core::{
@@ -79,7 +78,7 @@ pub struct RoutingValue {
 
     /// Additional metadata about the connection
     #[serde(default)]
-    pub connection_metadata: HashMap<String, serde_json::Value>,
+    pub connection_metadata: nebula_value::Object,
 
     /// Timestamp when connection was established
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,7 +91,7 @@ impl RoutingValue {
         Self {
             connected_node_id: None,
             connection_name: None,
-            connection_metadata: HashMap::new(),
+            connection_metadata: nebula_value::Object::new(),
             connected_at: None,
         }
     }
@@ -102,7 +101,7 @@ impl RoutingValue {
         Self {
             connected_node_id: Some(node_id.into()),
             connection_name: None,
-            connection_metadata: HashMap::new(),
+            connection_metadata: nebula_value::Object::new(),
             connected_at: Some(chrono::Utc::now()),
         }
     }
@@ -112,7 +111,7 @@ impl RoutingValue {
         Self {
             connected_node_id: Some(node_id.into()),
             connection_name: Some(name.into()),
-            connection_metadata: HashMap::new(),
+            connection_metadata: nebula_value::Object::new(),
             connected_at: Some(chrono::Utc::now()),
         }
     }
@@ -128,13 +127,15 @@ impl RoutingValue {
     }
 
     /// Set connection metadata
-    pub fn set_metadata(&mut self, key: impl Into<String>, value: serde_json::Value) {
-        self.connection_metadata.insert(key.into(), value);
+    pub fn set_metadata(&mut self, key: impl Into<String>, value: nebula_value::Value) {
+        use crate::ValueRefExt;
+        self.connection_metadata.insert(key.into(), value.to_json());
     }
 
     /// Get connection metadata
-    pub fn get_metadata(&self, key: &str) -> Option<&serde_json::Value> {
-        self.connection_metadata.get(key)
+    pub fn get_metadata(&self, key: &str) -> Option<nebula_value::Value> {
+        use crate::JsonValueExt;
+        self.connection_metadata.get(key).and_then(|v| v.to_nebula_value())
     }
 }
 
@@ -323,7 +324,7 @@ impl RoutingParameter {
     }
 
     /// Set connection metadata
-    pub fn set_connection_metadata(&mut self, key: impl Into<String>, value: serde_json::Value) {
+    pub fn set_connection_metadata(&mut self, key: impl Into<String>, value: nebula_value::Value) {
         if self.value.is_none() {
             self.value = Some(RoutingValue::new());
         }
@@ -333,7 +334,7 @@ impl RoutingParameter {
     }
 
     /// Get connection metadata
-    pub fn get_connection_metadata(&self, key: &str) -> Option<&serde_json::Value> {
+    pub fn get_connection_metadata(&self, key: &str) -> Option<nebula_value::Value> {
         self.value.as_ref()?.get_metadata(key)
     }
 

@@ -206,9 +206,7 @@ impl Validatable for ListParameter {
     }
 
     fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        use nebula_value::ValueRefExt;
-        let json_array: Vec<serde_json::Value> = value.items.iter().map(|v| v.to_json()).collect();
-        serde_json::Value::Array(json_array)
+        nebula_value::Value::Array(nebula_value::Array::from_nebula_values(value.items.clone()))
     }
 
     fn is_empty_value(&self, value: &Self::Value) -> bool {

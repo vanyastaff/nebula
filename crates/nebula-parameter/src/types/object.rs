@@ -42,7 +42,7 @@ pub struct ObjectParameterOptions {
 }
 
 /// Value container for object parameter
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObjectValue {
     /// Field values as an Object
     pub values: nebula_value::Object,
@@ -109,7 +109,7 @@ impl ObjectValue {
 
     /// Get all entries as (key, value) pairs
     pub fn entries(&self) -> impl Iterator<Item = (&String, &serde_json::Value)> {
-        self.values.iter()
+        self.values.entries()
     }
 }
 
@@ -204,12 +204,7 @@ impl HasValue for ObjectParameter {
                 }
             }
             ParameterValue::Value(nebula_value::Value::Object(obj)) => {
-                let mut object_value = ObjectValue::new();
-
-                for (key, val) in obj.entries() {
-                    // val is already &serde_json::Value, just clone it
-                    object_value.set_field(key.to_string(), val.clone());
-                }
+                let object_value = ObjectValue { values: obj };
 
                 if self.is_valid_object_value(&object_value)? {
                     self.value = Some(object_value);
@@ -224,7 +219,7 @@ impl HasValue for ObjectParameter {
             ParameterValue::Expression(expr) => {
                 // For expressions, create an object with a single expression field
                 let mut object_value = ObjectValue::new();
-                object_value.set_field("_expression", serde_json::Value::String(expr));
+                object_value.set_field("_expression", nebula_value::Value::text(expr));
                 self.value = Some(object_value);
                 Ok(())
             }
@@ -288,8 +283,8 @@ impl ObjectParameter {
     /// Validate if an object value is valid for this parameter
     fn is_valid_object_value(&self, object_value: &ObjectValue) -> Result<bool, ParameterError> {
         // Check for expression values
-        if let Some(serde_json::Value::String(expr)) = object_value.get_field("_expression") {
-            if expr.starts_with("{{") && expr.ends_with("}}") {
+        if let Some(nebula_value::Value::Text(expr)) = object_value.get_field("_expression") {
+            if expr.as_str().starts_with("{{") && expr.as_str().ends_with("}}") {
                 return Ok(true); // Allow expressions
             }
         }
@@ -364,19 +359,19 @@ impl ObjectParameter {
 
         for (key, child) in &self.children {
             // For container architecture, create default values based on parameter type
-            let default_json_val = match child.kind() {
-                ParameterKind::Text => serde_json::Value::String("".to_string()),
-                ParameterKind::Number => nebula_value::Value::integer(0.into( as i64)),
+            let default_val = match child.kind() {
+                ParameterKind::Text => nebula_value::Value::text(""),
+                ParameterKind::Number => nebula_value::Value::integer(0),
                 ParameterKind::Checkbox => nebula_value::Value::boolean(false),
-                ParameterKind::Date => serde_json::Value::String("".to_string()),
-                ParameterKind::DateTime => serde_json::Value::String("".to_string()),
-                ParameterKind::Time => serde_json::Value::String("".to_string()),
-                ParameterKind::Color => serde_json::Value::String("#000000".to_string()),
-                ParameterKind::Secret => serde_json::Value::String("".to_string()),
-                ParameterKind::Hidden => serde_json::Value::String("".to_string()),
-                _ => serde_json::Value::String("".to_string()),
+                ParameterKind::Date => nebula_value::Value::text(""),
+                ParameterKind::DateTime => nebula_value::Value::text(""),
+                ParameterKind::Time => nebula_value::Value::text(""),
+                ParameterKind::Color => nebula_value::Value::text("#000000"),
+                ParameterKind::Secret => nebula_value::Value::text(""),
+                ParameterKind::Hidden => nebula_value::Value::text(""),
+                _ => nebula_value::Value::text(""),
             };
-            object_value.set_field(key, default_json_val);
+            object_value.set_field(key, default_val);
         }
 
         object_value
@@ -443,7 +438,7 @@ impl ObjectParameter {
     pub fn set_field_value(
         &mut self,
         key: &str,
-        value: serde_json::Value,
+        value: nebula_value::Value,
     ) -> Result<(), ParameterError> {
         if !self.has_child(key)
             && !self
@@ -470,7 +465,7 @@ impl ObjectParameter {
     }
 
     /// Get a field value from the object
-    pub fn get_field_value(&self, key: &str) -> Option<&serde_json::Value> {
+    pub fn get_field_value(&self, key: &str) -> Option<nebula_value::Value> {
         self.value.as_ref().and_then(|obj| obj.get_field(key))
     }
 }

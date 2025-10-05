@@ -83,12 +83,11 @@ impl HasValue for MultiSelectParameter {
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
         self.value.as_ref().map(|vec| {
-            // Array uses serde_json::Value internally
-            let array: Vec<serde_json::Value> = vec
+            let values: Vec<nebula_value::Value> = vec
                 .iter()
-                .map(|s| serde_json::Value::String(s.clone()))
+                .map(|s| nebula_value::Value::text(s.clone()))
                 .collect();
-            ParameterValue::Value(nebula_value::Value::Array(nebula_value::Array::from(array)))
+            ParameterValue::Value(nebula_value::Value::Array(nebula_value::Array::from_nebula_values(values)))
         })
     }
 
@@ -104,7 +103,7 @@ impl HasValue for MultiSelectParameter {
                 // arr.iter() returns &serde_json::Value, not &nebula_value::Value
                 for item in arr.iter() {
                     match item {
-                        serde_json::Value::String(s) => {
+                        nebula_value::Value::Text(s) => {
                             string_values.push(s.clone());
                         }
                         _ => {
@@ -148,12 +147,11 @@ impl Validatable for MultiSelectParameter {
     }
 
     fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        serde_json::Value::Array(
-            value
-                .iter()
-                .map(|s| serde_json::Value::String(s.clone()))
-                .collect(),
-        )
+        let values: Vec<nebula_value::Value> = value
+            .iter()
+            .map(|s| nebula_value::Value::text(s.clone()))
+            .collect();
+        nebula_value::Value::Array(nebula_value::Array::from_nebula_values(values))
     }
 
     fn is_empty_value(&self, value: &Self::Value) -> bool {
