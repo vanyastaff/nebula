@@ -44,8 +44,8 @@ pub struct ObjectParameterOptions {
 /// Value container for object parameter
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObjectValue {
-    /// Field values as a Map
-    pub values: serde_json::Map<String, serde_json::Value>,
+    /// Field values as an Object
+    pub values: nebula_value::Object,
 }
 
 impl Default for ObjectParameterOptions {
@@ -60,7 +60,7 @@ impl ObjectValue {
     /// Create a new empty ObjectValue
     pub fn new() -> Self {
         Self {
-            values: serde_json::Map::new(),
+            values: nebula_value::Object::new(),
         }
     }
 
@@ -109,7 +109,7 @@ impl ObjectValue {
 
     /// Get all entries as (key, value) pairs
     pub fn entries(&self) -> impl Iterator<Item = (&String, &serde_json::Value)> {
-        self.values.iter()
+        self.values.entries()
     }
 }
 

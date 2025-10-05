@@ -289,20 +289,26 @@ impl ListParameter {
 
     /// Add an item to the list value
     pub fn add_item(&mut self, item: nebula_value::Value) -> Result<(), ParameterError> {
-        if let Some(items) = &mut self.value {
-            items.push(item);
+        use crate::ValueRefExt;
+        if let Some(items) = &self.value {
+            self.value = Some(items.push(item.to_json()));
         } else {
-            self.value = Some(ListValue::new(vec![item]));
+            self.value = Some(nebula_value::Array::from_vec(vec![item.to_json()]));
         }
         Ok(())
     }
 
     /// Remove an item from the list value by index
     pub fn remove_item(&mut self, index: usize) -> Result<bool, ParameterError> {
-        if let Some(items) = &mut self.value {
+        if let Some(items) = &self.value {
             if index < items.len() {
-                items.items.remove(index);
-                Ok(true)
+                match items.remove(index) {
+                    Ok((new_array, _)) => {
+                        self.value = Some(new_array);
+                        Ok(true)
+                    }
+                    Err(_) => Ok(false),
+                }
             } else {
                 Ok(false)
             }
@@ -313,10 +319,23 @@ impl ListParameter {
 
     /// Move an item to a different position
     pub fn move_item(&mut self, old_index: usize, new_index: usize) -> Result<(), ParameterError> {
-        if let Some(items) = &mut self.value {
+        if let Some(items) = &self.value {
             if old_index < items.len() && new_index < items.len() && old_index != new_index {
-                let item = items.items.remove(old_index);
-                items.items.insert(new_index, item);
+                // Remove from old position
+                let (items_after_remove, item) = items.remove(old_index)
+                    .map_err(|e| ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!("Failed to remove item: {}", e),
+                    })?;
+
+                // Insert at new position
+                let items_after_insert = items_after_remove.insert(new_index, item)
+                    .map_err(|e| ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!("Failed to insert item: {}", e),
+                    })?;
+
+                self.value = Some(items_after_insert);
                 Ok(())
             } else {
                 Err(ParameterError::InvalidValue {

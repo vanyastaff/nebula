@@ -28,6 +28,8 @@ type ValueItem = serde_json::Value;
 /// - Efficient cloning via structural sharing
 /// - Thread-safe immutable operations
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Object {
     inner: HashMap<String, ValueItem>,
 }

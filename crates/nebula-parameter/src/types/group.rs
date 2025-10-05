@@ -76,14 +76,14 @@ pub struct GroupParameterOptions {}
 /// Value container for group parameter
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GroupValue {
-    /// Field values as a Map
-    pub values: serde_json::Map<String, serde_json::Value>,
+    /// Field values as an Object
+    pub values: nebula_value::Object,
 }
 
 impl GroupValue {
     pub fn new() -> Self {
         Self {
-            values: serde_json::Map::new(),
+            values: nebula_value::Object::new(),
         }
     }
 
@@ -158,10 +158,7 @@ impl HasValue for GroupParameter {
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
         self.value.as_ref().map(|group_val| {
-            // Object uses serde_json::Value internally, so we can just clone the values
-            ParameterValue::Value(nebula_value::Value::Object(
-                group_val.values.clone().into_iter().collect(),
-            ))
+            ParameterValue::Value(nebula_value::Value::Object(group_val.values.clone()))
         })
     }
 
