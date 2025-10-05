@@ -42,10 +42,10 @@ pub struct ObjectParameterOptions {
 }
 
 /// Value container for object parameter
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ObjectValue {
-    /// Field values as key-value pairs
-    pub values: HashMap<String, serde_json::Value>,
+    /// Field values as an Object
+    pub values: nebula_value::Object,
 }
 
 impl Default for ObjectParameterOptions {
@@ -60,23 +60,26 @@ impl ObjectValue {
     /// Create a new empty ObjectValue
     pub fn new() -> Self {
         Self {
-            values: HashMap::new(),
+            values: nebula_value::Object::new(),
         }
     }
 
     /// Set a field value
-    pub fn set_field(&mut self, key: impl Into<String>, value: serde_json::Value) {
-        self.values.insert(key.into(), value);
+    pub fn set_field(&mut self, key: impl Into<String>, value: nebula_value::Value) {
+        use crate::ValueRefExt;
+        self.values.insert(key.into(), value.to_json());
     }
 
     /// Get a field value
-    pub fn get_field(&self, key: &str) -> Option<&serde_json::Value> {
-        self.values.get(key)
+    pub fn get_field(&self, key: &str) -> Option<nebula_value::Value> {
+        use crate::JsonValueExt;
+        self.values.get(key).and_then(|v| v.to_nebula_value())
     }
 
     /// Remove a field
-    pub fn remove_field(&mut self, key: &str) -> Option<serde_json::Value> {
-        self.values.remove(key)
+    pub fn remove_field(&mut self, key: &str) -> Option<nebula_value::Value> {
+        use crate::JsonValueExt;
+        self.values.remove(key).and_then(|v| v.to_nebula_value())
     }
 
     /// Check if the object has any values
@@ -239,7 +242,7 @@ impl Validatable for ObjectParameter {
     }
 
     fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::text(value.clone()).unwrap_or(serde_json::Value::Null)
+        nebula_value::Value::text(value.clone())
     }
 
     fn is_empty_value(&self, value: &Self::Value) -> bool {
@@ -363,8 +366,8 @@ impl ObjectParameter {
             // For container architecture, create default values based on parameter type
             let default_json_val = match child.kind() {
                 ParameterKind::Text => serde_json::Value::String("".to_string()),
-                ParameterKind::Number => serde_json::Value::Number(0.into()),
-                ParameterKind::Checkbox => serde_json::Value::Bool(false),
+                ParameterKind::Number => nebula_value::Value::integer(0.into( as i64)),
+                ParameterKind::Checkbox => nebula_value::Value::boolean(false),
                 ParameterKind::Date => serde_json::Value::String("".to_string()),
                 ParameterKind::DateTime => serde_json::Value::String("".to_string()),
                 ParameterKind::Time => serde_json::Value::String("".to_string()),

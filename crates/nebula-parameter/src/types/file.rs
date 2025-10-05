@@ -190,7 +190,8 @@ impl Validatable for FileParameter {
     }
 
     fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::text(value.clone()).unwrap_or(serde_json::Value::Null)
+        // Convert FileReference to a simple text (path)
+        nebula_value::Value::text(value.path.to_string_lossy().to_string())
     }
 
     fn is_empty_value(&self, _value: &Self::Value) -> bool {

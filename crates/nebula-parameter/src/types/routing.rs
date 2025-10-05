@@ -229,7 +229,7 @@ impl Validatable for RoutingParameter {
     }
 
     fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::text(value.clone()).unwrap_or(serde_json::Value::Null)
+        nebula_value::Value::text(value.clone())
     }
 
     fn is_empty_value(&self, value: &Self::Value) -> bool {

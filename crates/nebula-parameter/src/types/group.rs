@@ -54,7 +54,7 @@ pub struct GroupField {
 
     /// Default value for this field
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_value: Option<serde_json::Value>,
+    pub default_value: Option<nebula_value::Value>,
 }
 
 /// Supported field types for group parameters
@@ -75,27 +75,29 @@ pub enum GroupFieldType {
 pub struct GroupParameterOptions {}
 
 /// Value container for group parameter
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct GroupValue {
-    /// Field values as key-value pairs
-    pub values: HashMap<String, serde_json::Value>,
+    /// Field values as an Object
+    pub values: nebula_value::Object,
 }
 
 impl GroupValue {
     pub fn new() -> Self {
         Self {
-            values: HashMap::new(),
+            values: nebula_value::Object::new(),
         }
     }
 
     /// Set a field value
-    pub fn set_field(&mut self, key: impl Into<String>, value: serde_json::Value) {
-        self.values.insert(key.into(), value);
+    pub fn set_field(&mut self, key: impl Into<String>, value: nebula_value::Value) {
+        use crate::ValueRefExt;
+        self.values.insert(key.into(), value.to_json());
     }
 
     /// Get a field value
-    pub fn get_field(&self, key: &str) -> Option<&serde_json::Value> {
-        self.values.get(key)
+    pub fn get_field(&self, key: &str) -> Option<nebula_value::Value> {
+        use crate::JsonValueExt;
+        self.values.get(key).and_then(|v| v.to_nebula_value())
     }
 
     /// Check if the group has any values
@@ -209,7 +211,7 @@ impl Validatable for GroupParameter {
     }
 
     fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::text(value.clone()).unwrap_or(serde_json::Value::Null)
+        nebula_value::Value::text(value.clone())
     }
 
     fn is_empty_value(&self, value: &Self::Value) -> bool {
