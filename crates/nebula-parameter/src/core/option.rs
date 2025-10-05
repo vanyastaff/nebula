@@ -6,29 +6,10 @@
 use bon::Builder;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt::Debug;
 
-/// Context for loading dynamic options
-///
-/// This trait should be implemented by types that provide context
-/// for dynamic option loading, such as database connections,
-/// API clients, or other data sources.
-pub trait OptionLoadContext: Send + Sync {}
-
-// TODO: Add futures dependency for dynamic option loading
-// /// Function signature for loading dynamic options
-// ///
-// /// This function takes a context, optional search query, and pagination
-// /// parameters, and returns a future that resolves to an options response.
-// pub type OptionLoader = Arc<
-//     dyn Fn(
-//         Box<dyn OptionLoadContext>,
-//         Option<String>,    // search query
-//         Option<Pagination> // pagination
-//     ) -> futures::future::BoxFuture<'static, Result<OptionsResponse, ParameterError>>
-//     + Send
-//     + Sync
-// >;
+use crate::core::{ParameterError, ParameterValue};
 
 /// Pagination parameters for loading options
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,14 +40,50 @@ pub struct OptionsResponse {
     pub next_cursor: Option<String>,
 }
 
+/// Context for loading dynamic options
+#[derive(Debug)]
+pub struct OptionLoadContext<'a> {
+    /// Current parameter values for dependency resolution
+    pub parameters: &'a HashMap<String, ParameterValue>,
+
+    /// Optional search query
+    pub search: Option<String>,
+
+    /// Optional pagination parameters
+    pub pagination: Option<Pagination>,
+}
+
+impl<'a> OptionLoadContext<'a> {
+    pub fn new(parameters: &'a HashMap<String, ParameterValue>) -> Self {
+        Self {
+            parameters,
+            search: None,
+            pagination: None,
+        }
+    }
+
+    pub fn with_search(mut self, search: String) -> Self {
+        self.search = Some(search);
+        self
+    }
+
+    pub fn with_pagination(mut self, pagination: Pagination) -> Self {
+        self.pagination = Some(pagination);
+        self
+    }
+}
+
+/// Type alias for option loader function
+pub type OptionLoader = Box<
+    dyn Fn(&OptionLoadContext<'_>) -> Result<OptionsResponse, ParameterError> + Send + Sync,
+>;
+
 /// Options configuration for select-based parameters
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SelectOptions {
     /// Static options defined at compile time
     Static(Vec<SelectOption>),
-    // TODO: Add back when futures dependency is available
-    // /// Dynamic options fetched from a function
-    // Dynamic(DynamicOptions),
+    /// Dynamic options loaded from a function
+    Dynamic(DynamicOptions),
 }
 
 impl SelectOptions {
@@ -75,62 +92,110 @@ impl SelectOptions {
         SelectOptions::Static(options)
     }
 
-    // TODO: Add back when futures dependency is available
-    // /// Create dynamic options
-    // pub fn dynamic_options(name: String, loader: OptionLoader) -> Self {
-    //     SelectOptions::Dynamic(DynamicOptions { name, loader })
-    // }
+    /// Create dynamic options
+    pub fn dynamic_options(loader: OptionLoader) -> Self {
+        SelectOptions::Dynamic(DynamicOptions { loader })
+    }
 }
 
-// TODO: Add back when futures dependency is available
-// /// Configuration for dynamically loaded options
-// #[derive(Clone, Serialize)]
-// pub struct DynamicOptions {
-//     /// Identifier for the dynamic options loader
-//     pub name: String,
-//
-//     /// Function to load options dynamically
-//     #[serde(skip)]
-//     pub loader: OptionLoader,
-// }
-//
-// impl<'de> serde::Deserialize<'de> for DynamicOptions {
-//     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-//     where
-//         D: serde::Deserializer<'de>,
-//     {
-//         #[derive(Deserialize)]
-//         struct DynamicOptionsHelper {
-//             name: String,
-//         }
-//
-//         let helper = DynamicOptionsHelper::deserialize(deserializer)?;
-//
-//         // Create a dummy loader that returns an error
-//         let dummy_loader: OptionLoader = Arc::new(|_, _, _| {
-//             Box::pin(async {
-//                 Err(ParameterError::InvalidValue {
-//                     param: "dynamic_options".to_string(),
-//                     reason: "Loader function not available after deserialization".to_string(),
-//                 })
-//             })
-//         });
-//
-//         Ok(DynamicOptions {
-//             name: helper.name,
-//             loader: dummy_loader,
-//         })
-//     }
-// }
-//
-// impl Debug for DynamicOptions {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         f.debug_struct("DynamicOptions")
-//             .field("name", &self.name)
-//             .field("loader", &"<OptionLoader>")
-//             .finish()
-//     }
-// }
+impl Clone for SelectOptions {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Static(options) => Self::Static(options.clone()),
+            Self::Dynamic(_) => {
+                // Cannot clone dynamic options with closures
+                // Return empty static as fallback
+                Self::Static(Vec::new())
+            }
+        }
+    }
+}
+
+impl Debug for SelectOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Static(options) => f.debug_tuple("Static").field(options).finish(),
+            Self::Dynamic(_) => f.debug_tuple("Dynamic").field(&"<loader>").finish(),
+        }
+    }
+}
+
+impl Serialize for SelectOptions {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Static(options) => {
+                #[derive(Serialize)]
+                struct StaticOptions<'a> {
+                    r#type: &'static str,
+                    options: &'a Vec<SelectOption>,
+                }
+                StaticOptions {
+                    r#type: "static",
+                    options,
+                }
+                .serialize(serializer)
+            }
+            Self::Dynamic(_) => {
+                #[derive(Serialize)]
+                struct DynamicOptions {
+                    r#type: &'static str,
+                }
+                DynamicOptions { r#type: "dynamic" }.serialize(serializer)
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SelectOptions {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Helper {
+            r#type: String,
+            #[serde(default)]
+            options: Vec<SelectOption>,
+        }
+
+        let helper = Helper::deserialize(deserializer)?;
+        match helper.r#type.as_str() {
+            "static" => Ok(Self::Static(helper.options)),
+            "dynamic" => {
+                // Create a dummy loader that returns empty options
+                let loader: OptionLoader = Box::new(|_| {
+                    Ok(OptionsResponse {
+                        options: vec![],
+                        total: Some(0),
+                        has_more: false,
+                        next_cursor: None,
+                    })
+                });
+                Ok(Self::Dynamic(DynamicOptions { loader }))
+            }
+            _ => Err(serde::de::Error::custom(format!(
+                "Unknown options type: {}",
+                helper.r#type
+            ))),
+        }
+    }
+}
+
+/// Configuration for dynamically loaded options
+pub struct DynamicOptions {
+    /// Function to load options dynamically
+    pub loader: OptionLoader,
+}
+
+impl DynamicOptions {
+    /// Load options using the loader
+    pub fn load(&self, context: &OptionLoadContext<'_>) -> Result<OptionsResponse, ParameterError> {
+        (self.loader)(context)
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Builder)]
 pub struct SelectOption {

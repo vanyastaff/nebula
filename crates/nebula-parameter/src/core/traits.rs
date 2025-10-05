@@ -2,7 +2,7 @@
 
 use crate::core::ParameterValue;
 use crate::core::condition::ParameterCondition;
-use crate::core::display::{DisplayContext, ParameterDisplay, ParameterDisplayError, UiMode};
+use crate::core::display::{DisplayContext, ParameterDisplay, ParameterDisplayError};
 use crate::core::validation::ParameterValidation;
 use crate::core::{ParameterError, ParameterKind, ParameterMetadata};
 use nebula_core::ParameterKey as Key;
@@ -262,24 +262,6 @@ pub trait Displayable: ParameterType {
         self.set_display(None);
     }
 
-    /// Make this parameter visible only in specific UI modes
-    fn set_ui_mode_visibility(&mut self, modes: Vec<UiMode>) {
-        use serde_json::json;
-
-        let condition = ParameterCondition::Or(
-            modes
-                .into_iter()
-                .map(|mode| ParameterCondition::Eq(json!(mode).into()))
-                .collect(),
-        );
-
-        let mut display = self.display().cloned().unwrap_or_default();
-        display.add_show_condition(
-            "ui_mode".parse().unwrap_or("ui_mode".parse().unwrap()),
-            condition,
-        );
-        self.set_display(Some(display));
-    }
 
     // --- Optional reactive methods (default empty implementations) ---
 

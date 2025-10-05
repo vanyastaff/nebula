@@ -39,26 +39,6 @@ pub struct MultiSelectParameterOptions {
     /// Maximum number of selections allowed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_selections: Option<usize>,
-
-    /// Whether to show "select all" button
-    #[serde(default)]
-    pub show_select_all: bool,
-
-    /// Whether to show "clear all" button
-    #[serde(default)]
-    pub show_clear_all: bool,
-
-    /// Whether selections are searchable/filterable
-    #[serde(default)]
-    pub searchable: bool,
-
-    /// Placeholder text for the search input
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub search_placeholder: Option<String>,
-
-    /// Maximum number of options to show at once (before scrolling)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_visible_options: Option<usize>,
 }
 
 impl ParameterType for MultiSelectParameter {

@@ -17,4 +17,4 @@ pub use metadata::*;
 pub use option::SelectOption;
 pub use traits::*;
 pub use validation::*;
-pub use value::*;
+pub use value::ParameterValue;

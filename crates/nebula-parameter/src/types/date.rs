@@ -49,10 +49,6 @@ pub struct DateParameterOptions {
     /// Default to today's date
     #[serde(default)]
     pub default_to_today: bool,
-
-    /// Show relative date shortcuts (Today, Yesterday, etc.)
-    #[serde(default)]
-    pub show_shortcuts: bool,
 }
 
 impl ParameterType for DateParameter {

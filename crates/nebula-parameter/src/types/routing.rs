@@ -53,10 +53,6 @@ pub struct RoutingParameterOptions {
     /// Maximum number of connections allowed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_connections: Option<usize>,
-
-    /// Custom CSS class for styling the connection point
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub css_class: Option<String>,
 }
 
 impl Default for RoutingParameterOptions {
@@ -66,7 +62,6 @@ impl Default for RoutingParameterOptions {
             connection_description: None,
             connection_required: false,
             max_connections: Some(1),
-            css_class: None,
         }
     }
 }

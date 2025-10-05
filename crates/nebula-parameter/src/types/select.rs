@@ -35,25 +35,9 @@ pub struct SelectParameterOptions {
     #[serde(default)]
     pub multiple: bool,
 
-    /// Allow search/filter in options
-    #[serde(default)]
-    pub searchable: bool,
-
-    /// Show clear button
-    #[serde(default = "default_clearable")]
-    pub clearable: bool,
-
     /// Placeholder text when no selection
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
-
-    /// Load options dynamically
-    #[serde(default)]
-    pub load_options_on_focus: bool,
-}
-
-fn default_clearable() -> bool {
-    true
 }
 
 impl ParameterType for SelectParameter {

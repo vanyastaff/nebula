@@ -71,52 +71,8 @@ pub enum GroupFieldType {
 }
 
 /// Configuration options for a group parameter
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
-pub struct GroupParameterOptions {
-    /// Whether fields can be collapsed/expanded in UI
-    #[serde(default)]
-    pub collapsible: bool,
-
-    /// Whether the group starts collapsed
-    #[serde(default)]
-    pub collapsed_by_default: bool,
-
-    /// Layout style for the group fields
-    #[serde(default)]
-    pub layout: GroupLayout,
-
-    /// Show field labels inline or above fields
-    #[serde(default)]
-    pub label_position: GroupLabelPosition,
-}
-
-/// Layout options for group fields
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum GroupLayout {
-    /// Single column layout
-    #[default]
-    Vertical,
-    /// Two column layout
-    TwoColumn,
-    /// Grid layout (auto-sizing)
-    Grid,
-    /// Horizontal layout (all fields in one row)
-    Horizontal,
-}
-
-/// Label position options for group fields
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum GroupLabelPosition {
-    /// Labels above fields
-    #[default]
-    Top,
-    /// Labels to the left of fields
-    Left,
-    /// Labels inline with fields
-    Inline,
-}
+#[derive(Debug, Clone, Builder, Serialize, Deserialize, Default)]
+pub struct GroupParameterOptions {}
 
 /// Value container for group parameter
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

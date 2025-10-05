@@ -42,14 +42,6 @@ pub struct DateTimeParameterOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_datetime: Option<String>,
 
-    /// Show time picker alongside date
-    #[serde(default = "default_show_time")]
-    pub show_time: bool,
-
-    /// Show seconds in time picker
-    #[serde(default)]
-    pub show_seconds: bool,
-
     /// Use 12-hour format (AM/PM)
     #[serde(default)]
     pub use_12_hour: bool,
@@ -58,21 +50,9 @@ pub struct DateTimeParameterOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
 
-    /// Show timezone selector
-    #[serde(default)]
-    pub show_timezone: bool,
-
     /// Default to current date/time
     #[serde(default)]
     pub default_to_now: bool,
-
-    /// Show relative date shortcuts (Today, Yesterday, etc.)
-    #[serde(default)]
-    pub show_shortcuts: bool,
-}
-
-fn default_show_time() -> bool {
-    true
 }
 
 impl ParameterType for DateTimeParameter {
@@ -319,22 +299,6 @@ impl DateTimeParameter {
             .unwrap_or_else(|| "YYYY-MM-DD HH:mm:ss".to_string())
     }
 
-    /// Check if time should be shown
-    pub fn shows_time(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.show_time)
-            .unwrap_or(true)
-    }
-
-    /// Check if seconds should be shown
-    pub fn shows_seconds(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.show_seconds)
-            .unwrap_or(false)
-    }
-
     /// Check if 12-hour format should be used
     pub fn uses_12_hour_format(&self) -> bool {
         self.options
@@ -348,13 +312,5 @@ impl DateTimeParameter {
         self.options
             .as_ref()
             .and_then(|opts| opts.timezone.as_ref())
-    }
-
-    /// Check if timezone selector should be shown
-    pub fn shows_timezone(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.show_timezone)
-            .unwrap_or(false)
     }
 }

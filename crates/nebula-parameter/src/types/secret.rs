@@ -36,17 +36,9 @@ pub struct SecretParameterOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_length: Option<usize>,
 
-    /// Whether to show a "reveal" button to temporarily show the password
-    #[serde(default = "default_show_reveal")]
-    pub show_reveal: bool,
-
     /// Whether the value should be masked even in API responses (for extra security)
     #[serde(default)]
     pub always_masked: bool,
-}
-
-fn default_show_reveal() -> bool {
-    true
 }
 
 impl ParameterType for SecretParameter {

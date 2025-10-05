@@ -36,34 +36,6 @@ pub struct TextareaParameterOptions {
     /// Maximum number of characters
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_length: Option<usize>,
-
-    /// Number of visible rows
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rows: Option<u32>,
-
-    /// Number of visible columns
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cols: Option<u32>,
-
-    /// Whether text should wrap
-    #[serde(default = "default_wrap")]
-    pub wrap: bool,
-
-    /// Whether to show character count
-    #[serde(default)]
-    pub show_char_count: bool,
-
-    /// Whether textarea can be resized
-    #[serde(default = "default_resizable")]
-    pub resizable: bool,
-}
-
-fn default_wrap() -> bool {
-    true
-}
-
-fn default_resizable() -> bool {
-    true
 }
 
 impl ParameterType for TextareaParameter {
@@ -188,32 +160,6 @@ impl Displayable for TextareaParameter {
 }
 
 impl TextareaParameter {
-    /// Get the number of rows for display
-    pub fn get_rows(&self) -> u32 {
-        self.options
-            .as_ref()
-            .and_then(|opts| opts.rows)
-            .unwrap_or(4) // Default to 4 rows
-    }
-
-    /// Get the number of columns for display
-    pub fn get_cols(&self) -> Option<u32> {
-        self.options.as_ref().and_then(|opts| opts.cols)
-    }
-
-    /// Check if text wrapping is enabled
-    pub fn should_wrap(&self) -> bool {
-        self.options.as_ref().map(|opts| opts.wrap).unwrap_or(true)
-    }
-
-    /// Check if character count should be shown
-    pub fn show_character_count(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.show_char_count)
-            .unwrap_or(false)
-    }
-
     /// Get character count for current value
     pub fn character_count(&self) -> usize {
         self.value.as_ref().map(|v| v.len()).unwrap_or(0)

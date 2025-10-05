@@ -32,10 +32,6 @@ pub struct RadioParameter {
 
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
 pub struct RadioParameterOptions {
-    /// Layout direction for radio buttons
-    #[serde(default = "default_layout_direction")]
-    pub layout_direction: RadioLayoutDirection,
-
     /// Show "other" option with text input
     #[serde(default)]
     pub allow_other: bool,
@@ -43,18 +39,6 @@ pub struct RadioParameterOptions {
     /// Label for the "other" option
     #[serde(skip_serializing_if = "Option::is_none")]
     pub other_label: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum RadioLayoutDirection {
-    #[serde(rename = "horizontal")]
-    Horizontal,
-    #[serde(rename = "vertical")]
-    Vertical,
-}
-
-fn default_layout_direction() -> RadioLayoutDirection {
-    RadioLayoutDirection::Vertical
 }
 
 impl ParameterType for RadioParameter {
@@ -216,14 +200,6 @@ impl RadioParameter {
             }
         }
         None
-    }
-
-    /// Get the layout direction
-    pub fn get_layout_direction(&self) -> RadioLayoutDirection {
-        self.radio_options
-            .as_ref()
-            .map(|opts| opts.layout_direction.clone())
-            .unwrap_or(RadioLayoutDirection::Vertical)
     }
 
     /// Check if "other" option is allowed

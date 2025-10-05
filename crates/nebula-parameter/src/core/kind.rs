@@ -9,7 +9,6 @@ pub enum ParameterKind {
     Textarea,
     Secret,
     Number,
-    Boolean,
     Checkbox,
 
     // Selection Parameters
@@ -34,11 +33,11 @@ pub enum ParameterKind {
     List,
     Routing,
     Mode,
+    Panel,
 
     // Special Parameters
     Hidden,
     Notice,
-    Button,
     Expirable,
 }
 
@@ -65,7 +64,6 @@ impl ParameterKind {
             Self::Textarea => "textarea",
             Self::Secret => "secret",
             Self::Number => "number",
-            Self::Boolean => "boolean",
             Self::Checkbox => "checkbox",
             Self::Select => "select",
             Self::MultiSelect => "multiselect",
@@ -82,9 +80,9 @@ impl ParameterKind {
             Self::List => "list",
             Self::Routing => "routing",
             Self::Mode => "mode",
+            Self::Panel => "panel",
             Self::Hidden => "hidden",
             Self::Notice => "notice",
-            Self::Button => "button",
             Self::Expirable => "expirable",
         }
     }
@@ -119,7 +117,7 @@ impl ParameterKind {
             ],
 
             // Boolean types - simpler
-            Self::Boolean | Self::Checkbox => &[
+            Self::Checkbox => &[
                 HasValue,
                 Editable,
                 Displayable,
@@ -159,12 +157,12 @@ impl ParameterKind {
                 Serializable,
             ],
 
+            Self::Panel => &[Container, Displayable, Serializable],
+
             // Special parameters
             Self::Hidden => &[HasValue, SupportsExpressions, Serializable],
 
             Self::Notice => &[Displayable],
-
-            Self::Button => &[Displayable, Interactive],
 
             Self::Expirable => &[HasValue, Container, SupportsExpressions, Serializable],
         }
@@ -240,7 +238,7 @@ impl ParameterKind {
         match self {
             Self::Text | Self::Textarea | Self::Secret | Self::Code | Self::Color => "String",
             Self::Number => "Number",
-            Self::Boolean | Self::Checkbox => "Boolean",
+            Self::Checkbox => "Boolean",
             Self::Select | Self::Radio | Self::Resource => "String",
             Self::MultiSelect => "Array",
             Self::DateTime | Self::Date | Self::Time => "DateTime",
@@ -248,9 +246,9 @@ impl ParameterKind {
             Self::Object | Self::Group => "Object",
             Self::List | Self::Routing => "Array",
             Self::Mode => "Any",
+            Self::Panel => "None",
             Self::Hidden => "Any",
             Self::Notice => "None",
-            Self::Button => "None",
             Self::Expirable => "Any",
         }
     }
@@ -262,7 +260,6 @@ impl ParameterKind {
             "textarea" => Some(Self::Textarea),
             "secret" => Some(Self::Secret),
             "number" => Some(Self::Number),
-            "boolean" => Some(Self::Boolean),
             "checkbox" => Some(Self::Checkbox),
             "select" => Some(Self::Select),
             "multiselect" => Some(Self::MultiSelect),
@@ -279,9 +276,9 @@ impl ParameterKind {
             "list" => Some(Self::List),
             "routing" => Some(Self::Routing),
             "mode" => Some(Self::Mode),
+            "panel" => Some(Self::Panel),
             "hidden" => Some(Self::Hidden),
             "notice" => Some(Self::Notice),
-            "button" => Some(Self::Button),
             "expirable" => Some(Self::Expirable),
             _ => None,
         }
@@ -294,7 +291,6 @@ impl ParameterKind {
             Self::Textarea,
             Self::Secret,
             Self::Number,
-            Self::Boolean,
             Self::Checkbox,
             Self::Select,
             Self::MultiSelect,
@@ -311,9 +307,9 @@ impl ParameterKind {
             Self::List,
             Self::Routing,
             Self::Mode,
+            Self::Panel,
             Self::Hidden,
             Self::Notice,
-            Self::Button,
             Self::Expirable,
         ]
     }
@@ -325,7 +321,6 @@ impl ParameterKind {
             Self::Textarea,
             Self::Secret,
             Self::Number,
-            Self::Boolean,
             Self::Checkbox,
             Self::Select,
             Self::MultiSelect,
@@ -348,6 +343,7 @@ impl ParameterKind {
             Self::List,
             Self::Routing,
             Self::Mode,
+            Self::Panel,
         ]
     }
 }

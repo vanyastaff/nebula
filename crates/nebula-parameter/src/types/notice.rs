@@ -27,14 +27,6 @@ pub struct NoticeParameterOptions {
     /// Whether the notice can be dismissed by the user
     #[serde(default)]
     pub dismissible: bool,
-
-    /// Whether to show an icon with the notice
-    #[serde(default = "default_show_icon")]
-    pub show_icon: bool,
-}
-
-fn default_show_icon() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -2,9 +2,43 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, ListValue, ParameterDisplay, ParameterError, ParameterKind,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind,
     ParameterMetadata, ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
+
+/// Value for list parameters containing array of child parameter values
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ListValue {
+    /// Array of values from child parameters
+    pub items: Vec<nebula_value::Value>,
+}
+
+impl ListValue {
+    /// Create a new ListValue
+    pub fn new(items: Vec<nebula_value::Value>) -> Self {
+        Self { items }
+    }
+
+    /// Create an empty ListValue
+    pub fn empty() -> Self {
+        Self { items: Vec::new() }
+    }
+
+    /// Add an item to the list
+    pub fn push(&mut self, item: nebula_value::Value) {
+        self.items.push(item);
+    }
+
+    /// Get item count
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    /// Check if the list is empty
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
 
 /// Parameter for lists - acts as a container with child parameters
 #[derive(Serialize)]
@@ -54,54 +88,10 @@ pub struct ListParameterOptions {
     /// Whether items can be duplicated
     #[serde(default)]
     pub allow_duplicates: bool,
-
-    /// Whether to show item numbers
-    #[serde(default = "default_show_numbers")]
-    pub show_item_numbers: bool,
-
-    /// Layout style for the list
-    #[serde(default)]
-    pub layout: ListLayout,
-
-    /// Whether the list is collapsible
-    #[serde(default)]
-    pub collapsible: bool,
-
-    /// Whether the list starts collapsed
-    #[serde(default)]
-    pub collapsed_by_default: bool,
-
-    /// Custom CSS class for styling
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub css_class: Option<String>,
 }
 
-/// Layout options for list display
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ListLayout {
-    /// Vertical list layout
-    #[default]
-    Vertical,
-    /// Horizontal list layout
-    Horizontal,
-    /// Grid layout
-    Grid,
-    /// Card layout
-    Cards,
-    /// Table layout
-    Table,
-    /// Accordion layout
-    Accordion,
-}
-
-// Default value functions
 fn default_allow_reorder() -> bool {
     true
-}
-
-fn default_show_numbers() -> bool {
-    false
 }
 
 impl Default for ListParameterOptions {
@@ -111,11 +101,6 @@ impl Default for ListParameterOptions {
             max_items: None,
             allow_reorder: true,
             allow_duplicates: true,
-            show_item_numbers: false,
-            layout: ListLayout::Vertical,
-            collapsible: false,
-            collapsed_by_default: false,
-            css_class: None,
         }
     }
 }
@@ -368,7 +353,7 @@ impl ListParameter {
             let default_val = match template.kind() {
                 ParameterKind::Text => nebula_value::Value::text(""),
                 ParameterKind::Number => nebula_value::Value::integer(0),
-                ParameterKind::Boolean => nebula_value::Value::boolean(false),
+                ParameterKind::Checkbox => nebula_value::Value::boolean(false),
                 _ => nebula_value::Value::text("template_value"),
             };
             Ok(default_val)

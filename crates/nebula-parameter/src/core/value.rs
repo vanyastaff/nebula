@@ -1,40 +1,6 @@
-use crate::types::{ExpirableValue, ModeValue, ObjectValue, RoutingValue};
+use crate::types::{ExpirableValue, ListValue, ModeValue, ObjectValue, RoutingValue};
 use nebula_value::Value;
 use serde::{Deserialize, Serialize};
-
-/// Value for list parameters containing array of child parameter values
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct ListValue {
-    /// Array of values from child parameters
-    pub items: Vec<nebula_value::Value>,
-}
-
-impl ListValue {
-    /// Create a new ListValue
-    pub fn new(items: Vec<nebula_value::Value>) -> Self {
-        Self { items }
-    }
-
-    /// Create an empty ListValue
-    pub fn empty() -> Self {
-        Self { items: Vec::new() }
-    }
-
-    /// Add an item to the list
-    pub fn push(&mut self, item: nebula_value::Value) {
-        self.items.push(item);
-    }
-
-    /// Get item count
-    pub fn len(&self) -> usize {
-        self.items.len()
-    }
-
-    /// Check if the list is empty
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]

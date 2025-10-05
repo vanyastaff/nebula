@@ -36,67 +36,9 @@ pub struct ObjectParameter {
 /// Configuration options for object parameters
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
 pub struct ObjectParameterOptions {
-    /// Layout style for the object fields
-    #[serde(default)]
-    pub layout: ObjectLayout,
-
-    /// Whether fields can be collapsed/expanded
-    #[serde(default)]
-    pub collapsible: bool,
-
-    /// Whether the object starts collapsed
-    #[serde(default)]
-    pub collapsed_by_default: bool,
-
-    /// Show field labels inline or above fields
-    #[serde(default)]
-    pub label_position: ObjectLabelPosition,
-
-    /// Whether to show field borders
-    #[serde(default = "default_show_borders")]
-    pub show_borders: bool,
-
     /// Whether to allow additional properties beyond defined children
     #[serde(default)]
     pub allow_additional_properties: bool,
-
-    /// Custom CSS class for styling
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub css_class: Option<String>,
-}
-
-/// Layout options for object fields
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ObjectLayout {
-    /// Single column layout
-    #[default]
-    Vertical,
-    /// Two column layout
-    TwoColumn,
-    /// Three column layout
-    ThreeColumn,
-    /// Grid layout (auto-sizing)
-    Grid,
-    /// Horizontal layout (all fields in one row)
-    Horizontal,
-    /// Tabs layout (each field in a tab)
-    Tabs,
-}
-
-/// Label position options for object fields
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ObjectLabelPosition {
-    /// Labels above fields
-    #[default]
-    Top,
-    /// Labels to the left of fields
-    Left,
-    /// Labels inline with fields
-    Inline,
-    /// No labels (use placeholders)
-    None,
 }
 
 /// Value container for object parameter
@@ -106,21 +48,10 @@ pub struct ObjectValue {
     pub values: HashMap<String, serde_json::Value>,
 }
 
-// Default functions
-fn default_show_borders() -> bool {
-    true
-}
-
 impl Default for ObjectParameterOptions {
     fn default() -> Self {
         Self {
-            layout: ObjectLayout::Vertical,
-            collapsible: false,
-            collapsed_by_default: false,
-            label_position: ObjectLabelPosition::Top,
-            show_borders: true,
             allow_additional_properties: false,
-            css_class: None,
         }
     }
 }
@@ -433,7 +364,7 @@ impl ObjectParameter {
             let default_json_val = match child.kind() {
                 ParameterKind::Text => serde_json::Value::String("".to_string()),
                 ParameterKind::Number => serde_json::Value::Number(0.into()),
-                ParameterKind::Boolean => serde_json::Value::Bool(false),
+                ParameterKind::Checkbox => serde_json::Value::Bool(false),
                 ParameterKind::Date => serde_json::Value::String("".to_string()),
                 ParameterKind::DateTime => serde_json::Value::String("".to_string()),
                 ParameterKind::Time => serde_json::Value::String("".to_string()),

@@ -93,14 +93,6 @@ pub struct FileParameterOptions {
     #[serde(default)]
     pub multiple: bool,
 
-    /// Show file preview (for images, etc.)
-    #[serde(default)]
-    pub show_preview: bool,
-
-    /// Allow drag and drop
-    #[serde(default = "default_allow_drag_drop")]
-    pub allow_drag_drop: bool,
-
     /// Upload directory restriction
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upload_directory: Option<String>,
@@ -108,10 +100,6 @@ pub struct FileParameterOptions {
     /// Whether to validate file content (not just extension)
     #[serde(default)]
     pub validate_content: bool,
-}
-
-fn default_allow_drag_drop() -> bool {
-    true
 }
 
 impl ParameterType for FileParameter {
@@ -340,22 +328,6 @@ impl FileParameter {
             .as_ref()
             .map(|opts| opts.multiple)
             .unwrap_or(false)
-    }
-
-    /// Check if file preview should be shown
-    pub fn shows_preview(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.show_preview)
-            .unwrap_or(false)
-    }
-
-    /// Check if drag and drop is allowed
-    pub fn allows_drag_drop(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.allow_drag_drop)
-            .unwrap_or(true)
     }
 
     /// Get accepted file formats

@@ -34,49 +34,9 @@ pub struct CodeParameterOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<CodeLanguage>,
 
-    /// Theme for code editor (light, dark, auto)
-    #[serde(default = "default_theme")]
-    pub theme: CodeTheme,
-
-    /// Show line numbers
-    #[serde(default = "default_show_line_numbers")]
-    pub show_line_numbers: bool,
-
-    /// Enable word wrap
-    #[serde(default)]
-    pub word_wrap: bool,
-
-    /// Tab size (number of spaces)
-    #[serde(default = "default_tab_size")]
-    pub tab_size: u32,
-
-    /// Enable code folding
-    #[serde(default)]
-    pub enable_folding: bool,
-
-    /// Show invisible characters (spaces, tabs, etc.)
-    #[serde(default)]
-    pub show_invisibles: bool,
-
-    /// Enable automatic bracket/quote pairing
-    #[serde(default = "default_auto_pairs")]
-    pub auto_pairs: bool,
-
-    /// Minimum number of lines to display
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_lines: Option<u32>,
-
-    /// Maximum number of lines to display before scrolling
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_lines: Option<u32>,
-
     /// Read-only mode
     #[serde(default)]
     pub readonly: bool,
-
-    /// Show code validation errors inline
-    #[serde(default = "default_show_errors")]
-    pub show_validation_errors: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -123,46 +83,10 @@ pub enum CodeLanguage {
     PlainText,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum CodeTheme {
-    #[serde(rename = "light")]
-    Light,
-    #[serde(rename = "dark")]
-    Dark,
-    #[serde(rename = "auto")]
-    Auto,
-}
-
 impl Default for CodeLanguage {
     fn default() -> Self {
         CodeLanguage::PlainText
     }
-}
-
-impl Default for CodeTheme {
-    fn default() -> Self {
-        CodeTheme::Auto
-    }
-}
-
-fn default_theme() -> CodeTheme {
-    CodeTheme::Auto
-}
-
-fn default_show_line_numbers() -> bool {
-    true
-}
-
-fn default_tab_size() -> u32 {
-    4
-}
-
-fn default_auto_pairs() -> bool {
-    true
-}
-
-fn default_show_errors() -> bool {
-    true
 }
 
 impl ParameterType for CodeParameter {
@@ -407,54 +331,12 @@ impl CodeParameter {
             .unwrap_or_default()
     }
 
-    /// Get the editor theme
-    pub fn get_theme(&self) -> CodeTheme {
-        self.options
-            .as_ref()
-            .map(|opts| opts.theme.clone())
-            .unwrap_or_default()
-    }
-
-    /// Check if line numbers should be shown
-    pub fn shows_line_numbers(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.show_line_numbers)
-            .unwrap_or(true)
-    }
-
-    /// Get tab size
-    pub fn get_tab_size(&self) -> u32 {
-        self.options.as_ref().map(|opts| opts.tab_size).unwrap_or(4)
-    }
-
-    /// Check if word wrap is enabled
-    pub fn has_word_wrap(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.word_wrap)
-            .unwrap_or(false)
-    }
-
     /// Check if the editor is read-only
     pub fn is_readonly(&self) -> bool {
         self.options
             .as_ref()
             .map(|opts| opts.readonly)
             .unwrap_or(false)
-    }
-
-    /// Get the minimum number of lines
-    pub fn get_min_lines(&self) -> u32 {
-        self.options
-            .as_ref()
-            .and_then(|opts| opts.min_lines)
-            .unwrap_or(3)
-    }
-
-    /// Get the maximum number of lines before scrolling
-    pub fn get_max_lines(&self) -> Option<u32> {
-        self.options.as_ref().and_then(|opts| opts.max_lines)
     }
 
     /// Count lines in current code

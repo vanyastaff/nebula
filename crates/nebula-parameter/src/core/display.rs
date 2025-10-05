@@ -4,24 +4,6 @@ use nebula_core::ParameterKey;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// UI mode for parameter display
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UiMode {
-    /// Standard user interface mode
-    Standard,
-    /// Advanced user interface mode
-    Advanced,
-    /// Developer/debug mode
-    Developer,
-    /// Mobile interface mode
-    Mobile,
-    /// Desktop interface mode
-    Desktop,
-    /// API-only mode (no UI)
-    ApiOnly,
-}
-
 /// Context for evaluating display conditions
 #[derive(Debug, Clone)]
 pub struct DisplayContext {

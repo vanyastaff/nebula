@@ -1,5 +1,7 @@
 // Working parameter types with a new trait system
-pub mod button;
+pub mod resource;
+pub mod panel;
+pub mod number;
 pub mod checkbox;
 pub mod code;
 pub mod color;
@@ -21,35 +23,37 @@ pub mod select;
 pub mod text;
 pub mod textarea;
 pub mod time;
-
 // Export working types
-pub use button::{ButtonParameter, ButtonType};
 pub use checkbox::{CheckboxParameter, CheckboxParameterOptions};
-pub use code::{CodeLanguage, CodeParameter, CodeParameterOptions, CodeTheme};
+pub use code::{CodeLanguage, CodeParameter, CodeParameterOptions};
 pub use color::{ColorFormat, ColorParameter, ColorParameterOptions};
 pub use date::{DateParameter, DateParameterOptions};
 pub use datetime::{DateTimeParameter, DateTimeParameterOptions};
 pub use expirable::{ExpirableParameter, ExpirableParameterOptions, ExpirableValue};
 pub use file::{FileParameter, FileParameterOptions, FileReference};
 pub use group::{
-    GroupField, GroupFieldType, GroupLabelPosition, GroupLayout, GroupParameter,
+    GroupField, GroupFieldType, GroupParameter,
     GroupParameterOptions, GroupValue,
 };
 pub use hidden::HiddenParameter;
-pub use list::{ListLayout, ListParameter, ListParameterOptions};
+pub use list::{ListParameter, ListParameterOptions, ListValue};
 pub use mode::{ModeItem, ModeParameter, ModeValue};
 pub use multi_select::{MultiSelectParameter, MultiSelectParameterOptions};
 pub use notice::{NoticeParameter, NoticeParameterOptions, NoticeType};
+pub use number::{NumberParameter, NumberParameterOptions};
+pub use panel::{Panel, PanelParameter, PanelParameterOptions};
 pub use object::{
-    ObjectLabelPosition, ObjectLayout, ObjectParameter, ObjectParameterOptions, ObjectValue,
+    ObjectParameter, ObjectParameterOptions, ObjectValue,
 };
-pub use radio::{RadioLayoutDirection, RadioParameter, RadioParameterOptions};
+pub use radio::{RadioParameter, RadioParameterOptions};
+pub use resource::{
+    ResourceContext, ResourceLoader, ResourceParameter, ResourceParameterOptions, ResourceValue,
+};
 pub use routing::{RoutingParameter, RoutingParameterOptions, RoutingValue};
 pub use secret::{SecretParameter, SecretParameterOptions};
 pub use select::{SelectParameter, SelectParameterOptions};
 pub use text::{TextParameter, TextParameterOptions};
 pub use textarea::{TextareaParameter, TextareaParameterOptions};
 pub use time::{TimeParameter, TimeParameterOptions};
-
 // TODO: Update these to use new trait system (when needed)
 // pub mod credential;
