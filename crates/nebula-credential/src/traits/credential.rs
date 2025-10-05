@@ -1,57 +1,72 @@
-use crate::core::{
-    AccessToken, CredentialContext, CredentialError, CredentialMetadata, CredentialState,
-};
-use async_trait::async_trait;
-use serde::{Serialize, de::DeserializeOwned};
+//! Core traits for credential flows and interactive authentication
 
-/// Main trait for credential implementations
+use async_trait::async_trait;
+use serde::{de::DeserializeOwned, Serialize};
+
+use crate::core::{
+    result::{InitializeResult, PartialState, UserInput},
+    CredentialContext, CredentialError, CredentialMetadata, CredentialState,
+};
+
+/// Base credential trait
+///
+/// The `Credential` trait defines the interface for credential implementations.
+/// It supports both simple (non-interactive) and complex (interactive) flows.
+///
+/// # Type Parameters
+/// - `Input`: Parameters needed to initialize the credential (e.g., {api_key}, {username, password}, {client_id, client_secret})
+/// - `State`: The persisted state of the credential (can contain sensitive information, tokens, etc.)
 #[async_trait]
 pub trait Credential: Send + Sync + 'static {
     /// Input type for initialization
-    type Input: Serialize + DeserializeOwned + Send + Sync;
+    type Input: Serialize + DeserializeOwned + Send + Sync + 'static;
 
     /// State type for persistence
     type State: CredentialState;
-
-    /// Type name constant
-    const TYPE_NAME: &'static str = Self::State::KIND;
 
     /// Get metadata about this credential
     fn metadata(&self) -> CredentialMetadata;
 
     /// Initialize credential from input
+    ///
+    /// Can return:
+    /// - `Complete` for simple flows (API keys, static tokens)
+    /// - `RequiresInteraction` or `Pending` for interactive flows (OAuth2, SAML, 2FA)
     async fn initialize(
         &self,
         input: &Self::Input,
-        _ctx: &mut CredentialContext,
-    ) -> Result<(Self::State, Option<AccessToken>), CredentialError>;
+        ctx: &mut CredentialContext,
+    ) -> Result<InitializeResult<Self::State>, CredentialError>;
 
     /// Refresh the credential
     async fn refresh(
         &self,
-        _state: &mut Self::State,
-        _ctx: &mut CredentialContext,
-    ) -> Result<AccessToken, CredentialError> {
-        Err(CredentialError::refresh_not_supported(
-            Self::TYPE_NAME.to_string(),
-        ))
-    }
+        state: &mut Self::State,
+        ctx: &mut CredentialContext,
+    ) -> Result<(), CredentialError>;
 
     /// Revoke the credential (optional)
     async fn revoke(
         &self,
-        _state: &mut Self::State,
-        _ctx: &mut CredentialContext,
-    ) -> Result<(), CredentialError> {
-        Ok(())
-    }
+        state: &mut Self::State,
+        ctx: &mut CredentialContext,
+    ) -> Result<(), CredentialError>;
+}
 
-    /// Validate the credential state
-    async fn validate(
+/// Trait for credentials that support interactive flows
+///
+/// Implement this trait for credentials that require user interaction
+/// (OAuth2 authorization code flow, SAML, device flow, 2FA, etc.)
+#[async_trait]
+pub trait InteractiveCredential: Credential {
+    /// Continue flow after user interaction
+    ///
+    /// Called by the manager when user provides input for a pending flow.
+    /// The partial_state contains intermediate data from the previous step.
+    async fn continue_initialization(
         &self,
-        _state: &Self::State,
-        _ctx: &CredentialContext,
-    ) -> Result<bool, CredentialError> {
-        Ok(true)
-    }
+        partial_state: PartialState,
+        user_input: UserInput,
+        ctx: &mut CredentialContext,
+    ) -> Result<InitializeResult<Self::State>, CredentialError>;
 }

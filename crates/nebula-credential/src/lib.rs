@@ -1,63 +1,61 @@
-//! Nebula Credential Core
+//! Nebula Credential - Universal credential management system
 //!
-//! A secure, extensible credential management system for Nebula.
+//! A secure, extensible credential management system for workflow automation.
 //!
 //! # Features
 //!
-//! - **Type-safe credential management** - Compile-time verification
-//! - **Secure token storage** - Zero-copy secrets with automatic zeroization
-//! - **Automatic token refresh** - With jitter and retry logic
-//! - **Multi-level caching** - L1/L2 cache with TTL support
-//! - **Distributed locking** - For safe concurrent operations
-//! - **Pluggable authenticators** - Compose authentication strategies
-//! - **State migrations** - Version-to-version upgrades
-//! - **Comprehensive observability** - Metrics, tracing, and audit logs
+//! - **Protocol-agnostic flows** - OAuth2, API Keys, JWT, SAML, Kerberos, mTLS
+//! - **Type-safe credentials** - Compile-time verification with generic flows
+//! - **Interactive authentication** - Multi-step flows with user interaction
+//! - **Secure storage** - Zero-copy secrets with automatic zeroization
+//! - **Minimal boilerplate** - ~30-50 lines to add new integrations
 
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 #![forbid(unsafe_code)]
 
-/// Authentication strategies and composable authenticators
-pub mod authenticator;
-pub mod cache;
 /// Core types, errors, and primitives
 pub mod core;
-/// Credential manager and refresh policies
-pub mod manager;
-/// State migration support
-pub mod migration;
-/// Credential type registry and factories
-pub mod registry;
-pub mod storage;
-/// Testing utilities and mocks
-#[cfg_attr(test, allow(dead_code))]
-pub mod testing;
-/// Core traits for credentials, storage, caching, and locking
+/// Built-in credential flows (OAuth2, API Key, etc.)
+pub mod flows;
+/// Core traits for credentials, storage, and locking
 pub mod traits;
+/// Utilities for crypto, time, etc.
+pub mod utils;
 
 /// Commonly used types and traits
 pub mod prelude {
-    pub use crate::authenticator::{
-        AuthenticateWith, AuthenticateWithState, ChainAuthenticator, ClientAuthenticator,
-        StatefulAuthenticator,
-    };
+    // Core types
     pub use crate::core::{
-        AccessToken, CredentialContext, CredentialError, CredentialId, CredentialMetadata,
-        CredentialState, Ephemeral, SecureString,
+        adapter::FlowCredential,
+        result::{
+            CaptchaType, CodeFormat, CredentialFlow, DisplayData, InitializeResult,
+            InteractionRequest, PartialState, UserInput,
+        },
+        CredentialContext, CredentialError, CredentialId, CredentialMetadata, CredentialState,
+        SecureString,
     };
-    pub use crate::manager::{CredentialManager, ManagerBuilder, RefreshPolicy};
+
+    // Built-in flows
+    pub use crate::flows::{
+        api_key::{ApiKeyCredential, ApiKeyFlow, ApiKeyInput, ApiKeyState},
+        basic_auth::{BasicAuthCredential, BasicAuthFlow, BasicAuthInput, BasicAuthState},
+        bearer_token::{BearerTokenCredential, BearerTokenFlow, BearerTokenInput, BearerTokenState},
+        oauth2::{
+            AuthorizationCodeFlow, AuthorizationCodeInput,
+            ClientCredentialsFlow, ClientCredentialsInput,
+            OAuth2AuthorizationCode, OAuth2ClientCredentials, OAuth2State,
+        },
+        password::{PasswordCredential, PasswordFlow, PasswordInput, PasswordState},
+    };
+
+    // Traits
     pub use crate::traits::{
-        bridge::CredentialAdapter, Credential, DistributedLock, LockError, LockGuard, StateStore,
-        TokenCache,
+        Credential, DistributedLock, InteractiveCredential, LockError, LockGuard, StateStore,
     };
-    pub use async_trait::async_trait;
-    pub use serde::{Deserialize, Serialize};
+
+    // Utils
+    pub use crate::utils::{
+        generate_code_challenge, generate_pkce_verifier, generate_random_state,
+    };
 }
-
-// Re-export commonly used external types
-pub use chrono::{DateTime, Utc};
-pub use uuid::Uuid;
-
-// Re-export top-level types for convenience
-pub use crate::manager::CredentialManager;
-pub use crate::registry::CredentialRegistry;

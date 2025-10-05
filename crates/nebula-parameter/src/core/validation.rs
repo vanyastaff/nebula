@@ -401,12 +401,14 @@ impl CrossParameterValidation {
         values: &HashMap<Key, nebula_value::Value>,
     ) -> Result<(), ValidationError> {
         // Build a validation context from the values
-        let root = serde_json::to_value(values).unwrap_or(serde_json::Value::Null);
-        let root_value = match root {
-            serde_json::Value::Object(obj) => nebula_value::Value::Object(obj.into_iter().collect()),
-            _ => nebula_value::Value::Null,
-        };
+        // Convert HashMap<Key, Value> to Object by mapping keys to strings
+        use crate::ValueRefExt;
+        let obj_entries: Vec<(String, _)> = values
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_json()))
+            .collect();
 
+        let root_value = nebula_value::Value::Object(obj_entries.into_iter().collect());
         let context = ValidatorContext::simple(root_value);
 
         // Run the validator if present

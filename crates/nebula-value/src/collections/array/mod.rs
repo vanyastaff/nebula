@@ -49,6 +49,17 @@ impl Array {
         }
     }
 
+    /// Create from an iterator of nebula_value::Value items
+    #[cfg(feature = "serde")]
+    pub fn from_nebula_values<I>(iter: I) -> Self
+    where
+        I: IntoIterator<Item = crate::Value>,
+    {
+        use crate::core::convert::ValueRefExt;
+        let items: Vec<ValueItem> = iter.into_iter().map(|v| v.to_json()).collect();
+        Self::from_vec(items)
+    }
+
     /// Create with length validation
     pub fn with_limits(vec: Vec<ValueItem>, limits: &ValueLimits) -> ValueResult<Self> {
         limits.check_array_length(vec.len())?;

@@ -1,7 +1,7 @@
-use thiserror::Error;
+use nebula_error::prelude::*;
 
 /// Main error type for credential operations
-#[derive(Error, Debug, Clone)]
+#[derive(ThisError, Debug, Clone)]
 pub enum CredentialError {
     /// Credential not found
     #[error("Credential not found: {id}")]
@@ -16,10 +16,6 @@ pub enum CredentialError {
         /// The credential ID
         id: String,
     },
-
-    /// Invalid key format error
-    #[error("Credential invalid key: {0}")]
-    InvalidKey(#[from] domain_key::KeyParseError),
 
     /// Refresh operation is not supported for this credential type
     #[error("Refresh not supported for credential type: {credential_type}")]
@@ -204,7 +200,6 @@ impl CredentialError {
         match self {
             Self::NotFound { .. } => "not_found",
             Self::Expired { .. } => "expired",
-            Self::InvalidKey(_) => "invalid_key",
             Self::RefreshNotSupported { .. } => "refresh_not_supported",
             Self::RefreshFailed { .. } => "refresh_failed",
             Self::AuthenticationFailed { .. } => "authentication_failed",
@@ -249,6 +244,81 @@ impl From<serde_json::Error> for CredentialError {
             Self::DeserializationFailed(error.to_string())
         } else {
             Self::SerializationFailed(error.to_string())
+        }
+    }
+}
+
+/// Convert CredentialError to NebulaError for unified error handling
+impl From<CredentialError> for NebulaError {
+    fn from(err: CredentialError) -> Self {
+        match err {
+            // Client errors (4xx equivalent) - not retryable
+            CredentialError::NotFound { id } => {
+                NebulaError::credential_not_found(&id)
+            }
+            CredentialError::InvalidInput { field, reason } => {
+                NebulaError::validation(format!("Invalid {}: {}", field, reason))
+            }
+            CredentialError::InvalidConfiguration { reason } => {
+                NebulaError::validation(format!("Invalid configuration: {}", reason))
+            }
+            CredentialError::AlreadyExists { id } => {
+                NebulaError::validation(format!("Credential already exists: {}", id))
+            }
+            CredentialError::TypeNotRegistered { credential_type } => {
+                NebulaError::validation(format!("Credential type not registered: {}", credential_type))
+            }
+            CredentialError::PermissionDenied { operation, reason } => {
+                NebulaError::permission_denied(&operation, &reason)
+            }
+            CredentialError::RefreshNotSupported { credential_type } => {
+                NebulaError::validation(format!("Refresh not supported: {}", credential_type))
+            }
+
+            // Authentication errors
+            CredentialError::Expired { id } => {
+                NebulaError::credential_invalid(&id, "expired")
+            }
+            CredentialError::AuthenticationFailed { reason } => {
+                NebulaError::authentication(&reason)
+            }
+
+            // Server/Infrastructure errors - retryable
+            CredentialError::NetworkFailed(msg) => {
+                NebulaError::network(&msg)
+            }
+            CredentialError::Timeout { operation } => {
+                NebulaError::timeout(&operation, std::time::Duration::from_secs(30))
+            }
+            CredentialError::StorageFailed { operation, reason } => {
+                NebulaError::database(format!("{}: {}", operation, reason))
+            }
+            CredentialError::CacheFailed { operation, reason } => {
+                NebulaError::internal(format!("Cache {}: {}", operation, reason))
+            }
+            CredentialError::LockFailed { resource, reason } => {
+                NebulaError::internal(format!("Lock failed {}: {}", resource, reason))
+            }
+            CredentialError::RefreshFailed { id, reason } => {
+                NebulaError::credential_invalid(&id, &reason)
+            }
+
+            // Serialization errors
+            CredentialError::SerializationFailed(msg) |
+            CredentialError::DeserializationFailed(msg) => {
+                NebulaError::internal(msg)
+            }
+
+            // Conflict errors
+            CredentialError::CasConflict => {
+                NebulaError::internal("compare-and-swap conflict")
+            }
+
+            // Internal/Custom errors
+            CredentialError::Internal(msg) |
+            CredentialError::Custom { message: msg } => {
+                NebulaError::internal(msg)
+            }
         }
     }
 }

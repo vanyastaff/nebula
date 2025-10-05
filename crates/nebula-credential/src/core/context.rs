@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
 /// Context passed to credential operations
-#[derive(Default)]
 pub struct CredentialContext {
+    /// HTTP client for making requests
+    http_client: reqwest::Client,
+
     /// Additional parameters
     pub params: HashMap<String, serde_json::Value>,
 
@@ -10,10 +12,25 @@ pub struct CredentialContext {
     pub metadata: HashMap<String, String>,
 }
 
+impl Default for CredentialContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CredentialContext {
     /// Create new context
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            http_client: reqwest::Client::new(),
+            params: HashMap::new(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Get HTTP client
+    pub fn http_client(&self) -> &reqwest::Client {
+        &self.http_client
     }
 
     /// Set parameter
@@ -24,6 +41,16 @@ impl CredentialContext {
     /// Get parameter
     pub fn get_param(&self, key: &str) -> Option<&serde_json::Value> {
         self.params.get(key)
+    }
+
+    /// Set metadata
+    pub fn set_metadata(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.metadata.insert(key.into(), value.into());
+    }
+
+    /// Get metadata
+    pub fn get_metadata(&self, key: &str) -> Option<&String> {
+        self.metadata.get(key)
     }
 }
 

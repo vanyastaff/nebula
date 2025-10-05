@@ -43,7 +43,9 @@
       "Bash(cargo:*)",
       "Bash(MIRIFLAGS=\"-Zmiri-permissive-provenance\" cargo +nightly miri test --test miri_safety -- miri_bump_allocator_basic)",
       "Bash(export MIRIFLAGS=\"-Zmiri-permissive-provenance\")",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(tree:*)",
+      "Bash(test:*)"
     ],
     "deny": [],
     "ask": []

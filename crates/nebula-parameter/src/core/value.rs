@@ -114,34 +114,10 @@ impl From<&str> for ParameterValue {
     }
 }
 
-impl From<serde_json::Value> for ParameterValue {
-    fn from(json_value: serde_json::Value) -> Self {
-        let nebula_value = match json_value {
-            serde_json::Value::Null => Value::Null,
-            serde_json::Value::Bool(b) => Value::boolean(b),
-            serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    Value::integer(i)
-                } else if let Some(f) = n.as_f64() {
-                    Value::float(f)
-                } else {
-                    Value::Null
-                }
-            }
-            serde_json::Value::String(s) => Value::text(s),
-            serde_json::Value::Array(arr) => {
-                // Array uses serde_json::Value internally
-                Value::Array(nebula_value::Array::from(arr))
-            }
-            serde_json::Value::Object(obj) => {
-                // Object uses serde_json::Value internally, construct from iterator
-                let obj_iter = obj.into_iter();
-                Value::Object(obj_iter.collect())
-            }
-        };
-        ParameterValue::Value(nebula_value)
-    }
-}
+// Removed: impl From<serde_json::Value> for ParameterValue
+// Use nebula_value::JsonValueExt trait instead:
+// use nebula_value::JsonValueExt;
+// let param_val = json_value.to_nebula_value_or_null().into();
 
 impl From<ParameterValue> for Value {
     fn from(param_value: ParameterValue) -> Self {
@@ -158,14 +134,8 @@ impl From<ParameterValue> for Value {
                 }
             }
             ParameterValue::List(list_val) => {
-                // ListValue.items is Vec<nebula_value::Value> but Array needs Vec<serde_json::Value>
-                // We need to convert through serde
-                let json_items: Vec<serde_json::Value> = list_val
-                    .items
-                    .iter()
-                    .filter_map(|v| serde_json::to_value(v).ok())
-                    .collect();
-                Value::Array(nebula_value::Array::from(json_items))
+                // Convert Vec<nebula_value::Value> to Array using from_nebula_values
+                Value::Array(nebula_value::Array::from_nebula_values(list_val.items.clone()))
             }
             ParameterValue::Object(obj_val) => {
                 // Object uses serde_json::Value internally, construct from iterator

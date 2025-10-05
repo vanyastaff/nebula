@@ -144,7 +144,7 @@ impl Validatable for ColorParameter {
     }
 
     fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        serde_json::Value::String(value.clone())
+        nebula_value::Value::text(value.clone())
     }
 
     fn is_empty_value(&self, value: &Self::Value) -> bool {

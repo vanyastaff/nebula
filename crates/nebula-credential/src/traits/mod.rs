@@ -1,10 +1,10 @@
-//! Core traits for credential system
-pub mod bridge;
-mod cache;
+//! Infrastructure traits for storage and locking
+
 mod credential;
 mod lock;
 mod storage;
-pub use cache::TokenCache;
-pub use credential::Credential;
+
+pub use credential::{Credential, InteractiveCredential};
 pub use lock::{DistributedLock, LockError, LockGuard};
 pub use storage::{StateStore, StateVersion};
+
