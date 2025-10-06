@@ -1,18 +1,19 @@
-use crate::core::ParameterValue;
 use crate::core::condition::ParameterCondition;
 use nebula_core::ParameterKey;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Context for evaluating display conditions
 #[derive(Debug, Clone)]
 pub struct DisplayContext {
     /// Current values of other parameters
-    pub values: HashMap<ParameterKey, ParameterValue>,
+    pub values: HashMap<ParameterKey, MaybeExpression<Value>>,
 }
 
 impl DisplayContext {
-    pub fn new(values: HashMap<ParameterKey, ParameterValue>) -> Self {
+    pub fn new(values: HashMap<ParameterKey, MaybeExpression<Value>>) -> Self {
         Self { values }
     }
 }
@@ -38,7 +39,7 @@ impl ParameterDisplay {
     }
 
     /// Check if the parameter should be displayed given the current context
-    pub fn should_display(&self, properties: &HashMap<ParameterKey, ParameterValue>) -> bool {
+    pub fn should_display(&self, properties: &HashMap<ParameterKey, MaybeExpression<Value>>) -> bool {
         // Check hide conditions first - if any are met, hide the parameter
         if self.should_hide(properties) {
             return false;
@@ -49,7 +50,7 @@ impl ParameterDisplay {
     }
 
     /// Check if any hide conditions are met
-    fn should_hide(&self, properties: &HashMap<ParameterKey, ParameterValue>) -> bool {
+    fn should_hide(&self, properties: &HashMap<ParameterKey, MaybeExpression<Value>>) -> bool {
         if let Some(hide_conditions) = &self.hide {
             for (key, conditions) in hide_conditions {
                 if let Some(value) = properties.get(key) {
@@ -64,7 +65,7 @@ impl ParameterDisplay {
     }
 
     /// Check if all show conditions are met
-    fn should_show(&self, properties: &HashMap<ParameterKey, ParameterValue>) -> bool {
+    fn should_show(&self, properties: &HashMap<ParameterKey, MaybeExpression<Value>>) -> bool {
         if let Some(show_conditions) = &self.show {
             for (key, conditions) in show_conditions {
                 if let Some(value) = properties.get(key) {
@@ -84,7 +85,7 @@ impl ParameterDisplay {
     /// Validate display conditions and return detailed error if hidden
     pub fn validate_display(
         &self,
-        properties: &HashMap<ParameterKey, ParameterValue>,
+        properties: &HashMap<ParameterKey, MaybeExpression<Value>>,
     ) -> Result<(), ParameterDisplayError> {
         if !self.should_display(properties) {
             return Err(ParameterDisplayError::Hidden {
@@ -240,7 +241,7 @@ impl ParameterDisplayBuilder {
     }
 
     /// Add a show condition with equality check
-    pub fn show_when_equals<T: Into<ParameterValue>>(
+    pub fn show_when_equals<T: Into<MaybeExpression<Value>>>(
         self,
         property_key: impl Into<ParameterKey>,
         value: T,
@@ -249,7 +250,7 @@ impl ParameterDisplayBuilder {
     }
 
     /// Add a hide condition with equality check
-    pub fn hide_when_equals<T: Into<ParameterValue>>(
+    pub fn hide_when_equals<T: Into<MaybeExpression<Value>>>(
         self,
         property_key: impl Into<ParameterKey>,
         value: T,

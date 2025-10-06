@@ -2,9 +2,12 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
     ParameterMetadata, ParameterValidation, ParameterValue, SelectOption, Validatable,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Parameter for selecting multiple options from a dropdown
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -80,23 +83,29 @@ impl HasValue for MultiSelectParameter {
     fn clear(&mut self) {
         self.value = None;
     }
+}
 
-    fn to_expression(&self) -> Option<ParameterValue> {
+#[async_trait::async_trait]
+impl Expressible for MultiSelectParameter {
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         self.value.as_ref().map(|vec| {
             let values: Vec<nebula_value::Value> = vec
                 .iter()
-                .map(|s| nebula_value::Value::text(s.clone()))
+                .map(|s| nebula_value::Value::Text(nebula_value::Text::from(s.clone())))
                 .collect();
-            ParameterValue::Value(nebula_value::Value::Array(
+            MaybeExpression::Value(nebula_value::Value::Array(
                 nebula_value::Array::from_nebula_values(values),
             ))
         })
     }
 
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::Array(arr)) => {
+            MaybeExpression::Value(nebula_value::Value::Array(arr)) => {
                 let mut string_values = Vec::new();
 
                 // arr.iter() returns &serde_json::Value, convert to nebula_value::Value
@@ -130,7 +139,7 @@ impl HasValue for MultiSelectParameter {
                     })
                 }
             }
-            ParameterValue::Expression(expr) => {
+            MaybeExpression::Expression(expr) => {
                 // For expressions, store as single-item array with the expression
                 self.value = Some(vec![expr]);
                 Ok(())

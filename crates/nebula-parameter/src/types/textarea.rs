@@ -2,9 +2,12 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
 pub struct TextareaParameter {
@@ -12,10 +15,10 @@ pub struct TextareaParameter {
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
+    pub value: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<String>,
+    pub default: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<TextareaParameterOptions>,
@@ -55,7 +58,7 @@ impl std::fmt::Display for TextareaParameter {
 }
 
 impl HasValue for TextareaParameter {
-    type Value = String;
+    type Value = nebula_value::Text;
 
     fn get(&self) -> Option<&Self::Value> {
         self.value.as_ref()
@@ -78,50 +81,57 @@ impl HasValue for TextareaParameter {
         self.value = None;
     }
 
-    fn to_expression(&self) -> Option<ParameterValue> {
+}
+
+#[async_trait::async_trait]
+impl Expressible for TextareaParameter {
+fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         self.value
             .as_ref()
-            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+            .map(|s| MaybeExpression::Value(nebula_value::Value::Text(s.clone())))
     }
 
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::Text(s)) => {
-                let text = s.to_string();
+            MaybeExpression::Value(nebula_value::Value::Text(s)) => {
+                // Use Text directly
                 // Validate length constraints from options
                 if let Some(options) = &self.options {
                     if let Some(min_len) = options.min_length {
-                        if text.len() < min_len {
+                        if s.len() < min_len {
                             return Err(ParameterError::InvalidValue {
                                 key: self.metadata.key.clone(),
                                 reason: format!(
                                     "Text too short: {} chars, minimum {}",
-                                    text.len(),
+                                    s.len(),
                                     min_len
                                 ),
                             });
                         }
                     }
                     if let Some(max_len) = options.max_length {
-                        if text.len() > max_len {
+                        if s.len() > max_len {
                             return Err(ParameterError::InvalidValue {
                                 key: self.metadata.key.clone(),
                                 reason: format!(
                                     "Text too long: {} chars, maximum {}",
-                                    text.len(),
+                                    s.len(),
                                     max_len
                                 ),
                             });
                         }
                     }
                 }
-                self.value = Some(text);
+                self.value = Some(s);
                 Ok(())
             }
-            ParameterValue::Expression(expr) => {
+            MaybeExpression::Expression(expr) => {
                 // Allow expressions for dynamic text
-                self.value = Some(expr);
+                self.value = Some(nebula_value::Text::from(expr));
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {
@@ -131,6 +141,7 @@ impl HasValue for TextareaParameter {
         }
     }
 }
+
 
 impl Validatable for TextareaParameter {
     fn validation(&self) -> Option<&ParameterValidation> {

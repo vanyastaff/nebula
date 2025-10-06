@@ -2,9 +2,12 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Parameter for numeric input
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -87,41 +90,6 @@ impl HasValue for NumberParameter {
         self.value = None;
     }
 
-    fn to_expression(&self) -> Option<ParameterValue> {
-        self.value
-            .map(|n| ParameterValue::Value(nebula_value::Value::float(n)))
-    }
-
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            ParameterValue::Value(nebula_value::Value::Integer(i)) => {
-                let num = i.value() as f64;
-                self.validate_number(num)?;
-                self.value = Some(num);
-                Ok(())
-            }
-            ParameterValue::Value(nebula_value::Value::Float(f)) => {
-                let num = f.value();
-                self.validate_number(num)?;
-                self.value = Some(num);
-                Ok(())
-            }
-            ParameterValue::Expression(expr) => {
-                // Allow expressions for dynamic numbers
-                // Try to parse as number, otherwise store for later evaluation
-                if let Ok(num) = expr.parse::<f64>() {
-                    self.validate_number(num)?;
-                    self.value = Some(num);
-                }
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected numeric value".to_string(),
-            }),
-        }
-    }
 }
 
 impl Validatable for NumberParameter {
@@ -140,6 +108,45 @@ impl Displayable for NumberParameter {
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
         self.display = display;
+    }
+}
+
+#[async_trait::async_trait]
+impl Expressible for NumberParameter {
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
+        self.value
+            .map(|n| MaybeExpression::Value(Value::Float(nebula_value::Float::new(n))))
+    }
+
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
+        match value.into() {
+            MaybeExpression::Value(Value::Integer(i)) => {
+                let num = i.value() as f64;
+                self.validate_number(num)?;
+                self.value = Some(num);
+                Ok(())
+            }
+            MaybeExpression::Value(Value::Float(f)) => {
+                let num = f.value();
+                self.validate_number(num)?;
+                self.value = Some(num);
+                Ok(())
+            }
+            MaybeExpression::Expression(expr) => {
+                if let Ok(num) = expr.parse::<f64>() {
+                    self.validate_number(num)?;
+                    self.value = Some(num);
+                }
+                Ok(())
+            }
+            _ => Err(ParameterError::InvalidValue {
+                key: self.metadata.key.clone(),
+                reason: "Expected numeric value".to_string(),
+            }),
+        }
     }
 }
 

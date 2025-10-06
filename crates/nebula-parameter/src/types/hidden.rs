@@ -2,8 +2,12 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    HasValue, Parameter, ParameterError, ParameterKind, ParameterMetadata, ParameterValue,
+     HasValue, Parameter, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValue,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Parameter that is hidden from the user interface but can store values
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -58,20 +62,27 @@ impl HasValue for HiddenParameter {
         self.value = None;
     }
 
-    fn to_expression(&self) -> Option<ParameterValue> {
+}
+
+#[async_trait::async_trait]
+impl Expressible for HiddenParameter {
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         self.value
             .as_ref()
-            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+            .map(|s| MaybeExpression::Value(nebula_value::Value::Text(nebula_value::Text::from(s.clone()))))
     }
 
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::Text(s)) => {
+            MaybeExpression::Value(nebula_value::Value::Text(s)) => {
                 self.value = Some(s.to_string());
                 Ok(())
             }
-            ParameterValue::Expression(expr) => {
+            MaybeExpression::Expression(expr) => {
                 // Hidden parameters commonly use expressions for computed values
                 self.value = Some(expr);
                 Ok(())

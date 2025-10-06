@@ -4,10 +4,8 @@ mod error;
 mod kind;
 mod metadata;
 pub mod option;
-mod parameter;
-mod traits;
+pub mod traits;
 mod validation;
-mod value;
 
 pub use condition::*;
 pub use display::*;
@@ -17,4 +15,3 @@ pub use metadata::*;
 pub use option::SelectOption;
 pub use traits::*;
 pub use validation::*;
-pub use value::ParameterValue;

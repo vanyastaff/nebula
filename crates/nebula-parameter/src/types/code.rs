@@ -2,9 +2,12 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Parameter for code input with syntax highlighting and validation
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -13,10 +16,10 @@ pub struct CodeParameter {
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
+    pub value: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<String>,
+    pub default: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<CodeParameterOptions>,
@@ -106,7 +109,7 @@ impl std::fmt::Display for CodeParameter {
 }
 
 impl HasValue for CodeParameter {
-    type Value = String;
+    type Value = nebula_value::Text;
 
     fn get(&self) -> Option<&Self::Value> {
         self.value.as_ref()
@@ -128,21 +131,26 @@ impl HasValue for CodeParameter {
     fn clear(&mut self) {
         self.value = None;
     }
+}
 
-    fn to_expression(&self) -> Option<ParameterValue> {
+#[async_trait::async_trait]
+impl Expressible for CodeParameter {
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         self.value
             .as_ref()
-            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+            .map(|s| MaybeExpression::Value(nebula_value::Value::Text(s.clone())))
     }
 
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::Text(s)) => {
-                let code = s.to_string();
+            MaybeExpression::Value(nebula_value::Value::Text(s)) => {
                 // Perform language-specific validation if possible
-                if self.is_valid_code(&code) {
-                    self.value = Some(code);
+                if self.is_valid_code(s.as_str()) {
+                    self.value = Some(s);
                     Ok(())
                 } else {
                     Err(ParameterError::InvalidValue {
@@ -151,9 +159,9 @@ impl HasValue for CodeParameter {
                     })
                 }
             }
-            ParameterValue::Expression(expr) => {
+            MaybeExpression::Expression(expr) => {
                 // Allow expressions for dynamic code
-                self.value = Some(expr);
+                self.value = Some(nebula_value::Text::from(expr));
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {

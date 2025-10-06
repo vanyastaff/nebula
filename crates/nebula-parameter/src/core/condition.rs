@@ -1,4 +1,4 @@
-use crate::core::ParameterValue;
+use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 use serde::{Deserialize, Serialize};
 
@@ -6,28 +6,28 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ParameterCondition {
     // Comparison
-    Eq(ParameterValue),
-    NotEq(ParameterValue),
-    Gt(ParameterValue),
-    Gte(ParameterValue),
-    Lt(ParameterValue),
-    Lte(ParameterValue),
+    Eq(MaybeExpression<Value>),
+    NotEq(MaybeExpression<Value>),
+    Gt(MaybeExpression<Value>),
+    Gte(MaybeExpression<Value>),
+    Lt(MaybeExpression<Value>),
+    Lte(MaybeExpression<Value>),
     Between {
-        from: ParameterValue,
-        to: ParameterValue,
+        from: MaybeExpression<Value>,
+        to: MaybeExpression<Value>,
     },
 
     // String operations
-    StartsWith(ParameterValue),
-    EndsWith(ParameterValue),
-    Contains(ParameterValue),
-    Regex(ParameterValue),
+    StartsWith(MaybeExpression<Value>),
+    EndsWith(MaybeExpression<Value>),
+    Contains(MaybeExpression<Value>),
+    Regex(MaybeExpression<Value>),
     StringMinLength(usize),
     StringMaxLength(usize),
 
     // Set operations
-    In(Vec<ParameterValue>),
-    NotIn(Vec<ParameterValue>),
+    In(Vec<MaybeExpression<Value>>),
+    NotIn(Vec<MaybeExpression<Value>>),
 
     // Existence
     IsEmpty,
@@ -41,7 +41,7 @@ pub enum ParameterCondition {
 
 impl ParameterCondition {
     /// Evaluate the condition against a value
-    pub fn evaluate(&self, value: &ParameterValue) -> bool {
+    pub fn evaluate(&self, value: &MaybeExpression<Value>) -> bool {
         match self {
             ParameterCondition::Eq(expected) => value == expected,
             ParameterCondition::NotEq(expected) => value != expected,
@@ -82,27 +82,27 @@ impl ParameterCondition {
             ParameterCondition::IsEmpty => {
                 // Check if MaybeExpression is empty
                 match value {
-                    ParameterValue::Value(v) => match v {
+                    MaybeExpression::Value(v) => match v {
                         nebula_value::Value::Null => true,
                         nebula_value::Value::Text(s) => s.is_empty(),
                         nebula_value::Value::Array(a) => a.is_empty(),
                         nebula_value::Value::Object(o) => o.is_empty(),
                         _ => false,
                     },
-                    ParameterValue::Expression(expr) => expr.is_empty(),
+                    MaybeExpression::Expression(expr) => expr.is_empty(),
                 }
             }
             ParameterCondition::IsNotEmpty => {
                 // Check if MaybeExpression is not empty
                 match value {
-                    ParameterValue::Value(v) => match v {
+                    MaybeExpression::Value(v) => match v {
                         nebula_value::Value::Null => false,
                         nebula_value::Value::Text(s) => !s.is_empty(),
                         nebula_value::Value::Array(a) => !a.is_empty(),
                         nebula_value::Value::Object(o) => !o.is_empty(),
                         _ => true,
                     },
-                    ParameterValue::Expression(expr) => !expr.is_empty(),
+                    MaybeExpression::Expression(expr) => !expr.is_empty(),
                 }
             }
             ParameterCondition::And(conditions) => conditions.iter().all(|c| c.evaluate(value)),
@@ -114,27 +114,27 @@ impl ParameterCondition {
     // Helper constructor methods
 
     /// Create an equality condition
-    pub fn equals<T: Into<ParameterValue>>(value: T) -> Self {
+    pub fn equals<T: Into<MaybeExpression<Value>>>(value: T) -> Self {
         ParameterCondition::Eq(value.into())
     }
 
     /// Create a not equals condition
-    pub fn not_equals<T: Into<ParameterValue>>(value: T) -> Self {
+    pub fn not_equals<T: Into<MaybeExpression<Value>>>(value: T) -> Self {
         ParameterCondition::NotEq(value.into())
     }
 
     /// Create a greater than condition
-    pub fn greater_than<T: Into<ParameterValue>>(value: T) -> Self {
+    pub fn greater_than<T: Into<MaybeExpression<Value>>>(value: T) -> Self {
         ParameterCondition::Gt(value.into())
     }
 
     /// Create a less than condition
-    pub fn less_than<T: Into<ParameterValue>>(value: T) -> Self {
+    pub fn less_than<T: Into<MaybeExpression<Value>>>(value: T) -> Self {
         ParameterCondition::Lt(value.into())
     }
 
     /// Create a between condition
-    pub fn between<T: Into<ParameterValue>, U: Into<ParameterValue>>(from: T, to: U) -> Self {
+    pub fn between<T: Into<MaybeExpression<Value>>, U: Into<MaybeExpression<Value>>>(from: T, to: U) -> Self {
         ParameterCondition::Between {
             from: from.into(),
             to: to.into(),
@@ -143,12 +143,12 @@ impl ParameterCondition {
 
     /// Create a regex pattern condition
     pub fn regex_pattern<T: Into<String>>(pattern: T) -> Self {
-        ParameterCondition::Regex(ParameterValue::from(Value::text(pattern.into())))
+        ParameterCondition::Regex(MaybeExpression::from(Value::text(pattern.into())))
     }
 
     /// Create a contains condition
     pub fn contains<T: Into<String>>(substring: T) -> Self {
-        ParameterCondition::Contains(ParameterValue::from(Value::text(substring.into())))
+        ParameterCondition::Contains(MaybeExpression::from(Value::text(substring.into())))
     }
 
     /// Create an AND condition
@@ -170,7 +170,7 @@ impl ParameterCondition {
 
     /// Helper function to compare two numeric values
     #[inline]
-    fn compare_numbers<F>(value: &ParameterValue, expected: &ParameterValue, op: F) -> bool
+    fn compare_numbers<F>(value: &MaybeExpression<Value>, expected: &MaybeExpression<Value>, op: F) -> bool
     where
         F: Fn(f64, f64) -> bool,
     {
@@ -187,7 +187,7 @@ impl ParameterCondition {
 
     /// Helper function to compare two string values
     #[inline]
-    fn compare_strings<F>(value: &ParameterValue, expected: &ParameterValue, op: F) -> bool
+    fn compare_strings<F>(value: &MaybeExpression<Value>, expected: &MaybeExpression<Value>, op: F) -> bool
     where
         F: Fn(&str, &str) -> bool,
     {
@@ -199,7 +199,7 @@ impl ParameterCondition {
 
     /// Helper function to check string length
     #[inline]
-    fn check_string_length<F>(value: &ParameterValue, op: F) -> bool
+    fn check_string_length<F>(value: &MaybeExpression<Value>, op: F) -> bool
     where
         F: Fn(usize) -> bool,
     {
@@ -210,7 +210,7 @@ impl ParameterCondition {
     }
 
     /// Evaluate regex pattern
-    fn evaluate_regex(value: &ParameterValue, pattern: &ParameterValue) -> bool {
+    fn evaluate_regex(value: &MaybeExpression<Value>, pattern: &MaybeExpression<Value>) -> bool {
         match (value.as_value(), pattern.as_value()) {
             (Some(Value::Text(s)), Some(Value::Text(p))) => {
                 // Enhanced regex patterns for common validation cases

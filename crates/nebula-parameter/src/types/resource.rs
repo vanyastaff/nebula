@@ -3,14 +3,17 @@ use std::collections::HashMap;
 
 use crate::core::{
     Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    ParameterMetadata, ParameterValidation, Validatable,
     option::{OptionsResponse, Pagination, SelectOption},
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Context for resource loading
 pub struct ResourceContext<'a> {
     /// Current parameter values
-    pub parameters: &'a HashMap<String, ParameterValue>,
+    pub parameters: &'a HashMap<String, MaybeExpression<Value>>,
 
     /// Search query (if any)
     pub search: Option<String>,
@@ -23,7 +26,7 @@ pub struct ResourceContext<'a> {
 }
 
 impl<'a> ResourceContext<'a> {
-    pub fn new(parameters: &'a HashMap<String, ParameterValue>) -> Self {
+    pub fn new(parameters: &'a HashMap<String, MaybeExpression<Value>>) -> Self {
         Self {
             parameters,
             search: None,
@@ -48,7 +51,7 @@ impl<'a> ResourceContext<'a> {
     }
 
     /// Get a parameter value by key
-    pub fn get(&self, key: &str) -> Option<&ParameterValue> {
+    pub fn get(&self, key: &str) -> Option<&MaybeExpression<Value>> {
         self.parameters.get(key)
     }
 }
@@ -249,20 +252,27 @@ impl HasValue for ResourceParameter {
         self.value = None;
     }
 
-    fn to_expression(&self) -> Option<ParameterValue> {
+}
+
+#[async_trait::async_trait]
+impl Expressible for ResourceParameter {
+fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         self.value
             .as_ref()
-            .map(|v| ParameterValue::Value(nebula_value::Value::text(v.clone())))
+            .map(|v| MaybeExpression::Value(nebula_value::Value::Text(nebula_value::Text::from(v.clone()))))
     }
 
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::Text(s)) => {
+            MaybeExpression::Value(nebula_value::Value::Text(s)) => {
                 self.value = Some(s.to_string());
                 Ok(())
             }
-            ParameterValue::Expression(expr) => {
+            MaybeExpression::Expression(expr) => {
                 self.value = Some(expr);
                 Ok(())
             }
@@ -273,6 +283,7 @@ impl HasValue for ResourceParameter {
         }
     }
 }
+
 
 impl Validatable for ResourceParameter {
     fn validation(&self) -> Option<&ParameterValidation> {

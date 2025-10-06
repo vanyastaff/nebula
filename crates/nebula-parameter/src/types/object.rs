@@ -3,9 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Parameter for structured object data - acts as a container with named child parameters
 #[derive(Serialize)]
@@ -190,17 +193,23 @@ impl HasValue for ObjectParameter {
     fn clear(&mut self) {
         self.value = None;
     }
+}
 
-    fn to_expression(&self) -> Option<ParameterValue> {
+#[async_trait::async_trait]
+impl Expressible for ObjectParameter {
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         self.value.as_ref().map(|obj_val| {
-            ParameterValue::Value(nebula_value::Value::Object(obj_val.values.clone()))
+            MaybeExpression::Value(nebula_value::Value::Object(obj_val.values.clone()))
         })
     }
 
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::Object(obj)) => {
+            MaybeExpression::Value(nebula_value::Value::Object(obj)) => {
                 let object_value = ObjectValue { values: obj };
 
                 if self.is_valid_object_value(&object_value)? {
@@ -213,10 +222,13 @@ impl HasValue for ObjectParameter {
                     })
                 }
             }
-            ParameterValue::Expression(expr) => {
+            MaybeExpression::Expression(expr) => {
                 // For expressions, create an object with a single expression field
                 let mut object_value = ObjectValue::new();
-                object_value.set_field("_expression", nebula_value::Value::text(expr));
+                object_value.set_field(
+                    "_expression",
+                    nebula_value::Value::Text(nebula_value::Text::from(expr)),
+                );
                 self.value = Some(object_value);
                 Ok(())
             }

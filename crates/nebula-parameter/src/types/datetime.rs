@@ -2,9 +2,12 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Parameter for date and time selection
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -13,10 +16,10 @@ pub struct DateTimeParameter {
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
+    pub value: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<String>,
+    pub default: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<DateTimeParameterOptions>,
@@ -72,7 +75,7 @@ impl std::fmt::Display for DateTimeParameter {
 }
 
 impl HasValue for DateTimeParameter {
-    type Value = String;
+    type Value = nebula_value::Text;
 
     fn get(&self) -> Option<&Self::Value> {
         self.value.as_ref()
@@ -94,35 +97,37 @@ impl HasValue for DateTimeParameter {
     fn clear(&mut self) {
         self.value = None;
     }
+}
 
-    fn to_expression(&self) -> Option<ParameterValue> {
+#[async_trait::async_trait]
+impl Expressible for DateTimeParameter {
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         self.value
             .as_ref()
-            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+            .map(|s| MaybeExpression::Value(nebula_value::Value::Text(s.clone())))
     }
 
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::Text(s)) => {
-                let datetime_string = s.to_string();
+            MaybeExpression::Value(nebula_value::Value::Text(s)) => {
                 // Validate datetime format and range
-                if self.is_valid_datetime(&datetime_string) {
-                    self.value = Some(datetime_string);
+                if self.is_valid_datetime(s.as_str()) {
+                    self.value = Some(s);
                     Ok(())
                 } else {
                     Err(ParameterError::InvalidValue {
                         key: self.metadata.key.clone(),
-                        reason: format!(
-                            "Invalid datetime format or out of range: {}",
-                            datetime_string
-                        ),
+                        reason: format!("Invalid datetime format or out of range: {}", s),
                     })
                 }
             }
-            ParameterValue::Expression(expr) => {
+            MaybeExpression::Expression(expr) => {
                 // Allow expressions for dynamic datetimes
-                self.value = Some(expr);
+                self.value = Some(nebula_value::Text::from(expr));
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {

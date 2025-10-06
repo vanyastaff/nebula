@@ -2,9 +2,12 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, SelectOption, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, SelectOption, Validatable,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
 pub struct SelectParameter {
@@ -12,10 +15,10 @@ pub struct SelectParameter {
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
+    pub value: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<String>,
+    pub default: Option<nebula_value::Text>,
 
     pub options: Vec<SelectOption>,
 
@@ -57,7 +60,7 @@ impl std::fmt::Display for SelectParameter {
 }
 
 impl HasValue for SelectParameter {
-    type Value = String;
+    type Value = nebula_value::Text;
 
     fn get(&self) -> Option<&Self::Value> {
         self.value.as_ref()
@@ -80,31 +83,38 @@ impl HasValue for SelectParameter {
         self.value = None;
     }
 
-    fn to_expression(&self) -> Option<ParameterValue> {
+}
+
+#[async_trait::async_trait]
+impl Expressible for SelectParameter {
+fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         self.value
             .as_ref()
-            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+            .map(|s| MaybeExpression::Value(nebula_value::Value::Text(s.clone())))
     }
 
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::Text(s)) => {
-                let string_value = s.to_string();
+            MaybeExpression::Value(nebula_value::Value::Text(s)) => {
+                // Use Text directly
                 // Validate that the value is one of the available options
-                if self.is_valid_option(&string_value) {
-                    self.value = Some(string_value);
+                if self.is_valid_option(&s.as_str()) {
+                    self.value = Some(s);
                     Ok(())
                 } else {
                     Err(ParameterError::InvalidValue {
                         key: self.metadata.key.clone(),
-                        reason: format!("Value '{}' is not a valid option", string_value),
+                        reason: format!("Value '{}' is not a valid option", s.as_str()),
                     })
                 }
             }
-            ParameterValue::Expression(expr) => {
+            MaybeExpression::Expression(expr) => {
                 // Allow expressions for dynamic selection
-                self.value = Some(expr);
+                self.value = Some(nebula_value::Text::from(expr));
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {
@@ -114,6 +124,7 @@ impl HasValue for SelectParameter {
         }
     }
 }
+
 
 impl Validatable for SelectParameter {
     fn validation(&self) -> Option<&ParameterValidation> {

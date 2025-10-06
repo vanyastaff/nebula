@@ -2,10 +2,13 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{self, Display};
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
 use nebula_core::ParameterKey;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Routing parameter - container with connection point functionality
 /// Acts as a wrapper around any child parameter with routing/connection capabilities
@@ -236,15 +239,26 @@ impl HasValue for RoutingParameter {
         self.value = None;
     }
 
-    fn to_expression(&self) -> Option<ParameterValue> {
+}
+
+#[async_trait::async_trait]
+impl Expressible for RoutingParameter {
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         // Routing parameter cannot be serialized as MaybeExpression
         // Return None or convert to a descriptive value
         self.value
             .as_ref()
-            .map(|_| ParameterValue::Value(nebula_value::Value::text("routing_parameter")))
+            .map(|_| {
+                MaybeExpression::Value(nebula_value::Value::Text(nebula_value::Text::from(
+                    "routing_parameter",
+                )))
+            })
     }
 
-    fn from_expression(&mut self, _value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn from_expression(
+        &mut self,
+        _value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
         // Routing parameters cannot be set via generic ParameterValue
         // They must be set directly using set_value_unchecked
         Err(ParameterError::InvalidValue {

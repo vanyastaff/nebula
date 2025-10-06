@@ -2,9 +2,12 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Parameter for time selection
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -13,10 +16,10 @@ pub struct TimeParameter {
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
+    pub value: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<String>,
+    pub default: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<TimeParameterOptions>,
@@ -72,7 +75,7 @@ impl std::fmt::Display for TimeParameter {
 }
 
 impl HasValue for TimeParameter {
-    type Value = String;
+    type Value = nebula_value::Text;
 
     fn get(&self) -> Option<&Self::Value> {
         self.value.as_ref()
@@ -95,39 +98,6 @@ impl HasValue for TimeParameter {
         self.value = None;
     }
 
-    fn to_expression(&self) -> Option<ParameterValue> {
-        self.value
-            .as_ref()
-            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
-    }
-
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            ParameterValue::Value(nebula_value::Value::Text(s)) => {
-                let time_string = s.to_string();
-                // Validate time format and range
-                if self.is_valid_time(&time_string) {
-                    self.value = Some(time_string);
-                    Ok(())
-                } else {
-                    Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("Invalid time format or out of range: {}", time_string),
-                    })
-                }
-            }
-            ParameterValue::Expression(expr) => {
-                // Allow expressions for dynamic times
-                self.value = Some(expr);
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected string value for time parameter".to_string(),
-            }),
-        }
-    }
 }
 
 impl Validatable for TimeParameter {
@@ -146,6 +116,43 @@ impl Displayable for TimeParameter {
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
         self.display = display;
+    }
+}
+
+#[async_trait::async_trait]
+impl Expressible for TimeParameter {
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
+        self.value
+            .as_ref()
+            .map(|s| MaybeExpression::Value(Value::Text(s.clone())))
+    }
+
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
+        match value.into() {
+            MaybeExpression::Value(Value::Text(s)) => {
+                if self.is_valid_time(s.as_str()) {
+                    self.value = Some(s);
+                    Ok(())
+                } else {
+                    Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!("Invalid time format or out of range: {}", s),
+                    })
+                }
+            }
+            MaybeExpression::Expression(expr) => {
+                // Allow expressions for dynamic times
+                self.value = Some(nebula_value::Text::from(expr));
+                Ok(())
+            }
+            _ => Err(ParameterError::InvalidValue {
+                key: self.metadata.key.clone(),
+                reason: "Expected string value for time parameter".to_string(),
+            }),
+        }
     }
 }
 

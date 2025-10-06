@@ -2,9 +2,12 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Value for list parameters containing array of child parameter values
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -163,17 +166,23 @@ impl HasValue for ListParameter {
     fn clear(&mut self) {
         self.value = None;
     }
+}
 
-    fn to_expression(&self) -> Option<ParameterValue> {
+#[async_trait::async_trait]
+impl Expressible for ListParameter {
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         self.value
             .as_ref()
-            .map(|arr| ParameterValue::Value(nebula_value::Value::Array(arr.clone())))
+            .map(|arr| MaybeExpression::Value(nebula_value::Value::Array(arr.clone())))
     }
 
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::Array(arr)) => {
+            MaybeExpression::Value(nebula_value::Value::Array(arr)) => {
                 self.value = Some(arr);
                 Ok(())
             }

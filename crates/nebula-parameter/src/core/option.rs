@@ -9,7 +9,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Debug;
 
-use crate::core::{ParameterError, ParameterValue};
+use crate::core::ParameterError;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Pagination parameters for loading options
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,7 +46,7 @@ pub struct OptionsResponse {
 #[derive(Debug)]
 pub struct OptionLoadContext<'a> {
     /// Current parameter values for dependency resolution
-    pub parameters: &'a HashMap<String, ParameterValue>,
+    pub parameters: &'a HashMap<String, MaybeExpression<Value>>,
 
     /// Optional search query
     pub search: Option<String>,
@@ -54,7 +56,7 @@ pub struct OptionLoadContext<'a> {
 }
 
 impl<'a> OptionLoadContext<'a> {
-    pub fn new(parameters: &'a HashMap<String, ParameterValue>) -> Self {
+    pub fn new(parameters: &'a HashMap<String, MaybeExpression<Value>>) -> Self {
         Self {
             parameters,
             search: None,

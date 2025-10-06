@@ -2,12 +2,14 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
     ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
 
+use nebula_value::Boolean;
 use nebula_expression::MaybeExpression;
-use nebula_value::{Boolean, Value};
+use nebula_value::Value;
 
 /// Parameter for boolean checkbox
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -80,34 +82,6 @@ impl HasValue for CheckboxParameter {
         self.value = None;
     }
 
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value
-            .map(|b| MaybeExpression::Value(Value::boolean(b.value())))
-    }
-
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>>,
-    ) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            MaybeExpression::Value(Value::Boolean(b)) => {
-                self.value = Some(Boolean::new(b));
-                Ok(())
-            }
-            MaybeExpression::Expression(_expr) => {
-                // Checkboxes cannot be expressions, return error
-                Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
-                    reason: "Checkbox parameter cannot be an expression".to_string(),
-                })
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected boolean value".to_string(),
-            }),
-        }
-    }
 }
 
 impl Validatable for CheckboxParameter {

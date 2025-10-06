@@ -2,10 +2,13 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
 use nebula_core::ParameterKey;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Parameter for mode selection with switching between different parameter types
 #[derive(Debug, Serialize)]
@@ -122,10 +125,10 @@ impl ModeValue {
     }
 
     /// Create a new ModeValue from ParameterValue (MaybeExpression<Value>)
-    pub fn from_parameter_value(key: impl Into<String>, param_value: &ParameterValue) -> Self {
+    pub fn from_parameter_value(key: impl Into<String>, param_value: &MaybeExpression<Value>) -> Self {
         let nebula_val = match param_value {
-            ParameterValue::Value(v) => v.clone(),
-            ParameterValue::Expression(expr) => nebula_value::Value::text(expr),
+            MaybeExpression::Value(v) => v.clone(),
+            MaybeExpression::Expression(expr) => nebula_value::Value::text(expr),
         };
         Self {
             key: key.into(),
@@ -174,17 +177,24 @@ impl HasValue for ModeParameter {
         self.value = None;
     }
 
-    fn to_expression(&self) -> Option<ParameterValue> {
+}
+
+#[async_trait::async_trait]
+impl Expressible for ModeParameter {
+fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         // Convert ModeValue to MaybeExpression<Value>
         self.value
             .as_ref()
-            .map(|mode_val| ParameterValue::Value(mode_val.value.clone()))
+            .map(|mode_val| MaybeExpression::Value(mode_val.value.clone()))
     }
 
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Value(v) => {
+            MaybeExpression::Value(v) => {
                 let mode_value = ModeValue {
                     key: self.metadata.key.clone().to_string(),
                     value: v,
@@ -192,11 +202,11 @@ impl HasValue for ModeParameter {
                 self.value = Some(mode_value);
                 Ok(())
             }
-            ParameterValue::Expression(expr) => {
+            MaybeExpression::Expression(expr) => {
                 // Convert expression to text value
                 let mode_value = ModeValue {
                     key: self.metadata.key.clone().to_string(),
-                    value: nebula_value::Value::text(expr),
+                    value: nebula_value::Value::Text(nebula_value::Text::from(expr)),
                 };
                 self.value = Some(mode_value);
                 Ok(())
@@ -204,6 +214,7 @@ impl HasValue for ModeParameter {
         }
     }
 }
+
 
 impl Validatable for ModeParameter {
     fn validation(&self) -> Option<&ParameterValidation> {

@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextParameter {
@@ -78,31 +81,7 @@ impl HasValue for TextParameter {
         self.value = None;
     }
 
-    fn to_expression(&self) -> Option<ParameterValue> {
-        self.value
-            .as_ref()
-            .map(|s| ParameterValue::Value(nebula_value::Value::Text(s.clone())))
-    }
 
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            ParameterValue::Value(nebula_value::Value::Text(s)) => {
-                self.value = Some(s);
-                Ok(())
-            }
-            ParameterValue::Expression(expr) => {
-                // For now, treat expressions as literal strings
-                // In a full implementation, you'd evaluate the expression
-                self.value = Some(nebula_value::Text::from(expr));
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected string value".to_string(),
-            }),
-        }
-    }
 }
 
 impl Validatable for TextParameter {
@@ -121,5 +100,35 @@ impl Displayable for TextParameter {
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
         self.display = display;
+    }
+}
+
+#[async_trait::async_trait]
+impl Expressible for TextParameter {
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
+        self.value
+            .as_ref()
+            .map(|s| MaybeExpression::Value(Value::Text(s.clone())))
+    }
+
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>>,
+    ) -> Result<(), ParameterError> {
+        match value.into() {
+            MaybeExpression::Value(Value::Text(s)) => {
+                self.value = Some(s);
+                Ok(())
+            }
+            MaybeExpression::Expression(expr) => {
+                // Treat expressions as literal strings for now
+                self.value = Some(nebula_value::Text::from(expr));
+                Ok(())
+            }
+            _ => Err(ParameterError::InvalidValue {
+                key: self.metadata.key.clone(),
+                reason: "Expected string value".to_string(),
+            }),
+        }
     }
 }

@@ -2,9 +2,12 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Parameter for color selection
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -13,10 +16,10 @@ pub struct ColorParameter {
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
+    pub value: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<String>,
+    pub default: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<ColorParameterOptions>,
@@ -78,7 +81,7 @@ impl std::fmt::Display for ColorParameter {
 }
 
 impl HasValue for ColorParameter {
-    type Value = String;
+    type Value = nebula_value::Text;
 
     fn get(&self) -> Option<&Self::Value> {
         self.value.as_ref()
@@ -100,20 +103,26 @@ impl HasValue for ColorParameter {
     fn clear(&mut self) {
         self.value = None;
     }
+}
 
-    fn to_expression(&self) -> Option<ParameterValue> {
+#[async_trait::async_trait]
+impl Expressible for ColorParameter {
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         self.value
             .as_ref()
-            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
+            .map(|s| MaybeExpression::Value(nebula_value::Value::Text(s.clone())))
     }
 
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::Text(s)) => {
+            MaybeExpression::Value(nebula_value::Value::Text(s)) => {
                 // Validate color format
                 if self.is_valid_color(s.as_str()) {
-                    self.value = Some(s.to_string());
+                    self.value = Some(s);
                     Ok(())
                 } else {
                     Err(ParameterError::InvalidValue {
@@ -122,9 +131,9 @@ impl HasValue for ColorParameter {
                     })
                 }
             }
-            ParameterValue::Expression(expr) => {
+            MaybeExpression::Expression(expr) => {
                 // Allow expressions for dynamic colors
-                self.value = Some(expr);
+                self.value = Some(nebula_value::Text::from(expr));
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {
@@ -218,10 +227,10 @@ impl ColorParameter {
         // This is a simplified implementation
         // In a real application, you'd use a proper color conversion library
         match format {
-            ColorFormat::Hex if !current_value.starts_with('#') => {
+            ColorFormat::Hex if !current_value.starts_with("#") => {
                 Some(format!("#{}", current_value))
             }
-            _ => Some(current_value.clone()),
+            _ => Some(current_value.to_string()),
         }
     }
 }

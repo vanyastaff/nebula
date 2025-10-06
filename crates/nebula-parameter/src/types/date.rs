@@ -2,9 +2,12 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Parameter for date selection
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -91,39 +94,6 @@ impl HasValue for DateParameter {
         self.value = None;
     }
 
-    fn to_expression(&self) -> Option<ParameterValue> {
-        self.value
-            .as_ref()
-            .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
-    }
-
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            ParameterValue::Value(nebula_value::Value::Text(s)) => {
-                let date_string = s.to_string();
-                // Validate date format and range
-                if self.is_valid_date(&date_string) {
-                    self.value = Some(date_string);
-                    Ok(())
-                } else {
-                    Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("Invalid date format or out of range: {}", date_string),
-                    })
-                }
-            }
-            ParameterValue::Expression(expr) => {
-                // Allow expressions for dynamic dates
-                self.value = Some(expr);
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected string value for date parameter".to_string(),
-            }),
-        }
-    }
 }
 
 impl Validatable for DateParameter {

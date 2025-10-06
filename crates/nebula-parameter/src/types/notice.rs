@@ -1,7 +1,10 @@
 use bon::Builder;
 use serde::{Deserialize, Serialize};
 
-use crate::core::{Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata};
+use crate::core::{Displayable,  Parameter, ParameterDisplay, ParameterKind, ParameterMetadata};
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Parameter for displaying a notice or information to the user
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]

@@ -40,6 +40,9 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-credential/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-resource/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-resource/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-expression/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-expression/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-expression/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

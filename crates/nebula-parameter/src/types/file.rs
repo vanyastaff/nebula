@@ -3,9 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Represents a file reference with metadata
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -178,19 +181,26 @@ impl HasValue for FileParameter {
         self.value = None;
     }
 
-    fn to_expression(&self) -> Option<ParameterValue> {
+}
+
+#[async_trait::async_trait]
+impl Expressible for FileParameter {
+fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         self.value.as_ref().map(|file_ref| {
             // Convert FileReference to a simple string representation (path)
-            ParameterValue::Value(nebula_value::Value::text(
-                file_ref.path.to_string_lossy().to_string(),
+            MaybeExpression::Value(nebula_value::Value::Text(
+                nebula_value::Text::from(file_ref.path.to_string_lossy().to_string()),
             ))
         })
     }
 
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::Text(s)) => {
+            MaybeExpression::Value(nebula_value::Value::Text(s)) => {
                 // Simple path-based file reference
                 let file_ref = FileReference::new(s.as_str(), s.to_string());
                 if self.is_valid_file(&file_ref)? {
@@ -203,7 +213,7 @@ impl HasValue for FileParameter {
                     })
                 }
             }
-            ParameterValue::Expression(expr) => {
+            MaybeExpression::Expression(expr) => {
                 // Create a file reference with the expression as path
                 let file_ref = FileReference::new(&expr, expr.clone());
                 self.value = Some(file_ref);
@@ -216,6 +226,7 @@ impl HasValue for FileParameter {
         }
     }
 }
+
 
 impl Validatable for FileParameter {
     fn validation(&self) -> Option<&ParameterValidation> {

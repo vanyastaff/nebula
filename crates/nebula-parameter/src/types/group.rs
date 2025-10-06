@@ -2,9 +2,12 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 /// Parameter for grouping related data into a structured object
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -162,16 +165,23 @@ impl HasValue for GroupParameter {
         self.value = None;
     }
 
-    fn to_expression(&self) -> Option<ParameterValue> {
+}
+
+#[async_trait::async_trait]
+impl Expressible for GroupParameter {
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         self.value.as_ref().map(|group_val| {
-            ParameterValue::Value(nebula_value::Value::Object(group_val.values.clone()))
+            MaybeExpression::Value(nebula_value::Value::Object(group_val.values.clone()))
         })
     }
 
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::Object(obj)) => {
+            MaybeExpression::Value(nebula_value::Value::Object(obj)) => {
                 let mut group_value = GroupValue::new();
 
                 for (key, val) in obj.entries() {
@@ -192,7 +202,7 @@ impl HasValue for GroupParameter {
                     })
                 }
             }
-            ParameterValue::Expression(expr) => {
+            MaybeExpression::Expression(expr) => {
                 // For expressions, create a group with a single expression field
                 let mut group_value = GroupValue::new();
                 group_value.set_field("_expression", nebula_value::Value::text(expr));

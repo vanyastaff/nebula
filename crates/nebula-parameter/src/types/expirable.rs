@@ -3,9 +3,12 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
+    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
+use crate::core::traits::Expressible;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 
 // Default Time-To-Live in seconds (1 hour)
 const DEFAULT_TTL: u64 = 3600;
@@ -167,10 +170,10 @@ impl ExpirableValue {
     }
 
     /// Create a new ExpirableValue from ParameterValue (MaybeExpression<Value>)
-    pub fn from_parameter_value(param_value: &ParameterValue, ttl: u64) -> Self {
+    pub fn from_parameter_value(param_value: &MaybeExpression<Value>, ttl: u64) -> Self {
         let nebula_val = match param_value {
-            ParameterValue::Value(v) => v.clone(),
-            ParameterValue::Expression(expr) => nebula_value::Value::text(expr),
+            MaybeExpression::Value(v) => v.clone(),
+            MaybeExpression::Expression(expr) => nebula_value::Value::text(expr),
         };
         Self::new(nebula_val, ttl)
     }
@@ -257,20 +260,26 @@ impl HasValue for ExpirableParameter {
     fn clear(&mut self) {
         self.value = None;
     }
+}
 
-    fn to_expression(&self) -> Option<ParameterValue> {
+#[async_trait::async_trait]
+impl Expressible for ExpirableParameter {
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         // Convert ExpirableValue to MaybeExpression<Value>
         // Return the inner value if not expired, otherwise None
         self.value.as_ref().and_then(|exp_val| {
             if !exp_val.is_expired() {
-                Some(ParameterValue::Value(exp_val.value.clone()))
+                Some(MaybeExpression::Value(exp_val.value.clone()))
             } else {
                 None
             }
         })
     }
 
-    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
+    fn from_expression(
+        &mut self,
+        value: impl Into<MaybeExpression<Value>> + Send,
+    ) -> Result<(), ParameterError> {
         let value = value.into();
         // Get TTL from options or use default
         let ttl = self.options.as_ref().map(|opts| opts.ttl).unwrap_or(3600); // Default 1 hour
