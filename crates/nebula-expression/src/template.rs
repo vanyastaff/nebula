@@ -1,0 +1,480 @@
+//! Template engine with parsing, caching, and detailed error reporting
+//!
+//! This module provides a Template type that can parse templates with {{ }} expressions,
+//! cache the parsed structure for fast rendering, and provide detailed error information
+//! including line and column numbers.
+
+use crate::context::EvaluationContext;
+use crate::core::error::{ExpressionErrorExt, ExpressionResult};
+use crate::engine::ExpressionEngine;
+use nebula_error::NebulaError;
+use nebula_log::trace;
+use serde::{Deserialize, Serialize};
+use std::fmt;
+
+/// A template part - either static text or an expression to evaluate
+#[derive(Debug, Clone, PartialEq)]
+pub enum TemplatePart {
+    /// Static text that doesn't need evaluation
+    Static {
+        /// The static text content
+        content: String,
+        /// Starting position in the original template
+        position: Position,
+    },
+    /// An expression to be evaluated
+    Expression {
+        /// The expression content (without {{ }})
+        content: String,
+        /// Starting position of {{ in the original template
+        position: Position,
+        /// Length of the full {{ expression }} in characters
+        length: usize,
+    },
+}
+
+/// Position in the template (line and column)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Position {
+    /// Line number (1-based)
+    pub line: usize,
+    /// Column number (1-based)
+    pub column: usize,
+    /// Absolute character offset (0-based)
+    pub offset: usize,
+}
+
+impl Position {
+    /// Create a new position
+    pub fn new(line: usize, column: usize, offset: usize) -> Self {
+        Self {
+            line,
+            column,
+            offset,
+        }
+    }
+
+    /// Position at the start of input
+    pub fn start() -> Self {
+        Self {
+            line: 1,
+            column: 1,
+            offset: 0,
+        }
+    }
+}
+
+impl fmt::Display for Position {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "line {}, column {}", self.line, self.column)
+    }
+}
+
+/// A parsed template with cached structure
+#[derive(Debug, Clone)]
+pub struct Template {
+    /// Original template source
+    source: String,
+    /// Parsed template parts (cached after first parse)
+    parts: Vec<TemplatePart>,
+}
+
+impl Template {
+    /// Create a new template from a string
+    ///
+    /// This will parse the template immediately and cache the structure.
+    pub fn new(source: impl Into<String>) -> ExpressionResult<Self> {
+        let source = source.into();
+        let parts = Self::parse(&source)?;
+        Ok(Self { source, parts })
+    }
+
+    /// Get the original source string
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Get the parsed parts
+    pub fn parts(&self) -> &[TemplatePart] {
+        &self.parts
+    }
+
+    /// Render the template with the given context
+    pub fn render(&self, engine: &ExpressionEngine, context: &EvaluationContext) -> ExpressionResult<String> {
+        let mut result = String::with_capacity(self.source.len());
+
+        for part in &self.parts {
+            match part {
+                TemplatePart::Static { content, .. } => {
+                    result.push_str(content);
+                }
+                TemplatePart::Expression {
+                    content,
+                    position,
+                    length,
+                } => {
+                    trace!(
+                        expression = content.as_str(),
+                        position = %position,
+                        "Rendering template expression"
+                    );
+
+                    match engine.evaluate(content.trim(), context) {
+                        Ok(value) => {
+                            result.push_str(&value.to_string());
+                        }
+                        Err(e) => {
+                            // Enhance error with template position information
+                            return Err(NebulaError::expression_eval_error(format!(
+                                "Error evaluating expression at {}: '{}'\n  Error: {}",
+                                position, content, e.message
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Parse a template string into parts
+    fn parse(source: &str) -> ExpressionResult<Vec<TemplatePart>> {
+        let mut parts = Vec::new();
+        let mut current_static = String::new();
+        let mut static_start = Position::start();
+
+        let chars: Vec<char> = source.chars().collect();
+        let len = chars.len();
+        let mut i = 0;
+        let mut line = 1;
+        let mut column = 1;
+
+        while i < len {
+            // Look for opening {{
+            if i + 1 < len && chars[i] == '{' && chars[i + 1] == '{' {
+                // Save any accumulated static content
+                if !current_static.is_empty() {
+                    parts.push(TemplatePart::Static {
+                        content: current_static.clone(),
+                        position: static_start,
+                    });
+                    current_static.clear();
+                }
+
+                let expr_start = Position::new(line, column, i);
+
+                // Find closing }}
+                let mut j = i + 2;
+                let mut depth = 1;
+                let mut expr_line = line;
+                let mut expr_column = column + 2;
+
+                while j + 1 < len {
+                    if chars[j] == '\n' {
+                        expr_line += 1;
+                        expr_column = 1;
+                    }
+
+                    if chars[j] == '{' && chars[j + 1] == '{' {
+                        depth += 1;
+                        j += 2;
+                        expr_column += 2;
+                    } else if chars[j] == '}' && chars[j + 1] == '}' {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                        j += 2;
+                        expr_column += 2;
+                    } else {
+                        j += 1;
+                        expr_column += 1;
+                    }
+                }
+
+                if depth == 0 && j + 1 < len {
+                    // Extract the expression content
+                    let expr_start_idx = i + 2;
+                    let expr_end_idx = j;
+                    let expr_content: String = chars[expr_start_idx..expr_end_idx].iter().collect();
+                    let full_length = j + 2 - i;
+
+                    parts.push(TemplatePart::Expression {
+                        content: expr_content,
+                        position: expr_start,
+                        length: full_length,
+                    });
+
+                    // Update position tracking
+                    i = j + 2;
+                    line = expr_line;
+                    column = expr_column + 2;
+                    static_start = Position::new(line, column, i);
+                } else {
+                    // Unclosed {{ - this is an error
+                    return Err(NebulaError::expression_parse_error(
+                        format!("Unclosed '{{{{' at {} (offset: {})", expr_start, expr_start.offset)
+                    ));
+                }
+            } else {
+                // Regular character
+                current_static.push(chars[i]);
+                i += 1;
+
+                // Track newlines
+                if chars[i - 1] == '\n' {
+                    line += 1;
+                    column = 1;
+                } else {
+                    column += 1;
+                }
+            }
+        }
+
+        // Add any remaining static content
+        if !current_static.is_empty() {
+            parts.push(TemplatePart::Static {
+                content: current_static,
+                position: static_start,
+            });
+        }
+
+        Ok(parts)
+    }
+
+    /// Check if the template contains any expressions
+    pub fn has_expressions(&self) -> bool {
+        self.parts.iter().any(|part| matches!(part, TemplatePart::Expression { .. }))
+    }
+
+    /// Get the number of expressions in the template
+    pub fn expression_count(&self) -> usize {
+        self.parts
+            .iter()
+            .filter(|part| matches!(part, TemplatePart::Expression { .. }))
+            .count()
+    }
+
+    /// Get all expression contents
+    pub fn expressions(&self) -> Vec<&str> {
+        self.parts
+            .iter()
+            .filter_map(|part| match part {
+                TemplatePart::Expression { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+impl fmt::Display for Template {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.source)
+    }
+}
+
+/// A template that can be either unresolved (template string) or resolved (final value)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MaybeTemplate {
+    /// A template that needs to be rendered
+    Template(String),
+    /// An already resolved value
+    Resolved(String),
+}
+
+impl MaybeTemplate {
+    /// Create from a string, automatically detecting if it's a template
+    pub fn from_string(s: impl Into<String>) -> Self {
+        let s = s.into();
+        if s.contains("{{") && s.contains("}}") {
+            Self::Template(s)
+        } else {
+            Self::Resolved(s)
+        }
+    }
+
+    /// Check if this is a template
+    pub fn is_template(&self) -> bool {
+        matches!(self, Self::Template(_))
+    }
+
+    /// Resolve the template or return the resolved value
+    pub fn resolve(
+        &self,
+        engine: &ExpressionEngine,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<String> {
+        match self {
+            Self::Template(template_str) => {
+                let template = Template::new(template_str)?;
+                template.render(engine, context)
+            }
+            Self::Resolved(value) => Ok(value.clone()),
+        }
+    }
+
+    /// Get the underlying string (template or resolved)
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Template(s) | Self::Resolved(s) => s,
+        }
+    }
+}
+
+impl From<String> for MaybeTemplate {
+    fn from(s: String) -> Self {
+        Self::from_string(s)
+    }
+}
+
+impl From<&str> for MaybeTemplate {
+    fn from(s: &str) -> Self {
+        Self::from_string(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ExpressionEngine;
+    use nebula_value::Value;
+
+    #[test]
+    fn test_template_parse_static_only() {
+        let template = Template::new("Hello, World!").unwrap();
+        assert_eq!(template.parts().len(), 1);
+        assert!(!template.has_expressions());
+        assert_eq!(template.expression_count(), 0);
+    }
+
+    #[test]
+    fn test_template_parse_single_expression() {
+        let template = Template::new("Hello {{ $input }}!").unwrap();
+        assert_eq!(template.parts().len(), 3);
+        assert!(template.has_expressions());
+        assert_eq!(template.expression_count(), 1);
+    }
+
+    #[test]
+    fn test_template_parse_multiple_expressions() {
+        let template = Template::new("{{ $a }} + {{ $b }} = {{ $a + $b }}").unwrap();
+        assert_eq!(template.expression_count(), 3);
+        let exprs = template.expressions();
+        assert_eq!(exprs, vec![" $a ", " $b ", " $a + $b "]);
+    }
+
+    #[test]
+    fn test_template_render_simple() {
+        let engine = ExpressionEngine::new();
+        let mut context = EvaluationContext::new();
+        context.set_input(Value::text("World"));
+
+        let template = Template::new("Hello {{ $input }}!").unwrap();
+        let result = template.render(&engine, &context).unwrap();
+        assert_eq!(result, "Hello World!");
+    }
+
+    #[test]
+    fn test_template_render_multiple() {
+        let engine = ExpressionEngine::new();
+        let mut context = EvaluationContext::new();
+        context.set_input(Value::integer(5));
+
+        let template = Template::new("{{ $input }} * 2 = {{ $input * 2 }}").unwrap();
+        let result = template.render(&engine, &context).unwrap();
+        assert_eq!(result, "5 * 2 = 10");
+    }
+
+    #[test]
+    fn test_template_render_with_functions() {
+        let engine = ExpressionEngine::new();
+        let mut context = EvaluationContext::new();
+        context.set_input(Value::text("hello"));
+
+        let template = Template::new("{{ $input | uppercase() }}").unwrap();
+        let result = template.render(&engine, &context).unwrap();
+        assert_eq!(result, "HELLO");
+    }
+
+    #[test]
+    fn test_template_unclosed_expression() {
+        let result = Template::new("Hello {{ $input");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("Unclosed"));
+    }
+
+    #[test]
+    fn test_template_multiline() {
+        let engine = ExpressionEngine::new();
+        let mut context = EvaluationContext::new();
+        context.set_input(Value::text("Alice"));
+
+        let template = Template::new(
+            r#"Line 1: {{ $input }}
+Line 2: {{ $input | uppercase() }}
+Line 3: Done"#,
+        )
+        .unwrap();
+
+        let result = template.render(&engine, &context).unwrap();
+        assert!(result.contains("Line 1: Alice"));
+        assert!(result.contains("Line 2: ALICE"));
+        assert!(result.contains("Line 3: Done"));
+    }
+
+    #[test]
+    fn test_template_error_with_position() {
+        let engine = ExpressionEngine::new();
+        let context = EvaluationContext::new();
+
+        let template = Template::new("Hello {{ invalid_func() }}!").unwrap();
+        let result = template.render(&engine, &context);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("line 1"));
+    }
+
+    #[test]
+    fn test_maybe_template_auto_detection() {
+        let template = MaybeTemplate::from_string("Hello {{ $input }}");
+        assert!(template.is_template());
+
+        let resolved = MaybeTemplate::from_string("Hello World");
+        assert!(!resolved.is_template());
+    }
+
+    #[test]
+    fn test_maybe_template_resolve() {
+        let engine = ExpressionEngine::new();
+        let mut context = EvaluationContext::new();
+        context.set_input(Value::text("World"));
+
+        let template = MaybeTemplate::from_string("Hello {{ $input }}!");
+        let result = template.resolve(&engine, &context).unwrap();
+        assert_eq!(result, "Hello World!");
+
+        let resolved = MaybeTemplate::from_string("Hello World!");
+        let result = resolved.resolve(&engine, &context).unwrap();
+        assert_eq!(result, "Hello World!");
+    }
+
+    #[test]
+    fn test_position_tracking() {
+        let template = Template::new("Line 1\n{{ $a }}\nLine 3").unwrap();
+
+        // Find the expression part
+        let expr_part = template
+            .parts()
+            .iter()
+            .find(|p| matches!(p, TemplatePart::Expression { .. }));
+
+        assert!(expr_part.is_some());
+        if let Some(TemplatePart::Expression { position, .. }) = expr_part {
+            assert_eq!(position.line, 2);
+            assert_eq!(position.column, 1);
+        }
+    }
+}

@@ -20,16 +20,22 @@
 //!
 //!
 //!
+//!
+//!
+//!
 //! # nebula-expression
 //! ## Built-in Functions
 //! ## Quick Start
+//! ## Template Rendering
 //! ## With Caching
 //! ### Array Functions
 //! ### Conversion Functions
+//! ### Date/Time Functions
 //! ### Math Functions
 //! ### Object Functions
 //! ### String Functions
 //! ### Utility Functions
+//! - All `{{ expression }}` patterns are replaced with their evaluated results
 //! - Arithmetic operators: `+`, `-`, `*`, `/`, `%`, `**`
 //! - Comparison operators: `==`, `!=`, `>`, `<`, `>=`, `<=`, `=~`
 //! - Conditionals: `if condition then value1 else value2`
@@ -39,23 +45,29 @@
 //! - Logical operators: `&&`, `||`, `!`
 //! - Pipeline operator: `|` for function chaining
 //! - Property access: `$node.data`, `$execution.id`
-//! - Template delimiters: `{{ expression }}`
-//! - Variable access: `$node`, `$execution`, `$workflow`, `$input`
-//!
-//! ## Template Rendering
-//!
-//! Use `evaluate_template()` to process templates with multiple `{{ }}` expressions:
 //! - Supports HTML, JSON, Markdown, and any text format
-//! - All `{{ expression }}` patterns are replaced with their evaluated results
+//! - Template delimiters: `{{ expression }}`
 //! - Text outside expressions is preserved as-is
+//! - Variable access: `$node`, `$execution`, `$workflow`, `$input`
 //! - `abs(n)` - Absolute value
 //! - `ceil(n)` - Ceiling function
 //! - `concat(arr1, arr2, ...)` - Concatenate arrays
 //! - `contains(str, needle)` - Check if contains
+//! - `date_add(timestamp, amount, unit)` - Add duration
+//! - `date_day(timestamp)` - Extract day (1-31)
+//! - `date_day_of_week(timestamp)` - Day of week (0=Sunday)
+//! - `date_diff(ts1, ts2, unit)` - Difference between dates
+//! - `date_hour(timestamp)` - Extract hour (0-23)
+//! - `date_minute(timestamp)` - Extract minute (0-59)
+//! - `date_month(timestamp)` - Extract month (1-12)
+//! - `date_second(timestamp)` - Extract second (0-59)
+//! - `date_subtract(timestamp, amount, unit)` - Subtract duration
+//! - `date_year(timestamp)` - Extract year
 //! - `ends_with(str, suffix)` - Check if ends with
 //! - `first(arr)` - Get first element
 //! - `flatten(arr)` - Flatten nested array
 //! - `floor(n)` - Floor function
+//! - `format_date(timestamp, format)` - Format timestamp
 //! - `has(obj, key)` - Check if key exists
 //! - `is_array(value)` - Check if array
 //! - `is_null(value)` - Check if null
@@ -70,7 +82,10 @@
 //! - `lowercase(str)` - Convert to lowercase
 //! - `max(a, b, ...)` - Maximum value
 //! - `min(a, b, ...)` - Minimum value
+//! - `now()` - Current timestamp (Unix seconds)
 //! - `now()` - Get current timestamp
+//! - `now_iso()` - Current time as ISO 8601 string
+//! - `parse_date(str)` - Parse date string to timestamp
 //! - `parse_json(str)` - Parse JSON string
 //! - `pow(base, exp)` - Power function
 //! - `replace(str, from, to)` - Replace substring
@@ -90,22 +105,6 @@
 //! - `uppercase(str)` - Convert to uppercase
 //! - `uuid()` - Generate UUID
 //! - `values(obj)` - Get object values
-//!
-//! ### Date/Time Functions
-//! - `now()` - Current timestamp (Unix seconds)
-//! - `now_iso()` - Current time as ISO 8601 string
-//! - `format_date(timestamp, format)` - Format timestamp
-//! - `parse_date(str)` - Parse date string to timestamp
-//! - `date_add(timestamp, amount, unit)` - Add duration
-//! - `date_subtract(timestamp, amount, unit)` - Subtract duration
-//! - `date_diff(ts1, ts2, unit)` - Difference between dates
-//! - `date_year(timestamp)` - Extract year
-//! - `date_month(timestamp)` - Extract month (1-12)
-//! - `date_day(timestamp)` - Extract day (1-31)
-//! - `date_hour(timestamp)` - Extract hour (0-23)
-//! - `date_minute(timestamp)` - Extract minute (0-59)
-//! - `date_second(timestamp)` - Extract second (0-59)
-//! - `date_day_of_week(timestamp)` - Day of week (0=Sunday)
 //! // Create a context
 //! // Create an engine
 //! // Create an engine with caching for better performance
@@ -113,6 +112,7 @@
 //! Expression language for workflow automation, compatible with n8n syntax.
 //! The expression language includes comprehensive built-in functions:
 //! This crate provides a powerful expression language for evaluating dynamic values
+//! Use `evaluate_template()` to process templates with multiple `{{ }}` expressions:
 //! ```
 //! ```
 //! ```rust
@@ -127,6 +127,7 @@
 //! use nebula_expression::ExpressionEngine;
 //! use nebula_expression::{ExpressionEngine, EvaluationContext};
 //! use nebula_value::Value;
+pub mod template;
 pub mod maybe;
 pub mod core;
 pub mod lexer;
@@ -143,6 +144,7 @@ pub use core::error::{ExpressionErrorExt, ExpressionResult};
 pub use core::ast::{Expr, BinaryOp};
 pub use core::token::Token;
 pub use maybe::MaybeExpression;
+pub use template::{Template, MaybeTemplate, TemplatePart, Position};
 
 // Re-export nebula types for convenience
 pub use nebula_value::Value;
@@ -152,7 +154,9 @@ pub use nebula_error::NebulaError;
 pub mod prelude {
     pub use crate::{
         EvaluationContext, EvaluationContextBuilder, ExpressionEngine, ExpressionErrorExt,
-        ExpressionResult, MaybeExpression, Value, NebulaError,
+        ExpressionResult, MaybeExpression, MaybeTemplate, Template, TemplatePart, Position,
+        Value, NebulaError,
     };
 }
+
 
