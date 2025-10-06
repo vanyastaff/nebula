@@ -127,6 +127,7 @@
 //! use nebula_expression::ExpressionEngine;
 //! use nebula_expression::{ExpressionEngine, EvaluationContext};
 //! use nebula_value::Value;
+pub mod error_formatter;
 pub mod template;
 pub mod maybe;
 pub mod core;
@@ -158,5 +159,6 @@ pub mod prelude {
         Value, NebulaError,
     };
 }
+
 
 

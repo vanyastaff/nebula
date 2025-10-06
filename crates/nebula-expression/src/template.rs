@@ -7,6 +7,7 @@
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::engine::ExpressionEngine;
+use crate::error_formatter::format_template_error;
 use nebula_error::NebulaError;
 use nebula_log::trace;
 use serde::{Deserialize, Serialize};
@@ -148,11 +149,14 @@ impl Template {
                             }
                         }
                         Err(e) => {
-                            // Enhance error with template position information
-                            return Err(NebulaError::expression_eval_error(format!(
-                                "Error evaluating expression at {}: '{}'\n  Error: {}",
-                                position, content, e.message
-                            )));
+                            // Create beautiful error message with source context
+                            let formatted_error = format_template_error(
+                                &self.source,
+                                *position,
+                                &e.message,
+                                Some(content.trim()),
+                            );
+                            return Err(NebulaError::expression_eval_error(formatted_error));
                         }
                     }
                 }
@@ -255,9 +259,13 @@ impl Template {
                     static_start = Position::new(line, column, i);
                 } else {
                     // Unclosed {{ - this is an error
-                    return Err(NebulaError::expression_parse_error(
-                        format!("Unclosed '{{{{' at {} (offset: {})", expr_start, expr_start.offset)
-                    ));
+                    let formatted_error = format_template_error(
+                        source,
+                        expr_start,
+                        "Unclosed '{{' - expected closing '}}'",
+                        None,
+                    );
+                    return Err(NebulaError::expression_parse_error(formatted_error));
                 }
             } else {
                 // Regular character
