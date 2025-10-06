@@ -9,7 +9,7 @@ use crate::collections::{Array, Object};
 use crate::core::NebulaError;
 use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::value::Value;
-use crate::scalar::{Bytes, Float, Integer, Text};
+use crate::scalar::{Float, Integer, Text};
 use base64::Engine;
 use rust_decimal::Decimal;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
