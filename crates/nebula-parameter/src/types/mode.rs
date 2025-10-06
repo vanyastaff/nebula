@@ -190,7 +190,7 @@ impl Validatable for ModeParameter {
     }
 
     fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::text(value.clone())
+        value.value.clone()
     }
 
     fn is_empty_value(&self, value: &Self::Value) -> bool {

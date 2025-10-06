@@ -262,32 +262,32 @@ pub mod validators {
 
     /// String validation with length constraints
     pub fn string_length(min: Option<usize>, max: Option<usize>) -> ParameterValidation {
-        let mut validator = string();
+        let mut validator: Box<dyn Validator> = Box::new(string());
 
         if let Some(min_len) = min {
-            validator = validator.and(min_length(min_len));
+            validator = Box::new(validator.and(min_length(min_len)));
         }
 
         if let Some(max_len) = max {
-            validator = validator.and(max_length(max_len));
+            validator = Box::new(validator.and(max_length(max_len)));
         }
 
-        ParameterValidation::with_validator(Box::new(validator))
+        ParameterValidation::with_validator(validator)
     }
 
     /// Numeric range validation
     pub fn number_range(min: Option<f64>, max: Option<f64>) -> ParameterValidation {
-        let mut validator = number();
+        let mut validator: Box<dyn Validator> = Box::new(number());
 
         if let Some(min_val) = min {
-            validator = validator.and(nebula_validator::min(min_val));
+            validator = Box::new(validator.and(nebula_validator::min(min_val)));
         }
 
         if let Some(max_val) = max {
-            validator = validator.and(nebula_validator::max(max_val));
+            validator = Box::new(validator.and(nebula_validator::max(max_val)));
         }
 
-        ParameterValidation::with_validator(Box::new(validator))
+        ParameterValidation::with_validator(validator)
     }
 
     /// Required field validation
@@ -314,17 +314,17 @@ pub mod validators {
 
     /// Array size validation
     pub fn array_size(min: Option<usize>, max: Option<usize>) -> ParameterValidation {
-        let mut validator = array();
+        let mut validator: Box<dyn Validator> = Box::new(array());
 
         if let Some(min_size) = min {
-            validator = validator.and(array_min_size(min_size));
+            validator = Box::new(validator.and(array_min_size(min_size)));
         }
 
         if let Some(max_size) = max {
-            validator = validator.and(array_max_size(max_size));
+            validator = Box::new(validator.and(array_max_size(max_size)));
         }
 
-        ParameterValidation::with_validator(Box::new(validator))
+        ParameterValidation::with_validator(validator)
     }
 
     /// One of values validation

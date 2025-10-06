@@ -20,6 +20,8 @@ use crate::core::limits::ValueLimits;
 /// Uses Arc<str> internally for cheap cloning of large strings.
 /// Small strings (d23 bytes) could use SmallString optimization in the future.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Text {
     inner: Arc<str>,
 }

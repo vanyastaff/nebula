@@ -79,7 +79,12 @@ impl ObjectValue {
     /// Remove a field
     pub fn remove_field(&mut self, key: &str) -> Option<nebula_value::Value> {
         use crate::JsonValueExt;
-        self.values.remove(key).and_then(|v| v.to_nebula_value())
+        if let Some((new_obj, v)) = self.values.remove(key) {
+            self.values = new_obj;
+            v.to_nebula_value()
+        } else {
+            None
+        }
     }
 
     /// Check if the object has any values
@@ -183,7 +188,7 @@ impl HasValue for ObjectParameter {
     fn get_parameter_value(&self) -> Option<ParameterValue> {
         self.value
             .as_ref()
-            .map(|obj_val| ParameterValue::Object(obj_val.clone()))
+            .map(|obj_val| ParameterValue::Value(nebula_value::Value::Object(obj_val.values.clone())))
     }
 
     fn set_parameter_value(
@@ -192,17 +197,6 @@ impl HasValue for ObjectParameter {
     ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Object(obj_val) => {
-                if self.is_valid_object_value(&obj_val)? {
-                    self.value = Some(obj_val);
-                    Ok(())
-                } else {
-                    Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: "Object value validation failed".to_string(),
-                    })
-                }
-            }
             ParameterValue::Value(nebula_value::Value::Object(obj)) => {
                 let object_value = ObjectValue { values: obj };
 
@@ -237,7 +231,7 @@ impl Validatable for ObjectParameter {
     }
 
     fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::text(value.clone())
+        nebula_value::Value::Object(value.values.clone())
     }
 
     fn is_empty_value(&self, value: &Self::Value) -> bool {

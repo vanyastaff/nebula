@@ -148,12 +148,12 @@ pub trait HasValue: ParameterType + Debug + Display {
     }
 
     /// Validates the current value of the parameter
-    fn validate_current_value(&self) -> Result<(), ParameterError>
+    async fn validate_current_value(&self) -> Result<(), ParameterError>
     where
         Self: Validatable,
     {
         match self.get_value() {
-            Some(value) => self.validate(value),
+            Some(value) => self.validate(value).await,
             None if self.is_required() => Err(ParameterError::MissingValue {
                 key: self.metadata().key.clone(),
             }),
