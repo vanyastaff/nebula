@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::core::{
-    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterType, ParameterValidation, ParameterValue, Validatable,
+    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
 };
 
 /// Parameter for structured object data - acts as a container with named child parameters
@@ -21,7 +21,7 @@ pub struct ObjectParameter {
 
     /// Named child parameters in this object
     #[serde(skip)]
-    pub children: HashMap<String, Box<dyn ParameterType>>,
+    pub children: HashMap<String, Box<dyn Parameter>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<ObjectParameterOptions>,
@@ -151,7 +151,7 @@ impl std::fmt::Debug for ObjectParameter {
     }
 }
 
-impl ParameterType for ObjectParameter {
+impl Parameter for ObjectParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Object
     }
@@ -170,37 +170,34 @@ impl std::fmt::Display for ObjectParameter {
 impl HasValue for ObjectParameter {
     type Value = ObjectValue;
 
-    fn get_value(&self) -> Option<&Self::Value> {
+    fn get(&self) -> Option<&Self::Value> {
         self.value.as_ref()
     }
 
-    fn get_value_mut(&mut self) -> Option<&mut Self::Value> {
+    fn get_mut(&mut self) -> Option<&mut Self::Value> {
         self.value.as_mut()
     }
 
-    fn set_value_unchecked(&mut self, value: Self::Value) -> Result<(), ParameterError> {
+    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
         self.value = Some(value);
         Ok(())
     }
 
-    fn default_value(&self) -> Option<&Self::Value> {
+    fn default(&self) -> Option<&Self::Value> {
         self.default.as_ref()
     }
 
-    fn clear_value(&mut self) {
+    fn clear(&mut self) {
         self.value = None;
     }
 
-    fn get_parameter_value(&self) -> Option<ParameterValue> {
+    fn to_expression(&self) -> Option<ParameterValue> {
         self.value.as_ref().map(|obj_val| {
             ParameterValue::Value(nebula_value::Value::Object(obj_val.values.clone()))
         })
     }
 
-    fn set_parameter_value(
-        &mut self,
-        value: impl Into<ParameterValue>,
-    ) -> Result<(), ParameterError> {
+    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Object(obj)) => {
@@ -235,7 +232,7 @@ impl Validatable for ObjectParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty_value(&self, value: &Self::Value) -> bool {
+    fn is_empty(&self, value: &Self::Value) -> bool {
         value.is_empty()
     }
 }
@@ -316,12 +313,12 @@ impl ObjectParameter {
     }
 
     /// Get child parameter by key
-    pub fn get_child(&self, key: &str) -> Option<&Box<dyn ParameterType>> {
+    pub fn get_child(&self, key: &str) -> Option<&Box<dyn Parameter>> {
         self.children.get(key)
     }
 
     /// Get mutable child parameter by key
-    pub fn get_child_mut(&mut self, key: &str) -> Option<&mut Box<dyn ParameterType>> {
+    pub fn get_child_mut(&mut self, key: &str) -> Option<&mut Box<dyn Parameter>> {
         self.children.get_mut(key)
     }
 
@@ -331,12 +328,12 @@ impl ObjectParameter {
     }
 
     /// Get all children as (key, parameter) pairs
-    pub fn children(&self) -> &HashMap<String, Box<dyn ParameterType>> {
+    pub fn children(&self) -> &HashMap<String, Box<dyn Parameter>> {
         &self.children
     }
 
     /// Get mutable reference to all children
-    pub fn children_mut(&mut self) -> &mut HashMap<String, Box<dyn ParameterType>> {
+    pub fn children_mut(&mut self) -> &mut HashMap<String, Box<dyn Parameter>> {
         &mut self.children
     }
 
@@ -373,12 +370,12 @@ impl ObjectParameter {
     }
 
     /// Add a child parameter to the object
-    pub fn add_child(&mut self, key: impl Into<String>, child: Box<dyn ParameterType>) {
+    pub fn add_child(&mut self, key: impl Into<String>, child: Box<dyn Parameter>) {
         self.children.insert(key.into(), child);
     }
 
     /// Remove a child parameter from the object
-    pub fn remove_child(&mut self, key: &str) -> Option<Box<dyn ParameterType>> {
+    pub fn remove_child(&mut self, key: &str) -> Option<Box<dyn Parameter>> {
         self.children.remove(key)
     }
 
@@ -388,7 +385,7 @@ impl ObjectParameter {
     }
 
     /// Get visible children based on display conditions
-    pub fn get_visible_children(&self) -> impl Iterator<Item = (&String, &Box<dyn ParameterType>)> {
+    pub fn get_visible_children(&self) -> impl Iterator<Item = (&String, &Box<dyn Parameter>)> {
         self.children.iter().filter(|(_key, _child)| {
             // TODO: Implement display condition evaluation based on current values
             // For now, return all children
@@ -402,18 +399,14 @@ impl ObjectParameter {
     }
 
     /// Get all required children
-    pub fn get_required_children(
-        &self,
-    ) -> impl Iterator<Item = (&String, &Box<dyn ParameterType>)> {
+    pub fn get_required_children(&self) -> impl Iterator<Item = (&String, &Box<dyn Parameter>)> {
         self.children
             .iter()
             .filter(|(_key, child)| child.metadata().required)
     }
 
     /// Get all optional children
-    pub fn get_optional_children(
-        &self,
-    ) -> impl Iterator<Item = (&String, &Box<dyn ParameterType>)> {
+    pub fn get_optional_children(&self) -> impl Iterator<Item = (&String, &Box<dyn Parameter>)> {
         self.children
             .iter()
             .filter(|(_key, child)| !child.metadata().required)

@@ -2,8 +2,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterType, ParameterValidation, ParameterValue, SelectOption, Validatable,
+    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, ParameterValue, SelectOption, Validatable,
 };
 
 /// Parameter for selecting a single option from radio buttons
@@ -41,7 +41,7 @@ pub struct RadioParameterOptions {
     pub other_label: Option<String>,
 }
 
-impl ParameterType for RadioParameter {
+impl Parameter for RadioParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Radio
     }
@@ -60,37 +60,34 @@ impl std::fmt::Display for RadioParameter {
 impl HasValue for RadioParameter {
     type Value = String;
 
-    fn get_value(&self) -> Option<&Self::Value> {
+    fn get(&self) -> Option<&Self::Value> {
         self.value.as_ref()
     }
 
-    fn get_value_mut(&mut self) -> Option<&mut Self::Value> {
+    fn get_mut(&mut self) -> Option<&mut Self::Value> {
         self.value.as_mut()
     }
 
-    fn set_value_unchecked(&mut self, value: Self::Value) -> Result<(), ParameterError> {
+    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
         self.value = Some(value);
         Ok(())
     }
 
-    fn default_value(&self) -> Option<&Self::Value> {
+    fn default(&self) -> Option<&Self::Value> {
         self.default.as_ref()
     }
 
-    fn clear_value(&mut self) {
+    fn clear(&mut self) {
         self.value = None;
     }
 
-    fn get_parameter_value(&self) -> Option<ParameterValue> {
+    fn to_expression(&self) -> Option<ParameterValue> {
         self.value
             .as_ref()
             .map(|s| ParameterValue::Value(nebula_value::Value::text(s.clone())))
     }
 
-    fn set_parameter_value(
-        &mut self,
-        value: impl Into<ParameterValue>,
-    ) -> Result<(), ParameterError> {
+    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Text(s)) => {
@@ -123,7 +120,7 @@ impl Validatable for RadioParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty_value(&self, value: &Self::Value) -> bool {
+    fn is_empty(&self, value: &Self::Value) -> bool {
         value.is_empty()
     }
 }

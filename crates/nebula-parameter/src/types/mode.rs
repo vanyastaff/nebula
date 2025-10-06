@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use crate::core::{
-    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterType, ParameterValidation, ParameterValue, Validatable,
+    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
 };
 use nebula_core::ParameterKey;
 
@@ -44,7 +44,7 @@ pub struct ModeItem {
 
     /// Parameter for this mode
     #[serde(skip)] // Skip serialization for now due to trait objects
-    pub children: Box<dyn ParameterType>,
+    pub children: Box<dyn Parameter>,
 
     /// Whether this is the default mode
     pub default: bool,
@@ -134,7 +134,7 @@ impl ModeValue {
     }
 }
 
-impl ParameterType for ModeParameter {
+impl Parameter for ModeParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Mode
     }
@@ -153,38 +153,35 @@ impl std::fmt::Display for ModeParameter {
 impl HasValue for ModeParameter {
     type Value = ModeValue;
 
-    fn get_value(&self) -> Option<&Self::Value> {
+    fn get(&self) -> Option<&Self::Value> {
         self.value.as_ref()
     }
 
-    fn get_value_mut(&mut self) -> Option<&mut Self::Value> {
+    fn get_mut(&mut self) -> Option<&mut Self::Value> {
         self.value.as_mut()
     }
 
-    fn set_value_unchecked(&mut self, value: Self::Value) -> Result<(), ParameterError> {
+    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
         self.value = Some(value);
         Ok(())
     }
 
-    fn default_value(&self) -> Option<&Self::Value> {
+    fn default(&self) -> Option<&Self::Value> {
         self.default.as_ref()
     }
 
-    fn clear_value(&mut self) {
+    fn clear(&mut self) {
         self.value = None;
     }
 
-    fn get_parameter_value(&self) -> Option<ParameterValue> {
+    fn to_expression(&self) -> Option<ParameterValue> {
         // Convert ModeValue to MaybeExpression<Value>
         self.value
             .as_ref()
             .map(|mode_val| ParameterValue::Value(mode_val.value.clone()))
     }
 
-    fn set_parameter_value(
-        &mut self,
-        value: impl Into<ParameterValue>,
-    ) -> Result<(), ParameterError> {
+    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(v) => {
@@ -212,7 +209,7 @@ impl Validatable for ModeParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty_value(&self, value: &Self::Value) -> bool {
+    fn is_empty(&self, value: &Self::Value) -> bool {
         match &value.value {
             nebula_value::Value::Text(s) => s.as_str().trim().is_empty(),
             nebula_value::Value::Null => true,
@@ -301,7 +298,7 @@ impl ModeParameter {
     }
 
     /// Get the child parameter for current mode
-    pub fn current_child(&self) -> Option<&Box<dyn ParameterType>> {
+    pub fn current_child(&self) -> Option<&Box<dyn Parameter>> {
         self.current_mode().map(|mode| &mode.children)
     }
 }

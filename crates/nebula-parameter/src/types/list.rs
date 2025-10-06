@@ -2,8 +2,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterType, ParameterValidation, ParameterValue, Validatable,
+    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
 };
 
 /// Value for list parameters containing array of child parameter values
@@ -54,11 +54,11 @@ pub struct ListParameter {
 
     /// Child parameters in this list
     #[serde(skip)]
-    pub children: Vec<Box<dyn ParameterType>>,
+    pub children: Vec<Box<dyn Parameter>>,
 
     /// Template parameter for creating new items (optional)
     #[serde(skip)]
-    pub item_template: Option<Box<dyn ParameterType>>,
+    pub item_template: Option<Box<dyn Parameter>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<ListParameterOptions>,
@@ -124,7 +124,7 @@ impl std::fmt::Debug for ListParameter {
     }
 }
 
-impl ParameterType for ListParameter {
+impl Parameter for ListParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::List
     }
@@ -143,37 +143,34 @@ impl std::fmt::Display for ListParameter {
 impl HasValue for ListParameter {
     type Value = nebula_value::Array;
 
-    fn get_value(&self) -> Option<&Self::Value> {
+    fn get(&self) -> Option<&Self::Value> {
         self.value.as_ref()
     }
 
-    fn get_value_mut(&mut self) -> Option<&mut Self::Value> {
+    fn get_mut(&mut self) -> Option<&mut Self::Value> {
         self.value.as_mut()
     }
 
-    fn set_value_unchecked(&mut self, value: Self::Value) -> Result<(), ParameterError> {
+    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
         self.value = Some(value);
         Ok(())
     }
 
-    fn default_value(&self) -> Option<&Self::Value> {
+    fn default(&self) -> Option<&Self::Value> {
         self.default.as_ref()
     }
 
-    fn clear_value(&mut self) {
+    fn clear(&mut self) {
         self.value = None;
     }
 
-    fn get_parameter_value(&self) -> Option<ParameterValue> {
+    fn to_expression(&self) -> Option<ParameterValue> {
         self.value
             .as_ref()
             .map(|arr| ParameterValue::Value(nebula_value::Value::Array(arr.clone())))
     }
 
-    fn set_parameter_value(
-        &mut self,
-        value: impl Into<ParameterValue>,
-    ) -> Result<(), ParameterError> {
+    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Array(arr)) => {
@@ -192,7 +189,7 @@ impl Validatable for ListParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty_value(&self, value: &Self::Value) -> bool {
+    fn is_empty(&self, value: &Self::Value) -> bool {
         value.is_empty()
     }
 }
@@ -234,22 +231,22 @@ impl ListParameter {
     }
 
     /// Set the template parameter for creating new items
-    pub fn set_template(&mut self, template: Box<dyn ParameterType>) {
+    pub fn set_template(&mut self, template: Box<dyn Parameter>) {
         self.item_template = Some(template);
     }
 
     /// Get the template parameter
-    pub fn template(&self) -> Option<&Box<dyn ParameterType>> {
+    pub fn template(&self) -> Option<&Box<dyn Parameter>> {
         self.item_template.as_ref()
     }
 
     /// Add a child parameter to the list
-    pub fn add_child(&mut self, child: Box<dyn ParameterType>) {
+    pub fn add_child(&mut self, child: Box<dyn Parameter>) {
         self.children.push(child);
     }
 
     /// Remove a child parameter by index
-    pub fn remove_child(&mut self, index: usize) -> Option<Box<dyn ParameterType>> {
+    pub fn remove_child(&mut self, index: usize) -> Option<Box<dyn Parameter>> {
         if index < self.children.len() {
             Some(self.children.remove(index))
         } else {
@@ -258,22 +255,22 @@ impl ListParameter {
     }
 
     /// Get child parameter by index
-    pub fn get_child(&self, index: usize) -> Option<&Box<dyn ParameterType>> {
+    pub fn get_child(&self, index: usize) -> Option<&Box<dyn Parameter>> {
         self.children.get(index)
     }
 
     /// Get mutable child parameter by index
-    pub fn get_child_mut(&mut self, index: usize) -> Option<&mut Box<dyn ParameterType>> {
+    pub fn get_child_mut(&mut self, index: usize) -> Option<&mut Box<dyn Parameter>> {
         self.children.get_mut(index)
     }
 
     /// Get all children
-    pub fn children(&self) -> &[Box<dyn ParameterType>] {
+    pub fn children(&self) -> &[Box<dyn Parameter>] {
         &self.children
     }
 
     /// Get mutable reference to all children
-    pub fn children_mut(&mut self) -> &mut Vec<Box<dyn ParameterType>> {
+    pub fn children_mut(&mut self) -> &mut Vec<Box<dyn Parameter>> {
         &mut self.children
     }
 

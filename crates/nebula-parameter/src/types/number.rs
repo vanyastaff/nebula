@@ -2,8 +2,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterType, ParameterValidation, ParameterValue, Validatable,
+    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
 };
 
 /// Parameter for numeric input
@@ -47,7 +47,7 @@ pub struct NumberParameterOptions {
     pub precision: Option<u8>,
 }
 
-impl ParameterType for NumberParameter {
+impl Parameter for NumberParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Number
     }
@@ -66,36 +66,33 @@ impl std::fmt::Display for NumberParameter {
 impl HasValue for NumberParameter {
     type Value = f64;
 
-    fn get_value(&self) -> Option<&Self::Value> {
+    fn get(&self) -> Option<&Self::Value> {
         self.value.as_ref()
     }
 
-    fn get_value_mut(&mut self) -> Option<&mut Self::Value> {
+    fn get_mut(&mut self) -> Option<&mut Self::Value> {
         self.value.as_mut()
     }
 
-    fn set_value_unchecked(&mut self, value: Self::Value) -> Result<(), ParameterError> {
+    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
         self.value = Some(value);
         Ok(())
     }
 
-    fn default_value(&self) -> Option<&Self::Value> {
+    fn default(&self) -> Option<&Self::Value> {
         self.default.as_ref()
     }
 
-    fn clear_value(&mut self) {
+    fn clear(&mut self) {
         self.value = None;
     }
 
-    fn get_parameter_value(&self) -> Option<ParameterValue> {
+    fn to_expression(&self) -> Option<ParameterValue> {
         self.value
             .map(|n| ParameterValue::Value(nebula_value::Value::float(n)))
     }
 
-    fn set_parameter_value(
-        &mut self,
-        value: impl Into<ParameterValue>,
-    ) -> Result<(), ParameterError> {
+    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Integer(i)) => {
@@ -131,7 +128,7 @@ impl Validatable for NumberParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty_value(&self, _value: &Self::Value) -> bool {
+    fn is_empty(&self, _value: &Self::Value) -> bool {
         false // Numbers are never considered empty
     }
 }

@@ -10,7 +10,7 @@ use nebula_value::Value;
 use std::fmt::{Debug, Display};
 
 /// Base trait for all parameter types
-pub trait ParameterType: Send + Sync {
+pub trait Parameter: Send + Sync {
     /// Get the kind of this parameter
     fn kind(&self) -> ParameterKind;
 
@@ -37,32 +37,32 @@ pub trait ParameterType: Send + Sync {
 }
 
 /// Core trait for parameters that can store values
-pub trait HasValue: ParameterType + Debug + Display {
+pub trait HasValue: Parameter + Debug + Display {
     /// The concrete value type for this parameter
     type Value: Clone + PartialEq + Debug + Send + Sync + 'static;
 
     // --- Required methods (must be implemented) ---
 
     /// Gets the current value (immutable reference)
-    fn get_value(&self) -> Option<&Self::Value>;
+    fn get(&self) -> Option<&Self::Value>;
 
     /// Gets the current value (mutable reference)
-    fn get_value_mut(&mut self) -> Option<&mut Self::Value>;
+    fn get_mut(&mut self) -> Option<&mut Self::Value>;
 
     /// Sets a new value without validation
-    fn set_value_unchecked(&mut self, value: Self::Value) -> Result<(), ParameterError>;
+    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError>;
 
     /// Gets the default value if defined
-    fn default_value(&self) -> Option<&Self::Value>;
+    fn default(&self) -> Option<&Self::Value>;
 
     /// Clears the current value
-    fn clear_value(&mut self);
+    fn clear(&mut self);
 
     /// Converts to generic MaybeExpression<Value>
-    fn get_parameter_value(&self) -> Option<MaybeExpression<Value>>;
+    fn to_expression(&self) -> Option<MaybeExpression<Value>>;
 
     /// Sets from generic MaybeExpression<Value> or any type that converts to it
-    fn set_parameter_value(
+    fn from_expression(
         &mut self,
         value: impl Into<MaybeExpression<Value>>,
     ) -> Result<(), ParameterError>;
@@ -72,7 +72,7 @@ pub trait HasValue: ParameterType + Debug + Display {
     /// Returns true if parameter has a value set
     #[inline]
     fn has_value(&self) -> bool {
-        self.get_value().is_some()
+        self.get().is_some()
     }
 
     /// Sets a new value with validation (requires Validatable)
@@ -82,7 +82,7 @@ pub trait HasValue: ParameterType + Debug + Display {
         Self::Value: Clone + Into<nebula_value::Value>,
     {
         self.validate(&value).await?;
-        self.set_value_unchecked(value)
+        self.set(value)
     }
 
     /// Updates the current value in place using a closure
@@ -90,7 +90,7 @@ pub trait HasValue: ParameterType + Debug + Display {
     where
         F: FnOnce(&mut Self::Value) -> Result<(), ParameterError>,
     {
-        match self.get_value_mut() {
+        match self.get_mut() {
             Some(value) => f(value),
             None => Err(ParameterError::MissingValue {
                 key: self.metadata().key.clone(),
@@ -100,7 +100,7 @@ pub trait HasValue: ParameterType + Debug + Display {
 
     /// Checks if the current value equals the default
     fn is_default(&self) -> bool {
-        match (self.get_value(), self.default_value()) {
+        match (self.get(), self.default()) {
             (Some(current), Some(default)) => current == default,
             (None, None) => true,
             _ => false,
@@ -109,10 +109,10 @@ pub trait HasValue: ParameterType + Debug + Display {
 
     /// Resets the parameter's value to its default
     fn reset_to_default(&mut self) -> Result<(), ParameterError> {
-        match self.default_value().cloned() {
-            Some(default) => self.set_value_unchecked(default),
+        match self.default().cloned() {
+            Some(default) => self.set(default),
             None => {
-                self.clear_value();
+                self.clear();
                 Ok(())
             }
         }
@@ -120,19 +120,19 @@ pub trait HasValue: ParameterType + Debug + Display {
 
     /// Takes the current value, leaving the parameter empty
     fn take_value(&mut self) -> Option<Self::Value> {
-        let value = self.get_value().cloned();
-        self.clear_value();
+        let value = self.get().cloned();
+        self.clear();
         value
     }
 
     /// Gets the current value or the default value
     fn value_or_default(&self) -> Option<&Self::Value> {
-        self.get_value().or_else(|| self.default_value())
+        self.get().or_else(|| self.default())
     }
 
     /// Gets the current value or a provided fallback
     fn value_or<'a>(&'a self, fallback: &'a Self::Value) -> &'a Self::Value {
-        self.get_value().unwrap_or(fallback)
+        self.get().unwrap_or(fallback)
     }
 
     /// Maps the current value to another type
@@ -140,7 +140,7 @@ pub trait HasValue: ParameterType + Debug + Display {
     where
         F: FnOnce(&Self::Value) -> U,
     {
-        self.get_value().map(f)
+        self.get().map(f)
     }
 
     /// Sets the default value for this parameter
@@ -155,7 +155,7 @@ pub trait HasValue: ParameterType + Debug + Display {
         Self: Validatable,
         Self::Value: Clone + Into<nebula_value::Value>,
     {
-        match self.get_value() {
+        match self.get() {
             Some(value) => self.validate(value).await,
             None if self.is_required() => Err(ParameterError::MissingValue {
                 key: self.metadata().key.clone(),
@@ -188,7 +188,7 @@ pub trait Validatable: HasValue + Send + Sync {
         }
 
         // Basic validation - required field check
-        if self.is_empty_value(value) && self.is_required() {
+        if self.is_empty(value) && self.is_required() {
             return Err(ParameterError::MissingValue {
                 key: self.metadata().key.clone(),
             });
@@ -203,13 +203,13 @@ pub trait Validatable: HasValue + Send + Sync {
     }
 
     /// Check if a value is considered empty (default: false)
-    fn is_empty_value(&self, _value: &Self::Value) -> bool {
+    fn is_empty(&self, _value: &Self::Value) -> bool {
         false // Most types don't have an "empty" concept
     }
 }
 
 /// Unified trait for parameters that support conditional display
-pub trait Displayable: ParameterType {
+pub trait Displayable: Parameter {
     // --- Required methods ---
 
     /// Get the display configuration

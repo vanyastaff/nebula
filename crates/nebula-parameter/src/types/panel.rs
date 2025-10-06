@@ -1,7 +1,7 @@
 use bon::Builder;
 use serde::{Deserialize, Serialize};
 
-use crate::core::{Displayable, ParameterDisplay, ParameterKind, ParameterMetadata, ParameterType};
+use crate::core::{Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata};
 
 /// Panel parameter - container for organizing parameters into sections/tabs
 #[derive(Serialize)]
@@ -34,7 +34,7 @@ pub struct Panel {
 
     /// Parameters contained in this panel
     #[serde(skip)]
-    pub children: Vec<Box<dyn ParameterType>>,
+    pub children: Vec<Box<dyn Parameter>>,
 
     /// Optional icon identifier
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -107,13 +107,13 @@ impl Panel {
     }
 
     /// Add a child parameter
-    pub fn with_child(mut self, child: Box<dyn ParameterType>) -> Self {
+    pub fn with_child(mut self, child: Box<dyn Parameter>) -> Self {
         self.children.push(child);
         self
     }
 
     /// Add multiple child parameters
-    pub fn with_children(mut self, children: Vec<Box<dyn ParameterType>>) -> Self {
+    pub fn with_children(mut self, children: Vec<Box<dyn Parameter>>) -> Self {
         self.children.extend(children);
         self
     }
@@ -135,7 +135,7 @@ impl Panel {
     }
 }
 
-impl ParameterType for PanelParameter {
+impl Parameter for PanelParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Panel
     }
@@ -219,7 +219,7 @@ impl PanelParameter {
     }
 
     /// Get all parameters from all panels (flattened)
-    pub fn get_all_parameters(&self) -> Vec<&dyn ParameterType> {
+    pub fn get_all_parameters(&self) -> Vec<&dyn Parameter> {
         self.panels
             .iter()
             .flat_map(|panel| panel.children.iter().map(|child| child.as_ref()))
@@ -227,7 +227,7 @@ impl PanelParameter {
     }
 
     /// Get parameters from a specific panel
-    pub fn get_panel_parameters(&self, panel_key: &str) -> Option<Vec<&dyn ParameterType>> {
+    pub fn get_panel_parameters(&self, panel_key: &str) -> Option<Vec<&dyn Parameter>> {
         self.get_panel(panel_key)
             .map(|panel| panel.children.iter().map(|child| child.as_ref()).collect())
     }

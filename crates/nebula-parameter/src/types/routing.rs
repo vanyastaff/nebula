@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{self, Display};
 
 use crate::core::{
-    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterType, ParameterValidation, ParameterValue, Validatable,
+    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
 };
 use nebula_core::ParameterKey;
 
@@ -22,7 +22,7 @@ pub struct RoutingParameter {
 
     /// Child parameter that this routing parameter wraps
     #[serde(skip)]
-    pub children: Option<Box<dyn ParameterType>>,
+    pub children: Option<Box<dyn Parameter>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<RoutingParameterOptions>,
@@ -196,7 +196,7 @@ impl fmt::Debug for RoutingParameter {
     }
 }
 
-impl ParameterType for RoutingParameter {
+impl Parameter for RoutingParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Routing
     }
@@ -215,28 +215,28 @@ impl Display for RoutingParameter {
 impl HasValue for RoutingParameter {
     type Value = RoutingValue;
 
-    fn get_value(&self) -> Option<&Self::Value> {
+    fn get(&self) -> Option<&Self::Value> {
         self.value.as_ref()
     }
 
-    fn get_value_mut(&mut self) -> Option<&mut Self::Value> {
+    fn get_mut(&mut self) -> Option<&mut Self::Value> {
         self.value.as_mut()
     }
 
-    fn set_value_unchecked(&mut self, value: Self::Value) -> Result<(), ParameterError> {
+    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
         self.value = Some(value);
         Ok(())
     }
 
-    fn default_value(&self) -> Option<&Self::Value> {
+    fn default(&self) -> Option<&Self::Value> {
         self.default.as_ref()
     }
 
-    fn clear_value(&mut self) {
+    fn clear(&mut self) {
         self.value = None;
     }
 
-    fn get_parameter_value(&self) -> Option<ParameterValue> {
+    fn to_expression(&self) -> Option<ParameterValue> {
         // Routing parameter cannot be serialized as MaybeExpression
         // Return None or convert to a descriptive value
         self.value
@@ -244,10 +244,7 @@ impl HasValue for RoutingParameter {
             .map(|_| ParameterValue::Value(nebula_value::Value::text("routing_parameter")))
     }
 
-    fn set_parameter_value(
-        &mut self,
-        _value: impl Into<ParameterValue>,
-    ) -> Result<(), ParameterError> {
+    fn from_expression(&mut self, _value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
         // Routing parameters cannot be set via generic ParameterValue
         // They must be set directly using set_value_unchecked
         Err(ParameterError::InvalidValue {
@@ -262,7 +259,7 @@ impl Validatable for RoutingParameter {
         self.validation.as_ref()
     }
 
-    fn is_empty_value(&self, value: &Self::Value) -> bool {
+    fn is_empty(&self, value: &Self::Value) -> bool {
         !value.is_connected()
     }
 }
@@ -283,7 +280,7 @@ impl RoutingParameter {
         key: &str,
         name: &str,
         description: &str,
-        child: Option<Box<dyn ParameterType>>,
+        child: Option<Box<dyn Parameter>>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             metadata: ParameterMetadata {
@@ -304,12 +301,12 @@ impl RoutingParameter {
     }
 
     /// Get the child parameter
-    pub fn child(&self) -> Option<&Box<dyn ParameterType>> {
+    pub fn child(&self) -> Option<&Box<dyn Parameter>> {
         self.children.as_ref()
     }
 
     /// Set the child parameter
-    pub fn set_child(&mut self, child: Option<Box<dyn ParameterType>>) {
+    pub fn set_child(&mut self, child: Option<Box<dyn Parameter>>) {
         self.children = child;
     }
 

@@ -1,7 +1,7 @@
 use bon::Builder;
 use serde::{Deserialize, Serialize};
 
-use crate::core::{Displayable, ParameterDisplay, ParameterKind, ParameterMetadata, ParameterType};
+use crate::core::{Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata};
 
 /// Parameter for displaying a notice or information to the user
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -47,7 +47,7 @@ impl Default for NoticeType {
     }
 }
 
-impl ParameterType for NoticeParameter {
+impl Parameter for NoticeParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Notice
     }

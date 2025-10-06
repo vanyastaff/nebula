@@ -3,8 +3,8 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterType, ParameterValidation, ParameterValue, Validatable,
+    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, ParameterValue, Validatable,
 };
 
 // Default Time-To-Live in seconds (1 hour)
@@ -34,7 +34,7 @@ pub struct ExpirableParameter {
 
     /// The child parameter that this expirable parameter wraps
     #[serde(skip)]
-    pub children: Option<Box<dyn ParameterType>>,
+    pub children: Option<Box<dyn Parameter>>,
 }
 
 /// Configuration options for expirable parameters
@@ -191,7 +191,7 @@ impl std::fmt::Debug for ExpirableParameter {
     }
 }
 
-impl ParameterType for ExpirableParameter {
+impl Parameter for ExpirableParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Expirable
     }
@@ -210,7 +210,7 @@ impl std::fmt::Display for ExpirableParameter {
 impl HasValue for ExpirableParameter {
     type Value = ExpirableValue;
 
-    fn get_value(&self) -> Option<&Self::Value> {
+    fn get(&self) -> Option<&Self::Value> {
         // Check if value is expired and handle auto-clear
         if let Some(value) = &self.value {
             if value.is_expired() {
@@ -224,7 +224,7 @@ impl HasValue for ExpirableParameter {
         self.value.as_ref()
     }
 
-    fn get_value_mut(&mut self) -> Option<&mut Self::Value> {
+    fn get_mut(&mut self) -> Option<&mut Self::Value> {
         // Check if value is expired and handle auto-clear
         if let Some(value) = &self.value {
             if value.is_expired() {
@@ -239,7 +239,7 @@ impl HasValue for ExpirableParameter {
         self.value.as_mut()
     }
 
-    fn set_value_unchecked(&mut self, mut value: Self::Value) -> Result<(), ParameterError> {
+    fn set(&mut self, mut value: Self::Value) -> Result<(), ParameterError> {
         // Auto-refresh if enabled
         if let Some(options) = &self.options {
             if options.auto_refresh {
@@ -250,15 +250,15 @@ impl HasValue for ExpirableParameter {
         Ok(())
     }
 
-    fn default_value(&self) -> Option<&Self::Value> {
+    fn default(&self) -> Option<&Self::Value> {
         self.default.as_ref()
     }
 
-    fn clear_value(&mut self) {
+    fn clear(&mut self) {
         self.value = None;
     }
 
-    fn get_parameter_value(&self) -> Option<ParameterValue> {
+    fn to_expression(&self) -> Option<ParameterValue> {
         // Convert ExpirableValue to MaybeExpression<Value>
         // Return the inner value if not expired, otherwise None
         self.value.as_ref().and_then(|exp_val| {
@@ -270,17 +270,10 @@ impl HasValue for ExpirableParameter {
         })
     }
 
-    fn set_parameter_value(
-        &mut self,
-        value: impl Into<ParameterValue>,
-    ) -> Result<(), ParameterError> {
+    fn from_expression(&mut self, value: impl Into<ParameterValue>) -> Result<(), ParameterError> {
         let value = value.into();
         // Get TTL from options or use default
-        let ttl = self
-            .options
-            .as_ref()
-            .map(|opts| opts.ttl)
-            .unwrap_or(3600); // Default 1 hour
+        let ttl = self.options.as_ref().map(|opts| opts.ttl).unwrap_or(3600); // Default 1 hour
 
         let exp_val = ExpirableValue::from_parameter_value(&value, ttl);
         self.value = Some(exp_val);
@@ -292,7 +285,7 @@ impl Validatable for ExpirableParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty_value(&self, value: &Self::Value) -> bool {
+    fn is_empty(&self, value: &Self::Value) -> bool {
         value.is_expired()
             || match &value.value {
                 nebula_value::Value::Text(s) => s.as_str().trim().is_empty(),
@@ -320,7 +313,7 @@ impl ExpirableParameter {
         key: &str,
         name: &str,
         description: &str,
-        child: Option<Box<dyn ParameterType>>,
+        child: Option<Box<dyn Parameter>>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             metadata: ParameterMetadata {
@@ -341,12 +334,12 @@ impl ExpirableParameter {
     }
 
     /// Get the child parameter
-    pub fn child(&self) -> Option<&Box<dyn ParameterType>> {
+    pub fn child(&self) -> Option<&Box<dyn Parameter>> {
         self.children.as_ref()
     }
 
     /// Set the child parameter
-    pub fn set_child(&mut self, child: Option<Box<dyn ParameterType>>) {
+    pub fn set_child(&mut self, child: Option<Box<dyn Parameter>>) {
         self.children = child;
     }
 
@@ -395,7 +388,7 @@ impl ExpirableParameter {
 
     /// Get the actual value if not expired
     pub fn get_actual_value(&self) -> Option<&nebula_value::Value> {
-        if let Some(value) = self.get_value() {
+        if let Some(value) = self.get() {
             if !value.is_expired() {
                 Some(&value.value)
             } else {
