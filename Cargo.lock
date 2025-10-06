@@ -2962,6 +2962,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-expression"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "nebula-core",
+ "nebula-error",
+ "nebula-log",
+ "nebula-memory",
+ "nebula-value",
+ "pretty_assertions",
+ "regex",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "nebula-log"
 version = "0.1.0"
 dependencies = [

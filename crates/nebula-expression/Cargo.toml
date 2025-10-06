@@ -1,0 +1,35 @@
+[package]
+name = "nebula-expression"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Powerful expression language for Nebula workflow automation, compatible with n8n syntax"
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords = ["expression", "template", "workflow", "n8n", "automation"]
+categories = ["template-engine", "parser-implementations"]
+
+[dependencies]
+# Nebula internal crates
+nebula-core = { path = "../nebula-core" }
+nebula-error = { path = "../nebula-error" }
+nebula-log = { path = "../nebula-log" }
+nebula-memory = { path = "../nebula-memory", features = ["cache"] }
+nebula-value = { path = "../nebula-value", features = ["temporal", "serde"] }
+
+# External dependencies
+serde = { workspace = true }
+serde_json = "1.0"
+regex = "1.11"
+uuid = { workspace = true, features = ["v4"] }
+chrono = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+
+[features]
+default = ["cache"]
+cache = ["nebula-memory/cache"]

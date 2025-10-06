@@ -5,6 +5,7 @@ members = [
     "crates/nebula-core",
     "crates/nebula-credential",
     "crates/nebula-error",
+    "crates/nebula-expression",
     "crates/nebula-log",
     "crates/nebula-memory",
     "crates/nebula-parameter",
