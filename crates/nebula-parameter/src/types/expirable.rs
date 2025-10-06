@@ -166,14 +166,11 @@ impl ExpirableValue {
         Self::new(nebula_value::Value::integer(value), ttl)
     }
 
-    /// Create a new ExpirableValue from ParameterValue
+    /// Create a new ExpirableValue from ParameterValue (MaybeExpression<Value>)
     pub fn from_parameter_value(param_value: &ParameterValue, ttl: u64) -> Self {
         let nebula_val = match param_value {
             ParameterValue::Value(v) => v.clone(),
-            ParameterValue::Expression(expr) => nebula_value::Value::text(expr.clone()),
-            ParameterValue::Routing(_) => nebula_value::Value::text("routing_value"),
-            ParameterValue::Mode(mode_val) => mode_val.value.clone(),
-            ParameterValue::Expirable(exp_val) => exp_val.value.clone(),
+            ParameterValue::Expression(expr) => nebula_value::Value::text(expr),
         };
         Self::new(nebula_val, ttl)
     }
@@ -262,9 +259,15 @@ impl HasValue for ExpirableParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value
-            .as_ref()
-            .map(|exp_val| ParameterValue::Expirable(exp_val.clone()))
+        // Convert ExpirableValue to MaybeExpression<Value>
+        // Return the inner value if not expired, otherwise None
+        self.value.as_ref().and_then(|exp_val| {
+            if !exp_val.is_expired() {
+                Some(ParameterValue::Value(exp_val.value.clone()))
+            } else {
+                None
+            }
+        })
     }
 
     fn set_parameter_value(
@@ -272,16 +275,16 @@ impl HasValue for ExpirableParameter {
         value: impl Into<ParameterValue>,
     ) -> Result<(), ParameterError> {
         let value = value.into();
-        match value {
-            ParameterValue::Expirable(exp_val) => {
-                self.value = Some(exp_val);
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected expirable value".to_string(),
-            }),
-        }
+        // Get TTL from options or use default
+        let ttl = self
+            .options
+            .as_ref()
+            .map(|opts| opts.ttl)
+            .unwrap_or(3600); // Default 1 hour
+
+        let exp_val = ExpirableValue::from_parameter_value(&value, ttl);
+        self.value = Some(exp_val);
+        Ok(())
     }
 }
 

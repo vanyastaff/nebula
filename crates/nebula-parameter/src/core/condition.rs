@@ -79,8 +79,32 @@ impl ParameterCondition {
             }
             ParameterCondition::In(values) => values.contains(value),
             ParameterCondition::NotIn(values) => !values.contains(value),
-            ParameterCondition::IsEmpty => value.is_empty(),
-            ParameterCondition::IsNotEmpty => !value.is_empty(),
+            ParameterCondition::IsEmpty => {
+                // Check if MaybeExpression is empty
+                match value {
+                    ParameterValue::Value(v) => match v {
+                        nebula_value::Value::Null => true,
+                        nebula_value::Value::Text(s) => s.is_empty(),
+                        nebula_value::Value::Array(a) => a.is_empty(),
+                        nebula_value::Value::Object(o) => o.is_empty(),
+                        _ => false,
+                    },
+                    ParameterValue::Expression(expr) => expr.is_empty(),
+                }
+            }
+            ParameterCondition::IsNotEmpty => {
+                // Check if MaybeExpression is not empty
+                match value {
+                    ParameterValue::Value(v) => match v {
+                        nebula_value::Value::Null => false,
+                        nebula_value::Value::Text(s) => !s.is_empty(),
+                        nebula_value::Value::Array(a) => !a.is_empty(),
+                        nebula_value::Value::Object(o) => !o.is_empty(),
+                        _ => true,
+                    },
+                    ParameterValue::Expression(expr) => !expr.is_empty(),
+                }
+            }
             ParameterCondition::And(conditions) => conditions.iter().all(|c| c.evaluate(value)),
             ParameterCondition::Or(conditions) => conditions.iter().any(|c| c.evaluate(value)),
             ParameterCondition::Not(condition) => !condition.evaluate(value),

@@ -237,26 +237,23 @@ impl HasValue for RoutingParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
+        // Routing parameter cannot be serialized as MaybeExpression
+        // Return None or convert to a descriptive value
         self.value
             .as_ref()
-            .map(|routing_val| ParameterValue::Routing(routing_val.clone()))
+            .map(|_| ParameterValue::Value(nebula_value::Value::text("routing_parameter")))
     }
 
     fn set_parameter_value(
         &mut self,
-        value: impl Into<ParameterValue>,
+        _value: impl Into<ParameterValue>,
     ) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            ParameterValue::Routing(routing_value) => {
-                self.value = Some(routing_value);
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected routing value for routing parameter".to_string(),
-            }),
-        }
+        // Routing parameters cannot be set via generic ParameterValue
+        // They must be set directly using set_value_unchecked
+        Err(ParameterError::InvalidValue {
+            key: self.metadata.key.clone(),
+            reason: "Routing parameters must be set directly, not via ParameterValue".to_string(),
+        })
     }
 }
 

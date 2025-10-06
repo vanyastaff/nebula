@@ -37,6 +37,7 @@ nebula-derive = { path = "../nebula-derive" }
 nebula-error = { path = "../nebula-error" }
 nebula-value = { path = "../nebula-value", features = ["serde"] }
 nebula-validator = { path = "../nebula-validator" }
+nebula-expression = { path = "../nebula-expression" }
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["full"] }

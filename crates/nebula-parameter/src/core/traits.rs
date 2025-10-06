@@ -1,11 +1,12 @@
 //! Core parameter traits
 
-use crate::core::ParameterValue;
 use crate::core::condition::ParameterCondition;
 use crate::core::display::{DisplayContext, ParameterDisplay, ParameterDisplayError};
 use crate::core::validation::ParameterValidation;
 use crate::core::{ParameterError, ParameterKind, ParameterMetadata};
 use nebula_core::ParameterKey as Key;
+use nebula_expression::MaybeExpression;
+use nebula_value::Value;
 use std::fmt::{Debug, Display};
 
 /// Base trait for all parameter types
@@ -57,13 +58,13 @@ pub trait HasValue: ParameterType + Debug + Display {
     /// Clears the current value
     fn clear_value(&mut self);
 
-    /// Converts to generic ParameterValue
-    fn get_parameter_value(&self) -> Option<ParameterValue>;
+    /// Converts to generic MaybeExpression<Value>
+    fn get_parameter_value(&self) -> Option<MaybeExpression<Value>>;
 
-    /// Sets from generic ParameterValue or any type that converts to it
+    /// Sets from generic MaybeExpression<Value> or any type that converts to it
     fn set_parameter_value(
         &mut self,
-        value: impl Into<ParameterValue>,
+        value: impl Into<MaybeExpression<Value>>,
     ) -> Result<(), ParameterError>;
 
     // --- Default implementations (convenience methods) ---

@@ -3049,6 +3049,7 @@ dependencies = [
  "nebula-core",
  "nebula-derive",
  "nebula-error",
+ "nebula-expression",
  "nebula-validator",
  "nebula-value",
  "regex",

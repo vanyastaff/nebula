@@ -121,14 +121,11 @@ impl ModeValue {
         }
     }
 
-    /// Create a new ModeValue from ParameterValue
+    /// Create a new ModeValue from ParameterValue (MaybeExpression<Value>)
     pub fn from_parameter_value(key: impl Into<String>, param_value: &ParameterValue) -> Self {
         let nebula_val = match param_value {
             ParameterValue::Value(v) => v.clone(),
-            ParameterValue::Expression(expr) => nebula_value::Value::text(expr.clone()),
-            ParameterValue::Routing(_) => nebula_value::Value::text("routing_value"),
-            ParameterValue::Mode(mode_val) => mode_val.value.clone(),
-            ParameterValue::Expirable(exp_val) => exp_val.value.clone(),
+            ParameterValue::Expression(expr) => nebula_value::Value::text(expr),
         };
         Self {
             key: key.into(),
@@ -178,9 +175,10 @@ impl HasValue for ModeParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
+        // Convert ModeValue to MaybeExpression<Value>
         self.value
             .as_ref()
-            .map(|mode_val| ParameterValue::Mode(mode_val.clone()))
+            .map(|mode_val| ParameterValue::Value(mode_val.value.clone()))
     }
 
     fn set_parameter_value(
@@ -189,14 +187,23 @@ impl HasValue for ModeParameter {
     ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Mode(mode_value) => {
+            ParameterValue::Value(v) => {
+                let mode_value = ModeValue {
+                    key: self.metadata.key.clone().to_string(),
+                    value: v,
+                };
                 self.value = Some(mode_value);
                 Ok(())
             }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected mode value".to_string(),
-            }),
+            ParameterValue::Expression(expr) => {
+                // Convert expression to text value
+                let mode_value = ModeValue {
+                    key: self.metadata.key.clone().to_string(),
+                    value: nebula_value::Value::text(expr),
+                };
+                self.value = Some(mode_value);
+                Ok(())
+            }
         }
     }
 }

@@ -3,10 +3,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::{
     Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterType, ParameterValidation, ParameterValue, Validatable,
+    ParameterType, ParameterValidation, Validatable,
 };
 
-use nebula_value::Boolean;
+use nebula_expression::MaybeExpression;
+use nebula_value::{Boolean, Value};
 
 /// Parameter for boolean checkbox
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -79,26 +80,27 @@ impl HasValue for CheckboxParameter {
         self.value = None;
     }
 
-    fn get_parameter_value(&self) -> Option<ParameterValue> {
+    fn get_parameter_value(&self) -> Option<MaybeExpression<Value>> {
         self.value
-            .map(|b| ParameterValue::Value(nebula_value::Value::boolean(b.value())))
+            .map(|b| MaybeExpression::Value(Value::boolean(b.value())))
     }
 
     fn set_parameter_value(
         &mut self,
-        value: impl Into<ParameterValue>,
+        value: impl Into<MaybeExpression<Value>>,
     ) -> Result<(), ParameterError> {
         let value = value.into();
         match value {
-            ParameterValue::Value(nebula_value::Value::Boolean(b)) => {
+            MaybeExpression::Value(Value::Boolean(b)) => {
                 self.value = Some(Boolean::new(b));
                 Ok(())
             }
-            ParameterValue::Expression(_expr) => {
-                // Store as false for now, expression will be evaluated later
-                // In real implementation, you'd mark this as needing evaluation
-                self.value = Some(Boolean::new(false));
-                Ok(())
+            MaybeExpression::Expression(_expr) => {
+                // Checkboxes cannot be expressions, return error
+                Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: "Checkbox parameter cannot be an expression".to_string(),
+                })
             }
             _ => Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
