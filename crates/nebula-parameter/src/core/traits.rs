@@ -75,11 +75,11 @@ pub trait HasValue: ParameterType + Debug + Display {
     }
 
     /// Sets a new value with validation (requires Validatable)
-    fn set_value(&mut self, value: Self::Value) -> Result<(), ParameterError>
+    async fn set_value(&mut self, value: Self::Value) -> Result<(), ParameterError>
     where
         Self: Validatable,
     {
-        self.validate(&value)?;
+        self.validate(&value).await?;
         self.set_value_unchecked(value)
     }
 

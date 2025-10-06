@@ -251,7 +251,10 @@ impl GroupParameter {
 
             // Validate field type if value exists
             if let Some(value) = group_value.get_field(&field.key) {
-                if !self.is_valid_field_value(field, &value) {
+                // Convert nebula_value::Value to serde_json::Value for validation
+                use crate::ValueRefExt;
+                let json_value = value.to_json();
+                if !self.is_valid_field_value(field, &json_value) {
                     return Err(ParameterError::InvalidValue {
                         key: self.metadata.key.clone(),
                         reason: format!("Invalid value for field '{}'", field.key),

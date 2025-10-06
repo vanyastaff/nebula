@@ -247,7 +247,7 @@ pub mod validators {
 
     /// URL validation
     pub fn url(require_https: bool) -> ParameterValidation {
-        let validator = if require_https {
+        let validator: Box<dyn Validator> = if require_https {
             Box::new(string().and(string_starts_with("https://".to_string())))
         } else {
             Box::new(

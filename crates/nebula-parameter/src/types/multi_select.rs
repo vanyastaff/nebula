@@ -100,19 +100,22 @@ impl HasValue for MultiSelectParameter {
             ParameterValue::Value(nebula_value::Value::Array(arr)) => {
                 let mut string_values = Vec::new();
 
-                // arr.iter() returns &serde_json::Value, not &nebula_value::Value
+                // arr.iter() returns &serde_json::Value, convert to nebula_value::Value
+                use crate::JsonValueExt;
                 for item in arr.iter() {
-                    match item {
-                        nebula_value::Value::Text(s) => {
-                            string_values.push(s.clone());
-                        }
-                        _ => {
-                            return Err(ParameterError::InvalidValue {
-                                key: self.metadata.key.clone(),
-                                reason:
-                                    "All array items must be strings for multi-select parameter"
-                                        .to_string(),
-                            });
+                    if let Some(nebula_val) = item.to_nebula_value() {
+                        match nebula_val {
+                            nebula_value::Value::Text(s) => {
+                                string_values.push(s.to_string());
+                            }
+                            _ => {
+                                return Err(ParameterError::InvalidValue {
+                                    key: self.metadata.key.clone(),
+                                    reason:
+                                        "All array items must be strings for multi-select parameter"
+                                            .to_string(),
+                                });
+                            }
                         }
                     }
                 }
