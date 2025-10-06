@@ -18,7 +18,9 @@ use std::sync::{Arc, Mutex};
 /// Expression engine with parsing and evaluation capabilities
 pub struct ExpressionEngine {
     /// Cache for parsed expressions
-    cache: Option<Arc<Mutex<ComputeCache<String, Expr>>>>,
+    expr_cache: Option<Arc<Mutex<ComputeCache<String, Expr>>>>,
+    /// Cache for parsed templates
+    template_cache: Option<Arc<Mutex<ComputeCache<String, crate::Template>>>>,
     /// Builtin function registry
     builtins: Arc<BuiltinRegistry>,
     /// Evaluator
@@ -26,30 +28,60 @@ pub struct ExpressionEngine {
 }
 
 impl ExpressionEngine {
-    /// Create a new expression engine with default configuration
+    /// Create a new expression engine with default configuration (no caching)
     pub fn new() -> Self {
         let builtins = Arc::new(BuiltinRegistry::new());
         let evaluator = Evaluator::new(Arc::clone(&builtins));
 
         Self {
-            cache: None,
+            expr_cache: None,
+            template_cache: None,
             builtins,
             evaluator,
         }
     }
 
-    /// Create a new expression engine with a cache of the specified size
+    /// Create a new expression engine with caching for both expressions and templates
     pub fn with_cache_size(size: usize) -> Self {
         let builtins = Arc::new(BuiltinRegistry::new());
         let evaluator = Evaluator::new(Arc::clone(&builtins));
 
-        let config = CacheConfig::new(size);
-        let cache = ComputeCache::with_config(config);
+        let expr_config = CacheConfig::new(size);
+        let expr_cache = ComputeCache::with_config(expr_config);
 
-        debug!(cache_size = size, "Created expression engine with cache");
+        let template_config = CacheConfig::new(size);
+        let template_cache = ComputeCache::with_config(template_config);
+
+        debug!(cache_size = size, "Created expression engine with expression and template caches");
 
         Self {
-            cache: Some(Arc::new(Mutex::new(cache))),
+            expr_cache: Some(Arc::new(Mutex::new(expr_cache))),
+            template_cache: Some(Arc::new(Mutex::new(template_cache))),
+            builtins,
+            evaluator,
+        }
+    }
+
+    /// Create expression engine with separate cache sizes for expressions and templates
+    pub fn with_cache_sizes(expr_cache_size: usize, template_cache_size: usize) -> Self {
+        let builtins = Arc::new(BuiltinRegistry::new());
+        let evaluator = Evaluator::new(Arc::clone(&builtins));
+
+        let expr_config = CacheConfig::new(expr_cache_size);
+        let expr_cache = ComputeCache::with_config(expr_config);
+
+        let template_config = CacheConfig::new(template_cache_size);
+        let template_cache = ComputeCache::with_config(template_config);
+
+        debug!(
+            expr_cache_size = expr_cache_size,
+            template_cache_size = template_cache_size,
+            "Created expression engine with separate caches"
+        );
+
+        Self {
+            expr_cache: Some(Arc::new(Mutex::new(expr_cache))),
+            template_cache: Some(Arc::new(Mutex::new(template_cache))),
             builtins,
             evaluator,
         }
@@ -71,7 +103,7 @@ impl ExpressionEngine {
         trace!(expression = expression, "Evaluating expression");
 
         // Parse the expression (with caching if enabled)
-        let ast = if let Some(cache) = &self.cache {
+        let ast = if let Some(cache) = &self.expr_cache {
             let mut cache_guard = cache.lock().unwrap();
             cache_guard.get_or_compute(expression.to_string(), || {
                 self.parse_expression(expression)
@@ -88,9 +120,29 @@ impl ExpressionEngine {
         Ok(result)
     }
 
-    /// Parse a template from a string
+    /// Parse a template from a string (with caching if enabled)
+    ///
+    /// If template caching is enabled, this will return a cached template
+    /// for the same source string, avoiding re-parsing.
     pub fn parse_template(&self, source: impl Into<String>) -> ExpressionResult<crate::Template> {
-        crate::Template::new(source)
+        let source_str = source.into();
+
+        // Use cache if available
+        if let Some(cache) = &self.template_cache {
+            let mut cache_guard = cache.lock().unwrap();
+            let template = cache_guard.get_or_compute(source_str.clone(), || {
+                crate::Template::new(&source_str)
+                    .map_err(|_| nebula_memory::MemoryError::from(nebula_memory::MemoryErrorCode::InvalidState))
+            })?;
+            Ok(template)
+        } else {
+            crate::Template::new(source_str)
+        }
+    }
+
+    /// Get or parse a template (alias for parse_template with caching)
+    pub fn get_template(&self, source: impl Into<String>) -> ExpressionResult<crate::Template> {
+        self.parse_template(source)
     }
 
     /// Render a parsed template with the given context
@@ -121,22 +173,61 @@ impl ExpressionEngine {
         parser.parse()
     }
 
-    /// Clear the cache (if caching is enabled)
+    /// Clear all caches (expressions and templates)
     pub fn clear_cache(&self) {
-        if let Some(cache) = &self.cache {
+        if let Some(cache) = &self.expr_cache {
+            let mut cache_guard = cache.lock().unwrap();
+            cache_guard.clear();
+            debug!("Expression cache cleared");
+        }
+        if let Some(cache) = &self.template_cache {
+            let mut cache_guard = cache.lock().unwrap();
+            cache_guard.clear();
+            debug!("Template cache cleared");
+        }
+    }
+
+    /// Clear expression cache only
+    pub fn clear_expr_cache(&self) {
+        if let Some(cache) = &self.expr_cache {
             let mut cache_guard = cache.lock().unwrap();
             cache_guard.clear();
             debug!("Expression cache cleared");
         }
     }
 
-    /// Get cache statistics (if caching is enabled)
+    /// Clear template cache only
+    pub fn clear_template_cache(&self) {
+        if let Some(cache) = &self.template_cache {
+            let mut cache_guard = cache.lock().unwrap();
+            cache_guard.clear();
+            debug!("Template cache cleared");
+        }
+    }
+
+    /// Get expression cache statistics
     #[cfg(feature = "std")]
-    pub fn cache_stats(&self) -> Option<nebula_memory::cache::CacheMetrics> {
-        self.cache.as_ref().map(|cache| {
+    pub fn expr_cache_stats(&self) -> Option<nebula_memory::cache::CacheMetrics> {
+        self.expr_cache.as_ref().map(|cache| {
             let cache_guard = cache.lock().unwrap();
             cache_guard.metrics()
         })
+    }
+
+    /// Get template cache statistics
+    #[cfg(feature = "std")]
+    pub fn template_cache_stats(&self) -> Option<nebula_memory::cache::CacheMetrics> {
+        self.template_cache.as_ref().map(|cache| {
+            let cache_guard = cache.lock().unwrap();
+            cache_guard.metrics()
+        })
+    }
+
+    /// Get cache statistics (legacy - returns expression cache stats)
+    #[cfg(feature = "std")]
+    #[deprecated(note = "Use expr_cache_stats() or template_cache_stats() instead")]
+    pub fn cache_stats(&self) -> Option<nebula_memory::cache::CacheMetrics> {
+        self.expr_cache_stats()
     }
 }
 
@@ -342,5 +433,75 @@ mod tests {
 
         let result = engine.evaluate("{{ \"hello\" | uppercase() }}", &context).unwrap();
         assert_eq!(result.as_str(), Some("HELLO"));
+    }
+
+    #[test]
+    fn test_template_cache() {
+        let engine = ExpressionEngine::with_cache_size(100);
+        let mut context = EvaluationContext::new();
+        context.set_input(Value::text("World"));
+
+        let source = "Hello {{ $input }}!";
+
+        // First parse (cache miss)
+        let template1 = engine.parse_template(source).unwrap();
+        let result1 = engine.render_template(&template1, &context).unwrap();
+        assert_eq!(result1, "Hello World!");
+
+        // Second parse (cache hit)
+        let template2 = engine.parse_template(source).unwrap();
+        let result2 = engine.render_template(&template2, &context).unwrap();
+        assert_eq!(result2, "Hello World!");
+
+        #[cfg(feature = "std")]
+        {
+            let stats = engine.template_cache_stats().unwrap();
+            assert!(stats.hits > 0);
+        }
+    }
+
+    #[test]
+    fn test_separate_cache_sizes() {
+        let engine = ExpressionEngine::with_cache_sizes(50, 100);
+        let context = EvaluationContext::new();
+
+        // Test expression cache
+        let result = engine.evaluate("2 + 3", &context).unwrap();
+        assert_eq!(result.as_integer(), Some(5));
+
+        // Test template cache
+        let template = engine.parse_template("Result: {{ 2 + 3 }}").unwrap();
+        let result = engine.render_template(&template, &context).unwrap();
+        assert_eq!(result, "Result: 5");
+
+        #[cfg(feature = "std")]
+        {
+            assert!(engine.expr_cache_stats().is_some());
+            assert!(engine.template_cache_stats().is_some());
+        }
+    }
+
+    #[test]
+    fn test_clear_template_cache() {
+        let engine = ExpressionEngine::with_cache_size(100);
+        let context = EvaluationContext::new();
+
+        // Parse a template
+        let _template = engine.parse_template("Hello {{ $input }}").unwrap();
+
+        // Clear template cache only
+        engine.clear_template_cache();
+
+        // Expression cache should still work
+        let result = engine.evaluate("2 + 3", &context).unwrap();
+        assert_eq!(result.as_integer(), Some(5));
+    }
+
+    #[test]
+    fn test_get_template_alias() {
+        let engine = ExpressionEngine::new();
+        let template1 = engine.parse_template("Test").unwrap();
+        let template2 = engine.get_template("Test").unwrap();
+        assert_eq!(template1.source(), template2.source());
     }
 }

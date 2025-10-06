@@ -30,6 +30,10 @@ pub enum TemplatePart {
         position: Position,
         /// Length of the full {{ expression }} in characters
         length: usize,
+        /// Strip whitespace to the left ({{-)
+        strip_left: bool,
+        /// Strip whitespace to the right (-}})
+        strip_right: bool,
     },
 }
 
@@ -102,26 +106,46 @@ impl Template {
     /// Render the template with the given context
     pub fn render(&self, engine: &ExpressionEngine, context: &EvaluationContext) -> ExpressionResult<String> {
         let mut result = String::with_capacity(self.source.len());
+        let mut strip_next_leading = false;
 
         for part in &self.parts {
             match part {
                 TemplatePart::Static { content, .. } => {
-                    result.push_str(content);
+                    if strip_next_leading {
+                        result.push_str(content.trim_start());
+                        strip_next_leading = false;
+                    } else {
+                        result.push_str(content);
+                    }
                 }
                 TemplatePart::Expression {
                     content,
                     position,
-                    length,
+                    strip_left,
+                    strip_right,
+                    ..
                 } => {
                     trace!(
                         expression = content.as_str(),
                         position = %position,
+                        strip_left = strip_left,
+                        strip_right = strip_right,
                         "Rendering template expression"
                     );
+
+                    // Strip whitespace on the left if requested
+                    if *strip_left {
+                        result = result.trim_end().to_string();
+                    }
 
                     match engine.evaluate(content.trim(), context) {
                         Ok(value) => {
                             result.push_str(&value.to_string());
+
+                            // Mark that we should strip leading whitespace from next static part
+                            if *strip_right {
+                                strip_next_leading = true;
+                            }
                         }
                         Err(e) => {
                             // Enhance error with template position information
@@ -194,9 +218,25 @@ impl Template {
                 }
 
                 if depth == 0 && j + 1 < len {
-                    // Extract the expression content
-                    let expr_start_idx = i + 2;
-                    let expr_end_idx = j;
+                    // Check for whitespace control markers
+                    let mut expr_start_idx = i + 2;
+                    let mut expr_end_idx = j;
+                    let mut strip_left = false;
+                    let mut strip_right = false;
+
+                    // Check for {{- (strip left)
+                    if expr_start_idx < len && chars[expr_start_idx] == '-' {
+                        strip_left = true;
+                        expr_start_idx += 1;
+                    }
+
+                    // Check for -}} (strip right)
+                    if expr_end_idx > 0 && chars[expr_end_idx - 1] == '-' {
+                        strip_right = true;
+                        expr_end_idx -= 1;
+                    }
+
+                    // Extract the expression content (without whitespace markers)
                     let expr_content: String = chars[expr_start_idx..expr_end_idx].iter().collect();
                     let full_length = j + 2 - i;
 
@@ -204,6 +244,8 @@ impl Template {
                         content: expr_content,
                         position: expr_start,
                         length: full_length,
+                        strip_left,
+                        strip_right,
                     });
 
                     // Update position tracking
@@ -475,6 +517,81 @@ Line 3: Done"#,
         if let Some(TemplatePart::Expression { position, .. }) = expr_part {
             assert_eq!(position.line, 2);
             assert_eq!(position.column, 1);
+        }
+    }
+
+    #[test]
+    fn test_whitespace_control_left() {
+        let engine = ExpressionEngine::new();
+        let mut context = EvaluationContext::new();
+        context.set_input(Value::text("World"));
+
+        // {{- strips whitespace to the left
+        let template = Template::new("Hello   {{- $input }}!").unwrap();
+        let result = template.render(&engine, &context).unwrap();
+        assert_eq!(result, "HelloWorld!");
+    }
+
+    #[test]
+    fn test_whitespace_control_right() {
+        let engine = ExpressionEngine::new();
+        let mut context = EvaluationContext::new();
+        context.set_input(Value::text("Hello"));
+
+        // -}} strips whitespace to the right
+        let template = Template::new("{{ $input -}}   World!").unwrap();
+        let result = template.render(&engine, &context).unwrap();
+        assert_eq!(result, "HelloWorld!");
+    }
+
+    #[test]
+    fn test_whitespace_control_both() {
+        let engine = ExpressionEngine::new();
+        let mut context = EvaluationContext::new();
+        context.set_input(Value::text("X"));
+
+        // {{- and -}} strip both sides
+        let template = Template::new("A   {{- $input -}}   B").unwrap();
+        let result = template.render(&engine, &context).unwrap();
+        assert_eq!(result, "AXB");
+    }
+
+    #[test]
+    fn test_whitespace_control_multiline() {
+        let engine = ExpressionEngine::new();
+        let mut context = EvaluationContext::new();
+        context.set_input(Value::text("Content"));
+
+        let template = Template::new("<div>\n    {{- $input -}}\n</div>").unwrap();
+
+        let result = template.render(&engine, &context).unwrap();
+        assert_eq!(result, "<div>Content</div>");
+    }
+
+    #[test]
+    fn test_whitespace_control_html() {
+        let engine = ExpressionEngine::new();
+        let mut context = EvaluationContext::new();
+        context.set_input(Value::text("Title"));
+
+        // {{- strips whitespace before, -}} strips whitespace after
+        let template = Template::new("<html><title>{{- $input -}}</title></html>").unwrap();
+
+        let result = template.render(&engine, &context).unwrap();
+        assert_eq!(result, "<html><title>Title</title></html>");
+    }
+
+    #[test]
+    fn test_whitespace_parse_markers() {
+        let template = Template::new("{{- $input -}}").unwrap();
+
+        if let Some(TemplatePart::Expression { strip_left, strip_right, content, .. }) =
+            template.parts().iter().find(|p| matches!(p, TemplatePart::Expression { .. })) {
+            assert!(*strip_left);
+            assert!(*strip_right);
+            assert_eq!(content.trim(), "$input");
+        } else {
+            panic!("Expected expression part");
         }
     }
 }
