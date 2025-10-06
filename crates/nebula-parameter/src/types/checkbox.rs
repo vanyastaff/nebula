@@ -6,6 +6,8 @@ use crate::core::{
     ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 
+use nebula_value::Boolean;
+
 /// Parameter for boolean checkbox
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
 pub struct CheckboxParameter {
@@ -13,10 +15,10 @@ pub struct CheckboxParameter {
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<bool>,
+    pub value: Option<Boolean>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<bool>,
+    pub default: Option<Boolean>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<CheckboxParameterOptions>,
@@ -54,7 +56,7 @@ impl std::fmt::Display for CheckboxParameter {
 }
 
 impl HasValue for CheckboxParameter {
-    type Value = bool;
+    type Value = Boolean;
 
     fn get_value(&self) -> Option<&Self::Value> {
         self.value.as_ref()
@@ -79,7 +81,7 @@ impl HasValue for CheckboxParameter {
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
         self.value
-            .map(|b| ParameterValue::Value(nebula_value::Value::boolean(b)))
+            .map(|b| ParameterValue::Value(nebula_value::Value::boolean(b.value())))
     }
 
     fn set_parameter_value(
@@ -89,13 +91,13 @@ impl HasValue for CheckboxParameter {
         let value = value.into();
         match value {
             ParameterValue::Value(nebula_value::Value::Boolean(b)) => {
-                self.value = Some(b);
+                self.value = Some(Boolean::new(b));
                 Ok(())
             }
             ParameterValue::Expression(_expr) => {
                 // Store as false for now, expression will be evaluated later
                 // In real implementation, you'd mark this as needing evaluation
-                self.value = Some(false);
+                self.value = Some(Boolean::new(false));
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {
@@ -112,7 +114,7 @@ impl Validatable for CheckboxParameter {
     }
 
     fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::boolean(*value)
+        nebula_value::Value::boolean(value.value())
     }
 
     fn is_empty_value(&self, _value: &Self::Value) -> bool {

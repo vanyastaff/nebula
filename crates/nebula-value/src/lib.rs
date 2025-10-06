@@ -18,7 +18,7 @@ pub use core::{
 };
 // Re-export scalar and collection types
 pub use collections::{Array, Object};
-pub use scalar::{Bytes, Float, Integer, Text};
+pub use scalar::{Boolean, Bytes, Float, Integer, Text};
 
 // Re-export temporal types
 #[cfg(feature = "temporal")]
@@ -34,7 +34,7 @@ pub use core::convert::{JsonValueExt, ValueRefExt};
 
 /// Prelude for common imports
 pub mod prelude {
-    pub use crate::{Array, Bytes, Float, Integer, Object, Text};
+    pub use crate::{Array, Boolean, Bytes, Float, Integer, Object, Text};
     pub use crate::{NebulaError, Value, ValueErrorExt, ValueResult, ValueResultExt};
 
     #[cfg(feature = "temporal")]
