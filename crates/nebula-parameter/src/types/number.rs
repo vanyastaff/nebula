@@ -133,7 +133,7 @@ impl Validatable for NumberParameter {
     }
 
     fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::text(value.clone())
+        nebula_value::Value::float(*value)
     }
 
     fn is_empty_value(&self, _value: &Self::Value) -> bool {

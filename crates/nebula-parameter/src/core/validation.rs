@@ -346,7 +346,6 @@ pub mod validators {
 }
 
 /// Cross-parameter validation for validating relationships between parameters
-#[derive(Debug, Clone)]
 pub struct CrossParameterValidation {
     /// Name/description of this validation rule
     name: String,

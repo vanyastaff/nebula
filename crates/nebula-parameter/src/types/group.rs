@@ -207,7 +207,7 @@ impl Validatable for GroupParameter {
     }
 
     fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::text(value.clone())
+        nebula_value::Value::Object(value.values.clone())
     }
 
     fn is_empty_value(&self, value: &Self::Value) -> bool {
