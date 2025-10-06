@@ -88,73 +88,18 @@ impl ExpressionEngine {
         Ok(result)
     }
 
-    /// Evaluate a template string with multiple {{ }} expressions
-    /// All {{ expression }} patterns will be replaced with their evaluated results
-    /// Returns the final string with all expressions replaced
-    pub fn evaluate_template(
+    /// Parse a template from a string
+    pub fn parse_template(&self, source: impl Into<String>) -> ExpressionResult<crate::Template> {
+        crate::Template::new(source)
+    }
+
+    /// Render a parsed template with the given context
+    pub fn render_template(
         &self,
-        template: &str,
+        template: &crate::Template,
         context: &EvaluationContext,
     ) -> ExpressionResult<String> {
-        let mut result = String::new();
-        let mut last_pos = 0;
-        let chars: Vec<char> = template.chars().collect();
-        let len = chars.len();
-        let mut i = 0;
-
-        while i < len {
-            // Look for opening {{
-            if i + 1 < len && chars[i] == '{' && chars[i + 1] == '{' {
-                // Add text before the expression
-                result.push_str(&template[last_pos..i]);
-
-                // Find closing }}
-                let mut j = i + 2;
-                let mut depth = 1;
-                while j + 1 < len {
-                    if chars[j] == '{' && chars[j + 1] == '{' {
-                        depth += 1;
-                        j += 2;
-                    } else if chars[j] == '}' && chars[j + 1] == '}' {
-                        depth -= 1;
-                        if depth == 0 {
-                            break;
-                        }
-                        j += 2;
-                    } else {
-                        j += 1;
-                    }
-                }
-
-                if depth == 0 && j + 1 < len {
-                    // Extract and evaluate the expression
-                    let expr_start = i + 2;
-                    let expr_end = j;
-                    let expr: String = chars[expr_start..expr_end].iter().collect();
-
-                    trace!(expression = expr.as_str(), "Evaluating template expression");
-
-                    let value = self.evaluate(expr.trim(), context)?;
-                    result.push_str(&value.to_string());
-
-                    i = j + 2;
-                    last_pos = i;
-                } else {
-                    // No matching closing }}
-                    result.push(chars[i]);
-                    i += 1;
-                    last_pos = i;
-                }
-            } else {
-                i += 1;
-            }
-        }
-
-        // Add remaining text
-        result.push_str(&template[last_pos..]);
-
-        trace!(result = result.as_str(), "Template evaluation completed");
-        Ok(result)
+        template.render(self, context)
     }
 
     /// Parse an expression string into an AST (internal helper)
@@ -242,48 +187,52 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_template_simple() {
+    fn test_parse_template() {
+        let engine = ExpressionEngine::new();
+        let template = engine.parse_template("Hello {{ $input }}!").unwrap();
+        assert_eq!(template.expression_count(), 1);
+    }
+
+    #[test]
+    fn test_render_template_simple() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
         context.set_input(Value::text("World"));
 
-        let result = engine.evaluate_template("Hello {{ $input }}!", &context).unwrap();
+        let template = engine.parse_template("Hello {{ $input }}!").unwrap();
+        let result = engine.render_template(&template, &context).unwrap();
         assert_eq!(result, "Hello World!");
     }
 
     #[test]
-    fn test_evaluate_template_multiple() {
+    fn test_render_template_multiple() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
         context.set_input(Value::text("Alice"));
         context.set_execution_var("order_id", Value::integer(12345));
 
-        let result = engine
-            .evaluate_template(
-                "Hello {{ $input }}! Your order #{{ $execution.order_id }} is ready.",
-                &context,
-            )
+        let template = engine
+            .parse_template("Hello {{ $input }}! Your order #{{ $execution.order_id }} is ready.")
             .unwrap();
+        let result = engine.render_template(&template, &context).unwrap();
         assert_eq!(result, "Hello Alice! Your order #12345 is ready.");
     }
 
     #[test]
-    fn test_evaluate_template_with_functions() {
+    fn test_render_template_with_functions() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
         context.set_input(Value::text("john"));
 
-        let result = engine
-            .evaluate_template(
-                "User: {{ $input | uppercase() }}, Length: {{ length($input) }}",
-                &context,
-            )
+        let template = engine
+            .parse_template("User: {{ $input | uppercase() }}, Length: {{ length($input) }}")
             .unwrap();
+        let result = engine.render_template(&template, &context).unwrap();
         assert_eq!(result, "User: JOHN, Length: 4");
     }
 
     #[test]
-    fn test_evaluate_template_html() {
+    fn test_render_template_html() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
         context.set_input(Value::integer(42));
@@ -295,32 +244,53 @@ mod tests {
   <span>Total: {{ $input + 8 }}</span>
 </html>"#;
 
-        let result = engine.evaluate_template(html, &context).unwrap();
+        let template = engine.parse_template(html).unwrap();
+        let result = engine.render_template(&template, &context).unwrap();
         assert!(result.contains("<h1>Welcome Alice</h1>"));
         assert!(result.contains("<p>Your score: 84</p>"));
         assert!(result.contains("<span>Total: 50</span>"));
     }
 
     #[test]
-    fn test_evaluate_template_with_literal_braces() {
+    fn test_render_template_with_literal_braces() {
         let engine = ExpressionEngine::new();
         let context = EvaluationContext::new();
 
-        let result = engine
-            .evaluate_template("Result: {{ 2 + 3 }}, another: {{ 10 * 2 }}", &context)
+        let template = engine
+            .parse_template("Result: {{ 2 + 3 }}, another: {{ 10 * 2 }}")
             .unwrap();
+        let result = engine.render_template(&template, &context).unwrap();
         assert_eq!(result, "Result: 5, another: 20");
     }
 
     #[test]
-    fn test_evaluate_template_no_expressions() {
+    fn test_render_template_no_expressions() {
         let engine = ExpressionEngine::new();
         let context = EvaluationContext::new();
 
-        let result = engine
-            .evaluate_template("Just plain text without expressions", &context)
+        let template = engine
+            .parse_template("Just plain text without expressions")
             .unwrap();
+        let result = engine.render_template(&template, &context).unwrap();
         assert_eq!(result, "Just plain text without expressions");
+    }
+
+    #[test]
+    fn test_template_reuse() {
+        let engine = ExpressionEngine::new();
+        let template = engine.parse_template("Hello {{ $input }}!").unwrap();
+
+        let mut context = EvaluationContext::new();
+
+        // First render
+        context.set_input(Value::text("Alice"));
+        let result1 = engine.render_template(&template, &context).unwrap();
+        assert_eq!(result1, "Hello Alice!");
+
+        // Second render with different context
+        context.set_input(Value::text("Bob"));
+        let result2 = engine.render_template(&template, &context).unwrap();
+        assert_eq!(result2, "Hello Bob!");
     }
 
     #[test]
