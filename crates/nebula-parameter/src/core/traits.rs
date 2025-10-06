@@ -38,7 +38,7 @@ pub trait ParameterType: Send + Sync {
 /// Core trait for parameters that can store values
 pub trait HasValue: ParameterType + Debug + Display {
     /// The concrete value type for this parameter
-    type Value: Clone + PartialEq + Debug + 'static;
+    type Value: Clone + PartialEq + Debug + Send + Sync + 'static;
 
     // --- Required methods (must be implemented) ---
 

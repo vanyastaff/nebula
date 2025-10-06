@@ -172,8 +172,11 @@ impl HasValue for GroupParameter {
                 let mut group_value = GroupValue::new();
 
                 for (key, val) in obj.entries() {
-                    // val is already a &serde_json::Value, just clone it
-                    group_value.set_field(key.to_string(), val.clone());
+                    // Convert serde_json::Value to nebula_value::Value
+                    use crate::JsonValueExt;
+                    if let Some(nebula_val) = val.to_nebula_value() {
+                        group_value.set_field(key.to_string(), nebula_val);
+                    }
                 }
 
                 if self.is_valid_group_value(&group_value)? {
@@ -248,7 +251,7 @@ impl GroupParameter {
 
             // Validate field type if value exists
             if let Some(value) = group_value.get_field(&field.key) {
-                if !self.is_valid_field_value(field, value) {
+                if !self.is_valid_field_value(field, &value) {
                     return Err(ParameterError::InvalidValue {
                         key: self.metadata.key.clone(),
                         reason: format!("Invalid value for field '{}'", field.key),

@@ -262,30 +262,28 @@ pub mod validators {
 
     /// String validation with length constraints
     pub fn string_length(min: Option<usize>, max: Option<usize>) -> ParameterValidation {
-        let mut validator: Box<dyn Validator> = Box::new(string());
-
-        if let Some(min_len) = min {
-            validator = Box::new(validator.and(min_length(min_len)));
-        }
-
-        if let Some(max_len) = max {
-            validator = Box::new(validator.and(max_length(max_len)));
-        }
+        let validator: Box<dyn Validator> = match (min, max) {
+            (Some(min_len), Some(max_len)) => {
+                Box::new(string().and(min_length(min_len)).and(max_length(max_len)))
+            }
+            (Some(min_len), None) => Box::new(string().and(min_length(min_len))),
+            (None, Some(max_len)) => Box::new(string().and(max_length(max_len))),
+            (None, None) => Box::new(string()),
+        };
 
         ParameterValidation::with_validator(validator)
     }
 
     /// Numeric range validation
     pub fn number_range(min: Option<f64>, max: Option<f64>) -> ParameterValidation {
-        let mut validator: Box<dyn Validator> = Box::new(number());
-
-        if let Some(min_val) = min {
-            validator = Box::new(validator.and(nebula_validator::min(min_val)));
-        }
-
-        if let Some(max_val) = max {
-            validator = Box::new(validator.and(nebula_validator::max(max_val)));
-        }
+        let validator: Box<dyn Validator> = match (min, max) {
+            (Some(min_val), Some(max_val)) => {
+                Box::new(number().and(nebula_validator::min(min_val)).and(nebula_validator::max(max_val)))
+            }
+            (Some(min_val), None) => Box::new(number().and(nebula_validator::min(min_val))),
+            (None, Some(max_val)) => Box::new(number().and(nebula_validator::max(max_val))),
+            (None, None) => Box::new(number()),
+        };
 
         ParameterValidation::with_validator(validator)
     }
@@ -314,15 +312,14 @@ pub mod validators {
 
     /// Array size validation
     pub fn array_size(min: Option<usize>, max: Option<usize>) -> ParameterValidation {
-        let mut validator: Box<dyn Validator> = Box::new(array());
-
-        if let Some(min_size) = min {
-            validator = Box::new(validator.and(array_min_size(min_size)));
-        }
-
-        if let Some(max_size) = max {
-            validator = Box::new(validator.and(array_max_size(max_size)));
-        }
+        let validator: Box<dyn Validator> = match (min, max) {
+            (Some(min_size), Some(max_size)) => {
+                Box::new(array().and(array_min_size(min_size)).and(array_max_size(max_size)))
+            }
+            (Some(min_size), None) => Box::new(array().and(array_min_size(min_size))),
+            (None, Some(max_size)) => Box::new(array().and(array_max_size(max_size))),
+            (None, None) => Box::new(array()),
+        };
 
         ParameterValidation::with_validator(validator)
     }
