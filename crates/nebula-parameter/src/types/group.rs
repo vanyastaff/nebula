@@ -80,6 +80,12 @@ pub struct GroupValue {
     pub values: nebula_value::Object,
 }
 
+impl From<GroupValue> for nebula_value::Value {
+    fn from(group: GroupValue) -> Self {
+        nebula_value::Value::Object(group.values)
+    }
+}
+
 impl GroupValue {
     pub fn new() -> Self {
         Self {
@@ -208,11 +214,6 @@ impl Validatable for GroupParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-
-    fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::Object(value.values.clone())
-    }
-
     fn is_empty_value(&self, value: &Self::Value) -> bool {
         value.is_empty()
     }

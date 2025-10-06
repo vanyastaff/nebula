@@ -125,7 +125,11 @@ async fn test_cache_ttl_expiration() {
     };
 
     cache
-        .put(cred_id.as_str(), &short_lived_token, Duration::from_millis(50))
+        .put(
+            cred_id.as_str(),
+            &short_lived_token,
+            Duration::from_millis(50),
+        )
         .await
         .unwrap();
 

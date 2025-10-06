@@ -123,11 +123,6 @@ impl Validatable for RadioParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-
-    fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::text(value.clone())
-    }
-
     fn is_empty_value(&self, value: &Self::Value) -> bool {
         value.is_empty()
     }

@@ -56,6 +56,12 @@ impl Default for ObjectParameterOptions {
     }
 }
 
+impl From<ObjectValue> for nebula_value::Value {
+    fn from(obj: ObjectValue) -> Self {
+        nebula_value::Value::Object(obj.values)
+    }
+}
+
 impl ObjectValue {
     /// Create a new empty ObjectValue
     pub fn new() -> Self {
@@ -186,9 +192,9 @@ impl HasValue for ObjectParameter {
     }
 
     fn get_parameter_value(&self) -> Option<ParameterValue> {
-        self.value
-            .as_ref()
-            .map(|obj_val| ParameterValue::Value(nebula_value::Value::Object(obj_val.values.clone())))
+        self.value.as_ref().map(|obj_val| {
+            ParameterValue::Value(nebula_value::Value::Object(obj_val.values.clone()))
+        })
     }
 
     fn set_parameter_value(
@@ -229,11 +235,6 @@ impl Validatable for ObjectParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-
-    fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::Object(value.values.clone())
-    }
-
     fn is_empty_value(&self, value: &Self::Value) -> bool {
         value.is_empty()
     }

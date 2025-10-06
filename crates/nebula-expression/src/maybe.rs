@@ -8,8 +8,8 @@ use crate::context::EvaluationContext;
 use crate::engine::ExpressionEngine;
 use nebula_error::NebulaError;
 use nebula_value::Value;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// A value that can be either concrete or an expression to be evaluated
 ///
@@ -303,8 +303,8 @@ fn is_expression(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::ExpressionEngine;
     use crate::context::EvaluationContext;
+    use crate::engine::ExpressionEngine;
 
     #[test]
     fn test_maybe_expression_value() {

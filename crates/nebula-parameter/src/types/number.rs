@@ -131,11 +131,6 @@ impl Validatable for NumberParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-
-    fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::float(*value)
-    }
-
     fn is_empty_value(&self, _value: &Self::Value) -> bool {
         false // Numbers are never considered empty
     }

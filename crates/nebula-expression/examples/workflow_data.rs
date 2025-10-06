@@ -45,7 +45,10 @@ fn main() {
     // Example 2: Format price with rounding
     println!("\nExample 2: Format price with rounding");
     let result = engine
-        .evaluate("{{ $node.http.response.body.user.price | round(2) }}", &context)
+        .evaluate(
+            "{{ $node.http.response.body.user.price | round(2) }}",
+            &context,
+        )
         .unwrap();
     println!("  Rounded price: {}", result);
 

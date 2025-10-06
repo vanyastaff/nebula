@@ -5,8 +5,8 @@ use nebula_log::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    result::{CredentialFlow, InitializeResult},
     CredentialContext, CredentialError,
+    result::{CredentialFlow, InitializeResult},
 };
 
 use super::common::{OAuth2State, TokenResponse};
@@ -72,17 +72,16 @@ impl CredentialFlow for ClientCredentialsFlow {
             });
         }
 
-        let token: TokenResponse = response
-            .json()
-            .await
-            .map_err(|e| {
-                error!(error = %e, "Failed to parse token response");
-                CredentialError::NetworkFailed(e.to_string())
-            })?;
+        let token: TokenResponse = response.json().await.map_err(|e| {
+            error!(error = %e, "Failed to parse token response");
+            CredentialError::NetworkFailed(e.to_string())
+        })?;
 
         info!("OAuth2 client credentials flow completed successfully");
 
-        Ok(InitializeResult::Complete(OAuth2State::from_token_response(token)))
+        Ok(InitializeResult::Complete(
+            OAuth2State::from_token_response(token),
+        ))
     }
 
     async fn refresh(

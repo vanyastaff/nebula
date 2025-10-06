@@ -9,7 +9,11 @@ use nebula_error::NebulaError;
 use nebula_value::Value;
 
 /// Get current timestamp as Unix seconds
-pub fn now(_args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn now(
+    _args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     let now = Utc::now().timestamp();
     Ok(Value::integer(now))
 }
@@ -83,7 +87,7 @@ pub fn date_add(
             return Err(NebulaError::expression_invalid_argument(
                 "date_add",
                 format!("Invalid unit: {}", unit),
-            ))
+            ));
         }
     };
 
@@ -114,7 +118,7 @@ pub fn date_subtract(
             return Err(NebulaError::expression_invalid_argument(
                 "date_subtract",
                 format!("Invalid unit: {}", unit),
-            ))
+            ));
         }
     };
 
@@ -147,7 +151,7 @@ pub fn date_diff(
             return Err(NebulaError::expression_invalid_argument(
                 "date_diff",
                 format!("Invalid unit: {}", unit),
-            ))
+            ));
         }
     };
 

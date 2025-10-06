@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 
 use super::{
-    result::{CredentialFlow, InitializeResult, PartialState, UserInput},
     CredentialContext, CredentialError, CredentialKey, CredentialMetadata,
+    result::{CredentialFlow, InitializeResult, PartialState, UserInput},
 };
 use crate::traits::Credential;
 
@@ -62,9 +62,8 @@ impl<F: CredentialFlow> Credential for FlowCredential<F> {
 
         // Generate metadata from flow
         CredentialMetadata {
-            key: CredentialKey::new(self.flow.flow_name()).unwrap_or_else(|_| {
-                panic!("Invalid flow name: {}", self.flow.flow_name())
-            }),
+            key: CredentialKey::new(self.flow.flow_name())
+                .unwrap_or_else(|_| panic!("Invalid flow name: {}", self.flow.flow_name())),
             name: format!("{} Flow", self.flow.flow_name()),
             description: format!("Authentication via {}", self.flow.flow_name()),
             supports_refresh: true, // Most flows support refresh
@@ -120,7 +119,7 @@ impl<F: CredentialFlow> FlowCredential<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{state::CredentialState, CredentialContext};
+    use crate::core::{CredentialContext, state::CredentialState};
     use serde::{Deserialize, Serialize};
 
     #[derive(Clone, Serialize, Deserialize)]

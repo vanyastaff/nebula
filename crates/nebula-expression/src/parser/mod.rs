@@ -129,7 +129,7 @@ impl Parser {
                     return Err(NebulaError::expression_parse_error(format!(
                         "Unexpected operator: {}",
                         op_token
-                    )))
+                    )));
                 }
             };
 
@@ -292,7 +292,7 @@ impl Parser {
                             _ => {
                                 return Err(NebulaError::expression_parse_error(
                                     "Expected object key",
-                                ))
+                                ));
                             }
                         };
 

@@ -1,11 +1,11 @@
 //! Core traits for credential flows and interactive authentication
 
 use async_trait::async_trait;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::core::{
-    result::{InitializeResult, PartialState, UserInput},
     CredentialContext, CredentialError, CredentialMetadata, CredentialState,
+    result::{InitializeResult, PartialState, UserInput},
 };
 
 /// Base credential trait

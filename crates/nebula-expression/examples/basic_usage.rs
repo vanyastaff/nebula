@@ -67,7 +67,9 @@ fn main() {
 
     // Example 7: Math functions
     println!("\nExample 7: Math functions");
-    let result = engine.evaluate("{{ 3.14159 | round(2) }}", &context).unwrap();
+    let result = engine
+        .evaluate("{{ 3.14159 | round(2) }}", &context)
+        .unwrap();
     println!("  {{ 3.14159 | round(2) }} = {}", result);
 
     // Example 8: String functions

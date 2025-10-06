@@ -58,10 +58,7 @@ fn main() {
 
     context.set_input(Value::Object(
         nebula_value::Object::new()
-            .insert(
-                "timeout_seconds".to_string(),
-                serde_json::json!(60),
-            )
+            .insert("timeout_seconds".to_string(), serde_json::json!(60))
             .insert("username".to_string(), serde_json::json!("Alice"))
             .insert("max_retries".to_string(), serde_json::json!(5))
             .insert("priority".to_string(), serde_json::json!(8)),

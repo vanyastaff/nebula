@@ -2,8 +2,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterType, ParameterValidation, ParameterValue, Validatable,
+    Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterType, ParameterValidation, ParameterValue, Validatable,
 };
 
 /// Value for list parameters containing array of child parameter values
@@ -192,11 +192,6 @@ impl Validatable for ListParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-
-    fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::Array(value.clone())
-    }
-
     fn is_empty_value(&self, value: &Self::Value) -> bool {
         value.is_empty()
     }
@@ -322,17 +317,21 @@ impl ListParameter {
         if let Some(items) = &self.value {
             if old_index < items.len() && new_index < items.len() && old_index != new_index {
                 // Remove from old position
-                let (items_after_remove, item) = items.remove(old_index)
-                    .map_err(|e| ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("Failed to remove item: {}", e),
-                    })?;
+                let (items_after_remove, item) =
+                    items
+                        .remove(old_index)
+                        .map_err(|e| ParameterError::InvalidValue {
+                            key: self.metadata.key.clone(),
+                            reason: format!("Failed to remove item: {}", e),
+                        })?;
 
                 // Insert at new position
-                let items_after_insert = items_after_remove.insert(new_index, item)
-                    .map_err(|e| ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("Failed to insert item: {}", e),
+                let items_after_insert =
+                    items_after_remove.insert(new_index, item).map_err(|e| {
+                        ParameterError::InvalidValue {
+                            key: self.metadata.key.clone(),
+                            reason: format!("Failed to insert item: {}", e),
+                        }
                     })?;
 
                 self.value = Some(items_after_insert);

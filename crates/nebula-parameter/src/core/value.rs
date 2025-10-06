@@ -4,12 +4,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum ParameterValue {
-    Value(nebula_value::Value),
+pub enum ParameterValue<T> {
+    Value(T),
     Expression(String),
-    Routing(RoutingValue),
-    Mode(ModeValue),
-    Expirable(ExpirableValue),
 }
 
 impl ParameterValue {
@@ -43,7 +40,6 @@ impl ParameterValue {
     pub fn is_expirable(&self) -> bool {
         matches!(self, ParameterValue::Expirable(_))
     }
-
 
     /// Check if this parameter value is considered "empty"
     pub fn is_empty(&self) -> bool {
@@ -139,7 +135,6 @@ impl From<ExpirableValue> for ParameterValue {
         ParameterValue::Expirable(expirable_value)
     }
 }
-
 
 // Convenient Into implementations for common types
 impl From<bool> for ParameterValue {

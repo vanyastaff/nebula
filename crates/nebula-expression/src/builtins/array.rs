@@ -6,11 +6,15 @@ use crate::core::ast::Expr;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
 use nebula_error::NebulaError;
-use nebula_value::{JsonValueExt, ValueRefExt};
 use nebula_value::Value;
+use nebula_value::{JsonValueExt, ValueRefExt};
 
 /// Get the length of an array
-pub fn length(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn length(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("length", args, 1)?;
     let arr = args[0]
         .as_array()
@@ -19,7 +23,11 @@ pub fn length(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Ex
 }
 
 /// Get the first element of an array
-pub fn first(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn first(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("first", args, 1)?;
     let arr = args[0]
         .as_array()
@@ -31,7 +39,11 @@ pub fn first(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Exp
 }
 
 /// Get the last element of an array
-pub fn last(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn last(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("last", args, 1)?;
     let arr = args[0]
         .as_array()
@@ -47,23 +59,45 @@ pub fn last(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Expr
 }
 
 /// Filter array elements (stub - lambdas need special handling)
-pub fn filter(_args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn filter(
+    _args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     // Note: This would require special handling in the evaluator to pass lambdas
-    Err(NebulaError::expression_eval_error("filter requires lambda support in evaluator"))
+    Err(NebulaError::expression_eval_error(
+        "filter requires lambda support in evaluator",
+    ))
 }
 
 /// Map over array elements (stub - lambdas need special handling)
-pub fn map(_args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
-    Err(NebulaError::expression_eval_error("map requires lambda support in evaluator"))
+pub fn map(
+    _args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
+    Err(NebulaError::expression_eval_error(
+        "map requires lambda support in evaluator",
+    ))
 }
 
 /// Reduce array elements (stub - lambdas need special handling)
-pub fn reduce(_args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
-    Err(NebulaError::expression_eval_error("reduce requires lambda support in evaluator"))
+pub fn reduce(
+    _args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
+    Err(NebulaError::expression_eval_error(
+        "reduce requires lambda support in evaluator",
+    ))
 }
 
 /// Sort an array
-pub fn sort(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn sort(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("sort", args, 1)?;
     let arr = args[0]
         .as_array()
@@ -73,15 +107,14 @@ pub fn sort(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Expr
         .iter()
         .map(|json_val| json_val.to_nebula_value_or_null())
         .collect();
-    elements.sort_by(|a, b| {
-        match (a, b) {
-            (Value::Integer(x), Value::Integer(y)) => x.value().cmp(&y.value()),
-            (Value::Float(x), Value::Float(y)) => {
-                x.value().partial_cmp(&y.value()).unwrap_or(std::cmp::Ordering::Equal)
-            }
-            (Value::Text(x), Value::Text(y)) => x.as_str().cmp(y.as_str()),
-            _ => std::cmp::Ordering::Equal,
-        }
+    elements.sort_by(|a, b| match (a, b) {
+        (Value::Integer(x), Value::Integer(y)) => x.value().cmp(&y.value()),
+        (Value::Float(x), Value::Float(y)) => x
+            .value()
+            .partial_cmp(&y.value())
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Text(x), Value::Text(y)) => x.as_str().cmp(y.as_str()),
+        _ => std::cmp::Ordering::Equal,
     });
 
     let mut result = nebula_value::Array::new();
@@ -92,7 +125,11 @@ pub fn sort(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Expr
 }
 
 /// Reverse an array
-pub fn reverse(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn reverse(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("reverse", args, 1)?;
     let arr = args[0]
         .as_array()
@@ -112,7 +149,11 @@ pub fn reverse(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> E
 }
 
 /// Join array elements into a string
-pub fn join(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn join(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("join", args, 2)?;
     let arr = args[0]
         .as_array()
@@ -126,7 +167,11 @@ pub fn join(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Expr
 }
 
 /// Slice an array
-pub fn slice(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn slice(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_min_arg_count("slice", args, 2)?;
     let arr = args[0]
         .as_array()
@@ -148,7 +193,11 @@ pub fn slice(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Exp
 }
 
 /// Concatenate arrays
-pub fn concat(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn concat(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_min_arg_count("concat", args, 1)?;
 
     let mut result = nebula_value::Array::new();
@@ -164,7 +213,11 @@ pub fn concat(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Ex
 }
 
 /// Flatten a nested array
-pub fn flatten(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn flatten(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("flatten", args, 1)?;
     let arr = args[0]
         .as_array()

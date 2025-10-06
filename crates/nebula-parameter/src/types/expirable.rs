@@ -89,6 +89,27 @@ pub struct ExpirableValue {
     pub created_at: DateTime<Utc>,
 }
 
+impl From<ExpirableValue> for nebula_value::Value {
+    fn from(expirable: ExpirableValue) -> Self {
+        use crate::ValueRefExt;
+        let mut obj = serde_json::Map::new();
+        obj.insert("value".to_string(), expirable.value.to_json());
+        obj.insert(
+            "expires_at".to_string(),
+            nebula_value::Value::text(expirable.expires_at.to_rfc3339()).to_json(),
+        );
+        obj.insert(
+            "created_at".to_string(),
+            nebula_value::Value::text(expirable.created_at.to_rfc3339()).to_json(),
+        );
+
+        use crate::JsonValueExt;
+        serde_json::Value::Object(obj)
+            .to_nebula_value()
+            .unwrap_or(nebula_value::Value::Null)
+    }
+}
+
 impl ExpirableValue {
     /// Creates a new ExpirableValue with the specified TTL in seconds
     pub fn new(value: nebula_value::Value, ttl: u64) -> Self {
@@ -268,12 +289,6 @@ impl Validatable for ExpirableParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-
-    fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        // Serialize the entire ExpirableValue with expiry info
-        value.value.clone()
-    }
-
     fn is_empty_value(&self, value: &Self::Value) -> bool {
         value.is_expired()
             || match &value.value {

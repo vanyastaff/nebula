@@ -6,7 +6,7 @@ use crate::collections::{Array, Object};
 use crate::core::NebulaError;
 use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::kind::ValueKind;
-use crate::scalar::{Bytes, Float, Integer, Text};
+use crate::scalar::{Boolean, Bytes, Float, Integer, Text};
 #[cfg(feature = "temporal")]
 use crate::temporal::{Date, DateTime, Duration, Time};
 
@@ -425,6 +425,12 @@ impl From<String> for Value {
 impl From<&str> for Value {
     fn from(v: &str) -> Self {
         Self::text(v)
+    }
+}
+
+impl From<Boolean> for Value {
+    fn from(v: Boolean) -> Self {
+        Self::Boolean(v.value())
     }
 }
 

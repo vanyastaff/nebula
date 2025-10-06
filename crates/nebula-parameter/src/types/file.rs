@@ -26,6 +26,42 @@ pub struct FileReference {
     pub is_temporary: bool,
 }
 
+impl From<FileReference> for nebula_value::Value {
+    fn from(file_ref: FileReference) -> Self {
+        use crate::ValueRefExt;
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "path".to_string(),
+            nebula_value::Value::text(file_ref.path.to_string_lossy().to_string()).to_json(),
+        );
+        obj.insert(
+            "name".to_string(),
+            nebula_value::Value::text(file_ref.name).to_json(),
+        );
+        if let Some(size) = file_ref.size {
+            obj.insert(
+                "size".to_string(),
+                nebula_value::Value::integer(size as i64).to_json(),
+            );
+        }
+        if let Some(mime_type) = file_ref.mime_type {
+            obj.insert(
+                "mime_type".to_string(),
+                nebula_value::Value::text(mime_type).to_json(),
+            );
+        }
+        obj.insert(
+            "is_temporary".to_string(),
+            nebula_value::Value::boolean(file_ref.is_temporary).to_json(),
+        );
+
+        use crate::JsonValueExt;
+        serde_json::Value::Object(obj)
+            .to_nebula_value()
+            .unwrap_or(nebula_value::Value::Null)
+    }
+}
+
 impl FileReference {
     pub fn new(path: impl Into<PathBuf>, name: impl Into<String>) -> Self {
         Self {
@@ -188,12 +224,6 @@ impl Validatable for FileParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-
-    fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        // Convert FileReference to a simple text (path)
-        nebula_value::Value::text(value.path.to_string_lossy().to_string())
-    }
-
     fn is_empty_value(&self, _value: &Self::Value) -> bool {
         // Files are never considered "empty" since they represent a file reference
         false

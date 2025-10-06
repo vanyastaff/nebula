@@ -53,10 +53,8 @@ async fn test_concurrent_token_requests() {
     let cred_id1 = cred_id.clone();
     let cred_id2 = cred_id.clone();
 
-    let (result1, result2) = tokio::join!(
-        manager1.get_token(&cred_id1),
-        manager2.get_token(&cred_id2)
-    );
+    let (result1, result2) =
+        tokio::join!(manager1.get_token(&cred_id1), manager2.get_token(&cred_id2));
 
     // Both should succeed despite concurrent access
     assert!(result1.is_ok());

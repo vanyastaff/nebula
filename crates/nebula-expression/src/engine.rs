@@ -52,7 +52,10 @@ impl ExpressionEngine {
         let template_config = CacheConfig::new(size);
         let template_cache = ComputeCache::with_config(template_config);
 
-        debug!(cache_size = size, "Created expression engine with expression and template caches");
+        debug!(
+            cache_size = size,
+            "Created expression engine with expression and template caches"
+        );
 
         Self {
             expr_cache: Some(Arc::new(Mutex::new(expr_cache))),
@@ -106,8 +109,9 @@ impl ExpressionEngine {
         let ast = if let Some(cache) = &self.expr_cache {
             let mut cache_guard = cache.lock().unwrap();
             cache_guard.get_or_compute(expression.to_string(), || {
-                self.parse_expression(expression)
-                    .map_err(|_| nebula_memory::MemoryError::from(nebula_memory::MemoryErrorCode::InvalidState))
+                self.parse_expression(expression).map_err(|_| {
+                    nebula_memory::MemoryError::from(nebula_memory::MemoryErrorCode::InvalidState)
+                })
             })?
         } else {
             self.parse_expression(expression)?
@@ -131,8 +135,9 @@ impl ExpressionEngine {
         if let Some(cache) = &self.template_cache {
             let mut cache_guard = cache.lock().unwrap();
             let template = cache_guard.get_or_compute(source_str.clone(), || {
-                crate::Template::new(&source_str)
-                    .map_err(|_| nebula_memory::MemoryError::from(nebula_memory::MemoryErrorCode::InvalidState))
+                crate::Template::new(&source_str).map_err(|_| {
+                    nebula_memory::MemoryError::from(nebula_memory::MemoryErrorCode::InvalidState)
+                })
             })?;
             Ok(template)
         } else {
@@ -157,12 +162,13 @@ impl ExpressionEngine {
     /// Parse an expression string into an AST (internal helper)
     fn parse_expression(&self, expression: &str) -> ExpressionResult<Expr> {
         // Handle template delimiters
-        let expr_content = if expression.trim().starts_with("{{") && expression.trim().ends_with("}}") {
-            let trimmed = expression.trim();
-            &trimmed[2..trimmed.len() - 2].trim()
-        } else {
-            expression
-        };
+        let expr_content =
+            if expression.trim().starts_with("{{") && expression.trim().ends_with("}}") {
+                let trimmed = expression.trim();
+                &trimmed[2..trimmed.len() - 2].trim()
+            } else {
+                expression
+            };
 
         // Tokenize
         let mut lexer = Lexer::new(expr_content);
@@ -431,7 +437,9 @@ mod tests {
         let engine = ExpressionEngine::new();
         let context = EvaluationContext::new();
 
-        let result = engine.evaluate("{{ \"hello\" | uppercase() }}", &context).unwrap();
+        let result = engine
+            .evaluate("{{ \"hello\" | uppercase() }}", &context)
+            .unwrap();
         assert_eq!(result.as_str(), Some("HELLO"));
     }
 

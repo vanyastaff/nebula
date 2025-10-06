@@ -43,25 +43,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         use_pkce: false,
     };
 
-    let (partial_state, auth_url, state_param) = match credential.initialize(&input, &mut ctx).await? {
-        InitializeResult::Pending {
-            partial_state,
-            next_step,
-        } => {
-            if let InteractionRequest::Redirect {
-                url,
-                validation_params,
-                ..
-            } = next_step
-            {
-                let state = validation_params.get("state").unwrap().clone();
-                (partial_state, url, state)
-            } else {
-                return Err("Expected Redirect".into());
+    let (partial_state, auth_url, state_param) =
+        match credential.initialize(&input, &mut ctx).await? {
+            InitializeResult::Pending {
+                partial_state,
+                next_step,
+            } => {
+                if let InteractionRequest::Redirect {
+                    url,
+                    validation_params,
+                    ..
+                } = next_step
+                {
+                    let state = validation_params.get("state").unwrap().clone();
+                    (partial_state, url, state)
+                } else {
+                    return Err("Expected Redirect".into());
+                }
             }
-        }
-        _ => return Err("Expected Pending result".into()),
-    };
+            _ => return Err("Expected Pending result".into()),
+        };
 
     println!("✅ Authorization URL сгенерирован!\n");
     println!("🌐 URL для авторизации:");

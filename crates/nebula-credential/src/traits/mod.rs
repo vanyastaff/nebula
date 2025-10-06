@@ -7,4 +7,3 @@ mod storage;
 pub use credential::{Credential, InteractiveCredential};
 pub use lock::{DistributedLock, LockError, LockGuard};
 pub use storage::{StateStore, StateVersion};
-

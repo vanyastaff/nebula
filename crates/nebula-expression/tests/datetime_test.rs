@@ -115,12 +115,18 @@ fn test_date_diff() {
     ));
 
     let result = engine
-        .evaluate(r#"{{ date_diff($input.date1, $input.date2, "days") }}"#, &context)
+        .evaluate(
+            r#"{{ date_diff($input.date1, $input.date2, "days") }}"#,
+            &context,
+        )
         .unwrap();
     assert_eq!(result.as_integer(), Some(7));
 
     let result = engine
-        .evaluate(r#"{{ date_diff($input.date1, $input.date2, "hours") }}"#, &context)
+        .evaluate(
+            r#"{{ date_diff($input.date1, $input.date2, "hours") }}"#,
+            &context,
+        )
         .unwrap();
     assert_eq!(result.as_integer(), Some(168)); // 7 * 24
 }
@@ -131,7 +137,9 @@ fn test_date_year() {
     let mut context = EvaluationContext::new();
     context.set_input(Value::integer(1704067200)); // 2024-01-01 00:00:00
 
-    let result = engine.evaluate("{{ $input | date_year() }}", &context).unwrap();
+    let result = engine
+        .evaluate("{{ $input | date_year() }}", &context)
+        .unwrap();
     assert_eq!(result.as_integer(), Some(2024));
 }
 
@@ -141,7 +149,9 @@ fn test_date_month() {
     let mut context = EvaluationContext::new();
     context.set_input(Value::integer(1704067200)); // 2024-01-01 00:00:00
 
-    let result = engine.evaluate("{{ $input | date_month() }}", &context).unwrap();
+    let result = engine
+        .evaluate("{{ $input | date_month() }}", &context)
+        .unwrap();
     assert_eq!(result.as_integer(), Some(1));
 }
 
@@ -151,7 +161,9 @@ fn test_date_day() {
     let mut context = EvaluationContext::new();
     context.set_input(Value::integer(1704067200)); // 2024-01-01 00:00:00
 
-    let result = engine.evaluate("{{ $input | date_day() }}", &context).unwrap();
+    let result = engine
+        .evaluate("{{ $input | date_day() }}", &context)
+        .unwrap();
     assert_eq!(result.as_integer(), Some(1));
 }
 
@@ -161,7 +173,9 @@ fn test_date_hour() {
     let mut context = EvaluationContext::new();
     context.set_input(Value::integer(1704067200)); // 2024-01-01 00:00:00
 
-    let result = engine.evaluate("{{ $input | date_hour() }}", &context).unwrap();
+    let result = engine
+        .evaluate("{{ $input | date_hour() }}", &context)
+        .unwrap();
     assert_eq!(result.as_integer(), Some(0));
 }
 
@@ -171,7 +185,9 @@ fn test_date_minute() {
     let mut context = EvaluationContext::new();
     context.set_input(Value::integer(1704067200)); // 2024-01-01 00:00:00
 
-    let result = engine.evaluate("{{ $input | date_minute() }}", &context).unwrap();
+    let result = engine
+        .evaluate("{{ $input | date_minute() }}", &context)
+        .unwrap();
     assert_eq!(result.as_integer(), Some(0));
 }
 
@@ -181,7 +197,9 @@ fn test_date_second() {
     let mut context = EvaluationContext::new();
     context.set_input(Value::integer(1704067200)); // 2024-01-01 00:00:00
 
-    let result = engine.evaluate("{{ $input | date_second() }}", &context).unwrap();
+    let result = engine
+        .evaluate("{{ $input | date_second() }}", &context)
+        .unwrap();
     assert_eq!(result.as_integer(), Some(0));
 }
 

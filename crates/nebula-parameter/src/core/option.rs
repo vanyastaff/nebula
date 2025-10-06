@@ -74,9 +74,8 @@ impl<'a> OptionLoadContext<'a> {
 }
 
 /// Type alias for option loader function
-pub type OptionLoader = Box<
-    dyn Fn(&OptionLoadContext<'_>) -> Result<OptionsResponse, ParameterError> + Send + Sync,
->;
+pub type OptionLoader =
+    Box<dyn Fn(&OptionLoadContext<'_>) -> Result<OptionsResponse, ParameterError> + Send + Sync>;
 
 /// Options configuration for select-based parameters
 pub enum SelectOptions {

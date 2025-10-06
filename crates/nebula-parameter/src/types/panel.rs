@@ -1,9 +1,7 @@
 use bon::Builder;
 use serde::{Deserialize, Serialize};
 
-use crate::core::{
-    Displayable, ParameterDisplay, ParameterKind, ParameterMetadata, ParameterType,
-};
+use crate::core::{Displayable, ParameterDisplay, ParameterKind, ParameterMetadata, ParameterType};
 
 /// Panel parameter - container for organizing parameters into sections/tabs
 #[derive(Serialize)]
@@ -230,12 +228,7 @@ impl PanelParameter {
 
     /// Get parameters from a specific panel
     pub fn get_panel_parameters(&self, panel_key: &str) -> Option<Vec<&dyn ParameterType>> {
-        self.get_panel(panel_key).map(|panel| {
-            panel
-                .children
-                .iter()
-                .map(|child| child.as_ref())
-                .collect()
-        })
+        self.get_panel(panel_key)
+            .map(|panel| panel.children.iter().map(|child| child.as_ref()).collect())
     }
 }

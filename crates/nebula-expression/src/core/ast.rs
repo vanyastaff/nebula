@@ -35,23 +35,14 @@ pub enum Expr {
 
     // Access operations
     /// Property access (object.property)
-    PropertyAccess {
-        object: Box<Expr>,
-        property: String,
-    },
+    PropertyAccess { object: Box<Expr>, property: String },
 
     /// Index access (array[index])
-    IndexAccess {
-        object: Box<Expr>,
-        index: Box<Expr>,
-    },
+    IndexAccess { object: Box<Expr>, index: Box<Expr> },
 
     // Function calls
     /// Function call (functionName(args...))
-    FunctionCall {
-        name: String,
-        args: Vec<Expr>,
-    },
+    FunctionCall { name: String, args: Vec<Expr> },
 
     // Pipeline
     /// Pipeline operation (expr | function(args...))
@@ -71,10 +62,7 @@ pub enum Expr {
 
     // Lambda
     /// Lambda expression (param => body)
-    Lambda {
-        param: String,
-        body: Box<Expr>,
-    },
+    Lambda { param: String, body: Box<Expr> },
 
     // Array and Object literals
     /// Array literal ([expr1, expr2, ...])

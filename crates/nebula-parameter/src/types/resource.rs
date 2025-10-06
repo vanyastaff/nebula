@@ -2,9 +2,9 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 use crate::core::{
-    option::{OptionsResponse, Pagination, SelectOption},
     Displayable, HasValue, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterType, ParameterValidation, ParameterValue, Validatable,
+    option::{OptionsResponse, Pagination, SelectOption},
 };
 
 /// Context for resource loading
@@ -54,9 +54,8 @@ impl<'a> ResourceContext<'a> {
 }
 
 /// Type alias for resource loader function
-pub type ResourceLoader = Box<
-    dyn Fn(&ResourceContext<'_>) -> Result<OptionsResponse, ParameterError> + Send + Sync,
->;
+pub type ResourceLoader =
+    Box<dyn Fn(&ResourceContext<'_>) -> Result<OptionsResponse, ParameterError> + Send + Sync>;
 
 /// Resource value - simple string identifier
 pub type ResourceValue = String;
@@ -282,11 +281,6 @@ impl Validatable for ResourceParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-
-    fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::text(value.clone())
-    }
-
     fn is_empty_value(&self, value: &Self::Value) -> bool {
         value.is_empty()
     }

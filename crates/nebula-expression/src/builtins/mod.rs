@@ -1,9 +1,9 @@
 //!
 //! Built-in functions for the expression language
 //! This module provides all built-in functions organized by category.
-pub mod datetime;
 pub mod array;
 pub mod conversion;
+pub mod datetime;
 pub mod math;
 pub mod object;
 pub mod string;
@@ -211,4 +211,3 @@ pub(crate) fn extract_lambda(arg: &Expr) -> ExpressionResult<(&str, &Expr)> {
         )),
     }
 }
-

@@ -19,4 +19,3 @@ pub use resource::{Resource, ResourceFactory, ResourceInstance};
 pub use scoping::ResourceScope;
 pub use traits::{HealthCheckable, Poolable, Stateful};
 pub use versioning::{Version, VersionChecker};
-

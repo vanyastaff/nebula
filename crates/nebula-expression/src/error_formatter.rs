@@ -197,8 +197,7 @@ mod tests {
     fn test_error_with_context() {
         let source = "Line 1\nLine 2\nLine 3 ERROR\nLine 4\nLine 5";
         let position = Position::new(3, 8, 0);
-        let formatter = ErrorFormatter::new(source, position, "Syntax error")
-            .with_context(2, 2);
+        let formatter = ErrorFormatter::new(source, position, "Syntax error").with_context(2, 2);
 
         let output = formatter.format();
         assert!(output.contains("Line 1"));
@@ -223,7 +222,8 @@ mod tests {
         let source = "<html>\n  <title>{{ $unknown }}</title>\n</html>";
         let position = Position::new(2, 14, 0);
 
-        let output = format_template_error(source, position, "Undefined variable", Some("$unknown"));
+        let output =
+            format_template_error(source, position, "Undefined variable", Some("$unknown"));
 
         assert!(output.contains("Error at line 2, column 14"));
         assert!(output.contains("Undefined variable"));

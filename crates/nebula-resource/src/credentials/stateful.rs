@@ -8,10 +8,10 @@ use async_trait::async_trait;
 
 #[cfg(feature = "credentials")]
 use nebula_credential::{
+    CredentialManager,
     authenticator::StatefulAuthenticator,
     core::{CredentialError, CredentialId},
     traits::{Credential, StateStore},
-    CredentialManager,
 };
 
 use crate::core::error::{ResourceError, ResourceResult};

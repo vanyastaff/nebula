@@ -25,10 +25,8 @@ pub trait ExpressionErrorExt {
     fn expression_function_not_found(name: impl Into<String>) -> Self;
 
     /// Create an invalid argument error
-    fn expression_invalid_argument(
-        function: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self;
+    fn expression_invalid_argument(function: impl Into<String>, message: impl Into<String>)
+    -> Self;
 
     /// Create a division by zero error
     fn expression_division_by_zero() -> Self;

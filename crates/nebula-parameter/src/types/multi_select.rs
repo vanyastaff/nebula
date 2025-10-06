@@ -87,7 +87,9 @@ impl HasValue for MultiSelectParameter {
                 .iter()
                 .map(|s| nebula_value::Value::text(s.clone()))
                 .collect();
-            ParameterValue::Value(nebula_value::Value::Array(nebula_value::Array::from_nebula_values(values)))
+            ParameterValue::Value(nebula_value::Value::Array(
+                nebula_value::Array::from_nebula_values(values),
+            ))
         })
     }
 
@@ -148,15 +150,6 @@ impl Validatable for MultiSelectParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-
-    fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        let values: Vec<nebula_value::Value> = value
-            .iter()
-            .map(|s| nebula_value::Value::text(s.clone()))
-            .collect();
-        nebula_value::Value::Array(nebula_value::Array::from_nebula_values(values))
-    }
-
     fn is_empty_value(&self, value: &Self::Value) -> bool {
         value.is_empty()
     }

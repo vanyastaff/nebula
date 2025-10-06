@@ -5,7 +5,9 @@
 //! - Position tracking for error reporting
 //! - MaybeTemplate for conditional rendering
 
-use nebula_expression::{ExpressionEngine, EvaluationContext, Template, MaybeTemplate, TemplatePart};
+use nebula_expression::{
+    EvaluationContext, ExpressionEngine, MaybeTemplate, Template, TemplatePart,
+};
 use nebula_value::Value;
 
 fn main() {
@@ -13,7 +15,8 @@ fn main() {
 
     // Example 1: Basic Template usage
     println!("=== Example 1: Template Parsing and Rendering ===");
-    let template = Template::new("Hello {{ $input }}, you have {{ $execution.count }} messages!").unwrap();
+    let template =
+        Template::new("Hello {{ $input }}, you have {{ $execution.count }} messages!").unwrap();
 
     println!("Template source: {}", template.source());
     println!("Number of parts: {}", template.parts().len());
@@ -36,9 +39,17 @@ fn main() {
             TemplatePart::Static { content, position } => {
                 println!("Part {}: Static at {} = {:?}", i, position, content);
             }
-            TemplatePart::Expression { content, position, length } => {
-                println!("Part {}: Expression at {} (length: {}) = {:?}",
-                    i, position, length, content);
+            TemplatePart::Expression {
+                content,
+                position,
+                length,
+                strip_left,
+                strip_right,
+            } => {
+                println!(
+                    "Part {}: Expression at {} (length: {}, strip_left: {}, strip_right: {}) = {:?}",
+                    i, position, length, strip_left, strip_right, content
+                );
             }
         }
     }
@@ -46,9 +57,12 @@ fn main() {
 
     // Example 3: Error handling with position information
     println!("=== Example 3: Error with Position Information ===");
-    let template = Template::new(r#"Line 1
+    let template = Template::new(
+        r#"Line 1
 Line 2 with {{ invalid_function() }}
-Line 3"#).unwrap();
+Line 3"#,
+    )
+    .unwrap();
 
     match template.render(&engine, &context) {
         Ok(result) => println!("Result: {}", result),
@@ -74,7 +88,8 @@ Line 3"#).unwrap();
 
     // Example 5: Multiline template with position tracking
     println!("=== Example 5: Multiline Template ===");
-    let html = Template::new(r#"<!DOCTYPE html>
+    let html = Template::new(
+        r#"<!DOCTYPE html>
 <html>
 <head>
     <title>{{ $execution.title }}</title>
@@ -84,7 +99,9 @@ Line 3"#).unwrap();
     <p>You have {{ $execution.message_count }} new messages.</p>
     <p>Last login: {{ $execution.last_login | format_date("YYYY-MM-DD HH:mm") }}</p>
 </body>
-</html>"#).unwrap();
+</html>"#,
+    )
+    .unwrap();
 
     context.set_input(Value::text("charlie"));
     context.set_execution_var("title", Value::text("Dashboard"));
@@ -96,14 +113,11 @@ Line 3"#).unwrap();
 
     // Example 6: Template reusability
     println!("=== Example 6: Template Reusability ===");
-    let greeting_template = Template::new("Hello {{ $input }}, your score is {{ $execution.score }}!").unwrap();
+    let greeting_template =
+        Template::new("Hello {{ $input }}, your score is {{ $execution.score }}!").unwrap();
 
     // Render with different contexts
-    let users = vec![
-        ("Alice", 100),
-        ("Bob", 85),
-        ("Charlie", 92),
-    ];
+    let users = vec![("Alice", 100), ("Bob", 85), ("Charlie", 92)];
 
     for (name, score) in users {
         context.set_input(Value::text(name));
@@ -124,7 +138,8 @@ Line 3"#).unwrap();
 
     // Example 8: Complex nested template
     println!("=== Example 8: JSON Template ===");
-    let json_template = Template::new(r#"{
+    let json_template = Template::new(
+        r#"{
   "user": {
     "name": "{{ $input }}",
     "id": {{ $execution.user_id }},
@@ -135,7 +150,9 @@ Line 3"#).unwrap();
     "timestamp": {{ now() }},
     "version": "1.0"
   }
-}"#).unwrap();
+}"#,
+    )
+    .unwrap();
 
     context.set_input(Value::text("admin"));
     context.set_execution_var("user_id", Value::integer(1));

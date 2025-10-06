@@ -6,7 +6,6 @@ use crate::core::{
     scoping::ResourceScope,
 };
 
-
 /// Metrics resource configuration for Prometheus export
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

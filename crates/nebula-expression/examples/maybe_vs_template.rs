@@ -3,7 +3,7 @@
 //! This example demonstrates when to use each type and how they work together.
 
 use nebula_expression::{
-    ExpressionEngine, EvaluationContext, MaybeExpression, MaybeTemplate, Template,
+    EvaluationContext, ExpressionEngine, MaybeExpression, MaybeTemplate, Template,
 };
 use nebula_value::Value;
 use serde::{Deserialize, Serialize};
@@ -212,7 +212,10 @@ fn main() {
     println!("  url (expression): {:?}", request.url);
     println!("  method (value): {:?}", request.method);
     println!("  timeout_ms (expression): {:?}", request.timeout_ms);
-    println!("  body (template): is_template = {}\n", request.body.is_template());
+    println!(
+        "  body (template): is_template = {}\n",
+        request.body.is_template()
+    );
 
     // Resolve all fields
     let url = request.url.resolve(&engine, &context).unwrap();

@@ -27,24 +27,25 @@ pub mod utils;
 pub mod prelude {
     // Core types
     pub use crate::core::{
+        CredentialContext, CredentialError, CredentialId, CredentialMetadata, CredentialState,
+        SecureString,
         adapter::FlowCredential,
         result::{
             CaptchaType, CodeFormat, CredentialFlow, DisplayData, InitializeResult,
             InteractionRequest, PartialState, UserInput,
         },
-        CredentialContext, CredentialError, CredentialId, CredentialMetadata, CredentialState,
-        SecureString,
     };
 
     // Built-in flows
     pub use crate::flows::{
         api_key::{ApiKeyCredential, ApiKeyFlow, ApiKeyInput, ApiKeyState},
         basic_auth::{BasicAuthCredential, BasicAuthFlow, BasicAuthInput, BasicAuthState},
-        bearer_token::{BearerTokenCredential, BearerTokenFlow, BearerTokenInput, BearerTokenState},
+        bearer_token::{
+            BearerTokenCredential, BearerTokenFlow, BearerTokenInput, BearerTokenState,
+        },
         oauth2::{
-            AuthorizationCodeFlow, AuthorizationCodeInput,
-            ClientCredentialsFlow, ClientCredentialsInput,
-            OAuth2AuthorizationCode, OAuth2ClientCredentials, OAuth2State,
+            AuthorizationCodeFlow, AuthorizationCodeInput, ClientCredentialsFlow,
+            ClientCredentialsInput, OAuth2AuthorizationCode, OAuth2ClientCredentials, OAuth2State,
         },
         password::{PasswordCredential, PasswordFlow, PasswordInput, PasswordState},
     };

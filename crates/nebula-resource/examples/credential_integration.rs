@@ -11,16 +11,19 @@
 
 #[cfg(feature = "credentials")]
 use nebula_credential::{
-    core::{AccessToken, CredentialContext, CredentialError, CredentialMetadata, CredentialState, SecureString},
+    CredentialManager, CredentialRegistry,
+    core::{
+        AccessToken, CredentialContext, CredentialError, CredentialMetadata, CredentialState,
+        SecureString,
+    },
     testing::{MockLock, MockStateStore, MockTokenCache},
     traits::{Credential, StateStore, TokenCache},
-    CredentialManager, CredentialRegistry,
 };
 
 #[cfg(feature = "credentials")]
 use nebula_resource::credentials::{
-    build_connection_string_with_credentials, CredentialConfig, CredentialRotationHandler,
-    CredentialRotationScheduler, ResourceCredentialProvider,
+    CredentialConfig, CredentialRotationHandler, CredentialRotationScheduler,
+    ResourceCredentialProvider, build_connection_string_with_credentials,
 };
 
 use async_trait::async_trait;
@@ -175,15 +178,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get token through provider (cached)
     println!("   Getting token (1st time - cache miss)...");
     let token1 = provider.get_token().await?;
-    println!("      ✓ Token: {} chars", token1.token.with_exposed(|s| s.len()));
+    println!(
+        "      ✓ Token: {} chars",
+        token1.token.with_exposed(|s| s.len())
+    );
 
     // Get token again (should be cached)
     println!("   Getting token (2nd time - cache hit)...");
     let token2 = provider.get_token().await?;
-    println!("      ✓ Token: {} chars (same as before)", token2.token.with_exposed(|s| s.len()));
+    println!(
+        "      ✓ Token: {} chars (same as before)",
+        token2.token.with_exposed(|s| s.len())
+    );
 
     // Verify it's the same token
-    assert!(token1.token.with_exposed(|a| token2.token.with_exposed(|b| a == b)));
+    assert!(
+        token1
+            .token
+            .with_exposed(|a| token2.token.with_exposed(|b| a == b))
+    );
     println!("      ✓ Cache working correctly\n");
 
     // ═══════════════════════════════════════════════════════════════
@@ -208,7 +221,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("   Getting fresh token...");
     let token3 = provider.get_token().await?;
-    println!("      ✓ New token retrieved: {} chars", token3.token.with_exposed(|s| s.len()));
+    println!(
+        "      ✓ New token retrieved: {} chars",
+        token3.token.with_exposed(|s| s.len())
+    );
 
     // Should trigger refresh from credential manager
     println!("      └─ Token refreshed from credential manager\n");
@@ -218,12 +234,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ═══════════════════════════════════════════════════════════════
     println!("🔁 Example 4: Credential Rotation Handler");
 
-    let rotation_handler = CredentialRotationHandler::new(provider.clone())
-        .with_rotation_callback(|new_token| async move {
+    let rotation_handler = CredentialRotationHandler::new(provider.clone()).with_rotation_callback(
+        |new_token| async move {
             println!("      📢 Rotation callback triggered!");
             println!("         New token: {} chars", new_token.len());
             Ok(())
-        });
+        },
+    );
 
     println!("   Checking and rotating credential...");
     let rotated = rotation_handler.check_and_rotate().await?;
@@ -266,7 +283,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Resource configuration:");
     println!("      ├─ Credential ID: {}", config.credential_id);
     println!("      ├─ Auto-refresh: {}", config.auto_refresh);
-    println!("      └─ Refresh threshold: {} minutes", config.refresh_threshold_minutes);
+    println!(
+        "      └─ Refresh threshold: {} minutes",
+        config.refresh_threshold_minutes
+    );
     println!();
 
     // ═══════════════════════════════════════════════════════════════

@@ -407,7 +407,8 @@ impl ResourceManager {
             .downcast_ref::<TypedResourceInstance<T>>()
             .ok_or_else(|| {
                 ResourceError::internal("unknown", "Failed to cast instance to requested type")
-            }).cloned()
+            })
+            .cloned()
     }
 
     fn create_guard_with_pool<T>(
@@ -514,10 +515,7 @@ impl ResourceManager {
     }
 
     /// Get the health status of a specific instance
-    pub fn get_instance_health(
-        &self,
-        instance_id: &Uuid,
-    ) -> Option<crate::health::HealthRecord> {
+    pub fn get_instance_health(&self, instance_id: &Uuid) -> Option<crate::health::HealthRecord> {
         self.health_checker.get_health(instance_id)
     }
 

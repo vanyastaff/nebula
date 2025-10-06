@@ -165,8 +165,7 @@ impl Token {
                 | Token::GreaterEqual
                 | Token::RegexMatch
                 | Token::And
-                | Token::Or
-            // Pipe is not a binary operator, it's used for pipeline expressions
+                | Token::Or // Pipe is not a binary operator, it's used for pipeline expressions
         )
     }
 

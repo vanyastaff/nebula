@@ -113,7 +113,9 @@ async fn demo_authorization_code() -> Result<(), Box<dyn std::error::Error>> {
                 // Simulate continuation (in real app, this comes from callback)
                 println!("💡 Example code to continue:");
                 println!("   let mut params = HashMap::new();");
-                println!("   params.insert(\"code\".to_string(), \"<authorization_code>\".to_string());");
+                println!(
+                    "   params.insert(\"code\".to_string(), \"<authorization_code>\".to_string());"
+                );
                 println!("   params.insert(\"state\".to_string(), \"<state_value>\".to_string());");
                 println!("   ");
                 println!("   credential.continue_initialization(");

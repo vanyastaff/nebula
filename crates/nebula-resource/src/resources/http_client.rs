@@ -332,12 +332,13 @@ impl HttpClientInstance {
             for attempt in 1..=strategy.max_attempts {
                 // Check circuit breaker before attempt
                 if let Some(ref cb) = self.circuit_breaker
-                    && cb.is_open().await {
-                        return Err(ResourceError::CircuitBreakerOpen {
-                            resource_id: "http_client:1.0".to_string(),
-                            retry_after_ms: None,
-                        });
-                    }
+                    && cb.is_open().await
+                {
+                    return Err(ResourceError::CircuitBreakerOpen {
+                        resource_id: "http_client:1.0".to_string(),
+                        retry_after_ms: None,
+                    });
+                }
 
                 // Execute request
                 let result = f().await;
@@ -373,12 +374,13 @@ impl HttpClientInstance {
         } else {
             // No retry, just check circuit breaker
             if let Some(ref cb) = self.circuit_breaker
-                && cb.is_open().await {
-                    return Err(ResourceError::CircuitBreakerOpen {
-                        resource_id: "http_client:1.0".to_string(),
-                        retry_after_ms: None,
-                    });
-                }
+                && cb.is_open().await
+            {
+                return Err(ResourceError::CircuitBreakerOpen {
+                    resource_id: "http_client:1.0".to_string(),
+                    retry_after_ms: None,
+                });
+            }
 
             let result = f().await;
 

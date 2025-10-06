@@ -154,9 +154,7 @@ pub enum CaptchaType {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UserInput {
     /// Callback from redirect (OAuth2, SAML, etc.)
-    Callback {
-        params: HashMap<String, String>,
-    },
+    Callback { params: HashMap<String, String> },
 
     /// Code entered by user
     Code { code: String },
@@ -172,9 +170,7 @@ pub enum UserInput {
     Poll,
 
     /// Challenge response (WebAuthn, cryptographic)
-    ChallengeResponse {
-        response: serde_json::Value,
-    },
+    ChallengeResponse { response: serde_json::Value },
 
     /// Confirmation token
     ConfirmationToken { token: String },

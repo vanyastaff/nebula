@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::core::{
+    CredentialContext, CredentialError, CredentialKey, CredentialMetadata,
     result::{CredentialFlow, InitializeResult, InteractionRequest, PartialState, UserInput},
-    unix_now, CredentialContext, CredentialError, CredentialKey, CredentialMetadata,
+    unix_now,
 };
 use crate::traits::{Credential, InteractiveCredential};
 use crate::utils::{generate_code_challenge, generate_pkce_verifier, generate_random_state};
@@ -296,11 +297,10 @@ impl InteractiveCredential for OAuth2AuthorizationCode {
             .map_err(|e| CredentialError::NetworkFailed(e.to_string()))?;
 
         let status = response.status();
-        let body = response.text().await
-            .map_err(|e| {
-                error!(error = %e, "Failed to read token response body");
-                CredentialError::NetworkFailed(e.to_string())
-            })?;
+        let body = response.text().await.map_err(|e| {
+            error!(error = %e, "Failed to read token response body");
+            CredentialError::NetworkFailed(e.to_string())
+        })?;
 
         if !status.is_success() {
             error!(
@@ -313,15 +313,17 @@ impl InteractiveCredential for OAuth2AuthorizationCode {
             });
         }
 
-        let token: TokenResponse = serde_json::from_str(&body)
-            .map_err(|e| {
-                error!(
-                    error = %e,
-                    body = %body,
-                    "Failed to parse token response"
-                );
-                CredentialError::NetworkFailed(format!("Failed to parse token response: {}. Body: {}", e, body))
-            })?;
+        let token: TokenResponse = serde_json::from_str(&body).map_err(|e| {
+            error!(
+                error = %e,
+                body = %body,
+                "Failed to parse token response"
+            );
+            CredentialError::NetworkFailed(format!(
+                "Failed to parse token response: {}. Body: {}",
+                e, body
+            ))
+        })?;
 
         let state = OAuth2State::from_token_response(token);
 

@@ -78,6 +78,7 @@ pub trait HasValue: ParameterType + Debug + Display {
     async fn set_value(&mut self, value: Self::Value) -> Result<(), ParameterError>
     where
         Self: Validatable,
+        Self::Value: Clone + Into<nebula_value::Value>,
     {
         self.validate(&value).await?;
         self.set_value_unchecked(value)
@@ -151,6 +152,7 @@ pub trait HasValue: ParameterType + Debug + Display {
     async fn validate_current_value(&self) -> Result<(), ParameterError>
     where
         Self: Validatable,
+        Self::Value: Clone + Into<nebula_value::Value>,
     {
         match self.get_value() {
             Some(value) => self.validate(value).await,
@@ -169,10 +171,13 @@ pub trait Validatable: HasValue + Send + Sync {
     ///
     /// Default implementation provides common validation pattern.
     /// Override this method for custom validation logic.
-    async fn validate(&self, value: &Self::Value) -> Result<(), ParameterError> {
+    async fn validate(&self, value: &Self::Value) -> Result<(), ParameterError>
+    where
+        Self::Value: Clone + Into<nebula_value::Value>,
+    {
         // Use custom validation if available
         if let Some(validation) = self.validation() {
-            let nebula_value = self.value_to_nebula_value(value);
+            let nebula_value = value.clone().into();
             if let Err(validation_error) = validation.validate(&nebula_value, None).await {
                 return Err(ParameterError::InvalidValue {
                     key: self.metadata().key.clone(),
@@ -194,11 +199,6 @@ pub trait Validatable: HasValue + Send + Sync {
     /// Get the validation configuration (default: no validation)
     fn validation(&self) -> Option<&ParameterValidation> {
         None
-    }
-
-    /// Convert value to nebula_value::Value for validation (default: null)
-    fn value_to_nebula_value(&self, _value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::Null
     }
 
     /// Check if a value is considered empty (default: false)
@@ -262,7 +262,6 @@ pub trait Displayable: ParameterType {
     fn clear_display_conditions(&mut self) {
         self.set_display(None);
     }
-
 
     // --- Optional reactive methods (default empty implementations) ---
 

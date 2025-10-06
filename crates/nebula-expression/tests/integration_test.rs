@@ -37,10 +37,14 @@ fn test_string_operations() {
         .unwrap();
     assert_eq!(result.as_str(), Some("hello world"));
 
-    let result = engine.evaluate("{{ \"HELLO\" | lowercase() }}", &context).unwrap();
+    let result = engine
+        .evaluate("{{ \"HELLO\" | lowercase() }}", &context)
+        .unwrap();
     assert_eq!(result.as_str(), Some("hello"));
 
-    let result = engine.evaluate("{{ \"hello\" | uppercase() }}", &context).unwrap();
+    let result = engine
+        .evaluate("{{ \"hello\" | uppercase() }}", &context)
+        .unwrap();
     assert_eq!(result.as_str(), Some("HELLO"));
 }
 
@@ -136,15 +140,13 @@ fn test_node_data() {
 
     context.set_node_data(
         "http",
-        Value::Object(
-            nebula_value::Object::new().insert(
-                "response".to_string(),
-                json!({
-                    "statusCode": 200,
-                    "body": "Success"
-                }),
-            ),
-        ),
+        Value::Object(nebula_value::Object::new().insert(
+            "response".to_string(),
+            json!({
+                "statusCode": 200,
+                "body": "Success"
+            }),
+        )),
     );
 
     let result = engine
@@ -181,10 +183,14 @@ fn test_string_functions() {
     let engine = ExpressionEngine::new();
     let context = EvaluationContext::new();
 
-    let result = engine.evaluate("{{ \"hello\" | length() }}", &context).unwrap();
+    let result = engine
+        .evaluate("{{ \"hello\" | length() }}", &context)
+        .unwrap();
     assert_eq!(result.as_integer(), Some(5));
 
-    let result = engine.evaluate("{{ \"  hi  \" | trim() }}", &context).unwrap();
+    let result = engine
+        .evaluate("{{ \"  hi  \" | trim() }}", &context)
+        .unwrap();
     assert_eq!(result.as_str(), Some("hi"));
 
     let result = engine
@@ -214,13 +220,19 @@ fn test_type_conversion() {
     let engine = ExpressionEngine::new();
     let context = EvaluationContext::new();
 
-    let result = engine.evaluate("{{ 123 | to_string() }}", &context).unwrap();
+    let result = engine
+        .evaluate("{{ 123 | to_string() }}", &context)
+        .unwrap();
     assert_eq!(result.as_str(), Some("123"));
 
-    let result = engine.evaluate("{{ \"456\" | to_number() }}", &context).unwrap();
+    let result = engine
+        .evaluate("{{ \"456\" | to_number() }}", &context)
+        .unwrap();
     assert_eq!(result.as_integer(), Some(456));
 
-    let result = engine.evaluate("{{ \"true\" | to_boolean() }}", &context).unwrap();
+    let result = engine
+        .evaluate("{{ \"true\" | to_boolean() }}", &context)
+        .unwrap();
     assert_eq!(result.as_boolean(), Some(true));
 }
 

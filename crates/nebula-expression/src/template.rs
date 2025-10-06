@@ -105,7 +105,11 @@ impl Template {
     }
 
     /// Render the template with the given context
-    pub fn render(&self, engine: &ExpressionEngine, context: &EvaluationContext) -> ExpressionResult<String> {
+    pub fn render(
+        &self,
+        engine: &ExpressionEngine,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<String> {
         let mut result = String::with_capacity(self.source.len());
         let mut strip_next_leading = false;
 
@@ -295,7 +299,9 @@ impl Template {
 
     /// Check if the template contains any expressions
     pub fn has_expressions(&self) -> bool {
-        self.parts.iter().any(|part| matches!(part, TemplatePart::Expression { .. }))
+        self.parts
+            .iter()
+            .any(|part| matches!(part, TemplatePart::Expression { .. }))
     }
 
     /// Get the number of expressions in the template
@@ -593,8 +599,16 @@ Line 3: Done"#,
     fn test_whitespace_parse_markers() {
         let template = Template::new("{{- $input -}}").unwrap();
 
-        if let Some(TemplatePart::Expression { strip_left, strip_right, content, .. }) =
-            template.parts().iter().find(|p| matches!(p, TemplatePart::Expression { .. })) {
+        if let Some(TemplatePart::Expression {
+            strip_left,
+            strip_right,
+            content,
+            ..
+        }) = template
+            .parts()
+            .iter()
+            .find(|p| matches!(p, TemplatePart::Expression { .. }))
+        {
             assert!(*strip_left);
             assert!(*strip_right);
             assert_eq!(content.trim(), "$input");

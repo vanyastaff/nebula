@@ -7,8 +7,8 @@ use crate::context::EvaluationContext;
 use crate::core::ast::{BinaryOp, Expr};
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use nebula_error::NebulaError;
-use nebula_value::{JsonValueExt, ValueRefExt};
 use nebula_value::Value;
+use nebula_value::{JsonValueExt, ValueRefExt};
 use regex::Regex;
 use std::sync::Arc;
 
@@ -54,9 +54,7 @@ impl Evaluator {
                 Ok(Value::boolean(!val.to_boolean()))
             }
 
-            Expr::Binary { left, op, right } => {
-                self.eval_binary_op(*op, left, right, context)
-            }
+            Expr::Binary { left, op, right } => self.eval_binary_op(*op, left, right, context),
 
             Expr::PropertyAccess { object, property } => {
                 let obj_val = self.eval(object, context)?;
@@ -370,8 +368,8 @@ impl Evaluator {
             .as_str()
             .ok_or_else(|| NebulaError::expression_type_error("string", right.kind().name()))?;
 
-        let regex = Regex::new(pattern)
-            .map_err(|e| NebulaError::expression_regex_error(e.to_string()))?;
+        let regex =
+            Regex::new(pattern).map_err(|e| NebulaError::expression_regex_error(e.to_string()))?;
 
         Ok(Value::boolean(regex.is_match(text)))
     }
@@ -408,17 +406,14 @@ impl Evaluator {
                 }
 
                 let json_val = arr.get(actual_idx as usize).ok_or_else(|| {
-                    NebulaError::expression_index_out_of_bounds(
-                        actual_idx as usize,
-                        len as usize,
-                    )
+                    NebulaError::expression_index_out_of_bounds(actual_idx as usize, len as usize)
                 })?;
                 Ok(json_val.to_nebula_value_or_null())
             }
             Value::Object(o) => {
-                let key = index
-                    .as_str()
-                    .ok_or_else(|| NebulaError::expression_type_error("string", index.kind().name()))?;
+                let key = index.as_str().ok_or_else(|| {
+                    NebulaError::expression_type_error("string", index.kind().name())
+                })?;
                 let json_val = o.get(key).ok_or_else(|| {
                     NebulaError::expression_eval_error(format!("Key '{}' not found", key))
                 })?;

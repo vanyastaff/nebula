@@ -3,8 +3,8 @@
 //! This module provides the context in which expressions are evaluated,
 //! including access to $node, $execution, $workflow, and $input variables.
 
-use nebula_value::ValueRefExt;
 use nebula_value::Value;
+use nebula_value::ValueRefExt;
 use std::collections::HashMap;
 
 /// Evaluation context containing variables and workflow data
@@ -173,10 +173,7 @@ mod tests {
     fn test_set_and_get_node_data() {
         let mut ctx = EvaluationContext::new();
         ctx.set_node_data("node1", Value::text("test"));
-        assert_eq!(
-            ctx.get_node_data("node1").unwrap().as_str(),
-            Some("test")
-        );
+        assert_eq!(ctx.get_node_data("node1").unwrap().as_str(), Some("test"));
     }
 
     #[test]

@@ -172,12 +172,13 @@ impl MemoryCacheInstance {
         if let Some(entry) = cache.get(&key_string) {
             // Check if expired
             if let Some(expires_at) = entry.expires_at
-                && Instant::now() > expires_at {
-                    // Expired, remove it
-                    cache.remove(&key_string);
-                    self.record_miss();
-                    return None;
-                }
+                && Instant::now() > expires_at
+            {
+                // Expired, remove it
+                cache.remove(&key_string);
+                self.record_miss();
+                return None;
+            }
 
             self.record_hit();
             Some(entry.value.clone())

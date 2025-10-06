@@ -85,6 +85,40 @@ pub struct RoutingValue {
     pub connected_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+impl From<RoutingValue> for nebula_value::Value {
+    fn from(routing: RoutingValue) -> Self {
+        use crate::ValueRefExt;
+        let mut obj = serde_json::Map::new();
+        if let Some(node_id) = routing.connected_node_id {
+            obj.insert(
+                "connected_node_id".to_string(),
+                nebula_value::Value::text(node_id).to_json(),
+            );
+        }
+        if let Some(name) = routing.connection_name {
+            obj.insert(
+                "connection_name".to_string(),
+                nebula_value::Value::text(name).to_json(),
+            );
+        }
+        obj.insert(
+            "connection_metadata".to_string(),
+            nebula_value::Value::Object(routing.connection_metadata).to_json(),
+        );
+        if let Some(connected_at) = routing.connected_at {
+            obj.insert(
+                "connected_at".to_string(),
+                nebula_value::Value::text(connected_at.to_rfc3339()).to_json(),
+            );
+        }
+
+        use crate::JsonValueExt;
+        serde_json::Value::Object(obj)
+            .to_nebula_value()
+            .unwrap_or(nebula_value::Value::Null)
+    }
+}
+
 impl RoutingValue {
     /// Create a new routing value with no connections
     pub fn new() -> Self {
@@ -135,7 +169,9 @@ impl RoutingValue {
     /// Get connection metadata
     pub fn get_metadata(&self, key: &str) -> Option<nebula_value::Value> {
         use crate::JsonValueExt;
-        self.connection_metadata.get(key).and_then(|v| v.to_nebula_value())
+        self.connection_metadata
+            .get(key)
+            .and_then(|v| v.to_nebula_value())
     }
 }
 
@@ -227,17 +263,6 @@ impl HasValue for RoutingParameter {
 impl Validatable for RoutingParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
-    }
-
-    fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        // Serialize RoutingValue to serde_json::Value, then convert to nebula_value
-        serde_json::to_value(value)
-            .ok()
-            .and_then(|v| {
-                use crate::JsonValueExt;
-                v.to_nebula_value()
-            })
-            .unwrap_or(nebula_value::Value::Null)
     }
 
     fn is_empty_value(&self, value: &Self::Value) -> bool {

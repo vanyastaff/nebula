@@ -1,6 +1,5 @@
 //! Error types for resource management
 
-
 use nebula_error::NebulaError;
 use thiserror::Error;
 

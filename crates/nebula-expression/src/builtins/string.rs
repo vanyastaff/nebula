@@ -8,7 +8,11 @@ use nebula_error::NebulaError;
 use nebula_value::Value;
 
 /// Get the length of a string
-pub fn length(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn length(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("length", args, 1)?;
     let s = args[0]
         .as_str()
@@ -17,7 +21,11 @@ pub fn length(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Ex
 }
 
 /// Convert string to uppercase
-pub fn uppercase(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn uppercase(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("uppercase", args, 1)?;
     let s = args[0]
         .as_str()
@@ -26,7 +34,11 @@ pub fn uppercase(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) ->
 }
 
 /// Convert string to lowercase
-pub fn lowercase(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn lowercase(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("lowercase", args, 1)?;
     let s = args[0]
         .as_str()
@@ -35,7 +47,11 @@ pub fn lowercase(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) ->
 }
 
 /// Trim whitespace from both ends of a string
-pub fn trim(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn trim(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("trim", args, 1)?;
     let s = args[0]
         .as_str()
@@ -44,7 +60,11 @@ pub fn trim(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Expr
 }
 
 /// Split a string by a delimiter
-pub fn split(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn split(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("split", args, 2)?;
     let s = args[0]
         .as_str()
@@ -62,7 +82,11 @@ pub fn split(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Exp
 }
 
 /// Replace occurrences of a substring
-pub fn replace(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn replace(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("replace", args, 3)?;
     let s = args[0]
         .as_str()
@@ -78,7 +102,11 @@ pub fn replace(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> E
 }
 
 /// Get a substring
-pub fn substring(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn substring(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_min_arg_count("substring", args, 2)?;
     let s = args[0]
         .as_str()
@@ -100,7 +128,11 @@ pub fn substring(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) ->
 }
 
 /// Check if string contains a substring
-pub fn contains(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn contains(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("contains", args, 2)?;
     let s = args[0]
         .as_str()
@@ -113,7 +145,11 @@ pub fn contains(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> 
 }
 
 /// Check if string starts with a prefix
-pub fn starts_with(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn starts_with(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("starts_with", args, 2)?;
     let s = args[0]
         .as_str()
@@ -126,7 +162,11 @@ pub fn starts_with(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) 
 }
 
 /// Check if string ends with a suffix
-pub fn ends_with(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn ends_with(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("ends_with", args, 2)?;
     let s = args[0]
         .as_str()

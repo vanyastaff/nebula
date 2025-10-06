@@ -61,8 +61,8 @@ async fn test_create_and_get_token_workflow() {
 
 #[tokio::test]
 async fn test_token_refresh_when_expired() {
-    use nebula_credential::testing::TestCredentialFactory;
     use nebula_credential::core::AccessToken;
+    use nebula_credential::testing::TestCredentialFactory;
     use serde_json::json;
     use std::time::{Duration, SystemTime};
 
@@ -150,9 +150,7 @@ async fn test_unknown_credential_type_error() {
 
     let manager = create_test_manager().await;
 
-    let result = manager
-        .create_credential("unknown_type", json!({}))
-        .await;
+    let result = manager.create_credential("unknown_type", json!({})).await;
 
     assert!(matches!(
         result,

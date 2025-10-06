@@ -155,10 +155,8 @@ async fn test_concurrent_delete_and_get() {
     let id1 = cred_id.clone();
     let id2 = cred_id.clone();
 
-    let (delete_result, get_result) = tokio::join!(
-        manager.delete_credential(&id1),
-        manager.get_token(&id2)
-    );
+    let (delete_result, get_result) =
+        tokio::join!(manager.delete_credential(&id1), manager.get_token(&id2));
 
     // Delete should succeed
     assert!(delete_result.is_ok());

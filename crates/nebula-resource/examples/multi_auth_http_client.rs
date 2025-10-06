@@ -14,6 +14,7 @@ use async_trait::async_trait;
 
 #[cfg(feature = "credentials")]
 use nebula_credential::{
+    CredentialManager,
     authenticator::{AuthenticateWithState, StatefulAuthenticator},
     core::{
         AccessToken, CredentialContext, CredentialError, CredentialId, CredentialMetadata,
@@ -21,13 +22,12 @@ use nebula_credential::{
     },
     testing::{MockLock, MockStateStore},
     traits::Credential,
-    CredentialManager,
 };
 
 #[cfg(feature = "credentials")]
 use nebula_resource::{
-    credentials::{stateful::StatefulCredentialProvider, ResourceCredentialProvider},
     core::error::ResourceResult,
+    credentials::{ResourceCredentialProvider, stateful::StatefulCredentialProvider},
 };
 
 use serde::{Deserialize, Serialize};
@@ -393,7 +393,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         timeout_seconds: 30,
     };
 
-    println!("📋 Config: endpoint={}, credential_id={}", config.endpoint, config.credential_id);
+    println!(
+        "📋 Config: endpoint={}, credential_id={}",
+        config.endpoint, config.credential_id
+    );
 
     // Create client config and manually create state for demo
     let client_config = HttpClientConfig {

@@ -26,8 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = get_oauth_config()?;
 
     // Step 2: Initialize flow and get authorization URL
-    let (partial_state, auth_url, state_param) =
-        generate_authorization_url(&config).await?;
+    let (partial_state, auth_url, state_param) = generate_authorization_url(&config).await?;
 
     // Step 3: User authorizes
     println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -73,13 +72,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🔄 Шаг 3: Обмен code на access token");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    let token_result = exchange_code_for_token(
-        &config,
-        partial_state,
-        code.clone(),
-        received_state.clone(),
-    )
-    .await;
+    let token_result =
+        exchange_code_for_token(&config, partial_state, code.clone(), received_state.clone()).await;
 
     match token_result {
         Ok(state) => {
@@ -91,7 +85,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let access_token_preview = state.access_token.expose();
             let preview_len = 30.min(access_token_preview.len());
-            println!("  • Access Token: {}...", &access_token_preview[..preview_len]);
+            println!(
+                "  • Access Token: {}...",
+                &access_token_preview[..preview_len]
+            );
 
             println!("\n✅ OAuth2 flow завершен успешно!");
         }
@@ -174,9 +171,23 @@ fn get_oauth_config() -> Result<OAuthConfig, Box<dyn std::error::Error>> {
     };
 
     println!("\n✅ Конфигурация:");
-    println!("  • Flow Type: {}", if use_pkce { "PKCE" } else { "Authorization Code" });
+    println!(
+        "  • Flow Type: {}",
+        if use_pkce {
+            "PKCE"
+        } else {
+            "Authorization Code"
+        }
+    );
     println!("  • Client ID: {}", client_id);
-    println!("  • Client Secret: {}", if client_secret.is_some() { "***" } else { "None" });
+    println!(
+        "  • Client Secret: {}",
+        if client_secret.is_some() {
+            "***"
+        } else {
+            "None"
+        }
+    );
 
     Ok(OAuthConfig {
         client_id,
@@ -306,7 +317,8 @@ mod tests {
 
     #[test]
     fn test_parse_full_url() {
-        let url = "https://www.oauth.com/playground/authorization-code.html?code=ABC123&state=XYZ789";
+        let url =
+            "https://www.oauth.com/playground/authorization-code.html?code=ABC123&state=XYZ789";
         let (code, state) = parse_callback(url).unwrap();
         assert_eq!(code, "ABC123");
         assert_eq!(state, "XYZ789");

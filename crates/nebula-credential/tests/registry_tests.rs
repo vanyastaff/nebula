@@ -1,7 +1,7 @@
 //! Integration tests for CredentialRegistry
 
-use nebula_credential::testing::TestCredentialFactory;
 use nebula_credential::CredentialRegistry;
+use nebula_credential::testing::TestCredentialFactory;
 use std::sync::Arc;
 
 #[test]
@@ -44,10 +44,10 @@ fn test_factory_not_found() {
 
 #[test]
 fn test_multiple_credential_types() {
+    use async_trait::async_trait;
     use nebula_credential::core::{AccessToken, CredentialContext, Result};
     use nebula_credential::registry::CredentialFactory;
     use nebula_credential::testing::TestCredentialInput;
-    use async_trait::async_trait;
 
     // Create a second factory type
     struct AnotherCredentialFactory;
@@ -63,8 +63,9 @@ fn test_multiple_credential_types() {
             input_json: serde_json::Value,
             _cx: &mut CredentialContext,
         ) -> Result<(Box<dyn erased_serde::Serialize>, Option<AccessToken>)> {
-            let _input: TestCredentialInput = serde_json::from_value(input_json)
-                .map_err(|e| nebula_credential::core::CredentialError::DeserializationFailed(e.to_string()))?;
+            let _input: TestCredentialInput = serde_json::from_value(input_json).map_err(|e| {
+                nebula_credential::core::CredentialError::DeserializationFailed(e.to_string())
+            })?;
 
             Ok((Box::new(()), None))
         }
@@ -74,9 +75,11 @@ fn test_multiple_credential_types() {
             _state_json: serde_json::Value,
             _cx: &mut CredentialContext,
         ) -> Result<(Box<dyn erased_serde::Serialize>, AccessToken)> {
-            Err(nebula_credential::core::CredentialError::RefreshNotSupported {
-                credential_type: "another_credential".to_string(),
-            })
+            Err(
+                nebula_credential::core::CredentialError::RefreshNotSupported {
+                    credential_type: "another_credential".to_string(),
+                },
+            )
         }
     }
 

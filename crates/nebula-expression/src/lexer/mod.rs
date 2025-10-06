@@ -207,7 +207,7 @@ impl Lexer {
                 return Err(NebulaError::expression_syntax_error(format!(
                     "Unexpected character '{}' at position {}",
                     ch, self.position
-                )))
+                )));
             }
         };
 

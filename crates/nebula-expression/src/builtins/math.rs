@@ -13,12 +13,19 @@ pub fn abs(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Expre
     match &args[0] {
         Value::Integer(n) => Ok(Value::integer(n.value().abs())),
         Value::Float(n) => Ok(Value::float(n.value().abs())),
-        _ => Err(NebulaError::expression_type_error("number", args[0].kind().name())),
+        _ => Err(NebulaError::expression_type_error(
+            "number",
+            args[0].kind().name(),
+        )),
     }
 }
 
 /// Round to specified decimal places (default: 0)
-pub fn round(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn round(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_min_arg_count("round", args, 1)?;
     let num = args[0].to_float()?;
 
@@ -35,14 +42,22 @@ pub fn round(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Exp
 }
 
 /// Floor function
-pub fn floor(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn floor(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("floor", args, 1)?;
     let num = args[0].to_float()?;
     Ok(Value::float(num.floor()))
 }
 
 /// Ceiling function
-pub fn ceil(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn ceil(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("ceil", args, 1)?;
     let num = args[0].to_float()?;
     Ok(Value::float(num.ceil()))
@@ -79,11 +94,18 @@ pub fn max(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Expre
 }
 
 /// Square root
-pub fn sqrt(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn sqrt(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("sqrt", args, 1)?;
     let num = args[0].to_float()?;
     if num < 0.0 {
-        return Err(NebulaError::expression_invalid_argument("sqrt", "Cannot take square root of negative number"));
+        return Err(NebulaError::expression_invalid_argument(
+            "sqrt",
+            "Cannot take square root of negative number",
+        ));
     }
     Ok(Value::float(num.sqrt()))
 }

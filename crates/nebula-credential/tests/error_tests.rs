@@ -28,10 +28,7 @@ async fn test_unknown_credential_type_error() {
     // Don't register any factories
 
     let result = manager
-        .create_credential(
-            "unknown_type",
-            json!({"value": "test"}),
-        )
+        .create_credential("unknown_type", json!({"value": "test"}))
         .await;
 
     assert!(result.is_err());

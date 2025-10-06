@@ -35,8 +35,8 @@ async fn test_authorization_code_flow() -> Result<(), Box<dyn std::error::Error>
     // Get these from https://www.oauth.com/playground/
     let input = AuthorizationCodeInput {
         client_id: std::env::var("OAUTH_CLIENT_ID")
-            .unwrap_or_else(|_| "your_client_id".to_string()),
-        client_secret: std::env::var("OAUTH_CLIENT_SECRET").ok(),
+            .unwrap_or_else(|_| "AxIKkzEyzIqNUvLUvftnL57O".to_string()),
+        client_secret: "iO5-nArlk4J_5bGjV1ags2UGvCs1ZdqMywLVV7VGk7ZPjhKF".to_string(),
         authorization_endpoint: "https://www.oauth.com/playground/authorize.html".to_string(),
         token_endpoint: "https://www.oauth.com/playground/access-token.html".to_string(),
         redirect_uri: "http://localhost:8080/callback".to_string(),
@@ -68,7 +68,9 @@ async fn test_authorization_code_flow() -> Result<(), Box<dyn std::error::Error>
 
                 // Example callback simulation:
                 println!("\n  To continue, call continue_initialization with:");
-                println!("    UserInput::Callback {{ params: {{ \"code\": \"auth_code\", \"state\": \"...\" }} }}");
+                println!(
+                    "    UserInput::Callback {{ params: {{ \"code\": \"auth_code\", \"state\": \"...\" }} }}"
+                );
             }
         }
         InitializeResult::Complete(_) => {
@@ -91,8 +93,7 @@ async fn test_client_credentials_flow() -> Result<(), Box<dyn std::error::Error>
     let mut ctx = CredentialContext::new();
 
     let input = ClientCredentialsInput {
-        client_id: std::env::var("OAUTH_CLIENT_ID")
-            .unwrap_or_else(|_| "test_client".to_string()),
+        client_id: std::env::var("OAUTH_CLIENT_ID").unwrap_or_else(|_| "test_client".to_string()),
         client_secret: std::env::var("OAUTH_CLIENT_SECRET")
             .unwrap_or_else(|_| "test_secret".to_string()),
         token_endpoint: "https://www.oauth.com/playground/access-token.html".to_string(),

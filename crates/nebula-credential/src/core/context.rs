@@ -96,11 +96,18 @@ mod tests {
     #[test]
     fn test_context_metadata_field() {
         let mut context = CredentialContext::new();
-        context.metadata.insert("request_id".to_string(), "abc-123".to_string());
-        context.metadata.insert("user_id".to_string(), "user-456".to_string());
+        context
+            .metadata
+            .insert("request_id".to_string(), "abc-123".to_string());
+        context
+            .metadata
+            .insert("user_id".to_string(), "user-456".to_string());
 
         assert_eq!(context.metadata.len(), 2);
-        assert_eq!(context.metadata.get("request_id"), Some(&"abc-123".to_string()));
+        assert_eq!(
+            context.metadata.get("request_id"),
+            Some(&"abc-123".to_string())
+        );
     }
 
     #[test]

@@ -113,10 +113,6 @@ impl Validatable for CheckboxParameter {
         self.validation.as_ref()
     }
 
-    fn value_to_nebula_value(&self, value: &Self::Value) -> nebula_value::Value {
-        nebula_value::Value::boolean(value.value())
-    }
-
     fn is_empty_value(&self, _value: &Self::Value) -> bool {
         false // Booleans are never considered empty
     }

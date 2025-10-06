@@ -459,10 +459,7 @@ pub struct ResourcePool<T> {
     /// Factory function for creating new resources
     factory: Arc<
         dyn Fn() -> std::pin::Pin<
-                Box<
-                    dyn Future<Output = ResourceResult<TypedResourceInstance<T>>>
-                        + Send,
-                >,
+                Box<dyn Future<Output = ResourceResult<TypedResourceInstance<T>>> + Send>,
             > + Send
             + Sync,
     >,
@@ -482,8 +479,7 @@ where
     pub fn new<F, Fut>(config: PoolConfig, strategy: PoolStrategy, factory: F) -> Self
     where
         F: Fn() -> Fut + Send + Sync + 'static,
-        Fut:
-            Future<Output = ResourceResult<TypedResourceInstance<T>>> + Send + 'static,
+        Fut: Future<Output = ResourceResult<TypedResourceInstance<T>>> + Send + 'static,
     {
         Self {
             config,
@@ -856,7 +852,6 @@ where
             self.select_weighted_round_robin(available)
         } else {
             // Hybrid approach: use performance metrics to select
-            
 
             available
                 .iter_mut()

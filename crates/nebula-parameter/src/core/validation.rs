@@ -1,5 +1,5 @@
 use nebula_core::ParameterKey as Key;
-use nebula_validator::{Validator, ValidationContext as ValidatorContext};
+use nebula_validator::{ValidationContext as ValidatorContext, Validator};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -131,10 +131,7 @@ impl Serialize for ParameterValidation {
     {
         use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("ParameterValidation", 3)?;
-        state.serialize_field(
-            "validator_name",
-            &self.validator.as_ref().map(|v| v.name()),
-        )?;
+        state.serialize_field("validator_name", &self.validator.as_ref().map(|v| v.name()))?;
         state.serialize_field("required", &self.required)?;
         state.serialize_field("message", &self.message)?;
         state.end()
@@ -277,9 +274,11 @@ pub mod validators {
     /// Numeric range validation
     pub fn number_range(min: Option<f64>, max: Option<f64>) -> ParameterValidation {
         let validator: Box<dyn Validator> = match (min, max) {
-            (Some(min_val), Some(max_val)) => {
-                Box::new(number().and(nebula_validator::min(min_val)).and(nebula_validator::max(max_val)))
-            }
+            (Some(min_val), Some(max_val)) => Box::new(
+                number()
+                    .and(nebula_validator::min(min_val))
+                    .and(nebula_validator::max(max_val)),
+            ),
             (Some(min_val), None) => Box::new(number().and(nebula_validator::min(min_val))),
             (None, Some(max_val)) => Box::new(number().and(nebula_validator::max(max_val))),
             (None, None) => Box::new(number()),
@@ -313,9 +312,11 @@ pub mod validators {
     /// Array size validation
     pub fn array_size(min: Option<usize>, max: Option<usize>) -> ParameterValidation {
         let validator: Box<dyn Validator> = match (min, max) {
-            (Some(min_size), Some(max_size)) => {
-                Box::new(array().and(array_min_size(min_size)).and(array_max_size(max_size)))
-            }
+            (Some(min_size), Some(max_size)) => Box::new(
+                array()
+                    .and(array_min_size(min_size))
+                    .and(array_max_size(max_size)),
+            ),
             (Some(min_size), None) => Box::new(array().and(array_min_size(min_size))),
             (None, Some(max_size)) => Box::new(array().and(array_max_size(max_size))),
             (None, None) => Box::new(array()),

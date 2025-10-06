@@ -171,28 +171,28 @@ impl From<ParameterError> for NebulaError {
             ParameterError::InvalidKeyFormat(err) => {
                 NebulaError::validation(format!("Invalid key format: {}", err))
             }
-            ParameterError::ValidationError { key, reason } => {
-                NebulaError::validation(format!("Validation failed for parameter '{}': {}", key, reason))
-            }
+            ParameterError::ValidationError { key, reason } => NebulaError::validation(format!(
+                "Validation failed for parameter '{}': {}",
+                key, reason
+            )),
             ParameterError::MissingValue { key } => {
                 NebulaError::validation(format!("Missing value for parameter '{}'", key))
             }
-            ParameterError::InvalidValue { key, reason } => {
-                NebulaError::validation(format!("Invalid value for parameter '{}': {}", key, reason))
-            }
+            ParameterError::InvalidValue { key, reason } => NebulaError::validation(format!(
+                "Invalid value for parameter '{}': {}",
+                key, reason
+            )),
             ParameterError::InvalidType {
                 key,
                 expected_type,
                 actual_details,
-            } => {
-                NebulaError::validation(format!(
-                    "Type error for parameter '{}': Expected {}, got {}",
-                    key, expected_type, actual_details
-                ))
-            }
-            ParameterError::DeserializationError { key, error } => {
-                NebulaError::validation(format!("Deserialization error for parameter '{}': {}", key, error))
-            }
+            } => NebulaError::validation(format!(
+                "Type error for parameter '{}': Expected {}, got {}",
+                key, expected_type, actual_details
+            )),
+            ParameterError::DeserializationError { key, error } => NebulaError::validation(
+                format!("Deserialization error for parameter '{}': {}", key, error),
+            ),
             ParameterError::SerializationError(msg) => {
                 NebulaError::internal(format!("Serialization error: {}", msg))
             }
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn test_error_not_found() {
-        let key = ParameterKey::new("test.param");
+        let key = ParameterKey::new("test.param").unwrap();
         let err = ParameterError::not_found(key.clone());
         assert!(matches!(err, ParameterError::NotFound { .. }));
         assert!(err.to_string().contains("test.param"));
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn test_error_validation() {
-        let key = ParameterKey::new("test.param");
+        let key = ParameterKey::new("test.param").unwrap();
         let err = ParameterError::validation(key, "value out of range");
         assert!(matches!(err, ParameterError::ValidationError { .. }));
         assert!(err.to_string().contains("value out of range"));
@@ -222,18 +222,24 @@ mod tests {
 
     #[test]
     fn test_error_category() {
-        let key = ParameterKey::new("test.param");
-        assert_eq!(ParameterError::not_found(key.clone()).category(), "not_found");
+        let key = ParameterKey::new("test.param").unwrap();
+        assert_eq!(
+            ParameterError::not_found(key.clone()).category(),
+            "not_found"
+        );
         assert_eq!(
             ParameterError::validation(key.clone(), "error").category(),
             "validation_error"
         );
-        assert_eq!(ParameterError::missing_value(key).category(), "missing_value");
+        assert_eq!(
+            ParameterError::missing_value(key).category(),
+            "missing_value"
+        );
     }
 
     #[test]
     fn test_error_is_retryable() {
-        let key = ParameterKey::new("test.param");
+        let key = ParameterKey::new("test.param").unwrap();
         assert!(!ParameterError::not_found(key.clone()).is_retryable());
         assert!(!ParameterError::validation(key.clone(), "error").is_retryable());
         assert!(!ParameterError::missing_value(key).is_retryable());
@@ -250,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_error_to_nebula_error() {
-        let key = ParameterKey::new("test.param");
+        let key = ParameterKey::new("test.param").unwrap();
         let param_err = ParameterError::not_found(key);
         let nebula_err: NebulaError = param_err.into();
 

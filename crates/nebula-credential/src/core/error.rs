@@ -253,9 +253,7 @@ impl From<CredentialError> for NebulaError {
     fn from(err: CredentialError) -> Self {
         match err {
             // Client errors (4xx equivalent) - not retryable
-            CredentialError::NotFound { id } => {
-                NebulaError::credential_not_found(&id)
-            }
+            CredentialError::NotFound { id } => NebulaError::credential_not_found(&id),
             CredentialError::InvalidInput { field, reason } => {
                 NebulaError::validation(format!("Invalid {}: {}", field, reason))
             }
@@ -265,9 +263,9 @@ impl From<CredentialError> for NebulaError {
             CredentialError::AlreadyExists { id } => {
                 NebulaError::validation(format!("Credential already exists: {}", id))
             }
-            CredentialError::TypeNotRegistered { credential_type } => {
-                NebulaError::validation(format!("Credential type not registered: {}", credential_type))
-            }
+            CredentialError::TypeNotRegistered { credential_type } => NebulaError::validation(
+                format!("Credential type not registered: {}", credential_type),
+            ),
             CredentialError::PermissionDenied { operation, reason } => {
                 NebulaError::permission_denied(&operation, &reason)
             }
@@ -276,17 +274,13 @@ impl From<CredentialError> for NebulaError {
             }
 
             // Authentication errors
-            CredentialError::Expired { id } => {
-                NebulaError::credential_invalid(&id, "expired")
-            }
+            CredentialError::Expired { id } => NebulaError::credential_invalid(&id, "expired"),
             CredentialError::AuthenticationFailed { reason } => {
                 NebulaError::authentication(&reason)
             }
 
             // Server/Infrastructure errors - retryable
-            CredentialError::NetworkFailed(msg) => {
-                NebulaError::network(&msg)
-            }
+            CredentialError::NetworkFailed(msg) => NebulaError::network(&msg),
             CredentialError::Timeout { operation } => {
                 NebulaError::timeout(&operation, std::time::Duration::from_secs(30))
             }
@@ -304,19 +298,14 @@ impl From<CredentialError> for NebulaError {
             }
 
             // Serialization errors
-            CredentialError::SerializationFailed(msg) |
-            CredentialError::DeserializationFailed(msg) => {
-                NebulaError::internal(msg)
-            }
+            CredentialError::SerializationFailed(msg)
+            | CredentialError::DeserializationFailed(msg) => NebulaError::internal(msg),
 
             // Conflict errors
-            CredentialError::CasConflict => {
-                NebulaError::internal("compare-and-swap conflict")
-            }
+            CredentialError::CasConflict => NebulaError::internal("compare-and-swap conflict"),
 
             // Internal/Custom errors
-            CredentialError::Internal(msg) |
-            CredentialError::Custom { message: msg } => {
+            CredentialError::Internal(msg) | CredentialError::Custom { message: msg } => {
                 NebulaError::internal(msg)
             }
         }
@@ -403,10 +392,12 @@ mod tests {
     #[test]
     fn test_error_is_retryable() {
         assert!(CredentialError::NetworkFailed("timeout".to_string()).is_retryable());
-        assert!(CredentialError::Timeout {
-            operation: "fetch".to_string()
-        }
-        .is_retryable());
+        assert!(
+            CredentialError::Timeout {
+                operation: "fetch".to_string()
+            }
+            .is_retryable()
+        );
         assert!(CredentialError::storage_failed("save", "db down").is_retryable());
 
         assert!(!CredentialError::not_found("id").is_retryable());

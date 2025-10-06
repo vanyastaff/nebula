@@ -3,7 +3,7 @@
 //! This example shows how to use Template for parse-once, render-many pattern
 //! with multiple {{ }} expressions in various formats (HTML, JSON, plain text)
 
-use nebula_expression::{ExpressionEngine, EvaluationContext, Template};
+use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
 use nebula_value::Value;
 
 fn main() {
@@ -15,7 +15,10 @@ fn main() {
     context.set_input(Value::text("Alice"));
     context.set_execution_var("order_id", Value::integer(12345));
 
-    let template = Template::new("Hello {{ $input }}! Your order #{{ $execution.order_id }} is being processed.").unwrap();
+    let template = Template::new(
+        "Hello {{ $input }}! Your order #{{ $execution.order_id }} is being processed.",
+    )
+    .unwrap();
     let result = template.render(&engine, &context).unwrap();
     println!("{}", result);
 
@@ -42,7 +45,10 @@ fn main() {
 </html>
 "#;
 
-    let result = Template::new(html_template).unwrap().render(&engine, &context).unwrap();
+    let result = Template::new(html_template)
+        .unwrap()
+        .render(&engine, &context)
+        .unwrap();
     println!("{}", result);
 
     // Example 3: JSON Template
@@ -64,7 +70,10 @@ fn main() {
   }
 }"#;
 
-    let result = Template::new(json_template).unwrap().render(&engine, &context).unwrap();
+    let result = Template::new(json_template)
+        .unwrap()
+        .render(&engine, &context)
+        .unwrap();
     println!("{}", result);
 
     // Example 4: Markdown Document
@@ -89,7 +98,10 @@ fn main() {
 *Generated on {{ now_iso() }}*
 "#;
 
-    let result = Template::new(markdown_template).unwrap().render(&engine, &context).unwrap();
+    let result = Template::new(markdown_template)
+        .unwrap()
+        .render(&engine, &context)
+        .unwrap();
     println!("{}", result);
 
     // Example 5: Complex expressions with functions
@@ -106,7 +118,10 @@ Report for {{ $execution.username }}:
 - Formatted: {{ $input | format_date("YYYY-MM-DD HH:mm") }}
 "#;
 
-    let result = Template::new(template).unwrap().render(&engine, &context).unwrap();
+    let result = Template::new(template)
+        .unwrap()
+        .render(&engine, &context)
+        .unwrap();
     println!("{}", result);
 
     // Example 6: Conditional content (using pipeline)
@@ -124,6 +139,9 @@ Tax (10%): ${{ $execution.quantity * $execution.unit_price * 0.1 | round(2) }}
 Total: ${{ $execution.quantity * $execution.unit_price * 1.1 | round(2) }}
 "#;
 
-    let result = Template::new(template).unwrap().render(&engine, &context).unwrap();
+    let result = Template::new(template)
+        .unwrap()
+        .render(&engine, &context)
+        .unwrap();
     println!("{}", result);
 }

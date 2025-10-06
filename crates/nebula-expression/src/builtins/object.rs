@@ -1,6 +1,6 @@
 //! Object manipulation functions
 
-use super::{check_arg_count};
+use super::check_arg_count;
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
@@ -8,7 +8,11 @@ use nebula_error::NebulaError;
 use nebula_value::Value;
 
 /// Get all keys of an object
-pub fn keys(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn keys(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("keys", args, 1)?;
     let obj = args[0]
         .as_object()
@@ -23,7 +27,11 @@ pub fn keys(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> Expr
 }
 
 /// Get all values of an object
-pub fn values(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
+pub fn values(
+    args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
     check_arg_count("values", args, 1)?;
     let obj = args[0]
         .as_object()

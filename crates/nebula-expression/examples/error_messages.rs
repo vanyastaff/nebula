@@ -3,7 +3,7 @@
 //! This example shows how the template engine provides detailed error messages
 //! with source code context and visual highlighting.
 
-use nebula_expression::{ExpressionEngine, EvaluationContext, Template};
+use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
 use nebula_value::Value;
 
 fn main() {
