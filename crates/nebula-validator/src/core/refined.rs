@@ -85,7 +85,8 @@ pub struct Refined<T, V> {
 
 impl<T, V> Refined<T, V>
 where
-    V: TypedValidator<Input = T, Output = ()>,
+    V: TypedValidator<Output = ()>,
+    T: std::borrow::Borrow<V::Input>,
 {
     /// Creates a new refined type by validating the value.
     ///
@@ -109,7 +110,7 @@ where
     /// assert!(invalid.is_err());
     /// ```
     pub fn new(value: T, validator: &V) -> Result<Self, V::Error> {
-        validator.validate(&value)?;
+        validator.validate(value.borrow())?;
         Ok(Self {
             value,
             _validator: PhantomData,
@@ -229,7 +230,8 @@ impl<T, V> Refined<T, V> {
     /// ```
     pub fn refine<V2>(self, validator: &V2) -> Result<Refined<T, V2>, V2::Error>
     where
-        V2: TypedValidator<Input = T, Output = ()>,
+        V2: TypedValidator<Output = ()>,
+        T: std::borrow::Borrow<V2::Input>,
     {
         Refined::new(self.value, validator)
     }

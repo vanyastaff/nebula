@@ -518,3 +518,31 @@ mod tests {
         assert_eq!(flattened.len(), 4); // root + 2 children + 1 grandchild
     }
 }
+
+// ============================================================================
+// NEBULA ERROR INTEGRATION
+// ============================================================================
+
+/// Convert ValidationError to NebulaError
+impl From<ValidationError> for nebula_error::NebulaError {
+    fn from(err: ValidationError) -> Self {
+        let mut message = format!("[{}] {}", err.code, err.message);
+
+        if let Some(field) = &err.field {
+            message = format!("{} (field: {})", message, field);
+        }
+
+        if !err.params.is_empty() {
+            message = format!("{} (params: {:?})", message, err.params);
+        }
+
+        nebula_error::NebulaError::validation(message)
+    }
+}
+
+/// Convert NebulaError to ValidationError
+impl From<nebula_error::NebulaError> for ValidationError {
+    fn from(err: nebula_error::NebulaError) -> Self {
+        ValidationError::new("nebula_error", err.to_string())
+    }
+}

@@ -23,12 +23,9 @@ base64 = "0.22.1"
 regex = "1.11.1"
 url = "2.4"
 
-# Errors
-anyhow = { workspace = true }
-thiserror = { workspace = true }
-
-# Logging
-tracing = { workspace = true }
+# Internal crates
+nebula-error = { path = "../nebula-error" }
+nebula-log = { path = "../nebula-log" }
 
 # Randomness
 rand = "0.8"
@@ -40,9 +37,6 @@ serde_json = { workspace = true }
 # Time and IDs
 chrono = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
-
-# Internal crates
-nebula-value = { path = "../nebula-value" }
 
 # Builder patterns
 bon = "3.2"

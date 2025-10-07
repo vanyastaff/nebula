@@ -313,152 +313,23 @@ pub trait ValidatorExt: TypedValidator + Sized {
         Cached::new(self)
     }
 
-    /// Adds a custom error message on validation failure.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use nebula_validator::prelude::*;
-    ///
-    /// let validator = MinLength { min: 5 }
-    ///     .with_message(|_| ValidationError::new("custom", "Too short!"));
-    /// ```
-    fn with_message<F>(self, message_fn: F) -> WithMessage<Self, F>
-    where
-        F: Fn(&Self::Error) -> Self::Error,
-    {
-        WithMessage::new(self, message_fn)
-    }
-
-    /// Adds a timeout to the validator.
-    ///
-    /// Useful for preventing slow validators from blocking.
-    #[cfg(feature = "async")]
-    fn with_timeout(self, duration: std::time::Duration) -> WithTimeout<Self> {
-        WithTimeout::new(self, duration)
-    }
 }
 
 // Automatically implement ValidatorExt for all TypedValidator implementations
 impl<T: TypedValidator> ValidatorExt for T {}
 
 // ============================================================================
-// FORWARD DECLARATIONS FOR COMBINATORS
+// IMPORT COMBINATOR TYPES
 // ============================================================================
-// These are defined in separate modules but declared here for the trait
+// Import the actual combinator implementations instead of duplicating them
 
-pub struct And<L, R> {
-    left: L,
-    right: R,
-}
-
-impl<L, R> And<L, R> {
-    pub fn new(left: L, right: R) -> Self {
-        Self { left, right }
-    }
-}
-
-pub struct Or<L, R> {
-    left: L,
-    right: R,
-}
-
-impl<L, R> Or<L, R> {
-    pub fn new(left: L, right: R) -> Self {
-        Self { left, right }
-    }
-}
-
-pub struct Not<V> {
-    inner: V,
-}
-
-impl<V> Not<V> {
-    pub fn new(inner: V) -> Self {
-        Self { inner }
-    }
-}
-
-pub struct Map<V, F> {
-    validator: V,
-    mapper: F,
-}
-
-impl<V, F> Map<V, F> {
-    pub fn new(validator: V, mapper: F) -> Self {
-        Self { validator, mapper }
-    }
-}
-
-pub struct When<V, C> {
-    validator: V,
-    condition: C,
-}
-
-impl<V, C> When<V, C> {
-    pub fn new(validator: V, condition: C) -> Self {
-        Self { validator, condition }
-    }
-}
-
-pub struct Optional<V> {
-    inner: V,
-}
-
-impl<V> Optional<V> {
-    pub fn new(inner: V) -> Self {
-        Self { inner }
-    }
-}
-
-pub struct Cached<V>
-where
-    V: TypedValidator,
-{
-    validator: V,
-    cache: std::sync::RwLock<std::collections::HashMap<u64, CacheEntry<V>>>,
-}
-
-impl<V> Cached<V>
-where
-    V: TypedValidator,
-{
-    pub fn new(validator: V) -> Self {
-        Self {
-            validator,
-            cache: std::sync::RwLock::new(std::collections::HashMap::new()),
-        }
-    }
-}
-
-struct CacheEntry<V: TypedValidator> {
-    output: Option<V::Output>,
-    error: Option<V::Error>,
-}
-
-pub struct WithMessage<V, F> {
-    validator: V,
-    message_fn: F,
-}
-
-impl<V, F> WithMessage<V, F> {
-    pub fn new(validator: V, message_fn: F) -> Self {
-        Self { validator, message_fn }
-    }
-}
-
-#[cfg(feature = "async")]
-pub struct WithTimeout<V> {
-    validator: V,
-    duration: std::time::Duration,
-}
-
-#[cfg(feature = "async")]
-impl<V> WithTimeout<V> {
-    pub fn new(validator: V, duration: std::time::Duration) -> Self {
-        Self { validator, duration }
-    }
-}
+pub use crate::combinators::and::And;
+pub use crate::combinators::or::Or;
+pub use crate::combinators::not::Not;
+pub use crate::combinators::map::Map;
+pub use crate::combinators::when::When;
+pub use crate::combinators::optional::Optional;
+pub use crate::combinators::cached::Cached;
 
 // ============================================================================
 // TESTS

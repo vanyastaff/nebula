@@ -412,6 +412,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::core::traits::ValidatorExt;
     use super::*;
     use crate::core::ValidationError;
     use std::sync::atomic::{AtomicUsize, Ordering};

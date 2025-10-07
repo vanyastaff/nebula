@@ -101,6 +101,7 @@ pub mod refined;
 pub mod state;
 pub mod traits;
 
+
 // Re-export everything at the core level for convenience
 pub use error::{ErrorSeverity, ValidationError, ValidationErrors};
 pub use metadata::{
@@ -109,13 +110,7 @@ pub use metadata::{
 };
 pub use refined::Refined;
 pub use state::{Parameter, ParameterBuilder, Unvalidated, Validated, ValidationGroup};
-pub use traits::{
-    And, AsyncValidator, Cached, Map, Not, Optional, Or, TypedValidator, ValidatorExt, When,
-    WithMessage,
-};
-
-#[cfg(feature = "async")]
-pub use traits::WithTimeout;
+pub use traits::{AsyncValidator, TypedValidator, ValidatorExt};
 
 // ============================================================================
 // PRELUDE
@@ -286,7 +281,8 @@ pub type ValidationResultMulti<T> = Result<T, ValidationErrors>;
 // ============================================================================
 
 #[cfg(test)]
-mod tests {
+mod core_tests {
+    use crate::core::traits::ValidatorExt;
     use super::*;
 
     #[test]

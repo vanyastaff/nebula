@@ -8,7 +8,6 @@ pub mod core;
 pub mod scalar;
 #[cfg(feature = "temporal")]
 pub mod temporal;
-pub mod validation;
 // Re-export core types
 pub use core::{
     NebulaError, NebulaResult, ResultExt,
@@ -16,6 +15,8 @@ pub use core::{
     limits::ValueLimits,
     value::Value,
 };
+
+
 // Re-export scalar and collection types
 pub use collections::{Array, Object};
 pub use scalar::{Boolean, Bytes, Float, Integer, Text};
@@ -43,3 +44,4 @@ pub mod prelude {
     #[cfg(feature = "serde")]
     pub use serde_json::json;
 }
+

@@ -432,11 +432,13 @@ mod laws {
 
     #[test]
     fn test_short_circuit() {
+        use std::cell::Cell;
+
         // If left succeeds, right should not be evaluated
-        let mut right_called = false;
+        let right_called = Cell::new(false);
 
         struct ChecksCall<'a> {
-            flag: &'a mut bool,
+            flag: &'a Cell<bool>,
         }
 
         impl<'a> TypedValidator for ChecksCall<'a> {
@@ -444,21 +446,21 @@ mod laws {
             type Output = ();
             type Error = ValidationError;
             fn validate(&self, _: &str) -> Result<(), ValidationError> {
-                *self.flag = true;
+                self.flag.set(true);
                 Ok(())
             }
         }
 
         let left = AlwaysValid;
         let right = ChecksCall {
-            flag: &mut right_called,
+            flag: &right_called,
         };
 
         let validator = Or::new(left, right);
         let _ = validator.validate("test");
 
         // Right should not have been called
-        assert!(!right_called);
+        assert!(!right_called.get());
     }
 
     #[test]
@@ -488,6 +490,7 @@ mod laws {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{TypedValidator, ValidatorExt};
 
     struct ExactLength {
         length: usize,

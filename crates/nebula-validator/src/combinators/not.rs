@@ -300,6 +300,7 @@ mod laws {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{TypedValidator, ValidatorExt};
 
     struct Contains {
         substring: String,

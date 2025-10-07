@@ -3168,23 +3168,21 @@ dependencies = [
 name = "nebula-validator"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "base64 0.22.1",
  "bon",
  "chrono",
  "dashmap 5.5.3",
  "futures",
- "nebula-value",
+ "nebula-error",
+ "nebula-log",
  "pretty_assertions",
  "rand 0.8.5",
  "regex",
  "serde",
  "serde_json",
- "thiserror 2.0.16",
  "tokio",
  "tokio-test",
- "tracing",
  "url",
  "uuid",
 ]

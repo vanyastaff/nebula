@@ -273,6 +273,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::core::traits::ValidatorExt;
     use super::*;
     use crate::core::ValidationError;
 
@@ -314,8 +315,8 @@ mod tests {
     #[test]
     fn test_when_chain() {
         let validator = MinLength { min: 5 }
-            .when(|s: &&str| s.starts_with("check_"))
-            .when(|s: &&str| !s.is_empty());
+            .when(|s: &str| s.starts_with("check_"))
+            .when(|s: &str| !s.is_empty());
 
         assert!(validator.validate("").is_ok()); // empty, second condition false
         assert!(validator.validate("other").is_ok()); // first condition false
@@ -334,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_unless() {
-        let validator = unless(MinLength { min: 10 }, |s: &&str| s.starts_with("skip_"));
+        let validator = unless(MinLength { min: 10 }, |s: &str| s.starts_with("skip_"));
 
         assert!(validator.validate("skip_short").is_ok()); // skipped
         assert!(validator.validate("short").is_err()); // not skipped, too short
@@ -363,7 +364,7 @@ mod tests {
 
     #[test]
     fn test_when_with_complex_condition() {
-        let validator = MinLength { min: 10 }.when(|s: &&str| {
+        let validator = MinLength { min: 10 }.when(|s: &str| {
             s.starts_with("long_") && s.contains("_test")
         });
 

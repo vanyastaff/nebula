@@ -235,7 +235,7 @@ mod laws {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::core::{TypedValidator, ValidationError};
+    use crate::core::{TypedValidator, ValidationError, ValidatorExt};
 
     struct MinLength {
         min: usize,
@@ -278,7 +278,7 @@ mod integration_tests {
         // Build a complex validator using multiple combinators
         let validator = MinLength { min: 5 }
             .and(MaxLength { max: 20 })
-            .when(|s: &&str| !s.is_empty())
+            .when(|s: &str| !s.is_empty())
             .optional();
 
         // Test various cases
@@ -366,7 +366,7 @@ mod doc_tests {
     //! These tests verify that documentation examples compile and work.
 
     use super::*;
-    use crate::core::{TypedValidator, ValidationError};
+    use crate::core::{TypedValidator, ValidationError, ValidatorExt};
 
     struct Contains {
         substring: String,

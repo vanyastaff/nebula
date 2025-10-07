@@ -315,7 +315,7 @@ where
 #[cfg(test)]
 mod laws {
     use super::*;
-    use crate::core::ValidationError;
+    use crate::core::{ValidationError, traits::ValidatorExt};
 
     struct Identity;
     impl TypedValidator for Identity {
@@ -379,7 +379,7 @@ mod laws {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::ValidationError;
+    use crate::core::{ValidationError, traits::ValidatorExt};
 
     struct MinLength {
         min: usize,

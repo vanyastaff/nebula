@@ -41,10 +41,10 @@ pub mod kind;
 pub mod limits;
 pub mod ops;
 pub mod path;
-pub mod value;
-
 #[cfg(feature = "serde")]
 pub mod serde;
+pub mod value;
+
 
 pub use conversions::ValueConversion;
 /// Convenient re-exports of the most commonly used core types.
@@ -65,5 +65,7 @@ pub mod prelude {
     pub use super::{
         NebulaError, NebulaResult, PathSegment, Value, ValueErrorExt, ValueResult, ValueResultExt,
     };
-    pub use nebula_error::{ErrorContext, ResultExt};
+    pub use nebula_error::ErrorContext;
 }
+
+

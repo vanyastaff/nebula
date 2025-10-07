@@ -124,9 +124,10 @@ impl<T> Parameter<T, Unvalidated> {
     /// ```
     pub fn validate<V>(self, validator: &V) -> Result<Parameter<T, Validated<V>>, V::Error>
     where
-        V: TypedValidator<Input = T, Output = ()>,
+        V: TypedValidator<Output = ()>,
+        T: std::borrow::Borrow<V::Input>,
     {
-        validator.validate(&self.value)?;
+        validator.validate(self.value.borrow())?;
         Ok(Parameter {
             value: self.value,
             _state: PhantomData,
@@ -151,10 +152,11 @@ impl<T> Parameter<T, Unvalidated> {
         validators: Vec<&V>,
     ) -> Result<Parameter<T, Validated<V>>, V::Error>
     where
-        V: TypedValidator<Input = T, Output = ()>,
+        V: TypedValidator<Output = ()>,
+        T: std::borrow::Borrow<V::Input>,
     {
         for validator in validators {
-            validator.validate(&self.value)?;
+            validator.validate(self.value.borrow())?;
         }
         Ok(Parameter {
             value: self.value,
@@ -167,9 +169,10 @@ impl<T> Parameter<T, Unvalidated> {
     /// Useful when you want to validate but don't need the type-level proof.
     pub fn validate_in_place<V>(&self, validator: &V) -> Result<(), V::Error>
     where
-        V: TypedValidator<Input = T, Output = ()>,
+        V: TypedValidator<Output = ()>,
+        T: std::borrow::Borrow<V::Input>,
     {
-        validator.validate(&self.value)
+        validator.validate(self.value.borrow())
     }
 
     /// Skips validation and marks as validated (unsafe).
