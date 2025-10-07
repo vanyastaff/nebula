@@ -1,430 +1,495 @@
-//! Core validation traits for nebula-validator
+//! Core traits for the validation system
+//!
+//! This module defines the fundamental traits that all validators must implement.
 
-use async_trait::async_trait;
-use nebula_value::Value;
-use std::collections::HashMap;
+use crate::core::{ValidationError, ValidatorMetadata};
+use std::future::Future;
 
-use super::{Invalid, Valid};
+// ============================================================================
+// CORE VALIDATOR TRAIT
+// ============================================================================
 
-/// Main validation trait - the core interface for all validators
-#[async_trait]
-pub trait Validator: Send + Sync {
-    /// Validate a value with optional context for cross-field validation
-    async fn validate(
-        &self,
-        value: &Value,
-        context: Option<&ValidationContext>,
-    ) -> Result<Valid<()>, Invalid<()>>;
+/// The core trait that all validators must implement.
+///
+/// This trait is generic over the input type, allowing for compile-time
+/// type safety while maintaining flexibility.
+///
+/// # Type Parameters
+///
+/// * `Input` - The type being validated (can be `?Sized` for DSTs like `str`)
+/// * `Output` - The result of successful validation (often `()` or a refined type)
+/// * `Error` - The error type returned on validation failure
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_validator::core::{TypedValidator, ValidationError};
+///
+/// struct MinLength {
+///     min: usize,
+/// }
+///
+/// impl TypedValidator for MinLength {
+///     type Input = str;
+///     type Output = ();
+///     type Error = ValidationError;
+///
+///     fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+///         if input.len() >= self.min {
+///             Ok(())
+///         } else {
+///             Err(ValidationError::new(
+///                 "min_length",
+///                 format!("Must be at least {} characters", self.min),
+///             ))
+///         }
+///     }
+/// }
+/// ```
+pub trait TypedValidator {
+    /// The type of input being validated.
+    ///
+    /// Use `?Sized` to allow validation of unsized types like `str` and `[T]`.
+    type Input: ?Sized;
 
-    /// Get the validator name/identifier
-    fn name(&self) -> &str;
+    /// The type returned on successful validation.
+    ///
+    /// This is often `()` for simple validators, but can be a refined type
+    /// that carries additional guarantees.
+    type Output;
 
-    /// Get optional description of what this validator does
-    fn description(&self) -> Option<&str> {
-        None
+    /// The error type returned on validation failure.
+    ///
+    /// Should implement `std::error::Error` for interoperability.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Validates the input value.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - The value to validate
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(output)` if validation succeeds
+    /// * `Err(error)` if validation fails
+    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error>;
+
+    /// Returns metadata about this validator.
+    ///
+    /// Override this to provide introspection capabilities.
+    fn metadata(&self) -> ValidatorMetadata {
+        ValidatorMetadata::default()
     }
 
-    /// Get validation complexity level (for optimization)
-    fn complexity(&self) -> ValidationComplexity {
-        ValidationComplexity::Simple
-    }
-
-    /// Whether this validator can be cached
-    fn is_cacheable(&self) -> bool {
-        true
-    }
-}
-
-/// Validation context for cross-field validation
-#[derive(Debug, Clone)]
-pub struct ValidationContext {
-    /// The root object being validated (for cross-field access)
-    pub root_object: Value,
-
-    /// Current field path (e.g., "user.profile.email")
-    pub current_path: String,
-
-    /// Additional metadata that can be passed to validators
-    pub metadata: HashMap<String, Value>,
-}
-
-/// Lightweight validation context with references to avoid cloning
-#[derive(Debug)]
-pub struct ValidationContextRef<'a> {
-    /// Reference to the root object being validated
-    pub root_object: &'a Value,
-
-    /// Current field path
-    pub current_path: &'a str,
-
-    /// Additional metadata
-    pub metadata: &'a HashMap<String, Value>,
-}
-
-impl ValidationContext {
-    /// Create a new validation context
-    pub fn new(root_object: Value, current_path: String) -> Self {
-        Self {
-            root_object,
-            current_path,
-            metadata: HashMap::new(),
-        }
-    }
-
-    /// Create a simple context with just the root object
-    pub fn simple(root_object: Value) -> Self {
-        Self::new(root_object, String::new())
-    }
-
-    /// Get value at a specific path in the root object
-    pub fn get_field(&self, path: &str) -> Option<&Value> {
-        get_nested_value(&self.root_object, path)
-    }
-
-    /// Get value of a sibling field (same parent)
-    pub fn get_sibling(&self, field_name: &str) -> Option<&Value> {
-        if let Some(parent_path) = self.current_path.rfind('.') {
-            let parent = &self.current_path[..parent_path];
-            let sibling_path = format!("{}.{}", parent, field_name);
-            self.get_field(&sibling_path)
-        } else {
-            // We're at root level, so sibling is just the field name
-            self.get_field(field_name)
-        }
-    }
-
-    /// Add metadata to the context
-    pub fn with_metadata(mut self, key: String, value: Value) -> Self {
-        self.metadata.insert(key, value);
-        self
-    }
-
-    /// Get metadata value
-    pub fn get_metadata(&self, key: &str) -> Option<&Value> {
-        self.metadata.get(key)
-    }
-
-    /// Create a child context for nested validation (expensive due to cloning)
-    pub fn child_context(&self, field_name: &str) -> ValidationContext {
-        let new_path = if self.current_path.is_empty() {
-            field_name.to_string()
-        } else {
-            format!("{}.{}", self.current_path, field_name)
-        };
-
-        ValidationContext {
-            root_object: self.root_object.clone(),
-            current_path: new_path,
-            metadata: self.metadata.clone(),
-        }
-    }
-
-    /// Create a lightweight reference-based child context (more efficient)
-    pub fn child_context_ref<'a>(
-        &'a self,
-        _field_name: &'a str,
-        full_path: &'a str,
-    ) -> ValidationContextRef<'a> {
-        ValidationContextRef {
-            root_object: &self.root_object,
-            current_path: full_path,
-            metadata: &self.metadata,
-        }
-    }
-
-    /// Convert to reference-based context
-    pub fn as_ref(&self) -> ValidationContextRef<'_> {
-        ValidationContextRef {
-            root_object: &self.root_object,
-            current_path: &self.current_path,
-            metadata: &self.metadata,
-        }
+    /// Returns the name of this validator.
+    ///
+    /// Used for debugging and error messages.
+    fn name(&self) -> &str {
+        std::any::type_name::<Self>()
     }
 }
 
-impl<'a> ValidationContextRef<'a> {
-    /// Get value at a specific path in the root object
-    pub fn get_field(&self, path: &str) -> Option<&Value> {
-        get_nested_value(self.root_object, path)
+// ============================================================================
+// ASYNC VALIDATOR TRAIT
+// ============================================================================
+
+/// Async version of the validator trait.
+///
+/// Use this for validators that need to perform I/O operations,
+/// such as database lookups or API calls.
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_validator::core::{AsyncValidator, ValidationError};
+///
+/// struct EmailExists {
+///     db_pool: DatabasePool,
+/// }
+///
+/// #[async_trait::async_trait]
+/// impl AsyncValidator for EmailExists {
+///     type Input = str;
+///     type Output = ();
+///     type Error = ValidationError;
+///
+///     async fn validate_async(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+///         let exists = self.db_pool.check_email_exists(input).await?;
+///         if exists {
+///             Ok(())
+///         } else {
+///             Err(ValidationError::new("email_not_found", "Email does not exist"))
+///         }
+///     }
+/// }
+/// ```
+#[async_trait::async_trait]
+pub trait AsyncValidator: Send + Sync {
+    /// The type of input being validated.
+    type Input: ?Sized + Sync;
+
+    /// The type returned on successful validation.
+    type Output: Send;
+
+    /// The error type returned on validation failure.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Asynchronously validates the input value.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - The value to validate
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(output)` if validation succeeds
+    /// * `Err(error)` if validation fails
+    async fn validate_async(&self, input: &Self::Input) -> Result<Self::Output, Self::Error>;
+
+    /// Returns metadata about this validator.
+    fn metadata(&self) -> ValidatorMetadata {
+        ValidatorMetadata::default()
     }
 
-    /// Get value of a sibling field (same parent)
-    pub fn get_sibling(&self, field_name: &str) -> Option<&Value> {
-        if let Some(parent_path) = self.current_path.rfind('.') {
-            let parent = &self.current_path[..parent_path];
-            let sibling_path = format!("{}.{}", parent, field_name);
-            self.get_field(&sibling_path)
-        } else {
-            self.get_field(field_name)
-        }
-    }
-
-    /// Get metadata value
-    pub fn get_metadata(&self, key: &str) -> Option<&Value> {
-        self.metadata.get(key)
+    /// Returns the name of this validator.
+    fn name(&self) -> &str {
+        std::any::type_name::<Self>()
     }
 }
 
-/// Validation complexity levels
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ValidationComplexity {
-    /// O(1) - Simple check
-    Simple,
-    /// O(n) - Linear with input size
-    Moderate,
-    /// O(n²) - Quadratic complexity
-    Complex,
-    /// O(n³) or higher - Very complex
-    VeryComplex,
-}
+// ============================================================================
+// VALIDATOR EXTENSION TRAIT
+// ============================================================================
 
-impl ValidationComplexity {
-    /// Combine two complexity levels (takes the higher one)
-    pub fn combine(self, other: Self) -> Self {
-        std::cmp::max(self, other)
+/// Extension trait providing combinator methods for validators.
+///
+/// This trait is automatically implemented for all types that implement
+/// `TypedValidator`, providing a fluent API for composing validators.
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_validator::prelude::*;
+///
+/// let validator = MinLength { min: 5 }
+///     .and(MaxLength { max: 20 })
+///     .and(AlphanumericOnly);
+///
+/// assert!(validator.validate("hello").is_ok());
+/// assert!(validator.validate("hi").is_err());
+/// ```
+pub trait ValidatorExt: TypedValidator + Sized {
+    /// Combines two validators with logical AND.
+    ///
+    /// Both validators must pass for the combined validator to succeed.
+    /// Short-circuits on the first failure.
+    ///
+    /// # Type Constraints
+    ///
+    /// The other validator must validate the same input type and return
+    /// the same error type.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nebula_validator::prelude::*;
+    ///
+    /// let validator = MinLength { min: 3 }.and(MaxLength { max: 10 });
+    /// assert!(validator.validate("hello").is_ok());
+    /// assert!(validator.validate("hi").is_err()); // too short
+    /// assert!(validator.validate("verylongstring").is_err()); // too long
+    /// ```
+    fn and<V>(self, other: V) -> And<Self, V>
+    where
+        V: TypedValidator<Input = Self::Input, Error = Self::Error>,
+    {
+        And::new(self, other)
+    }
+
+    /// Combines two validators with logical OR.
+    ///
+    /// At least one validator must pass for the combined validator to succeed.
+    /// Short-circuits on the first success.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nebula_validator::prelude::*;
+    ///
+    /// let validator = ExactLength { length: 5 }.or(ExactLength { length: 10 });
+    /// assert!(validator.validate("hello").is_ok()); // length 5
+    /// assert!(validator.validate("helloworld").is_ok()); // length 10
+    /// assert!(validator.validate("hi").is_err()); // neither 5 nor 10
+    /// ```
+    fn or<V>(self, other: V) -> Or<Self, V>
+    where
+        V: TypedValidator<Input = Self::Input, Output = Self::Output, Error = Self::Error>,
+    {
+        Or::new(self, other)
+    }
+
+    /// Inverts the validator with logical NOT.
+    ///
+    /// The combined validator succeeds if the original validator fails,
+    /// and vice versa.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nebula_validator::prelude::*;
+    ///
+    /// let validator = Contains { substring: "test" }.not();
+    /// assert!(validator.validate("hello world").is_ok()); // doesn't contain "test"
+    /// assert!(validator.validate("test string").is_err()); // contains "test"
+    /// ```
+    fn not(self) -> Not<Self> {
+        Not::new(self)
+    }
+
+    /// Maps the output of a successful validation.
+    ///
+    /// This allows transforming the validation result without changing
+    /// the validation logic.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nebula_validator::prelude::*;
+    ///
+    /// let validator = MinLength { min: 5 }.map(|_| "Valid!");
+    /// assert_eq!(validator.validate("hello").unwrap(), "Valid!");
+    /// ```
+    fn map<F, O>(self, f: F) -> Map<Self, F>
+    where
+        F: Fn(Self::Output) -> O,
+    {
+        Map::new(self, f)
+    }
+
+    /// Makes validation conditional based on a predicate.
+    ///
+    /// The validator only runs if the condition returns `true`.
+    /// If the condition returns `false`, validation is skipped.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nebula_validator::prelude::*;
+    ///
+    /// let validator = MinLength { min: 10 }.when(|s: &&str| s.starts_with("long"));
+    /// assert!(validator.validate("longstring123").is_ok()); // checked, passes
+    /// assert!(validator.validate("short").is_ok()); // not checked, skipped
+    /// ```
+    fn when<C>(self, condition: C) -> When<Self, C>
+    where
+        C: Fn(&Self::Input) -> bool,
+    {
+        When::new(self, condition)
+    }
+
+    /// Makes a validator optional.
+    ///
+    /// The validator succeeds if the input is `None` or if validation passes.
+    fn optional(self) -> Optional<Self> {
+        Optional::new(self)
+    }
+
+    /// Adds caching to the validator.
+    ///
+    /// Results are cached based on the input value's hash.
+    /// Use with caution for validators with side effects.
+    ///
+    /// # Requirements
+    ///
+    /// - Input must be `Hash` and `Eq`
+    /// - Output and Error must be `Clone`
+    fn cached(self) -> Cached<Self>
+    where
+        Self::Input: std::hash::Hash + Eq,
+        Self::Output: Clone,
+        Self::Error: Clone,
+    {
+        Cached::new(self)
+    }
+
+    /// Adds a custom error message on validation failure.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nebula_validator::prelude::*;
+    ///
+    /// let validator = MinLength { min: 5 }
+    ///     .with_message(|_| ValidationError::new("custom", "Too short!"));
+    /// ```
+    fn with_message<F>(self, message_fn: F) -> WithMessage<Self, F>
+    where
+        F: Fn(&Self::Error) -> Self::Error,
+    {
+        WithMessage::new(self, message_fn)
+    }
+
+    /// Adds a timeout to the validator.
+    ///
+    /// Useful for preventing slow validators from blocking.
+    #[cfg(feature = "async")]
+    fn with_timeout(self, duration: std::time::Duration) -> WithTimeout<Self> {
+        WithTimeout::new(self, duration)
     }
 }
 
-/// Extension trait for Validator to provide convenient combinators
-pub trait ValidatorExt: Validator + Sized {
-    /// Combine this validator with another using AND logic
-    fn and<V: Validator>(self, other: V) -> AndValidator<Self, V> {
-        AndValidator::new(self, other)
-    }
+// Automatically implement ValidatorExt for all TypedValidator implementations
+impl<T: TypedValidator> ValidatorExt for T {}
 
-    /// Combine this validator with another using OR logic
-    fn or<V: Validator>(self, other: V) -> OrValidator<Self, V> {
-        OrValidator::new(self, other)
-    }
+// ============================================================================
+// FORWARD DECLARATIONS FOR COMBINATORS
+// ============================================================================
+// These are defined in separate modules but declared here for the trait
 
-    /// Negate this validator (NOT logic)
-    fn not(self) -> NotValidator<Self> {
-        NotValidator::new(self)
-    }
-
-    /// Make this validator conditional based on a condition
-    fn when<C: Validator>(self, condition: C) -> ConditionalValidator<Self, C> {
-        ConditionalValidator::new(self, condition)
-    }
-}
-
-// Implement ValidatorExt for all types that implement Validator
-impl<T: Validator> ValidatorExt for T {}
-
-// ============= Logical Combinators =============
-
-/// AND combinator - both validators must pass (uses static dispatch for better performance)
-pub struct AndValidator<L, R>
-where
-    L: Validator,
-    R: Validator,
-{
+pub struct And<L, R> {
     left: L,
     right: R,
-    name: String,
 }
 
-impl<L: Validator, R: Validator> AndValidator<L, R> {
+impl<L, R> And<L, R> {
     pub fn new(left: L, right: R) -> Self {
-        let name = format!("({} AND {})", left.name(), right.name());
-        Self { left, right, name }
+        Self { left, right }
     }
 }
 
-#[async_trait]
-impl<L: Validator, R: Validator> Validator for AndValidator<L, R> {
-    async fn validate(
-        &self,
-        value: &Value,
-        context: Option<&ValidationContext>,
-    ) -> Result<Valid<()>, Invalid<()>> {
-        // Both must pass - collect all errors
-        let left_result = self.left.validate(value, context).await;
-        let right_result = self.right.validate(value, context).await;
-
-        match (left_result, right_result) {
-            (Ok(_), Ok(_)) => Ok(Valid::simple(())),
-            (Err(left_invalid), Err(right_invalid)) => {
-                // Combine errors from both validators
-                Err(left_invalid
-                    .combine(right_invalid)
-                    .with_validator_name(&self.name))
-            }
-            (Err(invalid), _) => Err(invalid.with_validator_name(&self.name)),
-            (_, Err(invalid)) => Err(invalid.with_validator_name(&self.name)),
-        }
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn complexity(&self) -> ValidationComplexity {
-        self.left.complexity().combine(self.right.complexity())
-    }
-}
-
-/// OR combinator - at least one validator must pass (uses static dispatch for better performance)
-pub struct OrValidator<L, R>
-where
-    L: Validator,
-    R: Validator,
-{
+pub struct Or<L, R> {
     left: L,
     right: R,
-    name: String,
 }
 
-impl<L: Validator, R: Validator> OrValidator<L, R> {
+impl<L, R> Or<L, R> {
     pub fn new(left: L, right: R) -> Self {
-        let name = format!("({} OR {})", left.name(), right.name());
-        Self { left, right, name }
+        Self { left, right }
     }
 }
 
-#[async_trait]
-impl<L: Validator, R: Validator> Validator for OrValidator<L, R> {
-    async fn validate(
-        &self,
-        value: &Value,
-        context: Option<&ValidationContext>,
-    ) -> Result<Valid<()>, Invalid<()>> {
-        // Try both - if either passes, succeed; if both fail, combine errors
-        let left_result = self.left.validate(value, context).await;
-        let right_result = self.right.validate(value, context).await;
+pub struct Not<V> {
+    inner: V,
+}
 
-        match (left_result, right_result) {
-            (Ok(valid), _) | (_, Ok(valid)) => Ok(valid),
-            (Err(left_invalid), Err(right_invalid)) => {
-                // Both failed - combine errors with context
-                Err(left_invalid
-                    .combine(right_invalid)
-                    .with_context("All OR conditions failed")
-                    .with_validator_name(&self.name))
-            }
-        }
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn complexity(&self) -> ValidationComplexity {
-        // OR can short-circuit, so take the simpler complexity
-        std::cmp::min(self.left.complexity(), self.right.complexity())
+impl<V> Not<V> {
+    pub fn new(inner: V) -> Self {
+        Self { inner }
     }
 }
 
-/// NOT combinator - validator must fail for this to pass (uses static dispatch for better performance)
-pub struct NotValidator<V>
-where
-    V: Validator,
-{
+pub struct Map<V, F> {
     validator: V,
-    name: String,
+    mapper: F,
 }
 
-impl<V: Validator> NotValidator<V> {
-    pub fn new(validator: V) -> Self {
-        let name = format!("NOT {}", validator.name());
-        Self { validator, name }
-    }
-}
-
-#[async_trait]
-impl<V: Validator> Validator for NotValidator<V> {
-    async fn validate(
-        &self,
-        value: &Value,
-        context: Option<&ValidationContext>,
-    ) -> Result<Valid<()>, Invalid<()>> {
-        match self.validator.validate(value, context).await {
-            Ok(_) => {
-                // Validator passed, so NOT fails
-                Err(Invalid::simple(format!(
-                    "NOT condition failed: {} should not be valid",
-                    self.validator.name()
-                )))
-            }
-            Err(_) => {
-                // Validator failed, so NOT passes
-                Ok(Valid::simple(()))
-            }
-        }
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn complexity(&self) -> ValidationComplexity {
-        self.validator.complexity()
+impl<V, F> Map<V, F> {
+    pub fn new(validator: V, mapper: F) -> Self {
+        Self { validator, mapper }
     }
 }
 
-/// Conditional validator - only run if condition passes (uses static dispatch for better performance)
-pub struct ConditionalValidator<V, C>
-where
-    V: Validator,
-    C: Validator,
-{
+pub struct When<V, C> {
     validator: V,
     condition: C,
-    name: String,
 }
 
-impl<V: Validator, C: Validator> ConditionalValidator<V, C> {
+impl<V, C> When<V, C> {
     pub fn new(validator: V, condition: C) -> Self {
-        let name = format!("{} WHEN {}", validator.name(), condition.name());
+        Self { validator, condition }
+    }
+}
+
+pub struct Optional<V> {
+    inner: V,
+}
+
+impl<V> Optional<V> {
+    pub fn new(inner: V) -> Self {
+        Self { inner }
+    }
+}
+
+pub struct Cached<V>
+where
+    V: TypedValidator,
+{
+    validator: V,
+    cache: std::sync::RwLock<std::collections::HashMap<u64, CacheEntry<V>>>,
+}
+
+impl<V> Cached<V>
+where
+    V: TypedValidator,
+{
+    pub fn new(validator: V) -> Self {
         Self {
             validator,
-            condition,
-            name,
+            cache: std::sync::RwLock::new(std::collections::HashMap::new()),
         }
     }
 }
 
-#[async_trait]
-impl<V: Validator, C: Validator> Validator for ConditionalValidator<V, C> {
-    async fn validate(
-        &self,
-        value: &Value,
-        context: Option<&ValidationContext>,
-    ) -> Result<Valid<()>, Invalid<()>> {
-        // Check condition first
-        if self.condition.validate(value, context).await.is_ok() {
-            // Condition passed, run the actual validator
-            self.validator.validate(value, context).await
-        } else {
-            // Condition failed, so this validator is skipped (considered passing)
-            Ok(Valid::simple(()))
-        }
-    }
+struct CacheEntry<V: TypedValidator> {
+    output: Option<V::Output>,
+    error: Option<V::Error>,
+}
 
-    fn name(&self) -> &str {
-        &self.name
-    }
+pub struct WithMessage<V, F> {
+    validator: V,
+    message_fn: F,
+}
 
-    fn complexity(&self) -> ValidationComplexity {
-        self.validator
-            .complexity()
-            .combine(self.condition.complexity())
+impl<V, F> WithMessage<V, F> {
+    pub fn new(validator: V, message_fn: F) -> Self {
+        Self { validator, message_fn }
     }
 }
 
-// ============= Helper Functions =============
+#[cfg(feature = "async")]
+pub struct WithTimeout<V> {
+    validator: V,
+    duration: std::time::Duration,
+}
 
-/// Get nested value from JSON object using dot notation path
-///
-/// Note: Temporarily disabled as nebula-value v2's Array/Object use serde_json::Value internally
-/// and don't yet support full path traversal returning nebula_value::Value references.
-/// This will be re-enabled once the collections are migrated to store nebula_value::Value.
-fn get_nested_value<'a>(_value: &'a Value, path: &str) -> Option<&'a Value> {
-    if path.is_empty() {
-        return Some(_value);
+#[cfg(feature = "async")]
+impl<V> WithTimeout<V> {
+    pub fn new(validator: V, duration: std::time::Duration) -> Self {
+        Self { validator, duration }
+    }
+}
+
+// ============================================================================
+// TESTS
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Simple test validator
+    struct AlwaysValid;
+
+    impl TypedValidator for AlwaysValid {
+        type Input = str;
+        type Output = ();
+        type Error = ValidationError;
+
+        fn validate(&self, _input: &Self::Input) -> Result<Self::Output, Self::Error> {
+            Ok(())
+        }
     }
 
-    // TODO: Re-implement once nebula-value v2 collections support nested Value access
-    // For now, ValidationContext path-based access is disabled
-    None
+    #[test]
+    fn test_validator_trait() {
+        let validator = AlwaysValid;
+        assert!(validator.validate("test").is_ok());
+    }
+
+    #[test]
+    fn test_validator_name() {
+        let validator = AlwaysValid;
+        assert!(validator.name().contains("AlwaysValid"));
+    }
 }

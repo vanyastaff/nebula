@@ -1,30 +1,50 @@
-//! Validator implementations
+//! Built-in validators
 //!
-//! This module contains concrete validator implementations organized by category.
+//! This module provides a comprehensive set of ready-to-use validators
+//! for common validation scenarios.
+//!
+//! # Categories
+//!
+//! - **String**: Length, patterns, case, formats (email, URL, UUID)
+//! - **Numeric**: Range, properties (even, odd, positive)
+//! - **Collection**: Size, elements, structure
+//! - **Logical**: Boolean, nullable
+//! - **Bridge**: Legacy support for nebula-value::Value
+//!
+//! # Examples
+//!
+//! ```rust
+//! use nebula_validator::validators::prelude::*;
+//!
+//! // String validation
+//! let username = min_length(3).and(max_length(20)).and(alphanumeric());
+//!
+//! // Numeric validation
+//! let age = in_range(18, 100);
+//!
+//! // Collection validation
+//! let tags = min_size(1).and(max_size(10));
+//!
+//! // Composition
+//! let email_validator = not_empty().and(email());
+//! ```
 
-pub mod basic;
 pub mod collection;
-pub mod comparison;
-pub mod cross_field;
-pub mod dimensions;
-pub mod files;
+pub mod logical;
 pub mod numeric;
-pub mod patterns;
-pub mod sets;
 pub mod string;
-pub mod structural;
-pub mod types;
 
-// Re-export all validators for easy access
-pub use basic::*;
+// Re-export all validators
 pub use collection::*;
-pub use comparison::*;
-pub use cross_field::*;
-pub use dimensions::*;
-pub use files::*;
+pub use logical::*;
 pub use numeric::*;
-pub use patterns::*;
-pub use sets::*;
 pub use string::*;
-pub use structural::*;
-pub use types::*;
+
+
+/// Prelude with all validators.
+pub mod prelude {
+    pub use super::collection::prelude::*;
+    pub use super::logical::prelude::*;
+    pub use super::numeric::prelude::*;
+    pub use super::string::prelude::*;
+}

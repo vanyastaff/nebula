@@ -45,7 +45,8 @@
       "Bash(export MIRIFLAGS=\"-Zmiri-permissive-provenance\")",
       "Bash(rm:*)",
       "Bash(tree:*)",
-      "Bash(test:*)"
+      "Bash(test:*)",
+      "Bash(timeout 180 cargo test --test validator_derive)"
     ],
     "deny": [],
     "ask": []
