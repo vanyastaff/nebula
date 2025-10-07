@@ -19,7 +19,7 @@
 //! ```
 
 use crate::core::{TypedValidator, ValidatorMetadata, ValidationComplexity};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::RwLock;
 
@@ -44,21 +44,30 @@ use std::sync::RwLock;
 /// # Cache Behavior
 ///
 /// - Thread-safe using `RwLock`
-/// - No automatic eviction (unbounded cache)
+/// - **LRU eviction policy** with configurable capacity (default: 1000 entries)
 /// - Cache persists for the lifetime of the validator
+/// - Tracks hit/miss statistics
 ///
 /// # Examples
 ///
 /// ```rust
 /// use nebula_validator::prelude::*;
 ///
+/// // Default capacity (1000 entries)
 /// let validator = RegexValidator::new(r"^\d+$").cached();
+///
+/// // Custom capacity
+/// let validator = RegexValidator::new(r"^\d+$").cached_with_capacity(100);
 ///
 /// // First call: compiles and runs regex
 /// validator.validate("12345")?;
 ///
 /// // Second call: returns cached result
 /// validator.validate("12345")?; // Much faster!
+///
+/// // Check statistics
+/// let stats = validator.cache_stats();
+/// println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
 /// ```
 ///
 /// # Warning
@@ -76,7 +85,19 @@ where
     V: TypedValidator,
 {
     pub(crate) validator: V,
-    pub(crate) cache: RwLock<HashMap<u64, CacheEntry<V>>>,
+    pub(crate) cache: RwLock<LruCache<V>>,
+}
+
+/// LRU cache implementation for validation results.
+struct LruCache<V>
+where
+    V: TypedValidator,
+{
+    map: HashMap<u64, CacheEntry<V>>,
+    order: VecDeque<u64>, // LRU order: front = most recent, back = least recent
+    capacity: usize,
+    hits: u64,
+    misses: u64,
 }
 
 /// Cached validation result.
@@ -88,19 +109,110 @@ where
     result: Result<V::Output, V::Error>,
 }
 
+/// Default cache capacity (1000 entries)
+const DEFAULT_CACHE_CAPACITY: usize = 1000;
+
+impl<V> LruCache<V>
+where
+    V: TypedValidator,
+{
+    fn new(capacity: usize) -> Self {
+        Self {
+            map: HashMap::with_capacity(capacity),
+            order: VecDeque::with_capacity(capacity),
+            capacity,
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    fn get(&mut self, key: &u64) -> Option<&CacheEntry<V>> {
+        if let Some(entry) = self.map.get(key) {
+            // Move to front (most recently used)
+            self.order.retain(|k| k != key);
+            self.order.push_front(*key);
+            self.hits += 1;
+            Some(entry)
+        } else {
+            self.misses += 1;
+            None
+        }
+    }
+
+    fn insert(&mut self, key: u64, entry: CacheEntry<V>) {
+        // If at capacity, evict least recently used
+        if self.map.len() >= self.capacity && !self.map.contains_key(&key) {
+            if let Some(lru_key) = self.order.pop_back() {
+                self.map.remove(&lru_key);
+            }
+        }
+
+        // Insert or update
+        if self.map.contains_key(&key) {
+            // Update existing: move to front
+            self.order.retain(|k| k != &key);
+        }
+
+        self.order.push_front(key);
+        self.map.insert(key, entry);
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+        self.order.clear();
+        self.hits = 0;
+        self.misses = 0;
+    }
+
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    fn hits(&self) -> u64 {
+        self.hits
+    }
+
+    fn misses(&self) -> u64 {
+        self.misses
+    }
+}
+
 impl<V> Cached<V>
 where
     V: TypedValidator,
 {
-    /// Creates a new CACHED combinator.
+    /// Creates a new CACHED combinator with default capacity (1000 entries).
     ///
     /// # Arguments
     ///
     /// * `validator` - The validator to cache
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// let validator = expensive_validator().cached();
+    /// ```
     pub fn new(validator: V) -> Self {
+        Self::with_capacity(validator, DEFAULT_CACHE_CAPACITY)
+    }
+
+    /// Creates a new CACHED combinator with custom capacity.
+    ///
+    /// # Arguments
+    ///
+    /// * `validator` - The validator to cache
+    /// * `capacity` - Maximum number of cache entries
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// // Small cache for memory-constrained environments
+    /// let validator = expensive_validator().cached_with_capacity(100);
+    /// ```
+    pub fn with_capacity(validator: V, capacity: usize) -> Self {
         Self {
             validator,
-            cache: RwLock::new(HashMap::new()),
+            cache: RwLock::new(LruCache::new(capacity)),
         }
     }
 
@@ -131,22 +243,79 @@ where
     }
 
     /// Returns cache statistics.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// let validator = expensive_validator().cached();
+    /// validator.validate("test1")?;
+    /// validator.validate("test1")?; // Cache hit
+    /// validator.validate("test2")?;
+    ///
+    /// let stats = validator.cache_stats();
+    /// assert_eq!(stats.entries, 2);
+    /// assert_eq!(stats.hits, 1);
+    /// assert_eq!(stats.misses, 2);
+    /// assert_eq!(stats.hit_rate(), 0.33);
+    /// ```
     pub fn cache_stats(&self) -> CacheStats {
         let cache = self.cache.read().unwrap();
         CacheStats {
             entries: cache.len(),
+            capacity: cache.capacity,
+            hits: cache.hits(),
+            misses: cache.misses(),
             memory_estimate: std::mem::size_of_val(&*cache),
         }
+    }
+
+    /// Returns the cache capacity.
+    pub fn capacity(&self) -> usize {
+        self.cache.read().unwrap().capacity
     }
 }
 
 /// Statistics about the cache.
 #[derive(Debug, Clone, Copy)]
 pub struct CacheStats {
-    /// Number of entries in the cache.
+    /// Number of entries currently in the cache.
     pub entries: usize,
+    /// Maximum number of entries the cache can hold.
+    pub capacity: usize,
+    /// Number of cache hits.
+    pub hits: u64,
+    /// Number of cache misses.
+    pub misses: u64,
     /// Estimated memory usage in bytes.
     pub memory_estimate: usize,
+}
+
+impl CacheStats {
+    /// Calculates the cache hit rate (0.0 to 1.0).
+    ///
+    /// Returns 0.0 if there have been no cache accesses yet.
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.hits + self.misses;
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f64 / total as f64
+        }
+    }
+
+    /// Returns the total number of cache accesses.
+    pub fn total_accesses(&self) -> u64 {
+        self.hits + self.misses
+    }
+
+    /// Returns the cache utilization as a percentage (0.0 to 1.0).
+    pub fn utilization(&self) -> f64 {
+        if self.capacity == 0 {
+            0.0
+        } else {
+            self.entries as f64 / self.capacity as f64
+        }
+    }
 }
 
 // ============================================================================
@@ -168,9 +337,9 @@ where
         // Compute hash of input
         let hash = compute_hash(input);
 
-        // Try to read from cache first
+        // Try to get from cache (needs write lock to update LRU order)
         {
-            let cache = self.cache.read().unwrap();
+            let mut cache = self.cache.write().unwrap();
             if let Some(entry) = cache.get(&hash) {
                 // Cache hit!
                 return entry.result.clone();
@@ -240,18 +409,18 @@ where
     async fn validate_async(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
         let hash = compute_hash(input);
 
-        // Try cache first
+        // Try to get from cache (needs write lock to update LRU order)
         {
-            let cache = self.cache.read().unwrap();
+            let mut cache = self.cache.write().unwrap();
             if let Some(entry) = cache.get(&hash) {
                 return entry.result.clone();
             }
         }
 
-        // Cache miss
+        // Cache miss - perform async validation
         let result = self.validator.validate_async(input).await;
 
-        // Store in cache
+        // Store result in cache
         {
             let mut cache = self.cache.write().unwrap();
             cache.insert(

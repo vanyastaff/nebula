@@ -295,15 +295,23 @@ pub trait ValidatorExt: TypedValidator + Sized {
         Optional::new(self)
     }
 
-    /// Adds caching to the validator.
+    /// Adds caching to the validator with default capacity (1000 entries).
     ///
-    /// Results are cached based on the input value's hash.
+    /// Results are cached based on the input value's hash using LRU eviction.
     /// Use with caution for validators with side effects.
     ///
     /// # Requirements
     ///
     /// - Input must be `Hash` and `Eq`
     /// - Output and Error must be `Clone`
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// let validator = expensive_validator().cached();
+    /// let stats = validator.cache_stats();
+    /// println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
+    /// ```
     fn cached(self) -> Cached<Self>
     where
         Self::Input: std::hash::Hash + Eq,
@@ -311,6 +319,31 @@ pub trait ValidatorExt: TypedValidator + Sized {
         Self::Error: Clone,
     {
         Cached::new(self)
+    }
+
+    /// Adds caching to the validator with custom capacity.
+    ///
+    /// Results are cached based on the input value's hash using LRU eviction.
+    /// When the cache reaches capacity, the least recently used entry is evicted.
+    ///
+    /// # Requirements
+    ///
+    /// - Input must be `Hash` and `Eq`
+    /// - Output and Error must be `Clone`
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// // Small cache for memory-constrained environments
+    /// let validator = expensive_validator().cached_with_capacity(100);
+    /// ```
+    fn cached_with_capacity(self, capacity: usize) -> Cached<Self>
+    where
+        Self::Input: std::hash::Hash + Eq,
+        Self::Output: Clone,
+        Self::Error: Clone,
+    {
+        Cached::with_capacity(self, capacity)
     }
 
 }
