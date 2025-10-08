@@ -95,6 +95,7 @@
 //! ```
 
 // Module declarations
+pub mod context;
 pub mod error;
 pub mod metadata;
 pub mod refined;
@@ -103,6 +104,7 @@ pub mod traits;
 
 
 // Re-export everything at the core level for convenience
+pub use context::{ContextualValidator, ValidationContext, ValidationContextBuilder};
 pub use error::{ErrorSeverity, ValidationError, ValidationErrors};
 pub use metadata::{
     RegisteredValidatorMetadata, ValidationComplexity, ValidatorMetadata,
@@ -128,9 +130,10 @@ pub use traits::{AsyncValidator, TypedValidator, ValidatorExt};
 /// ```
 pub mod prelude {
     pub use super::{
-        AsyncValidator, ErrorSeverity, Parameter, ParameterBuilder, Refined, TypedValidator,
-        Unvalidated, Validated, ValidationComplexity, ValidationError, ValidationErrors,
-        ValidatorExt, ValidatorMetadata,
+        AsyncValidator, ContextualValidator, ErrorSeverity, Parameter, ParameterBuilder, Refined,
+        TypedValidator, Unvalidated, Validated, ValidationComplexity, ValidationContext,
+        ValidationContextBuilder, ValidationError, ValidationErrors, ValidatorExt,
+        ValidatorMetadata,
     };
 }
 
