@@ -1,9 +1,9 @@
-//! Code generation for Validator derive
+//! Code generation for Validator derive using Field/MultiField combinators
 
 use super::parse::ValidationAttrs;
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Fields, Ident};
+use syn::{Data, DeriveInput, Fields, Ident, Type};
 
 /// Generate the validator implementation for a struct.
 pub fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream> {
@@ -56,11 +56,12 @@ pub fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream> {
         }
     };
 
-    // Generate validation code for each field
-    let mut validations = Vec::new();
+    // Generate .add_field() calls for each field
+    let mut field_additions = Vec::new();
 
     for field in fields {
         let field_name = field.ident.as_ref().unwrap();
+        let field_type = &field.ty;
         let attrs = ValidationAttrs::from_attributes(&field.attrs)?;
 
         if attrs.skip {
@@ -71,27 +72,25 @@ pub fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream> {
             continue;
         }
 
-        let field_validations = generate_field_validations(field_name, &attrs)?;
-        validations.push(field_validations);
+        let addition = generate_field_addition(name, field_name, field_type, &attrs)?;
+        field_additions.push(addition);
     }
 
-    // Generate the impl block
+    // Generate the impl block using MultiField
     let generated = quote! {
         impl #name {
-            /// Validates all fields of this struct.
+            /// Validates all fields of this struct using Field/MultiField combinators.
             ///
             /// Returns `Ok(())` if all validations pass, or an error with details
-            /// about the first validation failure.
-            pub fn validate(&self) -> Result<(), nebula_validator::core::ValidationErrors> {
-                let mut errors = nebula_validator::core::ValidationErrors::new();
+            /// about validation failures.
+            pub fn validate(&self) -> ::std::result::Result<(), ::nebula_validator::core::ValidationError> {
+                use ::nebula_validator::combinators::field::MultiField;
+                use ::nebula_validator::core::TypedValidator;
 
-                #(#validations)*
+                let validator = MultiField::new()
+                    #(#field_additions)*;
 
-                if errors.has_errors() {
-                    Err(errors)
-                } else {
-                    Ok(())
-                }
+                validator.validate(self).map(|_| ())
             }
         }
     };
@@ -99,333 +98,277 @@ pub fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream> {
     Ok(generated)
 }
 
-/// Generate validation code for a single field.
-fn generate_field_validations(
+/// Generate a .add_field() call for a single field.
+fn generate_field_addition(
+    struct_name: &Ident,
     field_name: &Ident,
+    field_type: &Type,
     attrs: &ValidationAttrs,
 ) -> syn::Result<TokenStream> {
     let field_name_str = field_name.to_string();
-    let mut validators = Vec::new();
 
-    // ПРИОРИТЕТ: Universal expression (если указан, использовать только его)
+    // Generate the validator chain
+    let validator = generate_field_validator(attrs)?;
+
+    // Generate the accessor (closure that extracts the field)
+    let accessor = generate_field_accessor(struct_name, field_name, field_type)?;
+
+    Ok(quote! {
+        .add_field(
+            #field_name_str,
+            #validator,
+            #accessor
+        )
+    })
+}
+
+/// Generate the validator expression for a field.
+fn generate_field_validator(attrs: &ValidationAttrs) -> syn::Result<TokenStream> {
+    // PRIORITY: If expr is specified, use it directly
     if let Some(expr_str) = &attrs.expr {
         let expr: syn::Expr = syn::parse_str(expr_str)?;
-        validators.push(quote! {
-            if let Err(e) = (#expr).validate(&self.#field_name) {
-                errors.add(e.with_field(#field_name_str));
-            }
-        });
-
-        // Если expr указан, игнорируем остальные валидаторы!
-        // Это позволяет пользователю полностью контролировать валидацию
-        return Ok(quote! {
-            #(#validators)*
-        });
+        return Ok(quote! { #expr });
     }
+
+    let mut validators = Vec::new();
 
     // String validators
     if let Some(min) = attrs.min_length {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::string::min_length(#min)
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::string::min_length(#min)
         });
     }
 
     if let Some(max) = attrs.max_length {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::string::max_length(#max)
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::string::max_length(#max)
         });
     }
 
     if let Some(exact) = attrs.exact_length {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::string::exact_length(#exact)
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::string::exact_length(#exact)
         });
     }
 
     if attrs.email {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::string::email()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::string::email()
         });
     }
 
     if attrs.url {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::string::url()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::string::url()
         });
     }
 
     if let Some(pattern) = &attrs.regex {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::string::regex(#pattern)
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::string::regex(#pattern)
         });
     }
 
     if attrs.alphanumeric {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::string::alphanumeric()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::string::alphanumeric()
         });
     }
 
     if let Some(substring) = &attrs.contains {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::string::contains(#substring)
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::string::contains(#substring)
         });
     }
 
     if let Some(prefix) = &attrs.starts_with {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::string::starts_with(#prefix)
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::string::starts_with(#prefix)
         });
     }
 
     if let Some(suffix) = &attrs.ends_with {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::string::ends_with(#suffix)
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::string::ends_with(#suffix)
         });
     }
 
     // Text validators
     if attrs.uuid {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::text::Uuid::new()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::text::Uuid::new()
         });
     }
 
     if attrs.datetime {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::text::DateTime::new()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::text::DateTime::new()
         });
     }
 
     if attrs.json {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::text::Json::new()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::text::Json::new()
         });
     }
 
     if attrs.slug {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::text::Slug::new()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::text::Slug::new()
         });
     }
 
     if attrs.hex {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::text::Hex::new()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::text::Hex::new()
         });
     }
 
     if attrs.base64 {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::text::Base64::new()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::text::Base64::new()
         });
     }
 
     // Numeric validators
     if let Some(min) = &attrs.min {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::numeric::min(#min)
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::numeric::min(#min)
         });
     }
 
     if let Some(max) = &attrs.max {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::numeric::max(#max)
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::numeric::max(#max)
         });
     }
 
     if let (Some(min), Some(max)) = (&attrs.range_min, &attrs.range_max) {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::numeric::in_range(#min, #max)
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::numeric::in_range(#min, #max)
         });
     }
 
     if attrs.positive {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::numeric::positive()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::numeric::positive()
         });
     }
 
     if attrs.negative {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::numeric::negative()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::numeric::negative()
         });
     }
 
     if attrs.even {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::numeric::even()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::numeric::even()
         });
     }
 
     if attrs.odd {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::numeric::odd()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::numeric::odd()
         });
     }
 
     // Collection validators
     if let Some(min) = attrs.min_size {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::collection::min_size(#min)
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::collection::min_size(#min)
         });
     }
 
     if let Some(max) = attrs.max_size {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::collection::max_size(#max)
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::collection::max_size(#max)
         });
     }
 
     if attrs.unique {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::collection::unique()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::collection::unique()
         });
     }
 
     if attrs.non_empty {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::collection::non_empty()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::collection::non_empty()
         });
     }
 
     // Logical validators
     if attrs.required {
         validators.push(quote! {
-            if let Err(e) = nebula_validator::validators::logical::required()
-                .validate(&self.#field_name)
-            {
-                errors.add(e.with_field(#field_name_str));
-            }
+            ::nebula_validator::validators::logical::required()
         });
     }
 
+    // Nested validation requires special handling
     if attrs.nested {
-        validators.push(quote! {
-            if let Err(e) = self.#field_name.validate() {
-                errors.add_nested(#field_name_str, e);
-            }
+        return Ok(quote! {
+            ::nebula_validator::combinators::field::nested_validator()
         });
     }
 
+    // Custom validator
     if let Some(custom_fn) = &attrs.custom {
         let custom_ident = syn::parse_str::<Ident>(custom_fn)?;
         validators.push(quote! {
-            if let Err(e) = #custom_ident(&self.#field_name) {
-                errors.add(e.with_field(#field_name_str));
-            }
+            #custom_ident
         });
     }
 
-    Ok(quote! {
-        #(#validators)*
-    })
+    // Chain validators with .and()
+    if validators.is_empty() {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "No validators specified for field",
+        ));
+    }
+
+    if validators.len() == 1 {
+        Ok(validators.into_iter().next().unwrap())
+    } else {
+        let mut iter = validators.into_iter();
+        let first = iter.next().unwrap();
+        let rest: Vec<_> = iter.collect();
+        Ok(quote! {
+            #first #(.and(#rest))*
+        })
+    }
+}
+
+/// Generate the field accessor closure.
+///
+/// For String fields: |obj| obj.field.as_str()
+/// For other fields: |obj| &obj.field
+fn generate_field_accessor(
+    struct_name: &Ident,
+    field_name: &Ident,
+    field_type: &Type,
+) -> syn::Result<TokenStream> {
+    // Check if the field is a String
+    let is_string = is_string_type(field_type);
+
+    if is_string {
+        Ok(quote! {
+            |obj: &#struct_name| obj.#field_name.as_str()
+        })
+    } else {
+        Ok(quote! {
+            |obj: &#struct_name| &obj.#field_name
+        })
+    }
+}
+
+/// Check if a type is String.
+fn is_string_type(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            return segment.ident == "String";
+        }
+    }
+    false
 }
