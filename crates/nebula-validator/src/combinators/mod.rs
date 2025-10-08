@@ -85,6 +85,7 @@
 // Module declarations
 pub mod and;
 pub mod cached;
+pub mod field;
 pub mod map;
 pub mod not;
 pub mod optional;
@@ -94,6 +95,7 @@ pub mod when;
 // Re-export all combinator types
 pub use and::{and, and_all, And, AndAll};
 pub use cached::{cached, Cached, CacheStats};
+pub use field::{field, named_field, Field, FieldError, FieldValidatorExt};
 pub use map::{map, map_to, map_unit, map_with_input, Map, MapWithInput};
 pub use not::{not, Not, NotError};
 pub use optional::{nullable, optional, required_some, Nullable, Optional, RequiredError, RequiredSome};
@@ -120,8 +122,9 @@ pub use cached::{lru_cached, LruCached};
 /// ```
 pub mod prelude {
     pub use super::{
-        and, and_all, cached, map, map_to, not, nullable, optional, or, or_any, required_some,
-        unless, when, when_not_empty, And, AndAll, Cached, Map, Not, Optional, Or, OrAny, When,
+        and, and_all, cached, field, named_field, map, map_to, not, nullable, optional, or, or_any,
+        required_some, unless, when, when_not_empty, And, AndAll, Cached, Field, FieldValidatorExt,
+        Map, Not, Optional, Or, OrAny, When,
     };
 
     #[cfg(feature = "lru")]

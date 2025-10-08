@@ -46,7 +46,18 @@
       "Bash(rm:*)",
       "Bash(tree:*)",
       "Bash(test:*)",
-      "Bash(timeout 180 cargo test --test validator_derive)"
+      "Bash(timeout 180 cargo test --test validator_derive)",
+      "Bash(if grep -q \"#\\[cfg(test)\\]\" \"$file\")",
+      "Bash(then)",
+      "Bash(fi)",
+      "Bash(do echo \"=== $file ===\" grep \"#\\[cfg(test)\\]\" -A 5 \"crates/nebula-validator/src/combinators/$file\")",
+      "Bash(timeout 120 cargo test -p nebula-validator --lib)",
+      "Bash(timeout 120 cargo check -p nebula-validator)",
+      "Bash(timeout 120 cargo test -p nebula-validator --lib combinators::field)",
+      "Bash(timeout 120 cargo test -p nebula-validator --lib field::tests)",
+      "Bash(timeout 180 cargo test --test field_combinator_test)",
+      "Bash(timeout 180 cargo test -p nebula-validator --lib field::tests)",
+      "Bash(timeout 180 cargo test -p nebula-validator --lib field)"
     ],
     "deny": [],
     "ask": []
