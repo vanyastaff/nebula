@@ -100,10 +100,10 @@ pub use cached::{cached, Cached, CacheStats};
 pub use error::CombinatorError;
 pub use field::{field, named_field, Field, FieldError, FieldValidatorExt, MultiField};
 pub use map::{map, map_to, map_unit, map_with_input, Map, MapWithInput};
-pub use not::{not, Not, NotError};
-pub use optional::{nullable, optional, required_some, Nullable, Optional, RequiredError, RequiredSome};
+pub use not::{not, Not};
+pub use optional::{nullable, optional, required_some, Nullable, Optional, RequiredSome};
 pub use optimizer::{OptimizationReport, OptimizationStrategy, ValidatorChainOptimizer, ValidatorOrdering, ValidatorStats};
-pub use or::{or, or_any, Or, OrAny, OrAnyError, OrError};
+pub use or::{or, or_any, Or, OrAny, OrAnyError};
 pub use when::{unless, when, when_not_empty, when_some, When};
 
 #[cfg(feature = "lru")]

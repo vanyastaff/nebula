@@ -298,57 +298,6 @@ where
 }
 
 // ============================================================================
-// CONVERSIONS FOR LEGACY ERROR TYPES
-// ============================================================================
-
-// These are provided for backward compatibility with existing combinator errors
-
-/// Error from OR combinator (legacy).
-#[deprecated(since = "0.1.0", note = "Use CombinatorError::OrAllFailed instead")]
-pub struct OrError<E> {
-    pub left_error: E,
-    pub right_error: E,
-}
-
-impl<E> From<OrError<E>> for CombinatorError<E> {
-    fn from(error: OrError<E>) -> Self {
-        Self::or_all_failed(error.left_error, error.right_error)
-    }
-}
-
-/// Error from NOT combinator (legacy).
-#[deprecated(since = "0.1.0", note = "Use CombinatorError::NotValidatorPassed instead")]
-pub enum NotError<E> {
-    ValidatorPassed,
-    _InnerError(E),
-}
-
-impl<E> From<NotError<E>> for CombinatorError<E> {
-    fn from(error: NotError<E>) -> Self {
-        match error {
-            NotError::ValidatorPassed => Self::NotValidatorPassed,
-            NotError::_InnerError(e) => Self::ValidationFailed(e),
-        }
-    }
-}
-
-/// Error from Required combinator (legacy).
-#[deprecated(since = "0.1.0", note = "Use CombinatorError::RequiredValueMissing instead")]
-pub enum RequiredError<E> {
-    NoneValue,
-    ValidationFailed(E),
-}
-
-impl<E> From<RequiredError<E>> for CombinatorError<E> {
-    fn from(error: RequiredError<E>) -> Self {
-        match error {
-            RequiredError::NoneValue => Self::RequiredValueMissing,
-            RequiredError::ValidationFailed(e) => Self::ValidationFailed(e),
-        }
-    }
-}
-
-// ============================================================================
 // TESTS
 // ============================================================================
 
