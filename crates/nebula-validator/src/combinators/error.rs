@@ -348,22 +348,6 @@ impl<E> From<RequiredError<E>> for CombinatorError<E> {
     }
 }
 
-/// Error from Field combinator (legacy).
-#[deprecated(since = "0.1.0", note = "Use CombinatorError::FieldFailed instead")]
-pub struct FieldError<E> {
-    pub field_name: Option<String>,
-    pub inner: E,
-}
-
-impl<E> From<FieldError<E>> for CombinatorError<E> {
-    fn from(error: FieldError<E>) -> Self {
-        Self::FieldFailed {
-            field_name: error.field_name,
-            error: Box::new(error.inner),
-        }
-    }
-}
-
 // ============================================================================
 // TESTS
 // ============================================================================
