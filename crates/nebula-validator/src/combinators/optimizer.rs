@@ -133,6 +133,138 @@ impl ValidatorChainOptimizer {
 
         recommendations
     }
+
+    /// Analyzes a validator with runtime statistics.
+    ///
+    /// Uses both static metadata and runtime statistics to provide
+    /// more accurate recommendations.
+    pub fn analyze_with_stats<V: TypedValidator>(
+        &self,
+        validator: &V,
+        stats: &ValidatorStats,
+    ) -> OptimizationReport {
+        let metadata = validator.metadata();
+        let mut recommendations = self.generate_recommendations(&metadata);
+
+        // Add stats-based recommendations
+        if stats.failure_rate() > 0.7 {
+            recommendations.push(
+                "High failure rate detected. Consider running this validator early in the chain"
+                    .to_string(),
+            );
+        }
+
+        if stats.average_time_ns() > 1_000_000.0 {
+            // > 1ms
+            recommendations.push(
+                "Slow validator detected (avg > 1ms). Consider caching or optimization".to_string(),
+            );
+        }
+
+        if stats.selectivity_score() > 0.8 {
+            recommendations.push(
+                "High selectivity score. This validator rejects most inputs - run it early"
+                    .to_string(),
+            );
+        }
+
+        OptimizationReport {
+            original_complexity: metadata.complexity,
+            cacheable: metadata.cacheable,
+            estimated_speedup: self.estimate_speedup_with_stats(&metadata, stats),
+            recommendations,
+        }
+    }
+
+    /// Estimates speedup considering runtime statistics.
+    fn estimate_speedup_with_stats(
+        &self,
+        metadata: &ValidatorMetadata,
+        stats: &ValidatorStats,
+    ) -> f64 {
+        let base_speedup = self.estimate_speedup(metadata);
+
+        // Boost for high failure rate (early rejection is better)
+        let failure_boost = if stats.failure_rate() > 0.5 {
+            1.5
+        } else {
+            1.0
+        };
+
+        base_speedup * failure_boost
+    }
+
+    /// Optimizes a chain of validators by reordering them.
+    ///
+    /// Returns a new vector with validators in optimal order.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// let optimizer = ValidatorChainOptimizer::new();
+    /// let validators = vec![expensive_validator, cheap_validator, medium_validator];
+    /// let optimized = optimizer.optimize_chain(validators);
+    /// // Result: [cheap_validator, medium_validator, expensive_validator]
+    /// ```
+    pub fn optimize_chain<V>(&self, validators: Vec<V>) -> Vec<V>
+    where
+        V: TypedValidator,
+    {
+        if !self.reorder_by_complexity || validators.is_empty() {
+            return validators;
+        }
+
+        let mut with_meta: Vec<(V, ValidatorMetadata)> = validators
+            .into_iter()
+            .map(|v| {
+                let meta = v.metadata();
+                (v, meta)
+            })
+            .collect();
+
+        // Sort by complexity (cheap first)
+        with_meta.sort_by(|(_, meta_a), (_, meta_b)| meta_a.complexity.cmp(&meta_b.complexity));
+
+        with_meta.into_iter().map(|(v, _)| v).collect()
+    }
+
+    /// Optimizes a chain using runtime statistics.
+    ///
+    /// Considers both complexity and selectivity scores from stats.
+    pub fn optimize_chain_with_stats<V>(
+        &self,
+        validators: Vec<(V, ValidatorStats)>,
+    ) -> Vec<V>
+    where
+        V: TypedValidator,
+    {
+        if validators.is_empty() {
+            return Vec::new();
+        }
+
+        let mut with_scores: Vec<(V, f64)> = validators
+            .into_iter()
+            .map(|(v, stats)| {
+                let meta = v.metadata();
+                // Combined score: lower complexity + higher selectivity = run first
+                let complexity_score = meta.complexity.score() as f64;
+                let selectivity_score = stats.selectivity_score();
+
+                // Lower score = run first
+                let combined_score = complexity_score - (selectivity_score * 50.0);
+                (v, combined_score)
+            })
+            .collect();
+
+        // Sort by combined score
+        with_scores.sort_by(|(_, score_a), (_, score_b)| {
+            score_a
+                .partial_cmp(score_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        with_scores.into_iter().map(|(v, _)| v).collect()
+    }
 }
 
 impl Default for ValidatorChainOptimizer {
@@ -253,8 +385,28 @@ impl OptimizationStrategy {
 
             Self::FailFast => {
                 // Prefer validators that are likely to fail
-                // (this is heuristic - in practice would need runtime stats)
-                meta_a.complexity.cmp(&meta_b.complexity)
+                // Use selectivity_score from custom metadata if available
+                let selectivity_a = meta_a
+                    .custom
+                    .get("selectivity_score")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+
+                let selectivity_b = meta_b
+                    .custom
+                    .get("selectivity_score")
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+
+                // Higher selectivity = more likely to fail = run first
+                // If no stats, fall back to complexity
+                if selectivity_a != selectivity_b {
+                    selectivity_b
+                        .partial_cmp(&selectivity_a)
+                        .unwrap_or(Ordering::Equal)
+                } else {
+                    meta_a.complexity.cmp(&meta_b.complexity)
+                }
             }
 
             Self::Balanced => {
