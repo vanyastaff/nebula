@@ -1,5 +1,5 @@
 use nebula_validator::core::{TypedValidator, ValidatorExt};
-use nebula_validator::validators::string::{min_length};
+use nebula_validator::validators::string::min_length;
 
 #[test]
 fn test_lru_cache_basic() {

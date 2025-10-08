@@ -115,12 +115,12 @@ fn test_cross_field_validation() {
         password_confirmation: "different".to_string(),
     };
 
-    assert!(validator
-        .validate_with_context(&valid_user, &ctx)
-        .is_ok());
-    assert!(validator
-        .validate_with_context(&invalid_user, &ctx)
-        .is_err());
+    assert!(validator.validate_with_context(&valid_user, &ctx).is_ok());
+    assert!(
+        validator
+            .validate_with_context(&invalid_user, &ctx)
+            .is_err()
+    );
 }
 
 // Date range validation example
@@ -167,9 +167,11 @@ fn test_date_range_validation() {
     };
 
     assert!(validator.validate_with_context(&valid_range, &ctx).is_ok());
-    assert!(validator
-        .validate_with_context(&invalid_range, &ctx)
-        .is_err());
+    assert!(
+        validator
+            .validate_with_context(&invalid_range, &ctx)
+            .is_err()
+    );
 }
 
 // Conditional validation example
@@ -226,22 +228,30 @@ fn test_conditional_validation_with_context() {
     };
 
     // Should fail when email required and empty
-    assert!(validator
-        .validate_with_context(&form_empty, &ctx_required)
-        .is_err());
+    assert!(
+        validator
+            .validate_with_context(&form_empty, &ctx_required)
+            .is_err()
+    );
 
     // Should pass when email optional and empty
-    assert!(validator
-        .validate_with_context(&form_empty, &ctx_optional)
-        .is_ok());
+    assert!(
+        validator
+            .validate_with_context(&form_empty, &ctx_optional)
+            .is_ok()
+    );
 
     // Should always pass when email is filled
-    assert!(validator
-        .validate_with_context(&form_filled, &ctx_required)
-        .is_ok());
-    assert!(validator
-        .validate_with_context(&form_filled, &ctx_optional)
-        .is_ok());
+    assert!(
+        validator
+            .validate_with_context(&form_filled, &ctx_required)
+            .is_ok()
+    );
+    assert!(
+        validator
+            .validate_with_context(&form_filled, &ctx_optional)
+            .is_ok()
+    );
 }
 
 // Test with nested field paths

@@ -1,6 +1,6 @@
 //! Tests for Refined types
 
-use nebula_validator::core::{TypedValidator, ValidationError, Refined};
+use nebula_validator::core::{Refined, TypedValidator, ValidationError};
 use nebula_validator::validators::string::min_length;
 
 #[test]

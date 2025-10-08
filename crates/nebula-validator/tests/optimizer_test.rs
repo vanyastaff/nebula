@@ -118,10 +118,7 @@ impl TypedValidator for AsyncValidator {
 #[test]
 fn test_optimizer_creation() {
     let optimizer = ValidatorChainOptimizer::new();
-    assert!(optimizer.should_run_first(
-        &CheapValidator.metadata(),
-        &ExpensiveValidator.metadata()
-    ));
+    assert!(optimizer.should_run_first(&CheapValidator.metadata(), &ExpensiveValidator.metadata()));
 }
 
 #[test]
@@ -132,10 +129,9 @@ fn test_optimizer_with_settings() {
         .with_min_complexity_diff(5);
 
     // With reordering disabled, should not reorder
-    assert!(!optimizer.should_run_first(
-        &CheapValidator.metadata(),
-        &ExpensiveValidator.metadata()
-    ));
+    assert!(
+        !optimizer.should_run_first(&CheapValidator.metadata(), &ExpensiveValidator.metadata())
+    );
 }
 
 #[test]
@@ -210,9 +206,11 @@ fn test_optimization_recommendations_for_async() {
 
     assert!(report.is_optimization_recommended());
     let recommendations = report.recommendations;
-    assert!(recommendations
-        .iter()
-        .any(|r| r.contains("async") || r.contains("batching") || r.contains("parallelization")));
+    assert!(
+        recommendations.iter().any(|r| r.contains("async")
+            || r.contains("batching")
+            || r.contains("parallelization"))
+    );
 }
 
 #[test]
@@ -255,9 +253,11 @@ fn test_optimization_priority() {
 #[test]
 fn test_optimization_strategy_descriptions() {
     assert!(!OptimizationStrategy::None.description().is_empty());
-    assert!(!OptimizationStrategy::ComplexityBased
-        .description()
-        .is_empty());
+    assert!(
+        !OptimizationStrategy::ComplexityBased
+            .description()
+            .is_empty()
+    );
     assert!(!OptimizationStrategy::FailFast.description().is_empty());
     assert!(!OptimizationStrategy::Balanced.description().is_empty());
 }

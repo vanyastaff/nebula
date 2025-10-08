@@ -2,9 +2,9 @@
 //!
 //! These tests verify the public API works correctly
 
-use nebula_validator::core::{TypedValidator, ValidationError};
-use nebula_validator::validators::string::{min_length, max_length};
 use nebula_validator::combinators::and::and;
+use nebula_validator::core::{TypedValidator, ValidationError};
+use nebula_validator::validators::string::{max_length, min_length};
 
 #[test]
 fn test_min_length_validator() {
