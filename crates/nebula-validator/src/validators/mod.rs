@@ -31,12 +31,14 @@
 
 pub mod collection;
 pub mod logical;
+pub mod network;
 pub mod numeric;
 pub mod string;
 
 // Re-export all validators
 pub use collection::*;
 pub use logical::*;
+pub use network::*;
 pub use numeric::*;
 pub use string::*;
 
@@ -45,6 +47,7 @@ pub use string::*;
 pub mod prelude {
     pub use super::collection::prelude::*;
     pub use super::logical::prelude::*;
+    pub use super::network::*;
     pub use super::numeric::prelude::*;
     pub use super::string::prelude::*;
 }
