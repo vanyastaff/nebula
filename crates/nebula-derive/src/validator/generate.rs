@@ -305,10 +305,10 @@ fn generate_field_validator(attrs: &ValidationAttrs) -> syn::Result<TokenStream>
         });
     }
 
-    // Nested validation requires special handling
+    // Nested validation - use NestedValidator
     if attrs.nested {
         return Ok(quote! {
-            ::nebula_validator::combinators::field::nested_validator()
+            ::nebula_validator::combinators::field::NestedValidator::new(|v| v.validate())
         });
     }
 

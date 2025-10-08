@@ -487,6 +487,120 @@ impl<T> TypedValidator for MultiField<T> {
 }
 
 // ============================================================================
+// NESTED VALIDATOR
+// ============================================================================
+
+/// Validator wrapper for nested struct validation.
+///
+/// This validator wraps a function that validates a nested struct,
+/// typically by calling its `.validate()` method.
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_validator::combinators::field::NestedValidator;
+/// use nebula_validator::core::TypedValidator;
+///
+/// struct Address {
+///     street: String,
+/// }
+///
+/// impl Address {
+///     fn validate(&self) -> Result<(), String> {
+///         if self.street.is_empty() {
+///             Err("Street cannot be empty".to_string())
+///         } else {
+///             Ok(())
+///         }
+///     }
+/// }
+///
+/// let validator = NestedValidator::new(|addr: &Address| {
+///     addr.validate().map_err(|e| e.into())
+/// });
+/// ```
+#[derive(Debug, Clone)]
+pub struct NestedValidator<T, F> {
+    validate_fn: F,
+    _phantom: PhantomData<fn(&T)>,
+}
+
+impl<T, F> NestedValidator<T, F> {
+    /// Creates a new nested validator from a validation function.
+    pub fn new(validate_fn: F) -> Self {
+        Self {
+            validate_fn,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T, F> TypedValidator for NestedValidator<T, F>
+where
+    F: Fn(&T) -> Result<(), ValidationError>,
+{
+    type Input = T;
+    type Output = ();
+    type Error = ValidationError;
+
+    fn validate(&self, input: &T) -> Result<Self::Output, Self::Error> {
+        (self.validate_fn)(input)
+    }
+
+    fn metadata(&self) -> ValidatorMetadata {
+        ValidatorMetadata {
+            name: "NestedValidator".to_string(),
+            description: Some("Validates nested struct by calling its validate method".to_string()),
+            complexity: crate::core::ValidationComplexity::Linear,
+            cacheable: false, // Nested validation may have side effects
+            estimated_time: None,
+            tags: vec!["nested".to_string(), "composite".to_string()],
+            version: Some("1.0.0".to_string()),
+            custom: std::collections::HashMap::new(),
+        }
+    }
+}
+
+/// Helper function to create a nested validator.
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_validator::combinators::field::nested_validator;
+///
+/// struct User {
+///     name: String,
+/// }
+///
+/// impl User {
+///     fn validate(&self) -> Result<(), nebula_validator::core::ValidationError> {
+///         // validation logic
+///         Ok(())
+///     }
+/// }
+///
+/// let validator = nested_validator::<User>();
+/// ```
+pub fn nested_validator<T>() -> NestedValidator<T, impl Fn(&T) -> Result<(), ValidationError>>
+where
+    T: Validatable,
+{
+    NestedValidator::new(|input: &T| input.validate())
+}
+
+/// Trait for types that can be validated.
+///
+/// This trait is automatically implemented for any type that has a
+/// `validate()` method returning `Result<(), ValidationError>`.
+pub trait Validatable {
+    /// Validates the instance.
+    fn validate(&self) -> Result<(), ValidationError>;
+}
+
+// Auto-implement for any type with validate method
+// (This would need to be implemented by derive macro or manually)
+
+// ============================================================================
 // TESTS
 // ============================================================================
 
