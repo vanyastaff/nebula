@@ -63,7 +63,16 @@
       "Bash(timeout 180 cargo test -p nebula-validator --lib context::tests)",
       "Bash(timeout 180 cargo test test_context_ --lib)",
       "Bash(timeout 180 cargo test --test validation_context_test)",
-      "Bash(timeout 180 cargo test test_child_context --test validation_context_test)"
+      "Bash(timeout 180 cargo test test_child_context --test validation_context_test)",
+      "Bash(timeout 180 cargo test --test optimizer_test)",
+      "Bash(timeout 180 cargo test -p nebula-validator field --lib)",
+      "Bash(timeout 180 cargo test -p nebula-derive --test text_validators)",
+      "Bash(timeout 180 cargo test -p nebula-derive --lib)",
+      "Bash(timeout 60 cargo check -p nebula-derive)",
+      "Bash(timeout 180 cargo test --lib)",
+      "Bash(timeout 180 cargo test --test quick_test --no-default-features)",
+      "Bash(timeout 60 cargo test --lib)",
+      "Bash(timeout 180 cargo test -p nebula-derive --lib --no-fail-fast)"
     ],
     "deny": [],
     "ask": []

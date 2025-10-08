@@ -43,6 +43,8 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-expression/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-expression/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/nebula-expression/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-derive/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/nebula-derive/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />
