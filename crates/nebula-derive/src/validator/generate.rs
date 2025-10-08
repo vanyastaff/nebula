@@ -1,65 +1,22 @@
 //! Code generation for Validator derive using Field/MultiField combinators
 
 use super::parse::ValidationAttrs;
+use crate::shared::{codegen, validation};
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Fields, Ident, Type};
+use syn::{DeriveInput, Ident, Type};
 
 /// Generate the validator implementation for a struct.
 pub fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream> {
     let name = &input.ident;
 
-    let data = match &input.data {
-        Data::Struct(data) => data,
-        Data::Enum(_) => {
-            return Err(syn::Error::new_spanned(
-                input,
-                "Validator derive macro can only be applied to structs.\n\
-                 \n\
-                 For enums, consider using a custom validator or the 'expr' attribute:\n\
-                 #[validate(expr = \"custom_enum_validator()\")]",
-            ));
-        }
-        Data::Union(_) => {
-            return Err(syn::Error::new_spanned(
-                input,
-                "Validator derive macro can only be applied to structs.\n\
-                 \n\
-                 Unions are not supported for automatic validation.",
-            ));
-        }
-    };
-
-    let fields = match &data.fields {
-        Fields::Named(fields) => &fields.named,
-        Fields::Unnamed(_) => {
-            return Err(syn::Error::new_spanned(
-                input,
-                "Validator derive macro requires named fields.\n\
-                 \n\
-                 Example:\n\
-                 struct MyStruct {\n\
-                 \x20   #[validate(min_length = 3)]\n\
-                 \x20   name: String,\n\
-                 }\n\
-                 \n\
-                 Tuple structs are not supported.",
-            ));
-        }
-        Fields::Unit => {
-            return Err(syn::Error::new_spanned(
-                input,
-                "Validator derive macro cannot be applied to unit structs.\n\
-                 \n\
-                 Unit structs have no fields to validate.",
-            ));
-        }
-    };
+    // Use shared validation to check struct requirements
+    let fields = validation::require_named_struct(input)?;
 
     // Generate .add_field() calls for each field
     let mut field_additions = Vec::new();
 
-    for field in fields {
+    for field in &fields.named {
         let field_name = field.ident.as_ref().unwrap();
         let field_type = &field.ty;
         let attrs = ValidationAttrs::from_attributes(&field.attrs)?;
@@ -111,7 +68,7 @@ fn generate_field_addition(
     let validator = generate_field_validator(attrs)?;
 
     // Generate the accessor (closure that extracts the field)
-    let accessor = generate_field_accessor(struct_name, field_name, field_type)?;
+    let accessor = generate_field_accessor(struct_name, field_name, field_type);
 
     Ok(quote! {
         .add_field(
@@ -342,33 +299,12 @@ fn generate_field_validator(attrs: &ValidationAttrs) -> syn::Result<TokenStream>
 
 /// Generate the field accessor closure.
 ///
-/// For String fields: |obj| obj.field.as_str()
-/// For other fields: |obj| &obj.field
+/// Uses shared codegen infrastructure to generate type-aware accessors.
 fn generate_field_accessor(
     struct_name: &Ident,
     field_name: &Ident,
     field_type: &Type,
-) -> syn::Result<TokenStream> {
-    // Check if the field is a String
-    let is_string = is_string_type(field_type);
-
-    if is_string {
-        Ok(quote! {
-            |obj: &#struct_name| obj.#field_name.as_str()
-        })
-    } else {
-        Ok(quote! {
-            |obj: &#struct_name| &obj.#field_name
-        })
-    }
-}
-
-/// Check if a type is String.
-fn is_string_type(ty: &Type) -> bool {
-    if let Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            return segment.ident == "String";
-        }
-    }
-    false
+) -> TokenStream {
+    // Use shared codegen to generate accessor
+    codegen::generate_accessor(struct_name, field_name, field_type)
 }
