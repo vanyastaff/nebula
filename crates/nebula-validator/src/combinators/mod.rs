@@ -85,6 +85,7 @@
 // Module declarations
 pub mod and;
 pub mod cached;
+pub mod error;
 pub mod field;
 pub mod map;
 pub mod not;
@@ -95,6 +96,7 @@ pub mod when;
 // Re-export all combinator types
 pub use and::{and, and_all, And, AndAll};
 pub use cached::{cached, Cached, CacheStats};
+pub use error::CombinatorError;
 pub use field::{field, named_field, Field, FieldError, FieldValidatorExt};
 pub use map::{map, map_to, map_unit, map_with_input, Map, MapWithInput};
 pub use not::{not, Not, NotError};

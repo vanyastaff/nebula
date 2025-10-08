@@ -57,7 +57,9 @@
       "Bash(timeout 120 cargo test -p nebula-validator --lib field::tests)",
       "Bash(timeout 180 cargo test --test field_combinator_test)",
       "Bash(timeout 180 cargo test -p nebula-validator --lib field::tests)",
-      "Bash(timeout 180 cargo test -p nebula-validator --lib field)"
+      "Bash(timeout 180 cargo test -p nebula-validator --lib field)",
+      "Bash(timeout 180 cargo test -p nebula-validator --lib error::tests)",
+      "Bash(timeout 180 cargo test --test combinator_error_test)"
     ],
     "deny": [],
     "ask": []
