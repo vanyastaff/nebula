@@ -4,6 +4,9 @@
 
 use syn::{Data, DeriveInput, Fields, FieldsNamed};
 
+// Re-export attribute utilities from attrs module
+pub use super::attrs::{extract_doc_comments, has_attribute};
+
 // ============================================================================
 // STRUCT VALIDATION
 // ============================================================================
@@ -141,75 +144,6 @@ pub fn check_conflicting_attrs(
         }
     }
     Ok(())
-}
-
-/// Check if attributes contain a specific attribute by name.
-///
-/// # Examples
-///
-/// ```ignore
-/// if has_attribute(&field.attrs, "skip") {
-///     // Field has #[skip] or #[validate(skip)]
-/// }
-/// ```
-pub fn has_attribute(attrs: &[syn::Attribute], name: &str) -> bool {
-    attrs.iter().any(|attr| {
-        // Check direct attribute: #[skip]
-        if attr.path().is_ident(name) {
-            return true;
-        }
-
-        // Check nested attribute: #[validate(skip)]
-        if let Ok(meta_list) = attr.meta.require_list() {
-            // Parse nested meta items
-            // This is a simplified check - real implementation would need to parse the tokens
-            let tokens = meta_list.tokens.to_string();
-            return tokens.contains(name);
-        }
-
-        false
-    })
-}
-
-// ============================================================================
-// ATTRIBUTE EXTRACTION
-// ============================================================================
-
-/// Extract documentation comments from attributes.
-///
-/// Combines all `#[doc = "..."]` attributes into a single string.
-///
-/// # Examples
-///
-/// ```ignore
-/// let doc = extract_doc_comments(&input.attrs);
-/// if let Some(description) = doc {
-///     println!("Struct description: {}", description);
-/// }
-/// ```
-pub fn extract_doc_comments(attrs: &[syn::Attribute]) -> Option<String> {
-    let mut docs = Vec::new();
-
-    for attr in attrs {
-        if attr.path().is_ident("doc") {
-            if let syn::Meta::NameValue(meta_name_value) = &attr.meta {
-                if let syn::Expr::Lit(expr_lit) = &meta_name_value.value {
-                    if let syn::Lit::Str(lit_str) = &expr_lit.lit {
-                        let value = lit_str.value().trim().to_string();
-                        if !value.is_empty() {
-                            docs.push(value);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if docs.is_empty() {
-        None
-    } else {
-        Some(docs.join("\n"))
-    }
 }
 
 /// Check if struct or field is marked as deprecated.
