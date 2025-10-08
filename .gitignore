@@ -105,8 +105,8 @@ fabric.properties
 # Android studio 3.1+ serialized cache file
 .idea/caches/build_file_checksums.ser
 
-# Uncomment to fully ignore .idea folder
-# .idea/
+# Fully ignore .idea folder (AI agents)
+.idea/
 
 # ============================================================================
 # VSCODE
@@ -286,10 +286,9 @@ docker-compose.override.yml
 # CLAUDE CODE / AI TOOLS
 # ============================================================================
 
-# Claude Code local settings
-.claude/settings.local.json
-.claude/*.log
-.claude/cache/
+# AI Agent directories (ignore completely)
+.claude/
+.junie/
 
 # AI-generated files that should not be committed
 **/ai-generated/
