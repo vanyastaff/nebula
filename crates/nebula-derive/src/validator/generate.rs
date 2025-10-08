@@ -1,12 +1,30 @@
 //! Code generation for Validator derive using Field/MultiField combinators
+//!
+//! This module generates validation code using the shared infrastructure:
+//! - `shared::validation` - for struct validation
+//! - `shared::codegen` - for accessor and impl block generation
+//! - `shared::attrs` - for attribute parsing
+//! - `shared::types` - for type detection
 
 use super::parse::ValidationAttrs;
-use crate::shared::{codegen, validation};
+use crate::shared::{attrs, codegen, types, validation};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, Ident, Type};
 
 /// Generate the validator implementation for a struct.
+///
+/// This function orchestrates the entire validation code generation process:
+/// 1. Validates the input struct structure
+/// 2. Processes each field to generate validators
+/// 3. Builds the final impl block with validate() method
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Input is not a struct with named fields
+/// - Field attributes are invalid
+/// - No validators are specified for any field
 pub fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream> {
     let name = &input.ident;
 
@@ -19,12 +37,15 @@ pub fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream> {
     for field in &fields.named {
         let field_name = field.ident.as_ref().unwrap();
         let field_type = &field.ty;
-        let attrs = ValidationAttrs::from_attributes(&field.attrs)?;
 
-        if attrs.skip {
+        // Use shared attrs to check if field should be skipped
+        if attrs::should_skip(&field.attrs) {
             continue;
         }
 
+        let attrs = ValidationAttrs::from_attributes(&field.attrs)?;
+
+        // Skip fields without validators
         if !attrs.has_validators() {
             continue;
         }
@@ -33,29 +54,48 @@ pub fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream> {
         field_additions.push(addition);
     }
 
-    // Generate the impl block using MultiField
-    let generated = quote! {
-        impl #name {
-            /// Validates all fields of this struct using Field/MultiField combinators.
-            ///
-            /// Returns `Ok(())` if all validations pass, or an error with details
-            /// about validation failures.
-            pub fn validate(&self) -> ::std::result::Result<(), ::nebula_validator::core::ValidationError> {
-                use ::nebula_validator::combinators::field::MultiField;
-                use ::nebula_validator::core::TypedValidator;
+    // Use shared codegen ImplBlockBuilder for cleaner impl generation
+    let mut builder = codegen::ImplBlockBuilder::new(name.clone(), input.generics.clone());
 
-                let validator = MultiField::new()
-                    #(#field_additions)*;
+    builder.add_method(quote! {
+        /// Validates all fields of this struct using Field/MultiField combinators.
+        ///
+        /// Returns `Ok(())` if all validations pass, or an error with details
+        /// about validation failures.
+        ///
+        /// # Errors
+        ///
+        /// Returns a `ValidationError` if any field validation fails.
+        /// The error includes the field name and specific validation failure details.
+        pub fn validate(&self) -> ::std::result::Result<(), ::nebula_validator::core::ValidationError> {
+            use ::nebula_validator::combinators::field::MultiField;
+            use ::nebula_validator::core::TypedValidator;
 
-                validator.validate(self).map(|_| ())
-            }
+            let validator = MultiField::new()
+                #(#field_additions)*;
+
+            validator.validate(self).map(|_| ())
         }
-    };
+    });
 
-    Ok(generated)
+    Ok(builder.build())
 }
 
 /// Generate a .add_field() call for a single field.
+///
+/// This combines the validator generation and accessor generation into
+/// a single `.add_field()` call for the MultiField combinator.
+///
+/// # Arguments
+///
+/// * `struct_name` - Name of the parent struct
+/// * `field_name` - Name of the field being validated
+/// * `field_type` - Type of the field
+/// * `attrs` - Parsed validation attributes
+///
+/// # Returns
+///
+/// A TokenStream representing the `.add_field()` call
 fn generate_field_addition(
     struct_name: &Ident,
     field_name: &Ident,
@@ -64,11 +104,11 @@ fn generate_field_addition(
 ) -> syn::Result<TokenStream> {
     let field_name_str = field_name.to_string();
 
-    // Generate the validator chain
-    let validator = generate_field_validator(attrs)?;
+    // Generate the validator chain using attributes
+    let validator = generate_field_validator(field_type, attrs)?;
 
-    // Generate the accessor (closure that extracts the field)
-    let accessor = generate_field_accessor(struct_name, field_name, field_type);
+    // Use shared codegen to generate type-aware accessor
+    let accessor = codegen::generate_accessor(struct_name, field_name, field_type);
 
     Ok(quote! {
         .add_field(
@@ -80,7 +120,24 @@ fn generate_field_addition(
 }
 
 /// Generate the validator expression for a field.
-fn generate_field_validator(attrs: &ValidationAttrs) -> syn::Result<TokenStream> {
+///
+/// Uses both the field type (for type-aware validation) and attributes
+/// (for explicit validators) to generate the appropriate validator chain.
+///
+/// # Arguments
+///
+/// * `field_type` - The type of the field (for smart type detection)
+/// * `attrs` - Validation attributes from #[validate(...)]
+///
+/// # Returns
+///
+/// A TokenStream representing the validator or chain of validators
+fn generate_field_validator(field_type: &Type, attrs: &ValidationAttrs) -> syn::Result<TokenStream> {
+    // Detect field type using shared infrastructure
+    let _type_category = types::detect_type(field_type);
+
+    // TODO: In future, use type_category for smarter default validators
+    // For now, use explicit attributes as before
     // PRIORITY: If expr is specified, use it directly
     if let Some(expr_str) = &attrs.expr {
         let expr: syn::Expr = syn::parse_str(expr_str)?;
@@ -89,116 +146,70 @@ fn generate_field_validator(attrs: &ValidationAttrs) -> syn::Result<TokenStream>
 
     let mut validators = Vec::new();
 
+    // Helper macro to reduce boilerplate when adding validators
+    macro_rules! add_validator {
+        ($path:path, $value:expr) => {
+            if let Some(val) = $value {
+                validators.push(quote! { $path(#val) });
+            }
+        };
+        ($path:path) => {
+            validators.push(quote! { $path() });
+        };
+    }
+
     // String validators
-    if let Some(min) = attrs.min_length {
-        validators.push(quote! {
-            ::nebula_validator::validators::string::min_length(#min)
-        });
-    }
-
-    if let Some(max) = attrs.max_length {
-        validators.push(quote! {
-            ::nebula_validator::validators::string::max_length(#max)
-        });
-    }
-
-    if let Some(exact) = attrs.exact_length {
-        validators.push(quote! {
-            ::nebula_validator::validators::string::exact_length(#exact)
-        });
-    }
+    add_validator!(::nebula_validator::validators::string::min_length, attrs.min_length);
+    add_validator!(::nebula_validator::validators::string::max_length, attrs.max_length);
+    add_validator!(::nebula_validator::validators::string::exact_length, attrs.exact_length);
 
     if attrs.email {
-        validators.push(quote! {
-            ::nebula_validator::validators::string::email()
-        });
+        add_validator!(::nebula_validator::validators::string::email);
     }
 
     if attrs.url {
-        validators.push(quote! {
-            ::nebula_validator::validators::string::url()
-        });
+        add_validator!(::nebula_validator::validators::string::url);
     }
 
     if let Some(pattern) = &attrs.regex {
         validators.push(quote! {
-            ::nebula_validator::validators::string::matches_regex(#pattern).expect("Invalid regex pattern")
+            ::nebula_validator::validators::string::matches_regex(#pattern)
+                .expect("Invalid regex pattern")
         });
     }
 
     if attrs.alphanumeric {
-        validators.push(quote! {
-            ::nebula_validator::validators::string::alphanumeric()
-        });
+        add_validator!(::nebula_validator::validators::string::alphanumeric);
     }
 
-    if let Some(substring) = &attrs.contains {
-        validators.push(quote! {
-            ::nebula_validator::validators::string::contains(#substring)
-        });
-    }
+    add_validator!(::nebula_validator::validators::string::contains, attrs.contains.as_ref());
+    add_validator!(::nebula_validator::validators::string::starts_with, attrs.starts_with.as_ref());
+    add_validator!(::nebula_validator::validators::string::ends_with, attrs.ends_with.as_ref());
 
-    if let Some(prefix) = &attrs.starts_with {
-        validators.push(quote! {
-            ::nebula_validator::validators::string::starts_with(#prefix)
-        });
-    }
-
-    if let Some(suffix) = &attrs.ends_with {
-        validators.push(quote! {
-            ::nebula_validator::validators::string::ends_with(#suffix)
-        });
-    }
-
-    // Text validators
+    // Text validators (builder pattern)
+    // Note: These use the builder pattern Validator::new()
     if attrs.uuid {
-        validators.push(quote! {
-            ::nebula_validator::validators::text::Uuid::new()
-        });
+        validators.push(quote! { ::nebula_validator::validators::text::Uuid::new() });
     }
-
     if attrs.datetime {
-        validators.push(quote! {
-            ::nebula_validator::validators::text::DateTime::new()
-        });
+        validators.push(quote! { ::nebula_validator::validators::text::DateTime::new() });
     }
-
     if attrs.json {
-        validators.push(quote! {
-            ::nebula_validator::validators::text::Json::new()
-        });
+        validators.push(quote! { ::nebula_validator::validators::text::Json::new() });
     }
-
     if attrs.slug {
-        validators.push(quote! {
-            ::nebula_validator::validators::text::Slug::new()
-        });
+        validators.push(quote! { ::nebula_validator::validators::text::Slug::new() });
     }
-
     if attrs.hex {
-        validators.push(quote! {
-            ::nebula_validator::validators::text::Hex::new()
-        });
+        validators.push(quote! { ::nebula_validator::validators::text::Hex::new() });
     }
-
     if attrs.base64 {
-        validators.push(quote! {
-            ::nebula_validator::validators::text::Base64::new()
-        });
+        validators.push(quote! { ::nebula_validator::validators::text::Base64::new() });
     }
 
     // Numeric validators
-    if let Some(min) = &attrs.min {
-        validators.push(quote! {
-            ::nebula_validator::validators::numeric::min(#min)
-        });
-    }
-
-    if let Some(max) = &attrs.max {
-        validators.push(quote! {
-            ::nebula_validator::validators::numeric::max(#max)
-        });
-    }
+    add_validator!(::nebula_validator::validators::numeric::min, attrs.min.as_ref());
+    add_validator!(::nebula_validator::validators::numeric::max, attrs.max.as_ref());
 
     if let (Some(min), Some(max)) = (&attrs.range_min, &attrs.range_max) {
         validators.push(quote! {
@@ -207,59 +218,32 @@ fn generate_field_validator(attrs: &ValidationAttrs) -> syn::Result<TokenStream>
     }
 
     if attrs.positive {
-        validators.push(quote! {
-            ::nebula_validator::validators::numeric::positive()
-        });
+        add_validator!(::nebula_validator::validators::numeric::positive);
     }
-
     if attrs.negative {
-        validators.push(quote! {
-            ::nebula_validator::validators::numeric::negative()
-        });
+        add_validator!(::nebula_validator::validators::numeric::negative);
     }
-
     if attrs.even {
-        validators.push(quote! {
-            ::nebula_validator::validators::numeric::even()
-        });
+        add_validator!(::nebula_validator::validators::numeric::even);
     }
-
     if attrs.odd {
-        validators.push(quote! {
-            ::nebula_validator::validators::numeric::odd()
-        });
+        add_validator!(::nebula_validator::validators::numeric::odd);
     }
 
     // Collection validators
-    if let Some(min) = attrs.min_size {
-        validators.push(quote! {
-            ::nebula_validator::validators::collection::min_size(#min)
-        });
-    }
-
-    if let Some(max) = attrs.max_size {
-        validators.push(quote! {
-            ::nebula_validator::validators::collection::max_size(#max)
-        });
-    }
+    add_validator!(::nebula_validator::validators::collection::min_size, attrs.min_size);
+    add_validator!(::nebula_validator::validators::collection::max_size, attrs.max_size);
 
     if attrs.unique {
-        validators.push(quote! {
-            ::nebula_validator::validators::collection::unique()
-        });
+        add_validator!(::nebula_validator::validators::collection::unique);
     }
-
     if attrs.non_empty {
-        validators.push(quote! {
-            ::nebula_validator::validators::collection::non_empty()
-        });
+        add_validator!(::nebula_validator::validators::collection::non_empty);
     }
 
     // Logical validators
     if attrs.required {
-        validators.push(quote! {
-            ::nebula_validator::validators::logical::required()
-        });
+        add_validator!(::nebula_validator::validators::logical::required);
     }
 
     // Nested validation - use NestedValidator
@@ -297,14 +281,5 @@ fn generate_field_validator(attrs: &ValidationAttrs) -> syn::Result<TokenStream>
     }
 }
 
-/// Generate the field accessor closure.
-///
-/// Uses shared codegen infrastructure to generate type-aware accessors.
-fn generate_field_accessor(
-    struct_name: &Ident,
-    field_name: &Ident,
-    field_type: &Type,
-) -> TokenStream {
-    // Use shared codegen to generate accessor
-    codegen::generate_accessor(struct_name, field_name, field_type)
-}
+// NOTE: Field accessor generation is now handled directly by codegen::generate_accessor()
+// in generate_field_addition() above. No wrapper function needed!
