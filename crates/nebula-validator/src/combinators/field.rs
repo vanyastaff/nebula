@@ -24,7 +24,8 @@
 //! assert!(age_validator.validate(&user).is_ok());
 //! ```
 
-use crate::core::{TypedValidator, ValidatorMetadata};
+use crate::combinators::CombinatorError;
+use crate::core::{TypedValidator, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // FIELD COMBINATOR
@@ -51,10 +52,43 @@ where
     F: Fn(&T) -> &U,
     U: ?Sized,
 {
-    name: Option<&'static str>,
+    name: Option<String>,
     validator: V,
     accessor: F,
     _phantom: std::marker::PhantomData<fn() -> (T, U)>,
+}
+
+// Manual Debug implementation (F may not implement Debug)
+impl<T, U, V, F> std::fmt::Debug for Field<T, U, V, F>
+where
+    F: Fn(&T) -> &U,
+    U: ?Sized,
+    V: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Field")
+            .field("name", &self.name)
+            .field("validator", &self.validator)
+            .field("accessor", &"<function>")
+            .finish()
+    }
+}
+
+// Manual Clone implementation (only if V and F are Clone)
+impl<T, U, V, F> Clone for Field<T, U, V, F>
+where
+    F: Fn(&T) -> &U + Clone,
+    U: ?Sized,
+    V: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            validator: self.validator.clone(),
+            accessor: self.accessor.clone(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
 }
 
 impl<T, U, V, F> Field<T, U, V, F>
@@ -73,9 +107,9 @@ where
     }
 
     /// Creates a new field validator with a name.
-    pub fn named(name: &'static str, validator: V, accessor: F) -> Self {
+    pub fn named(name: impl Into<String>, validator: V, accessor: F) -> Self {
         Self {
-            name: Some(name),
+            name: Some(name.into()),
             validator,
             accessor,
             _phantom: std::marker::PhantomData,
@@ -83,8 +117,8 @@ where
     }
 
     /// Returns the field name, if any.
-    pub fn field_name(&self) -> Option<&'static str> {
-        self.name
+    pub fn field_name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
     /// Returns a reference to the inner validator.
@@ -100,17 +134,20 @@ where
 /// Error wrapper that includes field name context.
 #[derive(Debug, Clone)]
 pub struct FieldError<E> {
-    pub field_name: Option<&'static str>,
+    pub field_name: Option<String>,
     pub inner: E,
 }
 
 impl<E> FieldError<E> {
-    pub fn new(field_name: Option<&'static str>, inner: E) -> Self {
-        Self { field_name, inner }
+    pub fn new(field_name: Option<impl Into<String>>, inner: E) -> Self {
+        Self {
+            field_name: field_name.map(|n| n.into()),
+            inner,
+        }
     }
 
-    pub fn field_name(&self) -> Option<&'static str> {
-        self.field_name
+    pub fn field_name(&self) -> Option<&str> {
+        self.field_name.as_deref()
     }
 
     pub fn inner(&self) -> &E {
@@ -120,11 +157,45 @@ impl<E> FieldError<E> {
     pub fn into_inner(self) -> E {
         self.inner
     }
+
+    /// Maps the inner error to another type.
+    pub fn map_inner<F, U>(self, f: F) -> FieldError<U>
+    where
+        F: FnOnce(E) -> U,
+    {
+        FieldError {
+            field_name: self.field_name,
+            inner: f(self.inner),
+        }
+    }
+
+    /// Tries to map the inner error, propagating errors.
+    pub fn try_map_inner<F, U, Err>(self, f: F) -> Result<FieldError<U>, Err>
+    where
+        F: FnOnce(E) -> Result<U, Err>,
+    {
+        Ok(FieldError {
+            field_name: self.field_name,
+            inner: f(self.inner)?,
+        })
+    }
+
+    /// Sets or updates the field name.
+    pub fn with_field_name(mut self, name: impl Into<String>) -> Self {
+        self.field_name = Some(name.into());
+        self
+    }
+
+    /// Removes the field name.
+    pub fn without_field_name(mut self) -> Self {
+        self.field_name = None;
+        self
+    }
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for FieldError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(name) = self.field_name {
+        if let Some(ref name) = self.field_name {
             write!(f, "Validation failed for field '{}': {}", name, self.inner)
         } else {
             write!(f, "Validation failed for field: {}", self.inner)
@@ -135,6 +206,37 @@ impl<E: std::fmt::Display> std::fmt::Display for FieldError<E> {
 impl<E: std::error::Error + 'static> std::error::Error for FieldError<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.inner)
+    }
+}
+
+// ============================================================================
+// CONVERSIONS
+// ============================================================================
+
+/// Convert FieldError to CombinatorError
+impl<E> From<FieldError<E>> for CombinatorError<E> {
+    fn from(error: FieldError<E>) -> Self {
+        Self::FieldFailed {
+            field_name: error.field_name,
+            error: Box::new(error.inner),
+        }
+    }
+}
+
+/// Convert FieldError to ValidationError
+impl<E: std::fmt::Display> From<FieldError<E>> for ValidationError {
+    fn from(error: FieldError<E>) -> Self {
+        if let Some(field_name) = error.field_name {
+            ValidationError::new(
+                "field_validation_failed",
+                format!("Field '{}' validation failed: {}", field_name, error.inner),
+            )
+        } else {
+            ValidationError::new(
+                "field_validation_failed",
+                format!("Field validation failed: {}", error.inner),
+            )
+        }
     }
 }
 
@@ -157,21 +259,21 @@ where
         self.validator
             .validate(field_value)
             .map(|_| ())
-            .map_err(|err| FieldError::new(self.name, err))
+            .map_err(|err| FieldError::new(self.name.as_deref(), err))
     }
 
     fn metadata(&self) -> ValidatorMetadata {
         let inner_meta = self.validator.metadata();
 
         ValidatorMetadata {
-            name: if let Some(name) = self.name {
+            name: if let Some(ref name) = self.name {
                 format!("Field('{}', {})", name, inner_meta.name)
             } else {
                 format!("Field({})", inner_meta.name)
             },
             description: Some(format!(
                 "Validates field{} using {}",
-                self.name.map(|n| format!(" '{}'", n)).unwrap_or_default(),
+                self.name.as_ref().map(|n| format!(" '{}'", n)).unwrap_or_default(),
                 inner_meta.name
             )),
             complexity: inner_meta.complexity,
@@ -203,7 +305,7 @@ where
 }
 
 /// Creates a field validator with a name.
-pub fn named_field<T, U, V, F>(name: &'static str, validator: V, accessor: F) -> Field<T, U, V, F>
+pub fn named_field<T, U, V, F>(name: impl Into<String>, validator: V, accessor: F) -> Field<T, U, V, F>
 where
     F: Fn(&T) -> &U,
     U: ?Sized,
@@ -218,7 +320,7 @@ where
 /// Extension trait for creating field validators.
 pub trait FieldValidatorExt: TypedValidator + Sized {
     /// Creates a field validator for this validator.
-    fn for_field<T, F>(self, name: &'static str, accessor: F) -> Field<T, Self::Input, Self, F>
+    fn for_field<T, F>(self, name: impl Into<String>, accessor: F) -> Field<T, Self::Input, Self, F>
     where
         F: Fn(&T) -> &Self::Input,
     {

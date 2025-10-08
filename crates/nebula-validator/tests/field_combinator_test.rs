@@ -74,7 +74,7 @@ fn test_field_named() {
     let age_validator = named_field("age", MinValue { min: 18 }, |u: &User| &u.age);
 
     let err = age_validator.validate(&user).unwrap_err();
-    assert_eq!(err.field_name(), "age");
+    assert_eq!(err.field_name(), Some("age"));
     assert!(err.to_string().contains("field 'age'"));
 }
 
