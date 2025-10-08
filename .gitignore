@@ -304,3 +304,6 @@ docker-compose.override.yml
 # **/sandbox/
 # **/experimental/
 # **/playground/
+
+# Upgrade/migration planning files
+crates/nebula-validator/upgrade/

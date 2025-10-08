@@ -165,7 +165,7 @@ fn generate_field_validator(attrs: &ValidationAttrs) -> syn::Result<TokenStream>
 
     if let Some(pattern) = &attrs.regex {
         validators.push(quote! {
-            ::nebula_validator::validators::string::regex(#pattern)
+            ::nebula_validator::validators::string::matches_regex(#pattern).expect("Invalid regex pattern")
         });
     }
 
@@ -308,7 +308,7 @@ fn generate_field_validator(attrs: &ValidationAttrs) -> syn::Result<TokenStream>
     // Nested validation - use NestedValidator
     if attrs.nested {
         return Ok(quote! {
-            ::nebula_validator::combinators::field::NestedValidator::new(|v| v.validate())
+            ::nebula_validator::combinators::nested::NestedValidator::new(|v| v.validate())
         });
     }
 

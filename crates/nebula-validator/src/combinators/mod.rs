@@ -88,6 +88,7 @@ pub mod cached;
 pub mod error;
 pub mod field;
 pub mod map;
+pub mod nested;
 pub mod not;
 pub mod optional;
 pub mod optimizer;
@@ -100,6 +101,10 @@ pub use cached::{cached, Cached, CacheStats};
 pub use error::CombinatorError;
 pub use field::{field, named_field, Field, FieldError, FieldValidatorExt, MultiField};
 pub use map::{map, map_to, map_unit, map_with_input, Map, MapWithInput};
+pub use nested::{
+    collection_nested, custom_nested, nested_validator, optional_nested, CollectionNested,
+    NestedValidator, OptionalNested, Validatable,
+};
 pub use not::{not, Not};
 pub use optional::{nullable, optional, required_some, Nullable, Optional, RequiredSome};
 pub use optimizer::{OptimizationReport, OptimizationStrategy, ValidatorChainOptimizer, ValidatorOrdering, ValidatorStats};
