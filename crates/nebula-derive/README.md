@@ -82,6 +82,15 @@ fn main() -> Result<(), ValidationErrors> {
 - `#[validate(starts_with = "prefix")]` - Must start with prefix
 - `#[validate(ends_with = "suffix")]` - Must end with suffix
 
+#### Text Validators (Zero Dependencies!)
+
+- `#[validate(uuid)]` - RFC 4122 UUID format
+- `#[validate(datetime)]` - ISO 8601 date/time format
+- `#[validate(json)]` - Valid JSON string
+- `#[validate(slug)]` - URL-friendly slug (lowercase, numbers, hyphens)
+- `#[validate(hex)]` - Hexadecimal string
+- `#[validate(base64)]` - Base64 encoded string
+
 #### Numeric Validators
 
 - `#[validate(range(min = N, max = M))]` - Range validation
@@ -140,6 +149,48 @@ Combine multiple validators on a single field:
 struct ProductForm {
     #[validate(min_length = 3, max_length = 50, alphanumeric)]
     product_name: String,
+}
+```
+
+#### Text Validators
+
+Use the new zero-dependency text validators:
+
+```rust
+#[derive(Validator)]
+struct ApiRequest {
+    #[validate(uuid)]
+    request_id: String,
+
+    #[validate(datetime)]
+    timestamp: String,
+
+    #[validate(json)]
+    payload: String,
+
+    #[validate(slug)]
+    resource_name: String,
+
+    #[validate(hex)]
+    checksum: String,
+
+    #[validate(base64)]
+    encoded_data: String,
+}
+
+fn main() -> Result<(), ValidationErrors> {
+    let request = ApiRequest {
+        request_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+        timestamp: "2024-01-15T09:30:00Z".to_string(),
+        payload: r#"{"user": "alice"}"#.to_string(),
+        resource_name: "my-resource".to_string(),
+        checksum: "deadbeef".to_string(),
+        encoded_data: "SGVsbG8gV29ybGQ=".to_string(),
+    };
+
+    request.validate()?;
+    println!("Request validated successfully!");
+    Ok(())
 }
 ```
 

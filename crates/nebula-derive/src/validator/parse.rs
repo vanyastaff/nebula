@@ -17,6 +17,14 @@ pub struct ValidationAttrs {
     pub starts_with: Option<String>,
     pub ends_with: Option<String>,
 
+    // Text validators (new!)
+    pub uuid: bool,
+    pub datetime: bool,
+    pub json: bool,
+    pub slug: bool,
+    pub hex: bool,
+    pub base64: bool,
+
     // Numeric validators
     pub min: Option<syn::Expr>,
     pub max: Option<syn::Expr>,
@@ -174,6 +182,37 @@ impl ValidationAttrs {
             return Ok(());
         }
 
+        // Text validators
+        if path.is_ident("uuid") {
+            self.uuid = true;
+            return Ok(());
+        }
+
+        if path.is_ident("datetime") {
+            self.datetime = true;
+            return Ok(());
+        }
+
+        if path.is_ident("json") {
+            self.json = true;
+            return Ok(());
+        }
+
+        if path.is_ident("slug") {
+            self.slug = true;
+            return Ok(());
+        }
+
+        if path.is_ident("hex") {
+            self.hex = true;
+            return Ok(());
+        }
+
+        if path.is_ident("base64") {
+            self.base64 = true;
+            return Ok(());
+        }
+
         if path.is_ident("positive") {
             self.positive = true;
             return Ok(());
@@ -236,7 +275,19 @@ impl ValidationAttrs {
             return Ok(());
         }
 
-        Err(meta.error(format!("Unknown validation attribute: {:?}", path)))
+        Err(meta.error(format!(
+            "Unknown validation attribute: '{}'. \n\
+             Supported attributes:\n\
+             - String: min_length, max_length, exact_length, email, url, regex, alphanumeric, contains, starts_with, ends_with\n\
+             - Text: uuid, datetime, json, slug, hex, base64\n\
+             - Numeric: min, max, range, positive, negative, even, odd\n\
+             - Collection: min_size, max_size, unique, non_empty\n\
+             - Logical: required, nested, custom\n\
+             - Meta: message, skip, expr\n\
+             \n\
+             Use 'expr' for any validator not listed above: #[validate(expr = \"CustomValidator::new()\")]",
+            path.get_ident().map(|i| i.to_string()).unwrap_or_else(|| format!("{:?}", path))
+        )))
     }
 
     /// Check if any validators are specified.
@@ -251,6 +302,12 @@ impl ValidationAttrs {
             || self.contains.is_some()
             || self.starts_with.is_some()
             || self.ends_with.is_some()
+            || self.uuid
+            || self.datetime
+            || self.json
+            || self.slug
+            || self.hex
+            || self.base64
             || self.min.is_some()
             || self.max.is_some()
             || self.range_min.is_some()

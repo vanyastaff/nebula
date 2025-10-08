@@ -14,13 +14,18 @@ pub fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream> {
         Data::Enum(_) => {
             return Err(syn::Error::new_spanned(
                 input,
-                "Validator can only be derived for structs, not enums",
+                "Validator derive macro can only be applied to structs.\n\
+                 \n\
+                 For enums, consider using a custom validator or the 'expr' attribute:\n\
+                 #[validate(expr = \"custom_enum_validator()\")]",
             ));
         }
         Data::Union(_) => {
             return Err(syn::Error::new_spanned(
                 input,
-                "Validator can only be derived for structs, not unions",
+                "Validator derive macro can only be applied to structs.\n\
+                 \n\
+                 Unions are not supported for automatic validation.",
             ));
         }
     };
@@ -30,13 +35,23 @@ pub fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream> {
         Fields::Unnamed(_) => {
             return Err(syn::Error::new_spanned(
                 input,
-                "Validator can only be derived for structs with named fields",
+                "Validator derive macro requires named fields.\n\
+                 \n\
+                 Example:\n\
+                 struct MyStruct {\n\
+                 \x20   #[validate(min_length = 3)]\n\
+                 \x20   name: String,\n\
+                 }\n\
+                 \n\
+                 Tuple structs are not supported.",
             ));
         }
         Fields::Unit => {
             return Err(syn::Error::new_spanned(
                 input,
-                "Validator cannot be derived for unit structs",
+                "Validator derive macro cannot be applied to unit structs.\n\
+                 \n\
+                 Unit structs have no fields to validate.",
             ));
         }
     };
@@ -202,6 +217,67 @@ fn generate_field_validations(
     if let Some(suffix) = &attrs.ends_with {
         validators.push(quote! {
             if let Err(e) = nebula_validator::validators::string::ends_with(#suffix)
+                .validate(&self.#field_name)
+            {
+                errors.add(e.with_field(#field_name_str));
+            }
+        });
+    }
+
+    // Text validators
+    if attrs.uuid {
+        validators.push(quote! {
+            if let Err(e) = nebula_validator::validators::text::Uuid::new()
+                .validate(&self.#field_name)
+            {
+                errors.add(e.with_field(#field_name_str));
+            }
+        });
+    }
+
+    if attrs.datetime {
+        validators.push(quote! {
+            if let Err(e) = nebula_validator::validators::text::DateTime::new()
+                .validate(&self.#field_name)
+            {
+                errors.add(e.with_field(#field_name_str));
+            }
+        });
+    }
+
+    if attrs.json {
+        validators.push(quote! {
+            if let Err(e) = nebula_validator::validators::text::Json::new()
+                .validate(&self.#field_name)
+            {
+                errors.add(e.with_field(#field_name_str));
+            }
+        });
+    }
+
+    if attrs.slug {
+        validators.push(quote! {
+            if let Err(e) = nebula_validator::validators::text::Slug::new()
+                .validate(&self.#field_name)
+            {
+                errors.add(e.with_field(#field_name_str));
+            }
+        });
+    }
+
+    if attrs.hex {
+        validators.push(quote! {
+            if let Err(e) = nebula_validator::validators::text::Hex::new()
+                .validate(&self.#field_name)
+            {
+                errors.add(e.with_field(#field_name_str));
+            }
+        });
+    }
+
+    if attrs.base64 {
+        validators.push(quote! {
+            if let Err(e) = nebula_validator::validators::text::Base64::new()
                 .validate(&self.#field_name)
             {
                 errors.add(e.with_field(#field_name_str));
