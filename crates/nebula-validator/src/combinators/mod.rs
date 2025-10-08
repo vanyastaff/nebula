@@ -90,6 +90,7 @@ pub mod field;
 pub mod map;
 pub mod not;
 pub mod optional;
+pub mod optimizer;
 pub mod or;
 pub mod when;
 
@@ -101,6 +102,7 @@ pub use field::{field, named_field, Field, FieldError, FieldValidatorExt};
 pub use map::{map, map_to, map_unit, map_with_input, Map, MapWithInput};
 pub use not::{not, Not, NotError};
 pub use optional::{nullable, optional, required_some, Nullable, Optional, RequiredError, RequiredSome};
+pub use optimizer::{OptimizationReport, OptimizationStrategy, ValidatorChainOptimizer, ValidatorOrdering, ValidatorStats};
 pub use or::{or, or_any, Or, OrAny, OrAnyError, OrError};
 pub use when::{unless, when, when_not_empty, when_some, When};
 
