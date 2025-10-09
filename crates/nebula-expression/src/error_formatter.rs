@@ -42,7 +42,10 @@ impl<'a> ErrorFormatter<'a> {
         let lines: Vec<&str> = self.source.lines().collect();
         let error_line_idx = self.position.line.saturating_sub(1);
 
-        let mut output = String::new();
+        // Estimate output size: ~80 chars per line + header
+        let num_lines = self.context_before + self.context_after + 2;
+        let estimated_size = 200 + (num_lines * 80);
+        let mut output = String::with_capacity(estimated_size);
 
         // Header with error message
         output.push_str(&format!("Error at {}:\n", self.position));
@@ -99,7 +102,10 @@ impl<'a> ErrorFormatter<'a> {
         let lines: Vec<&str> = self.source.lines().collect();
         let error_line_idx = self.position.line.saturating_sub(1);
 
-        let mut output = String::new();
+        // Estimate output size: ~80 chars per line + header + highlighting
+        let num_lines = self.context_before + self.context_after + 2;
+        let estimated_size = 200 + (num_lines * 80) + length;
+        let mut output = String::with_capacity(estimated_size);
 
         // Header
         output.push_str(&format!("Error at {}:\n", self.position));
