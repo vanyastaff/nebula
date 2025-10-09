@@ -54,6 +54,8 @@
 
 pub mod client;
 pub mod codes;
+pub mod memory;
+pub mod resource;
 pub mod server;
 pub mod system;
 pub mod workflow;
@@ -63,6 +65,8 @@ use std::time::Duration;
 use thiserror::Error;
 
 pub use client::ClientError;
+pub use memory::MemoryError;
+pub use resource::ResourceError;
 pub use server::ServerError;
 pub use system::SystemError;
 pub use workflow::{
@@ -113,6 +117,14 @@ pub enum ErrorKind {
     /// Runtime execution errors (limits, cancellation, etc.)
     #[error(transparent)]
     Execution(#[from] ExecutionError),
+
+    /// Memory management errors (allocation, pooling, caching, budgets)
+    #[error(transparent)]
+    Memory(#[from] MemoryError),
+
+    /// Resource management errors (availability, health, pooling, dependencies)
+    #[error(transparent)]
+    Resource(#[from] ResourceError),
 }
 
 impl ErrorClassification for ErrorKind {
@@ -125,7 +137,10 @@ impl ErrorClassification for ErrorKind {
     }
 
     fn is_system_error(&self) -> bool {
-        matches!(self, ErrorKind::System(_))
+        matches!(
+            self,
+            ErrorKind::System(_) | ErrorKind::Memory(_) | ErrorKind::Resource(_)
+        )
     }
 }
 
@@ -141,6 +156,8 @@ impl RetryableError for ErrorKind {
             ErrorKind::Connector(e) => e.is_retryable(),
             ErrorKind::Credential(e) => e.is_retryable(),
             ErrorKind::Execution(e) => e.is_retryable(),
+            ErrorKind::Memory(e) => e.is_retryable(),
+            ErrorKind::Resource(e) => e.is_retryable(),
         }
     }
 
@@ -155,6 +172,8 @@ impl RetryableError for ErrorKind {
             ErrorKind::Connector(_) => Some(Duration::from_secs(2)),
             ErrorKind::Credential(_) => Some(Duration::from_secs(10)),
             ErrorKind::Execution(_) => Some(Duration::from_millis(500)),
+            ErrorKind::Memory(_) => Some(Duration::from_millis(100)),
+            ErrorKind::Resource(_) => Some(Duration::from_millis(500)),
         }
     }
 }
@@ -171,6 +190,8 @@ impl ErrorCode for ErrorKind {
             ErrorKind::Connector(e) => e.error_code(),
             ErrorKind::Credential(e) => e.error_code(),
             ErrorKind::Execution(e) => e.error_code(),
+            ErrorKind::Memory(e) => e.error_code(),
+            ErrorKind::Resource(e) => e.error_code(),
         }
     }
 
@@ -185,6 +206,8 @@ impl ErrorCode for ErrorKind {
             ErrorKind::Connector(_) => codes::CATEGORY_CONNECTOR,
             ErrorKind::Credential(_) => codes::CATEGORY_CREDENTIAL,
             ErrorKind::Execution(_) => codes::CATEGORY_EXECUTION,
+            ErrorKind::Memory(_) => codes::CATEGORY_MEMORY,
+            ErrorKind::Resource(_) => codes::CATEGORY_RESOURCE,
         }
     }
 }
@@ -264,3 +287,5 @@ mod tests {
         assert_eq!(internal_error.error_category(), "SERVER");
     }
 }
+
+

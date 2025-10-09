@@ -492,6 +492,204 @@ impl NebulaError {
             },
         ))
     }
+
+    // ============================================================================
+    // Memory Error Constructors
+    // ============================================================================
+
+    /// Create a memory allocation failed error
+    pub fn memory_allocation_failed(size: usize, align: usize) -> Self {
+        Self::new(ErrorKind::Memory(crate::kinds::MemoryError::AllocationFailed {
+            size,
+            align,
+        }))
+        .with_retry_info(true, Some(Duration::from_millis(100)))
+    }
+
+    /// Create a memory pool exhausted error
+    pub fn memory_pool_exhausted(pool_id: impl Into<String>, capacity: usize) -> Self {
+        Self::new(ErrorKind::Memory(crate::kinds::MemoryError::PoolExhausted {
+            pool_id: pool_id.into(),
+            capacity,
+        }))
+        .with_retry_info(true, Some(Duration::from_millis(500)))
+    }
+
+    /// Create a memory arena exhausted error
+    pub fn memory_arena_exhausted(
+        arena_id: impl Into<String>,
+        requested: usize,
+        available: usize,
+    ) -> Self {
+        Self::new(ErrorKind::Memory(crate::kinds::MemoryError::ArenaExhausted {
+            arena_id: arena_id.into(),
+            requested,
+            available,
+        }))
+        .with_retry_info(true, Some(Duration::from_millis(200)))
+    }
+
+    /// Create a cache miss error
+    pub fn memory_cache_miss(key: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Memory(crate::kinds::MemoryError::CacheMiss {
+            key: key.into(),
+        }))
+        .with_retry_info(false, None)
+    }
+
+    /// Create a memory budget exceeded error
+    pub fn memory_budget_exceeded(used: usize, limit: usize) -> Self {
+        Self::new(ErrorKind::Memory(crate::kinds::MemoryError::BudgetExceeded {
+            used,
+            limit,
+        }))
+        .with_retry_info(true, Some(Duration::from_millis(500)))
+    }
+
+    /// Create a memory corruption error
+    pub fn memory_corruption(component: impl Into<String>, details: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Memory(crate::kinds::MemoryError::Corruption {
+            component: component.into(),
+            details: details.into(),
+        }))
+        .with_retry_info(false, None)
+    }
+
+    /// Create a memory invalid layout error
+    pub fn memory_invalid_layout(reason: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Memory(crate::kinds::MemoryError::InvalidLayout {
+            reason: reason.into(),
+        }))
+        .with_retry_info(false, None)
+    }
+
+    // ============================================================================
+    // Resource Error Constructors
+    // ============================================================================
+
+    /// Create a resource unavailable error
+    pub fn resource_unavailable(
+        resource_id: impl Into<String>,
+        reason: impl Into<String>,
+        retryable: bool,
+    ) -> Self {
+        let retry_after = if retryable {
+            Some(Duration::from_secs(5))
+        } else {
+            None
+        };
+        Self::new(ErrorKind::Resource(crate::kinds::ResourceError::Unavailable {
+            resource_id: resource_id.into(),
+            reason: reason.into(),
+            retryable,
+        }))
+        .with_retry_info(retryable, retry_after)
+    }
+
+    /// Create a resource health check failed error
+    pub fn resource_health_check_failed(
+        resource_id: impl Into<String>,
+        attempt: u32,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::new(ErrorKind::Resource(
+            crate::kinds::ResourceError::HealthCheckFailed {
+                resource_id: resource_id.into(),
+                attempt,
+                reason: reason.into(),
+            },
+        ))
+        .with_retry_info(true, Some(Duration::from_secs(2)))
+    }
+
+    /// Create a resource circuit breaker open error
+    pub fn resource_circuit_breaker_open(
+        resource_id: impl Into<String>,
+        retry_after_ms: Option<u64>,
+    ) -> Self {
+        let retry_after = retry_after_ms.map(Duration::from_millis);
+        Self::new(ErrorKind::Resource(
+            crate::kinds::ResourceError::CircuitBreakerOpen {
+                resource_id: resource_id.into(),
+                retry_after_ms,
+            },
+        ))
+        .with_retry_info(true, retry_after)
+    }
+
+    /// Create a resource pool exhausted error
+    pub fn resource_pool_exhausted(
+        resource_id: impl Into<String>,
+        current_size: usize,
+        max_size: usize,
+        waiters: usize,
+    ) -> Self {
+        Self::new(ErrorKind::Resource(
+            crate::kinds::ResourceError::PoolExhausted {
+                resource_id: resource_id.into(),
+                current_size,
+                max_size,
+                waiters,
+            },
+        ))
+        .with_retry_info(true, Some(Duration::from_millis(200)))
+    }
+
+    /// Create a resource dependency failure error
+    pub fn resource_dependency_failure(
+        resource_id: impl Into<String>,
+        dependency_id: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::new(ErrorKind::Resource(
+            crate::kinds::ResourceError::DependencyFailure {
+                resource_id: resource_id.into(),
+                dependency_id: dependency_id.into(),
+                reason: reason.into(),
+            },
+        ))
+        .with_retry_info(true, Some(Duration::from_secs(3)))
+    }
+
+    /// Create a resource circular dependency error
+    pub fn resource_circular_dependency(cycle: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Resource(
+            crate::kinds::ResourceError::CircularDependency {
+                cycle: cycle.into(),
+            },
+        ))
+        .with_retry_info(false, None)
+    }
+
+    /// Create a resource invalid state transition error
+    pub fn resource_invalid_state_transition(
+        resource_id: impl Into<String>,
+        from: impl Into<String>,
+        to: impl Into<String>,
+    ) -> Self {
+        Self::new(ErrorKind::Resource(
+            crate::kinds::ResourceError::InvalidStateTransition {
+                resource_id: resource_id.into(),
+                from: from.into(),
+                to: to.into(),
+            },
+        ))
+        .with_retry_info(false, None)
+    }
+
+    /// Create a resource initialization failed error
+    pub fn resource_initialization_failed(
+        resource_id: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::new(ErrorKind::Resource(
+            crate::kinds::ResourceError::InitializationFailed {
+                resource_id: resource_id.into(),
+                reason: reason.into(),
+            },
+        ))
+        .with_retry_info(false, None)
+    }
 }
 
 impl std::error::Error for NebulaError {
