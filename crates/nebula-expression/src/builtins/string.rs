@@ -64,11 +64,11 @@ pub fn split(
     let delimiter = get_string_arg("split", args, 1, "delimiter")?;
 
     use nebula_value::ValueRefExt;
-    let mut arr = nebula_value::Array::new();
-    for part in s.split(delimiter) {
-        arr = arr.push(Value::text(part).to_json());
-    }
-    Ok(Value::Array(arr))
+    let parts: Vec<_> = s
+        .split(delimiter)
+        .map(|part| Value::text(part).to_json())
+        .collect();
+    Ok(Value::Array(nebula_value::Array::from_vec(parts)))
 }
 
 /// Replace occurrences of a substring
