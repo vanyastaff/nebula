@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use super::config::BudgetConfig;
-use crate::core::error::{MemoryError, MemoryResult};
+use crate::error::{MemoryError, MemoryResult};
 
 /// Current state of a memory budget
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

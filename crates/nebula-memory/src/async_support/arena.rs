@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, Semaphore};
 
 use crate::arena::{Arena, ArenaConfig};
-use crate::core::error::MemoryResult;
+use crate::error::MemoryResult;
 
 /// Handle to allocated arena memory
 ///

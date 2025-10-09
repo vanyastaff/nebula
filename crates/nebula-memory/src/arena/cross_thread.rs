@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
 use super::{Arena, ArenaConfig, ArenaStats};
-use crate::core::error::MemoryError;
+use crate::error::MemoryError;
 
 /// An arena that can be safely moved between threads
 ///

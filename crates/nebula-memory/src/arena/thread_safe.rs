@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use super::{ArenaAllocate, ArenaConfig, ArenaStats};
-use crate::core::error::MemoryError;
+use crate::error::MemoryError;
 use crate::utils::align_up;
 
 /// Thread-safe memory chunk with atomic bump pointer

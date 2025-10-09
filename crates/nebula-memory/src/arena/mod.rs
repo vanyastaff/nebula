@@ -47,7 +47,7 @@
 pub mod scope;
 use std::alloc::Layout;
 
-use crate::core::error::MemoryError;
+use crate::error::MemoryError;
 
 // Core arena implementations
 mod allocator;

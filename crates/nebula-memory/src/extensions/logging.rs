@@ -12,7 +12,7 @@ use core::fmt;
 #[cfg(feature = "std")]
 use std::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
-use crate::core::error::MemoryResult;
+use crate::error::MemoryResult;
 use crate::extensions::MemoryExtension;
 
 /// Log level for memory-related events

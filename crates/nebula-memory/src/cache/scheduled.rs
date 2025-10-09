@@ -18,7 +18,7 @@ use std::{
 
 use super::compute::{CacheKey, CacheResult, ComputeCache};
 use super::config::CacheConfig;
-use crate::core::error::MemoryError;
+use crate::error::MemoryError;
 
 /// A cache with automatic TTL-based cleanup
 ///

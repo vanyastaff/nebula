@@ -24,10 +24,7 @@ use {
     hashbrown::HashMap,
 };
 
-use crate::cache::{
-    compute::{CacheEntry, CacheKey},
-    stats::{AccessPattern, SizeDistribution},
-};
+use crate::cache::{CacheEntry, CacheKey};
 
 /// Frequency tracking modes for different scenarios
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,10 +155,6 @@ where
     last_aging: Instant,
     /// Total access count for adaptive algorithms
     total_accesses: u64,
-    /// Access pattern statistics
-    access_pattern: AccessPattern,
-    /// Frequency distribution statistics
-    frequency_distribution: SizeDistribution,
 }
 
 impl<K, V> LfuPolicy<K, V>
@@ -190,8 +183,6 @@ where
             #[cfg(feature = "std")]
             last_aging: Instant::now(),
             total_accesses: 0,
-            access_pattern: AccessPattern::default(),
-            frequency_distribution: SizeDistribution::default(),
         }
     }
 
@@ -398,15 +389,6 @@ where
         self.frequencies.get(key).copied()
     }
 
-    /// Get frequency distribution statistics
-    pub fn get_frequency_distribution(&self) -> &SizeDistribution {
-        &self.frequency_distribution
-    }
-
-    /// Get access pattern statistics
-    pub fn get_access_pattern(&self) -> &AccessPattern {
-        &self.access_pattern
-    }
 
     /// Get frequency histogram
     pub fn get_frequency_histogram(&self) -> &HashMap<u64, usize> {
@@ -527,21 +509,8 @@ where
     fn adaptive_frequency_update(&mut self, key: &K) {
         let current_freq = *self.frequencies.get(key).unwrap_or(&0);
 
-        // Adapt increment based on recent access patterns
-        let increment = if self.access_pattern.temporal_locality > 0.8 {
-            // High temporal locality - use larger increments
-            2
-        } else if self.access_pattern.hot_spot_ratio > 0.3 {
-            // Many hot spots - use standard increment
-            1
-        } else {
-            // Low locality - use smaller increments with decay
-            if current_freq > 5 {
-                0 // Don't increment if already high and locality is low
-            } else {
-                1
-            }
-        };
+        // Use standard increment for all accesses
+        let increment = 1;
 
         let new_freq = (current_freq + increment).min(self.config.max_frequency);
 

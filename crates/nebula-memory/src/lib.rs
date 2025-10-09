@@ -55,6 +55,9 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
+// Error types
+pub mod error;
+
 // Core functionality - foundational types and traits
 pub mod core;
 
@@ -65,7 +68,8 @@ pub mod allocator;
 pub mod utils;
 
 // Re-export core types for convenience
-pub use crate::core::{MemoryConfig, MemoryError, MemoryErrorCode, MemoryResult};
+pub use crate::core::{MemoryConfig};
+pub use crate::error::{MemoryError, MemoryResult};
 
 // Core features that depend on allocators
 #[cfg(feature = "arena")]

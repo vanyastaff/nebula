@@ -10,7 +10,7 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 
 use super::{Arena, ArenaAllocate, ThreadSafeArena};
-use crate::core::error::MemoryError;
+use crate::error::MemoryError;
 
 /// An arena-backed memory allocator
 ///

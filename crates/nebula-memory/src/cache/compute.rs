@@ -25,7 +25,7 @@ use {
 };
 
 use super::config::{CacheConfig, CacheMetrics, EvictionPolicy};
-use crate::core::error::{MemoryError, MemoryResult};
+use crate::error::{MemoryError, MemoryResult};
 
 /// Trait for cache keys
 pub trait CacheKey: Hash + Eq + Clone {}

@@ -26,7 +26,7 @@ use {
 
 use super::compute::{CacheKey, CacheResult, ComputeCache};
 use super::config::{CacheConfig, CacheMetrics};
-use crate::core::error::{MemoryError, MemoryResult};
+use crate::error::{MemoryError, MemoryResult};
 
 /// Hash function strategy for partitioning
 #[derive(Debug, Clone, Copy, PartialEq)]

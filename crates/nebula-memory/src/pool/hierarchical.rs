@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, Weak};
 #[cfg(feature = "stats")]
 use super::PoolStats;
 use super::{ObjectPool, PoolConfig, Poolable};
-use crate::core::error::{MemoryError, MemoryResult};
+use crate::error::{MemoryError, MemoryResult};
 
 /// Hierarchical pool supporting parent-child relationships
 ///

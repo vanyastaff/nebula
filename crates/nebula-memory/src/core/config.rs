@@ -11,7 +11,7 @@ use std::time::Duration;
 #[cfg(not(feature = "std"))]
 use core::time::Duration;
 
-use super::error::{MemoryError, MemoryResult};
+use crate::error::{MemoryError, MemoryResult};
 
 #[cfg(feature = "logging")]
 use nebula_log::{debug, info, warn};

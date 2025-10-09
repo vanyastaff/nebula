@@ -4,7 +4,6 @@
 //! utilities for different memory allocation patterns and requirements.
 
 // Core allocator types
-mod error;
 mod manager;
 #[cfg(all(feature = "std", feature = "monitoring"))]
 mod monitored;
@@ -28,9 +27,7 @@ pub use bump::BumpAllocator;
 pub use pool::PoolStats;
 pub use pool::{PoolAllocator, PoolBox, PoolConfig};
 
-pub use error::{
-    AllocError, AllocErrorCode, AllocResult, ErrorStats, ErrorStatsSnapshot, MemoryState,
-};
+pub use crate::error::{AllocError, AllocResult};
 pub use manager::{AllocatorId, AllocatorManager, GlobalAllocatorManager};
 #[cfg(all(feature = "std", feature = "monitoring"))]
 pub use monitored::{MonitoredAllocator, MonitoredConfig};
@@ -55,3 +52,4 @@ mod tests {
         let _manager = AllocatorManager::new();
     }
 }
+

@@ -24,7 +24,7 @@ use std::{
     vec::Vec,
 };
 
-use crate::core::error::{MemoryError, MemoryResult};
+use crate::error::{MemoryError, MemoryResult};
 use crate::extensions::MemoryExtension;
 
 /// Possible serialization formats

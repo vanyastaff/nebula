@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use super::compute::CacheEntry;
 use super::config::CacheConfig;
-use crate::core::error::{MemoryError, MemoryResult};
+use crate::error::{MemoryError, MemoryResult};
 
 /// Trait for cache keys (same as ComputeCache)
 pub trait CacheKey: Hash + Eq + Clone + Send + Sync {}

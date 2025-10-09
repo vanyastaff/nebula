@@ -3,9 +3,9 @@
 //! This example demonstrates the powerful macro DSL for simplified
 //! memory management with allocators.
 
-use nebula_memory::{allocator, alloc, dealloc, memory_scope, budget};
 use nebula_memory::allocator::{BumpAllocator, TypedAllocator};
 use nebula_memory::prelude::*;
+use nebula_memory::{alloc, allocator, budget, dealloc, memory_scope};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== nebula-memory Macro Showcase ===\n");
@@ -63,7 +63,9 @@ fn type_safe_allocation() -> Result<(), Box<dyn std::error::Error>> {
     println!("Allocating single u64...");
     let ptr = unsafe { alloc!(allocator, u64) }?;
     unsafe { ptr.as_ptr().write(42) };
-    println!("✓ Allocated and initialized: {}", unsafe { *ptr.as_ptr() });
+    println!("✓ Allocated and initialized: {}", unsafe {
+        *ptr.as_ptr()
+    });
 
     // Allocate with initialization
     println!("\nAllocating with initialization...");
@@ -113,7 +115,10 @@ fn memory_scopes() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     println!("✓ Scope 1 exited: result = {}", result);
-    println!("✓ Usage after scope: {} bytes (memory freed!)", allocator.used());
+    println!(
+        "✓ Usage after scope: {} bytes (memory freed!)",
+        allocator.used()
+    );
 
     // Scope 2: Nested scopes
     memory_scope!(allocator, {
@@ -141,16 +146,21 @@ fn memory_scopes() -> Result<(), Box<dyn std::error::Error>> {
 fn memory_budgets() -> Result<(), Box<dyn std::error::Error>> {
     // Simple budget
     let budget1 = budget!(10 * 1024 * 1024); // 10MB
-    println!("✓ Created simple budget: {} bytes total", budget1.total_limit());
+    println!(
+        "✓ Created simple budget: {} bytes total",
+        budget1.total_limit()
+    );
 
     // Budget with per-allocation limit
     let budget2 = budget!(
         total: 100 * 1024 * 1024,
         per_alloc: 1024 * 1024
     );
-    println!("✓ Created budget: {} MB total, {} MB per allocation",
+    println!(
+        "✓ Created budget: {} MB total, {} MB per allocation",
         budget2.total_limit() / (1024 * 1024),
-        budget2.allocation_limit() / (1024 * 1024));
+        budget2.allocation_limit() / (1024 * 1024)
+    );
 
     // Use budget to track allocations
     println!("\nTracking allocations against budget...");
@@ -160,9 +170,11 @@ fn memory_budgets() -> Result<(), Box<dyn std::error::Error>> {
     budget2.try_allocate(256 * 1024)?;
     println!("  ✓ Allocated 256 KB");
 
-    println!("  Budget used: {} KB / {} MB",
+    println!(
+        "  Budget used: {} KB / {} MB",
         budget2.used() / 1024,
-        budget2.total_limit() / (1024 * 1024));
+        budget2.total_limit() / (1024 * 1024)
+    );
 
     Ok(())
 }

@@ -47,8 +47,11 @@ fn benchmark_single_alloc() -> Result<(), Box<dyn std::error::Error>> {
         std::hint::black_box(b);
     }
     let system_time = start.elapsed();
-    println!("  System allocator:  {:>8.2?} ({:.2}ns per alloc)",
-        system_time, system_time.as_nanos() as f64 / ITERATIONS as f64);
+    println!(
+        "  System allocator:  {:>8.2?} ({:.2}ns per alloc)",
+        system_time,
+        system_time.as_nanos() as f64 / ITERATIONS as f64
+    );
 
     // Bump allocator
     let allocator = BumpAllocator::new(1024 * 1024)?;
@@ -58,10 +61,12 @@ fn benchmark_single_alloc() -> Result<(), Box<dyn std::error::Error>> {
         std::hint::black_box(ptr);
     }
     let bump_time = start.elapsed();
-    println!("  Bump allocator:    {:>8.2?} ({:.2}ns per alloc) - {:.1}x faster",
+    println!(
+        "  Bump allocator:    {:>8.2?} ({:.2}ns per alloc) - {:.1}x faster",
         bump_time,
         bump_time.as_nanos() as f64 / ITERATIONS as f64,
-        system_time.as_nanos() as f64 / bump_time.as_nanos() as f64);
+        system_time.as_nanos() as f64 / bump_time.as_nanos() as f64
+    );
 
     // Pool allocator
     let pool = PoolAllocator::new(64, 8, ITERATIONS)?;
@@ -69,13 +74,17 @@ fn benchmark_single_alloc() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..ITERATIONS {
         let ptr = unsafe { pool.alloc::<[u8; 64]>()? };
         std::hint::black_box(ptr);
-        unsafe { pool.dealloc(ptr); }
+        unsafe {
+            pool.dealloc(ptr);
+        }
     }
     let pool_time = start.elapsed();
-    println!("  Pool allocator:    {:>8.2?} ({:.2}ns per alloc) - {:.1}x faster",
+    println!(
+        "  Pool allocator:    {:>8.2?} ({:.2}ns per alloc) - {:.1}x faster",
         pool_time,
         pool_time.as_nanos() as f64 / ITERATIONS as f64,
-        system_time.as_nanos() as f64 / pool_time.as_nanos() as f64);
+        system_time.as_nanos() as f64 / pool_time.as_nanos() as f64
+    );
 
     // Stack allocator
     let stack = StackAllocator::new(1024 * 1024)?;
@@ -85,10 +94,12 @@ fn benchmark_single_alloc() -> Result<(), Box<dyn std::error::Error>> {
         std::hint::black_box(ptr);
     }
     let stack_time = start.elapsed();
-    println!("  Stack allocator:   {:>8.2?} ({:.2}ns per alloc) - {:.1}x faster",
+    println!(
+        "  Stack allocator:   {:>8.2?} ({:.2}ns per alloc) - {:.1}x faster",
         stack_time,
         stack_time.as_nanos() as f64 / ITERATIONS as f64,
-        system_time.as_nanos() as f64 / stack_time.as_nanos() as f64);
+        system_time.as_nanos() as f64 / stack_time.as_nanos() as f64
+    );
 
     Ok(())
 }
@@ -107,8 +118,11 @@ fn benchmark_batch_alloc() -> Result<(), Box<dyn std::error::Error>> {
         std::hint::black_box(boxes);
     }
     let system_time = start.elapsed();
-    println!("  System allocator:  {:>8.2?} ({:.2}µs per batch)",
-        system_time, system_time.as_micros() as f64 / ITERATIONS as f64);
+    println!(
+        "  System allocator:  {:>8.2?} ({:.2}µs per batch)",
+        system_time,
+        system_time.as_micros() as f64 / ITERATIONS as f64
+    );
 
     // Bump allocator
     let allocator = BumpAllocator::new(10 * 1024 * 1024)?;
@@ -121,10 +135,12 @@ fn benchmark_batch_alloc() -> Result<(), Box<dyn std::error::Error>> {
         allocator.reset();
     }
     let bump_time = start.elapsed();
-    println!("  Bump allocator:    {:>8.2?} ({:.2}µs per batch) - {:.1}x faster",
+    println!(
+        "  Bump allocator:    {:>8.2?} ({:.2}µs per batch) - {:.1}x faster",
         bump_time,
         bump_time.as_micros() as f64 / ITERATIONS as f64,
-        system_time.as_micros() as f64 / bump_time.as_micros() as f64);
+        system_time.as_micros() as f64 / bump_time.as_micros() as f64
+    );
 
     Ok(())
 }
@@ -138,11 +154,16 @@ fn benchmark_reuse_pattern() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..CYCLES {
         let ptr = unsafe { pool.alloc::<[u8; 64]>()? };
         std::hint::black_box(ptr);
-        unsafe { pool.dealloc(ptr); }
+        unsafe {
+            pool.dealloc(ptr);
+        }
     }
     let pool_time = start.elapsed();
-    println!("  Pool allocator:    {:>8.2?} ({:.2}ns per cycle)",
-        pool_time, pool_time.as_nanos() as f64 / CYCLES as f64);
+    println!(
+        "  Pool allocator:    {:>8.2?} ({:.2}ns per cycle)",
+        pool_time,
+        pool_time.as_nanos() as f64 / CYCLES as f64
+    );
 
     // System allocator (for comparison)
     let start = Instant::now();
@@ -151,10 +172,12 @@ fn benchmark_reuse_pattern() -> Result<(), Box<dyn std::error::Error>> {
         std::hint::black_box(b);
     }
     let system_time = start.elapsed();
-    println!("  System allocator:  {:>8.2?} ({:.2}ns per cycle) - {:.1}x slower",
+    println!(
+        "  System allocator:  {:>8.2?} ({:.2}ns per cycle) - {:.1}x slower",
         system_time,
         system_time.as_nanos() as f64 / CYCLES as f64,
-        system_time.as_nanos() as f64 / pool_time.as_nanos() as f64);
+        system_time.as_nanos() as f64 / pool_time.as_nanos() as f64
+    );
 
     Ok(())
 }
@@ -175,8 +198,11 @@ fn benchmark_reset() -> Result<(), Box<dyn std::error::Error>> {
         allocator.reset();
     }
     let reset_time = start.elapsed();
-    println!("  Reset time:        {:>8.2?} ({:.2}ns per reset)",
-        reset_time, reset_time.as_nanos() as f64 / ITERATIONS as f64);
+    println!(
+        "  Reset time:        {:>8.2?} ({:.2}ns per reset)",
+        reset_time,
+        reset_time.as_nanos() as f64 / ITERATIONS as f64
+    );
     println!("  → O(1) operation regardless of allocated memory!");
 
     Ok(())

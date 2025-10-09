@@ -2,7 +2,7 @@
 //!
 //! This module defines the fundamental traits used throughout nebula-memory.
 
-use super::error::{MemoryError, MemoryResult};
+use crate::error::{MemoryError, MemoryResult};
 use core::alloc::Layout;
 
 /// Core memory management trait for allocators and pools

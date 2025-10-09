@@ -1,11 +1,10 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 pub mod fifo;
-pub mod lfu;
-mod lru;
+// TODO: Fix lfu module after migration
+// pub mod lfu;
+pub mod lru;
 pub mod random;
-#[cfg(test)]
-mod tests {
-mod ttl;
+pub mod ttl;
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
@@ -18,11 +17,11 @@ use {
     hashbrown::HashMap,
 };
 
-use super::compute::CacheEntry;
+use super::CacheEntry;
 
 // Re-export policy modules
 pub use fifo::FifoPolicy;
-pub use lfu::LfuPolicy;
+// pub use lfu::LfuPolicy;
 pub use lru::LruPolicy;
 pub use random::RandomPolicy;
 pub use ttl::TtlPolicy;
@@ -66,7 +65,8 @@ where
     selector.select_victim(&entries)
 }
 
-
+#[cfg(test)]
+mod tests {
     use super::*;
 
     #[test]

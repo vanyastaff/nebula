@@ -7,7 +7,7 @@ use std::ptr::{self, NonNull};
 use std::time::Instant;
 
 use super::{ArenaAllocate, ArenaConfig, ArenaStats};
-use crate::core::error::MemoryError;
+use crate::error::MemoryError;
 use crate::utils::align_up;
 
 /// Memory chunk managed by the arena

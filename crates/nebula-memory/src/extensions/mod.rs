@@ -26,7 +26,7 @@ use std::{
     vec::Vec,
 };
 
-use crate::core::error::{MemoryError, MemoryResult};
+use crate::error::{MemoryError, MemoryResult};
 #[cfg(not(feature = "std"))]
 use crate::lockfree::RwLock;
 

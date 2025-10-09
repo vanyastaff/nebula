@@ -9,7 +9,7 @@ use alloc::{collections::BTreeMap as HashMap, format, string::String, vec::Vec};
 use std::{collections::HashMap, time::Instant};
 
 use super::memory_stats::MemoryMetrics;
-use crate::core::error::{MemoryError, MemoryResult};
+use crate::error::{MemoryError, MemoryResult};
 use crate::utils;
 
 /// Snapshot format for serialization

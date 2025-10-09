@@ -6,7 +6,7 @@ use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
 use super::ArenaStats;
-use crate::core::error::MemoryError;
+use crate::error::MemoryError;
 
 /// Capacity of each chunk in number of elements
 const DEFAULT_CHUNK_CAPACITY: usize = 64;

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "stats")]
 use super::PoolStats;
 use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
-use crate::core::error::{MemoryError, MemoryResult};
+use crate::error::{MemoryError, MemoryResult};
 
 /// Object pool with time-to-live for pooled objects
 ///

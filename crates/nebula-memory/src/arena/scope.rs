@@ -3,7 +3,7 @@
 //! This module provides RAII wrappers that automatically manage arena lifecycle.
 
 use super::{Arena, ArenaConfig};
-use crate::core::error::MemoryResult;
+use crate::error::MemoryResult;
 
 /// RAII wrapper for arena that automatically resets on drop
 ///

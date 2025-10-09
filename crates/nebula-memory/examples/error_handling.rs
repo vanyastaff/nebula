@@ -176,8 +176,11 @@ fn rich_error_messages() -> Result<(), Box<dyn std::error::Error>> {
 
             // Error provides useful information
             if let Some(layout) = e.layout() {
-                println!("Requested layout: {} bytes, align {}",
-                    layout.size(), layout.align());
+                println!(
+                    "Requested layout: {} bytes, align {}",
+                    layout.size(),
+                    layout.align()
+                );
             }
 
             if let Some(suggestion) = e.suggestion() {

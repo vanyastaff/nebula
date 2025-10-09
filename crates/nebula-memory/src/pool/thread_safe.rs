@@ -15,7 +15,7 @@ use spin::{Condvar, Mutex};
 #[cfg(feature = "stats")]
 use super::PoolStats;
 use super::{NoOpCallbacks, PoolCallbacks, PoolConfig, Poolable};
-use crate::core::error::{MemoryError, MemoryResult};
+use crate::error::{MemoryError, MemoryResult};
 
 /// Thread-safe object pool using mutex
 ///

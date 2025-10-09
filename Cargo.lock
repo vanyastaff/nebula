@@ -2967,6 +2967,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "chrono",
+ "criterion 0.5.1",
  "pretty_assertions",
  "rand 0.8.5",
  "serde",

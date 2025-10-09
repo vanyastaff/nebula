@@ -11,11 +11,3 @@ pub mod integration_patterns;
 pub mod macro_showcase;
 pub mod pool_for_structs;
 pub mod stats_export;
-
-
-
-
-
-
-
-

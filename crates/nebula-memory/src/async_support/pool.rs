@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, Semaphore};
 
-use crate::core::error::{MemoryError, MemoryResult};
+use crate::error::{MemoryError, MemoryResult};
 use crate::pool::{PoolConfig, Poolable};
 
 /// Async pooled value that returns to pool on drop

@@ -17,7 +17,7 @@ use std::time::Instant;
 use super::config::{AlertConfig, HistogramConfig, MonitoringConfig};
 use super::histogram::{HistogramData, MemoryHistogram};
 use super::memory_stats::{MemoryMetrics, MemoryStats};
-use crate::core::error::{MemoryError, MemoryResult};
+use crate::error::{MemoryError, MemoryResult};
 
 /// Represents a single active memory alert.
 #[derive(Debug, Clone, PartialEq)]

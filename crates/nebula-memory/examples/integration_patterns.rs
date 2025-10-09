@@ -53,8 +53,8 @@ fn request_handler_pattern() -> Result<(), Box<dyn std::error::Error>> {
         let buffer = unsafe { arena.alloc_array::<u8>(4096)? };
 
         // Process request (simulated)
-        let response_body = format!("Processed: {} ({} bytes)",
-            req.path, req.body.len()).into_bytes();
+        let response_body =
+            format!("Processed: {} ({} bytes)", req.path, req.body.len()).into_bytes();
 
         Ok(Response {
             status: 200,
@@ -71,7 +71,11 @@ fn request_handler_pattern() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let response = handle_request(req)?;
-    println!("✓ Response: {} (status {})", String::from_utf8_lossy(&response.body), response.status);
+    println!(
+        "✓ Response: {} (status {})",
+        String::from_utf8_lossy(&response.body),
+        response.status
+    );
     println!("✓ All temporary allocations freed automatically");
 
     Ok(())
@@ -130,8 +134,11 @@ fn ast_builder_pattern() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     println!("✓ Built AST: {:?}", result);
-    println!("✓ Memory usage: {} / {} bytes",
-        arena.allocator.used(), arena.allocator.capacity());
+    println!(
+        "✓ Memory usage: {} / {} bytes",
+        arena.allocator.used(),
+        arena.allocator.capacity()
+    );
     println!("✓ Zero fragmentation with arena allocation");
 
     Ok(())
@@ -200,10 +207,14 @@ fn connection_pool_pattern() -> Result<(), Box<dyn std::error::Error>> {
     // Acquire connections
     println!("Acquiring connections from pool...");
     let conn1 = pool.acquire()?;
-    println!("✓ Acquired connection {}", unsafe { (*conn1.as_ptr()).id });
+    println!("✓ Acquired connection {}", unsafe {
+        (*conn1.as_ptr()).id
+    });
 
     let conn2 = pool.acquire()?;
-    println!("✓ Acquired connection {}", unsafe { (*conn2.as_ptr()).id });
+    println!("✓ Acquired connection {}", unsafe {
+        (*conn2.as_ptr()).id
+    });
 
     // Return connection to pool
     pool.release(conn1);
@@ -211,7 +222,9 @@ fn connection_pool_pattern() -> Result<(), Box<dyn std::error::Error>> {
 
     // Reuse the slot
     let conn3 = pool.acquire()?;
-    println!("✓ Reused connection slot (id: {})", unsafe { (*conn3.as_ptr()).id });
+    println!("✓ Reused connection slot (id: {})", unsafe {
+        (*conn3.as_ptr()).id
+    });
 
     // Cleanup
     pool.release(conn2);
