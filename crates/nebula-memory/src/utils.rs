@@ -338,7 +338,7 @@ pub fn page_size() -> usize {
 pub use nebula_system::utils::is_power_of_two;
 
 /// Atomically update maximum value
-#[inline]
+#[inline(always)]
 pub fn atomic_max(current: &core::sync::atomic::AtomicUsize, value: usize) {
     let mut max = current.load(core::sync::atomic::Ordering::Relaxed);
     loop {
