@@ -19,6 +19,8 @@ mod multi_level;
 mod partitioned;
 pub mod policies;
 mod scheduled;
+#[cfg(all(feature = "std", feature = "async"))]
+pub mod simple;
 mod stats;
 
 // Re-exports for convenience
@@ -29,6 +31,8 @@ pub use config::{CacheConfig, CacheMetrics, EvictionPolicy};
 pub use multi_level::{CacheLevel, MultiLevelCache, MultiLevelStats, PromotionPolicy};
 pub use partitioned::PartitionedCache;
 pub use scheduled::{ScheduledCache, ScheduledTask};
+#[cfg(all(feature = "std", feature = "async"))]
+pub use simple::{AsyncCache, CacheStats as SimpleCacheStats};
 pub use stats::{AtomicCacheStats, CacheStats, StatsCollector, StatsProvider};
 
 #[cfg(feature = "async")]
@@ -45,3 +49,4 @@ mod tests {
         let _config = CacheConfig::default();
     }
 }
+
