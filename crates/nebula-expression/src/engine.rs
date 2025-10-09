@@ -110,7 +110,7 @@ impl ExpressionEngine {
             let key: Arc<str> = Arc::from(expression);
             cache.get_or_compute(key, || {
                 self.parse_expression(expression).map_err(|_| {
-                    nebula_memory::MemoryError::from(nebula_memory::MemoryErrorCode::InvalidState)
+                    nebula_memory::MemoryError::invalid_layout("parse expression failed")
                 })
             })?
         } else {
@@ -136,7 +136,7 @@ impl ExpressionEngine {
             let key: Arc<str> = Arc::from(source_str.as_str());
             let template = cache.get_or_compute(key, || {
                 crate::Template::new(&source_str).map_err(|_| {
-                    nebula_memory::MemoryError::from(nebula_memory::MemoryErrorCode::InvalidState)
+                    nebula_memory::MemoryError::invalid_layout("template creation failed")
                 })
             })?;
             Ok(template)

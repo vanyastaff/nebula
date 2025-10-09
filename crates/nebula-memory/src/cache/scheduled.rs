@@ -82,7 +82,7 @@ where
                 // Collect expired keys
                 let expired_keys: Vec<K> = ttls_guard
                     .iter()
-                    .filter(|(_, &expiry)| expiry <= now)
+                    .filter(|(_, expiry)| **expiry <= now)
                     .map(|(k, _)| k.clone())
                     .collect();
 
@@ -123,7 +123,7 @@ where
 
                 let expired_keys: Vec<K> = ttls_guard
                     .iter()
-                    .filter(|(_, &expiry)| expiry <= now)
+                    .filter(|(_, expiry)| **expiry <= now)
                     .map(|(k, _)| k.clone())
                     .collect();
 
@@ -229,7 +229,7 @@ where
 
         let expired_keys: Vec<K> = ttls
             .iter()
-            .filter(|(_, &expiry)| expiry <= now)
+            .filter(|(_, expiry)| **expiry <= now)
             .map(|(k, _)| k.clone())
             .collect();
 
