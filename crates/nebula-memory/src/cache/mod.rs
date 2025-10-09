@@ -17,7 +17,7 @@ pub mod policies;
 mod scheduled;
 #[cfg(all(feature = "std", feature = "async"))]
 pub mod simple;
-mod stats;
+pub mod stats;
 
 // Re-exports for convenience
 pub use compute::{CacheEntry, CacheKey, CacheResult, ComputeCache};
@@ -41,6 +41,10 @@ mod tests {
         let _config = CacheConfig::default();
     }
 }
+
+
+
+
 
 
 
