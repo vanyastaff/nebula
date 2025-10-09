@@ -35,11 +35,14 @@ pub use manager::{AllocatorId, AllocatorManager, GlobalAllocatorManager};
 #[cfg(all(feature = "std", feature = "monitoring"))]
 pub use monitored::{MonitoredAllocator, MonitoredConfig};
 pub use stack::{StackAllocator, StackConfig, StackFrame, StackMarker};
+#[cfg(feature = "std")]
+pub use stats::BatchedStats;
 pub use stats::{AllocatorStats, AtomicAllocatorStats, OptionalStats, StatisticsProvider};
 pub use system::SystemAllocator;
 pub use tracked::TrackedAllocator;
 pub use traits::{
     Allocator, BasicMemoryUsage, BulkAllocator, MemoryUsage, Resettable, ThreadSafeAllocator,
+    TypedAllocator,
 };
 
 #[cfg(feature = "compression")]

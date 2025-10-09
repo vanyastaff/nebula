@@ -514,8 +514,8 @@ pub trait TypedAllocator: Allocator {
             return Ok(NonNull::dangling());
         }
 
-        let layout = Layout::array::<T>(count)
-            .map_err(|_| AllocError::new(AllocErrorCode::SizeOverflow))?;
+        let layout =
+            Layout::array::<T>(count).map_err(|_| AllocError::new(AllocErrorCode::SizeOverflow))?;
 
         let ptr = unsafe { self.allocate(layout)? };
         Ok(unsafe { NonNull::new_unchecked(ptr.as_ptr() as *mut T) })

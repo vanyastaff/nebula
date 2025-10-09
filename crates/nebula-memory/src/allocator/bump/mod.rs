@@ -12,6 +12,7 @@ extern crate alloc;
 use alloc::{boxed::Box, vec, vec::Vec};
 
 use core::alloc::Layout;
+use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
@@ -30,14 +31,36 @@ use crate::allocator::{
 
 use crate::utils::{Backoff, MemoryOps, PrefetchManager, align_up, atomic_max, cache_line_size};
 
+/// Thread-safe wrapper for memory buffer with interior mutability
+#[repr(transparent)]
+struct SyncUnsafeCell<T: ?Sized>(UnsafeCell<T>);
+
+// SAFETY: We ensure proper synchronization through atomic cursor
+unsafe impl<T: ?Sized> Sync for SyncUnsafeCell<T> {}
+unsafe impl<T: ?Sized + Send> Send for SyncUnsafeCell<T> {}
+
+impl<T> SyncUnsafeCell<T> {
+    fn new(value: T) -> Self {
+        Self(UnsafeCell::new(value))
+    }
+}
+
+impl<T: ?Sized> SyncUnsafeCell<T> {
+    fn get(&self) -> *mut T {
+        self.0.get()
+    }
+}
+
 /// Production-ready bump allocator
 pub struct BumpAllocator {
-    memory: Box<[u8]>,
+    /// Memory buffer with explicit interior mutability for safe mutable access
+    memory: Box<SyncUnsafeCell<[u8]>>,
     config: BumpConfig,
     prefetch_mgr: PrefetchManager,
     memory_ops: MemoryOps,
     start_addr: usize,
     end_addr: usize,
+    capacity: usize,
     cursor: Box<dyn Cursor>,
     stats: OptionalStats,
     peak_usage: AtomicUsize,
@@ -51,16 +74,28 @@ impl BumpAllocator {
             return Err(AllocError::invalid_layout());
         }
 
-        let mut memory = vec![0u8; capacity].into_boxed_slice();
+        let mut vec = vec![0u8; capacity];
 
         let memory_ops = MemoryOps::new();
         if let Some(pattern) = config.alloc_pattern {
             unsafe {
-                MemoryOps::secure_fill_slice(&mut memory, pattern);
+                MemoryOps::secure_fill_slice(&mut vec, pattern);
             }
         }
 
-        let start_addr = memory.as_ptr() as usize;
+        // Wrap in SyncUnsafeCell for interior mutability
+        // We need to convert Box<[u8]> into Box<SyncUnsafeCell<[u8]>>
+        let boxed_slice = vec.into_boxed_slice();
+        let len = boxed_slice.len();
+        let ptr = Box::into_raw(boxed_slice) as *mut u8;
+        // SAFETY: We're transmuting Box<[u8]> layout to Box<SyncUnsafeCell<[u8]>> layout
+        // This is safe because SyncUnsafeCell is repr(transparent)
+        let memory: Box<SyncUnsafeCell<[u8]>> = unsafe {
+            Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len) as *mut SyncUnsafeCell<[u8]>)
+        };
+
+        // SAFETY: We just created the memory, getting pointer is safe
+        let start_addr = unsafe { (*memory.get()).as_ptr() as usize };
         let end_addr = start_addr + capacity;
 
         let cursor: Box<dyn Cursor> = if config.thread_safe {
@@ -78,6 +113,7 @@ impl BumpAllocator {
             memory_ops,
             start_addr,
             end_addr,
+            capacity,
             cursor,
             stats: if track_stats {
                 OptionalStats::enabled()
@@ -122,7 +158,7 @@ impl BumpAllocator {
     /// Total capacity
     #[inline]
     pub fn capacity(&self) -> usize {
-        self.memory.len()
+        self.capacity
     }
 
     /// Currently used memory
@@ -177,11 +213,11 @@ impl BumpAllocator {
         if let Some(pattern) = self.config.dealloc_pattern {
             let start = checkpoint.position - self.start_addr;
             let end = current - self.start_addr;
-            if let Some(slice) = self.memory.get(start..end) {
-                unsafe {
-                    let slice_mut =
-                        core::slice::from_raw_parts_mut(slice.as_ptr() as *mut u8, slice.len());
-                    MemoryOps::secure_fill_slice(slice_mut, pattern);
+            unsafe {
+                // SAFETY: We have exclusive access through UnsafeCell
+                let memory_slice = &mut *self.memory.get();
+                if let Some(slice) = memory_slice.get_mut(start..end) {
+                    MemoryOps::secure_fill_slice(slice, pattern);
                 }
             }
         }
@@ -218,8 +254,12 @@ impl BumpAllocator {
         if addr < self.end_addr && prefetch_end > addr {
             let start = addr - self.start_addr;
             let end = prefetch_end - self.start_addr;
-            if let Some(slice) = self.memory.get(start..end) {
-                self.prefetch_mgr.prefetch_slice_read(slice);
+            unsafe {
+                // SAFETY: Read-only access for prefetch
+                let memory_slice = &*self.memory.get();
+                if let Some(slice) = memory_slice.get(start..end) {
+                    self.prefetch_mgr.prefetch_slice_read(slice);
+                }
             }
         }
     }
@@ -260,16 +300,16 @@ impl BumpAllocator {
                     let usage = new_current - self.start_addr;
                     atomic_max(&self.peak_usage, usage);
 
-                    // Calculate return pointer with proper provenance
+                    // Calculate return pointer with proper provenance through UnsafeCell
                     let offset = aligned - self.start_addr;
                     let ptr = unsafe {
                         // SAFETY: offset is within bounds (checked by compare_exchange)
-                        // Cast to mut is safe for allocator - we own the memory
-                        (self.memory.as_ptr() as *mut u8).add(offset)
+                        // UnsafeCell grants us mutable access
+                        let memory_ptr = self.memory.get();
+                        (*memory_ptr).as_mut_ptr().add(offset)
                     };
 
                     // Fill with pattern if configured
-                    // Note: This uses interior mutability through raw pointers
                     if let Some(pattern) = self.config.alloc_pattern {
                         unsafe {
                             // SAFETY: We just allocated this memory, it's uninitialized

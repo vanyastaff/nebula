@@ -702,17 +702,42 @@ impl From<AllocError> for NebulaError {
 
 impl fmt::Display for AllocError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Write main error message
+        writeln!(f, "❌ Memory Allocation Error")?;
+        writeln!(f, "   Code: {}", self.inner.error_code())?;
+
+        // Show layout information if available
         if let Some(layout) = self.layout {
-            write!(
+            writeln!(
                 f,
-                "Allocation failed for {} bytes with {} alignment: {}",
+                "   Layout: {} bytes (alignment: {})",
                 layout.size(),
-                layout.align(),
-                self.inner
-            )
-        } else {
-            write!(f, "Allocation failed: {}", self.inner)
+                layout.align()
+            )?;
         }
+
+        // Show memory state if available
+        if let Some(state) = &self.memory_state {
+            if let Some(available) = state.available {
+                writeln!(f, "   Available memory: {} bytes", available)?;
+            }
+            if let Some(process_used) = state.process_used {
+                writeln!(f, "   Process memory used: {} bytes", process_used)?;
+            }
+        }
+
+        // Show underlying error details
+        writeln!(f, "   Details: {}", self.inner)?;
+
+        // Show actionable suggestion if available
+        if let Some(suggestion) = self.suggestion() {
+            writeln!(f, "\n💡 Suggestion:")?;
+            for line in suggestion.lines() {
+                writeln!(f, "   {}", line)?;
+            }
+        }
+
+        Ok(())
     }
 }
 

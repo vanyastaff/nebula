@@ -1,6 +1,7 @@
 //! Main pool allocator implementation
 
 use core::alloc::Layout;
+use core::cell::UnsafeCell;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
@@ -10,6 +11,26 @@ use crate::allocator::{
     StatisticsProvider,
 };
 use crate::utils::{Backoff, align_up, atomic_max, is_power_of_two};
+
+/// Thread-safe wrapper for memory buffer with interior mutability
+#[repr(transparent)]
+struct SyncUnsafeCell<T: ?Sized>(UnsafeCell<T>);
+
+// SAFETY: We ensure proper synchronization through atomic free list
+unsafe impl<T: ?Sized> Sync for SyncUnsafeCell<T> {}
+unsafe impl<T: ?Sized + Send> Send for SyncUnsafeCell<T> {}
+
+impl<T> SyncUnsafeCell<T> {
+    fn new(value: T) -> Self {
+        Self(UnsafeCell::new(value))
+    }
+}
+
+impl<T: ?Sized> SyncUnsafeCell<T> {
+    fn get(&self) -> *mut T {
+        self.0.get()
+    }
+}
 
 /// Pool allocator for fixed-size blocks
 ///
@@ -26,8 +47,8 @@ use crate::utils::{Backoff, align_up, atomic_max, is_power_of_two};
 ///
 /// Free blocks are linked together in a singly-linked list.
 pub struct PoolAllocator {
-    /// Owned memory buffer containing all blocks
-    memory: Box<[u8]>,
+    /// Owned memory buffer containing all blocks with interior mutability
+    memory: Box<SyncUnsafeCell<[u8]>>,
 
     /// Size of each individual block
     block_size: usize,
@@ -37,6 +58,9 @@ pub struct PoolAllocator {
 
     /// Total number of blocks in the pool
     block_count: usize,
+
+    /// Total capacity for convenience
+    capacity: usize,
 
     /// Head of the free list (atomic for thread safety)
     free_head: AtomicPtr<FreeBlock>,
@@ -114,14 +138,23 @@ impl PoolAllocator {
             .ok_or_else(|| AllocError::size_overflow())?;
 
         // Allocate memory buffer
-        let mut memory = vec![0u8; total_size].into_boxed_slice();
+        let mut vec = vec![0u8; total_size];
 
         // Fill with alloc pattern if debugging
         if let Some(pattern) = config.alloc_pattern {
-            memory.fill(pattern);
+            vec.fill(pattern);
         }
 
-        let start_addr = memory.as_ptr() as usize;
+        // Wrap in SyncUnsafeCell for interior mutability
+        let boxed_slice = vec.into_boxed_slice();
+        let len = boxed_slice.len();
+        let ptr = Box::into_raw(boxed_slice) as *mut u8;
+        // SAFETY: Transmuting Box<[u8]> to Box<SyncUnsafeCell<[u8]>> is safe (repr(transparent))
+        let memory: Box<SyncUnsafeCell<[u8]>> = unsafe {
+            Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len) as *mut SyncUnsafeCell<[u8]>)
+        };
+
+        let start_addr = unsafe { (*memory.get()).as_ptr() as usize };
         let end_addr = start_addr + total_size;
 
         let mut allocator = Self {
@@ -129,6 +162,7 @@ impl PoolAllocator {
             block_size: aligned_block_size,
             block_align,
             block_count,
+            capacity: total_size,
             free_head: AtomicPtr::new(ptr::null_mut()),
             free_count: AtomicUsize::new(0),
             start_addr,

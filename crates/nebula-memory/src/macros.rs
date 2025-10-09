@@ -299,6 +299,230 @@ macro_rules! dyn_allocator {
     }};
 }
 
+/// Create an allocator with ergonomic syntax
+///
+/// Supports multiple allocator types with simple or detailed configuration.
+///
+/// # Examples
+/// ```
+/// use nebula_memory::allocator;
+///
+/// // Simple bump allocator
+/// let alloc = allocator!(bump 4096)?;
+///
+/// // Bump with configuration
+/// let alloc = allocator!(bump 8192, {
+///     thread_safe: true,
+///     track_stats: true,
+/// })?;
+///
+/// // Pool allocator
+/// let alloc = allocator!(pool 64, 100)?;
+///
+/// // Stack allocator
+/// let alloc = allocator!(stack 4096)?;
+/// # Ok::<(), nebula_memory::AllocError>(())
+/// ```
+#[macro_export]
+macro_rules! allocator {
+    // Simple bump allocator
+    (bump $size:expr) => {{
+        $crate::allocator::BumpAllocator::new($size)
+    }};
+
+    // Bump with config fields
+    (bump $size:expr, {
+        $($key:ident: $value:expr),* $(,)?
+    }) => {{
+        let mut config = $crate::allocator::bump::BumpConfig::default();
+        $(
+            config.$key = $value;
+        )*
+        $crate::allocator::BumpAllocator::with_config($size, config)
+    }};
+
+    // Simple pool allocator (block_size, capacity)
+    (pool $block_size:expr, $capacity:expr) => {{
+        $crate::allocator::PoolAllocator::new($block_size, $capacity)
+    }};
+
+    // Pool with config
+    (pool $block_size:expr, $capacity:expr, {
+        $($key:ident: $value:expr),* $(,)?
+    }) => {{
+        let mut config = $crate::allocator::PoolConfig::default();
+        $(
+            config.$key = $value;
+        )*
+        $crate::allocator::PoolAllocator::with_config($block_size, $capacity, config)
+    }};
+
+    // Simple stack allocator
+    (stack $size:expr) => {{
+        $crate::allocator::StackAllocator::new($size)
+    }};
+
+    // Stack with config
+    (stack $size:expr, {
+        $($key:ident: $value:expr),* $(,)?
+    }) => {{
+        let mut config = $crate::allocator::StackConfig::default();
+        $(
+            config.$key = $value;
+        )*
+        $crate::allocator::StackAllocator::with_config($size, config)
+    }};
+}
+
+/// Allocate memory with type-safe API
+///
+/// Provides ergonomic allocation with automatic layout calculation.
+///
+/// # Examples
+/// ```
+/// use nebula_memory::{allocator, alloc};
+///
+/// let allocator = allocator!(bump 4096)?;
+///
+/// // Allocate single value
+/// let ptr = unsafe { alloc!(allocator, u64) }?;
+///
+/// // Allocate and initialize
+/// let ptr = unsafe { alloc!(allocator, u64 = 42) }?;
+///
+/// // Allocate array
+/// let ptr = unsafe { alloc!(allocator, [u32; 10]) }?;
+/// # Ok::<(), nebula_memory::AllocError>(())
+/// ```
+#[macro_export]
+macro_rules! alloc {
+    // Simple typed allocation
+    ($allocator:expr, $ty:ty) => {{
+        use $crate::allocator::TypedAllocator;
+        unsafe { $allocator.alloc_typed::<$ty>() }
+    }};
+
+    // Allocation with initialization
+    ($allocator:expr, $ty:ty = $value:expr) => {{
+        use $crate::allocator::TypedAllocator;
+        unsafe { $allocator.alloc_init::<$ty>($value) }
+    }};
+
+    // Array allocation
+    ($allocator:expr, [$ty:ty; $count:expr]) => {{
+        use $crate::allocator::TypedAllocator;
+        unsafe { $allocator.alloc_array::<$ty>($count) }
+    }};
+}
+
+/// Deallocate memory with type-safe API
+///
+/// # Examples
+/// ```
+/// use nebula_memory::{allocator, alloc, dealloc};
+///
+/// let allocator = allocator!(bump 4096)?;
+/// let ptr = unsafe { alloc!(allocator, u64) }?;
+///
+/// // Deallocate typed pointer
+/// unsafe { dealloc!(allocator, ptr, u64) };
+///
+/// // Deallocate array
+/// let arr_ptr = unsafe { alloc!(allocator, [u32; 10]) }?;
+/// unsafe { dealloc!(allocator, arr_ptr, [u32; 10]) };
+/// # Ok::<(), nebula_memory::AllocError>(())
+/// ```
+#[macro_export]
+macro_rules! dealloc {
+    // Deallocate typed pointer
+    ($allocator:expr, $ptr:expr, $ty:ty) => {{
+        use $crate::allocator::TypedAllocator;
+        unsafe { $allocator.dealloc_typed::<$ty>($ptr) }
+    }};
+
+    // Deallocate array
+    ($allocator:expr, $ptr:expr, [$ty:ty; $count:expr]) => {{
+        use $crate::allocator::TypedAllocator;
+        unsafe { $allocator.dealloc_array::<$ty>($ptr, $count) }
+    }};
+}
+
+/// Execute code with a scoped allocator that auto-cleans
+///
+/// Creates an allocator, executes the body, and ensures cleanup.
+///
+/// # Examples
+/// ```
+/// use nebula_memory::with_allocator;
+///
+/// let result = with_allocator!(bump 4096, |alloc| {
+///     // Use allocator within this scope
+///     unsafe {
+///         let ptr = alloc.alloc_typed::<u64>()?;
+///         ptr.as_ptr().write(42);
+///         Ok(*ptr.as_ptr())
+///     }
+/// })?;
+///
+/// assert_eq!(result, 42);
+/// # Ok::<(), nebula_memory::AllocError>(())
+/// ```
+#[macro_export]
+macro_rules! with_allocator {
+    // Scoped bump allocator
+    (bump $size:expr, |$alloc:ident| $body:expr) => {{
+        let $alloc = $crate::allocator::BumpAllocator::new($size)?;
+        let result = (|| $body)();
+        drop($alloc);
+        result
+    }};
+
+    // Scoped pool allocator
+    (pool $block_size:expr, $capacity:expr, |$alloc:ident| $body:expr) => {{
+        let $alloc = $crate::allocator::PoolAllocator::new($block_size, $capacity)?;
+        let result = (|| $body)();
+        drop($alloc);
+        result
+    }};
+
+    // Scoped stack allocator
+    (stack $size:expr, |$alloc:ident| $body:expr) => {{
+        let $alloc = $crate::allocator::StackAllocator::new($size)?;
+        let result = (|| $body)();
+        drop($alloc);
+        result
+    }};
+}
+
+/// Create a memory budget with ergonomic syntax
+///
+/// # Examples
+/// ```
+/// use nebula_memory::budget;
+///
+/// // Simple budget with total limit
+/// let budget = budget!(10 * 1024 * 1024); // 10MB
+///
+/// // Budget with per-allocation limit
+/// let budget = budget!(
+///     total: 10 * 1024 * 1024,
+///     per_alloc: 1024 * 1024
+/// );
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+#[macro_export]
+macro_rules! budget {
+    // Simple total budget
+    ($total:expr) => {{
+        $crate::budget::MemoryBudget::new($total, $total)
+    }};
+
+    // Budget with limits
+    (total: $total:expr, per_alloc: $per_alloc:expr) => {{
+        $crate::budget::MemoryBudget::new($total, $per_alloc)
+    }};
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

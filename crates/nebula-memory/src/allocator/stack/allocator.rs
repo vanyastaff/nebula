@@ -1,6 +1,7 @@
 //! Main stack allocator implementation
 
 use core::alloc::Layout;
+use core::cell::UnsafeCell;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
@@ -10,6 +11,26 @@ use crate::allocator::{
     StatisticsProvider,
 };
 use crate::utils::{Backoff, align_up, atomic_max};
+
+/// Thread-safe wrapper for memory buffer with interior mutability
+#[repr(transparent)]
+struct SyncUnsafeCell<T: ?Sized>(UnsafeCell<T>);
+
+// SAFETY: We ensure proper synchronization through atomic top pointer
+unsafe impl<T: ?Sized> Sync for SyncUnsafeCell<T> {}
+unsafe impl<T: ?Sized + Send> Send for SyncUnsafeCell<T> {}
+
+impl<T> SyncUnsafeCell<T> {
+    fn new(value: T) -> Self {
+        Self(UnsafeCell::new(value))
+    }
+}
+
+impl<T: ?Sized> SyncUnsafeCell<T> {
+    fn get(&self) -> *mut T {
+        self.0.get()
+    }
+}
 
 /// Stack allocator that supports LIFO allocation and deallocation
 ///
@@ -25,8 +46,8 @@ use crate::utils::{Backoff, align_up, atomic_max};
 ///
 /// Deallocations must happen in reverse order: alloc3, then alloc2, then alloc1.
 pub struct StackAllocator {
-    /// Owned memory buffer
-    memory: Box<[u8]>,
+    /// Owned memory buffer with interior mutability
+    memory: Box<SyncUnsafeCell<[u8]>>,
 
     /// Configuration
     config: StackConfig,
@@ -39,6 +60,9 @@ pub struct StackAllocator {
 
     /// End address (cached for performance)
     end_addr: usize,
+
+    /// Capacity for convenience
+    capacity: usize,
 
     /// Statistics (optional, only tracked if enabled)
     total_allocs: AtomicU32,
@@ -56,14 +80,23 @@ impl StackAllocator {
             ));
         }
 
-        let mut memory = vec![0u8; capacity].into_boxed_slice();
+        let mut vec = vec![0u8; capacity];
 
         // Fill with alloc pattern if debugging
         if let Some(pattern) = config.alloc_pattern {
-            memory.fill(pattern);
+            vec.fill(pattern);
         }
 
-        let start_addr = memory.as_ptr() as usize;
+        // Wrap in SyncUnsafeCell for interior mutability
+        let boxed_slice = vec.into_boxed_slice();
+        let len = boxed_slice.len();
+        let ptr = Box::into_raw(boxed_slice) as *mut u8;
+        // SAFETY: Transmuting Box<[u8]> to Box<SyncUnsafeCell<[u8]>> is safe (repr(transparent))
+        let memory: Box<SyncUnsafeCell<[u8]>> = unsafe {
+            Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len) as *mut SyncUnsafeCell<[u8]>)
+        };
+
+        let start_addr = unsafe { (*memory.get()).as_ptr() as usize };
         let end_addr = start_addr + capacity;
 
         Ok(Self {
@@ -72,6 +105,7 @@ impl StackAllocator {
             start_addr,
             top: AtomicUsize::new(start_addr),
             end_addr,
+            capacity,
             total_allocs: AtomicU32::new(0),
             total_deallocs: AtomicU32::new(0),
             peak_usage: AtomicUsize::new(0),
@@ -100,8 +134,18 @@ impl StackAllocator {
 
     /// Creates a stack allocator from a pre-allocated boxed slice
     pub fn from_boxed_slice(memory: Box<[u8]>) -> Self {
-        let start_addr = memory.as_ptr() as usize;
-        let end_addr = start_addr + memory.len();
+        let capacity = memory.len();
+
+        // Wrap in SyncUnsafeCell for interior mutability
+        let len = memory.len();
+        let ptr = Box::into_raw(memory) as *mut u8;
+        // SAFETY: Transmuting Box<[u8]> to Box<SyncUnsafeCell<[u8]>> is safe (repr(transparent))
+        let memory: Box<SyncUnsafeCell<[u8]>> = unsafe {
+            Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len) as *mut SyncUnsafeCell<[u8]>)
+        };
+
+        let start_addr = unsafe { (*memory.get()).as_ptr() as usize };
+        let end_addr = start_addr + capacity;
 
         Self {
             memory,
@@ -109,6 +153,7 @@ impl StackAllocator {
             start_addr,
             top: AtomicUsize::new(start_addr),
             end_addr,
+            capacity,
             total_allocs: AtomicU32::new(0),
             total_deallocs: AtomicU32::new(0),
             peak_usage: AtomicUsize::new(0),
@@ -117,7 +162,7 @@ impl StackAllocator {
 
     /// Returns the total capacity of the allocator
     pub fn capacity(&self) -> usize {
-        self.memory.len()
+        self.capacity
     }
 
     /// Returns the amount of memory currently allocated

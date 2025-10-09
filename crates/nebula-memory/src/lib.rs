@@ -118,7 +118,9 @@ pub mod prelude {
     pub use crate::core::{MemoryConfig, MemoryError, MemoryErrorCode, MemoryResult};
 
     // Allocator types
-    pub use crate::allocator::{AllocError, AllocResult, Allocator, GlobalAllocatorManager};
+    pub use crate::allocator::{
+        AllocError, AllocResult, Allocator, GlobalAllocatorManager, TypedAllocator,
+    };
     #[cfg(all(feature = "std", feature = "monitoring"))]
     pub use crate::allocator::{MonitoredAllocator, MonitoredConfig};
 
