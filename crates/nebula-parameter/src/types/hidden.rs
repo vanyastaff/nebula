@@ -1,11 +1,10 @@
 use bon::Builder;
 use serde::{Deserialize, Serialize};
 
-use crate::core::{
-     HasValue, Parameter, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValue,
-};
 use crate::core::traits::Expressible;
+use crate::core::{
+    HasValue, Parameter, ParameterError, ParameterKind, ParameterMetadata, ParameterValue,
+};
 use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
@@ -61,15 +60,16 @@ impl HasValue for HiddenParameter {
     fn clear(&mut self) {
         self.value = None;
     }
-
 }
 
 #[async_trait::async_trait]
 impl Expressible for HiddenParameter {
     fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value
-            .as_ref()
-            .map(|s| MaybeExpression::Value(nebula_value::Value::Text(nebula_value::Text::from(s.clone()))))
+        self.value.as_ref().map(|s| {
+            MaybeExpression::Value(nebula_value::Value::Text(nebula_value::Text::from(
+                s.clone(),
+            )))
+        })
     }
 
     fn from_expression(

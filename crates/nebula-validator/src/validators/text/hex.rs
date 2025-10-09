@@ -2,7 +2,7 @@
 //!
 //! Validates that a string contains only valid hexadecimal characters.
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata, ValidationComplexity};
+use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // HEX VALIDATOR
@@ -132,7 +132,10 @@ impl TypedValidator for Hex {
 
     fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
         if input.is_empty() {
-            return Err(ValidationError::new("empty_hex", "Hex string cannot be empty"));
+            return Err(ValidationError::new(
+                "empty_hex",
+                "Hex string cannot be empty",
+            ));
         }
 
         // Strip prefix if present
@@ -150,7 +153,10 @@ impl TypedValidator for Hex {
 
         // Check if empty after prefix removal
         if hex_str.is_empty() {
-            return Err(ValidationError::new("empty_hex", "Hex string cannot be just a prefix"));
+            return Err(ValidationError::new(
+                "empty_hex",
+                "Hex string cannot be just a prefix",
+            ));
         }
 
         // Check length constraints
@@ -195,11 +201,13 @@ impl TypedValidator for Hex {
                     &hex_str[i..i + 2]
                 } else {
                     // Odd length - pad with 0
-                    return u8::from_str_radix(&format!("0{}", &hex_str[i..i + 1]), 16)
-                        .map_err(|_| ValidationError::new("hex_parse_error", "Failed to parse hex string"));
+                    return u8::from_str_radix(&format!("0{}", &hex_str[i..i + 1]), 16).map_err(
+                        |_| ValidationError::new("hex_parse_error", "Failed to parse hex string"),
+                    );
                 };
-                u8::from_str_radix(byte_str, 16)
-                    .map_err(|_| ValidationError::new("hex_parse_error", "Failed to parse hex string"))
+                u8::from_str_radix(byte_str, 16).map_err(|_| {
+                    ValidationError::new("hex_parse_error", "Failed to parse hex string")
+                })
             })
             .collect::<Result<Vec<u8>, ValidationError>>()?;
 
@@ -211,13 +219,21 @@ impl TypedValidator for Hex {
             name: "Hex".to_string(),
             description: Some(format!(
                 "Validates hexadecimal strings (prefix: {}, case: {:?})",
-                if self.allow_prefix { "optional" } else { "not allowed" },
+                if self.allow_prefix {
+                    "optional"
+                } else {
+                    "not allowed"
+                },
                 self.case_sensitive.unwrap_or(HexCase::Mixed)
             )),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(5)),
-            tags: vec!["text".to_string(), "hex".to_string(), "encoding".to_string()],
+            tags: vec![
+                "text".to_string(),
+                "hex".to_string(),
+                "encoding".to_string(),
+            ],
             version: Some("1.0.0".to_string()),
             custom: std::collections::HashMap::new(),
         }
@@ -293,7 +309,11 @@ impl TypedValidator for RequirePrefixHex {
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(5)),
-            tags: vec!["text".to_string(), "hex".to_string(), "encoding".to_string()],
+            tags: vec![
+                "text".to_string(),
+                "hex".to_string(),
+                "encoding".to_string(),
+            ],
             version: Some("1.0.0".to_string()),
             custom: std::collections::HashMap::new(),
         }

@@ -345,7 +345,6 @@ pub trait ValidatorExt: TypedValidator + Sized {
     {
         Cached::with_capacity(self, capacity)
     }
-
 }
 
 // Automatically implement ValidatorExt for all TypedValidator implementations
@@ -357,12 +356,12 @@ impl<T: TypedValidator> ValidatorExt for T {}
 // Import the actual combinator implementations instead of duplicating them
 
 pub use crate::combinators::and::And;
-pub use crate::combinators::or::Or;
-pub use crate::combinators::not::Not;
-pub use crate::combinators::map::Map;
-pub use crate::combinators::when::When;
-pub use crate::combinators::optional::Optional;
 pub use crate::combinators::cached::Cached;
+pub use crate::combinators::map::Map;
+pub use crate::combinators::not::Not;
+pub use crate::combinators::optional::Optional;
+pub use crate::combinators::or::Or;
+pub use crate::combinators::when::When;
 
 // ============================================================================
 // TESTS

@@ -419,24 +419,26 @@ mod tests {
     fn test_refined_type_safety() {
         let validator = MinLength { min: 5 };
         let refined = Refined::new("hello".to_string(), &validator).unwrap();
-        
+
         // This function only accepts validated strings
         fn process_validated(s: Refined<String, MinLength>) -> usize {
             s.len() // We know it's at least 5 characters
         }
-        
+
         assert_eq!(process_validated(refined), 5);
     }
 
     #[test]
     fn test_refined_refine() {
-        struct MaxLength { max: usize }
-        
+        struct MaxLength {
+            max: usize,
+        }
+
         impl TypedValidator for MaxLength {
             type Input = str;
             type Output = ();
             type Error = ValidationError;
-            
+
             fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
                 if input.len() <= self.max {
                     Ok(())
@@ -445,10 +447,10 @@ mod tests {
                 }
             }
         }
-        
+
         let min_validator = MinLength { min: 5 };
         let max_validator = MaxLength { max: 10 };
-        
+
         let min_refined = Refined::new("hello".to_string(), &min_validator).unwrap();
         let fully_refined = min_refined.refine(&max_validator);
         assert!(fully_refined.is_ok());

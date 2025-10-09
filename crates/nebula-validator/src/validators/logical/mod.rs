@@ -6,10 +6,10 @@ pub mod boolean;
 pub mod nullable;
 
 // Re-export boolean validators
-pub use boolean::{is_false, is_true, IsFalse, IsTrue};
+pub use boolean::{IsFalse, IsTrue, is_false, is_true};
 
 // Re-export nullable validators
-pub use nullable::{not_null, required, NotNull, Required};
+pub use nullable::{NotNull, Required, not_null, required};
 
 pub mod prelude {
     pub use super::boolean::*;

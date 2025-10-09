@@ -2,7 +2,7 @@
 //!
 //! Validates MAC addresses in various formats (colon, hyphen, dot notation).
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata, ValidationComplexity};
+use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // MAC ADDRESS VALIDATOR
@@ -153,7 +153,10 @@ impl MacAddress {
         let mut bytes = [0u8; 6];
         for i in 0..6 {
             bytes[i] = u8::from_str_radix(&input[i * 2..i * 2 + 2], 16).map_err(|_| {
-                ValidationError::new("invalid_hex", format!("Invalid hex digits at position {}", i * 2))
+                ValidationError::new(
+                    "invalid_hex",
+                    format!("Invalid hex digits at position {}", i * 2),
+                )
             })?;
         }
 
@@ -191,7 +194,10 @@ impl TypedValidator for MacAddress {
 
     fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
         if input.is_empty() {
-            return Err(ValidationError::new("empty_input", "MAC address cannot be empty"));
+            return Err(ValidationError::new(
+                "empty_input",
+                "MAC address cannot be empty",
+            ));
         }
 
         // Try different formats
@@ -207,7 +213,11 @@ impl TypedValidator for MacAddress {
             return self.validate_dot_format(input);
         }
 
-        if !input.contains(':') && !input.contains('-') && !input.contains('.') && self.allow_no_separator {
+        if !input.contains(':')
+            && !input.contains('-')
+            && !input.contains('.')
+            && self.allow_no_separator
+        {
             return self.validate_no_separator_format(input);
         }
 
@@ -235,11 +245,18 @@ impl TypedValidator for MacAddress {
 
         ValidatorMetadata {
             name: "MacAddress".to_string(),
-            description: Some(format!("Validates MAC addresses (formats: {})", formats.join(", "))),
+            description: Some(format!(
+                "Validates MAC addresses (formats: {})",
+                formats.join(", ")
+            )),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(10)),
-            tags: vec!["network".to_string(), "mac".to_string(), "hardware".to_string()],
+            tags: vec![
+                "network".to_string(),
+                "mac".to_string(),
+                "hardware".to_string(),
+            ],
             version: Some("1.0.0".to_string()),
             custom: std::collections::HashMap::new(),
         }

@@ -2,7 +2,7 @@
 //!
 //! Validates date and time strings in ISO 8601 format.
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata, ValidationComplexity};
+use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // DATETIME VALIDATOR
@@ -78,35 +78,53 @@ impl DateTime {
 
     fn parse_date(date: &str) -> Result<(i32, u8, u8), ValidationError> {
         if date.len() != 10 {
-            return Err(ValidationError::new("invalid_date_format", "Date must be in YYYY-MM-DD format"));
+            return Err(ValidationError::new(
+                "invalid_date_format",
+                "Date must be in YYYY-MM-DD format",
+            ));
         }
 
         let parts: Vec<&str> = date.split('-').collect();
         if parts.len() != 3 {
-            return Err(ValidationError::new("invalid_date_format", "Date must be in YYYY-MM-DD format"));
+            return Err(ValidationError::new(
+                "invalid_date_format",
+                "Date must be in YYYY-MM-DD format",
+            ));
         }
 
-        let year = parts[0].parse::<i32>()
+        let year = parts[0]
+            .parse::<i32>()
             .map_err(|_| ValidationError::new("invalid_year", "Year must be a valid number"))?;
 
-        let month = parts[1].parse::<u8>()
+        let month = parts[1]
+            .parse::<u8>()
             .map_err(|_| ValidationError::new("invalid_month", "Month must be a valid number"))?;
 
-        let day = parts[2].parse::<u8>()
+        let day = parts[2]
+            .parse::<u8>()
             .map_err(|_| ValidationError::new("invalid_day", "Day must be a valid number"))?;
 
         // Validate ranges
         if !(1..=9999).contains(&year) {
-            return Err(ValidationError::new("invalid_year", "Year must be between 1 and 9999"));
+            return Err(ValidationError::new(
+                "invalid_year",
+                "Year must be between 1 and 9999",
+            ));
         }
 
         if !(1..=12).contains(&month) {
-            return Err(ValidationError::new("invalid_month", "Month must be between 1 and 12"));
+            return Err(ValidationError::new(
+                "invalid_month",
+                "Month must be between 1 and 12",
+            ));
         }
 
         let max_day = Self::days_in_month(year, month);
         if day < 1 || day > max_day {
-            return Err(ValidationError::new("invalid_day", format!("Day must be between 1 and {}", max_day)));
+            return Err(ValidationError::new(
+                "invalid_day",
+                format!("Day must be between 1 and {}", max_day),
+            ));
         }
 
         Ok((year, month, day))
@@ -136,10 +154,17 @@ impl DateTime {
         let (time_part, millis) = if let Some(dot_pos) = time.find('.') {
             let millis_str = &time[dot_pos + 1..];
             if millis_str.len() > 3 {
-                return Err(ValidationError::new("invalid_milliseconds", "Milliseconds must be 3 digits or less"));
+                return Err(ValidationError::new(
+                    "invalid_milliseconds",
+                    "Milliseconds must be 3 digits or less",
+                ));
             }
-            let millis = millis_str.parse::<u16>()
-                .map_err(|_| ValidationError::new("invalid_milliseconds", "Milliseconds must be a valid number"))?;
+            let millis = millis_str.parse::<u16>().map_err(|_| {
+                ValidationError::new(
+                    "invalid_milliseconds",
+                    "Milliseconds must be a valid number",
+                )
+            })?;
             (&time[..dot_pos], Some(millis))
         } else {
             (time, None)
@@ -147,28 +172,43 @@ impl DateTime {
 
         let parts: Vec<&str> = time_part.split(':').collect();
         if parts.len() != 3 {
-            return Err(ValidationError::new("invalid_time_format", "Time must be in HH:MM:SS format"));
+            return Err(ValidationError::new(
+                "invalid_time_format",
+                "Time must be in HH:MM:SS format",
+            ));
         }
 
-        let hour = parts[0].parse::<u8>()
+        let hour = parts[0]
+            .parse::<u8>()
             .map_err(|_| ValidationError::new("invalid_hour", "Hour must be a valid number"))?;
 
-        let minute = parts[1].parse::<u8>()
+        let minute = parts[1]
+            .parse::<u8>()
             .map_err(|_| ValidationError::new("invalid_minute", "Minute must be a valid number"))?;
 
-        let second = parts[2].parse::<u8>()
+        let second = parts[2]
+            .parse::<u8>()
             .map_err(|_| ValidationError::new("invalid_second", "Second must be a valid number"))?;
 
         if hour > 23 {
-            return Err(ValidationError::new("invalid_hour", "Hour must be between 0 and 23"));
+            return Err(ValidationError::new(
+                "invalid_hour",
+                "Hour must be between 0 and 23",
+            ));
         }
 
         if minute > 59 {
-            return Err(ValidationError::new("invalid_minute", "Minute must be between 0 and 59"));
+            return Err(ValidationError::new(
+                "invalid_minute",
+                "Minute must be between 0 and 59",
+            ));
         }
 
         if second > 59 {
-            return Err(ValidationError::new("invalid_second", "Second must be between 0 and 59"));
+            return Err(ValidationError::new(
+                "invalid_second",
+                "Second must be between 0 and 59",
+            ));
         }
 
         Ok((hour, minute, second, millis))
@@ -180,31 +220,54 @@ impl DateTime {
         }
 
         if tz.len() != 6 {
-            return Err(ValidationError::new("invalid_timezone_format", "Timezone must be Z or ±HH:MM"));
+            return Err(ValidationError::new(
+                "invalid_timezone_format",
+                "Timezone must be Z or ±HH:MM",
+            ));
         }
 
         let sign = tz.chars().next().unwrap();
         if sign != '+' && sign != '-' {
-            return Err(ValidationError::new("invalid_timezone_format", "Timezone must start with + or -"));
+            return Err(ValidationError::new(
+                "invalid_timezone_format",
+                "Timezone must start with + or -",
+            ));
         }
 
         let parts: Vec<&str> = tz[1..].split(':').collect();
         if parts.len() != 2 {
-            return Err(ValidationError::new("invalid_timezone_format", "Timezone must be ±HH:MM"));
+            return Err(ValidationError::new(
+                "invalid_timezone_format",
+                "Timezone must be ±HH:MM",
+            ));
         }
 
-        let hours = parts[0].parse::<u8>()
-            .map_err(|_| ValidationError::new("invalid_timezone_hours", "Timezone hours must be a valid number"))?;
+        let hours = parts[0].parse::<u8>().map_err(|_| {
+            ValidationError::new(
+                "invalid_timezone_hours",
+                "Timezone hours must be a valid number",
+            )
+        })?;
 
-        let minutes = parts[1].parse::<u8>()
-            .map_err(|_| ValidationError::new("invalid_timezone_minutes", "Timezone minutes must be a valid number"))?;
+        let minutes = parts[1].parse::<u8>().map_err(|_| {
+            ValidationError::new(
+                "invalid_timezone_minutes",
+                "Timezone minutes must be a valid number",
+            )
+        })?;
 
         if hours > 23 {
-            return Err(ValidationError::new("invalid_timezone_hours", "Timezone hours must be between 0 and 23"));
+            return Err(ValidationError::new(
+                "invalid_timezone_hours",
+                "Timezone hours must be between 0 and 23",
+            ));
         }
 
         if minutes > 59 {
-            return Err(ValidationError::new("invalid_timezone_minutes", "Timezone minutes must be between 0 and 59"));
+            return Err(ValidationError::new(
+                "invalid_timezone_minutes",
+                "Timezone minutes must be between 0 and 59",
+            ));
         }
 
         Ok(())
@@ -224,13 +287,19 @@ impl TypedValidator for DateTime {
 
     fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
         if input.is_empty() {
-            return Err(ValidationError::new("empty_datetime", "DateTime string cannot be empty"));
+            return Err(ValidationError::new(
+                "empty_datetime",
+                "DateTime string cannot be empty",
+            ));
         }
 
         // Check if it's date-only format
         if !input.contains('T') {
             if !self.allow_date_only {
-                return Err(ValidationError::new("date_only_not_allowed", "Date-only format not allowed, time is required"));
+                return Err(ValidationError::new(
+                    "date_only_not_allowed",
+                    "Date-only format not allowed, time is required",
+                ));
             }
             Self::parse_date(input)?;
             return Ok(());
@@ -239,7 +308,10 @@ impl TypedValidator for DateTime {
         // Split date and time parts
         let parts: Vec<&str> = input.split('T').collect();
         if parts.len() != 2 {
-            return Err(ValidationError::new("invalid_datetime_format", "DateTime must be in YYYY-MM-DDTHH:MM:SS format"));
+            return Err(ValidationError::new(
+                "invalid_datetime_format",
+                "DateTime must be in YYYY-MM-DDTHH:MM:SS format",
+            ));
         }
 
         // Parse date
@@ -252,7 +324,8 @@ impl TypedValidator for DateTime {
         let (time_str, has_timezone) = if time_part.ends_with('Z') {
             (&time_part[..time_part.len() - 1], true)
         } else if let Some(pos) = time_part.rfind('+').or_else(|| time_part.rfind('-')) {
-            if pos > 0 { // Make sure it's not at the start
+            if pos > 0 {
+                // Make sure it's not at the start
                 let tz = &time_part[pos..];
                 Self::parse_timezone(tz)?;
                 (&time_part[..pos], true)
@@ -264,14 +337,20 @@ impl TypedValidator for DateTime {
         };
 
         if self.require_timezone && !has_timezone {
-            return Err(ValidationError::new("timezone_required", "Timezone is required"));
+            return Err(ValidationError::new(
+                "timezone_required",
+                "Timezone is required",
+            ));
         }
 
         // Parse time
         let (_, _, _, millis) = Self::parse_time(time_str)?;
 
         if !self.allow_milliseconds && millis.is_some() {
-            return Err(ValidationError::new("milliseconds_not_allowed", "Milliseconds are not allowed"));
+            return Err(ValidationError::new(
+                "milliseconds_not_allowed",
+                "Milliseconds are not allowed",
+            ));
         }
 
         Ok(())
@@ -282,14 +361,30 @@ impl TypedValidator for DateTime {
             name: "DateTime".to_string(),
             description: Some(format!(
                 "Validates ISO 8601 date/time strings (date-only: {}, timezone: {}, milliseconds: {})",
-                if self.allow_date_only { "allowed" } else { "not allowed" },
-                if self.require_timezone { "required" } else { "optional" },
-                if self.allow_milliseconds { "allowed" } else { "not allowed" }
+                if self.allow_date_only {
+                    "allowed"
+                } else {
+                    "not allowed"
+                },
+                if self.require_timezone {
+                    "required"
+                } else {
+                    "optional"
+                },
+                if self.allow_milliseconds {
+                    "allowed"
+                } else {
+                    "not allowed"
+                }
             )),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(10)),
-            tags: vec!["text".to_string(), "datetime".to_string(), "iso8601".to_string()],
+            tags: vec![
+                "text".to_string(),
+                "datetime".to_string(),
+                "iso8601".to_string(),
+            ],
             version: Some("1.0.0".to_string()),
             custom: std::collections::HashMap::new(),
         }

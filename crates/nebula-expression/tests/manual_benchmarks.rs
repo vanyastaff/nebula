@@ -1,7 +1,7 @@
 // Manual benchmarks (workaround for Rust 1.90 Windows bug)
 // Run with: cargo test --release manual_benchmarks -- --ignored --nocapture --test-threads=1
 
-use nebula_expression::{Template, ExpressionEngine, EvaluationContext};
+use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
 use nebula_value::Value;
 use std::time::Instant;
 

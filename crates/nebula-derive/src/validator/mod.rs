@@ -1,10 +1,10 @@
 //! Validator derive macro implementation
 
-mod parse;
 mod generate;
+mod parse;
 
 use proc_macro::TokenStream;
-use syn::{parse_macro_input, DeriveInput};
+use syn::{DeriveInput, parse_macro_input};
 
 /// Main entry point for the Validator derive macro.
 pub fn derive_validator_impl(input: TokenStream) -> TokenStream {

@@ -49,7 +49,9 @@ pub struct ParameterValidation {
     /// The underlying validator (type-erased for storage)
     /// Not serialized - validators must be reconstructed when deserializing
     #[serde(skip)]
-    validator: Option<Arc<dyn AsyncValidator<Input = Value, Output = (), Error = ValidationError> + Send + Sync>>,
+    validator: Option<
+        Arc<dyn AsyncValidator<Input = Value, Output = (), Error = ValidationError> + Send + Sync>,
+    >,
 
     /// Whether the parameter is required (checked before validator)
     required: bool,
@@ -92,7 +94,10 @@ impl ParameterValidation {
     /// Create validation with a typed validator
     pub fn with_validator<V>(validator: V) -> Self
     where
-        V: AsyncValidator<Input = Value, Output = (), Error = ValidationError> + Send + Sync + 'static,
+        V: AsyncValidator<Input = Value, Output = (), Error = ValidationError>
+            + Send
+            + Sync
+            + 'static,
     {
         Self {
             validator: Some(Arc::new(validator)),
@@ -146,9 +151,7 @@ impl ParameterValidation {
         if self.required && value.is_null() {
             let mut err = ValidationError::new(
                 "required",
-                self.message
-                    .as_deref()
-                    .unwrap_or("This field is required"),
+                self.message.as_deref().unwrap_or("This field is required"),
             );
 
             if let Some(key) = &self.key {
@@ -270,7 +273,11 @@ impl StringValidationBuilder {
 
     pub fn build(self) -> ParameterValidation {
         // Build composite validator
-        let mut validators: Vec<Box<dyn TypedValidator<Input = str, Output = (), Error = ValidationError> + Send + Sync>> = Vec::new();
+        let mut validators: Vec<
+            Box<
+                dyn TypedValidator<Input = str, Output = (), Error = ValidationError> + Send + Sync,
+            >,
+        > = Vec::new();
 
         if let Some(min) = self.min_len {
             validators.push(Box::new(min_length(min)));
@@ -310,7 +317,12 @@ impl StringValidationBuilder {
         // Combine all validators with AND logic
         let validator = if !validators.is_empty() {
             // Create a composite validator that checks all conditions
-            Some(Arc::new(StringCompositeValidator { validators }) as Arc<dyn AsyncValidator<Input = Value, Output = (), Error = ValidationError> + Send + Sync>)
+            Some(Arc::new(StringCompositeValidator { validators })
+                as Arc<
+                    dyn AsyncValidator<Input = Value, Output = (), Error = ValidationError>
+                        + Send
+                        + Sync,
+                >)
         } else {
             None
         };
@@ -397,14 +409,22 @@ impl NumberValidationBuilder {
     }
 
     pub fn build(self) -> ParameterValidation {
-        let mut validators: Vec<Box<dyn TypedValidator<Input = f64, Output = (), Error = ValidationError> + Send + Sync>> = Vec::new();
+        let mut validators: Vec<
+            Box<
+                dyn TypedValidator<Input = f64, Output = (), Error = ValidationError> + Send + Sync,
+            >,
+        > = Vec::new();
 
         if let Some(min_value) = self.min_val {
-            validators.push(Box::new(nebula_validator::validators::numeric::min(min_value)));
+            validators.push(Box::new(nebula_validator::validators::numeric::min(
+                min_value,
+            )));
         }
 
         if let Some(max_value) = self.max_val {
-            validators.push(Box::new(nebula_validator::validators::numeric::max(max_value)));
+            validators.push(Box::new(nebula_validator::validators::numeric::max(
+                max_value,
+            )));
         }
 
         if self.must_be_positive {
@@ -424,7 +444,12 @@ impl NumberValidationBuilder {
         }
 
         let validator = if !validators.is_empty() {
-            Some(Arc::new(NumberCompositeValidator { validators }) as Arc<dyn AsyncValidator<Input = Value, Output = (), Error = ValidationError> + Send + Sync>)
+            Some(Arc::new(NumberCompositeValidator { validators })
+                as Arc<
+                    dyn AsyncValidator<Input = Value, Output = (), Error = ValidationError>
+                        + Send
+                        + Sync,
+                >)
         } else {
             None
         };
@@ -450,7 +475,9 @@ impl Default for NumberValidationBuilder {
 
 /// Composite validator for strings
 struct StringCompositeValidator {
-    validators: Vec<Box<dyn TypedValidator<Input = str, Output = (), Error = ValidationError> + Send + Sync>>,
+    validators: Vec<
+        Box<dyn TypedValidator<Input = str, Output = (), Error = ValidationError> + Send + Sync>,
+    >,
 }
 
 #[async_trait::async_trait]
@@ -459,12 +486,10 @@ impl AsyncValidator for StringCompositeValidator {
     type Output = ();
     type Error = ValidationError;
 
-    async fn validate_async(
-        &self,
-        value: &Value,
-    ) -> Result<(), ValidationError> {
+    async fn validate_async(&self, value: &Value) -> Result<(), ValidationError> {
         // Extract string from Value
-        let s = value.as_text()
+        let s = value
+            .as_text()
             .ok_or_else(|| ValidationError::new("type_error", "Expected text value"))?;
 
         // Run all validators
@@ -478,7 +503,9 @@ impl AsyncValidator for StringCompositeValidator {
 
 /// Composite validator for numbers
 struct NumberCompositeValidator {
-    validators: Vec<Box<dyn TypedValidator<Input = f64, Output = (), Error = ValidationError> + Send + Sync>>,
+    validators: Vec<
+        Box<dyn TypedValidator<Input = f64, Output = (), Error = ValidationError> + Send + Sync>,
+    >,
 }
 
 #[async_trait::async_trait]
@@ -487,10 +514,7 @@ impl AsyncValidator for NumberCompositeValidator {
     type Output = ();
     type Error = ValidationError;
 
-    async fn validate_async(
-        &self,
-        value: &Value,
-    ) -> Result<(), ValidationError> {
+    async fn validate_async(&self, value: &Value) -> Result<(), ValidationError> {
         // Extract number from Value
         let num = match value {
             Value::Integer(i) => {
@@ -563,13 +587,23 @@ mod tests {
             .build();
 
         // Valid
-        assert!(validation.validate(&Value::text("hello"), None).await.is_ok());
+        assert!(
+            validation
+                .validate(&Value::text("hello"), None)
+                .await
+                .is_ok()
+        );
 
         // Too short
         assert!(validation.validate(&Value::text("hi"), None).await.is_err());
 
         // Too long
-        assert!(validation.validate(&Value::text("hello world!"), None).await.is_err());
+        assert!(
+            validation
+                .validate(&Value::text("hello world!"), None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -577,27 +611,44 @@ mod tests {
         let validation = ParameterValidation::email();
 
         // Valid email
-        assert!(validation.validate(&Value::text("user@example.com"), None).await.is_ok());
+        assert!(
+            validation
+                .validate(&Value::text("user@example.com"), None)
+                .await
+                .is_ok()
+        );
 
         // Invalid email
-        assert!(validation.validate(&Value::text("not-an-email"), None).await.is_err());
+        assert!(
+            validation
+                .validate(&Value::text("not-an-email"), None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn test_number_validation() {
-        let validation = ParameterValidation::number()
-            .min(0.0)
-            .max(100.0)
-            .build();
+        let validation = ParameterValidation::number().min(0.0).max(100.0).build();
 
         // Valid
         assert!(validation.validate(&Value::float(50.0), None).await.is_ok());
 
         // Too small
-        assert!(validation.validate(&Value::float(-10.0), None).await.is_err());
+        assert!(
+            validation
+                .validate(&Value::float(-10.0), None)
+                .await
+                .is_err()
+        );
 
         // Too large
-        assert!(validation.validate(&Value::float(150.0), None).await.is_err());
+        assert!(
+            validation
+                .validate(&Value::float(150.0), None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -608,6 +659,11 @@ mod tests {
         assert!(validation.validate(&Value::Null, None).await.is_err());
 
         // Non-null value should pass
-        assert!(validation.validate(&Value::text("anything"), None).await.is_ok());
+        assert!(
+            validation
+                .validate(&Value::text("anything"), None)
+                .await
+                .is_ok()
+        );
     }
 }

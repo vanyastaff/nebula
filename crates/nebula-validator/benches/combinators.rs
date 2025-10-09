@@ -6,7 +6,7 @@
 //! - Cached combinator with various hit rates
 //! - Nested compositions
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use nebula_validator::core::{TypedValidator, ValidatorExt};
 use nebula_validator::validators::string::*;
 
@@ -316,9 +316,7 @@ fn bench_mixed_combinators(c: &mut Criterion) {
     let mut group = c.benchmark_group("mixed_combinators");
 
     // AND + OR
-    let and_or = min_length(5)
-        .and(max_length(20))
-        .or(exact_length(3));
+    let and_or = min_length(5).and(max_length(20)).or(exact_length(3));
     group.bench_function("and_or_success_left", |b| {
         b.iter(|| and_or.validate(black_box("hello")))
     });
@@ -381,9 +379,7 @@ fn bench_form_validation(c: &mut Criterion) {
     let mut group = c.benchmark_group("form_validation");
 
     // Username validator
-    let username = min_length(3)
-        .and(max_length(20))
-        .and(alphanumeric());
+    let username = min_length(3).and(max_length(20)).and(alphanumeric());
 
     // Email validator
     let email_val = email();
@@ -458,10 +454,7 @@ criterion_group!(
     bench_error_paths
 );
 
-criterion_group!(
-    real_world,
-    bench_form_validation
-);
+criterion_group!(real_world, bench_form_validation);
 
 criterion_main!(
     basic_combinators,

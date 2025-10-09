@@ -125,7 +125,10 @@ where
         if input.contains(&self.element) {
             Ok(())
         } else {
-            Err(ValidationError::new("contains", "Collection must contain the element"))
+            Err(ValidationError::new(
+                "contains",
+                "Collection must contain the element",
+            ))
         }
     }
 

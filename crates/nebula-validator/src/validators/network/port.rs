@@ -1,6 +1,6 @@
 //! Port number validator (1-65535).
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata, ValidationComplexity};
+use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // PORT VALIDATOR
@@ -25,9 +25,9 @@ use crate::core::{TypedValidator, ValidationError, ValidatorMetadata, Validation
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct Port {
-    allow_well_known: bool,    // 1-1023
-    allow_registered: bool,    // 1024-49151
-    allow_dynamic: bool,       // 49152-65535
+    allow_well_known: bool, // 1-1023
+    allow_registered: bool, // 1024-49151
+    allow_dynamic: bool,    // 49152-65535
 }
 
 impl Port {
@@ -183,9 +183,9 @@ mod tests {
     #[test]
     fn test_well_known_ports() {
         let validator = Port::new();
-        assert!(validator.validate(&22).is_ok());   // SSH
-        assert!(validator.validate(&80).is_ok());   // HTTP
-        assert!(validator.validate(&443).is_ok());  // HTTPS
+        assert!(validator.validate(&22).is_ok()); // SSH
+        assert!(validator.validate(&80).is_ok()); // HTTP
+        assert!(validator.validate(&443).is_ok()); // HTTPS
         assert!(validator.validate(&1023).is_ok());
     }
 

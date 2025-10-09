@@ -17,7 +17,7 @@
 //! assert!(validator.validate("hi").is_err()); // too short
 //! ```
 
-use crate::core::{TypedValidator, ValidatorMetadata, ValidationComplexity};
+use crate::core::{TypedValidator, ValidationComplexity, ValidatorMetadata};
 
 // ============================================================================
 // AND COMBINATOR
@@ -142,13 +142,18 @@ where
 #[async_trait::async_trait]
 impl<L, R> crate::core::AsyncValidator for And<L, R>
 where
-    L: TypedValidator + crate::core::AsyncValidator<
-        Input = <L as TypedValidator>::Input,
-        Error = <L as TypedValidator>::Error
-    > + Send + Sync,
+    L: TypedValidator
+        + crate::core::AsyncValidator<
+            Input = <L as TypedValidator>::Input,
+            Error = <L as TypedValidator>::Error,
+        > + Send
+        + Sync,
     R: TypedValidator<Input = <L as TypedValidator>::Input, Error = <L as TypedValidator>::Error>
-        + crate::core::AsyncValidator<Input = <L as TypedValidator>::Input, Error = <L as TypedValidator>::Error>
-        + Send + Sync,
+        + crate::core::AsyncValidator<
+            Input = <L as TypedValidator>::Input,
+            Error = <L as TypedValidator>::Error,
+        > + Send
+        + Sync,
     <L as TypedValidator>::Input: Sync,
 {
     type Input = <L as TypedValidator>::Input;
@@ -189,7 +194,10 @@ where
     pub fn and<V>(self, other: V) -> And<Self, V>
     where
         Self: TypedValidator,
-        V: TypedValidator<Input = <Self as TypedValidator>::Input, Error = <Self as TypedValidator>::Error>,
+        V: TypedValidator<
+                Input = <Self as TypedValidator>::Input,
+                Error = <Self as TypedValidator>::Error,
+            >,
     {
         And::new(self, other)
     }
@@ -235,7 +243,9 @@ where
 ///
 /// let combined = and_all(validators);
 /// ```
-pub fn and_all<V>(validators: Vec<V>) -> impl TypedValidator<Input = V::Input, Output = (), Error = V::Error>
+pub fn and_all<V>(
+    validators: Vec<V>,
+) -> impl TypedValidator<Input = V::Input, Output = (), Error = V::Error>
 where
     V: TypedValidator,
 {
@@ -277,7 +287,10 @@ where
 
         ValidatorMetadata {
             name: format!("AndAll(count={})", self.validators.len()),
-            description: Some(format!("All {} validators must pass", self.validators.len())),
+            description: Some(format!(
+                "All {} validators must pass",
+                self.validators.len()
+            )),
             complexity,
             cacheable,
             estimated_time: None,

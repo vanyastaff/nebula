@@ -42,8 +42,8 @@
 use proc_macro::TokenStream;
 
 // Module declarations
-mod validator;
 mod utils;
+mod validator;
 
 // Shared infrastructure for all derive macros
 mod shared;

@@ -411,8 +411,18 @@ impl fmt::Display for ValidatorStatistics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Validator Statistics:")?;
         writeln!(f, "  Total validations: {}", self.total_validations)?;
-        writeln!(f, "  Successful: {} ({:.2}%)", self.successful_validations, self.success_rate())?;
-        writeln!(f, "  Failed: {} ({:.2}%)", self.failed_validations, self.failure_rate())?;
+        writeln!(
+            f,
+            "  Successful: {} ({:.2}%)",
+            self.successful_validations,
+            self.success_rate()
+        )?;
+        writeln!(
+            f,
+            "  Failed: {} ({:.2}%)",
+            self.failed_validations,
+            self.failure_rate()
+        )?;
         writeln!(f, "  Average time: {:?}", self.average_time)?;
         if let Some(min) = self.min_time {
             writeln!(f, "  Min time: {:?}", min)?;
@@ -457,7 +467,9 @@ mod tests {
     fn test_complexity_ordering() {
         assert!(ValidationComplexity::Constant < ValidationComplexity::Linear);
         assert!(ValidationComplexity::Linear < ValidationComplexity::Expensive);
-        assert!(ValidationComplexity::Expensive.is_more_expensive_than(&ValidationComplexity::Constant));
+        assert!(
+            ValidationComplexity::Expensive.is_more_expensive_than(&ValidationComplexity::Constant)
+        );
     }
 
     #[test]

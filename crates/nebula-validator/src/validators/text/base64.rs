@@ -2,7 +2,7 @@
 //!
 //! Validates that a string is properly encoded in Base64 format.
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata, ValidationComplexity};
+use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // BASE64 VALIDATOR
@@ -121,7 +121,10 @@ impl TypedValidator for Base64 {
 
     fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
         if input.is_empty() {
-            return Err(ValidationError::new("empty_base64", "Base64 string cannot be empty"));
+            return Err(ValidationError::new(
+                "empty_base64",
+                "Base64 string cannot be empty",
+            ));
         }
 
         // Filter out whitespace if allowed
@@ -132,7 +135,10 @@ impl TypedValidator for Base64 {
         };
 
         if cleaned.is_empty() {
-            return Err(ValidationError::new("empty_base64", "Base64 string cannot be empty"));
+            return Err(ValidationError::new(
+                "empty_base64",
+                "Base64 string cannot be empty",
+            ));
         }
 
         // Check for padding
@@ -155,7 +161,10 @@ impl TypedValidator for Base64 {
             if padding_count != expected_padding {
                 return Err(ValidationError::new(
                     "invalid_base64_padding",
-                    format!("Expected {} padding characters, found {}", expected_padding, padding_count),
+                    format!(
+                        "Expected {} padding characters, found {}",
+                        expected_padding, padding_count
+                    ),
                 ));
             }
         } else {
@@ -179,7 +188,10 @@ impl TypedValidator for Base64 {
                 };
                 return Err(ValidationError::new(
                     "invalid_base64_char",
-                    format!("Invalid Base64 character '{}' at position {}{}", c, i, alphabet_hint),
+                    format!(
+                        "Invalid Base64 character '{}' at position {}{}",
+                        c, i, alphabet_hint
+                    ),
                 ));
             }
         }
@@ -209,13 +221,25 @@ impl TypedValidator for Base64 {
             description: Some(format!(
                 "Validates Base64 strings (alphabet: {:?}, padding: {}, whitespace: {})",
                 self.alphabet,
-                if self.require_padding { "required" } else { "optional" },
-                if self.allow_whitespace { "allowed" } else { "not allowed" }
+                if self.require_padding {
+                    "required"
+                } else {
+                    "optional"
+                },
+                if self.allow_whitespace {
+                    "allowed"
+                } else {
+                    "not allowed"
+                }
             )),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(5)),
-            tags: vec!["text".to_string(), "base64".to_string(), "encoding".to_string()],
+            tags: vec![
+                "text".to_string(),
+                "base64".to_string(),
+                "encoding".to_string(),
+            ],
             version: Some("1.0.0".to_string()),
             custom: std::collections::HashMap::new(),
         }
@@ -321,7 +345,11 @@ mod tests {
         let validator = Base64::new();
 
         // JWT-like structure (without signature verification)
-        assert!(validator.validate("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9").is_ok());
+        assert!(
+            validator
+                .validate("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")
+                .is_ok()
+        );
 
         // Image data
         assert!(validator.validate("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==").is_ok());

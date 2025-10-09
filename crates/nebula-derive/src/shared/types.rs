@@ -16,14 +16,14 @@ pub enum TypeCategory {
     String,
     Str,
     Bool,
-    
+
     // Numbers
     Integer(IntegerType),
     Float(FloatType),
-    
+
     // Dates/Times
     DateTime(DateTimeType),
-    
+
     // Collections
     Vec(Box<TypeCategory>),
     HashSet(Box<TypeCategory>),
@@ -36,7 +36,7 @@ pub enum TypeCategory {
         value: Box<TypeCategory>,
     },
     BTreeSet(Box<TypeCategory>),
-    
+
     // Special wrappers
     Option(Box<TypeCategory>),
     Result {
@@ -47,29 +47,39 @@ pub enum TypeCategory {
     Rc(Box<TypeCategory>),
     Box(Box<TypeCategory>),
     Cow(Box<TypeCategory>),
-    
+
     // Nebula-specific types
-    NebulaValue,       // nebula_value::Value
-    Parameter,         // nebula_parameter::Parameter
-    
+    NebulaValue, // nebula_value::Value
+    Parameter,   // nebula_parameter::Parameter
+
     // Custom types
     CustomStruct(StructInfo),
     CustomEnum(String),
-    
+
     // References
     Reference {
         mutable: bool,
         inner: Box<TypeCategory>,
     },
-    
+
     // Unknown
     Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegerType {
-    I8, I16, I32, I64, I128, ISize,
-    U8, U16, U32, U64, U128, USize,
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    ISize,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    USize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,15 +92,15 @@ pub enum FloatType {
 pub enum DateTimeType {
     /// String with ISO 8601 validation
     IsoString,
-    
+
     /// Native JavaScript-style date
     NativeDate,
-    
+
     /// Chrono types (feature-gated)
     ChronoNaiveDate,
     ChronoNaiveDateTime,
     ChronoDateTime,
-    
+
     /// Time crate types (feature-gated)
     TimeDate,
     TimeOffsetDateTime,
@@ -122,24 +132,24 @@ pub fn detect_type(ty: &Type) -> TypeCategory {
 
 fn detect_from_path(type_path: &TypePath) -> TypeCategory {
     let segments = &type_path.path.segments;
-    
+
     if segments.is_empty() {
         return TypeCategory::Unknown;
     }
-    
+
     // Get the last segment (most specific type)
     let last_segment = segments.last().unwrap();
     let type_name = last_segment.ident.to_string();
-    
+
     // Check for primitive types first
     match type_name.as_str() {
         // Strings
         "String" => return TypeCategory::String,
         "str" => return TypeCategory::Str,
-        
+
         // Bool
         "bool" => return TypeCategory::Bool,
-        
+
         // Integers
         "i8" => return TypeCategory::Integer(IntegerType::I8),
         "i16" => return TypeCategory::Integer(IntegerType::I16),
@@ -153,19 +163,19 @@ fn detect_from_path(type_path: &TypePath) -> TypeCategory {
         "u64" => return TypeCategory::Integer(IntegerType::U64),
         "u128" => return TypeCategory::Integer(IntegerType::U128),
         "usize" => return TypeCategory::Integer(IntegerType::USize),
-        
+
         // Floats
         "f32" => return TypeCategory::Float(FloatType::F32),
         "f64" => return TypeCategory::Float(FloatType::F64),
-        
+
         _ => {}
     }
-    
+
     // Check for date/time types with path context
     if type_name == "NativeDate" {
         return TypeCategory::DateTime(DateTimeType::NativeDate);
     }
-    
+
     if has_module_in_path(segments, "chrono") {
         match type_name.as_str() {
             "NaiveDate" => return TypeCategory::DateTime(DateTimeType::ChronoNaiveDate),
@@ -174,49 +184,54 @@ fn detect_from_path(type_path: &TypePath) -> TypeCategory {
             _ => {}
         }
     }
-    
+
     if has_module_in_path(segments, "time") {
         match type_name.as_str() {
             "Date" => return TypeCategory::DateTime(DateTimeType::TimeDate),
             "OffsetDateTime" => return TypeCategory::DateTime(DateTimeType::TimeOffsetDateTime),
-            "PrimitiveDateTime" => return TypeCategory::DateTime(DateTimeType::TimePrimitiveDateTime),
+            "PrimitiveDateTime" => {
+                return TypeCategory::DateTime(DateTimeType::TimePrimitiveDateTime);
+            }
             _ => {}
         }
     }
-    
+
     // Check for nebula types
-    if has_module_in_path(segments, "nebula_value") || has_module_in_path(segments, "nebula-value") {
+    if has_module_in_path(segments, "nebula_value") || has_module_in_path(segments, "nebula-value")
+    {
         if type_name == "Value" {
             return TypeCategory::NebulaValue;
         }
     }
-    
-    if has_module_in_path(segments, "nebula_parameter") || has_module_in_path(segments, "nebula-parameter") {
+
+    if has_module_in_path(segments, "nebula_parameter")
+        || has_module_in_path(segments, "nebula-parameter")
+    {
         if type_name == "Parameter" {
             return TypeCategory::Parameter;
         }
     }
-    
+
     // Check for generic types
     match type_name.as_str() {
         "Vec" => {
             if let Some(inner_ty) = extract_first_generic(&last_segment) {
                 return TypeCategory::Vec(Box::new(detect_type(&inner_ty)));
             }
-        },
-        
+        }
+
         "HashSet" => {
             if let Some(inner_ty) = extract_first_generic(&last_segment) {
                 return TypeCategory::HashSet(Box::new(detect_type(&inner_ty)));
             }
-        },
-        
+        }
+
         "BTreeSet" => {
             if let Some(inner_ty) = extract_first_generic(&last_segment) {
                 return TypeCategory::BTreeSet(Box::new(detect_type(&inner_ty)));
             }
-        },
-        
+        }
+
         "HashMap" => {
             if let Some((key_ty, value_ty)) = extract_two_generics(&last_segment) {
                 return TypeCategory::HashMap {
@@ -224,8 +239,8 @@ fn detect_from_path(type_path: &TypePath) -> TypeCategory {
                     value: Box::new(detect_type(&value_ty)),
                 };
             }
-        },
-        
+        }
+
         "BTreeMap" => {
             if let Some((key_ty, value_ty)) = extract_two_generics(&last_segment) {
                 return TypeCategory::BTreeMap {
@@ -233,14 +248,14 @@ fn detect_from_path(type_path: &TypePath) -> TypeCategory {
                     value: Box::new(detect_type(&value_ty)),
                 };
             }
-        },
-        
+        }
+
         "Option" => {
             if let Some(inner_ty) = extract_first_generic(&last_segment) {
                 return TypeCategory::Option(Box::new(detect_type(&inner_ty)));
             }
-        },
-        
+        }
+
         "Result" => {
             if let Some((ok_ty, err_ty)) = extract_two_generics(&last_segment) {
                 return TypeCategory::Result {
@@ -248,55 +263,60 @@ fn detect_from_path(type_path: &TypePath) -> TypeCategory {
                     err: Box::new(detect_type(&err_ty)),
                 };
             }
-        },
-        
+        }
+
         "Arc" => {
             if let Some(inner_ty) = extract_first_generic(&last_segment) {
                 return TypeCategory::Arc(Box::new(detect_type(&inner_ty)));
             }
-        },
-        
+        }
+
         "Rc" => {
             if let Some(inner_ty) = extract_first_generic(&last_segment) {
                 return TypeCategory::Rc(Box::new(detect_type(&inner_ty)));
             }
-        },
-        
+        }
+
         "Box" => {
             if let Some(inner_ty) = extract_first_generic(&last_segment) {
                 return TypeCategory::Box(Box::new(detect_type(&inner_ty)));
             }
-        },
-        
+        }
+
         "Cow" => {
             if let Some(inner_ty) = extract_first_generic(&last_segment) {
                 return TypeCategory::Cow(Box::new(detect_type(&inner_ty)));
             }
-        },
-        
+        }
+
         _ => {}
     }
-    
+
     // Check if it's a custom struct (uppercase first letter)
-    if type_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+    if type_name
+        .chars()
+        .next()
+        .map(|c| c.is_uppercase())
+        .unwrap_or(false)
+    {
         let full_path = segments
             .iter()
             .map(|s| s.ident.to_string())
             .collect::<Vec<_>>()
             .join("::");
-        
+
         let is_nebula = segments.iter().any(|s| {
             let name = s.ident.to_string();
             name.starts_with("nebula") || name.starts_with("Nebula")
         });
-        
+
         return TypeCategory::CustomStruct(StructInfo {
             name: type_name.clone(),
             path: Some(full_path),
             is_nebula_type: is_nebula,
         });
     }
-    
+
     TypeCategory::Unknown
 }
 
@@ -328,7 +348,7 @@ fn extract_first_generic(segment: &PathSegment) -> Option<Type> {
 fn extract_two_generics(segment: &PathSegment) -> Option<(Type, Type)> {
     if let PathArguments::AngleBracketed(args) = &segment.arguments {
         let mut iter = args.args.iter();
-        
+
         if let Some(GenericArgument::Type(first)) = iter.next() {
             if let Some(GenericArgument::Type(second)) = iter.next() {
                 return Some((first.clone(), second.clone()));
@@ -347,7 +367,7 @@ impl TypeCategory {
     pub fn is_datetime(&self) -> bool {
         matches!(self, TypeCategory::DateTime(_))
     }
-    
+
     /// Check if this type supports date validation
     pub fn supports_date_validation(&self) -> bool {
         match self {
@@ -357,7 +377,7 @@ impl TypeCategory {
             _ => false,
         }
     }
-    
+
     /// Check if this is a collection type
     pub fn is_collection(&self) -> bool {
         matches!(
@@ -369,7 +389,7 @@ impl TypeCategory {
                 | TypeCategory::BTreeMap { .. }
         )
     }
-    
+
     /// Check if this is a wrapper type (Option, Result, Arc, etc.)
     pub fn is_wrapper(&self) -> bool {
         matches!(
@@ -381,7 +401,7 @@ impl TypeCategory {
                 | TypeCategory::Box(_)
         )
     }
-    
+
     /// Get the inner type if this is a wrapper
     pub fn unwrap_wrapper(&self) -> Option<&TypeCategory> {
         match self {
@@ -394,7 +414,7 @@ impl TypeCategory {
             _ => None,
         }
     }
-    
+
     /// Check if this is a custom user-defined type
     pub fn is_custom(&self) -> bool {
         matches!(
@@ -402,7 +422,7 @@ impl TypeCategory {
             TypeCategory::CustomStruct(_) | TypeCategory::CustomEnum(_)
         )
     }
-    
+
     /// Check if type needs special accessor (like String -> .as_str())
     pub fn needs_special_accessor(&self) -> bool {
         match self {
@@ -420,28 +440,28 @@ impl TypeCategory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_detect_string() {
         let ty: Type = syn::parse_quote!(String);
         assert_eq!(detect_type(&ty), TypeCategory::String);
     }
-    
+
     #[test]
     fn test_detect_str() {
         let ty: Type = syn::parse_quote!(str);
         assert_eq!(detect_type(&ty), TypeCategory::Str);
     }
-    
+
     #[test]
     fn test_detect_integers() {
         let ty: Type = syn::parse_quote!(i32);
         assert_eq!(detect_type(&ty), TypeCategory::Integer(IntegerType::I32));
-        
+
         let ty: Type = syn::parse_quote!(u64);
         assert_eq!(detect_type(&ty), TypeCategory::Integer(IntegerType::U64));
     }
-    
+
     #[test]
     fn test_detect_native_date() {
         let ty: Type = syn::parse_quote!(NativeDate);
@@ -450,7 +470,7 @@ mod tests {
             TypeCategory::DateTime(DateTimeType::NativeDate)
         );
     }
-    
+
     #[test]
     fn test_detect_chrono_date() {
         let ty: Type = syn::parse_quote!(chrono::NaiveDate);
@@ -459,7 +479,7 @@ mod tests {
             TypeCategory::DateTime(DateTimeType::ChronoNaiveDate)
         );
     }
-    
+
     #[test]
     fn test_detect_option() {
         let ty: Type = syn::parse_quote!(Option<String>);
@@ -470,7 +490,7 @@ mod tests {
             _ => panic!("Expected Option<String>"),
         }
     }
-    
+
     #[test]
     fn test_detect_vec() {
         let ty: Type = syn::parse_quote!(Vec<i32>);
@@ -481,7 +501,7 @@ mod tests {
             _ => panic!("Expected Vec<i32>"),
         }
     }
-    
+
     #[test]
     fn test_detect_hashmap() {
         let ty: Type = syn::parse_quote!(HashMap<String, i32>);
@@ -493,7 +513,7 @@ mod tests {
             _ => panic!("Expected HashMap<String, i32>"),
         }
     }
-    
+
     #[test]
     fn test_detect_custom_struct() {
         let ty: Type = syn::parse_quote!(Address);
@@ -504,24 +524,24 @@ mod tests {
             _ => panic!("Expected custom struct"),
         }
     }
-    
+
     #[test]
     fn test_supports_date_validation() {
         let native_date: Type = syn::parse_quote!(NativeDate);
         assert!(detect_type(&native_date).supports_date_validation());
-        
+
         let string: Type = syn::parse_quote!(String);
         assert!(detect_type(&string).supports_date_validation());
-        
+
         let integer: Type = syn::parse_quote!(i32);
         assert!(!detect_type(&integer).supports_date_validation());
     }
-    
+
     #[test]
     fn test_is_collection() {
         let vec: Type = syn::parse_quote!(Vec<String>);
         assert!(detect_type(&vec).is_collection());
-        
+
         let string: Type = syn::parse_quote!(String);
         assert!(!detect_type(&string).is_collection());
     }

@@ -6,7 +6,7 @@
 //! - Content validators (Email, URL)
 //! - Unicode handling
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use nebula_validator::core::TypedValidator;
 use nebula_validator::validators::string::*;
 
@@ -460,16 +460,9 @@ criterion_group!(
     bench_alphabetic
 );
 
-criterion_group!(
-    content_benches,
-    bench_email,
-    bench_url
-);
+criterion_group!(content_benches, bench_email, bench_url);
 
-criterion_group!(
-    unicode_benches,
-    bench_unicode_handling
-);
+criterion_group!(unicode_benches, bench_unicode_handling);
 
 criterion_group!(
     composition_benches,

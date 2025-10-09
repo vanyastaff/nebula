@@ -31,7 +31,10 @@ where
         } else {
             Err(ValidationError::new(
                 "min_size",
-                format!("Collection must have at least {} elements, got {}", self.min, size),
+                format!(
+                    "Collection must have at least {} elements, got {}",
+                    self.min, size
+                ),
             ))
         }
     }
@@ -91,7 +94,10 @@ where
         } else {
             Err(ValidationError::new(
                 "max_size",
-                format!("Collection must have at most {} elements, got {}", self.max, size),
+                format!(
+                    "Collection must have at most {} elements, got {}",
+                    self.max, size
+                ),
             ))
         }
     }
@@ -151,7 +157,10 @@ where
         } else {
             Err(ValidationError::new(
                 "exact_size",
-                format!("Collection must have exactly {} elements, got {}", self.size, actual_size),
+                format!(
+                    "Collection must have exactly {} elements, got {}",
+                    self.size, actual_size
+                ),
             ))
         }
     }
@@ -288,7 +297,11 @@ mod tests {
     #[test]
     fn test_min_size_string() {
         let validator = min_size::<String>(2);
-        assert!(validator.validate(&vec!["a".to_string(), "b".to_string()]).is_ok());
+        assert!(
+            validator
+                .validate(&vec!["a".to_string(), "b".to_string()])
+                .is_ok()
+        );
         assert!(validator.validate(&vec!["a".to_string()]).is_err());
     }
 }

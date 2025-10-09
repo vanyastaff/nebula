@@ -19,7 +19,8 @@ pub fn keys(
         .ok_or_else(|| NebulaError::expression_type_error("object", args[0].kind().name()))?;
 
     // Pre-allocate with known size to avoid reallocations
-    let keys: Vec<_> = obj.keys()
+    let keys: Vec<_> = obj
+        .keys()
         .map(|k| serde_json::Value::String(k.to_string()))
         .collect();
 

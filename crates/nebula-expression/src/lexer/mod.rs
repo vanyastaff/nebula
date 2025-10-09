@@ -16,10 +16,7 @@ pub struct Lexer<'a> {
 impl<'a> Lexer<'a> {
     /// Create a new lexer from an input string
     pub fn new(input: &'a str) -> Self {
-        Self {
-            input,
-            position: 0,
-        }
+        Self { input, position: 0 }
     }
 
     /// Tokenize the entire input string
@@ -47,7 +44,10 @@ impl<'a> Lexer<'a> {
         let start = self.position;
 
         let Some(ch) = self.current_char() else {
-            return Ok(Token::new(TokenKind::Eof, Span::new(self.position, self.position)));
+            return Ok(Token::new(
+                TokenKind::Eof,
+                Span::new(self.position, self.position),
+            ));
         };
 
         let token = match ch {
@@ -261,7 +261,10 @@ impl<'a> Lexer<'a> {
 
                 // If no escapes, we can return a zero-copy slice
                 if !has_escapes {
-                    return Ok(Token::new(TokenKind::String(&self.input[start_pos + 1..end_pos]), span));
+                    return Ok(Token::new(
+                        TokenKind::String(&self.input[start_pos + 1..end_pos]),
+                        span,
+                    ));
                 }
 
                 // Otherwise, we need to process escapes
@@ -283,7 +286,12 @@ impl<'a> Lexer<'a> {
     }
 
     /// Read a string with escape sequences (requires allocation)
-    fn read_string_with_escapes(&self, start: usize, end: usize, span: Span) -> ExpressionResult<Token<'a>> {
+    fn read_string_with_escapes(
+        &self,
+        start: usize,
+        end: usize,
+        span: Span,
+    ) -> ExpressionResult<Token<'a>> {
         let raw = &self.input[start..end];
         let mut result = String::with_capacity(raw.len());
         let mut chars = raw.chars();

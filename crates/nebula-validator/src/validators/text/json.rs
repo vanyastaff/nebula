@@ -2,7 +2,7 @@
 //!
 //! Validates that a string contains well-formed JSON.
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata, ValidationComplexity};
+use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // JSON VALIDATOR
@@ -70,7 +70,10 @@ impl Json {
         let trimmed = input.trim();
 
         if trimmed.is_empty() {
-            return Err(ValidationError::new("empty_json", "JSON string cannot be empty"));
+            return Err(ValidationError::new(
+                "empty_json",
+                "JSON string cannot be empty",
+            ));
         }
 
         // Check if it starts with allowed character
@@ -135,7 +138,10 @@ impl Json {
 
     fn parse_object(&self, input: &str, depth: usize) -> Result<(), ValidationError> {
         if !input.starts_with('{') || !input.ends_with('}') {
-            return Err(ValidationError::new("invalid_json_object", "Invalid JSON object"));
+            return Err(ValidationError::new(
+                "invalid_json_object",
+                "Invalid JSON object",
+            ));
         }
 
         let content = &input[1..input.len() - 1].trim();
@@ -166,12 +172,18 @@ impl Json {
             }
 
             if brace_count < 0 || bracket_count < 0 {
-                return Err(ValidationError::new("unbalanced_json", "Unbalanced braces or brackets"));
+                return Err(ValidationError::new(
+                    "unbalanced_json",
+                    "Unbalanced braces or brackets",
+                ));
             }
         }
 
         if brace_count != 0 || bracket_count != 0 || in_string {
-            return Err(ValidationError::new("unbalanced_json", "Unbalanced braces, brackets, or quotes"));
+            return Err(ValidationError::new(
+                "unbalanced_json",
+                "Unbalanced braces, brackets, or quotes",
+            ));
         }
 
         Ok(())
@@ -179,7 +191,10 @@ impl Json {
 
     fn parse_array(&self, input: &str, depth: usize) -> Result<(), ValidationError> {
         if !input.starts_with('[') || !input.ends_with(']') {
-            return Err(ValidationError::new("invalid_json_array", "Invalid JSON array"));
+            return Err(ValidationError::new(
+                "invalid_json_array",
+                "Invalid JSON array",
+            ));
         }
 
         let content = &input[1..input.len() - 1].trim();
@@ -210,12 +225,18 @@ impl Json {
             }
 
             if brace_count < 0 || bracket_count < 0 {
-                return Err(ValidationError::new("unbalanced_json", "Unbalanced braces or brackets"));
+                return Err(ValidationError::new(
+                    "unbalanced_json",
+                    "Unbalanced braces or brackets",
+                ));
             }
         }
 
         if brace_count != 0 || bracket_count != 0 || in_string {
-            return Err(ValidationError::new("unbalanced_json", "Unbalanced braces, brackets, or quotes"));
+            return Err(ValidationError::new(
+                "unbalanced_json",
+                "Unbalanced braces, brackets, or quotes",
+            ));
         }
 
         Ok(())
@@ -223,7 +244,10 @@ impl Json {
 
     fn parse_string(&self, input: &str) -> Result<(), ValidationError> {
         if !input.starts_with('"') {
-            return Err(ValidationError::new("invalid_json_string", "JSON string must start with \""));
+            return Err(ValidationError::new(
+                "invalid_json_string",
+                "JSON string must start with \"",
+            ));
         }
 
         let mut chars = input.chars().skip(1);
@@ -269,7 +293,10 @@ impl Json {
                             return Ok(());
                         }
                         // If there are more characters, it's invalid
-                        return Err(ValidationError::new("invalid_json_string", "Extra characters after closing quote"));
+                        return Err(ValidationError::new(
+                            "invalid_json_string",
+                            "Extra characters after closing quote",
+                        ));
                     }
                     '\x00'..='\x1F' => {
                         return Err(ValidationError::new(
@@ -282,7 +309,10 @@ impl Json {
             }
         }
 
-        Err(ValidationError::new("unclosed_json_string", "JSON string is not closed"))
+        Err(ValidationError::new(
+            "unclosed_json_string",
+            "JSON string is not closed",
+        ))
     }
 
     fn parse_number(&self, input: &str) -> Result<(), ValidationError> {
@@ -299,7 +329,10 @@ impl Json {
             chars.next();
         } else if let Some(&c) = chars.peek() {
             if !('1'..='9').contains(&c) {
-                return Err(ValidationError::new("invalid_json_number", "Invalid number format"));
+                return Err(ValidationError::new(
+                    "invalid_json_number",
+                    "Invalid number format",
+                ));
             }
             chars.next();
             while let Some(&c) = chars.peek() {
@@ -326,7 +359,10 @@ impl Json {
                 }
             }
             if !has_digit {
-                return Err(ValidationError::new("invalid_json_number", "Decimal point must be followed by digits"));
+                return Err(ValidationError::new(
+                    "invalid_json_number",
+                    "Decimal point must be followed by digits",
+                ));
             }
         }
 
@@ -349,13 +385,19 @@ impl Json {
                     }
                 }
                 if !has_digit {
-                    return Err(ValidationError::new("invalid_json_number", "Exponent must have digits"));
+                    return Err(ValidationError::new(
+                        "invalid_json_number",
+                        "Exponent must have digits",
+                    ));
                 }
             }
         }
 
         if chars.next().is_some() {
-            return Err(ValidationError::new("invalid_json_number", "Extra characters in number"));
+            return Err(ValidationError::new(
+                "invalid_json_number",
+                "Extra characters in number",
+            ));
         }
 
         Ok(())
@@ -365,7 +407,10 @@ impl Json {
         if input == "true" || input == "false" {
             Ok(())
         } else {
-            Err(ValidationError::new("invalid_json_boolean", format!("Invalid boolean value: {}", input)))
+            Err(ValidationError::new(
+                "invalid_json_boolean",
+                format!("Invalid boolean value: {}", input),
+            ))
         }
     }
 
@@ -373,7 +418,10 @@ impl Json {
         if input == "null" {
             Ok(())
         } else {
-            Err(ValidationError::new("invalid_json_null", format!("Invalid null value: {}", input)))
+            Err(ValidationError::new(
+                "invalid_json_null",
+                format!("Invalid null value: {}", input),
+            ))
         }
     }
 }
@@ -398,7 +446,11 @@ impl TypedValidator for Json {
             name: "Json".to_string(),
             description: Some(format!(
                 "Validates JSON strings (primitives: {}, max depth: {:?})",
-                if self.allow_primitives { "allowed" } else { "objects/arrays only" },
+                if self.allow_primitives {
+                    "allowed"
+                } else {
+                    "objects/arrays only"
+                },
                 self.max_depth
             )),
             complexity: ValidationComplexity::Linear,
@@ -468,7 +520,11 @@ mod tests {
     #[test]
     fn test_nested_structures() {
         let validator = Json::new();
-        assert!(validator.validate(r#"{"user": {"name": "John", "age": 30}}"#).is_ok());
+        assert!(
+            validator
+                .validate(r#"{"user": {"name": "John", "age": 30}}"#)
+                .is_ok()
+        );
         assert!(validator.validate(r#"[1, [2, 3], [4, [5, 6]]]"#).is_ok());
     }
 

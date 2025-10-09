@@ -71,11 +71,7 @@ impl ValidatorChainOptimizer {
     /// Checks if one validator should run before another.
     ///
     /// Returns true if `a` should run before `b`.
-    pub fn should_run_first(
-        &self,
-        meta_a: &ValidatorMetadata,
-        meta_b: &ValidatorMetadata,
-    ) -> bool {
+    pub fn should_run_first(&self, meta_a: &ValidatorMetadata, meta_b: &ValidatorMetadata) -> bool {
         if !self.reorder_by_complexity {
             return false; // No reordering
         }
@@ -128,7 +124,8 @@ impl ValidatorChainOptimizer {
         }
 
         if metadata.tags.contains(&"async".to_string()) {
-            recommendations.push("Async validator. Consider batching or parallelization".to_string());
+            recommendations
+                .push("Async validator. Consider batching or parallelization".to_string());
         }
 
         recommendations
@@ -185,11 +182,7 @@ impl ValidatorChainOptimizer {
         let base_speedup = self.estimate_speedup(metadata);
 
         // Boost for high failure rate (early rejection is better)
-        let failure_boost = if stats.failure_rate() > 0.5 {
-            1.5
-        } else {
-            1.0
-        };
+        let failure_boost = if stats.failure_rate() > 0.5 { 1.5 } else { 1.0 };
 
         base_speedup * failure_boost
     }
@@ -231,10 +224,7 @@ impl ValidatorChainOptimizer {
     /// Optimizes a chain using runtime statistics.
     ///
     /// Considers both complexity and selectivity scores from stats.
-    pub fn optimize_chain_with_stats<V>(
-        &self,
-        validators: Vec<(V, ValidatorStats)>,
-    ) -> Vec<V>
+    pub fn optimize_chain_with_stats<V>(&self, validators: Vec<(V, ValidatorStats)>) -> Vec<V>
     where
         V: TypedValidator,
     {

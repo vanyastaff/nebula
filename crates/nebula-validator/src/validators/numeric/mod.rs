@@ -6,10 +6,10 @@ pub mod properties;
 pub mod range;
 
 // Re-export range validators
-pub use range::{in_range, max, min, InRange, Max, Min};
+pub use range::{InRange, Max, Min, in_range, max, min};
 
 // Re-export property validators
-pub use properties::{even, negative, odd, positive, Even, Negative, Odd, Positive};
+pub use properties::{Even, Negative, Odd, Positive, even, negative, odd, positive};
 
 /// Prelude for numeric validators.
 pub mod prelude {

@@ -108,7 +108,9 @@ pub fn sort(
     elements.sort_by(|a, b| match (a, b) {
         (serde_json::Value::Number(x), serde_json::Value::Number(y)) => {
             // Compare numbers
-            x.as_f64().partial_cmp(&y.as_f64()).unwrap_or(std::cmp::Ordering::Equal)
+            x.as_f64()
+                .partial_cmp(&y.as_f64())
+                .unwrap_or(std::cmp::Ordering::Equal)
         }
         (serde_json::Value::String(x), serde_json::Value::String(y)) => x.cmp(y),
         _ => std::cmp::Ordering::Equal,
@@ -149,7 +151,8 @@ pub fn join(
         .ok_or_else(|| NebulaError::expression_type_error("string", args[1].kind().name()))?;
 
     // Use iterator directly without intermediate Vec allocation
-    let result = arr.iter()
+    let result = arr
+        .iter()
         .map(|v| v.to_string())
         .collect::<Vec<_>>()
         .join(separator);
@@ -189,7 +192,8 @@ pub fn concat(
     check_min_arg_count("concat", args, 1)?;
 
     // Calculate total size to pre-allocate
-    let total_size: usize = args.iter()
+    let total_size: usize = args
+        .iter()
         .filter_map(|arg| arg.as_array().map(|arr| arr.len()))
         .sum();
 
@@ -216,7 +220,8 @@ pub fn flatten(
         .ok_or_else(|| NebulaError::expression_type_error("array", args[0].kind().name()))?;
 
     // Use iterator + flat_map for more efficient flattening
-    let result: Vec<_> = arr.iter()
+    let result: Vec<_> = arr
+        .iter()
         .flat_map(|elem| {
             if let Some(inner_arr) = elem.as_array() {
                 inner_arr.iter().cloned().collect::<Vec<_>>()

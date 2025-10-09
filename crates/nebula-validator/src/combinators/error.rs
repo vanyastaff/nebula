@@ -38,10 +38,7 @@ pub enum CombinatorError<E = ValidationError> {
     /// OR combinator: all alternatives failed.
     ///
     /// Contains errors from left and right validators.
-    OrAllFailed {
-        left: Box<E>,
-        right: Box<E>,
-    },
+    OrAllFailed { left: Box<E>, right: Box<E> },
 
     /// AND combinator: one or both validators failed.
     ///
@@ -82,10 +79,7 @@ pub enum CombinatorError<E = ValidationError> {
     /// Custom error with a message.
     ///
     /// For cases not covered by other variants.
-    Custom {
-        code: String,
-        message: String,
-    },
+    Custom { code: String, message: String },
 }
 
 // ============================================================================
@@ -177,11 +171,7 @@ impl<E: fmt::Display> fmt::Display for CombinatorError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OrAllFailed { left, right } => {
-                write!(
-                    f,
-                    "All validators failed. Left: {}; Right: {}",
-                    left, right
-                )
+                write!(f, "All validators failed. Left: {}; Right: {}", left, right)
             }
             Self::AndFailed(e) => {
                 write!(f, "AND combinator failed: {}", e)
@@ -249,18 +239,17 @@ where
 {
     fn from(error: CombinatorError<E>) -> Self {
         match error {
-            CombinatorError::OrAllFailed { left, right } => {
-                ValidationError::new(
-                    "or_all_failed",
-                    format!("All validators failed. Left: {}; Right: {}", left, right),
-                )
-            }
+            CombinatorError::OrAllFailed { left, right } => ValidationError::new(
+                "or_all_failed",
+                format!("All validators failed. Left: {}; Right: {}", left, right),
+            ),
             CombinatorError::AndFailed(e) => {
                 ValidationError::new("and_failed", format!("AND combinator failed: {}", e))
             }
-            CombinatorError::NotValidatorPassed => {
-                ValidationError::new("not_validator_passed", "Validation must NOT pass, but it did")
-            }
+            CombinatorError::NotValidatorPassed => ValidationError::new(
+                "not_validator_passed",
+                "Validation must NOT pass, but it did",
+            ),
             CombinatorError::FieldFailed { field_name, error } => {
                 let mut ve = ValidationError::new(
                     "field_validation_failed",
@@ -290,9 +279,7 @@ where
                 ve = ve.with_nested(nested);
                 ve
             }
-            CombinatorError::Custom { code, message } => {
-                ValidationError::new(&code, message)
-            }
+            CombinatorError::Custom { code, message } => ValidationError::new(&code, message),
         }
     }
 }

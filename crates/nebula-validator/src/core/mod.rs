@@ -102,13 +102,12 @@ pub mod refined;
 pub mod state;
 pub mod traits;
 
-
 // Re-export everything at the core level for convenience
 pub use context::{ContextualValidator, ValidationContext, ValidationContextBuilder};
 pub use error::{ErrorSeverity, ValidationError, ValidationErrors};
 pub use metadata::{
-    RegisteredValidatorMetadata, ValidationComplexity, ValidatorMetadata,
-    ValidatorMetadataBuilder, ValidatorStatistics,
+    RegisteredValidatorMetadata, ValidationComplexity, ValidatorMetadata, ValidatorMetadataBuilder,
+    ValidatorStatistics,
 };
 pub use refined::Refined;
 pub use state::{Parameter, ParameterBuilder, Unvalidated, Validated, ValidationGroup};
@@ -167,10 +166,10 @@ pub fn features() -> Features {
 pub struct Features {
     /// Whether async validation is enabled.
     pub async_support: bool,
-    
+
     /// Whether serde serialization is enabled.
     pub serde_support: bool,
-    
+
     /// Whether caching is enabled.
     pub cache_support: bool,
 }
@@ -222,10 +221,7 @@ where
 
     for validator in &validators {
         if let Err(e) = validator.validate(value) {
-            errors.add(ValidationError::new(
-                "validation_failed",
-                e.to_string(),
-            ));
+            errors.add(ValidationError::new("validation_failed", e.to_string()));
         }
     }
 
@@ -251,7 +247,10 @@ where
 ///     &exact_length(10),
 /// ])?;
 /// ```
-pub fn validate_with_any<V>(value: &V::Input, validators: Vec<&V>) -> Result<V::Output, ValidationErrors>
+pub fn validate_with_any<V>(
+    value: &V::Input,
+    validators: Vec<&V>,
+) -> Result<V::Output, ValidationErrors>
 where
     V: TypedValidator,
 {
@@ -285,8 +284,8 @@ pub type ValidationResultMulti<T> = Result<T, ValidationErrors>;
 
 #[cfg(test)]
 mod core_tests {
-    use crate::core::traits::ValidatorExt;
     use super::*;
+    use crate::core::traits::ValidatorExt;
 
     #[test]
     fn test_version() {
@@ -298,9 +297,7 @@ mod core_tests {
     fn test_features() {
         let features = features();
         // At least one feature should be enabled in tests
-        assert!(
-            features.async_support || features.serde_support || features.cache_support
-        );
+        assert!(features.async_support || features.serde_support || features.cache_support);
     }
 
     // Simple test validator for testing utilities
@@ -336,37 +333,25 @@ mod core_tests {
 
     #[test]
     fn test_validate_with_all_success() {
-        let result = validate_with_all(
-            "test",
-            vec![&AlwaysValid, &AlwaysValid],
-        );
+        let result = validate_with_all("test", vec![&AlwaysValid, &AlwaysValid]);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_with_all_failure() {
-        let result = validate_with_all(
-            "test",
-            vec![&AlwaysValid, &AlwaysFails],
-        );
+        let result = validate_with_all("test", vec![&AlwaysValid, &AlwaysFails]);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_validate_with_any_success() {
-        let result = validate_with_any(
-            "test",
-            vec![&AlwaysFails, &AlwaysValid],
-        );
+        let result = validate_with_any("test", vec![&AlwaysFails, &AlwaysValid]);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_with_any_all_fail() {
-        let result = validate_with_any(
-            "test",
-            vec![&AlwaysFails, &AlwaysFails],
-        );
+        let result = validate_with_any("test", vec![&AlwaysFails, &AlwaysFails]);
         assert!(result.is_err());
     }
 }

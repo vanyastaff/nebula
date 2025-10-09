@@ -119,11 +119,13 @@ where
 #[async_trait::async_trait]
 impl<V, T> crate::core::AsyncValidator for Optional<V>
 where
-    V: TypedValidator<Input = T> + crate::core::AsyncValidator<
-        Input = T,
-        Output = <V as TypedValidator>::Output,
-        Error = <V as TypedValidator>::Error
-    > + Send + Sync,
+    V: TypedValidator<Input = T>
+        + crate::core::AsyncValidator<
+            Input = T,
+            Output = <V as TypedValidator>::Output,
+            Error = <V as TypedValidator>::Error,
+        > + Send
+        + Sync,
     T: Sync,
 {
     type Input = Option<T>;
@@ -221,12 +223,11 @@ where
     fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
         match input {
             None => Err(RequiredError::NoneValue),
-            Some(value) => {
-                self.inner
-                    .validate(value)
-                    .map(|_| ())
-                    .map_err(RequiredError::ValidationFailed)
-            }
+            Some(value) => self
+                .inner
+                .validate(value)
+                .map(|_| ())
+                .map_err(RequiredError::ValidationFailed),
         }
     }
 

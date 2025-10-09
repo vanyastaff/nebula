@@ -102,7 +102,9 @@ where
 
         ValidatorMetadata {
             name: format!("Map({})", inner_meta.name),
-            description: inner_meta.description.map(|desc| format!("Mapped: {}", desc)),
+            description: inner_meta
+                .description
+                .map(|desc| format!("Mapped: {}", desc)),
             complexity: inner_meta.complexity,
             cacheable: inner_meta.cacheable,
             estimated_time: inner_meta.estimated_time,
@@ -126,11 +128,13 @@ where
 #[async_trait::async_trait]
 impl<V, F, O> crate::core::AsyncValidator for Map<V, F>
 where
-    V: TypedValidator + crate::core::AsyncValidator<
-        Input = <V as TypedValidator>::Input,
-        Output = <V as TypedValidator>::Output,
-        Error = <V as TypedValidator>::Error
-    > + Send + Sync,
+    V: TypedValidator
+        + crate::core::AsyncValidator<
+            Input = <V as TypedValidator>::Input,
+            Output = <V as TypedValidator>::Output,
+            Error = <V as TypedValidator>::Error,
+        > + Send
+        + Sync,
     F: Fn(<V as TypedValidator>::Output) -> O + Send + Sync,
     <V as TypedValidator>::Input: Sync,
     O: Send,
@@ -261,10 +265,7 @@ where
 ///     "Valid: hello"
 /// );
 /// ```
-pub fn map_with_input<V, F, O>(
-    validator: V,
-    mapper: F,
-) -> MapWithInput<V, F>
+pub fn map_with_input<V, F, O>(validator: V, mapper: F) -> MapWithInput<V, F>
 where
     V: TypedValidator,
     F: Fn(V::Output, &V::Input) -> O,
@@ -436,9 +437,8 @@ mod tests {
 
     #[test]
     fn test_map_with_input() {
-        let validator = map_with_input(MinLength { min: 3 }, |_, input| {
-            format!("Valid: {}", input)
-        });
+        let validator =
+            map_with_input(MinLength { min: 3 }, |_, input| format!("Valid: {}", input));
 
         assert_eq!(validator.validate("hello").unwrap(), "Valid: hello");
     }

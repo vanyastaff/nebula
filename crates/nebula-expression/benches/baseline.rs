@@ -1,8 +1,8 @@
 // Baseline benchmarks for nebula-expression
 // Run with: cargo bench --bench baseline
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
-use nebula_expression::{Template, ExpressionEngine, EvaluationContext};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
 use nebula_value::Value;
 use std::sync::Arc;
 use std::thread;
@@ -16,16 +16,12 @@ fn benchmark_template_parse(c: &mut Criterion) {
 
     // Simple template
     group.bench_function("simple", |b| {
-        b.iter(|| {
-            Template::new(black_box("Hello {{ $input }}!"))
-        })
+        b.iter(|| Template::new(black_box("Hello {{ $input }}!")))
     });
 
     // Multiple expressions
     group.bench_function("multiple_expressions", |b| {
-        b.iter(|| {
-            Template::new(black_box("{{ $a }} + {{ $b }} = {{ $a + $b }}"))
-        })
+        b.iter(|| Template::new(black_box("{{ $a }} + {{ $b }} = {{ $a + $b }}")))
     });
 
     // Complex template
@@ -40,9 +36,7 @@ fn benchmark_template_parse(c: &mut Criterion) {
                 </body>
             </html>
         "#;
-        b.iter(|| {
-            Template::new(black_box(template))
-        })
+        b.iter(|| Template::new(black_box(template)))
     });
 
     group.finish();
@@ -56,23 +50,22 @@ fn benchmark_template_render(c: &mut Criterion) {
     context.set_input(Value::text("World"));
 
     let simple = Template::new("Hello {{ $input }}!").unwrap();
-    let complex = Template::new(r#"
+    let complex = Template::new(
+        r#"
         <html>
             <title>{{ $input | uppercase() }}</title>
             <p>Length: {{ length($input) }}</p>
         </html>
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
 
     group.bench_function("simple", |b| {
-        b.iter(|| {
-            simple.render(black_box(&engine), black_box(&context))
-        })
+        b.iter(|| simple.render(black_box(&engine), black_box(&context)))
     });
 
     group.bench_function("complex", |b| {
-        b.iter(|| {
-            complex.render(black_box(&engine), black_box(&context))
-        })
+        b.iter(|| complex.render(black_box(&engine), black_box(&context)))
     });
 
     group.finish();
@@ -81,11 +74,7 @@ fn benchmark_template_render(c: &mut Criterion) {
 fn benchmark_template_clone(c: &mut Criterion) {
     let template = Template::new("Hello {{ $input }}!").unwrap();
 
-    c.bench_function("template/clone", |b| {
-        b.iter(|| {
-            black_box(template.clone())
-        })
-    });
+    c.bench_function("template/clone", |b| b.iter(|| black_box(template.clone())));
 }
 
 // ================================
@@ -110,9 +99,7 @@ fn benchmark_evaluate_no_cache(c: &mut Criterion) {
 
     for (name, expr) in test_cases {
         group.bench_with_input(BenchmarkId::from_parameter(name), expr, |b, expr| {
-            b.iter(|| {
-                engine.evaluate(black_box(expr), black_box(&context))
-            })
+            b.iter(|| engine.evaluate(black_box(expr), black_box(&context)))
         });
     }
 
@@ -131,9 +118,7 @@ fn benchmark_evaluate_with_cache(c: &mut Criterion) {
     let _ = engine.evaluate(expr, &context);
 
     group.bench_function("cache_hit", |b| {
-        b.iter(|| {
-            engine.evaluate(black_box(expr), black_box(&context))
-        })
+        b.iter(|| engine.evaluate(black_box(expr), black_box(&context)))
     });
 
     // Cache miss
@@ -163,17 +148,11 @@ fn benchmark_context_operations(c: &mut Criterion) {
     }
 
     // Clone benchmark
-    group.bench_function("clone_100_vars", |b| {
-        b.iter(|| {
-            black_box(context.clone())
-        })
-    });
+    group.bench_function("clone_100_vars", |b| b.iter(|| black_box(context.clone())));
 
     // Lookup benchmark
     group.bench_function("lookup", |b| {
-        b.iter(|| {
-            context.get_execution_var(black_box("var_50"))
-        })
+        b.iter(|| context.get_execution_var(black_box("var_50")))
     });
 
     group.finish();
@@ -199,9 +178,7 @@ fn benchmark_concurrent_access(c: &mut Criterion) {
     // Single thread baseline
     group.bench_function("1_thread", |b| {
         let context = EvaluationContext::new();
-        b.iter(|| {
-            engine.evaluate(black_box(expr), black_box(&context))
-        })
+        b.iter(|| engine.evaluate(black_box(expr), black_box(&context)))
     });
 
     // Multi-threaded
@@ -238,9 +215,7 @@ fn benchmark_throughput(c: &mut Criterion) {
     let context = EvaluationContext::new();
 
     group.bench_function("ops_per_sec", |b| {
-        b.iter(|| {
-            engine.evaluate(black_box("2 + 2"), black_box(&context))
-        })
+        b.iter(|| engine.evaluate(black_box("2 + 2"), black_box(&context)))
     });
 
     group.finish();
@@ -272,9 +247,7 @@ fn benchmark_builtins(c: &mut Criterion) {
 
     for (name, expr) in test_cases {
         group.bench_with_input(BenchmarkId::from_parameter(name), expr, |b, expr| {
-            b.iter(|| {
-                engine.evaluate(black_box(expr), black_box(&context))
-            })
+            b.iter(|| engine.evaluate(black_box(expr), black_box(&context)))
         });
     }
 
@@ -298,10 +271,7 @@ criterion_group!(
     benchmark_evaluate_with_cache
 );
 
-criterion_group!(
-    context_benches,
-    benchmark_context_operations
-);
+criterion_group!(context_benches, benchmark_context_operations);
 
 criterion_group!(
     concurrent_benches,
@@ -309,10 +279,7 @@ criterion_group!(
     benchmark_throughput
 );
 
-criterion_group!(
-    builtin_benches,
-    benchmark_builtins
-);
+criterion_group!(builtin_benches, benchmark_builtins);
 
 criterion_main!(
     template_benches,

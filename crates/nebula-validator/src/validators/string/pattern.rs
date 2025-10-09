@@ -2,7 +2,7 @@
 //!
 //! This module provides validators for checking string patterns and formats.
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata, ValidationComplexity};
+use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // CONTAINS
@@ -214,9 +214,9 @@ impl TypedValidator for Alphanumeric {
     type Error = ValidationError;
 
     fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
-        let is_valid = input.chars().all(|c| {
-            c.is_alphanumeric() || (self.allow_spaces && c.is_whitespace())
-        });
+        let is_valid = input
+            .chars()
+            .all(|c| c.is_alphanumeric() || (self.allow_spaces && c.is_whitespace()));
 
         if is_valid {
             Ok(())
@@ -283,9 +283,9 @@ impl TypedValidator for Alphabetic {
     type Error = ValidationError;
 
     fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
-        let is_valid = input.chars().all(|c| {
-            c.is_alphabetic() || (self.allow_spaces && c.is_whitespace())
-        });
+        let is_valid = input
+            .chars()
+            .all(|c| c.is_alphabetic() || (self.allow_spaces && c.is_whitespace()));
 
         if is_valid {
             Ok(())
@@ -371,7 +371,10 @@ impl TypedValidator for Lowercase {
     type Error = ValidationError;
 
     fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
-        if input.chars().all(|c| !c.is_alphabetic() || c.is_lowercase()) {
+        if input
+            .chars()
+            .all(|c| !c.is_alphabetic() || c.is_lowercase())
+        {
             Ok(())
         } else {
             Err(ValidationError::new(
@@ -402,7 +405,10 @@ impl TypedValidator for Uppercase {
     type Error = ValidationError;
 
     fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
-        if input.chars().all(|c| !c.is_alphabetic() || c.is_uppercase()) {
+        if input
+            .chars()
+            .all(|c| !c.is_alphabetic() || c.is_uppercase())
+        {
             Ok(())
         } else {
             Err(ValidationError::new(

@@ -7,13 +7,16 @@ pub mod size;
 pub mod structure;
 
 // Re-export size validators
-pub use size::{exact_size, max_size, min_size, not_empty_collection, ExactSize, MaxSize, MinSize, NotEmptyCollection};
+pub use size::{
+    ExactSize, MaxSize, MinSize, NotEmptyCollection, exact_size, max_size, min_size,
+    not_empty_collection,
+};
 
 // Re-export element validators
-pub use elements::{all, any, contains_element, unique, All, Any, ContainsElement, Unique};
+pub use elements::{All, Any, ContainsElement, Unique, all, any, contains_element, unique};
 
 // Re-export structure validators
-pub use structure::{has_key, HasKey};
+pub use structure::{HasKey, has_key};
 
 pub mod prelude {
     pub use super::elements::*;

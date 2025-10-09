@@ -343,10 +343,7 @@ impl<T> ParameterBuilder<T, Unvalidated> {
     }
 
     /// Validates the value.
-    pub fn validate<V>(
-        self,
-        validator: &V,
-    ) -> Result<ParameterBuilder<T, Validated<V>>, V::Error>
+    pub fn validate<V>(self, validator: &V) -> Result<ParameterBuilder<T, Validated<V>>, V::Error>
     where
         V: TypedValidator<Input = T, Output = ()>,
     {
@@ -445,7 +442,9 @@ impl ValidationGroup<Unvalidated> {
     }
 
     /// Validates all parameters in the group.
-    pub fn validate_all(self) -> Result<ValidationGroup<Validated<()>>, Vec<Box<dyn std::error::Error>>> {
+    pub fn validate_all(
+        self,
+    ) -> Result<ValidationGroup<Validated<()>>, Vec<Box<dyn std::error::Error>>> {
         // This is a simplified version - real implementation would need to
         // track validators and validate each parameter
         Ok(ValidationGroup {

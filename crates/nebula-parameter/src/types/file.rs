@@ -2,11 +2,11 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
     ParameterMetadata, ParameterValidation, Validatable,
 };
-use crate::core::traits::Expressible;
 use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
@@ -180,17 +180,16 @@ impl HasValue for FileParameter {
     fn clear(&mut self) {
         self.value = None;
     }
-
 }
 
 #[async_trait::async_trait]
 impl Expressible for FileParameter {
-fn to_expression(&self) -> Option<MaybeExpression<Value>> {
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         self.value.as_ref().map(|file_ref| {
             // Convert FileReference to a simple string representation (path)
-            MaybeExpression::Value(nebula_value::Value::Text(
-                nebula_value::Text::from(file_ref.path.to_string_lossy().to_string()),
-            ))
+            MaybeExpression::Value(nebula_value::Value::Text(nebula_value::Text::from(
+                file_ref.path.to_string_lossy().to_string(),
+            )))
         })
     }
 
@@ -226,7 +225,6 @@ fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         }
     }
 }
-
 
 impl Validatable for FileParameter {
     fn validation(&self) -> Option<&ParameterValidation> {

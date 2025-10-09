@@ -1,11 +1,11 @@
 use bon::Builder;
 use serde::{Deserialize, Serialize};
 
+use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
     ParameterMetadata, ParameterValidation, Validatable,
 };
-use crate::core::traits::Expressible;
 use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
@@ -89,7 +89,6 @@ impl HasValue for NumberParameter {
     fn clear(&mut self) {
         self.value = None;
     }
-
 }
 
 impl Validatable for NumberParameter {

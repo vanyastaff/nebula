@@ -1,7 +1,7 @@
 //! Type-safe parameter collection with dependency tracking
 
-use std::collections::HashMap;
 use std::any::Any;
+use std::collections::HashMap;
 
 use nebula_core::ParameterKey;
 use nebula_value::Value;
@@ -76,9 +76,7 @@ impl ParameterCollection {
 
     /// Get a parameter's value (type-erased)
     pub fn value(&self, key: impl Into<ParameterKey>) -> Option<Value> {
-        self.parameters
-            .get(&key.into())?
-            .get_erased()
+        self.parameters.get(&key.into())?.get_erased()
     }
 
     /// Get a typed value from a parameter
@@ -88,15 +86,13 @@ impl ParameterCollection {
         T::Error: std::fmt::Display,
     {
         let key_obj = key.into();
-        let value = self.value(key_obj.clone())
+        let value = self
+            .value(key_obj.clone())
             .ok_or_else(|| ParameterError::not_found(key_obj.clone()))?;
 
-        value.try_into()
-            .map_err(|e| ParameterError::type_error(
-                key_obj,
-                std::any::type_name::<T>(),
-                e.to_string(),
-            ))
+        value.try_into().map_err(|e| {
+            ParameterError::type_error(key_obj, std::any::type_name::<T>(), e.to_string())
+        })
     }
 
     /// Check if a parameter exists
@@ -225,7 +221,8 @@ impl ParameterCollection {
     /// Create a snapshot of all parameter values
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
-            values: self.parameters
+            values: self
+                .parameters
                 .iter()
                 .map(|(k, v)| (k.clone(), v.get_erased()))
                 .collect(),
@@ -334,12 +331,12 @@ mod tests {
             .with(
                 TextParameter::builder()
                     .metadata(crate::core::ParameterMetadata::new("test1", "Test 1"))
-                    .build()
+                    .build(),
             )
             .with(
                 TextParameter::builder()
                     .metadata(crate::core::ParameterMetadata::new("test2", "Test 2"))
-                    .build()
+                    .build(),
             );
 
         assert_eq!(collection.len(), 2);
@@ -353,7 +350,7 @@ mod tests {
             TextParameter::builder()
                 .metadata(crate::core::ParameterMetadata::new("test", "Test"))
                 .value(Some(nebula_value::Text::from("hello")))
-                .build()
+                .build(),
         );
 
         let param: Option<&TextParameter> = collection.get("test");

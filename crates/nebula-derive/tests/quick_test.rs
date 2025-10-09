@@ -1,12 +1,16 @@
 //! Quick test to verify new validators work without building nebula-parameter
 
-use nebula_validator::validators::text::*;
 use nebula_validator::core::TypedValidator;
+use nebula_validator::validators::text::*;
 
 #[test]
 fn test_uuid_validator() {
     let validator = Uuid::new();
-    assert!(validator.validate("550e8400-e29b-41d4-a716-446655440000").is_ok());
+    assert!(
+        validator
+            .validate("550e8400-e29b-41d4-a716-446655440000")
+            .is_ok()
+    );
     assert!(validator.validate("not-a-uuid").is_err());
 }
 

@@ -2,7 +2,7 @@
 //!
 //! Validates IP addresses using Rust's standard library `std::net`.
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata, ValidationComplexity};
+use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
@@ -98,16 +98,21 @@ impl TypedValidator for IpAddress {
 
     fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
         let addr = IpAddr::from_str(input).map_err(|_| {
-            ValidationError::new("invalid_ip_address", format!("'{}' is not a valid IP address", input))
+            ValidationError::new(
+                "invalid_ip_address",
+                format!("'{}' is not a valid IP address", input),
+            )
         })?;
 
         match addr {
-            IpAddr::V4(_) if !self.allow_v4 => {
-                Err(ValidationError::new("ipv4_not_allowed", "IPv4 addresses are not allowed"))
-            }
-            IpAddr::V6(_) if !self.allow_v6 => {
-                Err(ValidationError::new("ipv6_not_allowed", "IPv6 addresses are not allowed"))
-            }
+            IpAddr::V4(_) if !self.allow_v4 => Err(ValidationError::new(
+                "ipv4_not_allowed",
+                "IPv4 addresses are not allowed",
+            )),
+            IpAddr::V6(_) if !self.allow_v6 => Err(ValidationError::new(
+                "ipv6_not_allowed",
+                "IPv6 addresses are not allowed",
+            )),
             _ => Ok(addr),
         }
     }
@@ -144,7 +149,10 @@ impl TypedValidator for Ipv4 {
 
     fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
         Ipv4Addr::from_str(input).map_err(|_| {
-            ValidationError::new("invalid_ipv4", format!("'{}' is not a valid IPv4 address", input))
+            ValidationError::new(
+                "invalid_ipv4",
+                format!("'{}' is not a valid IPv4 address", input),
+            )
         })
     }
 
@@ -177,7 +185,10 @@ impl TypedValidator for Ipv6 {
 
     fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
         Ipv6Addr::from_str(input).map_err(|_| {
-            ValidationError::new("invalid_ipv6", format!("'{}' is not a valid IPv6 address", input))
+            ValidationError::new(
+                "invalid_ipv6",
+                format!("'{}' is not a valid IPv6 address", input),
+            )
         })
     }
 
@@ -215,7 +226,11 @@ mod tests {
     #[test]
     fn test_ip_address_valid_ipv6() {
         let validator = IpAddress::new();
-        assert!(validator.validate("2001:0db8:85a3:0000:0000:8a2e:0370:7334").is_ok());
+        assert!(
+            validator
+                .validate("2001:0db8:85a3:0000:0000:8a2e:0370:7334")
+                .is_ok()
+        );
         assert!(validator.validate("::1").is_ok());
         assert!(validator.validate("::").is_ok());
         assert!(validator.validate("fe80::1").is_ok());

@@ -157,8 +157,12 @@ impl EvaluationContextBuilder {
         EvaluationContext {
             nodes: self.nodes,
             execution_vars: self.execution_vars,
-            workflow: self.workflow.unwrap_or_else(|| Arc::new(Value::object_empty())),
-            input: self.input.unwrap_or_else(|| Arc::new(Value::object_empty())),
+            workflow: self
+                .workflow
+                .unwrap_or_else(|| Arc::new(Value::object_empty())),
+            input: self
+                .input
+                .unwrap_or_else(|| Arc::new(Value::object_empty())),
         }
     }
 }

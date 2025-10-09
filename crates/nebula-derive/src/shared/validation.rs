@@ -187,7 +187,8 @@ pub fn get_deprecation_message(attrs: &[syn::Attribute]) -> Option<String> {
                 if let Some(start) = tokens.find("note") {
                     if let Some(quote_start) = tokens[start..].find('"') {
                         if let Some(quote_end) = tokens[start + quote_start + 1..].find('"') {
-                            let msg = &tokens[start + quote_start + 1..start + quote_start + 1 + quote_end];
+                            let msg = &tokens
+                                [start + quote_start + 1..start + quote_start + 1 + quote_end];
                             return Some(msg.to_string());
                         }
                     }

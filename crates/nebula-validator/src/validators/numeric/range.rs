@@ -1,6 +1,6 @@
 //! Numeric range validators
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata, ValidationComplexity};
+use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
 use std::fmt::Display;
 
 // ============================================================================
@@ -31,12 +31,11 @@ where
         if *input >= self.min {
             Ok(())
         } else {
-            Err(ValidationError::new(
-                "min",
-                format!("Value must be at least {}", self.min),
+            Err(
+                ValidationError::new("min", format!("Value must be at least {}", self.min))
+                    .with_param("min", self.min.to_string())
+                    .with_param("actual", input.to_string()),
             )
-            .with_param("min", self.min.to_string())
-            .with_param("actual", input.to_string()))
         }
     }
 
@@ -86,12 +85,11 @@ where
         if *input <= self.max {
             Ok(())
         } else {
-            Err(ValidationError::new(
-                "max",
-                format!("Value must be at most {}", self.max),
+            Err(
+                ValidationError::new("max", format!("Value must be at most {}", self.max))
+                    .with_param("max", self.max.to_string())
+                    .with_param("actual", input.to_string()),
             )
-            .with_param("max", self.max.to_string())
-            .with_param("actual", input.to_string()))
         }
     }
 
@@ -143,10 +141,7 @@ where
             Ok(())
         } else {
             Err(ValidationError::out_of_range(
-                "",
-                self.min,
-                self.max,
-                *input,
+                "", self.min, self.max, *input,
             ))
         }
     }
@@ -154,7 +149,10 @@ where
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
             name: "InRange".to_string(),
-            description: Some(format!("Value must be between {} and {}", self.min, self.max)),
+            description: Some(format!(
+                "Value must be between {} and {}",
+                self.min, self.max
+            )),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,

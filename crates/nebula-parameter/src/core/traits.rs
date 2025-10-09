@@ -1,10 +1,10 @@
 //! Core parameter traits
 
-pub use async_trait::async_trait;
 use crate::core::condition::ParameterCondition;
 use crate::core::display::{DisplayContext, ParameterDisplay, ParameterDisplayError};
 use crate::core::validation::ParameterValidation;
 use crate::core::{ParameterError, ParameterKind, ParameterMetadata};
+pub use async_trait::async_trait;
 use nebula_core::ParameterKey as Key;
 pub use nebula_expression::{EvaluationContext, ExpressionEngine, MaybeExpression};
 use nebula_value::Value;
@@ -194,7 +194,7 @@ pub trait HasValue: Parameter + Debug {
     {
         // Validate first
         self.validate(&value).await?;
-        
+
         // Use try_set for transactional behavior
         HasValueExt::try_set(self, value)?;
         Ok(())
@@ -360,14 +360,14 @@ pub trait HasValueExt: HasValue {
     /// # use nebula_parameter::prelude::*;
     /// # let mut param = TextParameter::new("test");
     /// param.set("hello".to_string()).unwrap();
-    /// 
+    ///
     /// let old = param.try_set("world".to_string()).unwrap();
     /// assert_eq!(old, Some("hello".to_string()));
     /// assert_eq!(param.get(), Some(&"world".to_string()));
     /// ```
     fn try_set(&mut self, value: Self::Value) -> Result<Option<Self::Value>, ParameterError> {
         let old = self.take();
-        
+
         match self.set(value) {
             Ok(()) => Ok(old),
             Err(original_error) => {
@@ -377,7 +377,10 @@ pub trait HasValueExt: HasValue {
                         // Critical: both operations failed, parameter is poisoned
                         return Err(ParameterError::InvalidValue {
                             key: self.metadata().key.clone(),
-                            reason: format!("Failed to set value and restore old value: {}", original_error),
+                            reason: format!(
+                                "Failed to set value and restore old value: {}",
+                                original_error
+                            ),
                         });
                     }
                 }
@@ -446,7 +449,9 @@ pub trait ParameterValue: Parameter {
     /// Validate the current value (type-erased, async)
     ///
     /// Returns a boxed future to allow trait objects
-    fn validate_erased(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>;
+    fn validate_erased(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>;
 }
 
 // Blanket implementation for all HasValue types with proper conversion support
@@ -469,11 +474,13 @@ where
     }
 
     fn set_erased(&mut self, value: Value) -> Result<(), ParameterError> {
-        let typed = T::Value::try_from(value).map_err(|e| {
-            ParameterError::InvalidValue {
-                key: self.metadata().key.clone(),
-                reason: format!("Cannot convert Value to {}: {}", std::any::type_name::<T::Value>(), e),
-            }
+        let typed = T::Value::try_from(value).map_err(|e| ParameterError::InvalidValue {
+            key: self.metadata().key.clone(),
+            reason: format!(
+                "Cannot convert Value to {}: {}",
+                std::any::type_name::<T::Value>(),
+                e
+            ),
         })?;
 
         self.set(typed)
@@ -487,7 +494,10 @@ where
         self
     }
 
-    fn validate_erased(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>> {
+    fn validate_erased(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
+    {
         Box::pin(self.validate_current())
     }
 }
@@ -604,12 +614,13 @@ pub trait Validatable: HasValue + Send + Sync {
         // 3. Custom validation from configuration
         if let Some(validation) = self.validation() {
             let nebula_value = value.clone().into();
-            validation.validate(&nebula_value, None).await.map_err(|e| {
-                ParameterError::InvalidValue {
+            validation
+                .validate(&nebula_value, None)
+                .await
+                .map_err(|e| ParameterError::InvalidValue {
                     key: self.metadata().key.clone(),
                     reason: format!("{}", e),
-                }
-            })?;
+                })?;
         }
 
         Ok(())
@@ -803,12 +814,12 @@ pub trait Expressible: HasValue {
     ) -> Result<Value, ParameterError> {
         match self.to_expression() {
             Some(MaybeExpression::Expression(expr)) => {
-                engine.evaluate(&expr, context).map_err(|e| {
-                    ParameterError::InvalidValue {
+                engine
+                    .evaluate(&expr, context)
+                    .map_err(|e| ParameterError::InvalidValue {
                         key: self.metadata().key.clone(),
                         reason: format!("Expression evaluation failed: {}", e),
-                    }
-                })
+                    })
             }
             Some(MaybeExpression::Value(v)) => Ok(v),
             None => Err(ParameterError::MissingValue {
@@ -843,12 +854,14 @@ pub trait Expressible: HasValue {
         <Self::Value as TryFrom<Value>>::Error: std::fmt::Display,
     {
         let value = self.evaluate(engine, context).await?;
-        
-        value.try_into().map_err(|e| {
-            ParameterError::InvalidValue {
-                key: self.metadata().key.clone(),
-                reason: format!("Cannot convert Value to {}: {}", std::any::type_name::<Self::Value>(), e),
-            }
+
+        value.try_into().map_err(|e| ParameterError::InvalidValue {
+            key: self.metadata().key.clone(),
+            reason: format!(
+                "Cannot convert Value to {}: {}",
+                std::any::type_name::<Self::Value>(),
+                e
+            ),
         })
     }
 
@@ -1093,13 +1106,12 @@ pub fn apply_display_change<P>(
     param: &mut P,
     old_context: &DisplayContext,
     new_context: &DisplayContext,
-)
-where
+) where
     P: DisplayableReactive,
 {
     let old_visible = param.should_display(old_context);
     let new_visible = param.should_display(new_context);
-    
+
     if old_visible != new_visible {
         param.on_display_change(old_visible, new_visible, new_context);
     }
@@ -1119,10 +1131,7 @@ pub mod testing {
         P: Validatable,
         P::Value: Clone + Into<Value>,
     {
-        param
-            .validate(value)
-            .await
-            .expect("validation should pass");
+        param.validate(value).await.expect("validation should pass");
     }
 
     /// Assert that a value is invalid for a parameter

@@ -17,7 +17,7 @@
 //! assert!(validator.validate("hi").is_err());        // neither
 //! ```
 
-use crate::core::{TypedValidator, ValidatorMetadata, ValidationComplexity, ValidationError};
+use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // OR COMBINATOR
@@ -188,14 +188,22 @@ impl<E: std::error::Error + 'static> std::error::Error for OrError<E> {
 #[async_trait::async_trait]
 impl<L, R> crate::core::AsyncValidator for Or<L, R>
 where
-    L: TypedValidator + crate::core::AsyncValidator<
-        Input = <L as TypedValidator>::Input,
-        Output = <L as TypedValidator>::Output,
-        Error = <L as TypedValidator>::Error
-    > + Send + Sync,
-    R: TypedValidator<Input = <L as TypedValidator>::Input, Output = <L as TypedValidator>::Output, Error = <L as TypedValidator>::Error>
-        + crate::core::AsyncValidator<Input = <L as TypedValidator>::Input, Output = <L as TypedValidator>::Output, Error = <L as TypedValidator>::Error>
-        + Send
+    L: TypedValidator
+        + crate::core::AsyncValidator<
+            Input = <L as TypedValidator>::Input,
+            Output = <L as TypedValidator>::Output,
+            Error = <L as TypedValidator>::Error,
+        > + Send
+        + Sync,
+    R: TypedValidator<
+            Input = <L as TypedValidator>::Input,
+            Output = <L as TypedValidator>::Output,
+            Error = <L as TypedValidator>::Error,
+        > + crate::core::AsyncValidator<
+            Input = <L as TypedValidator>::Input,
+            Output = <L as TypedValidator>::Output,
+            Error = <L as TypedValidator>::Error,
+        > + Send
         + Sync,
     <L as TypedValidator>::Input: Sync,
     <L as TypedValidator>::Output: Send,
@@ -248,7 +256,11 @@ where
     pub fn or<V>(self, other: V) -> Or<Self, V>
     where
         Self: TypedValidator,
-        V: TypedValidator<Input = <Self as TypedValidator>::Input, Output = <Self as TypedValidator>::Output, Error = <Self as TypedValidator>::Error>,
+        V: TypedValidator<
+                Input = <Self as TypedValidator>::Input,
+                Output = <Self as TypedValidator>::Output,
+                Error = <Self as TypedValidator>::Error,
+            >,
     {
         Or::new(self, other)
     }
@@ -294,7 +306,9 @@ where
 ///
 /// let combined = or_any(validators);
 /// ```
-pub fn or_any<V>(validators: Vec<V>) -> impl TypedValidator<Input = V::Input, Output = V::Output, Error = OrAnyError<V::Error>>
+pub fn or_any<V>(
+    validators: Vec<V>,
+) -> impl TypedValidator<Input = V::Input, Output = V::Output, Error = OrAnyError<V::Error>>
 where
     V: TypedValidator,
 {

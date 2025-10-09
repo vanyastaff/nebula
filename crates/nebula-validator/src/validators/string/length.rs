@@ -2,7 +2,7 @@
 //!
 //! This module provides validators for checking string length constraints.
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata, ValidationComplexity};
+use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // MIN LENGTH
@@ -249,7 +249,10 @@ impl TypedValidator for LengthRange {
         } else {
             Err(ValidationError::new(
                 "length_range",
-                format!("String length must be between {} and {}", self.min, self.max),
+                format!(
+                    "String length must be between {} and {}",
+                    self.min, self.max
+                ),
             )
             .with_param("min", self.min.to_string())
             .with_param("max", self.max.to_string())
@@ -267,7 +270,11 @@ impl TypedValidator for LengthRange {
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["string".to_string(), "length".to_string(), "range".to_string()],
+            tags: vec![
+                "string".to_string(),
+                "length".to_string(),
+                "range".to_string(),
+            ],
             version: None,
             custom: std::collections::HashMap::new(),
         }
@@ -308,7 +315,10 @@ impl TypedValidator for NotEmpty {
         if !input.is_empty() {
             Ok(())
         } else {
-            Err(ValidationError::new("not_empty", "String must not be empty"))
+            Err(ValidationError::new(
+                "not_empty",
+                "String must not be empty",
+            ))
         }
     }
 
@@ -454,7 +464,7 @@ mod tests {
     fn test_metadata() {
         let validator = MinLength::new(5);
         let meta = validator.metadata();
-        
+
         assert_eq!(meta.name, "MinLength");
         assert!(meta.description.is_some());
         assert_eq!(meta.complexity, ValidationComplexity::Constant);
@@ -467,7 +477,7 @@ mod tests {
         let validator = MinLength::new(5);
         assert!(validator.validate("hello").is_ok());
         assert!(validator.validate("👋🌍").is_err()); // 2 chars but 8 bytes
-        
+
         // String length counts Unicode scalar values, not bytes
         assert_eq!("👋🌍".len(), 8); // bytes
         assert_eq!("👋🌍".chars().count(), 2); // characters

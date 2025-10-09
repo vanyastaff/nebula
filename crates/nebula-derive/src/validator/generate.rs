@@ -132,7 +132,10 @@ fn generate_field_addition(
 /// # Returns
 ///
 /// A TokenStream representing the validator or chain of validators
-fn generate_field_validator(field_type: &Type, attrs: &ValidationAttrs) -> syn::Result<TokenStream> {
+fn generate_field_validator(
+    field_type: &Type,
+    attrs: &ValidationAttrs,
+) -> syn::Result<TokenStream> {
     // Detect field type using shared infrastructure
     let _type_category = types::detect_type(field_type);
 
@@ -159,9 +162,18 @@ fn generate_field_validator(field_type: &Type, attrs: &ValidationAttrs) -> syn::
     }
 
     // String validators
-    add_validator!(::nebula_validator::validators::string::min_length, attrs.min_length);
-    add_validator!(::nebula_validator::validators::string::max_length, attrs.max_length);
-    add_validator!(::nebula_validator::validators::string::exact_length, attrs.exact_length);
+    add_validator!(
+        ::nebula_validator::validators::string::min_length,
+        attrs.min_length
+    );
+    add_validator!(
+        ::nebula_validator::validators::string::max_length,
+        attrs.max_length
+    );
+    add_validator!(
+        ::nebula_validator::validators::string::exact_length,
+        attrs.exact_length
+    );
 
     if attrs.email {
         add_validator!(::nebula_validator::validators::string::email);
@@ -182,9 +194,18 @@ fn generate_field_validator(field_type: &Type, attrs: &ValidationAttrs) -> syn::
         add_validator!(::nebula_validator::validators::string::alphanumeric);
     }
 
-    add_validator!(::nebula_validator::validators::string::contains, attrs.contains.as_ref());
-    add_validator!(::nebula_validator::validators::string::starts_with, attrs.starts_with.as_ref());
-    add_validator!(::nebula_validator::validators::string::ends_with, attrs.ends_with.as_ref());
+    add_validator!(
+        ::nebula_validator::validators::string::contains,
+        attrs.contains.as_ref()
+    );
+    add_validator!(
+        ::nebula_validator::validators::string::starts_with,
+        attrs.starts_with.as_ref()
+    );
+    add_validator!(
+        ::nebula_validator::validators::string::ends_with,
+        attrs.ends_with.as_ref()
+    );
 
     // Text validators (builder pattern)
     // Note: These use the builder pattern Validator::new()
@@ -208,8 +229,14 @@ fn generate_field_validator(field_type: &Type, attrs: &ValidationAttrs) -> syn::
     }
 
     // Numeric validators
-    add_validator!(::nebula_validator::validators::numeric::min, attrs.min.as_ref());
-    add_validator!(::nebula_validator::validators::numeric::max, attrs.max.as_ref());
+    add_validator!(
+        ::nebula_validator::validators::numeric::min,
+        attrs.min.as_ref()
+    );
+    add_validator!(
+        ::nebula_validator::validators::numeric::max,
+        attrs.max.as_ref()
+    );
 
     if let (Some(min), Some(max)) = (&attrs.range_min, &attrs.range_max) {
         validators.push(quote! {
@@ -231,8 +258,14 @@ fn generate_field_validator(field_type: &Type, attrs: &ValidationAttrs) -> syn::
     }
 
     // Collection validators
-    add_validator!(::nebula_validator::validators::collection::min_size, attrs.min_size);
-    add_validator!(::nebula_validator::validators::collection::max_size, attrs.max_size);
+    add_validator!(
+        ::nebula_validator::validators::collection::min_size,
+        attrs.min_size
+    );
+    add_validator!(
+        ::nebula_validator::validators::collection::max_size,
+        attrs.max_size
+    );
 
     if attrs.unique {
         add_validator!(::nebula_validator::validators::collection::unique);

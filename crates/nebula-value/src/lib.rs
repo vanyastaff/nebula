@@ -16,7 +16,6 @@ pub use core::{
     value::Value,
 };
 
-
 // Re-export scalar and collection types
 pub use collections::{Array, Object};
 pub use scalar::{Boolean, Bytes, Float, Integer, Text};
@@ -44,4 +43,3 @@ pub mod prelude {
     #[cfg(feature = "serde")]
     pub use serde_json::json;
 }
-

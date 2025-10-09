@@ -14,7 +14,7 @@
 //! assert!(validator.validate("test string").is_err()); // contains "test"
 //! ```
 
-use crate::core::{TypedValidator, ValidatorMetadata, ValidationError};
+use crate::core::{TypedValidator, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // NOT COMBINATOR
@@ -158,11 +158,13 @@ impl<E> From<NotError<E>> for ValidationError {
 #[async_trait::async_trait]
 impl<V> crate::core::AsyncValidator for Not<V>
 where
-    V: TypedValidator + crate::core::AsyncValidator<
-        Input = <V as TypedValidator>::Input,
-        Output = <V as TypedValidator>::Output,
-        Error = <V as TypedValidator>::Error
-    > + Send + Sync,
+    V: TypedValidator
+        + crate::core::AsyncValidator<
+            Input = <V as TypedValidator>::Input,
+            Output = <V as TypedValidator>::Output,
+            Error = <V as TypedValidator>::Error,
+        > + Send
+        + Sync,
     <V as TypedValidator>::Input: Sync,
 {
     type Input = <V as TypedValidator>::Input;

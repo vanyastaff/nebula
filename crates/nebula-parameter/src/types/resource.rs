@@ -1,12 +1,12 @@
 use serde::Serialize;
 use std::collections::HashMap;
 
+use crate::core::traits::Expressible;
 use crate::core::{
     Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
     ParameterMetadata, ParameterValidation, Validatable,
     option::{OptionsResponse, Pagination, SelectOption},
 };
-use crate::core::traits::Expressible;
 use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
@@ -251,15 +251,16 @@ impl HasValue for ResourceParameter {
     fn clear(&mut self) {
         self.value = None;
     }
-
 }
 
 #[async_trait::async_trait]
 impl Expressible for ResourceParameter {
-fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value
-            .as_ref()
-            .map(|v| MaybeExpression::Value(nebula_value::Value::Text(nebula_value::Text::from(v.clone()))))
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
+        self.value.as_ref().map(|v| {
+            MaybeExpression::Value(nebula_value::Value::Text(nebula_value::Text::from(
+                v.clone(),
+            )))
+        })
     }
 
     fn from_expression(
@@ -283,7 +284,6 @@ fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         }
     }
 }
-
 
 impl Validatable for ResourceParameter {
     fn validation(&self) -> Option<&ParameterValidation> {

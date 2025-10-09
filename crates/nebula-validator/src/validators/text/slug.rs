@@ -2,7 +2,7 @@
 //!
 //! Validates that a string is a valid slug (lowercase letters, numbers, hyphens).
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata, ValidationComplexity};
+use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // SLUG VALIDATOR
@@ -168,9 +168,7 @@ impl TypedValidator for Slug {
             name: "Slug".to_string(),
             description: Some(format!(
                 "Validates URL-friendly slugs (length: {}-{}, consecutive hyphens: {})",
-                self.min_length,
-                self.max_length,
-                self.allow_consecutive_hyphens
+                self.min_length, self.max_length, self.allow_consecutive_hyphens
             )),
             complexity: ValidationComplexity::Linear,
             cacheable: true,

@@ -1,6 +1,6 @@
 //! String manipulation functions
 
-use super::{check_arg_count, check_min_arg_count, get_string_arg, get_int_arg};
+use super::{check_arg_count, check_min_arg_count, get_int_arg, get_string_arg};
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;

@@ -135,11 +135,13 @@ where
 #[async_trait::async_trait]
 impl<V, C> crate::core::AsyncValidator for When<V, C>
 where
-    V: TypedValidator + crate::core::AsyncValidator<
-        Input = <V as TypedValidator>::Input,
-        Output = <V as TypedValidator>::Output,
-        Error = <V as TypedValidator>::Error
-    > + Send + Sync,
+    V: TypedValidator
+        + crate::core::AsyncValidator<
+            Input = <V as TypedValidator>::Input,
+            Output = <V as TypedValidator>::Output,
+            Error = <V as TypedValidator>::Error,
+        > + Send
+        + Sync,
     C: Fn(&<V as TypedValidator>::Input) -> bool + Send + Sync,
     <V as TypedValidator>::Input: Sync,
 {
@@ -259,7 +261,10 @@ where
 /// assert!(validator.validate("skip_short").is_ok()); // skipped
 /// assert!(validator.validate("short").is_err());     // validated, fails
 /// ```
-pub fn unless<V, C>(validator: V, condition: C) -> When<V, Box<dyn for<'a> Fn(&'a <V as TypedValidator>::Input) -> bool>>
+pub fn unless<V, C>(
+    validator: V,
+    condition: C,
+) -> When<V, Box<dyn for<'a> Fn(&'a <V as TypedValidator>::Input) -> bool>>
 where
     V: TypedValidator,
     C: for<'a> Fn(&'a <V as TypedValidator>::Input) -> bool + 'static,
@@ -273,9 +278,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::core::traits::ValidatorExt;
     use super::*;
     use crate::core::ValidationError;
+    use crate::core::traits::ValidatorExt;
 
     struct MinLength {
         min: usize,
@@ -364,9 +369,8 @@ mod tests {
 
     #[test]
     fn test_when_with_complex_condition() {
-        let validator = MinLength { min: 10 }.when(|s: &str| {
-            s.starts_with("long_") && s.contains("_test")
-        });
+        let validator =
+            MinLength { min: 10 }.when(|s: &str| s.starts_with("long_") && s.contains("_test"));
 
         assert!(validator.validate("short").is_ok()); // condition false
         assert!(validator.validate("long_other").is_ok()); // condition false

@@ -1,7 +1,7 @@
 // Simple baseline benchmarks without external dependencies
 // Run with: cargo test --release --test simple_baseline -- --nocapture --test-threads=1
 
-use nebula_expression::{Template, ExpressionEngine, EvaluationContext};
+use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
 use nebula_value::Value;
 use std::time::{Duration, Instant};
 

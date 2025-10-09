@@ -247,7 +247,11 @@ impl ValidationError {
 
     /// Returns the number of errors (including nested).
     pub fn total_error_count(&self) -> usize {
-        1 + self.nested.iter().map(|e| e.total_error_count()).sum::<usize>()
+        1 + self
+            .nested
+            .iter()
+            .map(|e| e.total_error_count())
+            .sum::<usize>()
     }
 
     /// Flattens all errors into a single list (depth-first).
@@ -357,11 +361,14 @@ impl ValidationError {
         max: T,
         actual: T,
     ) -> Self {
-        Self::new("out_of_range", format!("Value must be between {} and {}", min, max))
-            .with_field(field)
-            .with_param("min", min.to_string())
-            .with_param("max", max.to_string())
-            .with_param("actual", actual.to_string())
+        Self::new(
+            "out_of_range",
+            format!("Value must be between {} and {}", min, max),
+        )
+        .with_field(field)
+        .with_param("min", min.to_string())
+        .with_param("max", max.to_string())
+        .with_param("actual", actual.to_string())
     }
 
     /// Creates a "custom" error with a message.
@@ -508,9 +515,8 @@ mod tests {
     #[test]
     fn test_flatten() {
         let error = ValidationError::new("root", "Root error").with_nested(vec![
-            ValidationError::new("child1", "Child 1").with_nested(vec![
-                ValidationError::new("grandchild", "Grandchild"),
-            ]),
+            ValidationError::new("child1", "Child 1")
+                .with_nested(vec![ValidationError::new("grandchild", "Grandchild")]),
             ValidationError::new("child2", "Child 2"),
         ]);
 

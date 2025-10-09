@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
     ParameterMetadata, ParameterValidation, Validatable,
 };
-use crate::core::traits::Expressible;
 use nebula_core::ParameterKey;
 use nebula_expression::MaybeExpression;
 use nebula_value::Value;
@@ -125,7 +125,10 @@ impl ModeValue {
     }
 
     /// Create a new ModeValue from ParameterValue (MaybeExpression<Value>)
-    pub fn from_parameter_value(key: impl Into<String>, param_value: &MaybeExpression<Value>) -> Self {
+    pub fn from_parameter_value(
+        key: impl Into<String>,
+        param_value: &MaybeExpression<Value>,
+    ) -> Self {
         let nebula_val = match param_value {
             MaybeExpression::Value(v) => v.clone(),
             MaybeExpression::Expression(expr) => nebula_value::Value::text(expr),
@@ -176,12 +179,11 @@ impl HasValue for ModeParameter {
     fn clear(&mut self) {
         self.value = None;
     }
-
 }
 
 #[async_trait::async_trait]
 impl Expressible for ModeParameter {
-fn to_expression(&self) -> Option<MaybeExpression<Value>> {
+    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         // Convert ModeValue to MaybeExpression<Value>
         self.value
             .as_ref()
@@ -214,7 +216,6 @@ fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         }
     }
 }
-
 
 impl Validatable for ModeParameter {
     fn validation(&self) -> Option<&ParameterValidation> {

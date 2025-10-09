@@ -18,7 +18,7 @@
 //! validator.validate("test@example.com")?; // Fast!
 //! ```
 
-use crate::core::{TypedValidator, ValidatorMetadata, ValidationComplexity};
+use crate::core::{TypedValidator, ValidationComplexity, ValidatorMetadata};
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::RwLock;
@@ -370,8 +370,8 @@ where
             name: format!("Cached({})", inner_meta.name),
             description: Some(format!("Cached {}", inner_meta.name)),
             complexity: ValidationComplexity::Constant, // O(1) after first call
-            cacheable: false, // Already cached!
-            estimated_time: None, // Depends on cache hit/miss
+            cacheable: false,                           // Already cached!
+            estimated_time: None,                       // Depends on cache hit/miss
             tags: {
                 let mut tags = inner_meta.tags;
                 tags.push("combinator".to_string());
@@ -393,11 +393,13 @@ where
 #[async_trait::async_trait]
 impl<V> crate::core::AsyncValidator for Cached<V>
 where
-    V: TypedValidator + crate::core::AsyncValidator<
-        Input = <V as TypedValidator>::Input,
-        Output = <V as TypedValidator>::Output,
-        Error = <V as TypedValidator>::Error
-    > + Send + Sync,
+    V: TypedValidator
+        + crate::core::AsyncValidator<
+            Input = <V as TypedValidator>::Input,
+            Output = <V as TypedValidator>::Output,
+            Error = <V as TypedValidator>::Error,
+        > + Send
+        + Sync,
     <V as TypedValidator>::Input: Hash + Sync,
     <V as TypedValidator>::Output: Clone + Send + Sync,
     <V as TypedValidator>::Error: Clone + Send + Sync,
@@ -581,11 +583,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::core::traits::ValidatorExt;
     use super::*;
     use crate::core::ValidationError;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use crate::core::traits::ValidatorExt;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct CountingValidator {
         min: usize,
@@ -668,10 +670,7 @@ mod tests {
     #[test]
     fn test_cache_size() {
         let call_count = Arc::new(AtomicUsize::new(0));
-        let validator = Cached::new(CountingValidator {
-            min: 5,
-            call_count,
-        });
+        let validator = Cached::new(CountingValidator { min: 5, call_count });
 
         assert_eq!(validator.cache_size(), 0);
 
@@ -704,10 +703,7 @@ mod tests {
     #[test]
     fn test_cache_stats() {
         let call_count = Arc::new(AtomicUsize::new(0));
-        let validator = Cached::new(CountingValidator {
-            min: 5,
-            call_count,
-        });
+        let validator = Cached::new(CountingValidator { min: 5, call_count });
 
         validator.validate("hello").unwrap();
         validator.validate("world").unwrap();
@@ -720,10 +716,7 @@ mod tests {
     #[test]
     fn test_cached_metadata() {
         let call_count = Arc::new(AtomicUsize::new(0));
-        let validator = Cached::new(CountingValidator {
-            min: 5,
-            call_count,
-        });
+        let validator = Cached::new(CountingValidator { min: 5, call_count });
 
         let meta = validator.metadata();
         assert!(meta.name.contains("Cached"));

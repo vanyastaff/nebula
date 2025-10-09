@@ -44,7 +44,6 @@ pub use numeric::*;
 pub use string::*;
 pub use text::*;
 
-
 /// Prelude with all validators.
 pub mod prelude {
     pub use super::collection::prelude::*;

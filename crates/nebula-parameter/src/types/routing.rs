@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Display};
 
+use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
     ParameterMetadata, ParameterValidation, Validatable,
 };
-use crate::core::traits::Expressible;
 use nebula_core::ParameterKey;
 use nebula_expression::MaybeExpression;
 use nebula_value::Value;
@@ -238,7 +238,6 @@ impl HasValue for RoutingParameter {
     fn clear(&mut self) {
         self.value = None;
     }
-
 }
 
 #[async_trait::async_trait]
@@ -246,13 +245,11 @@ impl Expressible for RoutingParameter {
     fn to_expression(&self) -> Option<MaybeExpression<Value>> {
         // Routing parameter cannot be serialized as MaybeExpression
         // Return None or convert to a descriptive value
-        self.value
-            .as_ref()
-            .map(|_| {
-                MaybeExpression::Value(nebula_value::Value::Text(nebula_value::Text::from(
-                    "routing_parameter",
-                )))
-            })
+        self.value.as_ref().map(|_| {
+            MaybeExpression::Value(nebula_value::Value::Text(nebula_value::Text::from(
+                "routing_parameter",
+            )))
+        })
     }
 
     fn from_expression(

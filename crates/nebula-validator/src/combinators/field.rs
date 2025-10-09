@@ -408,12 +408,7 @@ impl<T> MultiField<T> {
     }
 
     /// Adds a field validator.
-    pub fn add_field<U, V, F>(
-        mut self,
-        name: impl Into<String>,
-        validator: V,
-        accessor: F,
-    ) -> Self
+    pub fn add_field<U, V, F>(mut self, name: impl Into<String>, validator: V, accessor: F) -> Self
     where
         U: ?Sized,
         V: TypedValidator<Input = U> + Send + Sync + 'static,
@@ -423,13 +418,10 @@ impl<T> MultiField<T> {
         let name = name.into();
         self.validators.push(Box::new(move |input: &T| {
             let field_value = accessor(input);
-            validator
-                .validate(field_value)
-                .map(|_| ())
-                .map_err(|err| {
-                    ValidationError::new("field_validation", format!("{}", err))
-                        .with_field(name.clone())
-                })
+            validator.validate(field_value).map(|_| ()).map_err(|err| {
+                ValidationError::new("field_validation", format!("{}", err))
+                    .with_field(name.clone())
+            })
         }));
         self
     }
@@ -460,11 +452,10 @@ impl<T> TypedValidator for MultiField<T> {
         } else if errors.len() == 1 {
             Err(errors.into_iter().next().unwrap())
         } else {
-            Err(ValidationError::new(
-                "multiple_field_errors",
-                "Multiple field validation errors",
+            Err(
+                ValidationError::new("multiple_field_errors", "Multiple field validation errors")
+                    .with_nested(errors),
             )
-            .with_nested(errors))
         }
     }
 
@@ -690,12 +681,12 @@ mod tests {
     fn test_field_clone() {
         let validator = named_field("age", MinValue { min: 18 }, get_age);
         let cloned = validator.clone();
-        
+
         let user = TestUser {
             name: "Alice".to_string(),
             age: 25,
         };
-        
+
         assert!(validator.validate(&user).is_ok());
         assert!(cloned.validate(&user).is_ok());
     }

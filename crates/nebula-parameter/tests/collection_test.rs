@@ -104,7 +104,12 @@ fn test_collection_snapshot_restore() {
 
     // Verify modification
     assert_eq!(
-        collection.value("test").unwrap().as_text().unwrap().as_str(),
+        collection
+            .value("test")
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .as_str(),
         "modified"
     );
 
@@ -113,7 +118,12 @@ fn test_collection_snapshot_restore() {
 
     // Verify restoration
     assert_eq!(
-        collection.value("test").unwrap().as_text().unwrap().as_str(),
+        collection
+            .value("test")
+            .unwrap()
+            .as_text()
+            .unwrap()
+            .as_str(),
         "initial"
     );
 }

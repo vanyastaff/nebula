@@ -48,9 +48,10 @@ impl<'a> Parser<'a> {
     /// Parse expression with depth tracking
     fn parse_expression_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
         if depth > MAX_PARSER_DEPTH {
-            return Err(NebulaError::expression_parse_error(
-                format!("Maximum parser recursion depth ({}) exceeded", MAX_PARSER_DEPTH)
-            ));
+            return Err(NebulaError::expression_parse_error(format!(
+                "Maximum parser recursion depth ({}) exceeded",
+                MAX_PARSER_DEPTH
+            )));
         }
         self.parse_conditional_with_depth(depth)
     }
@@ -128,7 +129,11 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse binary expression with precedence climbing and depth tracking
-    fn parse_binary_op_with_depth(&mut self, min_precedence: u8, depth: usize) -> ExpressionResult<Expr> {
+    fn parse_binary_op_with_depth(
+        &mut self,
+        min_precedence: u8,
+        depth: usize,
+    ) -> ExpressionResult<Expr> {
         let mut left = self.parse_unary_with_depth(depth + 1)?;
 
         while self.current_token().kind.is_binary_operator() {
@@ -410,7 +415,8 @@ impl<'a> Parser<'a> {
                         // Not a lambda, backtrack by parsing as identifier
                         let expr = Expr::Identifier(param_name);
                         // Continue parsing if there are more operations
-                        let full_expr = self.parse_postfix_from_primary_with_depth(expr, depth + 1)?;
+                        let full_expr =
+                            self.parse_postfix_from_primary_with_depth(expr, depth + 1)?;
                         args.push(full_expr);
                     }
                 } else {
@@ -434,7 +440,11 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse postfix operations starting from a given primary expression with depth tracking
-    fn parse_postfix_from_primary_with_depth(&mut self, mut expr: Expr, depth: usize) -> ExpressionResult<Expr> {
+    fn parse_postfix_from_primary_with_depth(
+        &mut self,
+        mut expr: Expr,
+        depth: usize,
+    ) -> ExpressionResult<Expr> {
         loop {
             match &self.current_token().kind {
                 TokenKind::Dot => {
@@ -572,8 +582,15 @@ mod tests {
         }
 
         let result = parse(&expr);
-        assert!(result.is_ok(), "Parser should handle 40 levels of nesting: {}",
-                result.as_ref().err().map(|e| format!("{:?}", e)).unwrap_or_default());
+        assert!(
+            result.is_ok(),
+            "Parser should handle 40 levels of nesting: {}",
+            result
+                .as_ref()
+                .err()
+                .map(|e| format!("{:?}", e))
+                .unwrap_or_default()
+        );
     }
 
     #[test]

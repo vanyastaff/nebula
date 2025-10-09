@@ -2,7 +2,7 @@
 //!
 //! Provides common code generation helpers that can be used by any derive macro.
 
-use crate::shared::types::{detect_type, TypeCategory};
+use crate::shared::types::{TypeCategory, detect_type};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Ident, Type};
@@ -135,7 +135,7 @@ pub fn generate_conversion(from: &TypeCategory, to: &TypeCategory) -> Option<Tok
         (TypeCategory::Option(inner_from), TypeCategory::Option(inner_to)) => {
             let inner_conv = generate_conversion(inner_from, inner_to)?;
             Some(quote! { .map(|x| x #inner_conv) })
-        },
+        }
 
         // Same types don't need conversion
         (a, b) if a == b => None,
@@ -162,9 +162,9 @@ pub fn generate_conversion(from: &TypeCategory, to: &TypeCategory) -> Option<Tok
 pub fn generate_clone(type_category: &TypeCategory) -> Option<CloneStrategy> {
     match type_category {
         // Primitives are Copy
-        TypeCategory::Bool
-        | TypeCategory::Integer(_)
-        | TypeCategory::Float(_) => Some(CloneStrategy::Copy),
+        TypeCategory::Bool | TypeCategory::Integer(_) | TypeCategory::Float(_) => {
+            Some(CloneStrategy::Copy)
+        }
 
         // String needs .clone()
         TypeCategory::String => Some(CloneStrategy::Clone),
@@ -346,11 +346,8 @@ mod tests {
 
     #[test]
     fn test_generate_accessor_integer() {
-        let accessor = generate_accessor(
-            &parse_quote!(User),
-            &parse_quote!(age),
-            &parse_quote!(u32),
-        );
+        let accessor =
+            generate_accessor(&parse_quote!(User), &parse_quote!(age), &parse_quote!(u32));
 
         let expected = quote! {
             |obj: &User| &obj.age
@@ -377,7 +374,9 @@ mod tests {
     #[test]
     fn test_clone_strategy() {
         assert_eq!(
-            generate_clone(&TypeCategory::Integer(crate::shared::types::IntegerType::I32)),
+            generate_clone(&TypeCategory::Integer(
+                crate::shared::types::IntegerType::I32
+            )),
             Some(CloneStrategy::Copy)
         );
 
@@ -389,10 +388,7 @@ mod tests {
 
     #[test]
     fn test_impl_block_builder() {
-        let builder = ImplBlockBuilder::new(
-            parse_quote!(MyStruct),
-            parse_quote! { <T> },
-        );
+        let builder = ImplBlockBuilder::new(parse_quote!(MyStruct), parse_quote! { <T> });
 
         let impl_block = builder.build();
 

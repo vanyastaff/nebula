@@ -44,12 +44,18 @@ impl Evaluator {
     }
 
     /// Evaluate an expression with recursion depth tracking
-    fn eval_with_depth(&self, expr: &Expr, context: &EvaluationContext, depth: usize) -> ExpressionResult<Value> {
+    fn eval_with_depth(
+        &self,
+        expr: &Expr,
+        context: &EvaluationContext,
+        depth: usize,
+    ) -> ExpressionResult<Value> {
         // Check recursion depth limit
         if depth > MAX_RECURSION_DEPTH {
-            return Err(NebulaError::expression_eval_error(
-                format!("Maximum recursion depth ({}) exceeded", MAX_RECURSION_DEPTH)
-            ));
+            return Err(NebulaError::expression_eval_error(format!(
+                "Maximum recursion depth ({}) exceeded",
+                MAX_RECURSION_DEPTH
+            )));
         }
         match expr {
             Expr::Literal(val) => Ok(val.clone()),
@@ -81,7 +87,9 @@ impl Evaluator {
                 Ok(Value::boolean(!val.to_boolean()))
             }
 
-            Expr::Binary { left, op, right } => self.eval_binary_op(*op, left, right, context, depth),
+            Expr::Binary { left, op, right } => {
+                self.eval_binary_op(*op, left, right, context, depth)
+            }
 
             Expr::PropertyAccess { object, property } => {
                 let obj_val = self.eval_with_depth(object, context, depth + 1)?;
@@ -139,8 +147,10 @@ impl Evaluator {
             }
 
             Expr::Array(elements) => {
-                let values: Result<Vec<_>, _> =
-                    elements.iter().map(|e| self.eval_with_depth(e, context, depth + 1)).collect();
+                let values: Result<Vec<_>, _> = elements
+                    .iter()
+                    .map(|e| self.eval_with_depth(e, context, depth + 1))
+                    .collect();
                 let values = values?;
                 // Optimize: collect directly into Vec and convert once
                 let json_values: Vec<_> = values.into_iter().map(|v| v.to_json()).collect();
@@ -438,7 +448,7 @@ impl Evaluator {
     #[cfg(not(feature = "regex"))]
     fn regex_match(&self, _left: &Value, _right: &Value) -> ExpressionResult<Value> {
         Err(NebulaError::expression_eval_error(
-            "Regex matching is not enabled (feature 'regex' not enabled)"
+            "Regex matching is not enabled (feature 'regex' not enabled)",
         ))
     }
 
@@ -559,7 +569,8 @@ mod tests {
 
         // Create moderately nested expression (safe for both construction and evaluation)
         let mut expr = Expr::Literal(Value::integer(1));
-        for _ in 0..50 {  // 50 levels is safe and tests recursion tracking works
+        for _ in 0..50 {
+            // 50 levels is safe and tests recursion tracking works
             expr = Expr::Binary {
                 left: Box::new(expr),
                 op: BinaryOp::Add,
@@ -592,7 +603,10 @@ mod tests {
 
         // Should succeed without dividing by zero (short-circuit)
         let result = evaluator.eval(&expr, &context);
-        assert!(result.is_ok(), "Short-circuit should prevent division by zero");
+        assert!(
+            result.is_ok(),
+            "Short-circuit should prevent division by zero"
+        );
         assert_eq!(result.unwrap().as_boolean(), Some(false));
     }
 
@@ -614,7 +628,10 @@ mod tests {
 
         // Should succeed without dividing by zero (short-circuit)
         let result = evaluator.eval(&expr, &context);
-        assert!(result.is_ok(), "Short-circuit should prevent division by zero");
+        assert!(
+            result.is_ok(),
+            "Short-circuit should prevent division by zero"
+        );
         assert_eq!(result.unwrap().as_boolean(), Some(true));
     }
 

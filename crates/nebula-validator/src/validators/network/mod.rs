@@ -9,4 +9,3 @@ mod port;
 pub use ip_address::{IpAddress, Ipv4, Ipv6};
 pub use mac_address::MacAddress;
 pub use port::Port;
-

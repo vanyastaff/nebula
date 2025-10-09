@@ -66,9 +66,7 @@ impl ValidationAttrs {
                 continue;
             }
 
-            attr.parse_nested_meta(|meta| {
-                result.parse_meta(&meta)
-            })?;
+            attr.parse_nested_meta(|meta| result.parse_meta(&meta))?;
         }
 
         Ok(result)
@@ -322,6 +320,6 @@ impl ValidationAttrs {
             || self.required
             || self.nested
             || self.custom.is_some()
-            || self.expr.is_some()  // Universal expression
+            || self.expr.is_some() // Universal expression
     }
 }

@@ -90,29 +90,32 @@ pub mod field;
 pub mod map;
 pub mod nested;
 pub mod not;
-pub mod optional;
 pub mod optimizer;
+pub mod optional;
 pub mod or;
 pub mod when;
 
 // Re-export all combinator types
-pub use and::{and, and_all, And, AndAll};
-pub use cached::{cached, Cached, CacheStats};
+pub use and::{And, AndAll, and, and_all};
+pub use cached::{CacheStats, Cached, cached};
 pub use error::CombinatorError;
-pub use field::{field, named_field, Field, FieldError, FieldValidatorExt, MultiField};
-pub use map::{map, map_to, map_unit, map_with_input, Map, MapWithInput};
+pub use field::{Field, FieldError, FieldValidatorExt, MultiField, field, named_field};
+pub use map::{Map, MapWithInput, map, map_to, map_unit, map_with_input};
 pub use nested::{
-    collection_nested, custom_nested, nested_validator, optional_nested, CollectionNested,
-    NestedValidator, OptionalNested, Validatable,
+    CollectionNested, NestedValidator, OptionalNested, Validatable, collection_nested,
+    custom_nested, nested_validator, optional_nested,
 };
-pub use not::{not, Not};
-pub use optional::{nullable, optional, required_some, Nullable, Optional, RequiredSome};
-pub use optimizer::{OptimizationReport, OptimizationStrategy, ValidatorChainOptimizer, ValidatorOrdering, ValidatorStats};
-pub use or::{or, or_any, Or, OrAny, OrAnyError};
-pub use when::{unless, when, when_not_empty, when_some, When};
+pub use not::{Not, not};
+pub use optimizer::{
+    OptimizationReport, OptimizationStrategy, ValidatorChainOptimizer, ValidatorOrdering,
+    ValidatorStats,
+};
+pub use optional::{Nullable, Optional, RequiredSome, nullable, optional, required_some};
+pub use or::{Or, OrAny, OrAnyError, or, or_any};
+pub use when::{When, unless, when, when_not_empty, when_some};
 
 #[cfg(feature = "lru")]
-pub use cached::{lru_cached, LruCached};
+pub use cached::{LruCached, lru_cached};
 
 // ============================================================================
 // PRELUDE
@@ -131,13 +134,13 @@ pub use cached::{lru_cached, LruCached};
 /// ```
 pub mod prelude {
     pub use super::{
-        and, and_all, cached, field, named_field, map, map_to, not, nullable, optional, or, or_any,
-        required_some, unless, when, when_not_empty, And, AndAll, Cached, Field, FieldValidatorExt,
-        Map, Not, Optional, Or, OrAny, When,
+        And, AndAll, Cached, Field, FieldValidatorExt, Map, Not, Optional, Or, OrAny, When, and,
+        and_all, cached, field, map, map_to, named_field, not, nullable, optional, or, or_any,
+        required_some, unless, when, when_not_empty,
     };
 
     #[cfg(feature = "lru")]
-    pub use super::{lru_cached, LruCached};
+    pub use super::{LruCached, lru_cached};
 }
 
 // ============================================================================
@@ -298,7 +301,11 @@ mod integration_tests {
         assert!(validator.validate(&Some("")).is_ok()); // Empty skipped by when
         assert!(validator.validate(&Some("hello")).is_ok()); // Valid length
         assert!(validator.validate(&Some("hi")).is_err()); // Too short
-        assert!(validator.validate(&Some("verylongstringthatistoolong")).is_err()); // Too long
+        assert!(
+            validator
+                .validate(&Some("verylongstringthatistoolong"))
+                .is_err()
+        ); // Too long
     }
 
     #[test]
@@ -333,8 +340,8 @@ mod integration_tests {
 
     #[test]
     fn test_cached_with_complex_validator() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = call_count.clone();

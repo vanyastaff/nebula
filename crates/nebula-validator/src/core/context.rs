@@ -127,8 +127,7 @@ impl ValidationContext {
 
     /// Checks if a key exists in the context.
     pub fn contains(&self, key: &str) -> bool {
-        self.data.contains_key(key)
-            || self.parent.as_ref().map_or(false, |p| p.contains(key))
+        self.data.contains_key(key) || self.parent.as_ref().map_or(false, |p| p.contains(key))
     }
 
     /// Pushes a field name onto the path for nested validation.
@@ -328,11 +327,7 @@ impl ValidationContextBuilder {
     }
 
     /// Adds a value to the context being built.
-    pub fn with<T: Send + Sync + 'static>(
-        mut self,
-        key: impl Into<String>,
-        value: T,
-    ) -> Self {
+    pub fn with<T: Send + Sync + 'static>(mut self, key: impl Into<String>, value: T) -> Self {
         self.context.insert(key, value);
         self
     }

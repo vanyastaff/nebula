@@ -2,7 +2,7 @@
 //!
 //! Validates Universally Unique Identifiers (UUIDs) in standard format.
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata, ValidationComplexity};
+use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // UUID VALIDATOR
@@ -104,14 +104,20 @@ impl Uuid {
         // Version is the first hex digit of the 3rd group (15th character)
         // Format: xxxxxxxx-xxxx-Vxxx-xxxx-xxxxxxxxxxxx
         //                        ^
-        uuid.chars().nth(14).and_then(|c| c.to_digit(16)).map(|v| v as u8)
+        uuid.chars()
+            .nth(14)
+            .and_then(|c| c.to_digit(16))
+            .map(|v| v as u8)
     }
 
     fn extract_variant(uuid: &str) -> Option<u8> {
         // Variant is indicated by the first hex digit of the 4th group (20th character)
         // Format: xxxxxxxx-xxxx-xxxx-Vxxx-xxxxxxxxxxxx
         //                             ^
-        uuid.chars().nth(19).and_then(|c| c.to_digit(16)).map(|v| v as u8)
+        uuid.chars()
+            .nth(19)
+            .and_then(|c| c.to_digit(16))
+            .map(|v| v as u8)
     }
 }
 
@@ -128,13 +134,19 @@ impl TypedValidator for Uuid {
 
     fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
         if input.is_empty() {
-            return Err(ValidationError::new("empty_uuid", "UUID string cannot be empty"));
+            return Err(ValidationError::new(
+                "empty_uuid",
+                "UUID string cannot be empty",
+            ));
         }
 
         // Strip braces if present
         let uuid = if input.starts_with('{') && input.ends_with('}') {
             if !self.allow_braces {
-                return Err(ValidationError::new("braces_not_allowed", "UUID with braces is not allowed"));
+                return Err(ValidationError::new(
+                    "braces_not_allowed",
+                    "UUID with braces is not allowed",
+                ));
             }
             &input[1..input.len() - 1]
         } else {
@@ -176,7 +188,10 @@ impl TypedValidator for Uuid {
                 };
                 return Err(ValidationError::new(
                     "invalid_uuid_char",
-                    format!("Invalid UUID character '{}' at position {}{}", c, i, case_hint),
+                    format!(
+                        "Invalid UUID character '{}' at position {}{}",
+                        c, i, case_hint
+                    ),
                 ));
             }
         }
@@ -187,11 +202,17 @@ impl TypedValidator for Uuid {
                 if version != expected_version {
                     return Err(ValidationError::new(
                         "invalid_uuid_version",
-                        format!("Expected UUID version {}, found {}", expected_version, version),
+                        format!(
+                            "Expected UUID version {}, found {}",
+                            expected_version, version
+                        ),
                     ));
                 }
             } else {
-                return Err(ValidationError::new("invalid_uuid_version", "Could not extract UUID version"));
+                return Err(ValidationError::new(
+                    "invalid_uuid_version",
+                    "Could not extract UUID version",
+                ));
             }
         }
 
@@ -201,7 +222,10 @@ impl TypedValidator for Uuid {
             if !(8..=11).contains(&variant) {
                 return Err(ValidationError::new(
                     "invalid_uuid_variant",
-                    format!("Invalid UUID variant (expected RFC 4122, found variant bits: {:x})", variant),
+                    format!(
+                        "Invalid UUID variant (expected RFC 4122, found variant bits: {:x})",
+                        variant
+                    ),
                 ));
             }
         }
@@ -214,13 +238,22 @@ impl TypedValidator for Uuid {
             name: "Uuid".to_string(),
             description: Some(format!(
                 "Validates RFC 4122 UUIDs (version: {:?}, braces: {})",
-                self.specific_version.map_or("any".to_string(), |v| v.to_string()),
-                if self.allow_braces { "allowed" } else { "not allowed" }
+                self.specific_version
+                    .map_or("any".to_string(), |v| v.to_string()),
+                if self.allow_braces {
+                    "allowed"
+                } else {
+                    "not allowed"
+                }
             )),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(5)),
-            tags: vec!["text".to_string(), "uuid".to_string(), "identifier".to_string()],
+            tags: vec![
+                "text".to_string(),
+                "uuid".to_string(),
+                "identifier".to_string(),
+            ],
             version: Some("1.0.0".to_string()),
             custom: std::collections::HashMap::new(),
         }
@@ -238,72 +271,152 @@ mod tests {
     #[test]
     fn test_valid_uuids() {
         let validator = Uuid::new();
-        assert!(validator.validate("123e4567-e89b-12d3-a456-426614174000").is_ok());
-        assert!(validator.validate("550e8400-e29b-41d4-a716-446655440000").is_ok());
-        assert!(validator.validate("f47ac10b-58cc-4372-a567-0e02b2c3d479").is_ok());
-        assert!(validator.validate("00000000-0000-0000-0000-000000000000").is_ok()); // nil UUID
+        assert!(
+            validator
+                .validate("123e4567-e89b-12d3-a456-426614174000")
+                .is_ok()
+        );
+        assert!(
+            validator
+                .validate("550e8400-e29b-41d4-a716-446655440000")
+                .is_ok()
+        );
+        assert!(
+            validator
+                .validate("f47ac10b-58cc-4372-a567-0e02b2c3d479")
+                .is_ok()
+        );
+        assert!(
+            validator
+                .validate("00000000-0000-0000-0000-000000000000")
+                .is_ok()
+        ); // nil UUID
     }
 
     #[test]
     fn test_uppercase_uuid() {
         let validator = Uuid::new();
-        assert!(validator.validate("123E4567-E89B-12D3-A456-426614174000").is_ok());
-        assert!(validator.validate("F47AC10B-58CC-4372-A567-0E02B2C3D479").is_ok());
+        assert!(
+            validator
+                .validate("123E4567-E89B-12D3-A456-426614174000")
+                .is_ok()
+        );
+        assert!(
+            validator
+                .validate("F47AC10B-58CC-4372-A567-0E02B2C3D479")
+                .is_ok()
+        );
     }
 
     #[test]
     fn test_mixed_case() {
         let validator = Uuid::new();
-        assert!(validator.validate("123e4567-E89B-12d3-A456-426614174000").is_ok());
+        assert!(
+            validator
+                .validate("123e4567-E89B-12d3-A456-426614174000")
+                .is_ok()
+        );
     }
 
     #[test]
     fn test_lowercase_only() {
         let validator = Uuid::new().lowercase_only();
-        assert!(validator.validate("123e4567-e89b-12d3-a456-426614174000").is_ok());
-        assert!(validator.validate("123E4567-E89B-12D3-A456-426614174000").is_err());
+        assert!(
+            validator
+                .validate("123e4567-e89b-12d3-a456-426614174000")
+                .is_ok()
+        );
+        assert!(
+            validator
+                .validate("123E4567-E89B-12D3-A456-426614174000")
+                .is_err()
+        );
     }
 
     #[test]
     fn test_uppercase_only() {
         let validator = Uuid::new().uppercase_only();
-        assert!(validator.validate("123E4567-E89B-12D3-A456-426614174000").is_ok());
-        assert!(validator.validate("123e4567-e89b-12d3-a456-426614174000").is_err());
+        assert!(
+            validator
+                .validate("123E4567-E89B-12D3-A456-426614174000")
+                .is_ok()
+        );
+        assert!(
+            validator
+                .validate("123e4567-e89b-12d3-a456-426614174000")
+                .is_err()
+        );
     }
 
     #[test]
     fn test_with_braces() {
         let validator = Uuid::new().allow_braces();
-        assert!(validator.validate("{123e4567-e89b-12d3-a456-426614174000}").is_ok());
-        assert!(validator.validate("123e4567-e89b-12d3-a456-426614174000").is_ok());
+        assert!(
+            validator
+                .validate("{123e4567-e89b-12d3-a456-426614174000}")
+                .is_ok()
+        );
+        assert!(
+            validator
+                .validate("123e4567-e89b-12d3-a456-426614174000")
+                .is_ok()
+        );
     }
 
     #[test]
     fn test_braces_not_allowed() {
         let validator = Uuid::new();
-        assert!(validator.validate("{123e4567-e89b-12d3-a456-426614174000}").is_err());
+        assert!(
+            validator
+                .validate("{123e4567-e89b-12d3-a456-426614174000}")
+                .is_err()
+        );
     }
 
     #[test]
     fn test_invalid_format() {
         let validator = Uuid::new();
-        assert!(validator.validate("123e4567e89b12d3a456426614174000").is_err()); // no hyphens
+        assert!(
+            validator
+                .validate("123e4567e89b12d3a456426614174000")
+                .is_err()
+        ); // no hyphens
         assert!(validator.validate("123e4567-e89b-12d3-a456").is_err()); // too short
-        assert!(validator.validate("123e4567-e89b-12d3-a456-426614174000-extra").is_err()); // too long
+        assert!(
+            validator
+                .validate("123e4567-e89b-12d3-a456-426614174000-extra")
+                .is_err()
+        ); // too long
     }
 
     #[test]
     fn test_invalid_characters() {
         let validator = Uuid::new();
-        assert!(validator.validate("123g4567-e89b-12d3-a456-426614174000").is_err()); // 'g' is not hex
-        assert!(validator.validate("not-a-uuid-at-all-really-not-at-all").is_err());
+        assert!(
+            validator
+                .validate("123g4567-e89b-12d3-a456-426614174000")
+                .is_err()
+        ); // 'g' is not hex
+        assert!(
+            validator
+                .validate("not-a-uuid-at-all-really-not-at-all")
+                .is_err()
+        );
     }
 
     #[test]
     fn test_version_specific() {
         let validator = Uuid::new().version(4);
-        assert!(validator.validate("123e4567-e89b-42d3-a456-426614174000").is_ok()); // version 4
-        assert!(validator.validate("123e4567-e89b-12d3-a456-426614174000").is_err()); // version 1
+        assert!(
+            validator
+                .validate("123e4567-e89b-42d3-a456-426614174000")
+                .is_ok()
+        ); // version 4
+        assert!(
+            validator
+                .validate("123e4567-e89b-12d3-a456-426614174000")
+                .is_err()
+        ); // version 1
     }
 
     #[test]
@@ -316,10 +429,22 @@ mod tests {
     fn test_real_world_uuids() {
         let validator = Uuid::new();
         // UUID v4 (random)
-        assert!(validator.validate("550e8400-e29b-41d4-a716-446655440000").is_ok());
+        assert!(
+            validator
+                .validate("550e8400-e29b-41d4-a716-446655440000")
+                .is_ok()
+        );
         // UUID v1 (time-based)
-        assert!(validator.validate("6ba7b810-9dad-11d1-80b4-00c04fd430c8").is_ok());
+        assert!(
+            validator
+                .validate("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+                .is_ok()
+        );
         // UUID v5 (SHA-1 hash)
-        assert!(validator.validate("886313e1-3b8a-5372-9b90-0c9aee199e5d").is_ok());
+        assert!(
+            validator
+                .validate("886313e1-3b8a-5372-9b90-0c9aee199e5d")
+                .is_ok()
+        );
     }
 }

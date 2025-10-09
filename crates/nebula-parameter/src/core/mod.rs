@@ -8,17 +8,11 @@ pub mod traits;
 pub mod validation;
 // mod display;  // TODO: Temporarily disabled, needs rewrite
 
-
 pub use collection::*;
-pub use display_stub::*;  // TODO: Temporary stub
+pub use display_stub::*; // TODO: Temporary stub
 pub use error::*;
 pub use kind::*;
 pub use metadata::*;
 pub use option::SelectOption;
 pub use traits::*;
 pub use validation::*;
-
-
-
-
-

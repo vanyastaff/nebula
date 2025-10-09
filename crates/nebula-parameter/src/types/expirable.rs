@@ -2,11 +2,11 @@ use bon::Builder;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable,  HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
     ParameterMetadata, ParameterValidation, Validatable,
 };
-use crate::core::traits::Expressible;
 use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 

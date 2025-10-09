@@ -1,9 +1,9 @@
 //! Temporary stubs for display system (to be rewritten)
 
 use nebula_core::ParameterKey;
+use nebula_value::Value;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use nebula_value::Value;
 
 /// Temporary stub for DisplayContext
 #[derive(Debug, Clone, Default)]

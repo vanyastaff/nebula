@@ -36,7 +36,10 @@ pub enum Expr {
 
     // Access operations
     /// Property access (object.property)
-    PropertyAccess { object: Box<Expr>, property: Arc<str> },
+    PropertyAccess {
+        object: Box<Expr>,
+        property: Arc<str>,
+    },
 
     /// Index access (array[index])
     IndexAccess { object: Box<Expr>, index: Box<Expr> },

@@ -2,7 +2,7 @@
 //!
 //! Validators for checking string content and patterns.
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata, ValidationComplexity};
+use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // REGEX VALIDATOR
@@ -59,7 +59,11 @@ impl TypedValidator for MatchesRegex {
             complexity: ValidationComplexity::Expensive,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["string".to_string(), "regex".to_string(), "pattern".to_string()],
+            tags: vec![
+                "string".to_string(),
+                "regex".to_string(),
+                "pattern".to_string(),
+            ],
             version: None,
             custom: std::collections::HashMap::new(),
         }
@@ -88,7 +92,7 @@ impl Email {
         let pattern = regex::Regex::new(
             r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
         ).unwrap();
-        
+
         Self { pattern }
     }
 }
@@ -119,7 +123,11 @@ impl TypedValidator for Email {
             complexity: ValidationComplexity::Expensive,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["string".to_string(), "email".to_string(), "format".to_string()],
+            tags: vec![
+                "string".to_string(),
+                "email".to_string(),
+                "format".to_string(),
+            ],
             version: None,
             custom: std::collections::HashMap::new(),
         }
@@ -142,10 +150,8 @@ pub struct Url {
 
 impl Url {
     pub fn new() -> Self {
-        let pattern = regex::Regex::new(
-            r"^https?://[^\s/$.?#].[^\s]*$"
-        ).unwrap();
-        
+        let pattern = regex::Regex::new(r"^https?://[^\s/$.?#].[^\s]*$").unwrap();
+
         Self { pattern }
     }
 }
@@ -176,7 +182,11 @@ impl TypedValidator for Url {
             complexity: ValidationComplexity::Expensive,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["string".to_string(), "url".to_string(), "format".to_string()],
+            tags: vec![
+                "string".to_string(),
+                "url".to_string(),
+                "format".to_string(),
+            ],
             version: None,
             custom: std::collections::HashMap::new(),
         }
@@ -256,7 +266,11 @@ mod tests {
     #[test]
     fn test_uuid() {
         let validator = uuid();
-        assert!(validator.validate("123e4567-e89b-12d3-a456-426614174000").is_ok());
+        assert!(
+            validator
+                .validate("123e4567-e89b-12d3-a456-426614174000")
+                .is_ok()
+        );
         assert!(validator.validate("invalid").is_err());
     }
 }

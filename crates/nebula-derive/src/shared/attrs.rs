@@ -21,7 +21,7 @@ use syn::Attribute;
 /// ```
 pub fn extract_doc_comments(attrs: &[Attribute]) -> Option<String> {
     let mut docs = Vec::new();
-    
+
     for attr in attrs {
         if attr.path().is_ident("doc") {
             if let syn::Meta::NameValue(meta) = &attr.meta {
@@ -33,7 +33,7 @@ pub fn extract_doc_comments(attrs: &[Attribute]) -> Option<String> {
             }
         }
     }
-    
+
     if docs.is_empty() {
         None
     } else {
@@ -95,7 +95,7 @@ pub fn extract_rename(attrs: &[Attribute]) -> Option<String> {
     if let Some(name) = extract_string_attr(attrs, "rename") {
         return Some(name);
     }
-    
+
     // Serde rename
     for attr in attrs {
         if attr.path().is_ident("serde") {
@@ -112,7 +112,7 @@ pub fn extract_rename(attrs: &[Attribute]) -> Option<String> {
             }
         }
     }
-    
+
     None
 }
 
@@ -123,47 +123,47 @@ pub fn extract_rename(attrs: &[Attribute]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_extract_doc_comments() {
         let attrs: Vec<Attribute> = syn::parse_quote! {
             /// First line
             /// Second line
         };
-        
+
         let docs = extract_doc_comments(&attrs);
         assert_eq!(docs, Some("First line\nSecond line".to_string()));
     }
-    
+
     #[test]
     fn test_has_attribute() {
         let attrs: Vec<Attribute> = syn::parse_quote! {
             #[skip]
             #[other]
         };
-        
+
         assert!(has_attribute(&attrs, "skip"));
         assert!(has_attribute(&attrs, "other"));
         assert!(!has_attribute(&attrs, "missing"));
     }
-    
+
     #[test]
     fn test_extract_string_attr() {
         let attrs: Vec<Attribute> = syn::parse_quote! {
             #[rename = "new_name"]
         };
-        
+
         assert_eq!(
             extract_string_attr(&attrs, "rename"),
             Some("new_name".to_string())
         );
     }
-    
+
     #[test]
     fn test_should_skip() {
         let attrs1: Vec<Attribute> = syn::parse_quote! { #[skip] };
         assert!(should_skip(&attrs1));
-        
+
         let attrs2: Vec<Attribute> = syn::parse_quote! { #[other] };
         assert!(!should_skip(&attrs2));
     }
