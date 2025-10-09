@@ -5,18 +5,34 @@ use nebula_error::{ErrorContext, NebulaError};
 
 /// Extension trait for Result types (log-specific)
 pub trait LogResultExt<T> {
-    /// Convert to LogResult with custom log error message
+    /// Convert to [`LogResult`] with custom log error message
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NebulaError::Internal`] with the provided message
     fn or_log_error<S: Into<String>>(self, msg: S) -> LogResult<T>;
 
     /// Add logging context to error
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NebulaError::Internal`] with context prepended to error message
     fn with_log_context<S: Into<String>, F>(self, f: F) -> LogResult<T>
     where
         F: FnOnce() -> S;
 
     /// Add component context for logging operations
+    ///
+    /// # Errors
+    ///
+    /// Returns error with component metadata attached via [`ErrorContext`]
     fn with_component(self, component: impl Into<String>) -> LogResult<T>;
 
     /// Add operation context for logging operations
+    ///
+    /// # Errors
+    ///
+    /// Returns error with operation metadata attached via [`ErrorContext`]
     fn with_operation(self, operation: impl Into<String>) -> LogResult<T>;
 }
 
@@ -32,12 +48,15 @@ where
     where
         F: FnOnce() -> S,
     {
-        self.map_err(|e| NebulaError::internal(format!("{}: {}", f().into(), e)))
+        self.map_err(|e| {
+            let ctx = f().into();
+            NebulaError::internal(format!("{ctx}: {e}"))
+        })
     }
 
     fn with_component(self, component: impl Into<String>) -> LogResult<T> {
         self.map_err(|e| {
-            NebulaError::internal(format!("{}", e)).with_context(
+            NebulaError::internal(format!("{e}")).with_context(
                 ErrorContext::new("Logging operation failed").with_component(component),
             )
         })
@@ -45,7 +64,7 @@ where
 
     fn with_operation(self, operation: impl Into<String>) -> LogResult<T> {
         self.map_err(|e| {
-            NebulaError::internal(format!("{}", e)).with_context(
+            NebulaError::internal(format!("{e}")).with_context(
                 ErrorContext::new("Logging operation failed").with_operation(operation),
             )
         })
@@ -54,44 +73,66 @@ where
 
 /// Extension trait specifically for IO Result types
 pub trait LogIoResultExt {
-    /// Convert IO error to LogResult with custom message
+    /// Convert IO error to [`LogResult`] with custom message
+    ///
+    /// # Errors
+    ///
+    /// Returns log writer error with custom message prepended
     fn or_log_error<S: Into<String>>(self, msg: S) -> LogResult<()>;
 
     /// Add logging context to IO error
+    ///
+    /// # Errors
+    ///
+    /// Returns log writer error with context prepended
     fn with_log_context<S: Into<String>, F>(self, f: F) -> LogResult<()>
     where
         F: FnOnce() -> S;
 
     /// Add component context for IO operations
+    ///
+    /// # Errors
+    ///
+    /// Returns error with component metadata attached
     fn with_component(self, component: impl Into<String>) -> LogResult<()>;
 
     /// Add operation context for IO operations
+    ///
+    /// # Errors
+    ///
+    /// Returns error with operation metadata attached
     fn with_operation(self, operation: impl Into<String>) -> LogResult<()>;
 }
 
 // Specific implementations for common error types
 impl LogIoResultExt for Result<(), std::io::Error> {
     fn or_log_error<S: Into<String>>(self, msg: S) -> LogResult<()> {
-        self.map_err(|e| NebulaError::log_writer_error("io", format!("{}: {}", msg.into(), e)))
+        self.map_err(|e| {
+            let msg = msg.into();
+            NebulaError::log_writer_error("io", format!("{msg}: {e}"))
+        })
     }
 
     fn with_log_context<S: Into<String>, F>(self, f: F) -> LogResult<()>
     where
         F: FnOnce() -> S,
     {
-        self.map_err(|e| NebulaError::log_writer_error("io", format!("{}: {}", f().into(), e)))
+        self.map_err(|e| {
+            let ctx = f().into();
+            NebulaError::log_writer_error("io", format!("{ctx}: {e}"))
+        })
     }
 
     fn with_component(self, component: impl Into<String>) -> LogResult<()> {
         self.map_err(|e| {
-            NebulaError::log_writer_error("io", format!("{}", e))
+            NebulaError::log_writer_error("io", format!("{e}"))
                 .with_context(ErrorContext::new("IO operation failed").with_component(component))
         })
     }
 
     fn with_operation(self, operation: impl Into<String>) -> LogResult<()> {
         self.map_err(|e| {
-            NebulaError::log_writer_error("io", format!("{}", e))
+            NebulaError::log_writer_error("io", format!("{e}"))
                 .with_context(ErrorContext::new("IO operation failed").with_operation(operation))
         })
     }

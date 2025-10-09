@@ -24,23 +24,27 @@ pub struct Context {
 
 impl Context {
     /// Create a new empty context
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set request ID
+    #[must_use]
     pub fn with_request_id(mut self, id: impl Into<String>) -> Self {
         self.request_id = Some(id.into());
         self
     }
 
     /// Set user ID
+    #[must_use]
     pub fn with_user_id(mut self, id: impl Into<String>) -> Self {
         self.user_id = Some(id.into());
         self
     }
 
     /// Add a field
+    #[must_use]
     pub fn with_field(mut self, key: impl Into<String>, value: impl Serialize) -> Self {
         if let Ok(v) = serde_json::to_value(value) {
             self.fields.insert(key.into(), v);
@@ -49,6 +53,7 @@ impl Context {
     }
 
     /// Set as current context
+    #[must_use]
     pub fn set_current(self) -> ContextGuard {
         CONTEXT.with(|ctx| {
             let old = ctx.write().clone();
@@ -58,6 +63,8 @@ impl Context {
     }
 
     /// Get current context
+    #[inline]
+    #[must_use]
     pub fn current() -> Self {
         CONTEXT.with(|ctx| ctx.read().clone())
     }

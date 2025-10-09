@@ -39,12 +39,24 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
             let appender = match rolling {
                 Some(Rolling::Hourly) => {
                     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-                    let prefix = path.file_name().unwrap();
+                    let prefix = path.file_name().ok_or_else(|| {
+                        use crate::core::LogError;
+                        nebula_error::NebulaError::log_config_error(format!(
+                            "Invalid file path (no filename): '{}'",
+                            path.display()
+                        ))
+                    })?;
                     tracing_appender::rolling::hourly(dir, prefix)
                 }
                 Some(Rolling::Daily) => {
                     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-                    let prefix = path.file_name().unwrap();
+                    let prefix = path.file_name().ok_or_else(|| {
+                        use crate::core::LogError;
+                        nebula_error::NebulaError::log_config_error(format!(
+                            "Invalid file path (no filename): '{}'",
+                            path.display()
+                        ))
+                    })?;
                     tracing_appender::rolling::daily(dir, prefix)
                 }
                 Some(Rolling::Size(_)) => {
@@ -67,7 +79,7 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
 
         WriterConfig::Multi(writers) => {
             // For now, use the first writer
-            // TODO: Implement proper multi-writer
+            // TODO(feature): Implement proper multi-writer with fanout or tee functionality
             if writers.is_empty() {
                 use crate::core::LogError;
                 return Err(nebula_error::NebulaError::log_config_error(

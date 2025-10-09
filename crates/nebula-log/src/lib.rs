@@ -63,6 +63,13 @@ static TEST_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 // ============================================================================
 
 /// Auto-detect and initialize the best logging configuration
+///
+/// Checks environment variables (`NEBULA_LOG`, `RUST_LOG`) and debug assertions
+/// to choose between development, production, or custom configuration.
+///
+/// # Errors
+///
+/// Returns error if filter parsing fails or logger initialization fails
 pub fn auto_init() -> LogResult<LoggerGuard> {
     #[cfg(test)]
     {
@@ -82,11 +89,26 @@ pub fn auto_init() -> LogResult<LoggerGuard> {
 }
 
 /// Initialize with default configuration
+///
+/// Uses compact format with info level logging to stderr.
+///
+/// # Errors
+///
+/// Returns error if logger initialization fails
 pub fn init() -> LogResult<LoggerGuard> {
     init_with(Config::default())
 }
 
 /// Initialize with custom configuration
+///
+/// Allows full control over format, output, filters, and telemetry.
+///
+/// # Errors
+///
+/// Returns error if:
+/// - Filter string is invalid
+/// - File writer cannot be created (if using file output)
+/// - Telemetry setup fails (if enabled)
 pub fn init_with(config: Config) -> LogResult<LoggerGuard> {
     LoggerBuilder::from_config(config).build()
 }

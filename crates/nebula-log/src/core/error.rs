@@ -1,16 +1,16 @@
 //! Error handling for nebula-log
 //!
-//! This module provides unified error handling using NebulaError from the nebula-error crate.
-//! All logging operations return `LogResult<T>` which is an alias for `Result<T, NebulaError>`.
+//! This module provides unified error handling using [`NebulaError`] from the nebula-error crate.
+//! All logging operations return [`LogResult<T>`] which is an alias for `Result<T, NebulaError>`.
 
 use nebula_error::{NebulaError, Result as NebulaResult};
 
-/// Type alias for Result with NebulaError for logging operations
+/// Type alias for Result with [`NebulaError`] for logging operations
 pub type LogResult<T> = NebulaResult<T>;
 
 // ==================== Log-specific NebulaError Extensions ====================
 
-/// Extension trait for creating log-specific NebulaErrors
+/// Extension trait for creating log-specific [`NebulaError`] instances
 pub trait LogError {
     /// Create a configuration error
     fn log_config_error(message: impl Into<String>) -> Self;

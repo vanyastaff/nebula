@@ -1,15 +1,16 @@
 //! Logger builder implementation
 
-// Standard library
-use std::sync::Arc;
-
 // External dependencies
 use parking_lot::Mutex;
+use std::sync::Arc;
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 // Internal crates
 use crate::core::LogResult;
-use crate::{config::*, layer, writer};
+use crate::{
+    config::{Config, Format},
+    layer, writer,
+};
 
 /// Logger builder
 pub struct LoggerBuilder {
@@ -17,9 +18,12 @@ pub struct LoggerBuilder {
 }
 
 /// Guard that keeps the logger alive
+///
+/// This guard ensures that all logging infrastructure stays alive for the lifetime
+/// of the guard. When dropped, the logger will be properly shut down.
 pub struct LoggerGuard {
     #[allow(dead_code)]
-    inner: Option<Arc<Inner>>,
+    inner: Option<Box<Inner>>,
 }
 
 struct Inner {
@@ -28,6 +32,8 @@ struct Inner {
     #[cfg(feature = "sentry")]
     sentry_guard: Option<sentry::ClientInitGuard>,
     reload_handle: Option<ReloadHandle>,
+    /// RAII guard for root span - intentionally prefixed with _ to indicate it's never accessed
+    #[allow(clippy::used_underscore_binding)]
     _root_span_guard: Option<tracing::span::EnteredSpan>,
 }
 
@@ -42,11 +48,19 @@ pub struct ReloadHandle {
 
 impl LoggerBuilder {
     /// Create builder from config
+    #[must_use]
     pub fn from_config(config: Config) -> Self {
         Self { config }
     }
 
     /// Build and initialize the logger
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - Filter string cannot be parsed
+    /// - File writer initialization fails
+    /// - Telemetry setup fails
     pub fn build(self) -> LogResult<LoggerGuard> {
         let mut inner = Inner {
             #[cfg(feature = "file")]
@@ -72,15 +86,18 @@ impl LoggerBuilder {
         }
 
         // Build the subscriber based on reloadable flag and format
+        // Note: Logfmt currently uses Compact formatter (TODO: implement dedicated logfmt formatter)
         match (self.config.reloadable, self.config.format) {
             (true, Format::Pretty) => self.build_reloadable_pretty(filter, writer, &mut inner)?,
-            (true, Format::Compact) => self.build_reloadable_compact(filter, writer, &mut inner)?,
+            (true, Format::Compact | Format::Logfmt) => {
+                self.build_reloadable_compact(filter, writer, &mut inner)?;
+            }
             (true, Format::Json) => self.build_reloadable_json(filter, writer, &mut inner)?,
-            (true, Format::Logfmt) => self.build_reloadable_compact(filter, writer, &mut inner)?,
             (false, Format::Pretty) => self.build_static_pretty(filter, writer, &mut inner)?,
-            (false, Format::Compact) => self.build_static_compact(filter, writer, &mut inner)?,
+            (false, Format::Compact | Format::Logfmt) => {
+                self.build_static_compact(filter, writer, &mut inner)?;
+            }
             (false, Format::Json) => self.build_static_json(filter, writer, &mut inner)?,
-            (false, Format::Logfmt) => self.build_static_compact(filter, writer, &mut inner)?,
         }
 
         // Create root span with global fields
@@ -97,12 +114,16 @@ impl LoggerBuilder {
         }
 
         Ok(LoggerGuard {
-            inner: Some(Arc::new(inner)),
+            inner: Some(Box::new(inner)),
         })
     }
 
     // Reloadable variants
+    // These functions return LogResult<()> for API consistency and future extensibility,
+    // even though they currently cannot fail. This allows adding error handling later
+    // without breaking the API.
 
+    #[allow(clippy::unnecessary_wraps)]
     fn build_reloadable_pretty(
         &self,
         filter: EnvFilter,
@@ -165,6 +186,7 @@ impl LoggerBuilder {
         Ok(())
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn build_reloadable_compact(
         &self,
         filter: EnvFilter,
@@ -233,6 +255,7 @@ impl LoggerBuilder {
         Ok(())
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn build_reloadable_json(
         &self,
         filter: EnvFilter,
@@ -306,6 +329,7 @@ impl LoggerBuilder {
 
     // Static (non-reloadable) variants
 
+    #[allow(clippy::unnecessary_wraps)]
     fn build_static_pretty(
         &self,
         filter: EnvFilter,
@@ -366,6 +390,7 @@ impl LoggerBuilder {
         Ok(())
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn build_static_compact(
         &self,
         filter: EnvFilter,
@@ -426,6 +451,7 @@ impl LoggerBuilder {
         Ok(())
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn build_static_json(
         &self,
         filter: EnvFilter,
@@ -483,7 +509,7 @@ impl ReloadHandle {
         let new_filter = EnvFilter::try_new(filter)
             .map_err(|e| nebula_error::NebulaError::log_filter_error(filter, e.to_string()))?;
         self.filter.reload(new_filter).map_err(|e| {
-            nebula_error::NebulaError::log_config_error(format!("Failed to reload filter: {}", e))
+            nebula_error::NebulaError::log_config_error(format!("Failed to reload filter: {e}"))
         })?;
         *self.current_filter.lock() = filter.to_string();
         Ok(())

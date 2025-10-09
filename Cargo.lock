@@ -3002,7 +3002,6 @@ dependencies = [
 name = "nebula-log"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "criterion 0.7.0",
  "flate2",
  "nebula-error",

@@ -107,6 +107,11 @@ pub enum Rolling {
 }
 
 /// Display configuration
+///
+/// This struct uses multiple boolean flags for configuration as it represents
+/// independent toggleable features. This is more ergonomic than enums or bitflags
+/// for a configuration struct that maps directly to CLI flags or config files.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayConfig {
@@ -114,7 +119,7 @@ pub struct DisplayConfig {
     pub time: bool,
     /// Custom time format (strftime)
     pub time_format: Option<String>,
-    /// Show source location (file:line)
+    /// Show source location (`file:line`)
     pub source: bool,
     /// Show target module
     pub target: bool,
@@ -181,6 +186,7 @@ impl Default for Config {
 
 impl Config {
     /// Create configuration from environment variables
+    #[must_use]
     pub fn from_env() -> Self {
         let mut config = Self::default();
 
@@ -211,6 +217,7 @@ impl Config {
     }
 
     /// Development configuration (pretty, debug level)
+    #[must_use]
     pub fn development() -> Self {
         Self {
             level: "debug".to_string(),
@@ -225,6 +232,7 @@ impl Config {
     }
 
     /// Production configuration (JSON, info level)
+    #[must_use]
     pub fn production() -> Self {
         Self {
             level: "info".to_string(),
@@ -287,6 +295,7 @@ impl DisplayConfig {
 
 impl Fields {
     /// Create fields from environment variables
+    #[must_use]
     pub fn from_env() -> Self {
         Self {
             service: std::env::var("NEBULA_SERVICE").ok(),
@@ -296,11 +305,13 @@ impl Fields {
                 .or_else(|| option_env!("CARGO_PKG_VERSION").map(String::from)),
             instance: std::env::var("NEBULA_INSTANCE").ok(),
             region: std::env::var("NEBULA_REGION").ok(),
-            custom: Default::default(),
+            custom: std::collections::BTreeMap::default(),
         }
     }
 
     /// Check if fields are empty
+    #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.service.is_none()
             && self.env.is_none()

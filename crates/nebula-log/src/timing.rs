@@ -28,18 +28,22 @@ impl Timer {
     }
 
     /// Set the log level
+    #[must_use]
     pub fn level(mut self, level: tracing::Level) -> Self {
         self.level = level;
         self
     }
 
     /// Only log if duration exceeds threshold
+    #[must_use]
     pub fn threshold(mut self, duration: Duration) -> Self {
         self.threshold = Some(duration);
         self
     }
 
     /// Get elapsed time
+    #[inline]
+    #[must_use]
     pub fn elapsed(&self) -> Duration {
         self.start.elapsed()
     }
