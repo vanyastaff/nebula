@@ -159,7 +159,7 @@ pub fn format_template_error(
     error_msg: &str,
     expression: Option<&str>,
 ) -> String {
-    let mut formatter = ErrorFormatter::new(source, position, error_msg);
+    let formatter = ErrorFormatter::new(source, position, error_msg);
 
     let formatted = if let Some(expr) = expression {
         // Try to highlight the expression length

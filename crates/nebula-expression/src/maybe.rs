@@ -5,16 +5,48 @@
 //! be evaluated at runtime.
 
 use crate::context::EvaluationContext;
+use crate::core::ast::Expr;
 use crate::engine::ExpressionEngine;
 use nebula_error::NebulaError;
 use nebula_value::Value;
+use once_cell::sync::OnceCell;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+/// Internal structure for cached expression parsing
+#[derive(Debug)]
+#[doc(hidden)]
+pub struct CachedExpression {
+    /// Source expression string
+    pub source: String,
+    #[doc(hidden)]
+    pub ast: OnceCell<Expr>,
+}
+
+impl Clone for CachedExpression {
+    fn clone(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            ast: OnceCell::new(), // Don't clone the cached AST, let it re-parse if needed
+        }
+    }
+}
+
+impl PartialEq for CachedExpression {
+    fn eq(&self, other: &Self) -> bool {
+        self.source == other.source
+    }
+}
 
 /// A value that can be either concrete or an expression to be evaluated
 ///
 /// This is useful for workflow parameters that can accept both static values
 /// and dynamic expressions.
+///
+/// # Lazy Parsing
+///
+/// When using the Expression variant, the expression is parsed lazily on first use
+/// and the parsed AST is cached for subsequent evaluations using OnceCell.
 ///
 /// # Serialization
 ///
@@ -46,8 +78,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub enum MaybeExpression<T> {
     /// A concrete value
     Value(T),
-    /// An expression string to be evaluated
-    Expression(String),
+    /// An expression string to be evaluated (with cached AST)
+    Expression(CachedExpression),
 }
 
 impl<T> MaybeExpression<T> {
@@ -58,7 +90,10 @@ impl<T> MaybeExpression<T> {
 
     /// Create a new expression
     pub fn expression(expr: impl Into<String>) -> Self {
-        Self::Expression(expr.into())
+        Self::Expression(CachedExpression {
+            source: expr.into(),
+            ast: OnceCell::new(),
+        })
     }
 
     /// Check if this is a concrete value
@@ -83,7 +118,7 @@ impl<T> MaybeExpression<T> {
     pub fn as_expression(&self) -> Option<&str> {
         match self {
             Self::Value(_) => None,
-            Self::Expression(e) => Some(e),
+            Self::Expression(cached) => Some(&cached.source),
         }
     }
 
@@ -99,7 +134,7 @@ impl<T> MaybeExpression<T> {
     pub fn into_expression(self) -> Option<String> {
         match self {
             Self::Value(_) => None,
-            Self::Expression(e) => Some(e),
+            Self::Expression(cached) => Some(cached.source),
         }
     }
 }
@@ -142,8 +177,8 @@ where
     {
         match self {
             Self::Value(v) => Ok(v.clone()),
-            Self::Expression(expr) => {
-                let value = engine.evaluate(expr, context)?;
+            Self::Expression(cached) => {
+                let value = engine.evaluate(&cached.source, context)?;
                 T::try_from(value).map_err(Into::into)
             }
         }
@@ -162,7 +197,7 @@ impl MaybeExpression<Value> {
     ) -> Result<Value, NebulaError> {
         match self {
             Self::Value(v) => Ok(v.clone()),
-            Self::Expression(expr) => engine.evaluate(expr, context),
+            Self::Expression(cached) => engine.evaluate(&cached.source, context),
         }
     }
 }
@@ -179,8 +214,8 @@ impl MaybeExpression<String> {
     ) -> Result<String, NebulaError> {
         match self {
             Self::Value(s) => Ok(s.clone()),
-            Self::Expression(expr) => {
-                let value = engine.evaluate(expr, context)?;
+            Self::Expression(cached) => {
+                let value = engine.evaluate(&cached.source, context)?;
                 Ok(value.to_string())
             }
         }
@@ -196,8 +231,8 @@ impl MaybeExpression<i64> {
     ) -> Result<i64, NebulaError> {
         match self {
             Self::Value(i) => Ok(*i),
-            Self::Expression(expr) => {
-                let value = engine.evaluate(expr, context)?;
+            Self::Expression(cached) => {
+                let value = engine.evaluate(&cached.source, context)?;
                 value.to_integer()
             }
         }
@@ -213,8 +248,8 @@ impl MaybeExpression<f64> {
     ) -> Result<f64, NebulaError> {
         match self {
             Self::Value(f) => Ok(*f),
-            Self::Expression(expr) => {
-                let value = engine.evaluate(expr, context)?;
+            Self::Expression(cached) => {
+                let value = engine.evaluate(&cached.source, context)?;
                 value.to_float()
             }
         }
@@ -230,8 +265,8 @@ impl MaybeExpression<bool> {
     ) -> Result<bool, NebulaError> {
         match self {
             Self::Value(b) => Ok(*b),
-            Self::Expression(expr) => {
-                let value = engine.evaluate(expr, context)?;
+            Self::Expression(cached) => {
+                let value = engine.evaluate(&cached.source, context)?;
                 Ok(value.to_boolean())
             }
         }
@@ -264,7 +299,7 @@ where
     {
         match self {
             Self::Value(v) => v.serialize(serializer),
-            Self::Expression(e) => e.serialize(serializer),
+            Self::Expression(cached) => cached.source.serialize(serializer),
         }
     }
 }
@@ -284,7 +319,10 @@ where
         if let Some(s) = value.as_str() {
             // If it's a string, check if it looks like an expression
             if is_expression(s) {
-                return Ok(Self::Expression(s.to_string()));
+                return Ok(Self::Expression(CachedExpression {
+                    source: s.to_string(),
+                    ast: OnceCell::new(),
+                }));
             }
         }
 

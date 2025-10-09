@@ -4,19 +4,30 @@
 
 use crate::core::ast::{BinaryOp, Expr};
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
-use crate::core::token::Token;
+use crate::core::span::Span;
+use crate::core::token::{Token, TokenKind};
 use nebula_error::NebulaError;
 use nebula_value::Value;
+use std::sync::Arc;
+
+/// Maximum recursion depth for parser
+const MAX_PARSER_DEPTH: usize = 256;
+
+/// EOF token constant
+const EOF_TOKEN: Token<'static> = Token {
+    kind: TokenKind::Eof,
+    span: Span { start: 0, end: 0 },
+};
 
 /// Parser for converting tokens into an AST
-pub struct Parser {
-    tokens: Vec<Token>,
+pub struct Parser<'a> {
+    tokens: Vec<Token<'a>>,
     position: usize,
 }
 
-impl Parser {
+impl<'a> Parser<'a> {
     /// Create a new parser from a list of tokens
-    pub fn new(tokens: Vec<Token>) -> Self {
+    pub fn new(tokens: Vec<Token<'a>>) -> Self {
         Self {
             tokens,
             position: 0,
@@ -25,22 +36,39 @@ impl Parser {
 
     /// Parse the tokens into an expression AST
     pub fn parse(&mut self) -> ExpressionResult<Expr> {
-        self.parse_expression()
+        self.parse_expression_with_depth(0)
     }
 
     /// Parse a full expression
+    #[allow(dead_code)]
     fn parse_expression(&mut self) -> ExpressionResult<Expr> {
-        self.parse_conditional()
+        self.parse_expression_with_depth(0)
+    }
+
+    /// Parse expression with depth tracking
+    fn parse_expression_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
+        if depth > MAX_PARSER_DEPTH {
+            return Err(NebulaError::expression_parse_error(
+                format!("Maximum parser recursion depth ({}) exceeded", MAX_PARSER_DEPTH)
+            ));
+        }
+        self.parse_conditional_with_depth(depth)
     }
 
     /// Parse conditional expression (if-then-else)
+    #[allow(dead_code)]
     fn parse_conditional(&mut self) -> ExpressionResult<Expr> {
-        if self.match_token(&Token::If) {
-            let condition = Box::new(self.parse_pipeline()?);
-            self.expect_token(Token::Then)?;
-            let then_expr = Box::new(self.parse_pipeline()?);
-            self.expect_token(Token::Else)?;
-            let else_expr = Box::new(self.parse_pipeline()?);
+        self.parse_conditional_with_depth(0)
+    }
+
+    /// Parse conditional with depth tracking
+    fn parse_conditional_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
+        if self.match_token(&TokenKind::If) {
+            let condition = Box::new(self.parse_pipeline_with_depth(depth + 1)?);
+            self.expect_token(TokenKind::Then)?;
+            let then_expr = Box::new(self.parse_pipeline_with_depth(depth + 1)?);
+            self.expect_token(TokenKind::Else)?;
+            let else_expr = Box::new(self.parse_pipeline_with_depth(depth + 1)?);
 
             Ok(Expr::Conditional {
                 condition,
@@ -48,20 +76,26 @@ impl Parser {
                 else_expr,
             })
         } else {
-            self.parse_pipeline()
+            self.parse_pipeline_with_depth(depth + 1)
         }
     }
 
     /// Parse pipeline expression
+    #[allow(dead_code)]
     fn parse_pipeline(&mut self) -> ExpressionResult<Expr> {
-        let mut expr = self.parse_binary_expression(0)?;
+        self.parse_pipeline_with_depth(0)
+    }
 
-        while self.current_token() == &Token::Pipe {
+    /// Parse pipeline expression with depth tracking
+    fn parse_pipeline_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
+        let mut expr = self.parse_binary_op_with_depth(0, depth + 1)?;
+
+        while self.current_token().kind == TokenKind::Pipe {
             self.advance();
 
             // Expect function name
-            let function = if let Token::Identifier(name) = self.current_token() {
-                let name = name.clone();
+            let function = if let TokenKind::Identifier(name) = &self.current_token().kind {
+                let name = Arc::from(*name);
                 self.advance();
                 name
             } else {
@@ -71,8 +105,8 @@ impl Parser {
             };
 
             // Parse arguments if present
-            let args = if self.current_token() == &Token::LeftParen {
-                self.parse_function_args()?
+            let args = if self.current_token().kind == TokenKind::LeftParen {
+                self.parse_function_args_with_depth(depth + 1)?
             } else {
                 Vec::new()
             };
@@ -88,50 +122,57 @@ impl Parser {
     }
 
     /// Parse binary expression with precedence climbing
+    #[allow(dead_code)]
     fn parse_binary_expression(&mut self, min_precedence: u8) -> ExpressionResult<Expr> {
-        let mut left = self.parse_unary_expression()?;
+        self.parse_binary_op_with_depth(min_precedence, 0)
+    }
 
-        while self.current_token().is_binary_operator() {
-            let op_token = self.current_token().clone();
-            let precedence = op_token.precedence();
+    /// Parse binary expression with precedence climbing and depth tracking
+    fn parse_binary_op_with_depth(&mut self, min_precedence: u8, depth: usize) -> ExpressionResult<Expr> {
+        let mut left = self.parse_unary_with_depth(depth + 1)?;
+
+        while self.current_token().kind.is_binary_operator() {
+            // Extract token info before advancing
+            let precedence = self.current_token().kind.precedence();
 
             if precedence < min_precedence {
                 break;
             }
 
+            let is_right_assoc = self.current_token().kind.is_right_associative();
+            let binary_op = match &self.current_token().kind {
+                TokenKind::Plus => BinaryOp::Add,
+                TokenKind::Minus => BinaryOp::Subtract,
+                TokenKind::Star => BinaryOp::Multiply,
+                TokenKind::Slash => BinaryOp::Divide,
+                TokenKind::Percent => BinaryOp::Modulo,
+                TokenKind::Power => BinaryOp::Power,
+                TokenKind::Equal => BinaryOp::Equal,
+                TokenKind::NotEqual => BinaryOp::NotEqual,
+                TokenKind::LessThan => BinaryOp::LessThan,
+                TokenKind::GreaterThan => BinaryOp::GreaterThan,
+                TokenKind::LessEqual => BinaryOp::LessEqual,
+                TokenKind::GreaterEqual => BinaryOp::GreaterEqual,
+                TokenKind::RegexMatch => BinaryOp::RegexMatch,
+                TokenKind::And => BinaryOp::And,
+                TokenKind::Or => BinaryOp::Or,
+                _ => {
+                    return Err(NebulaError::expression_parse_error(format!(
+                        "Unexpected operator: {}",
+                        self.current_token()
+                    )));
+                }
+            };
+
             self.advance();
 
-            let next_min_precedence = if op_token.is_right_associative() {
+            let next_min_precedence = if is_right_assoc {
                 precedence
             } else {
                 precedence + 1
             };
 
-            let right = self.parse_binary_expression(next_min_precedence)?;
-
-            let binary_op = match op_token {
-                Token::Plus => BinaryOp::Add,
-                Token::Minus => BinaryOp::Subtract,
-                Token::Star => BinaryOp::Multiply,
-                Token::Slash => BinaryOp::Divide,
-                Token::Percent => BinaryOp::Modulo,
-                Token::Power => BinaryOp::Power,
-                Token::Equal => BinaryOp::Equal,
-                Token::NotEqual => BinaryOp::NotEqual,
-                Token::LessThan => BinaryOp::LessThan,
-                Token::GreaterThan => BinaryOp::GreaterThan,
-                Token::LessEqual => BinaryOp::LessEqual,
-                Token::GreaterEqual => BinaryOp::GreaterEqual,
-                Token::RegexMatch => BinaryOp::RegexMatch,
-                Token::And => BinaryOp::And,
-                Token::Or => BinaryOp::Or,
-                _ => {
-                    return Err(NebulaError::expression_parse_error(format!(
-                        "Unexpected operator: {}",
-                        op_token
-                    )));
-                }
-            };
+            let right = self.parse_binary_op_with_depth(next_min_precedence, depth + 1)?;
 
             left = Expr::Binary {
                 left: Box::new(left),
@@ -144,32 +185,44 @@ impl Parser {
     }
 
     /// Parse unary expression
+    #[allow(dead_code)]
     fn parse_unary_expression(&mut self) -> ExpressionResult<Expr> {
-        match self.current_token() {
-            Token::Minus => {
+        self.parse_unary_with_depth(0)
+    }
+
+    /// Parse unary expression with depth tracking
+    fn parse_unary_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
+        match &self.current_token().kind {
+            TokenKind::Minus => {
                 self.advance();
-                let expr = self.parse_unary_expression()?;
+                let expr = self.parse_unary_with_depth(depth + 1)?;
                 Ok(Expr::Negate(Box::new(expr)))
             }
-            Token::Not => {
+            TokenKind::Not => {
                 self.advance();
-                let expr = self.parse_unary_expression()?;
+                let expr = self.parse_unary_with_depth(depth + 1)?;
                 Ok(Expr::Not(Box::new(expr)))
             }
-            _ => self.parse_postfix_expression(),
+            _ => self.parse_postfix_with_depth(depth + 1),
         }
     }
 
     /// Parse postfix expression (property access, index access)
+    #[allow(dead_code)]
     fn parse_postfix_expression(&mut self) -> ExpressionResult<Expr> {
-        let mut expr = self.parse_primary_expression()?;
+        self.parse_postfix_with_depth(0)
+    }
+
+    /// Parse postfix expression with depth tracking
+    fn parse_postfix_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
+        let mut expr = self.parse_primary_with_depth(depth + 1)?;
 
         loop {
-            match self.current_token() {
-                Token::Dot => {
+            match &self.current_token().kind {
+                TokenKind::Dot => {
                     self.advance();
-                    let property = if let Token::Identifier(name) = self.current_token() {
-                        let name = name.clone();
+                    let property = if let TokenKind::Identifier(name) = &self.current_token().kind {
+                        let name = Arc::from(*name);
                         self.advance();
                         name
                     } else {
@@ -183,10 +236,10 @@ impl Parser {
                         property,
                     };
                 }
-                Token::LeftBracket => {
+                TokenKind::LeftBracket => {
                     self.advance();
-                    let index = self.parse_expression()?;
-                    self.expect_token(Token::RightBracket)?;
+                    let index = self.parse_expression_with_depth(depth + 1)?;
+                    self.expect_token(TokenKind::RightBracket)?;
 
                     expr = Expr::IndexAccess {
                         object: Box::new(expr),
@@ -201,42 +254,54 @@ impl Parser {
     }
 
     /// Parse primary expression (literals, variables, function calls, etc.)
+    #[allow(dead_code)]
     fn parse_primary_expression(&mut self) -> ExpressionResult<Expr> {
-        match self.current_token().clone() {
+        self.parse_primary_with_depth(0)
+    }
+
+    /// Parse primary expression with depth tracking
+    fn parse_primary_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
+        match &self.current_token().kind.clone() {
             // Literals
-            Token::Integer(n) => {
+            TokenKind::Integer(n) => {
+                let n = *n;
                 self.advance();
                 Ok(Expr::Literal(Value::integer(n)))
             }
-            Token::Float(n) => {
+            TokenKind::Float(n) => {
+                let n = *n;
                 self.advance();
                 Ok(Expr::Literal(Value::float(n)))
             }
-            Token::String(s) => {
+            TokenKind::String(s) => {
+                let s: Arc<str> = Arc::from(*s);
                 self.advance();
-                Ok(Expr::Literal(Value::text(s)))
+                Ok(Expr::Literal(Value::text(s.as_ref())))
             }
-            Token::Boolean(b) => {
+            TokenKind::Boolean(b) => {
+                let b = *b;
                 self.advance();
                 Ok(Expr::Literal(Value::boolean(b)))
             }
-            Token::Null => {
+            TokenKind::Null => {
                 self.advance();
                 Ok(Expr::Literal(Value::null()))
             }
 
             // Variables
-            Token::Variable(name) => {
+            TokenKind::Variable(name) => {
+                let name = Arc::from(*name);
                 self.advance();
                 Ok(Expr::Variable(name))
             }
 
             // Identifiers (could be function calls)
-            Token::Identifier(name) => {
+            TokenKind::Identifier(name) => {
+                let name = Arc::from(*name);
                 self.advance();
-                if self.current_token() == &Token::LeftParen {
+                if self.current_token().kind == TokenKind::LeftParen {
                     // Function call
-                    let args = self.parse_function_args()?;
+                    let args = self.parse_function_args_with_depth(depth + 1)?;
                     Ok(Expr::FunctionCall { name, args })
                 } else {
                     // Just an identifier
@@ -245,47 +310,47 @@ impl Parser {
             }
 
             // Parenthesized expression
-            Token::LeftParen => {
+            TokenKind::LeftParen => {
                 self.advance();
-                let expr = self.parse_expression()?;
-                self.expect_token(Token::RightParen)?;
+                let expr = self.parse_expression_with_depth(depth + 1)?;
+                self.expect_token(TokenKind::RightParen)?;
                 Ok(expr)
             }
 
             // Array literal
-            Token::LeftBracket => {
+            TokenKind::LeftBracket => {
                 self.advance();
                 let mut elements = Vec::new();
 
-                if self.current_token() != &Token::RightBracket {
+                if self.current_token().kind != TokenKind::RightBracket {
                     loop {
-                        elements.push(self.parse_expression()?);
-                        if !self.match_token(&Token::Comma) {
+                        elements.push(self.parse_expression_with_depth(depth + 1)?);
+                        if !self.match_token(&TokenKind::Comma) {
                             break;
                         }
                     }
                 }
 
-                self.expect_token(Token::RightBracket)?;
+                self.expect_token(TokenKind::RightBracket)?;
                 Ok(Expr::Array(elements))
             }
 
             // Object literal
-            Token::LeftBrace => {
+            TokenKind::LeftBrace => {
                 self.advance();
                 let mut pairs = Vec::new();
 
-                if self.current_token() != &Token::RightBrace {
+                if self.current_token().kind != TokenKind::RightBrace {
                     loop {
                         // Parse key
-                        let key = match self.current_token() {
-                            Token::Identifier(name) => {
-                                let k = name.clone();
+                        let key = match &self.current_token().kind {
+                            TokenKind::Identifier(name) => {
+                                let k: Arc<str> = Arc::from(*name);
                                 self.advance();
                                 k
                             }
-                            Token::String(s) => {
-                                let k = s.clone();
+                            TokenKind::String(s) => {
+                                let k: Arc<str> = Arc::from(*s);
                                 self.advance();
                                 k
                             }
@@ -296,41 +361,47 @@ impl Parser {
                             }
                         };
 
-                        self.expect_token(Token::Colon)?;
-                        let value = self.parse_expression()?;
+                        self.expect_token(TokenKind::Colon)?;
+                        let value = self.parse_expression_with_depth(depth + 1)?;
                         pairs.push((key, value));
 
-                        if !self.match_token(&Token::Comma) {
+                        if !self.match_token(&TokenKind::Comma) {
                             break;
                         }
                     }
                 }
 
-                self.expect_token(Token::RightBrace)?;
+                self.expect_token(TokenKind::RightBrace)?;
                 Ok(Expr::Object(pairs))
             }
 
-            token => Err(NebulaError::expression_parse_error(format!(
+            _ => Err(NebulaError::expression_parse_error(format!(
                 "Unexpected token: {}",
-                token
+                self.current_token()
             ))),
         }
     }
 
     /// Parse function arguments
+    #[allow(dead_code)]
     fn parse_function_args(&mut self) -> ExpressionResult<Vec<Expr>> {
-        self.expect_token(Token::LeftParen)?;
+        self.parse_function_args_with_depth(0)
+    }
+
+    /// Parse function arguments with depth tracking
+    fn parse_function_args_with_depth(&mut self, depth: usize) -> ExpressionResult<Vec<Expr>> {
+        self.expect_token(TokenKind::LeftParen)?;
         let mut args = Vec::new();
 
-        if self.current_token() != &Token::RightParen {
+        if self.current_token().kind != TokenKind::RightParen {
             loop {
                 // Check for lambda expression (param => body)
-                if let Token::Identifier(param) = self.current_token() {
-                    let param_name = param.clone();
+                if let TokenKind::Identifier(param) = &self.current_token().kind {
+                    let param_name = Arc::from(*param);
                     self.advance();
-                    if self.match_token(&Token::Arrow) {
+                    if self.match_token(&TokenKind::Arrow) {
                         // This is a lambda
-                        let body = Box::new(self.parse_expression()?);
+                        let body = Box::new(self.parse_expression_with_depth(depth + 1)?);
                         args.push(Expr::Lambda {
                             param: param_name,
                             body,
@@ -339,31 +410,37 @@ impl Parser {
                         // Not a lambda, backtrack by parsing as identifier
                         let expr = Expr::Identifier(param_name);
                         // Continue parsing if there are more operations
-                        let full_expr = self.parse_postfix_from_primary(expr)?;
+                        let full_expr = self.parse_postfix_from_primary_with_depth(expr, depth + 1)?;
                         args.push(full_expr);
                     }
                 } else {
-                    args.push(self.parse_expression()?);
+                    args.push(self.parse_expression_with_depth(depth + 1)?);
                 }
 
-                if !self.match_token(&Token::Comma) {
+                if !self.match_token(&TokenKind::Comma) {
                     break;
                 }
             }
         }
 
-        self.expect_token(Token::RightParen)?;
+        self.expect_token(TokenKind::RightParen)?;
         Ok(args)
     }
 
     /// Parse postfix operations starting from a given primary expression
-    fn parse_postfix_from_primary(&mut self, mut expr: Expr) -> ExpressionResult<Expr> {
+    #[allow(dead_code)]
+    fn parse_postfix_from_primary(&mut self, expr: Expr) -> ExpressionResult<Expr> {
+        self.parse_postfix_from_primary_with_depth(expr, 0)
+    }
+
+    /// Parse postfix operations starting from a given primary expression with depth tracking
+    fn parse_postfix_from_primary_with_depth(&mut self, mut expr: Expr, depth: usize) -> ExpressionResult<Expr> {
         loop {
-            match self.current_token() {
-                Token::Dot => {
+            match &self.current_token().kind {
+                TokenKind::Dot => {
                     self.advance();
-                    let property = if let Token::Identifier(name) = self.current_token() {
-                        let name = name.clone();
+                    let property = if let TokenKind::Identifier(name) = &self.current_token().kind {
+                        let name = Arc::from(*name);
                         self.advance();
                         name
                     } else {
@@ -377,10 +454,10 @@ impl Parser {
                         property,
                     };
                 }
-                Token::LeftBracket => {
+                TokenKind::LeftBracket => {
                     self.advance();
-                    let index = self.parse_expression()?;
-                    self.expect_token(Token::RightBracket)?;
+                    let index = self.parse_expression_with_depth(depth + 1)?;
+                    self.expect_token(TokenKind::RightBracket)?;
 
                     expr = Expr::IndexAccess {
                         object: Box::new(expr),
@@ -394,8 +471,8 @@ impl Parser {
     }
 
     /// Get the current token
-    fn current_token(&self) -> &Token {
-        self.tokens.get(self.position).unwrap_or(&Token::Eof)
+    fn current_token(&self) -> &Token<'a> {
+        self.tokens.get(self.position).unwrap_or(&EOF_TOKEN)
     }
 
     /// Advance to the next token
@@ -406,8 +483,8 @@ impl Parser {
     }
 
     /// Match a specific token and advance if it matches
-    fn match_token(&mut self, expected: &Token) -> bool {
-        if self.current_token() == expected {
+    fn match_token(&mut self, expected: &TokenKind) -> bool {
+        if self.current_token().kind == *expected {
             self.advance();
             true
         } else {
@@ -416,8 +493,8 @@ impl Parser {
     }
 
     /// Expect a specific token and advance, or return an error
-    fn expect_token(&mut self, expected: Token) -> ExpressionResult<()> {
-        if self.current_token() == &expected {
+    fn expect_token(&mut self, expected: TokenKind) -> ExpressionResult<()> {
+        if self.current_token().kind == expected {
             self.advance();
             Ok(())
         } else {
@@ -482,5 +559,37 @@ mod tests {
     fn test_parse_conditional() {
         let expr = parse("if true then 1 else 2").unwrap();
         assert!(matches!(expr, Expr::Conditional { .. }));
+    }
+
+    #[test]
+    fn test_parser_recursion_depth_safe() {
+        // Create a moderately nested expression that should parse successfully
+        // Each level of parentheses consumes ~6 depth increments (through the call chain)
+        // So 40 parentheses = ~240 depth, which is safely under MAX_PARSER_DEPTH of 256
+        let mut expr = String::from("1");
+        for _ in 0..40 {
+            expr = format!("({})", expr);
+        }
+
+        let result = parse(&expr);
+        assert!(result.is_ok(), "Parser should handle 40 levels of nesting: {}",
+                result.as_ref().err().map(|e| format!("{:?}", e)).unwrap_or_default());
+    }
+
+    #[test]
+    fn test_parser_recursion_depth_within_limits() {
+        // Test various expression types with nesting
+
+        // Nested arithmetic
+        let expr = parse("1 + (2 + (3 + (4 + 5)))").unwrap();
+        assert!(matches!(expr, Expr::Binary { .. }));
+
+        // Nested conditionals
+        let expr = parse("if true then (if false then 1 else 2) else 3").unwrap();
+        assert!(matches!(expr, Expr::Conditional { .. }));
+
+        // Nested property access
+        let expr = parse("$node.data.items.first.value").unwrap();
+        assert!(matches!(expr, Expr::PropertyAccess { .. }));
     }
 }

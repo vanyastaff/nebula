@@ -3,6 +3,7 @@
 //! This module provides all built-in functions organized by category.
 pub mod array;
 pub mod conversion;
+#[cfg(feature = "datetime")]
 pub mod datetime;
 pub mod math;
 pub mod object;
@@ -39,6 +40,7 @@ impl BuiltinRegistry {
         registry.register_object_functions();
         registry.register_conversion_functions();
         registry.register_util_functions();
+        #[cfg(feature = "datetime")]
         registry.register_datetime_functions();
 
         registry
@@ -138,6 +140,7 @@ impl BuiltinRegistry {
         self.register("uuid", util::uuid);
     }
 
+    #[cfg(feature = "datetime")]
     fn register_datetime_functions(&mut self) {
         // Current time
         self.register("now", datetime::now);
@@ -202,6 +205,7 @@ pub(crate) fn check_min_arg_count(
 }
 
 /// Helper to extract a lambda expression from args
+#[allow(dead_code)]
 pub(crate) fn extract_lambda(arg: &Expr) -> ExpressionResult<(&str, &Expr)> {
     match arg {
         Expr::Lambda { param, body } => Ok((param, body)),
@@ -209,5 +213,129 @@ pub(crate) fn extract_lambda(arg: &Expr) -> ExpressionResult<(&str, &Expr)> {
             "lambda",
             "Expected a lambda expression",
         )),
+    }
+}
+
+/// Helper to get a string argument with better error message
+pub(crate) fn get_string_arg<'a>(func_name: &str, args: &'a [Value], index: usize, arg_name: &str) -> ExpressionResult<&'a str> {
+    args.get(index)
+        .ok_or_else(|| NebulaError::expression_invalid_argument(
+            func_name,
+            format!("Missing argument '{}' at position {}", arg_name, index)
+        ))?
+        .as_str()
+        .ok_or_else(|| NebulaError::expression_invalid_argument(
+            func_name,
+            format!("Argument '{}' must be a string, got {}", arg_name, args[index].kind().name())
+        ))
+}
+
+/// Helper to get an integer argument with better error message
+pub(crate) fn get_int_arg(func_name: &str, args: &[Value], index: usize, arg_name: &str) -> ExpressionResult<i64> {
+    args.get(index)
+        .ok_or_else(|| NebulaError::expression_invalid_argument(
+            func_name,
+            format!("Missing argument '{}' at position {}", arg_name, index)
+        ))?
+        .to_integer()
+        .map_err(|_| NebulaError::expression_invalid_argument(
+            func_name,
+            format!("Argument '{}' must be an integer, got {}", arg_name, args[index].kind().name())
+        ))
+}
+
+/// Helper to get a number argument (int or float) with better error message
+pub(crate) fn get_number_arg(func_name: &str, args: &[Value], index: usize, arg_name: &str) -> ExpressionResult<f64> {
+    let val = args.get(index)
+        .ok_or_else(|| NebulaError::expression_invalid_argument(
+            func_name,
+            format!("Missing argument '{}' at position {}", arg_name, index)
+        ))?;
+
+    val.to_float()
+        .map_err(|_| NebulaError::expression_invalid_argument(
+            func_name,
+            format!("Argument '{}' must be a number, got {}", arg_name, val.kind().name())
+        ))
+}
+
+/// Helper to get an array argument with better error message
+#[allow(dead_code)]
+pub(crate) fn get_array_arg<'a>(func_name: &str, args: &'a [Value], index: usize, arg_name: &str) -> ExpressionResult<&'a nebula_value::Array> {
+    args.get(index)
+        .ok_or_else(|| NebulaError::expression_invalid_argument(
+            func_name,
+            format!("Missing argument '{}' at position {}", arg_name, index)
+        ))?
+        .as_array()
+        .ok_or_else(|| NebulaError::expression_invalid_argument(
+            func_name,
+            format!("Argument '{}' must be an array, got {}", arg_name, args[index].kind().name())
+        ))
+}
+
+/// Helper to get an object argument with better error message
+#[allow(dead_code)]
+pub(crate) fn get_object_arg<'a>(func_name: &str, args: &'a [Value], index: usize, arg_name: &str) -> ExpressionResult<&'a nebula_value::Object> {
+    args.get(index)
+        .ok_or_else(|| NebulaError::expression_invalid_argument(
+            func_name,
+            format!("Missing argument '{}' at position {}", arg_name, index)
+        ))?
+        .as_object()
+        .ok_or_else(|| NebulaError::expression_invalid_argument(
+            func_name,
+            format!("Argument '{}' must be an object, got {}", arg_name, args[index].kind().name())
+        ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_string_arg_type_error() {
+        let args = vec![Value::integer(42)];
+        let result = get_string_arg("test_func", &args, 0, "text");
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        println!("Error message: {}", msg);
+        assert!(msg.contains("Argument 'text' must be a string"));
+        assert!(msg.contains("Integer") || msg.contains("integer"));
+    }
+
+    #[test]
+    fn test_get_int_arg_type_error() {
+        let args = vec![Value::text("hello")];
+        let result = get_int_arg("test_func", &args, 0, "count");
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Argument 'count' must be an integer"));
+    }
+
+    #[test]
+    fn test_get_number_arg_accepts_int_and_float() {
+        let args_int = vec![Value::integer(42)];
+        let result_int = get_number_arg("test_func", &args_int, 0, "value");
+        assert_eq!(result_int.unwrap(), 42.0);
+
+        let args_float = vec![Value::float(3.14)];
+        let result_float = get_number_arg("test_func", &args_float, 0, "value");
+        assert_eq!(result_float.unwrap(), 3.14);
+    }
+
+    #[test]
+    fn test_get_array_arg_type_error() {
+        let args = vec![Value::text("not an array")];
+        let result = get_array_arg("test_func", &args, 0, "items");
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Argument 'items' must be an array"));
     }
 }

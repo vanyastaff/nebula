@@ -13,14 +13,15 @@ use crate::parser::Parser;
 use nebula_log::{debug, trace};
 use nebula_memory::cache::{CacheConfig, ComputeCache};
 use nebula_value::Value;
-use std::sync::{Arc, Mutex};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 /// Expression engine with parsing and evaluation capabilities
 pub struct ExpressionEngine {
     /// Cache for parsed expressions
-    expr_cache: Option<Arc<Mutex<ComputeCache<String, Expr>>>>,
+    expr_cache: Option<Arc<RwLock<ComputeCache<Arc<str>, Expr>>>>,
     /// Cache for parsed templates
-    template_cache: Option<Arc<Mutex<ComputeCache<String, crate::Template>>>>,
+    template_cache: Option<Arc<RwLock<ComputeCache<Arc<str>, crate::Template>>>>,
     /// Builtin function registry
     builtins: Arc<BuiltinRegistry>,
     /// Evaluator
@@ -58,8 +59,8 @@ impl ExpressionEngine {
         );
 
         Self {
-            expr_cache: Some(Arc::new(Mutex::new(expr_cache))),
-            template_cache: Some(Arc::new(Mutex::new(template_cache))),
+            expr_cache: Some(Arc::new(RwLock::new(expr_cache))),
+            template_cache: Some(Arc::new(RwLock::new(template_cache))),
             builtins,
             evaluator,
         }
@@ -83,8 +84,8 @@ impl ExpressionEngine {
         );
 
         Self {
-            expr_cache: Some(Arc::new(Mutex::new(expr_cache))),
-            template_cache: Some(Arc::new(Mutex::new(template_cache))),
+            expr_cache: Some(Arc::new(RwLock::new(expr_cache))),
+            template_cache: Some(Arc::new(RwLock::new(template_cache))),
             builtins,
             evaluator,
         }
@@ -107,8 +108,9 @@ impl ExpressionEngine {
 
         // Parse the expression (with caching if enabled)
         let ast = if let Some(cache) = &self.expr_cache {
-            let mut cache_guard = cache.lock().unwrap();
-            cache_guard.get_or_compute(expression.to_string(), || {
+            let key: Arc<str> = Arc::from(expression);
+            let mut cache_write = cache.write();
+            cache_write.get_or_compute(key, || {
                 self.parse_expression(expression).map_err(|_| {
                     nebula_memory::MemoryError::from(nebula_memory::MemoryErrorCode::InvalidState)
                 })
@@ -133,8 +135,9 @@ impl ExpressionEngine {
 
         // Use cache if available
         if let Some(cache) = &self.template_cache {
-            let mut cache_guard = cache.lock().unwrap();
-            let template = cache_guard.get_or_compute(source_str.clone(), || {
+            let key: Arc<str> = Arc::from(source_str.as_str());
+            let mut cache_write = cache.write();
+            let template = cache_write.get_or_compute(key, || {
                 crate::Template::new(&source_str).map_err(|_| {
                     nebula_memory::MemoryError::from(nebula_memory::MemoryErrorCode::InvalidState)
                 })
@@ -182,13 +185,13 @@ impl ExpressionEngine {
     /// Clear all caches (expressions and templates)
     pub fn clear_cache(&self) {
         if let Some(cache) = &self.expr_cache {
-            let mut cache_guard = cache.lock().unwrap();
-            cache_guard.clear();
+            let mut cache_write = cache.write();
+            cache_write.clear();
             debug!("Expression cache cleared");
         }
         if let Some(cache) = &self.template_cache {
-            let mut cache_guard = cache.lock().unwrap();
-            cache_guard.clear();
+            let mut cache_write = cache.write();
+            cache_write.clear();
             debug!("Template cache cleared");
         }
     }
@@ -196,8 +199,8 @@ impl ExpressionEngine {
     /// Clear expression cache only
     pub fn clear_expr_cache(&self) {
         if let Some(cache) = &self.expr_cache {
-            let mut cache_guard = cache.lock().unwrap();
-            cache_guard.clear();
+            let mut cache_write = cache.write();
+            cache_write.clear();
             debug!("Expression cache cleared");
         }
     }
@@ -205,32 +208,29 @@ impl ExpressionEngine {
     /// Clear template cache only
     pub fn clear_template_cache(&self) {
         if let Some(cache) = &self.template_cache {
-            let mut cache_guard = cache.lock().unwrap();
-            cache_guard.clear();
+            let mut cache_write = cache.write();
+            cache_write.clear();
             debug!("Template cache cleared");
         }
     }
 
     /// Get expression cache statistics
-    #[cfg(feature = "std")]
     pub fn expr_cache_stats(&self) -> Option<nebula_memory::cache::CacheMetrics> {
         self.expr_cache.as_ref().map(|cache| {
-            let cache_guard = cache.lock().unwrap();
-            cache_guard.metrics()
+            let cache_read = cache.read();
+            cache_read.metrics()
         })
     }
 
     /// Get template cache statistics
-    #[cfg(feature = "std")]
     pub fn template_cache_stats(&self) -> Option<nebula_memory::cache::CacheMetrics> {
         self.template_cache.as_ref().map(|cache| {
-            let cache_guard = cache.lock().unwrap();
-            cache_guard.metrics()
+            let cache_read = cache.read();
+            cache_read.metrics()
         })
     }
 
     /// Get cache statistics (legacy - returns expression cache stats)
-    #[cfg(feature = "std")]
     #[deprecated(note = "Use expr_cache_stats() or template_cache_stats() instead")]
     pub fn cache_stats(&self) -> Option<nebula_memory::cache::CacheMetrics> {
         self.expr_cache_stats()

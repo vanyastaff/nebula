@@ -2,7 +2,6 @@
 
 use super::{check_arg_count, check_min_arg_count};
 use crate::context::EvaluationContext;
-use crate::core::ast::Expr;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
 use nebula_error::NebulaError;
@@ -162,8 +161,13 @@ pub fn join(
         .as_str()
         .ok_or_else(|| NebulaError::expression_type_error("string", args[1].kind().name()))?;
 
-    let strings: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
-    Ok(Value::text(strings.join(separator)))
+    // Use iterator directly without intermediate Vec allocation
+    let result = arr.iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(separator);
+
+    Ok(Value::text(result))
 }
 
 /// Slice an array
@@ -183,13 +187,10 @@ pub fn slice(
         arr.len()
     };
 
-    let mut result = nebula_value::Array::new();
-    for i in start..end.min(arr.len()) {
-        if let Some(elem) = arr.get(i) {
-            result.push(elem.clone());
-        }
-    }
-    Ok(Value::Array(result))
+    let result: Vec<_> = (start..end.min(arr.len()))
+        .filter_map(|i| arr.get(i).cloned())
+        .collect();
+    Ok(Value::Array(nebula_value::Array::from_vec(result)))
 }
 
 /// Concatenate arrays
@@ -200,16 +201,20 @@ pub fn concat(
 ) -> ExpressionResult<Value> {
     check_min_arg_count("concat", args, 1)?;
 
-    let mut result = nebula_value::Array::new();
+    // Calculate total size to pre-allocate
+    let total_size: usize = args.iter()
+        .filter_map(|arg| arg.as_array().map(|arr| arr.len()))
+        .sum();
+
+    let mut result = Vec::with_capacity(total_size);
     for arg in args {
         let arr = arg
             .as_array()
             .ok_or_else(|| NebulaError::expression_type_error("array", arg.kind().name()))?;
-        for elem in arr.iter() {
-            result.push(elem.clone());
-        }
+        result.extend(arr.iter().cloned());
     }
-    Ok(Value::Array(result))
+
+    Ok(Value::Array(nebula_value::Array::from_vec(result)))
 }
 
 /// Flatten a nested array
@@ -223,15 +228,16 @@ pub fn flatten(
         .as_array()
         .ok_or_else(|| NebulaError::expression_type_error("array", args[0].kind().name()))?;
 
-    let mut result = nebula_value::Array::new();
-    for elem in arr.iter() {
-        if let Some(inner_arr) = elem.as_array() {
-            for inner_elem in inner_arr.iter() {
-                result.push(inner_elem.clone());
+    // Use iterator + flat_map for more efficient flattening
+    let result: Vec<_> = arr.iter()
+        .flat_map(|elem| {
+            if let Some(inner_arr) = elem.as_array() {
+                inner_arr.iter().cloned().collect::<Vec<_>>()
+            } else {
+                vec![elem.clone()]
             }
-        } else {
-            result.push(elem.clone());
-        }
-    }
-    Ok(Value::Array(result))
+        })
+        .collect();
+
+    Ok(Value::Array(nebula_value::Array::from_vec(result)))
 }
