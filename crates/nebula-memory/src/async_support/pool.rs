@@ -1,24 +1,18 @@
 //! Async-friendly object pool
 
-#[cfg(feature = "async")]
 use std::sync::Arc;
 
-#[cfg(feature = "async")]
 use tokio::sync::{Mutex, Semaphore};
 
-#[cfg(feature = "async")]
 use crate::core::error::{MemoryError, MemoryResult};
-#[cfg(feature = "async")]
 use crate::pool::{PoolConfig, Poolable};
 
 /// Async pooled value that returns to pool on drop
-#[cfg(feature = "async")]
 pub struct AsyncPooledValue<T: Poolable> {
     value: Option<T>,
     pool: Arc<Mutex<AsyncPoolInner<T>>>,
 }
 
-#[cfg(feature = "async")]
 impl<T: Poolable> AsyncPooledValue<T> {
     /// Detach value from pool (won't be returned)
     pub fn detach(mut self) -> T {
@@ -26,7 +20,6 @@ impl<T: Poolable> AsyncPooledValue<T> {
     }
 }
 
-#[cfg(feature = "async")]
 impl<T: Poolable> std::ops::Deref for AsyncPooledValue<T> {
     type Target = T;
 
@@ -35,14 +28,12 @@ impl<T: Poolable> std::ops::Deref for AsyncPooledValue<T> {
     }
 }
 
-#[cfg(feature = "async")]
 impl<T: Poolable> std::ops::DerefMut for AsyncPooledValue<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.value.as_mut().unwrap()
     }
 }
 
-#[cfg(feature = "async")]
 impl<T: Poolable> Drop for AsyncPooledValue<T> {
     fn drop(&mut self) {
         if let Some(mut value) = self.value.take() {
@@ -58,7 +49,6 @@ impl<T: Poolable> Drop for AsyncPooledValue<T> {
 }
 
 /// Internal pool state
-#[cfg(feature = "async")]
 struct AsyncPoolInner<T: Poolable> {
     objects: Vec<T>,
     factory: Box<dyn Fn() -> T + Send + Sync>,
@@ -70,13 +60,11 @@ struct AsyncPoolInner<T: Poolable> {
 ///
 /// Provides async/await compatible object pooling with proper async locking
 /// and waiting for available objects.
-#[cfg(feature = "async")]
 pub struct AsyncPool<T: Poolable> {
     inner: Arc<Mutex<AsyncPoolInner<T>>>,
     semaphore: Arc<Semaphore>,
 }
 
-#[cfg(feature = "async")]
 impl<T: Poolable> AsyncPool<T> {
     /// Create new async pool with capacity and factory function
     pub fn new<F>(capacity: usize, factory: F) -> Self
@@ -214,7 +202,6 @@ impl<T: Poolable> AsyncPool<T> {
     }
 }
 
-#[cfg(feature = "async")]
 impl<T: Poolable> AsyncPoolInner<T> {
     fn return_object(&mut self, obj: T) {
         if self.objects.len() < self.config.initial_capacity {

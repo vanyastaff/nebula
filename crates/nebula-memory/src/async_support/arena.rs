@@ -1,34 +1,24 @@
 //! Async-friendly arena allocator with owned value API
 
-#[cfg(feature = "async")]
-use std::any::Any;
-#[cfg(feature = "async")]
 use std::sync::Arc;
 
-#[cfg(feature = "async")]
 use tokio::sync::{RwLock, Semaphore};
 
-#[cfg(feature = "async")]
 use crate::arena::{Arena, ArenaConfig};
-#[cfg(feature = "async")]
 use crate::core::error::MemoryResult;
 
 /// Handle to allocated arena memory
 ///
 /// This provides safe access to arena-allocated values without lifetime issues.
 /// The value is owned by the arena and accessed through Arc<RwLock>.
-#[cfg(feature = "async")]
 pub struct ArenaHandle<T> {
     ptr: *mut T,
     arena: Arc<RwLock<Arena>>,
 }
 
-#[cfg(feature = "async")]
 unsafe impl<T: Send> Send for ArenaHandle<T> {}
-#[cfg(feature = "async")]
 unsafe impl<T: Send> Sync for ArenaHandle<T> {}
 
-#[cfg(feature = "async")]
 impl<T> ArenaHandle<T> {
     /// Get reference to the value
     pub async fn get(&self) -> &T {
@@ -67,7 +57,6 @@ impl<T> ArenaHandle<T> {
 ///
 /// Uses an owned value API to avoid lifetime issues with async functions.
 /// Returns handles instead of direct references.
-#[cfg(feature = "async")]
 pub struct AsyncArena {
     /// Underlying arena allocator
     arena: Arc<RwLock<Arena>>,
@@ -79,7 +68,6 @@ pub struct AsyncArena {
     max_concurrent: usize,
 }
 
-#[cfg(feature = "async")]
 impl AsyncArena {
     /// Create new async arena with default configuration
     pub fn new() -> Self {
@@ -117,7 +105,7 @@ impl AsyncArena {
         let _permit = self.semaphore.acquire().await.unwrap();
 
         // Lock arena for writing
-        let mut arena = self.arena.write().await;
+        let arena = self.arena.write().await;
 
         // Perform allocation
         let ptr = arena.alloc(value)?;
@@ -134,7 +122,7 @@ impl AsyncArena {
         T: Copy,
     {
         let _permit = self.semaphore.acquire().await.unwrap();
-        let mut arena = self.arena.write().await;
+        let arena = self.arena.write().await;
 
         // Allocate slice in arena
         let arena_slice = arena.alloc_slice(slice)?;
@@ -146,7 +134,7 @@ impl AsyncArena {
     /// Allocate a string asynchronously, returning owned String
     pub async fn alloc_string(&self, s: &str) -> MemoryResult<String> {
         let _permit = self.semaphore.acquire().await.unwrap();
-        let mut arena = self.arena.write().await;
+        let arena = self.arena.write().await;
 
         // Allocate in arena
         let arena_str = arena.alloc_str(s)?;
@@ -173,7 +161,6 @@ impl AsyncArena {
     }
 }
 
-#[cfg(feature = "async")]
 impl Default for AsyncArena {
     fn default() -> Self {
         Self::new()
@@ -181,12 +168,10 @@ impl Default for AsyncArena {
 }
 
 /// Scoped async arena that automatically resets on drop
-#[cfg(feature = "async")]
 pub struct AsyncArenaScope {
     arena: AsyncArena,
 }
 
-#[cfg(feature = "async")]
 impl AsyncArenaScope {
     /// Create new scoped async arena
     pub fn new(config: ArenaConfig) -> Self {
@@ -206,7 +191,6 @@ impl AsyncArenaScope {
     }
 }
 
-#[cfg(feature = "async")]
 impl Drop for AsyncArenaScope {
     fn drop(&mut self) {
         // We can't call async reset in Drop, so we'll need to use blocking
