@@ -152,6 +152,71 @@ impl AllocErrorCode {
         }
     }
 
+    /// Get actionable suggestion for resolving the error
+    pub fn suggestion(&self) -> &'static str {
+        match self {
+            AllocErrorCode::OutOfMemory => {
+                "Try: 1) Increase allocator capacity\n\
+                      2) Call reset() to reclaim memory\n\
+                      3) Use a different allocator type\n\
+                      4) Reduce allocation size or frequency"
+            }
+            AllocErrorCode::SizeOverflow => {
+                "Try: 1) Reduce allocation size\n\
+                      2) Check for integer overflow in size calculations\n\
+                      3) Use checked arithmetic operations"
+            }
+            AllocErrorCode::InvalidAlignment => {
+                "Try: 1) Use a power-of-two alignment (e.g., 1, 2, 4, 8, 16)\n\
+                      2) Check Layout::from_size_align() return value\n\
+                      3) Use Layout::new::<T>() for automatic correct alignment"
+            }
+            AllocErrorCode::ExceedsMaxSize => {
+                "Try: 1) Reduce allocation size\n\
+                      2) Split large allocations into smaller chunks\n\
+                      3) Use streaming or incremental processing"
+            }
+            AllocErrorCode::InvalidLayout => {
+                "Try: 1) Validate size and alignment before creating Layout\n\
+                      2) Use Layout::from_size_align_unchecked() only when certain\n\
+                      3) Check that size doesn't overflow when padded to alignment"
+            }
+            AllocErrorCode::InvalidState => {
+                "Try: 1) Initialize allocator before use\n\
+                      2) Check allocator hasn't been reset or destroyed\n\
+                      3) Ensure single ownership of allocator"
+            }
+            AllocErrorCode::ConcurrentAccess => {
+                "Try: 1) Use thread-safe allocator variant\n\
+                      2) Add proper synchronization (Mutex/RwLock)\n\
+                      3) Use thread-local allocators for each thread"
+            }
+            AllocErrorCode::ResourceLimit => {
+                "Try: 1) Increase resource limits in configuration\n\
+                      2) Reduce concurrent allocations\n\
+                      3) Implement backpressure or rate limiting"
+            }
+            AllocErrorCode::PoolExhausted => {
+                "Try: 1) Increase pool capacity\n\
+                      2) Return unused objects to pool sooner\n\
+                      3) Enable pool growth if supported\n\
+                      4) Use multiple pools to distribute load"
+            }
+            AllocErrorCode::ArenaExhausted => {
+                "Try: 1) Create arena with larger initial capacity\n\
+                      2) Use multiple arenas\n\
+                      3) Reset arena when safe to reclaim memory\n\
+                      4) Consider using a different allocator type"
+            }
+            AllocErrorCode::AllocationDenied => {
+                "Try: 1) Reduce memory usage elsewhere\n\
+                      2) Implement graceful degradation\n\
+                      3) Check memory pressure thresholds in configuration\n\
+                      4) Consider delaying non-critical allocations"
+            }
+        }
+    }
+
     pub fn severity(&self) -> Severity {
         match self {
             AllocErrorCode::OutOfMemory => Severity::Critical,
@@ -487,6 +552,28 @@ impl AllocError {
     /// Returns the memory state if available
     pub fn memory_state(&self) -> Option<&MemoryState> {
         self.memory_state.as_ref()
+    }
+
+    /// Returns actionable suggestion for this error if available
+    ///
+    /// This provides context-specific guidance on how to resolve the error.
+    pub fn suggestion(&self) -> Option<&'static str> {
+        // Extract the error code from the inner error and provide suggestion
+        let error_code = self.inner.error_code();
+        match error_code {
+            "ALLOC_OUT_OF_MEMORY" => Some(AllocErrorCode::OutOfMemory.suggestion()),
+            "ALLOC_SIZE_OVERFLOW" => Some(AllocErrorCode::SizeOverflow.suggestion()),
+            "ALLOC_INVALID_ALIGNMENT" => Some(AllocErrorCode::InvalidAlignment.suggestion()),
+            "ALLOC_EXCEEDS_MAX_SIZE" => Some(AllocErrorCode::ExceedsMaxSize.suggestion()),
+            "ALLOC_INVALID_LAYOUT" => Some(AllocErrorCode::InvalidLayout.suggestion()),
+            "ALLOC_INVALID_STATE" => Some(AllocErrorCode::InvalidState.suggestion()),
+            "ALLOC_CONCURRENT_ACCESS" => Some(AllocErrorCode::ConcurrentAccess.suggestion()),
+            "ALLOC_RESOURCE_LIMIT" => Some(AllocErrorCode::ResourceLimit.suggestion()),
+            "ALLOC_POOL_EXHAUSTED" => Some(AllocErrorCode::PoolExhausted.suggestion()),
+            "ALLOC_ARENA_EXHAUSTED" => Some(AllocErrorCode::ArenaExhausted.suggestion()),
+            "ALLOC_DENIED" => Some(AllocErrorCode::AllocationDenied.suggestion()),
+            _ => None,
+        }
     }
 
     /// Returns the underlying NebulaError

@@ -36,7 +36,8 @@
 //! ```
 
 use nebula_core::ParameterKey;
-use nebula_validator::{Validator, ValidationContext, Valid, Invalid};
+// TODO: Update display system to work with new nebula-validator API
+// use nebula_validator::core::{AsyncValidator, ValidationContext};
 use nebula_value::Value;
 use std::collections::HashMap;
 use std::ops::{BitAnd, BitOr, Not};

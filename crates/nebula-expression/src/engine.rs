@@ -11,17 +11,16 @@ use crate::eval::Evaluator;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use nebula_log::{debug, trace};
-use nebula_memory::cache::{CacheConfig, ComputeCache};
+use nebula_memory::cache::{CacheConfig, ConcurrentComputeCache};
 use nebula_value::Value;
-use parking_lot::RwLock;
 use std::sync::Arc;
 
 /// Expression engine with parsing and evaluation capabilities
 pub struct ExpressionEngine {
-    /// Cache for parsed expressions
-    expr_cache: Option<Arc<RwLock<ComputeCache<Arc<str>, Expr>>>>,
-    /// Cache for parsed templates
-    template_cache: Option<Arc<RwLock<ComputeCache<Arc<str>, crate::Template>>>>,
+    /// Cache for parsed expressions (lock-free concurrent cache)
+    expr_cache: Option<ConcurrentComputeCache<Arc<str>, Expr>>,
+    /// Cache for parsed templates (lock-free concurrent cache)
+    template_cache: Option<ConcurrentComputeCache<Arc<str>, crate::Template>>,
     /// Builtin function registry
     builtins: Arc<BuiltinRegistry>,
     /// Evaluator
@@ -48,19 +47,19 @@ impl ExpressionEngine {
         let evaluator = Evaluator::new(Arc::clone(&builtins));
 
         let expr_config = CacheConfig::new(size);
-        let expr_cache = ComputeCache::with_config(expr_config);
+        let expr_cache = ConcurrentComputeCache::with_config(expr_config);
 
         let template_config = CacheConfig::new(size);
-        let template_cache = ComputeCache::with_config(template_config);
+        let template_cache = ConcurrentComputeCache::with_config(template_config);
 
         debug!(
             cache_size = size,
-            "Created expression engine with expression and template caches"
+            "Created expression engine with lock-free concurrent caches"
         );
 
         Self {
-            expr_cache: Some(Arc::new(RwLock::new(expr_cache))),
-            template_cache: Some(Arc::new(RwLock::new(template_cache))),
+            expr_cache: Some(expr_cache),
+            template_cache: Some(template_cache),
             builtins,
             evaluator,
         }
@@ -72,20 +71,20 @@ impl ExpressionEngine {
         let evaluator = Evaluator::new(Arc::clone(&builtins));
 
         let expr_config = CacheConfig::new(expr_cache_size);
-        let expr_cache = ComputeCache::with_config(expr_config);
+        let expr_cache = ConcurrentComputeCache::with_config(expr_config);
 
         let template_config = CacheConfig::new(template_cache_size);
-        let template_cache = ComputeCache::with_config(template_config);
+        let template_cache = ConcurrentComputeCache::with_config(template_config);
 
         debug!(
             expr_cache_size = expr_cache_size,
             template_cache_size = template_cache_size,
-            "Created expression engine with separate caches"
+            "Created expression engine with lock-free concurrent caches"
         );
 
         Self {
-            expr_cache: Some(Arc::new(RwLock::new(expr_cache))),
-            template_cache: Some(Arc::new(RwLock::new(template_cache))),
+            expr_cache: Some(expr_cache),
+            template_cache: Some(template_cache),
             builtins,
             evaluator,
         }
@@ -106,11 +105,10 @@ impl ExpressionEngine {
     ) -> ExpressionResult<Value> {
         trace!(expression = expression, "Evaluating expression");
 
-        // Parse the expression (with caching if enabled)
+        // Parse the expression (with lock-free caching if enabled)
         let ast = if let Some(cache) = &self.expr_cache {
             let key: Arc<str> = Arc::from(expression);
-            let mut cache_write = cache.write();
-            cache_write.get_or_compute(key, || {
+            cache.get_or_compute(key, || {
                 self.parse_expression(expression).map_err(|_| {
                     nebula_memory::MemoryError::from(nebula_memory::MemoryErrorCode::InvalidState)
                 })
@@ -133,11 +131,10 @@ impl ExpressionEngine {
     pub fn parse_template(&self, source: impl Into<String>) -> ExpressionResult<crate::Template> {
         let source_str = source.into();
 
-        // Use cache if available
+        // Use lock-free cache if available
         if let Some(cache) = &self.template_cache {
             let key: Arc<str> = Arc::from(source_str.as_str());
-            let mut cache_write = cache.write();
-            let template = cache_write.get_or_compute(key, || {
+            let template = cache.get_or_compute(key, || {
                 crate::Template::new(&source_str).map_err(|_| {
                     nebula_memory::MemoryError::from(nebula_memory::MemoryErrorCode::InvalidState)
                 })
@@ -185,13 +182,11 @@ impl ExpressionEngine {
     /// Clear all caches (expressions and templates)
     pub fn clear_cache(&self) {
         if let Some(cache) = &self.expr_cache {
-            let mut cache_write = cache.write();
-            cache_write.clear();
+            cache.clear();
             debug!("Expression cache cleared");
         }
         if let Some(cache) = &self.template_cache {
-            let mut cache_write = cache.write();
-            cache_write.clear();
+            cache.clear();
             debug!("Template cache cleared");
         }
     }
@@ -199,8 +194,7 @@ impl ExpressionEngine {
     /// Clear expression cache only
     pub fn clear_expr_cache(&self) {
         if let Some(cache) = &self.expr_cache {
-            let mut cache_write = cache.write();
-            cache_write.clear();
+            cache.clear();
             debug!("Expression cache cleared");
         }
     }
@@ -208,32 +202,41 @@ impl ExpressionEngine {
     /// Clear template cache only
     pub fn clear_template_cache(&self) {
         if let Some(cache) = &self.template_cache {
-            let mut cache_write = cache.write();
-            cache_write.clear();
+            cache.clear();
             debug!("Template cache cleared");
         }
     }
 
-    /// Get expression cache statistics
+    /// Get expression cache size
+    pub fn expr_cache_size(&self) -> Option<usize> {
+        self.expr_cache.as_ref().map(|cache| cache.len())
+    }
+
+    /// Get template cache size
+    pub fn template_cache_size(&self) -> Option<usize> {
+        self.template_cache.as_ref().map(|cache| cache.len())
+    }
+
+    /// Get expression cache statistics (stub for compatibility)
+    ///
+    /// Note: ConcurrentComputeCache doesn't track detailed metrics for performance.
+    /// Use expr_cache_size() to get the number of entries instead.
     pub fn expr_cache_stats(&self) -> Option<nebula_memory::cache::CacheMetrics> {
-        self.expr_cache.as_ref().map(|cache| {
-            let cache_read = cache.read();
-            cache_read.metrics()
-        })
+        None // ConcurrentComputeCache doesn't have metrics
     }
 
-    /// Get template cache statistics
+    /// Get template cache statistics (stub for compatibility)
+    ///
+    /// Note: ConcurrentComputeCache doesn't track detailed metrics for performance.
+    /// Use template_cache_size() to get the number of entries instead.
     pub fn template_cache_stats(&self) -> Option<nebula_memory::cache::CacheMetrics> {
-        self.template_cache.as_ref().map(|cache| {
-            let cache_read = cache.read();
-            cache_read.metrics()
-        })
+        None // ConcurrentComputeCache doesn't have metrics
     }
 
-    /// Get cache statistics (legacy - returns expression cache stats)
-    #[deprecated(note = "Use expr_cache_stats() or template_cache_stats() instead")]
+    /// Get cache statistics (legacy - always returns None now)
+    #[deprecated(note = "Use expr_cache_size() or template_cache_size() instead")]
     pub fn cache_stats(&self) -> Option<nebula_memory::cache::CacheMetrics> {
-        self.expr_cache_stats()
+        None
     }
 }
 

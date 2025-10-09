@@ -9,28 +9,27 @@
 extern crate alloc;
 
 // Core cache types
+#[cfg(feature = "async")]
+mod async_compute;
 mod compute;
+#[cfg(feature = "std")]
+pub mod concurrent;
 mod config;
-mod stats;
-
-// Advanced cache implementations
 mod multi_level;
 mod partitioned;
-mod scheduled;
-
-// Cache eviction policies
 pub mod policies;
+mod scheduled;
+mod stats;
 
 // Re-exports for convenience
 pub use compute::{CacheEntry, CacheKey, CacheResult, ComputeCache};
+#[cfg(feature = "std")]
+pub use concurrent::ConcurrentComputeCache;
 pub use config::{CacheConfig, CacheMetrics, EvictionPolicy};
 pub use multi_level::{CacheLevel, MultiLevelCache, MultiLevelStats, PromotionPolicy};
 pub use partitioned::PartitionedCache;
 pub use scheduled::{ScheduledCache, ScheduledTask};
 pub use stats::{AtomicCacheStats, CacheStats, StatsCollector, StatsProvider};
-
-#[cfg(feature = "async")]
-mod async_compute;
 
 #[cfg(feature = "async")]
 pub use async_compute::{AsyncCacheResult, AsyncComputeCache};

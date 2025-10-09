@@ -388,6 +388,209 @@ pub unsafe trait BulkAllocator: Allocator {
 /// - Delegating to thread-safe system allocators
 pub unsafe trait ThreadSafeAllocator: Allocator + Sync + Send {}
 
+/// Type-safe allocator trait providing compile-time size/alignment guarantees
+///
+/// This trait extends [`Allocator`] with type-safe methods that eliminate common
+/// allocation mistakes by leveraging Rust's type system. All size and alignment
+/// calculations are performed at compile time where possible.
+///
+/// # Benefits
+/// - **Compile-time correctness**: Layout is derived from type `T`, preventing errors
+/// - **Zero overhead**: All methods inline and delegate to base [`Allocator`]
+/// - **Type safety**: Cannot accidentally pass wrong layout for a type
+/// - **Ergonomics**: Cleaner API for typed allocations
+///
+/// # Examples
+/// ```rust
+/// use nebula_memory::prelude::*;
+/// use nebula_memory::allocator::TypedAllocator;
+///
+/// let allocator = BumpAllocator::new(4096)?;
+///
+/// // Type-safe allocation
+/// let ptr = unsafe { allocator.alloc_typed::<u64>()? };
+///
+/// // Initialize with value
+/// let ptr = unsafe { allocator.alloc_init(42u64)? };
+///
+/// // Array allocation
+/// let array = unsafe { allocator.alloc_array::<u32>(10)? };
+///
+/// # Ok::<(), nebula_memory::AllocError>(())
+/// ```
+///
+/// # Safety
+/// Same safety requirements as [`Allocator`] apply. The caller must:
+/// - Not use pointers after deallocation
+/// - Pass correct pointer and type to deallocation methods
+/// - Ensure proper alignment and initialization
+pub trait TypedAllocator: Allocator {
+    /// Allocates memory for a single instance of type `T`
+    ///
+    /// Returns a properly aligned pointer suitable for storing a `T`.
+    /// The memory is **not initialized**.
+    ///
+    /// # Safety
+    /// The caller must initialize the memory before reading from it,
+    /// and must deallocate it with `dealloc_typed::<T>()` when done.
+    ///
+    /// # Examples
+    /// ```rust
+    /// use nebula_memory::prelude::*;
+    /// use nebula_memory::allocator::TypedAllocator;
+    ///
+    /// let allocator = BumpAllocator::new(1024)?;
+    /// let ptr = unsafe { allocator.alloc_typed::<u64>()? };
+    /// unsafe {
+    ///     ptr.as_ptr().write(42);
+    ///     assert_eq!(*ptr.as_ptr(), 42);
+    /// }
+    /// # Ok::<(), nebula_memory::AllocError>(())
+    /// ```
+    #[inline]
+    unsafe fn alloc_typed<T>(&self) -> AllocResult<NonNull<T>> {
+        let layout = Layout::new::<T>();
+        let ptr = unsafe { self.allocate(layout)? };
+        Ok(unsafe { NonNull::new_unchecked(ptr.as_ptr() as *mut T) })
+    }
+
+    /// Allocates and initializes memory for a single instance of type `T`
+    ///
+    /// This is a convenience method that allocates memory and writes the
+    /// provided value into it.
+    ///
+    /// # Safety
+    /// The caller must deallocate with `dealloc_typed::<T>()` when done.
+    /// The value is moved into the allocation, so `T` need not be `Copy`.
+    ///
+    /// # Examples
+    /// ```rust
+    /// use nebula_memory::prelude::*;
+    /// use nebula_memory::allocator::TypedAllocator;
+    ///
+    /// let allocator = BumpAllocator::new(1024)?;
+    /// let ptr = unsafe { allocator.alloc_init(String::from("hello"))? };
+    /// unsafe {
+    ///     assert_eq!(&*ptr.as_ptr(), "hello");
+    /// }
+    /// # Ok::<(), nebula_memory::AllocError>(())
+    /// ```
+    #[inline]
+    unsafe fn alloc_init<T>(&self, value: T) -> AllocResult<NonNull<T>> {
+        let ptr = unsafe { self.alloc_typed::<T>()? };
+        unsafe {
+            ptr.as_ptr().write(value);
+        }
+        Ok(ptr)
+    }
+
+    /// Allocates memory for an array of `count` instances of type `T`
+    ///
+    /// Returns a pointer to the first element. The memory is **not initialized**.
+    ///
+    /// # Safety
+    /// - Caller must initialize all elements before reading
+    /// - Must deallocate with `dealloc_array::<T>()` passing same count
+    /// - Count must not cause size overflow
+    ///
+    /// # Examples
+    /// ```rust
+    /// use nebula_memory::prelude::*;
+    /// use nebula_memory::allocator::TypedAllocator;
+    ///
+    /// let allocator = BumpAllocator::new(1024)?;
+    /// let ptr = unsafe { allocator.alloc_array::<u32>(10)? };
+    /// unsafe {
+    ///     for i in 0..10 {
+    ///         ptr.as_ptr().add(i).write(i as u32);
+    ///     }
+    /// }
+    /// # Ok::<(), nebula_memory::AllocError>(())
+    /// ```
+    #[inline]
+    unsafe fn alloc_array<T>(&self, count: usize) -> AllocResult<NonNull<T>> {
+        if count == 0 {
+            // For zero-sized allocation, return a dangling but properly aligned pointer
+            return Ok(NonNull::dangling());
+        }
+
+        let layout = Layout::array::<T>(count)
+            .map_err(|_| AllocError::new(AllocErrorCode::SizeOverflow))?;
+
+        let ptr = unsafe { self.allocate(layout)? };
+        Ok(unsafe { NonNull::new_unchecked(ptr.as_ptr() as *mut T) })
+    }
+
+    /// Allocates and initializes an array by cloning a value
+    ///
+    /// Creates an array of `count` elements, each initialized by cloning `value`.
+    ///
+    /// # Safety
+    /// Must deallocate with `dealloc_array::<T>()` passing same count.
+    ///
+    /// # Examples
+    /// ```rust
+    /// use nebula_memory::prelude::*;
+    /// use nebula_memory::allocator::TypedAllocator;
+    ///
+    /// let allocator = BumpAllocator::new(1024)?;
+    /// let ptr = unsafe { allocator.alloc_array_with::<u32>(5, 42)? };
+    /// unsafe {
+    ///     for i in 0..5 {
+    ///         assert_eq!(*ptr.as_ptr().add(i), 42);
+    ///     }
+    /// }
+    /// # Ok::<(), nebula_memory::AllocError>(())
+    /// ```
+    #[inline]
+    unsafe fn alloc_array_with<T: Clone>(&self, count: usize, value: T) -> AllocResult<NonNull<T>> {
+        let ptr = unsafe { self.alloc_array::<T>(count)? };
+
+        if count > 0 {
+            unsafe {
+                for i in 0..count {
+                    ptr.as_ptr().add(i).write(value.clone());
+                }
+            }
+        }
+
+        Ok(ptr)
+    }
+
+    /// Deallocates memory for a single instance of type `T`
+    ///
+    /// # Safety
+    /// - `ptr` must have been allocated by `alloc_typed::<T>()` or `alloc_init::<T>()`
+    /// - `ptr` must not be used after this call
+    /// - If `T` has a destructor, caller must run it before deallocation
+    #[inline]
+    unsafe fn dealloc_typed<T>(&self, ptr: NonNull<T>) {
+        let layout = Layout::new::<T>();
+        unsafe { self.deallocate(ptr.cast(), layout) }
+    }
+
+    /// Deallocates memory for an array of type `T`
+    ///
+    /// # Safety
+    /// - `ptr` must have been allocated by `alloc_array::<T>()` with same `count`
+    /// - `ptr` must not be used after this call
+    /// - If `T` has a destructor, caller must run it for all elements before deallocation
+    #[inline]
+    unsafe fn dealloc_array<T>(&self, ptr: NonNull<T>, count: usize) {
+        if count == 0 {
+            return;
+        }
+
+        let layout = Layout::array::<T>(count).expect("layout must be valid for deallocation");
+        unsafe { self.deallocate(ptr.cast(), layout) }
+    }
+}
+
+/// Blanket implementation: all Allocators automatically implement TypedAllocator
+///
+/// This means any type implementing [`Allocator`] gets the type-safe API for free.
+impl<A: Allocator + ?Sized> TypedAllocator for A {}
+
 // ============================================================================
 // Blanket implementations for references
 // ============================================================================

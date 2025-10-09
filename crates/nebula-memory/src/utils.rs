@@ -87,7 +87,7 @@ pub const fn padding_needed(value: usize, alignment: usize) -> usize {
 /// assert_eq!(next_power_of_two(8), 8);
 /// assert_eq!(next_power_of_two(9), 16);
 /// ```
-#[inline]
+#[inline(always)]
 pub const fn next_power_of_two(mut value: usize) -> usize {
     if value == 0 {
         return 1;
@@ -154,7 +154,7 @@ pub fn memory_barrier() {
 }
 
 /// Securely zero memory
-#[inline]
+#[inline(always)]
 pub fn secure_zero(ptr: *mut u8, len: usize) {
     if len == 0 {
         return;
@@ -167,7 +167,7 @@ pub fn secure_zero(ptr: *mut u8, len: usize) {
 }
 
 /// Platform-specific prefetch for read
-#[inline]
+#[inline(always)]
 #[cfg(target_arch = "x86_64")]
 pub fn prefetch_read<T>(ptr: *const T) {
     use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
@@ -176,12 +176,12 @@ pub fn prefetch_read<T>(ptr: *const T) {
     }
 }
 
-#[inline]
+#[inline(always)]
 #[cfg(not(target_arch = "x86_64"))]
 pub fn prefetch_read<T>(_ptr: *const T) {}
 
 /// Platform-specific prefetch for write
-#[inline]
+#[inline(always)]
 #[cfg(target_arch = "x86_64")]
 pub fn prefetch_write<T>(ptr: *mut T) {
     use core::arch::x86_64::{_MM_HINT_T1, _mm_prefetch};
@@ -190,7 +190,7 @@ pub fn prefetch_write<T>(ptr: *mut T) {
     }
 }
 
-#[inline]
+#[inline(always)]
 #[cfg(not(target_arch = "x86_64"))]
 pub fn prefetch_write<T>(_ptr: *mut T) {}
 

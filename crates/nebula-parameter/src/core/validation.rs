@@ -1,19 +1,86 @@
-use nebula_core::ParameterKey as Key;
-use nebula_validator::{ValidationContext as ValidatorContext, Validator};
+//! Parameter validation using nebula-validator
+//!
+//! This module provides an ergonomic API for parameter validation that wraps
+//! the powerful `nebula-validator` crate with parameter-specific conveniences.
+//!
+//! # Architecture
+//!
+//! - `ParameterValidation` - Configuration holding validators
+//! - Fluent builder API for common validation patterns
+//! - Integration with nebula-validator's TypedValidator trait
+//!
+//! # Examples
+//!
+//! ```rust
+//! use nebula_parameter::prelude::*;
+//!
+//! // Simple validators
+//! let validation = ParameterValidation::string()
+//!     .min_length(3)
+//!     .max_length(50)
+//!     .build();
+//!
+//! // Email validation
+//! let email_validation = ParameterValidation::email();
+//!
+//! // Number range
+//! let age_validation = ParameterValidation::number()
+//!     .min(18.0)
+//!     .max(120.0)
+//!     .build();
+//! ```
+
+use nebula_core::ParameterKey;
+use nebula_validator::core::{AsyncValidator, TypedValidator, ValidationContext, ValidationError};
+use nebula_validator::validators::prelude::*;
+use nebula_value::Value;
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
-/// Validation configuration for parameters using nebula-validator
-#[derive(Default)]
+/// Validation configuration for parameters
+///
+/// This wraps validators from `nebula-validator` and provides parameter-specific
+/// conveniences like required field checking and custom error messages.
+///
+/// Note: The validator itself is not serialized, only the configuration (required, message, key).
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ParameterValidation {
-    /// The validator from nebula-validator (not serialized)
-    validator: Option<Box<dyn Validator>>,
+    /// The underlying validator (type-erased for storage)
+    /// Not serialized - validators must be reconstructed when deserializing
+    #[serde(skip)]
+    validator: Option<Arc<dyn AsyncValidator<Input = Value, Output = (), Error = ValidationError> + Send + Sync>>,
 
-    /// Whether the parameter is required (default: true)
+    /// Whether the parameter is required (checked before validator)
     required: bool,
 
     /// Custom validation message override
     message: Option<String>,
+
+    /// Parameter key (for error context)
+    key: Option<ParameterKey>,
+}
+
+impl Default for ParameterValidation {
+    fn default() -> Self {
+        Self {
+            validator: None,
+            required: false,
+            message: None,
+            key: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for ParameterValidation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParameterValidation")
+            .field("has_validator", &self.validator.is_some())
+            .field("required", &self.required)
+            .field("message", &self.message)
+            .field("key", &self.key)
+            .finish()
+    }
 }
 
 impl ParameterValidation {
@@ -22,23 +89,41 @@ impl ParameterValidation {
         Self::default()
     }
 
-    /// Create validation with a validator
-    pub fn with_validator(validator: Box<dyn Validator>) -> Self {
+    /// Create validation with a typed validator
+    pub fn with_validator<V>(validator: V) -> Self
+    where
+        V: AsyncValidator<Input = Value, Output = (), Error = ValidationError> + Send + Sync + 'static,
+    {
         Self {
-            validator: Some(validator),
-            required: true,
+            validator: Some(Arc::new(validator)),
+            required: false,
             message: None,
+            key: None,
         }
     }
 
     /// Set whether the parameter is required
-    pub fn set_required(&mut self, required: bool) {
-        self.required = required;
+    pub fn required(mut self) -> Self {
+        self.required = true;
+        self
+    }
+
+    /// Set whether the parameter is optional
+    pub fn optional(mut self) -> Self {
+        self.required = false;
+        self
     }
 
     /// Set custom validation message
-    pub fn set_message(&mut self, message: impl Into<String>) {
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = Some(message.into());
+        self
+    }
+
+    /// Set parameter key for error context
+    pub fn with_key(mut self, key: ParameterKey) -> Self {
+        self.key = Some(key);
+        self
     }
 
     /// Get the custom validation message
@@ -51,413 +136,478 @@ impl ParameterValidation {
         self.required
     }
 
-    /// Check if this validation has a validator
-    pub fn has_validator(&self) -> bool {
-        self.validator.is_some()
-    }
-
-    /// Validate a value (async)
+    /// Validate a value
     pub async fn validate(
         &self,
-        value: &nebula_value::Value,
-        context: Option<&ValidatorContext>,
+        value: &Value,
+        _context: Option<&ValidationContext>,
     ) -> Result<(), ValidationError> {
-        // Check if value is required
-        if self.required && self.is_empty_value(value) {
-            return Err(ValidationError::Required {
-                message: self.message.clone(),
-            });
+        // Check required first
+        if self.required && value.is_null() {
+            let mut err = ValidationError::new(
+                "required",
+                self.message
+                    .as_deref()
+                    .unwrap_or("This field is required"),
+            );
+
+            if let Some(key) = &self.key {
+                err = err.with_field(key.as_str());
+            }
+
+            return Err(err);
         }
 
-        // If value is empty and not required, skip validation
-        if !self.required && self.is_empty_value(value) {
+        // If no value and not required, skip validation
+        if value.is_null() {
             return Ok(());
         }
 
-        // Run the validator if present
+        // Run validator if present
         if let Some(validator) = &self.validator {
-            validator
-                .validate(value, context)
-                .await
-                .map_err(|invalid| ValidationError::ValidatorFailed {
-                    validator: validator.name().to_string(),
-                    message: self.message.clone().or_else(|| Some(invalid.to_string())),
-                })?;
+            let result = validator.validate_async(value).await;
+
+            // Apply custom message and field if validation failed
+            if let Err(mut err) = result {
+                if let Some(msg) = &self.message {
+                    // Create new error with custom message using the error code field
+                    err = ValidationError::new(&err.code, msg);
+                }
+                if let Some(key) = &self.key {
+                    err = err.with_field(key.as_str());
+                }
+                return Err(err);
+            }
         }
 
         Ok(())
     }
-
-    /// Check if a value is considered empty
-    #[inline]
-    fn is_empty_value(&self, value: &nebula_value::Value) -> bool {
-        match value {
-            nebula_value::Value::Null => true,
-            nebula_value::Value::Text(s) => s.is_empty(),
-            nebula_value::Value::Array(a) => a.is_empty(),
-            nebula_value::Value::Object(o) => o.is_empty(),
-            _ => false,
-        }
-    }
 }
 
-// Manual Clone implementation since Box<dyn Validator> can't be cloned
-impl Clone for ParameterValidation {
-    fn clone(&self) -> Self {
-        Self {
-            validator: None, // Can't clone validator
-            required: self.required,
-            message: self.message.clone(),
-        }
-    }
-}
+// =============================================================================
+// Fluent Builder API
+// =============================================================================
 
-// Manual Debug implementation
-impl std::fmt::Debug for ParameterValidation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ParameterValidation")
-            .field("validator", &self.validator.as_ref().map(|v| v.name()))
-            .field("required", &self.required)
-            .field("message", &self.message)
-            .finish()
-    }
-}
-
-// Custom Serialize - only serialize metadata, not the validator
-impl Serialize for ParameterValidation {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("ParameterValidation", 3)?;
-        state.serialize_field("validator_name", &self.validator.as_ref().map(|v| v.name()))?;
-        state.serialize_field("required", &self.required)?;
-        state.serialize_field("message", &self.message)?;
-        state.end()
-    }
-}
-
-// Custom Deserialize - restore metadata only, validator will be set separately
-impl<'de> Deserialize<'de> for ParameterValidation {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Helper {
-            #[serde(default)]
-            required: bool,
-            message: Option<String>,
-        }
-
-        let helper = Helper::deserialize(deserializer)?;
-        Ok(Self {
-            validator: None,
-            required: helper.required,
-            message: helper.message,
-        })
-    }
-}
-
-/// Validation error types
-#[derive(Debug, thiserror::Error)]
-pub enum ValidationError {
-    #[error("Value is required{}", .message.as_ref().map(|m| format!(": {}", m)).unwrap_or_default())]
-    Required { message: Option<String> },
-
-    #[error("Validation failed for '{validator}'{}", .message.as_ref().map(|m| format!(": {}", m)).unwrap_or_default())]
-    ValidatorFailed {
-        validator: String,
-        message: Option<String>,
-    },
-
-    #[error("Custom validation error: {message}")]
-    Custom { message: String },
-}
-
-/// Builder for parameter validation using nebula-validator
-pub struct ParameterValidationBuilder {
-    validator: Option<Box<dyn Validator>>,
+/// Builder for string validation
+pub struct StringValidationBuilder {
+    min_len: Option<usize>,
+    max_len: Option<usize>,
+    pattern: Option<String>,
+    contains_str: Option<String>,
+    starts_with_str: Option<String>,
+    ends_with_str: Option<String>,
+    is_email: bool,
+    is_url: bool,
     required: bool,
     message: Option<String>,
 }
 
-impl ParameterValidationBuilder {
-    /// Create a new validation builder
+impl StringValidationBuilder {
     pub fn new() -> Self {
         Self {
-            validator: None,
-            required: true,
+            min_len: None,
+            max_len: None,
+            pattern: None,
+            contains_str: None,
+            starts_with_str: None,
+            ends_with_str: None,
+            is_email: false,
+            is_url: false,
+            required: false,
             message: None,
         }
     }
 
-    /// Set the validator
-    pub fn validator(mut self, validator: Box<dyn Validator>) -> Self {
-        self.validator = Some(validator);
+    pub fn min_length(mut self, min: usize) -> Self {
+        self.min_len = Some(min);
         self
     }
 
-    /// Set whether the field is required
-    pub fn required(mut self, required: bool) -> Self {
-        self.required = required;
+    pub fn max_length(mut self, max: usize) -> Self {
+        self.max_len = Some(max);
         self
     }
 
-    /// Set a custom validation message
-    pub fn message(mut self, message: impl Into<String>) -> Self {
-        self.message = Some(message.into());
+    pub fn pattern(mut self, pattern: impl Into<String>) -> Self {
+        self.pattern = Some(pattern.into());
         self
     }
 
-    /// Build the validation configuration
+    pub fn contains(mut self, s: impl Into<String>) -> Self {
+        self.contains_str = Some(s.into());
+        self
+    }
+
+    pub fn starts_with(mut self, s: impl Into<String>) -> Self {
+        self.starts_with_str = Some(s.into());
+        self
+    }
+
+    pub fn ends_with(mut self, s: impl Into<String>) -> Self {
+        self.ends_with_str = Some(s.into());
+        self
+    }
+
+    pub fn email(mut self) -> Self {
+        self.is_email = true;
+        self
+    }
+
+    pub fn url(mut self) -> Self {
+        self.is_url = true;
+        self
+    }
+
+    pub fn required(mut self) -> Self {
+        self.required = true;
+        self
+    }
+
+    pub fn message(mut self, msg: impl Into<String>) -> Self {
+        self.message = Some(msg.into());
+        self
+    }
+
     pub fn build(self) -> ParameterValidation {
+        // Build composite validator
+        let mut validators: Vec<Box<dyn TypedValidator<Input = str, Output = (), Error = ValidationError> + Send + Sync>> = Vec::new();
+
+        if let Some(min) = self.min_len {
+            validators.push(Box::new(min_length(min)));
+        }
+
+        if let Some(max) = self.max_len {
+            validators.push(Box::new(max_length(max)));
+        }
+
+        if self.is_email {
+            validators.push(Box::new(email()));
+        }
+
+        if self.is_url {
+            validators.push(Box::new(url()));
+        }
+
+        if let Some(pattern) = self.pattern {
+            // matches_regex returns Result, need to unwrap or handle
+            if let Ok(validator) = matches_regex(pattern) {
+                validators.push(Box::new(validator));
+            }
+        }
+
+        if let Some(s) = self.contains_str {
+            validators.push(Box::new(contains(s)));
+        }
+
+        if let Some(s) = self.starts_with_str {
+            validators.push(Box::new(starts_with(s)));
+        }
+
+        if let Some(s) = self.ends_with_str {
+            validators.push(Box::new(ends_with(s)));
+        }
+
+        // Combine all validators with AND logic
+        let validator = if !validators.is_empty() {
+            // Create a composite validator that checks all conditions
+            Some(Arc::new(StringCompositeValidator { validators }) as Arc<dyn AsyncValidator<Input = Value, Output = (), Error = ValidationError> + Send + Sync>)
+        } else {
+            None
+        };
+
         ParameterValidation {
-            validator: self.validator,
+            validator,
             required: self.required,
             message: self.message,
+            key: None,
         }
     }
 }
 
-impl Default for ParameterValidationBuilder {
+impl Default for StringValidationBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Convenient validation builders using nebula-validator
-pub mod validators {
-    use super::*;
-    use nebula_validator::*;
-
-    /// Email validation
-    pub fn email() -> ParameterValidation {
-        ParameterValidation::with_validator(Box::new(
-            string()
-                .and(string_contains("@".to_string()))
-                .and(string_contains(".".to_string()))
-                .and(min_length(5)),
-        ))
-    }
-
-    /// URL validation
-    pub fn url(require_https: bool) -> ParameterValidation {
-        let validator: Box<dyn Validator> = if require_https {
-            Box::new(string().and(string_starts_with("https://".to_string())))
-        } else {
-            Box::new(
-                string().and(
-                    string_starts_with("http://".to_string())
-                        .or(string_starts_with("https://".to_string())),
-                ),
-            )
-        };
-        ParameterValidation::with_validator(validator)
-    }
-
-    /// String validation with length constraints
-    pub fn string_length(min: Option<usize>, max: Option<usize>) -> ParameterValidation {
-        let validator: Box<dyn Validator> = match (min, max) {
-            (Some(min_len), Some(max_len)) => {
-                Box::new(string().and(min_length(min_len)).and(max_length(max_len)))
-            }
-            (Some(min_len), None) => Box::new(string().and(min_length(min_len))),
-            (None, Some(max_len)) => Box::new(string().and(max_length(max_len))),
-            (None, None) => Box::new(string()),
-        };
-
-        ParameterValidation::with_validator(validator)
-    }
-
-    /// Numeric range validation
-    pub fn number_range(min: Option<f64>, max: Option<f64>) -> ParameterValidation {
-        let validator: Box<dyn Validator> = match (min, max) {
-            (Some(min_val), Some(max_val)) => Box::new(
-                number()
-                    .and(nebula_validator::min(min_val))
-                    .and(nebula_validator::max(max_val)),
-            ),
-            (Some(min_val), None) => Box::new(number().and(nebula_validator::min(min_val))),
-            (None, Some(max_val)) => Box::new(number().and(nebula_validator::max(max_val))),
-            (None, None) => Box::new(number()),
-        };
-
-        ParameterValidation::with_validator(validator)
-    }
-
-    /// Required field validation
-    pub fn required() -> ParameterValidation {
-        ParameterValidation::with_validator(Box::new(nebula_validator::required()))
-    }
-
-    /// Optional field validation
-    pub fn optional() -> ParameterValidation {
-        let mut validation = ParameterValidation::new();
-        validation.set_required(false);
-        validation
-    }
-
-    /// Integer validation
-    pub fn integer() -> ParameterValidation {
-        ParameterValidation::with_validator(Box::new(nebula_validator::integer()))
-    }
-
-    /// Positive number validation
-    pub fn positive() -> ParameterValidation {
-        ParameterValidation::with_validator(Box::new(nebula_validator::positive()))
-    }
-
-    /// Array size validation
-    pub fn array_size(min: Option<usize>, max: Option<usize>) -> ParameterValidation {
-        let validator: Box<dyn Validator> = match (min, max) {
-            (Some(min_size), Some(max_size)) => Box::new(
-                array()
-                    .and(array_min_size(min_size))
-                    .and(array_max_size(max_size)),
-            ),
-            (Some(min_size), None) => Box::new(array().and(array_min_size(min_size))),
-            (None, Some(max_size)) => Box::new(array().and(array_max_size(max_size))),
-            (None, None) => Box::new(array()),
-        };
-
-        ParameterValidation::with_validator(validator)
-    }
-
-    /// One of values validation
-    pub fn one_of(values: Vec<nebula_value::Value>) -> ParameterValidation {
-        ParameterValidation::with_validator(Box::new(nebula_validator::one_of(values)))
-    }
-
-    /// Not in values validation
-    pub fn not_in(values: Vec<&str>) -> ParameterValidation {
-        ParameterValidation::with_validator(Box::new(not_in_str_values(values)))
-    }
-
-    /// Alphanumeric string validation
-    pub fn alphanumeric(allow_spaces: bool) -> ParameterValidation {
-        ParameterValidation::with_validator(Box::new(
-            string().and(nebula_validator::alphanumeric(allow_spaces)),
-        ))
-    }
+/// Builder for number validation
+pub struct NumberValidationBuilder {
+    min_val: Option<f64>,
+    max_val: Option<f64>,
+    must_be_positive: bool,
+    must_be_negative: bool,
+    must_be_even: bool,
+    must_be_odd: bool,
+    required: bool,
+    message: Option<String>,
 }
 
-/// Cross-parameter validation for validating relationships between parameters
-pub struct CrossParameterValidation {
-    /// Name/description of this validation rule
-    name: String,
-
-    /// Parameters involved in this validation
-    parameters: Vec<Key>,
-
-    /// Error message when validation fails
-    error_message: String,
-
-    /// Validator to run (stored separately, not serialized)
-    #[allow(dead_code)]
-    validator: Option<Box<dyn Validator>>,
-}
-
-impl CrossParameterValidation {
-    /// Create a new cross-parameter validation
-    pub fn new(name: impl Into<String>, error_message: impl Into<String>) -> Self {
+impl NumberValidationBuilder {
+    pub fn new() -> Self {
         Self {
-            name: name.into(),
-            parameters: Vec::new(),
-            error_message: error_message.into(),
-            validator: None,
+            min_val: None,
+            max_val: None,
+            must_be_positive: false,
+            must_be_negative: false,
+            must_be_even: false,
+            must_be_odd: false,
+            required: false,
+            message: None,
         }
     }
 
-    /// Get the validation rule name
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn min(mut self, min: f64) -> Self {
+        self.min_val = Some(min);
+        self
     }
 
-    /// Get the parameters involved in this validation
-    pub fn parameters(&self) -> &[Key] {
-        &self.parameters
+    pub fn max(mut self, max: f64) -> Self {
+        self.max_val = Some(max);
+        self
     }
 
-    /// Get the error message
-    pub fn error_message(&self) -> &str {
-        &self.error_message
+    pub fn positive(mut self) -> Self {
+        self.must_be_positive = true;
+        self
     }
 
-    /// Add a parameter to this validation
-    pub fn add_parameter(&mut self, param: Key) {
-        if !self.parameters.contains(&param) {
-            self.parameters.push(param);
+    pub fn negative(mut self) -> Self {
+        self.must_be_negative = true;
+        self
+    }
+
+    pub fn even(mut self) -> Self {
+        self.must_be_even = true;
+        self
+    }
+
+    pub fn odd(mut self) -> Self {
+        self.must_be_odd = true;
+        self
+    }
+
+    pub fn required(mut self) -> Self {
+        self.required = true;
+        self
+    }
+
+    pub fn message(mut self, msg: impl Into<String>) -> Self {
+        self.message = Some(msg.into());
+        self
+    }
+
+    pub fn build(self) -> ParameterValidation {
+        let mut validators: Vec<Box<dyn TypedValidator<Input = f64, Output = (), Error = ValidationError> + Send + Sync>> = Vec::new();
+
+        if let Some(min_value) = self.min_val {
+            validators.push(Box::new(nebula_validator::validators::numeric::min(min_value)));
+        }
+
+        if let Some(max_value) = self.max_val {
+            validators.push(Box::new(nebula_validator::validators::numeric::max(max_value)));
+        }
+
+        if self.must_be_positive {
+            validators.push(Box::new(positive()));
+        }
+
+        if self.must_be_negative {
+            validators.push(Box::new(negative()));
+        }
+
+        if self.must_be_even {
+            validators.push(Box::new(even()));
+        }
+
+        if self.must_be_odd {
+            validators.push(Box::new(odd()));
+        }
+
+        let validator = if !validators.is_empty() {
+            Some(Arc::new(NumberCompositeValidator { validators }) as Arc<dyn AsyncValidator<Input = Value, Output = (), Error = ValidationError> + Send + Sync>)
+        } else {
+            None
+        };
+
+        ParameterValidation {
+            validator,
+            required: self.required,
+            message: self.message,
+            key: None,
         }
     }
+}
 
-    /// Validate using the validator and context
-    pub async fn validate(
+impl Default for NumberValidationBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// =============================================================================
+// Composite Validators (bridge TypedValidator to AsyncValidator on Value)
+// =============================================================================
+
+/// Composite validator for strings
+struct StringCompositeValidator {
+    validators: Vec<Box<dyn TypedValidator<Input = str, Output = (), Error = ValidationError> + Send + Sync>>,
+}
+
+#[async_trait::async_trait]
+impl AsyncValidator for StringCompositeValidator {
+    type Input = Value;
+    type Output = ();
+    type Error = ValidationError;
+
+    async fn validate_async(
         &self,
-        values: &HashMap<Key, nebula_value::Value>,
+        value: &Value,
     ) -> Result<(), ValidationError> {
-        // Build a validation context from the values
-        // Convert HashMap<Key, Value> to Object by mapping keys to strings
-        use crate::ValueRefExt;
-        let obj_entries: Vec<(String, _)> = values
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_json()))
-            .collect();
+        // Extract string from Value
+        let s = value.as_text()
+            .ok_or_else(|| ValidationError::new("type_error", "Expected text value"))?;
 
-        let root_value = nebula_value::Value::Object(obj_entries.into_iter().collect());
-        let context = ValidatorContext::simple(root_value);
-
-        // Run the validator if present
-        if let Some(validator) = &self.validator {
-            // We validate against the root object
-            let dummy_value = nebula_value::Value::boolean(true);
-            validator
-                .validate(&dummy_value, Some(&context))
-                .await
-                .map_err(|_| ValidationError::Custom {
-                    message: self.error_message.clone(),
-                })?;
+        // Run all validators
+        for validator in &self.validators {
+            validator.validate(s.as_str())?;
         }
 
         Ok(())
     }
 }
 
-// Manual Serialize for CrossParameterValidation
-impl Serialize for CrossParameterValidation {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("CrossParameterValidation", 3)?;
-        state.serialize_field("name", &self.name)?;
-        state.serialize_field("parameters", &self.parameters)?;
-        state.serialize_field("error_message", &self.error_message)?;
-        state.end()
+/// Composite validator for numbers
+struct NumberCompositeValidator {
+    validators: Vec<Box<dyn TypedValidator<Input = f64, Output = (), Error = ValidationError> + Send + Sync>>,
+}
+
+#[async_trait::async_trait]
+impl AsyncValidator for NumberCompositeValidator {
+    type Input = Value;
+    type Output = ();
+    type Error = ValidationError;
+
+    async fn validate_async(
+        &self,
+        value: &Value,
+    ) -> Result<(), ValidationError> {
+        // Extract number from Value
+        let num = match value {
+            Value::Integer(i) => {
+                // Convert Integer to i64 then to f64
+                let i64_val: i64 = i.clone().into();
+                i64_val as f64
+            }
+            Value::Float(f) => {
+                // Convert Float to f64
+                let f64_val: f64 = f.clone().into();
+                f64_val
+            }
+            _ => return Err(ValidationError::new("type_error", "Expected numeric value")),
+        };
+
+        // Run all validators
+        for validator in &self.validators {
+            validator.validate(&num)?;
+        }
+
+        Ok(())
     }
 }
 
-// Manual Deserialize for CrossParameterValidation
-impl<'de> Deserialize<'de> for CrossParameterValidation {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Helper {
-            name: String,
-            parameters: Vec<Key>,
-            error_message: String,
-        }
+// =============================================================================
+// Convenience constructors
+// =============================================================================
 
-        let helper = Helper::deserialize(deserializer)?;
-        Ok(Self {
-            name: helper.name,
-            parameters: helper.parameters,
-            error_message: helper.error_message,
+impl ParameterValidation {
+    /// Start building string validation
+    pub fn string() -> StringValidationBuilder {
+        StringValidationBuilder::new()
+    }
+
+    /// Start building number validation
+    pub fn number() -> NumberValidationBuilder {
+        NumberValidationBuilder::new()
+    }
+
+    /// Quick email validation
+    pub fn email() -> Self {
+        Self::string().email().build()
+    }
+
+    /// Quick URL validation
+    pub fn url() -> Self {
+        Self::string().url().build()
+    }
+
+    /// Quick required validation
+    pub fn required_field() -> Self {
+        Self {
             validator: None,
-        })
+            required: true,
+            message: Some("This field is required".to_string()),
+            key: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_string_validation() {
+        let validation = ParameterValidation::string()
+            .min_length(3)
+            .max_length(10)
+            .build();
+
+        // Valid
+        assert!(validation.validate(&Value::text("hello"), None).await.is_ok());
+
+        // Too short
+        assert!(validation.validate(&Value::text("hi"), None).await.is_err());
+
+        // Too long
+        assert!(validation.validate(&Value::text("hello world!"), None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_email_validation() {
+        let validation = ParameterValidation::email();
+
+        // Valid email
+        assert!(validation.validate(&Value::text("user@example.com"), None).await.is_ok());
+
+        // Invalid email
+        assert!(validation.validate(&Value::text("not-an-email"), None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_number_validation() {
+        let validation = ParameterValidation::number()
+            .min(0.0)
+            .max(100.0)
+            .build();
+
+        // Valid
+        assert!(validation.validate(&Value::float(50.0), None).await.is_ok());
+
+        // Too small
+        assert!(validation.validate(&Value::float(-10.0), None).await.is_err());
+
+        // Too large
+        assert!(validation.validate(&Value::float(150.0), None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_required_validation() {
+        let validation = ParameterValidation::required_field();
+
+        // Null value should fail
+        assert!(validation.validate(&Value::Null, None).await.is_err());
+
+        // Non-null value should pass
+        assert!(validation.validate(&Value::text("anything"), None).await.is_ok());
     }
 }

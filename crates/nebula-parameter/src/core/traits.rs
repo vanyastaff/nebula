@@ -442,12 +442,17 @@ pub trait ParameterValue: Parameter {
 
     /// Downcast to concrete type (mutable)
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+
+    /// Validate the current value (type-erased, async)
+    ///
+    /// Returns a boxed future to allow trait objects
+    fn validate_erased(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>;
 }
 
 // Blanket implementation for all HasValue types with proper conversion support
 impl<T> ParameterValue for T
 where
-    T: HasValue + 'static,
+    T: HasValue + Validatable + 'static,
     T::Value: Clone + Into<Value> + TryFrom<Value>,
     <T::Value as TryFrom<Value>>::Error: std::fmt::Display,
 {
@@ -480,6 +485,10 @@ where
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+
+    fn validate_erased(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>> {
+        Box::pin(self.validate_current())
     }
 }
 

@@ -148,16 +148,8 @@ impl Expressible for CodeParameter {
         let value = value.into();
         match value {
             MaybeExpression::Value(nebula_value::Value::Text(s)) => {
-                // Perform language-specific validation if possible
-                if self.is_valid_code(s.as_str()) {
-                    self.value = Some(s);
-                    Ok(())
-                } else {
-                    Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: "Code contains syntax errors".to_string(),
-                    })
-                }
+                self.value = Some(s);
+                Ok(())
             }
             MaybeExpression::Expression(expr) => {
                 // Allow expressions for dynamic code
@@ -192,136 +184,6 @@ impl Displayable for CodeParameter {
 }
 
 impl CodeParameter {
-    /// Validate code syntax based on language
-    fn is_valid_code(&self, code: &str) -> bool {
-        if code.is_empty() {
-            return true; // Empty code is valid
-        }
-
-        // Check for expressions (start with {{ and end with }})
-        if code.starts_with("{{") && code.ends_with("}}") {
-            return true;
-        }
-
-        // Basic validation based on language
-        if let Some(options) = &self.options {
-            if let Some(language) = &options.language {
-                return self.validate_language_syntax(code, language);
-            }
-        }
-
-        // No specific language validation, accept all
-        true
-    }
-
-    /// Basic language-specific syntax validation
-    fn validate_language_syntax(&self, code: &str, language: &CodeLanguage) -> bool {
-        match language {
-            CodeLanguage::Json => {
-                // Try to parse as JSON
-                serde_json::from_str::<serde_json::Value>(code).is_ok()
-            }
-            CodeLanguage::JavaScript | CodeLanguage::TypeScript => {
-                // Basic JS/TS validation - check for unclosed braces/brackets
-                self.validate_balanced_brackets(code)
-            }
-            CodeLanguage::Python => {
-                // Basic Python validation - check indentation consistency
-                self.validate_python_indentation(code)
-            }
-            _ => {
-                // For other languages, just check balanced brackets
-                self.validate_balanced_brackets(code)
-            }
-        }
-    }
-
-    /// Check if brackets, braces, and parentheses are balanced
-    fn validate_balanced_brackets(&self, code: &str) -> bool {
-        let mut stack = Vec::new();
-        let mut in_string = false;
-        let mut in_char = false;
-        let mut escaped = false;
-
-        for ch in code.chars() {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-
-            if ch == '\\' {
-                escaped = true;
-                continue;
-            }
-
-            if in_string {
-                if ch == '"' {
-                    in_string = false;
-                }
-                continue;
-            }
-
-            if in_char {
-                if ch == '\'' {
-                    in_char = false;
-                }
-                continue;
-            }
-
-            match ch {
-                '"' => in_string = true,
-                '\'' => in_char = true,
-                '(' => stack.push(')'),
-                '[' => stack.push(']'),
-                '{' => stack.push('}'),
-                ')' | ']' | '}' => {
-                    if stack.pop() != Some(ch) {
-                        return false;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        stack.is_empty() && !in_string && !in_char
-    }
-
-    /// Basic Python indentation validation
-    fn validate_python_indentation(&self, code: &str) -> bool {
-        let mut indent_stack = vec![0];
-
-        for line in code.lines() {
-            let trimmed = line.trim();
-
-            // Skip empty lines and comments
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-
-            let indent_level = line.len() - line.trim_start().len();
-
-            // Check if indentation is consistent with stack
-            if indent_level > *indent_stack.last().unwrap() {
-                indent_stack.push(indent_level);
-            } else {
-                // Pop stack until we find matching indentation
-                while let Some(&last_indent) = indent_stack.last() {
-                    if last_indent <= indent_level {
-                        break;
-                    }
-                    indent_stack.pop();
-                }
-
-                // Check if we found a matching indentation level
-                if indent_stack.last() != Some(&indent_level) {
-                    return false;
-                }
-            }
-        }
-
-        true
-    }
-
     /// Get the programming language
     pub fn get_language(&self) -> CodeLanguage {
         self.options
