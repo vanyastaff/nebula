@@ -3,6 +3,7 @@
 //! This module defines the AST structure for parsed expressions.
 
 use nebula_value::Value;
+use std::sync::Arc;
 
 /// An expression node in the AST
 #[derive(Debug, Clone, PartialEq)]
@@ -13,10 +14,10 @@ pub enum Expr {
 
     // Variables and identifiers
     /// Variable reference (e.g., $node, $execution)
-    Variable(String),
+    Variable(Arc<str>),
 
     /// Identifier (for function names, etc.)
-    Identifier(String),
+    Identifier(Arc<str>),
 
     // Unary operations
     /// Unary negation (-expr)
@@ -35,20 +36,20 @@ pub enum Expr {
 
     // Access operations
     /// Property access (object.property)
-    PropertyAccess { object: Box<Expr>, property: String },
+    PropertyAccess { object: Box<Expr>, property: Arc<str> },
 
     /// Index access (array[index])
     IndexAccess { object: Box<Expr>, index: Box<Expr> },
 
     // Function calls
     /// Function call (functionName(args...))
-    FunctionCall { name: String, args: Vec<Expr> },
+    FunctionCall { name: Arc<str>, args: Vec<Expr> },
 
     // Pipeline
     /// Pipeline operation (expr | function(args...))
     Pipeline {
         value: Box<Expr>,
-        function: String,
+        function: Arc<str>,
         args: Vec<Expr>,
     },
 
@@ -62,14 +63,14 @@ pub enum Expr {
 
     // Lambda
     /// Lambda expression (param => body)
-    Lambda { param: String, body: Box<Expr> },
+    Lambda { param: Arc<str>, body: Box<Expr> },
 
     // Array and Object literals
     /// Array literal ([expr1, expr2, ...])
     Array(Vec<Expr>),
 
     /// Object literal ({key1: value1, key2: value2, ...})
-    Object(Vec<(String, Expr)>),
+    Object(Vec<(Arc<str>, Expr)>),
 }
 
 /// Binary operators

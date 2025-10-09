@@ -1,6 +1,6 @@
 //! Math functions
 
-use super::{check_arg_count, check_min_arg_count};
+use super::{check_arg_count, check_min_arg_count, get_number_arg};
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
@@ -10,14 +10,8 @@ use nebula_value::Value;
 /// Absolute value
 pub fn abs(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
     check_arg_count("abs", args, 1)?;
-    match &args[0] {
-        Value::Integer(n) => Ok(Value::integer(n.value().abs())),
-        Value::Float(n) => Ok(Value::float(n.value().abs())),
-        _ => Err(NebulaError::expression_type_error(
-            "number",
-            args[0].kind().name(),
-        )),
-    }
+    let num = get_number_arg("abs", args, 0, "value")?;
+    Ok(Value::float(num.abs()))
 }
 
 /// Round to specified decimal places (default: 0)
@@ -27,11 +21,11 @@ pub fn round(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("round", args, 1)?;
-    let num = args[0].to_float()?;
+    let num = get_number_arg("round", args, 0, "value")?;
 
     if args.len() >= 2 {
         // Round to specific decimal places
-        let decimals = args[1].to_integer()? as u32;
+        let decimals = super::get_int_arg("round", args, 1, "decimals")? as u32;
         let multiplier = 10_f64.powi(decimals as i32);
         let rounded = (num * multiplier).round() / multiplier;
         Ok(Value::float(rounded))
@@ -48,7 +42,7 @@ pub fn floor(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("floor", args, 1)?;
-    let num = args[0].to_float()?;
+    let num = get_number_arg("floor", args, 0, "value")?;
     Ok(Value::float(num.floor()))
 }
 

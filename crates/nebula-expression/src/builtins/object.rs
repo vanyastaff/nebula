@@ -18,12 +18,12 @@ pub fn keys(
         .as_object()
         .ok_or_else(|| NebulaError::expression_type_error("object", args[0].kind().name()))?;
 
-    use nebula_value::ValueRefExt;
-    let mut result = nebula_value::Array::new();
-    for key in obj.keys() {
-        result = result.push(Value::text(key).to_json());
-    }
-    Ok(Value::Array(result))
+    // Pre-allocate with known size to avoid reallocations
+    let keys: Vec<_> = obj.keys()
+        .map(|k| serde_json::Value::String(k.to_string()))
+        .collect();
+
+    Ok(Value::Array(nebula_value::Array::from_vec(keys)))
 }
 
 /// Get all values of an object
@@ -37,11 +37,10 @@ pub fn values(
         .as_object()
         .ok_or_else(|| NebulaError::expression_type_error("object", args[0].kind().name()))?;
 
-    let mut result = nebula_value::Array::new();
-    for value in obj.values() {
-        result.push(value.clone());
-    }
-    Ok(Value::Array(result))
+    // Collect into Vec directly - single allocation
+    let values: Vec<_> = obj.values().cloned().collect();
+
+    Ok(Value::Array(nebula_value::Array::from_vec(values)))
 }
 
 /// Check if an object has a specific key

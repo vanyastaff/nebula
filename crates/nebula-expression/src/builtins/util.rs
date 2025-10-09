@@ -75,6 +75,7 @@ pub fn is_number(
 }
 
 /// Generate a new UUID
+#[cfg(feature = "uuid")]
 pub fn uuid(
     _args: &[Value],
     _eval: &Evaluator,
@@ -82,4 +83,16 @@ pub fn uuid(
 ) -> ExpressionResult<Value> {
     let id = uuid::Uuid::new_v4();
     Ok(Value::text(id.to_string()))
+}
+
+/// Generate a new UUID (fallback when feature disabled)
+#[cfg(not(feature = "uuid"))]
+pub fn uuid(
+    _args: &[Value],
+    _eval: &Evaluator,
+    _ctx: &EvaluationContext,
+) -> ExpressionResult<Value> {
+    Err(nebula_error::NebulaError::expression_function_not_found(
+        "uuid (feature 'uuid' not enabled)",
+    ))
 }

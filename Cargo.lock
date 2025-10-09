@@ -2982,11 +2982,14 @@ name = "nebula-expression"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "criterion 0.5.1",
  "nebula-core",
  "nebula-error",
  "nebula-log",
  "nebula-memory",
  "nebula-value",
+ "once_cell",
+ "parking_lot",
  "pretty_assertions",
  "regex",
  "serde",

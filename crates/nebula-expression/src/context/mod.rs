@@ -6,18 +6,19 @@
 use nebula_value::Value;
 use nebula_value::ValueRefExt;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Evaluation context containing variables and workflow data
 #[derive(Debug, Clone)]
 pub struct EvaluationContext {
     /// Node data ($node['name'].data)
-    nodes: HashMap<String, Value>,
+    nodes: HashMap<Arc<str>, Arc<Value>>,
     /// Execution variables ($execution.id, $execution.mode, etc.)
-    execution_vars: HashMap<String, Value>,
+    execution_vars: HashMap<Arc<str>, Arc<Value>>,
     /// Workflow metadata ($workflow.id, $workflow.name, etc.)
-    workflow: Value,
+    workflow: Arc<Value>,
     /// Input data ($input.item, $input.all, etc.)
-    input: Value,
+    input: Arc<Value>,
 }
 
 impl EvaluationContext {
@@ -26,49 +27,51 @@ impl EvaluationContext {
         Self {
             nodes: HashMap::new(),
             execution_vars: HashMap::new(),
-            workflow: Value::object_empty(),
-            input: Value::object_empty(),
+            workflow: Arc::new(Value::object_empty()),
+            input: Arc::new(Value::object_empty()),
         }
     }
 
     /// Set data for a specific node
     pub fn set_node_data(&mut self, node_id: impl Into<String>, data: Value) {
-        self.nodes.insert(node_id.into(), data);
+        let key: Arc<str> = Arc::from(node_id.into().as_str());
+        self.nodes.insert(key, Arc::new(data));
     }
 
     /// Get data for a specific node
-    pub fn get_node_data(&self, node_id: &str) -> Option<&Value> {
-        self.nodes.get(node_id)
+    pub fn get_node_data(&self, node_id: &str) -> Option<Arc<Value>> {
+        self.nodes.get(node_id).cloned()
     }
 
     /// Set an execution variable
     pub fn set_execution_var(&mut self, name: impl Into<String>, value: Value) {
-        self.execution_vars.insert(name.into(), value);
+        let key: Arc<str> = Arc::from(name.into().as_str());
+        self.execution_vars.insert(key, Arc::new(value));
     }
 
     /// Get an execution variable
-    pub fn get_execution_var(&self, name: &str) -> Option<&Value> {
-        self.execution_vars.get(name)
+    pub fn get_execution_var(&self, name: &str) -> Option<Arc<Value>> {
+        self.execution_vars.get(name).cloned()
     }
 
     /// Set the workflow metadata
     pub fn set_workflow(&mut self, workflow: Value) {
-        self.workflow = workflow;
+        self.workflow = Arc::new(workflow);
     }
 
     /// Get the workflow metadata
-    pub fn get_workflow(&self) -> &Value {
-        &self.workflow
+    pub fn get_workflow(&self) -> Arc<Value> {
+        Arc::clone(&self.workflow)
     }
 
     /// Set the input data
     pub fn set_input(&mut self, input: Value) {
-        self.input = input;
+        self.input = Arc::new(input);
     }
 
     /// Get the input data
-    pub fn get_input(&self) -> &Value {
-        &self.input
+    pub fn get_input(&self) -> Arc<Value> {
+        Arc::clone(&self.input)
     }
 
     /// Resolve a variable by name
@@ -78,7 +81,7 @@ impl EvaluationContext {
                 // Return an object containing all nodes
                 let mut obj = nebula_value::Object::new();
                 for (key, value) in &self.nodes {
-                    obj = obj.insert(key.clone(), value.to_json());
+                    obj = obj.insert(key.to_string(), value.to_json());
                 }
                 Some(Value::Object(obj))
             }
@@ -86,12 +89,12 @@ impl EvaluationContext {
                 // Return an object containing all execution variables
                 let mut obj = nebula_value::Object::new();
                 for (key, value) in &self.execution_vars {
-                    obj = obj.insert(key.clone(), value.to_json());
+                    obj = obj.insert(key.to_string(), value.to_json());
                 }
                 Some(Value::Object(obj))
             }
-            "workflow" => Some(self.workflow.clone()),
-            "input" => Some(self.input.clone()),
+            "workflow" => Some((*self.workflow).clone()),
+            "input" => Some((*self.input).clone()),
             _ => None,
         }
     }
@@ -111,10 +114,10 @@ impl Default for EvaluationContext {
 /// Builder for creating evaluation contexts
 #[derive(Debug, Clone, Default)]
 pub struct EvaluationContextBuilder {
-    nodes: HashMap<String, Value>,
-    execution_vars: HashMap<String, Value>,
-    workflow: Option<Value>,
-    input: Option<Value>,
+    nodes: HashMap<Arc<str>, Arc<Value>>,
+    execution_vars: HashMap<Arc<str>, Arc<Value>>,
+    workflow: Option<Arc<Value>>,
+    input: Option<Arc<Value>>,
 }
 
 impl EvaluationContextBuilder {
@@ -125,25 +128,27 @@ impl EvaluationContextBuilder {
 
     /// Add node data
     pub fn node(mut self, node_id: impl Into<String>, data: Value) -> Self {
-        self.nodes.insert(node_id.into(), data);
+        let key: Arc<str> = Arc::from(node_id.into().as_str());
+        self.nodes.insert(key, Arc::new(data));
         self
     }
 
     /// Add an execution variable
     pub fn execution_var(mut self, name: impl Into<String>, value: Value) -> Self {
-        self.execution_vars.insert(name.into(), value);
+        let key: Arc<str> = Arc::from(name.into().as_str());
+        self.execution_vars.insert(key, Arc::new(value));
         self
     }
 
     /// Set workflow metadata
     pub fn workflow(mut self, workflow: Value) -> Self {
-        self.workflow = Some(workflow);
+        self.workflow = Some(Arc::new(workflow));
         self
     }
 
     /// Set input data
     pub fn input(mut self, input: Value) -> Self {
-        self.input = Some(input);
+        self.input = Some(Arc::new(input));
         self
     }
 
@@ -152,8 +157,8 @@ impl EvaluationContextBuilder {
         EvaluationContext {
             nodes: self.nodes,
             execution_vars: self.execution_vars,
-            workflow: self.workflow.unwrap_or_else(Value::object_empty),
-            input: self.input.unwrap_or_else(Value::object_empty),
+            workflow: self.workflow.unwrap_or_else(|| Arc::new(Value::object_empty())),
+            input: self.input.unwrap_or_else(|| Arc::new(Value::object_empty())),
         }
     }
 }

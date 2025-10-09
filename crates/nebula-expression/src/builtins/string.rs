@@ -1,6 +1,6 @@
 //! String manipulation functions
 
-use super::{check_arg_count, check_min_arg_count};
+use super::{check_arg_count, check_min_arg_count, get_string_arg, get_int_arg};
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
@@ -27,9 +27,7 @@ pub fn uppercase(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("uppercase", args, 1)?;
-    let s = args[0]
-        .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[0].kind().name()))?;
+    let s = get_string_arg("uppercase", args, 0, "text")?;
     Ok(Value::text(s.to_uppercase()))
 }
 
@@ -40,9 +38,7 @@ pub fn lowercase(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("lowercase", args, 1)?;
-    let s = args[0]
-        .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[0].kind().name()))?;
+    let s = get_string_arg("lowercase", args, 0, "text")?;
     Ok(Value::text(s.to_lowercase()))
 }
 
@@ -53,9 +49,7 @@ pub fn trim(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("trim", args, 1)?;
-    let s = args[0]
-        .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[0].kind().name()))?;
+    let s = get_string_arg("trim", args, 0, "text")?;
     Ok(Value::text(s.trim()))
 }
 
@@ -66,12 +60,8 @@ pub fn split(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("split", args, 2)?;
-    let s = args[0]
-        .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[0].kind().name()))?;
-    let delimiter = args[1]
-        .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[1].kind().name()))?;
+    let s = get_string_arg("split", args, 0, "text")?;
+    let delimiter = get_string_arg("split", args, 1, "delimiter")?;
 
     use nebula_value::ValueRefExt;
     let mut arr = nebula_value::Array::new();
@@ -88,15 +78,9 @@ pub fn replace(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("replace", args, 3)?;
-    let s = args[0]
-        .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[0].kind().name()))?;
-    let from = args[1]
-        .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[1].kind().name()))?;
-    let to = args[2]
-        .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[2].kind().name()))?;
+    let s = get_string_arg("replace", args, 0, "text")?;
+    let from = get_string_arg("replace", args, 1, "from")?;
+    let to = get_string_arg("replace", args, 2, "to")?;
 
     Ok(Value::text(s.replace(from, to)))
 }
@@ -108,12 +92,10 @@ pub fn substring(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("substring", args, 2)?;
-    let s = args[0]
-        .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[0].kind().name()))?;
-    let start = args[1].to_integer()? as usize;
+    let s = get_string_arg("substring", args, 0, "text")?;
+    let start = get_int_arg("substring", args, 1, "start")? as usize;
     let end = if args.len() > 2 {
-        args[2].to_integer()? as usize
+        get_int_arg("substring", args, 2, "end")? as usize
     } else {
         s.len()
     };
