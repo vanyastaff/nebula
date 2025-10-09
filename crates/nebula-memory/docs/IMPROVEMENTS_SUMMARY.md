@@ -194,30 +194,69 @@ thread_local! {
 
 ---
 
+### 🎨 Latest: Macro DSL & Examples
+
+**Problem**: Verbose API made memory management error-prone and tedious.
+
+**Solution**: Comprehensive macro DSL and real-world examples:
+
+**New Macros**:
+- `memory_scope!` - Automatic checkpoint/restore for RAII-style cleanup
+- Updated `dealloc!` - Uses TypedAllocator for type safety
+- Improved documentation with usage examples
+
+**New Examples** (580+ lines):
+1. `error_handling.rs` - Graceful degradation, recovery strategies, fallback chains
+2. `integration_patterns.rs` - Web server requests, compiler AST, connection pools
+3. `macro_showcase.rs` - Complete demonstration of macro DSL
+
+**Usage Example**:
+```rust
+let result = memory_scope!(allocator, {
+    let x = unsafe { allocator.alloc::<u64>()? };
+    unsafe { x.as_ptr().write(42); }
+    unsafe { Ok(*x.as_ptr()) }
+})?;
+// All allocations automatically freed!
+```
+
+**Files Changed**:
+- `src/macros.rs` - Enhanced macro implementations
+- `examples/*.rs` - 3 new comprehensive examples
+
+**Commit**: `a61f358` - feat(nebula-memory): add macro DSL and comprehensive examples
+
+---
+
 ## 📝 Commits Summary
 
 ```bash
+a61f358 feat(nebula-memory): add macro DSL and comprehensive examples
+9fa2c9b docs(nebula-memory): add comprehensive improvements summary
 74f169c perf(nebula-memory): optimize atomic_max with inline(always)
 b8b112c fix(nebula-memory): migrate allocators to UnsafeCell for Miri compliance
 ```
 
 **Total Changes**:
-- 10 files modified
-- 677 insertions, 40 deletions
+- 15 files modified/added
+- 1,302+ insertions, 42 deletions
 - 3 critical UB fixes
 - 1 major API improvement (TypedAllocator)
 - Enhanced error diagnostics
 - Performance optimizations
+- Rich macro DSL
+- 3 comprehensive real-world examples
 
 ---
 
 ## 🏆 Key Achievements
 
 1. **Memory Safety**: Resolved all critical Stacked Borrows violations
-2. **Developer Experience**: Errors now provide actionable guidance
-3. **Type Safety**: New TypedAllocator API prevents common mistakes
+2. **Developer Experience**: Rich errors + ergonomic macro DSL
+3. **Type Safety**: TypedAllocator API prevents common mistakes
 4. **Performance**: Zero-overhead abstractions in hot paths
-5. **Foundation**: Stats optimization infrastructure ready
+5. **Documentation**: 580+ lines of real-world examples
+6. **Foundation**: Stats optimization infrastructure ready
 
 ---
 
