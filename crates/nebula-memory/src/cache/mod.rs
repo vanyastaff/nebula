@@ -14,26 +14,26 @@ mod compute;
 pub mod concurrent;
 mod config;
 pub mod policies;
-mod scheduled;
+#[cfg(feature = "std")]
+pub mod scheduled;
 #[cfg(all(feature = "std", feature = "async"))]
 pub mod simple;
 pub mod stats;
-
 // Re-exports for convenience
 pub use compute::{CacheEntry, CacheKey, CacheResult, ComputeCache};
 #[cfg(feature = "std")]
 pub use concurrent::ConcurrentComputeCache;
 pub use config::{CacheConfig, CacheMetrics, EvictionPolicy};
-pub use scheduled::{ScheduledCache, ScheduledTask};
+#[cfg(feature = "std")]
+pub use scheduled::ScheduledCache;
 #[cfg(all(feature = "std", feature = "async"))]
 pub use simple::{AsyncCache, CacheStats as SimpleCacheStats};
 pub use stats::{AtomicCacheStats, CacheStats, StatsCollector, StatsProvider};
 
-#[cfg(feature = "std")]
-pub use scheduled::ExpiredEntriesCleanupTask;
-
 #[cfg(test)]
 mod tests {
+
+
     use super::*;
 
     #[test]
@@ -41,6 +41,8 @@ mod tests {
         let _config = CacheConfig::default();
     }
 }
+
+
 
 
 
