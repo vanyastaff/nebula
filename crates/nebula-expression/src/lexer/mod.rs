@@ -24,7 +24,9 @@ impl<'a> Lexer<'a> {
 
     /// Tokenize the entire input string
     pub fn tokenize(&mut self) -> ExpressionResult<Vec<Token<'a>>> {
-        let mut tokens = Vec::new();
+        // Estimate: typical expressions have ~1 token per 5 chars
+        let estimated_tokens = (self.input.len() / 5).max(8);
+        let mut tokens = Vec::with_capacity(estimated_tokens);
 
         loop {
             let token = self.next_token()?;
