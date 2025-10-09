@@ -16,12 +16,17 @@ use crate::kinds::ErrorKind;
 ///
 /// This is the primary error type used throughout the Nebula ecosystem.
 /// It provides structured error information with rich context and metadata.
+///
+/// # Performance Note
+/// Large fields are boxed to keep the error size small (≤128 bytes).
+/// This improves performance when returning Results, as small errors
+/// can be passed on the stack efficiently.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NebulaError {
-    /// The specific kind/variant of error
-    pub kind: ErrorKind,
-    /// Additional context information
-    pub context: Option<ErrorContext>,
+    /// The specific kind/variant of error (boxed to reduce size)
+    pub kind: Box<ErrorKind>,
+    /// Additional context information (boxed - rarely used in hot paths)
+    pub context: Option<Box<ErrorContext>>,
     /// Whether this error is retryable
     pub retryable: bool,
     /// Suggested retry delay
@@ -30,8 +35,8 @@ pub struct NebulaError {
     pub code: String,
     /// User-friendly error message
     pub message: String,
-    /// Technical details for debugging
-    pub details: Option<String>,
+    /// Technical details for debugging (boxed - only for detailed errors)
+    pub details: Option<Box<String>>,
 }
 
 impl NebulaError {
@@ -42,7 +47,7 @@ impl NebulaError {
         let message = kind.to_string();
 
         Self {
-            kind,
+            kind: Box::new(kind),
             context: None,
             retryable,
             retry_after: None,
@@ -54,13 +59,13 @@ impl NebulaError {
 
     /// Add context to the error
     pub fn with_context(mut self, context: ErrorContext) -> Self {
-        self.context = Some(context);
+        self.context = Some(Box::new(context));
         self
     }
 
     /// Add details to the error
     pub fn with_details(mut self, details: impl Into<String>) -> Self {
-        self.details = Some(details.into());
+        self.details = Some(Box::new(details.into()));
         self
     }
 
@@ -108,12 +113,12 @@ impl NebulaError {
 
     /// Get the error details
     pub fn details(&self) -> Option<&str> {
-        self.details.as_deref()
+        self.details.as_deref().map(|s| s.as_str())
     }
 
     /// Get the error context
     pub fn context(&self) -> Option<&ErrorContext> {
-        self.context.as_ref()
+        self.context.as_deref()
     }
 
     // =============================================================================
@@ -443,7 +448,7 @@ impl NebulaError {
 
 impl std::error::Error for NebulaError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.kind)
+        Some(self.kind.as_ref())
     }
 }
 
