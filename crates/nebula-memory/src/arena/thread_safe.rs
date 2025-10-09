@@ -22,7 +22,7 @@ impl ThreadSafeChunk {
     /// Creates a new chunk with specified size (minimum 64 bytes)
     fn new(size: usize) -> Result<Self, MemoryError> {
         let size = size.max(64); // Minimum chunk size to reduce overhead
-        let layout = Layout::from_size_align(size, 1).map_err(|_| MemoryError::invalid_layout())?;
+        let layout = Layout::from_size_align(size, 1).map_err(|_| MemoryError::invalid_layout("layout creation failed"))?;
 
         // Safety: Layout is non-zero and properly aligned
         let ptr = unsafe { alloc(layout) };

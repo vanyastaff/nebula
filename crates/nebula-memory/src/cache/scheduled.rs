@@ -52,7 +52,7 @@ where
 
 impl<K, V> ScheduledCache<K, V>
 where
-    K: CacheKey + 'static,
+    K: CacheKey + Send + 'static,
     V: Clone + Send + Sync + 'static,
 {
     /// Create a new scheduled cache
@@ -63,7 +63,7 @@ where
     /// * `cleanup_interval` - How often to check for expired entries
     pub fn new(max_entries: usize, cleanup_interval: Duration) -> Self {
         let cache = Arc::new(Mutex::new(ComputeCache::new(max_entries)));
-        let ttls = Arc::new(Mutex::new(HashMap::new()));
+        let ttls: Arc<Mutex<HashMap<K, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let cache_clone = cache.clone();
@@ -106,7 +106,7 @@ where
     /// Create with custom configuration
     pub fn with_config(config: CacheConfig, cleanup_interval: Duration) -> Self {
         let cache = Arc::new(Mutex::new(ComputeCache::with_config(config)));
-        let ttls = Arc::new(Mutex::new(HashMap::new()));
+        let ttls: Arc<Mutex<HashMap<K, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let cache_clone = cache.clone();
@@ -156,7 +156,7 @@ where
     /// Get a value from the cache
     #[inline]
     pub fn get(&self, key: &K) -> Option<V> {
-        let cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock().unwrap();
         cache.get(key)
     }
 
@@ -176,7 +176,7 @@ where
     {
         // Check if value exists
         {
-            let cache = self.cache.lock().unwrap();
+            let mut cache = self.cache.lock().unwrap();
             if let Some(value) = cache.get(&key) {
                 return Ok(value);
             }

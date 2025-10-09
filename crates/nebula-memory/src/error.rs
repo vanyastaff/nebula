@@ -41,7 +41,7 @@ impl MemoryError {
         }
 
         Self {
-            inner: NebulaError::from(kind),
+            inner: NebulaError::new(nebula_error::ErrorKind::Memory(kind)),
             layout: None,
         }
     }

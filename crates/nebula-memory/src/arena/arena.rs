@@ -23,7 +23,7 @@ impl Chunk {
         // Ensure minimum chunk size to reduce fragmentation
         let size = size.max(64); // Minimum 64 bytes
 
-        let layout = Layout::from_size_align(size, 1).map_err(|_| MemoryError::invalid_layout())?;
+        let layout = Layout::from_size_align(size, 1).map_err(|_| MemoryError::invalid_layout("layout creation failed"))?;
 
         // Safety: Layout is non-zero size and properly aligned
         let ptr = unsafe { alloc(layout) };

@@ -47,7 +47,7 @@ struct Block {
 
 impl Block {
     fn new(size: usize) -> Result<Self, MemoryError> {
-        let layout = Layout::from_size_align(size, 1).map_err(|_| MemoryError::invalid_layout())?;
+        let layout = Layout::from_size_align(size, 1).map_err(|_| MemoryError::invalid_layout("layout creation failed"))?;
 
         let ptr = unsafe { alloc(layout) };
         let ptr = NonNull::new(ptr).ok_or(MemoryError::allocation_failed(0, 1))?;

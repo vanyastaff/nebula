@@ -74,10 +74,7 @@ impl StackAllocator {
     /// Creates a new stack allocator with custom configuration
     pub fn with_config(capacity: usize, config: StackConfig) -> AllocResult<Self> {
         if capacity == 0 {
-            return Err(AllocError::with_layout(
-                AllocErrorCode::InvalidLayout,
-                Layout::from_size_align(0, 1).unwrap(),
-            ));
+            return Err(AllocError::invalid_layout("capacity cannot be zero"));
         }
 
         let mut vec = vec![0u8; capacity];

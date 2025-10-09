@@ -114,17 +114,11 @@ impl PoolAllocator {
     ) -> AllocResult<Self> {
         // Validate parameters
         if block_size < core::mem::size_of::<*mut u8>() {
-            return Err(AllocError::with_layout(
-                AllocErrorCode::InvalidLayout,
-                Layout::from_size_align(block_size, block_align).unwrap_or(Layout::new::<u8>()),
-            ));
+            return Err(AllocError::invalid_layout("block size too small"));
         }
 
         if !is_power_of_two(block_align) {
-            return Err(AllocError::with_layout(
-                AllocErrorCode::InvalidAlignment,
-                Layout::from_size_align(block_size, block_align).unwrap_or(Layout::new::<u8>()),
-            ));
+            return Err(AllocError::invalid_alignment(block_align));
         }
 
         if block_count == 0 {
@@ -483,10 +477,7 @@ unsafe impl Allocator for PoolAllocator {
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
         // Check if the requested layout matches our pool configuration
         if layout.size() > self.block_size || layout.align() > self.block_align {
-            return Err(AllocError::with_layout(
-                AllocErrorCode::InvalidLayout,
-                layout,
-            ));
+            return Err(AllocError::invalid_layout("layout exceeds pool configuration"));
         }
 
         // Handle zero-sized allocations
@@ -521,10 +512,7 @@ unsafe impl Allocator for PoolAllocator {
     ) -> AllocResult<NonNull<[u8]>> {
         // Pool allocator can only handle allocations of the configured size
         if new_layout.size() > self.block_size || new_layout.align() > self.block_align {
-            return Err(AllocError::with_layout(
-                AllocErrorCode::InvalidLayout,
-                new_layout,
-            ));
+            return Err(AllocError::invalid_layout("new layout exceeds pool configuration"));
         }
 
         // If the new size fits within the same block, we can reuse it
