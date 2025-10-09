@@ -186,7 +186,7 @@ impl<T: Poolable> LockFreePool<T> {
             let created = self.size.load(Ordering::Relaxed);
 
             if created >= max {
-                return Err(MemoryError::pool_exhausted());
+                return Err(MemoryError::pool_exhausted("pool", 0));
             }
         }
 

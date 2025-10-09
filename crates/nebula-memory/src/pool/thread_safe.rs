@@ -190,7 +190,7 @@ impl<T: Poolable> ThreadSafePool<T> {
                     while inner.objects.is_empty() && !inner.shutdown {
                         let remaining = timeout.saturating_sub(start.elapsed());
                         if remaining.is_zero() {
-                            return Err(MemoryError::pool_exhausted());
+                            return Err(MemoryError::pool_exhausted("pool", 0));
                         }
 
                         // Корректная обработка результата wait_timeout
@@ -202,7 +202,7 @@ impl<T: Poolable> ThreadSafePool<T> {
                     }
 
                     if inner.shutdown {
-                        return Err(MemoryError::pool_exhausted());
+                        return Err(MemoryError::pool_exhausted("pool", 0));
                     }
 
                     if let Some(mut obj) = inner.objects.pop() {
@@ -221,7 +221,7 @@ impl<T: Poolable> ThreadSafePool<T> {
                     }
                 }
 
-                return Err(MemoryError::pool_exhausted());
+                return Err(MemoryError::pool_exhausted("pool", 0));
             }
         }
 
@@ -253,7 +253,7 @@ impl<T: Poolable> ThreadSafePool<T> {
         _timeout: Option<Duration>,
     ) -> MemoryResult<ThreadSafePooledValue<T>> {
         // Without std, we can't do timed waits
-        self.try_get().ok_or(MemoryError::pool_exhausted())
+        self.try_get().ok_or(MemoryError::pool_exhausted("pool", 0))
     }
 
     /// Return object to pool

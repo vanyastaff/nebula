@@ -119,7 +119,8 @@ pub mod prelude {
 
     // Core types
     pub use crate::core::traits::{MemoryManager, MemoryUsage, Resettable};
-    pub use crate::core::{MemoryConfig, MemoryError, MemoryErrorCode, MemoryResult};
+    pub use crate::core::{MemoryConfig};
+    pub use crate::error::{MemoryError, MemoryResult};
 
     // Allocator types
     pub use crate::allocator::{

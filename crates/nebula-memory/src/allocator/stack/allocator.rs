@@ -7,7 +7,7 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use super::{StackConfig, StackMarker};
 use crate::allocator::{
-    AllocError, AllocErrorCode, AllocResult, Allocator, AllocatorStats, MemoryUsage, Resettable,
+    AllocError, AllocResult, Allocator, AllocatorStats, MemoryUsage, Resettable,
     StatisticsProvider,
 };
 use crate::utils::{Backoff, align_up, atomic_max};
@@ -347,7 +347,7 @@ unsafe impl Allocator for StackAllocator {
         if let Some(ptr) = self.try_allocate(layout.size(), layout.align()) {
             Ok(NonNull::slice_from_raw_parts(ptr, layout.size()))
         } else {
-            Err(AllocError::with_layout(AllocErrorCode::OutOfMemory, layout))
+            Err(AllocError::allocation_failed(layout.size(), layout.align()))
         }
     }
 

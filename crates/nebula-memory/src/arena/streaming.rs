@@ -60,7 +60,7 @@ impl StreamBuffer {
                 capacity: size,
                 used: Cell::new(0),
             }),
-            None => Err(MemoryError::allocation_failed()),
+            None => Err(MemoryError::allocation_failed(0, 1)),
         }
     }
 
@@ -213,7 +213,7 @@ impl<T> StreamingArena<T> {
                 }
                 Ok(ptr)
             }
-            None => Err(MemoryError::allocation_failed()),
+            None => Err(MemoryError::allocation_failed(0, 1)),
         }
     }
 

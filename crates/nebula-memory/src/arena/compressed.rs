@@ -50,7 +50,7 @@ impl Block {
         let layout = Layout::from_size_align(size, 1).map_err(|_| MemoryError::invalid_layout())?;
 
         let ptr = unsafe { alloc(layout) };
-        let ptr = NonNull::new(ptr).ok_or(MemoryError::allocation_failed())?;
+        let ptr = NonNull::new(ptr).ok_or(MemoryError::allocation_failed(0, 1))?;
 
         Ok(Self {
             ptr,

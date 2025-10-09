@@ -288,7 +288,7 @@ impl MemoryBudget {
             let mut stats = self.stats.lock().unwrap();
             stats.failed += 1;
 
-            return Err(MemoryError::allocation_failed());
+            return Err(MemoryError::allocation_failed(0, 1));
         }
 
         // Update parent budget if needed

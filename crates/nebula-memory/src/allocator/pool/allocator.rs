@@ -7,7 +7,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 use super::{PoolConfig, PoolStats};
 use crate::allocator::{
-    AllocError, AllocErrorCode, AllocResult, Allocator, AllocatorStats, MemoryUsage, Resettable,
+    AllocError, AllocResult, Allocator, AllocatorStats, MemoryUsage, Resettable,
     StatisticsProvider,
 };
 use crate::utils::{Backoff, align_up, atomic_max, is_power_of_two};
@@ -499,7 +499,7 @@ unsafe impl Allocator for PoolAllocator {
         if let Some(ptr) = self.try_allocate_block() {
             Ok(NonNull::slice_from_raw_parts(ptr, layout.size()))
         } else {
-            Err(AllocError::with_layout(AllocErrorCode::OutOfMemory, layout))
+            Err(AllocError::allocation_failed(layout.size(), layout.align()))
         }
     }
 

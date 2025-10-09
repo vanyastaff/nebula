@@ -142,7 +142,7 @@ impl<T: Poolable> HierarchicalPool<T> {
             });
         }
 
-        Err(MemoryError::pool_exhausted())
+        Err(MemoryError::pool_exhausted("pool", 0))
     }
 
     /// Return object to pool

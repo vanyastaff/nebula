@@ -15,7 +15,7 @@ use std::alloc::System;
 compile_error!("SystemAllocator requires either 'std' or 'alloc' feature to be enabled");
 
 use super::{
-    AllocError, AllocErrorCode, AllocResult, Allocator, BulkAllocator, MemoryUsage,
+    AllocError, AllocResult, Allocator, BulkAllocator, MemoryUsage,
     ThreadSafeAllocator,
 };
 
@@ -83,7 +83,7 @@ unsafe impl Allocator for SystemAllocator {
         let ptr = unsafe { System.alloc(layout) };
 
         if ptr.is_null() {
-            Err(AllocError::with_layout(AllocErrorCode::OutOfMemory, layout))
+            Err(AllocError::allocation_failed(layout.size(), layout.align()))
         } else {
             let non_null = unsafe { NonNull::new_unchecked(ptr) };
             Ok(NonNull::slice_from_raw_parts(non_null, layout.size()))

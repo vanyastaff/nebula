@@ -251,7 +251,7 @@ where
                 // Allocation denied by monitor
                 self.stats.record_allocation_failure();
                 Err(AllocError::with_layout(
-                    AllocErrorCode::AllocationDenied,
+                    0,
                     layout,
                 ))
             }
@@ -312,7 +312,7 @@ where
             Ok(false) => {
                 self.stats.record_allocation_failure();
                 Err(AllocError::with_layout(
-                    AllocErrorCode::AllocationDenied,
+                    0,
                     new_layout,
                 ))
             }

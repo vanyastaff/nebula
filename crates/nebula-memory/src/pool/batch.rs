@@ -103,7 +103,7 @@ impl<T: Poolable> BatchAllocator<T> {
                 }
                 Err(_) if objects.is_empty() => {
                     // First object failed - propagate error
-                    return Err(MemoryError::pool_exhausted());
+                    return Err(MemoryError::pool_exhausted("pool", 0));
                 }
                 Err(_) => {
                     // Partial batch is ok

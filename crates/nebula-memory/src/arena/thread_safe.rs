@@ -190,7 +190,7 @@ impl ThreadSafeArena {
     #[inline]
     pub fn alloc_bytes_aligned(&self, size: usize, align: usize) -> Result<*mut u8, MemoryError> {
         if !align.is_power_of_two() {
-            return Err(MemoryError::invalid_alignment(align, 0));
+            return Err(MemoryError::invalid_alignment(align));
         }
 
         let start_time = self.config.track_stats.then(Instant::now);
@@ -216,7 +216,7 @@ impl ThreadSafeArena {
         let chunk = unsafe { &*current };
         chunk
             .try_alloc(size, align)
-            .ok_or(MemoryError::allocation_failed())
+            .ok_or(MemoryError::allocation_failed(0, 1))
             .map(|ptr| {
                 if let Some(start) = start_time {
                     self.stats

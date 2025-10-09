@@ -170,7 +170,7 @@ impl<T: Poolable> TtlPool<T> {
                 let created = 0;
 
                 if created >= max {
-                    return Err(MemoryError::pool_exhausted());
+                    return Err(MemoryError::pool_exhausted("pool", 0));
                 }
             }
 
