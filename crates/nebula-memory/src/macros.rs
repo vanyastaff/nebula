@@ -437,13 +437,13 @@ macro_rules! dealloc {
     // Deallocate typed pointer
     ($allocator:expr, $ptr:expr, $ty:ty) => {{
         use $crate::allocator::TypedAllocator;
-        unsafe { $allocator.dealloc_typed::<$ty>($ptr) }
+        unsafe { $allocator.dealloc::<$ty>($ptr) }
     }};
 
     // Deallocate array
     ($allocator:expr, $ptr:expr, [$ty:ty; $count:expr]) => {{
         use $crate::allocator::TypedAllocator;
-        unsafe { $allocator.dealloc_array::<$ty>($ptr, $count) }
+        unsafe { $allocator.dealloc_array::<$ty>($ptr) }
     }};
 }
 
@@ -490,6 +490,40 @@ macro_rules! with_allocator {
         let $alloc = $crate::allocator::StackAllocator::new($size)?;
         let result = (|| $body)();
         drop($alloc);
+        result
+    }};
+}
+
+/// Memory scope with automatic checkpoint/restore
+///
+/// Creates a checkpoint at the start of the scope and automatically
+/// restores to that checkpoint when the scope exits, freeing all
+/// allocations made within the scope.
+///
+/// # Examples
+/// ```
+/// use nebula_memory::memory_scope;
+/// use nebula_memory::allocator::BumpAllocator;
+///
+/// let allocator = BumpAllocator::new(4096)?;
+///
+/// let result = memory_scope!(allocator, {
+///     // Allocations here will be freed when scope exits
+///     let x = unsafe { allocator.alloc::<u64>()? };
+///     unsafe { x.as_ptr().write(42); }
+///     unsafe { Ok(*x.as_ptr()) }
+/// })?;
+///
+/// assert_eq!(result, 42);
+/// // All allocations from the scope are now freed
+/// # Ok::<(), nebula_memory::AllocError>(())
+/// ```
+#[macro_export]
+macro_rules! memory_scope {
+    ($allocator:expr, $body:block) => {{
+        let checkpoint = $allocator.checkpoint();
+        let result = (|| $body)();
+        $allocator.restore(checkpoint)?;
         result
     }};
 }
