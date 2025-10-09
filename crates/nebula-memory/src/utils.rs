@@ -194,6 +194,155 @@ pub fn prefetch_write<T>(ptr: *mut T) {
 #[cfg(not(target_arch = "x86_64"))]
 pub fn prefetch_write<T>(_ptr: *mut T) {}
 
+/// SIMD-optimized memory copy for aligned data (AVX2)
+///
+/// # Safety
+/// - `dst` and `src` must be valid for reads/writes of `len` bytes
+/// - `dst` and `src` should be 32-byte aligned for optimal performance
+/// - Regions must not overlap
+#[inline]
+#[cfg(all(feature = "simd", target_arch = "x86_64", target_feature = "avx2"))]
+pub unsafe fn copy_aligned_simd(dst: *mut u8, src: *const u8, len: usize) {
+    use core::arch::x86_64::*;
+
+    if len == 0 {
+        return;
+    }
+
+    // Process 32-byte chunks with AVX2
+    let chunks = len / 32;
+    let remainder = len % 32;
+
+    for i in 0..chunks {
+        let offset = i * 32;
+        // Load 32 bytes from source
+        let data = _mm256_loadu_si256(src.add(offset) as *const __m256i);
+        // Store 32 bytes to destination
+        _mm256_storeu_si256(dst.add(offset) as *mut __m256i, data);
+    }
+
+    // Handle remainder with scalar copy
+    if remainder > 0 {
+        ptr::copy_nonoverlapping(src.add(chunks * 32), dst.add(chunks * 32), remainder);
+    }
+}
+
+/// SIMD-optimized memory copy (fallback for non-AVX2)
+#[inline]
+#[cfg(all(feature = "simd", target_arch = "x86_64", not(target_feature = "avx2")))]
+pub unsafe fn copy_aligned_simd(dst: *mut u8, src: *const u8, len: usize) {
+    ptr::copy_nonoverlapping(src, dst, len);
+}
+
+/// SIMD-optimized memory copy (fallback for non-x86_64)
+#[inline]
+#[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
+pub unsafe fn copy_aligned_simd(dst: *mut u8, src: *const u8, len: usize) {
+    ptr::copy_nonoverlapping(src, dst, len);
+}
+
+/// SIMD-optimized memory fill with pattern (AVX2)
+///
+/// # Safety
+/// - `dst` must be valid for writes of `len` bytes
+/// - Works best with 32-byte aligned destination
+#[inline]
+#[cfg(all(feature = "simd", target_arch = "x86_64", target_feature = "avx2"))]
+pub unsafe fn fill_simd(dst: *mut u8, pattern: u8, len: usize) {
+    use core::arch::x86_64::*;
+
+    if len == 0 {
+        return;
+    }
+
+    // Create pattern vector (broadcast byte to all lanes)
+    let pattern_vec = _mm256_set1_epi8(pattern as i8);
+
+    // Process 32-byte chunks
+    let chunks = len / 32;
+    let remainder = len % 32;
+
+    for i in 0..chunks {
+        let offset = i * 32;
+        _mm256_storeu_si256(dst.add(offset) as *mut __m256i, pattern_vec);
+    }
+
+    // Handle remainder
+    if remainder > 0 {
+        ptr::write_bytes(dst.add(chunks * 32), pattern, remainder);
+    }
+}
+
+/// SIMD-optimized memory fill (fallback)
+#[inline]
+#[cfg(not(all(feature = "simd", target_arch = "x86_64", target_feature = "avx2")))]
+pub unsafe fn fill_simd(dst: *mut u8, pattern: u8, len: usize) {
+    ptr::write_bytes(dst, pattern, len);
+}
+
+/// SIMD-optimized memory compare (AVX2)
+///
+/// Returns true if memory regions are equal
+///
+/// # Safety
+/// - Both pointers must be valid for reads of `len` bytes
+#[inline]
+#[cfg(all(feature = "simd", target_arch = "x86_64", target_feature = "avx2"))]
+pub unsafe fn compare_simd(a: *const u8, b: *const u8, len: usize) -> bool {
+    use core::arch::x86_64::*;
+
+    if len == 0 {
+        return true;
+    }
+
+    // Process 32-byte chunks
+    let chunks = len / 32;
+    let remainder = len % 32;
+
+    for i in 0..chunks {
+        let offset = i * 32;
+        let va = _mm256_loadu_si256(a.add(offset) as *const __m256i);
+        let vb = _mm256_loadu_si256(b.add(offset) as *const __m256i);
+
+        // Compare and get mask
+        let cmp = _mm256_cmpeq_epi8(va, vb);
+        let mask = _mm256_movemask_epi8(cmp);
+
+        // If not all bits are set, regions differ
+        if mask != -1 {
+            return false;
+        }
+    }
+
+    // Compare remainder
+    if remainder > 0 {
+        let offset = chunks * 32;
+        for i in 0..remainder {
+            if *a.add(offset + i) != *b.add(offset + i) {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+/// SIMD-optimized memory compare (fallback)
+#[inline]
+#[cfg(not(all(feature = "simd", target_arch = "x86_64", target_feature = "avx2")))]
+pub unsafe fn compare_simd(a: *const u8, b: *const u8, len: usize) -> bool {
+    if len == 0 {
+        return true;
+    }
+
+    for i in 0..len {
+        if *a.add(i) != *b.add(i) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Timer for performance measurements
 #[cfg(feature = "std")]
 #[derive(Debug)]

@@ -33,6 +33,7 @@ logging = ["std", "nebula-log"]
 # Platform optimization
 numa-aware = ["libc"]
 linux-optimizations = ["libc"]
+simd = []  # Enable SIMD optimizations for memory operations
 
 # Development/debugging (объединены)
 monitoring = ["std", "stats"]
