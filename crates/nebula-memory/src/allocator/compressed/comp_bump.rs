@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::allocator::bump::BumpAllocator;
-use crate::allocator::{AllocError, AllocResult, Allocator};
+use crate::allocator::{AllocError, AllocResult, Allocator, Resettable};
 
 use super::comp_buffer::CompressedBuffer;
 use super::comp_stats::{CompressionStats, CompressionStrategy};
@@ -103,7 +103,7 @@ impl CompressedBump {
     /// Reset allocator and clear compressed buffers
     pub fn reset_allocator(&mut self) {
         unsafe {
-            self.bump.reset();
+            unsafe { self.bump.reset(); }
         }
         if let Ok(mut buffers) = self.buffers.lock() {
             buffers.clear();
@@ -123,7 +123,7 @@ impl CompressedBump {
 
 #[cfg(feature = "compression")]
 unsafe impl Allocator for CompressedBump {
-    unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
+    unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
         // For now, just use the underlying bump allocator
         // In a real implementation, we would:
         // 1. Allocate from bump
@@ -155,7 +155,7 @@ impl CompressedBump {
 
     pub fn reset_allocator(&mut self) {
         unsafe {
-            self.bump.reset();
+            unsafe { self.bump.reset(); }
         }
     }
 }

@@ -37,8 +37,9 @@ pub struct CompressedPool {
 impl CompressedPool {
     /// Create new compressed pool allocator
     pub fn new(block_size: usize, block_align: usize) -> AllocResult<Self> {
+        const DEFAULT_BLOCK_COUNT: usize = 1024;
         Ok(Self {
-            pool: PoolAllocator::with_config(block_size, block_align, PoolConfig::default())?,
+            pool: PoolAllocator::with_config(block_size, block_align, DEFAULT_BLOCK_COUNT, PoolConfig::default())?,
             strategy: CompressionStrategy::default(),
             stats: Arc::new(CompressionStats::new()),
             compressed: Arc::new(Mutex::new(HashMap::new())),
@@ -52,8 +53,9 @@ impl CompressedPool {
         block_align: usize,
         strategy: CompressionStrategy,
     ) -> AllocResult<Self> {
+        const DEFAULT_BLOCK_COUNT: usize = 1024;
         Ok(Self {
-            pool: PoolAllocator::with_config(block_size, block_align, PoolConfig::default())?,
+            pool: PoolAllocator::with_config(block_size, block_align, DEFAULT_BLOCK_COUNT, PoolConfig::default())?,
             strategy,
             stats: Arc::new(CompressionStats::new()),
             compressed: Arc::new(Mutex::new(HashMap::new())),
@@ -118,12 +120,12 @@ impl CompressedPool {
 
 #[cfg(feature = "compression")]
 unsafe impl Allocator for CompressedPool {
-    unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
+    unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
         let ptr = self.pool.allocate(layout)?;
 
         // Track active allocation
         if let Ok(mut active) = self.active.lock() {
-            active.insert(ptr.as_ptr() as usize, layout.size());
+            active.insert(ptr.as_ptr() as *mut u8 as usize, layout.size());
         }
 
         Ok(ptr)
