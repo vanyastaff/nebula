@@ -13,6 +13,8 @@ mod compute;
 #[cfg(feature = "std")]
 pub mod concurrent;
 mod config;
+pub mod multi_level;
+pub mod partitioned;
 pub mod policies;
 #[cfg(feature = "std")]
 pub mod scheduled;
@@ -24,6 +26,8 @@ pub use compute::{CacheEntry, CacheKey, CacheResult, ComputeCache};
 #[cfg(feature = "std")]
 pub use concurrent::ConcurrentComputeCache;
 pub use config::{CacheConfig, CacheMetrics, EvictionPolicy};
+pub use multi_level::MultiLevelCache;
+pub use partitioned::PartitionedCache;
 #[cfg(feature = "std")]
 pub use scheduled::ScheduledCache;
 #[cfg(all(feature = "std", feature = "async"))]
@@ -34,6 +38,8 @@ pub use stats::{AtomicCacheStats, CacheStats, StatsCollector, StatsProvider};
 mod tests {
 
 
+
+
     use super::*;
 
     #[test]
@@ -41,6 +47,8 @@ mod tests {
         let _config = CacheConfig::default();
     }
 }
+
+
 
 
 

@@ -1,12 +1,10 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-//!
-//! Cache eviction policies
-//! This module provides various cache eviction policies that determine
-//! which entries to remove when a cache is full.
-
 pub mod fifo;
+pub mod lfu;
 mod lru;
 pub mod random;
+#[cfg(test)]
+mod tests {
 mod ttl;
 
 #[cfg(not(feature = "std"))]
@@ -24,6 +22,7 @@ use super::compute::CacheEntry;
 
 // Re-export policy modules
 pub use fifo::FifoPolicy;
+pub use lfu::LfuPolicy;
 pub use lru::LruPolicy;
 pub use random::RandomPolicy;
 pub use ttl::TtlPolicy;
@@ -67,8 +66,7 @@ where
     selector.select_victim(&entries)
 }
 
-#[cfg(test)]
-mod tests {
+
     use super::*;
 
     #[test]
@@ -90,3 +88,4 @@ mod tests {
         }
     }
 }
+
