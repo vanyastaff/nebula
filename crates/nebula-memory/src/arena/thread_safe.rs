@@ -187,6 +187,7 @@ impl ThreadSafeArena {
     }
 
     /// Allocates aligned memory block (thread-safe)
+    #[inline]
     pub fn alloc_bytes_aligned(&self, size: usize, align: usize) -> Result<*mut u8, MemoryError> {
         if !align.is_power_of_two() {
             return Err(MemoryError::invalid_alignment(align, 0));
@@ -226,6 +227,7 @@ impl ThreadSafeArena {
     }
 
     /// Allocates and initializes a value (thread-safe)
+    #[inline]
     pub fn alloc<T>(&self, value: T) -> Result<&T, MemoryError> {
         let ptr = self.alloc_bytes_aligned(mem::size_of::<T>(), mem::align_of::<T>())? as *mut T;
 
@@ -237,6 +239,7 @@ impl ThreadSafeArena {
     }
 
     /// Allocates and copies a slice (thread-safe)
+    #[inline]
     pub fn alloc_slice<T: Copy>(&self, slice: &[T]) -> Result<&[T], MemoryError> {
         if slice.is_empty() {
             return Ok(&[]);
