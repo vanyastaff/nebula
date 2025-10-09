@@ -126,26 +126,42 @@
 //! - `is_number(value)` - Check if number
 //! - `uuid()` - Generate UUID
 
-// Core modules
+// Public modules - exposed for external use
 pub mod builtins;
 pub mod context;
-pub mod core;
 pub mod engine;
 pub mod error_formatter;
-pub mod eval;
-pub mod lexer;
 pub mod maybe;
-pub mod parser;
 pub mod template;
+
+// Internal modules - not part of stable public API
+// These are exposed for advanced use cases but may change between versions
+#[doc(hidden)]
+pub mod core;
+#[doc(hidden)]
+pub mod eval;
+#[doc(hidden)]
+pub mod lexer;
+#[doc(hidden)]
+pub mod parser;
 
 // Re-exports
 pub use context::{EvaluationContext, EvaluationContextBuilder};
-pub use core::ast::{BinaryOp, Expr};
 pub use core::error::{ExpressionErrorExt, ExpressionResult};
-pub use core::token::Token;
 pub use engine::ExpressionEngine;
 pub use maybe::MaybeExpression;
-pub use template::{MaybeTemplate, Position, Template, TemplatePart};
+pub use template::{MaybeTemplate, Template};
+
+// Internal types - only exported for advanced use cases
+// Most users should not need these types directly
+#[doc(hidden)]
+pub use core::ast::{BinaryOp, Expr};
+#[doc(hidden)]
+pub use core::span::Span;
+#[doc(hidden)]
+pub use core::token::{Token, TokenKind};
+#[doc(hidden)]
+pub use template::{Position, TemplatePart};
 
 // Re-export nebula types for convenience
 pub use nebula_error::NebulaError;
@@ -155,7 +171,6 @@ pub use nebula_value::Value;
 pub mod prelude {
     pub use crate::{
         EvaluationContext, EvaluationContextBuilder, ExpressionEngine, ExpressionErrorExt,
-        ExpressionResult, MaybeExpression, MaybeTemplate, NebulaError, Position, Template,
-        TemplatePart, Value,
+        ExpressionResult, MaybeExpression, MaybeTemplate, NebulaError, Template, Value,
     };
 }

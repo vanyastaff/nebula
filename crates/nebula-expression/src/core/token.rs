@@ -2,16 +2,34 @@
 //!
 //! This module defines all tokens that can appear in an expression.
 
-/// A token in the expression language
+use super::span::Span;
+
+/// A token in the expression language with position information
 #[derive(Debug, Clone, PartialEq)]
-pub enum Token {
+pub struct Token<'a> {
+    /// The token kind
+    pub kind: TokenKind<'a>,
+    /// Source span for this token
+    pub span: Span,
+}
+
+impl<'a> Token<'a> {
+    /// Create a new token with span
+    pub fn new(kind: TokenKind<'a>, span: Span) -> Self {
+        Self { kind, span }
+    }
+}
+
+/// The kind of token
+#[derive(Debug, Clone, PartialEq)]
+pub enum TokenKind<'a> {
     // Literals
     /// Integer literal (e.g., 42, -10)
     Integer(i64),
     /// Float literal (e.g., 3.14, -2.5)
     Float(f64),
     /// String literal (e.g., "hello", 'world')
-    String(String),
+    String(&'a str),
     /// Boolean literal (true, false)
     Boolean(bool),
     /// Null literal
@@ -19,9 +37,9 @@ pub enum Token {
 
     // Identifiers and variables
     /// Identifier (e.g., functionName, variableName)
-    Identifier(String),
+    Identifier(&'a str),
     /// Variable reference starting with $ (e.g., $node, $execution)
-    Variable(String),
+    Variable(&'a str),
 
     // Operators - Arithmetic
     /// Addition operator (+)
@@ -110,16 +128,16 @@ pub enum Token {
     Eof,
 }
 
-impl Token {
+impl<'a> TokenKind<'a> {
     /// Check if this token is a literal value
     pub fn is_literal(&self) -> bool {
         matches!(
             self,
-            Token::Integer(_)
-                | Token::Float(_)
-                | Token::String(_)
-                | Token::Boolean(_)
-                | Token::Null
+            TokenKind::Integer(_)
+                | TokenKind::Float(_)
+                | TokenKind::String(_)
+                | TokenKind::Boolean(_)
+                | TokenKind::Null
         )
     }
 
@@ -127,23 +145,23 @@ impl Token {
     pub fn is_operator(&self) -> bool {
         matches!(
             self,
-            Token::Plus
-                | Token::Minus
-                | Token::Star
-                | Token::Slash
-                | Token::Percent
-                | Token::Power
-                | Token::Equal
-                | Token::NotEqual
-                | Token::LessThan
-                | Token::GreaterThan
-                | Token::LessEqual
-                | Token::GreaterEqual
-                | Token::RegexMatch
-                | Token::And
-                | Token::Or
-                | Token::Not
-                | Token::Pipe
+            TokenKind::Plus
+                | TokenKind::Minus
+                | TokenKind::Star
+                | TokenKind::Slash
+                | TokenKind::Percent
+                | TokenKind::Power
+                | TokenKind::Equal
+                | TokenKind::NotEqual
+                | TokenKind::LessThan
+                | TokenKind::GreaterThan
+                | TokenKind::LessEqual
+                | TokenKind::GreaterEqual
+                | TokenKind::RegexMatch
+                | TokenKind::And
+                | TokenKind::Or
+                | TokenKind::Not
+                | TokenKind::Pipe
         )
     }
 
@@ -151,38 +169,38 @@ impl Token {
     pub fn is_binary_operator(&self) -> bool {
         matches!(
             self,
-            Token::Plus
-                | Token::Minus
-                | Token::Star
-                | Token::Slash
-                | Token::Percent
-                | Token::Power
-                | Token::Equal
-                | Token::NotEqual
-                | Token::LessThan
-                | Token::GreaterThan
-                | Token::LessEqual
-                | Token::GreaterEqual
-                | Token::RegexMatch
-                | Token::And
-                | Token::Or // Pipe is not a binary operator, it's used for pipeline expressions
+            TokenKind::Plus
+                | TokenKind::Minus
+                | TokenKind::Star
+                | TokenKind::Slash
+                | TokenKind::Percent
+                | TokenKind::Power
+                | TokenKind::Equal
+                | TokenKind::NotEqual
+                | TokenKind::LessThan
+                | TokenKind::GreaterThan
+                | TokenKind::LessEqual
+                | TokenKind::GreaterEqual
+                | TokenKind::RegexMatch
+                | TokenKind::And
+                | TokenKind::Or // Pipe is not a binary operator, it's used for pipeline expressions
         )
     }
 
     /// Get the precedence of this operator (higher number = higher precedence)
     pub fn precedence(&self) -> u8 {
         match self {
-            Token::Or => 1,
-            Token::And => 2,
-            Token::Equal | Token::NotEqual => 3,
-            Token::LessThan
-            | Token::GreaterThan
-            | Token::LessEqual
-            | Token::GreaterEqual
-            | Token::RegexMatch => 4,
-            Token::Plus | Token::Minus => 5,
-            Token::Star | Token::Slash | Token::Percent => 6,
-            Token::Power => 7,
+            TokenKind::Or => 1,
+            TokenKind::And => 2,
+            TokenKind::Equal | TokenKind::NotEqual => 3,
+            TokenKind::LessThan
+            | TokenKind::GreaterThan
+            | TokenKind::LessEqual
+            | TokenKind::GreaterEqual
+            | TokenKind::RegexMatch => 4,
+            TokenKind::Plus | TokenKind::Minus => 5,
+            TokenKind::Star | TokenKind::Slash | TokenKind::Percent => 6,
+            TokenKind::Power => 7,
             // Pipe is not a binary operator, handled separately in parse_pipeline
             _ => 0,
         }
@@ -190,54 +208,60 @@ impl Token {
 
     /// Check if this operator is right-associative
     pub fn is_right_associative(&self) -> bool {
-        matches!(self, Token::Power)
+        matches!(self, TokenKind::Power)
     }
 }
 
-impl std::fmt::Display for Token {
+impl<'a> std::fmt::Display for Token<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.kind)
+    }
+}
+
+impl<'a> std::fmt::Display for TokenKind<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Token::Integer(n) => write!(f, "{}", n),
-            Token::Float(n) => write!(f, "{}", n),
-            Token::String(s) => write!(f, "\"{}\"", s),
-            Token::Boolean(b) => write!(f, "{}", b),
-            Token::Null => write!(f, "null"),
-            Token::Identifier(s) => write!(f, "{}", s),
-            Token::Variable(s) => write!(f, "${}", s),
-            Token::Plus => write!(f, "+"),
-            Token::Minus => write!(f, "-"),
-            Token::Star => write!(f, "*"),
-            Token::Slash => write!(f, "/"),
-            Token::Percent => write!(f, "%"),
-            Token::Power => write!(f, "**"),
-            Token::Equal => write!(f, "=="),
-            Token::NotEqual => write!(f, "!="),
-            Token::LessThan => write!(f, "<"),
-            Token::GreaterThan => write!(f, ">"),
-            Token::LessEqual => write!(f, "<="),
-            Token::GreaterEqual => write!(f, ">="),
-            Token::RegexMatch => write!(f, "=~"),
-            Token::And => write!(f, "&&"),
-            Token::Or => write!(f, "||"),
-            Token::Not => write!(f, "!"),
-            Token::Pipe => write!(f, "|"),
-            Token::LeftParen => write!(f, "("),
-            Token::RightParen => write!(f, ")"),
-            Token::LeftBracket => write!(f, "["),
-            Token::RightBracket => write!(f, "]"),
-            Token::LeftBrace => write!(f, "{{"),
-            Token::RightBrace => write!(f, "}}"),
-            Token::Dot => write!(f, "."),
-            Token::Comma => write!(f, ","),
-            Token::Colon => write!(f, ":"),
-            Token::Question => write!(f, "?"),
-            Token::Arrow => write!(f, "=>"),
-            Token::If => write!(f, "if"),
-            Token::Then => write!(f, "then"),
-            Token::Else => write!(f, "else"),
-            Token::TemplateStart => write!(f, "{{{{"),
-            Token::TemplateEnd => write!(f, "}}}}"),
-            Token::Eof => write!(f, "EOF"),
+            TokenKind::Integer(n) => write!(f, "{}", n),
+            TokenKind::Float(n) => write!(f, "{}", n),
+            TokenKind::String(s) => write!(f, "\"{}\"", s),
+            TokenKind::Boolean(b) => write!(f, "{}", b),
+            TokenKind::Null => write!(f, "null"),
+            TokenKind::Identifier(s) => write!(f, "{}", s),
+            TokenKind::Variable(s) => write!(f, "${}", s),
+            TokenKind::Plus => write!(f, "+"),
+            TokenKind::Minus => write!(f, "-"),
+            TokenKind::Star => write!(f, "*"),
+            TokenKind::Slash => write!(f, "/"),
+            TokenKind::Percent => write!(f, "%"),
+            TokenKind::Power => write!(f, "**"),
+            TokenKind::Equal => write!(f, "=="),
+            TokenKind::NotEqual => write!(f, "!="),
+            TokenKind::LessThan => write!(f, "<"),
+            TokenKind::GreaterThan => write!(f, ">"),
+            TokenKind::LessEqual => write!(f, "<="),
+            TokenKind::GreaterEqual => write!(f, ">="),
+            TokenKind::RegexMatch => write!(f, "=~"),
+            TokenKind::And => write!(f, "&&"),
+            TokenKind::Or => write!(f, "||"),
+            TokenKind::Not => write!(f, "!"),
+            TokenKind::Pipe => write!(f, "|"),
+            TokenKind::LeftParen => write!(f, "("),
+            TokenKind::RightParen => write!(f, ")"),
+            TokenKind::LeftBracket => write!(f, "["),
+            TokenKind::RightBracket => write!(f, "]"),
+            TokenKind::LeftBrace => write!(f, "{{"),
+            TokenKind::RightBrace => write!(f, "}}"),
+            TokenKind::Dot => write!(f, "."),
+            TokenKind::Comma => write!(f, ","),
+            TokenKind::Colon => write!(f, ":"),
+            TokenKind::Question => write!(f, "?"),
+            TokenKind::Arrow => write!(f, "=>"),
+            TokenKind::If => write!(f, "if"),
+            TokenKind::Then => write!(f, "then"),
+            TokenKind::Else => write!(f, "else"),
+            TokenKind::TemplateStart => write!(f, "{{{{"),
+            TokenKind::TemplateEnd => write!(f, "}}}}"),
+            TokenKind::Eof => write!(f, "EOF"),
         }
     }
 }

@@ -12,6 +12,7 @@ use nebula_error::NebulaError;
 use nebula_log::trace;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::sync::Arc;
 
 /// A template part - either static text or an expression to evaluate
 #[derive(Debug, Clone, PartialEq)]
@@ -19,14 +20,14 @@ pub enum TemplatePart {
     /// Static text that doesn't need evaluation
     Static {
         /// The static text content
-        content: String,
+        content: Arc<str>,
         /// Starting position in the original template
         position: Position,
     },
     /// An expression to be evaluated
     Expression {
         /// The expression content (without {{ }})
-        content: String,
+        content: Arc<str>,
         /// Starting position of {{ in the original template
         position: Position,
         /// Length of the full {{ expression }} in characters
@@ -79,7 +80,7 @@ impl fmt::Display for Position {
 #[derive(Debug, Clone)]
 pub struct Template {
     /// Original template source
-    source: String,
+    source: Arc<str>,
     /// Parsed template parts (cached after first parse)
     parts: Vec<TemplatePart>,
 }
@@ -89,8 +90,9 @@ impl Template {
     ///
     /// This will parse the template immediately and cache the structure.
     pub fn new(source: impl Into<String>) -> ExpressionResult<Self> {
-        let source = source.into();
-        let parts = Self::parse(&source)?;
+        let source_str = source.into();
+        let parts = Self::parse(&source_str)?;
+        let source = Arc::from(source_str.as_str());
         Ok(Self { source, parts })
     }
 
@@ -131,7 +133,7 @@ impl Template {
                     ..
                 } => {
                     trace!(
-                        expression = content.as_str(),
+                        expression = &**content,
                         position = %position,
                         strip_left = strip_left,
                         strip_right = strip_right,
@@ -188,7 +190,7 @@ impl Template {
                 // Save any accumulated static content
                 if !current_static.is_empty() {
                     parts.push(TemplatePart::Static {
-                        content: current_static.clone(),
+                        content: Arc::from(current_static.as_str()),
                         position: static_start,
                     });
                     current_static.clear();
@@ -249,7 +251,7 @@ impl Template {
                     let full_length = j + 2 - i;
 
                     parts.push(TemplatePart::Expression {
-                        content: expr_content,
+                        content: Arc::from(expr_content.as_str()),
                         position: expr_start,
                         length: full_length,
                         strip_left,
@@ -289,7 +291,7 @@ impl Template {
         // Add any remaining static content
         if !current_static.is_empty() {
             parts.push(TemplatePart::Static {
-                content: current_static,
+                content: Arc::from(current_static.as_str()),
                 position: static_start,
             });
         }
@@ -317,7 +319,7 @@ impl Template {
         self.parts
             .iter()
             .filter_map(|part| match part {
-                TemplatePart::Expression { content, .. } => Some(content.as_str()),
+                TemplatePart::Expression { content, .. } => Some(&**content),
                 _ => None,
             })
             .collect()
