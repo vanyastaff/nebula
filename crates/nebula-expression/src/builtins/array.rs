@@ -102,25 +102,19 @@ pub fn sort(
         .as_array()
         .ok_or_else(|| NebulaError::expression_type_error("array", args[0].kind().name()))?;
 
-    let mut elements: Vec<Value> = arr
-        .iter()
-        .map(|json_val| json_val.to_nebula_value_or_null())
-        .collect();
+    let mut elements: Vec<serde_json::Value> = arr.iter().cloned().collect();
+
+    // Sort the JSON values directly
     elements.sort_by(|a, b| match (a, b) {
-        (Value::Integer(x), Value::Integer(y)) => x.value().cmp(&y.value()),
-        (Value::Float(x), Value::Float(y)) => x
-            .value()
-            .partial_cmp(&y.value())
-            .unwrap_or(std::cmp::Ordering::Equal),
-        (Value::Text(x), Value::Text(y)) => x.as_str().cmp(y.as_str()),
+        (serde_json::Value::Number(x), serde_json::Value::Number(y)) => {
+            // Compare numbers
+            x.as_f64().partial_cmp(&y.as_f64()).unwrap_or(std::cmp::Ordering::Equal)
+        }
+        (serde_json::Value::String(x), serde_json::Value::String(y)) => x.cmp(y),
         _ => std::cmp::Ordering::Equal,
     });
 
-    let mut result = nebula_value::Array::new();
-    for elem in elements {
-        result = result.push(elem.to_json());
-    }
-    Ok(Value::Array(result))
+    Ok(Value::Array(nebula_value::Array::from_vec(elements)))
 }
 
 /// Reverse an array
@@ -134,17 +128,10 @@ pub fn reverse(
         .as_array()
         .ok_or_else(|| NebulaError::expression_type_error("array", args[0].kind().name()))?;
 
-    let mut elements: Vec<Value> = arr
-        .iter()
-        .map(|json_val| json_val.to_nebula_value_or_null())
-        .collect();
+    let mut elements: Vec<serde_json::Value> = arr.iter().cloned().collect();
     elements.reverse();
 
-    let mut result = nebula_value::Array::new();
-    for elem in elements {
-        result = result.push(elem.to_json());
-    }
-    Ok(Value::Array(result))
+    Ok(Value::Array(nebula_value::Array::from_vec(elements)))
 }
 
 /// Join array elements into a string

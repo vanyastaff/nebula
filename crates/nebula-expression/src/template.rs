@@ -142,7 +142,9 @@ impl Template {
 
                     // Strip whitespace on the left if requested
                     if *strip_left {
-                        result = result.trim_end().to_string();
+                        // Truncate in-place instead of allocating new String
+                        let trimmed_len = result.trim_end().len();
+                        result.truncate(trimmed_len);
                     }
 
                     match engine.evaluate(content.trim(), context) {
