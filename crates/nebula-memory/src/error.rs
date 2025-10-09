@@ -50,13 +50,11 @@ impl MemoryError {
     pub fn with_layout(kind: MemoryErrorKind, layout: Layout) -> Self {
         let mut error = Self::new(kind);
         error.layout = Some(layout);
-        error.inner = error.inner.with_metadata(
-            "layout_size",
-            layout.size().to_string(),
-        ).with_metadata(
-            "layout_align",
-            layout.align().to_string(),
-        );
+        error.inner = error.inner.with_details(format!(
+            "layout: {} bytes, {} align",
+            layout.size(),
+            layout.align()
+        ));
         error
     }
 
@@ -66,7 +64,7 @@ impl MemoryError {
         K: Into<String>,
         V: fmt::Display,
     {
-        self.inner = self.inner.with_metadata(key, value.to_string());
+        self.inner = self.inner.with_details(format!("{}: {}", key.into(), value));
         self
     }
 
@@ -119,12 +117,14 @@ impl MemoryError {
 
     /// Creates a size overflow error
     pub fn size_overflow(size: usize, align: usize) -> Self {
-        Self::new(MemoryErrorKind::SizeOverflow { size, align })
+        Self::new(MemoryErrorKind::SizeOverflow {
+            operation: format!("{}x{} byte allocation", size, align),
+        })
     }
 
     /// Creates an invalid alignment error
-    pub fn invalid_alignment(align: usize) -> Self {
-        Self::new(MemoryErrorKind::InvalidAlignment { align })
+    pub fn invalid_alignment(alignment: usize) -> Self {
+        Self::new(MemoryErrorKind::InvalidAlignment { alignment })
     }
 
     // ============================================================================
@@ -141,7 +141,14 @@ impl MemoryError {
 
     /// Creates an invalid pool configuration error
     pub fn invalid_pool_config(reason: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::InvalidPoolConfig {
+        Self::new(MemoryErrorKind::InvalidConfig {
+            reason: format!("invalid pool config: {}", reason.into()),
+        })
+    }
+
+    /// Creates an invalid config error (generic)
+    pub fn invalid_config(reason: impl Into<String>) -> Self {
+        Self::new(MemoryErrorKind::InvalidConfig {
             reason: reason.into(),
         })
     }
@@ -165,8 +172,8 @@ impl MemoryError {
 
     /// Creates an invalid arena operation error
     pub fn invalid_arena_operation(operation: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::InvalidArenaOperation {
-            operation: operation.into(),
+        Self::new(MemoryErrorKind::InvalidState {
+            reason: format!("invalid arena operation: {}", operation.into()),
         })
     }
 
@@ -183,13 +190,16 @@ impl MemoryError {
 
     /// Creates a cache full error
     pub fn cache_full(capacity: usize) -> Self {
-        Self::new(MemoryErrorKind::CacheFull { capacity })
+        Self::new(MemoryErrorKind::CacheOverflow {
+            current: capacity,
+            max: capacity,
+        })
     }
 
     /// Creates an invalid cache key error
     pub fn invalid_cache_key(key: impl Into<String>) -> Self {
         Self::new(MemoryErrorKind::InvalidCacheKey {
-            key: key.into(),
+            reason: format!("invalid key: {}", key.into()),
         })
     }
 
@@ -204,8 +214,8 @@ impl MemoryError {
 
     /// Creates an invalid budget error
     pub fn invalid_budget(reason: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::InvalidBudget {
-            reason: reason.into(),
+        Self::new(MemoryErrorKind::InvalidConfig {
+            reason: format!("invalid budget: {}", reason.into()),
         })
     }
 
@@ -224,15 +234,15 @@ impl MemoryError {
     /// Creates a concurrent access error
     pub fn concurrent_access(resource: impl Into<String>) -> Self {
         Self::new(MemoryErrorKind::ConcurrentAccess {
-            resource: resource.into(),
+            details: format!("concurrent access to {}", resource.into()),
         })
     }
 
     /// Creates a leak detected error
     pub fn leak_detected(size: usize, location: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::LeakDetected {
-            size,
-            location: location.into(),
+        Self::new(MemoryErrorKind::Corruption {
+            component: "memory tracker".into(),
+            details: format!("leak detected: {} bytes at {}", size, location.into()),
         })
     }
 
@@ -242,18 +252,39 @@ impl MemoryError {
         largest_block: usize,
         requested: usize,
     ) -> Self {
-        Self::new(MemoryErrorKind::Fragmentation {
-            available,
-            largest_block,
-            requested,
+        Self::new(MemoryErrorKind::InvalidState {
+            reason: format!(
+                "fragmentation: {} bytes available, largest block {}, requested {}",
+                available, largest_block, requested
+            ),
         })
     }
 
     /// Creates an initialization failed error
     pub fn initialization_failed(component: impl Into<String>) -> Self {
         Self::new(MemoryErrorKind::InitializationFailed {
-            component: component.into(),
+            reason: format!("failed to initialize {}", component.into()),
         })
+    }
+
+    /// Creates an invalid input error
+    pub fn invalid_input(reason: impl Into<String>) -> Self {
+        Self::invalid_layout(reason)
+    }
+
+    /// Creates an out of memory error
+    pub fn out_of_memory(size: usize, align: usize) -> Self {
+        Self::allocation_failed(size, align)
+    }
+
+    /// Creates an out of memory error with layout
+    pub fn out_of_memory_with_layout(layout: Layout) -> Self {
+        Self::allocation_failed_with_layout(layout)
+    }
+
+    /// Creates an allocation too large error
+    pub fn allocation_too_large(size: usize, max_size: usize) -> Self {
+        Self::new(MemoryErrorKind::ExceedsMaxSize { size, max_size })
     }
 }
 

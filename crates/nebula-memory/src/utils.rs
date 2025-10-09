@@ -416,19 +416,19 @@ impl CheckedArithmetic for usize {
     #[inline]
     fn try_add(self, rhs: Self) -> AllocResult<Self> {
         self.checked_add(rhs)
-            .ok_or_else(|| AllocError::size_overflow())
+            .ok_or_else(|| AllocError::size_overflow(self, rhs))
     }
 
     #[inline]
     fn try_sub(self, rhs: Self) -> AllocResult<Self> {
         self.checked_sub(rhs)
-            .ok_or_else(|| AllocError::size_overflow())
+            .ok_or_else(|| AllocError::size_overflow(self, rhs))
     }
 
     #[inline]
     fn try_mul(self, rhs: Self) -> AllocResult<Self> {
         self.checked_mul(rhs)
-            .ok_or_else(|| AllocError::size_overflow())
+            .ok_or_else(|| AllocError::size_overflow(self, rhs))
     }
 
     #[inline]
@@ -442,19 +442,19 @@ impl CheckedArithmetic for isize {
     #[inline]
     fn try_add(self, rhs: Self) -> AllocResult<Self> {
         self.checked_add(rhs)
-            .ok_or_else(|| AllocError::size_overflow())
+            .ok_or_else(|| AllocError::size_overflow(self, rhs))
     }
 
     #[inline]
     fn try_sub(self, rhs: Self) -> AllocResult<Self> {
         self.checked_sub(rhs)
-            .ok_or_else(|| AllocError::size_overflow())
+            .ok_or_else(|| AllocError::size_overflow(self, rhs))
     }
 
     #[inline]
     fn try_mul(self, rhs: Self) -> AllocResult<Self> {
         self.checked_mul(rhs)
-            .ok_or_else(|| AllocError::size_overflow())
+            .ok_or_else(|| AllocError::size_overflow(self, rhs))
     }
 
     #[inline]

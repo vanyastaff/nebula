@@ -71,7 +71,7 @@ impl BumpAllocator {
     /// Creates a new bump allocator with specified capacity and configuration
     pub fn with_config(capacity: usize, config: BumpConfig) -> AllocResult<Self> {
         if capacity == 0 {
-            return Err(AllocError::invalid_layout());
+            return Err(AllocError::invalid_layout("invalid layout"));
         }
 
         let mut vec = vec![0u8; capacity];

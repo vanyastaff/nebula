@@ -264,7 +264,7 @@ impl AllocatorManager {
     /// Allocate using the currently active allocator
     pub unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
         self.with_active_allocator(|alloc| unsafe { alloc.managed_allocate(layout) })
-            .unwrap_or_else(|| Err(AllocError::invalid_layout()))
+            .unwrap_or_else(|| Err(AllocError::invalid_layout("no active allocator")))
     }
 
     /// Deallocate using the currently active allocator
@@ -282,7 +282,7 @@ impl AllocatorManager {
         self.with_active_allocator(|alloc| unsafe {
             alloc.managed_reallocate(ptr, old_layout, new_layout)
         })
-        .unwrap_or_else(|| Err(AllocError::invalid_layout()))
+        .unwrap_or_else(|| Err(AllocError::invalid_layout("no active allocator")))
     }
 }
 

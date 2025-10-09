@@ -128,14 +128,14 @@ impl PoolAllocator {
         }
 
         if block_count == 0 {
-            return Err(AllocError::invalid_layout());
+            return Err(AllocError::invalid_layout("invalid layout"));
         }
 
         // Calculate total memory needed
         let aligned_block_size = align_up(block_size, block_align);
         let total_size = aligned_block_size
             .checked_mul(block_count)
-            .ok_or_else(|| AllocError::size_overflow())?;
+            .ok_or_else(|| AllocError::size_overflow(aligned_block_size, block_align))?;
 
         // Allocate memory buffer
         let mut vec = vec![0u8; total_size];

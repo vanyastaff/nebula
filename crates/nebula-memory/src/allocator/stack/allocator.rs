@@ -204,10 +204,10 @@ impl StackAllocator {
         let current_top = self.top.load(Ordering::Acquire);
 
         if marker.position > current_top {
-            return Err(AllocError::invalid_layout()); // marker from the future
+            return Err(AllocError::invalid_layout("invalid layout")); // marker from the future
         }
         if marker.position < self.start_addr || marker.position > self.end_addr {
-            return Err(AllocError::invalid_layout()); // out of bounds
+            return Err(AllocError::invalid_layout("invalid layout")); // out of bounds
         }
 
         self.top.store(marker.position, Ordering::Release);
