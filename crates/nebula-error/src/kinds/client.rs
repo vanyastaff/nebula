@@ -3,13 +3,17 @@
 //! These errors are typically caused by invalid user input, authentication failures,
 //! or other client-side issues. They are generally not retryable.
 
+#![allow(missing_docs)] // Enum variant fields are self-explanatory
+
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
 
 use crate::core::traits::{ErrorCode, RetryableError};
+use crate::kinds::codes;
 
 /// Client-side error variants
+#[non_exhaustive]
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum ClientError {
     /// Validation error
@@ -85,23 +89,23 @@ impl RetryableError for ClientError {
 impl ErrorCode for ClientError {
     fn error_code(&self) -> &str {
         match self {
-            ClientError::Validation { .. } => "VALIDATION_ERROR",
-            ClientError::NotFound { .. } => "NOT_FOUND_ERROR",
-            ClientError::InvalidInput { .. } => "INVALID_INPUT_ERROR",
-            ClientError::PermissionDenied { .. } => "PERMISSION_DENIED_ERROR",
-            ClientError::Authentication { .. } => "AUTHENTICATION_ERROR",
-            ClientError::Authorization { .. } => "AUTHORIZATION_ERROR",
-            ClientError::Serialization { .. } => "SERIALIZATION_ERROR",
-            ClientError::Deserialization { .. } => "DESERIALIZATION_ERROR",
-            ClientError::Conflict { .. } => "CONFLICT_ERROR",
-            ClientError::PreconditionFailed { .. } => "PRECONDITION_FAILED_ERROR",
-            ClientError::RequestTooLarge { .. } => "REQUEST_TOO_LARGE_ERROR",
-            ClientError::UnsupportedMediaType { .. } => "UNSUPPORTED_MEDIA_TYPE_ERROR",
+            ClientError::Validation { .. } => codes::VALIDATION_ERROR,
+            ClientError::NotFound { .. } => codes::NOT_FOUND_ERROR,
+            ClientError::InvalidInput { .. } => codes::INVALID_INPUT_ERROR,
+            ClientError::PermissionDenied { .. } => codes::PERMISSION_DENIED_ERROR,
+            ClientError::Authentication { .. } => codes::AUTHENTICATION_ERROR,
+            ClientError::Authorization { .. } => codes::AUTHORIZATION_ERROR,
+            ClientError::Serialization { .. } => codes::SERIALIZATION_ERROR,
+            ClientError::Deserialization { .. } => codes::DESERIALIZATION_ERROR,
+            ClientError::Conflict { .. } => codes::CONFLICT_ERROR,
+            ClientError::PreconditionFailed { .. } => codes::PRECONDITION_FAILED_ERROR,
+            ClientError::RequestTooLarge { .. } => codes::REQUEST_TOO_LARGE_ERROR,
+            ClientError::UnsupportedMediaType { .. } => codes::UNSUPPORTED_MEDIA_TYPE_ERROR,
         }
     }
 
-    fn error_category(&self) -> &str {
-        "CLIENT"
+    fn error_category(&self) -> &'static str {
+        codes::CATEGORY_CLIENT
     }
 }
 

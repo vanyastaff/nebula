@@ -1,21 +1,24 @@
 //! Error conversion utilities for Nebula
 //!
 //! This module provides conversion utilities to transform external error types
-//! into NebulaError instances with appropriate categorization and context.
+//! into [`NebulaError`] instances with appropriate categorization and context.
 
 use crate::core::context::ErrorContext;
 use crate::core::{NebulaError, Result};
 use crate::kinds::{ClientError, ErrorKind, ServerError, SystemError};
 use std::time::Duration;
 
-/// Trait for converting external errors to NebulaError
+/// Trait for converting external errors to [`NebulaError`]
 pub trait IntoNebulaError {
-    /// Convert to NebulaError
+    /// Convert to [`NebulaError`]
     fn into_nebula_error(self) -> NebulaError;
 }
 
-/// Extension trait for Results to add context
-pub trait ResultExt<T, E> {
+/// Extension trait for `Result`s to add context (conversion variant)
+///
+/// Note: This provides the same interface as `ResultExt` but for conversion contexts
+#[allow(dead_code)]
+trait ConversionResultExt<T, E> {
     /// Add context to a Result
     fn context(self, context: impl Into<String>) -> Result<T>;
 
@@ -25,7 +28,7 @@ pub trait ResultExt<T, E> {
         F: FnOnce() -> ErrorContext;
 }
 
-impl<T, E> ResultExt<T, E> for std::result::Result<T, E>
+impl<T, E> ConversionResultExt<T, E> for std::result::Result<T, E>
 where
     E: IntoNebulaError,
 {
@@ -89,8 +92,7 @@ impl IntoNebulaError for std::fmt::Error {
 impl IntoNebulaError for std::num::ParseIntError {
     fn into_nebula_error(self) -> NebulaError {
         NebulaError::new(ErrorKind::Client(ClientError::validation(format!(
-            "Integer parsing error: {}",
-            self
+            "Integer parsing error: {self}"
         ))))
     }
 }
@@ -98,8 +100,7 @@ impl IntoNebulaError for std::num::ParseIntError {
 impl IntoNebulaError for std::num::ParseFloatError {
     fn into_nebula_error(self) -> NebulaError {
         NebulaError::new(ErrorKind::Client(ClientError::validation(format!(
-            "Float parsing error: {}",
-            self
+            "Float parsing error: {self}"
         ))))
     }
 }
@@ -107,8 +108,7 @@ impl IntoNebulaError for std::num::ParseFloatError {
 impl IntoNebulaError for std::str::Utf8Error {
     fn into_nebula_error(self) -> NebulaError {
         NebulaError::new(ErrorKind::Client(ClientError::validation(format!(
-            "UTF-8 error: {}",
-            self
+            "UTF-8 error: {self}"
         ))))
     }
 }
@@ -116,8 +116,7 @@ impl IntoNebulaError for std::str::Utf8Error {
 impl IntoNebulaError for std::string::FromUtf8Error {
     fn into_nebula_error(self) -> NebulaError {
         NebulaError::new(ErrorKind::Client(ClientError::validation(format!(
-            "UTF-8 conversion error: {}",
-            self
+            "UTF-8 conversion error: {self}"
         ))))
     }
 }
@@ -149,8 +148,7 @@ impl IntoNebulaError for serde_json::Error {
 impl IntoNebulaError for bincode::Error {
     fn into_nebula_error(self) -> NebulaError {
         NebulaError::new(ErrorKind::Client(ClientError::deserialization(format!(
-            "Bincode error: {}",
-            self
+            "Bincode error: {self}"
         ))))
     }
 }
@@ -158,8 +156,7 @@ impl IntoNebulaError for bincode::Error {
 impl IntoNebulaError for uuid::Error {
     fn into_nebula_error(self) -> NebulaError {
         NebulaError::new(ErrorKind::Client(ClientError::validation(format!(
-            "UUID error: {}",
-            self
+            "UUID error: {self}"
         ))))
     }
 }
@@ -167,8 +164,7 @@ impl IntoNebulaError for uuid::Error {
 impl IntoNebulaError for chrono::ParseError {
     fn into_nebula_error(self) -> NebulaError {
         NebulaError::new(ErrorKind::Client(ClientError::validation(format!(
-            "Date/time parsing error: {}",
-            self
+            "Date/time parsing error: {self}"
         ))))
     }
 }
@@ -176,8 +172,7 @@ impl IntoNebulaError for chrono::ParseError {
 impl IntoNebulaError for anyhow::Error {
     fn into_nebula_error(self) -> NebulaError {
         NebulaError::new(ErrorKind::Server(ServerError::internal(format!(
-            "Anyhow error: {}",
-            self
+            "Anyhow error: {self}"
         ))))
     }
 }
@@ -194,8 +189,7 @@ impl IntoNebulaError for tokio::time::error::Elapsed {
 impl IntoNebulaError for serde::de::value::Error {
     fn into_nebula_error(self) -> NebulaError {
         NebulaError::new(ErrorKind::Client(ClientError::deserialization(format!(
-            "Deserialization error: {}",
-            self
+            "Deserialization error: {self}"
         ))))
     }
 }
@@ -255,15 +249,14 @@ impl IntoNebulaError for NebulaError {
 // Helper Functions
 // =============================================================================
 
-/// Convert any error that implements Display to NebulaError
+/// Convert any error that implements `Display` to [`NebulaError`]
 pub fn from_display_error<E: std::fmt::Display>(error: E) -> NebulaError {
     NebulaError::new(ErrorKind::Server(ServerError::internal(format!(
-        "Error: {}",
-        error
+        "Error: {error}"
     ))))
 }
 
-/// Convert any error that implements Display to NebulaError with context
+/// Convert any error that implements `Display` to [`NebulaError`] with context
 pub fn from_display_error_with_context<E: std::fmt::Display>(
     error: E,
     context: impl Into<String>,
@@ -271,15 +264,14 @@ pub fn from_display_error_with_context<E: std::fmt::Display>(
     from_display_error(error).with_context(ErrorContext::new(context))
 }
 
-/// Convert any error that implements std::error::Error to NebulaError
+/// Convert any error that implements `std::error::Error` to [`NebulaError`]
 pub fn from_std_error<E: std::error::Error>(error: E) -> NebulaError {
     NebulaError::new(ErrorKind::Server(ServerError::internal(format!(
-        "Standard error: {}",
-        error
+        "Standard error: {error}"
     ))))
 }
 
-/// Convert any error that implements std::error::Error to NebulaError with context
+/// Convert any error that implements [`std::error::Error`] to [`NebulaError`] with context
 pub fn from_std_error_with_context<E: std::error::Error>(
     error: E,
     context: impl Into<String>,

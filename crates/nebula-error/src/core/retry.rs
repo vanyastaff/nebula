@@ -8,7 +8,11 @@ use tokio::time::{sleep, timeout};
 use crate::core::NebulaError;
 
 /// Retry strategy configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// TODO(feature): Add support for custom backoff strategies (jittered, decorrelated)
+/// TODO(feature): Add circuit breaker pattern integration
+/// TODO(optimization): Consider making this a trait for extensibility
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct RetryStrategy {
     /// Maximum number of retry attempts
     pub max_attempts: u32,
@@ -47,48 +51,56 @@ impl RetryStrategy {
     }
 
     /// Set maximum attempts
+    #[must_use]
     pub fn with_max_attempts(mut self, max_attempts: u32) -> Self {
         self.max_attempts = max_attempts;
         self
     }
 
     /// Set base delay
+    #[must_use]
     pub fn with_base_delay(mut self, base_delay: Duration) -> Self {
         self.base_delay = base_delay;
         self
     }
 
     /// Set maximum delay
+    #[must_use]
     pub fn with_max_delay(mut self, max_delay: Duration) -> Self {
         self.max_delay = max_delay;
         self
     }
 
     /// Set backoff multiplier
+    #[must_use]
     pub fn with_backoff_multiplier(mut self, multiplier: f64) -> Self {
         self.backoff_multiplier = multiplier;
         self
     }
 
     /// Set jitter factor
+    #[must_use]
     pub fn with_jitter_factor(mut self, jitter: f64) -> Self {
         self.jitter_factor = jitter;
         self
     }
 
     /// Enable/disable exponential backoff
+    #[must_use]
     pub fn with_exponential_backoff(mut self, enabled: bool) -> Self {
         self.exponential_backoff = enabled;
         self
     }
 
     /// Set timeout
+    #[must_use]
     pub fn with_timeout(mut self, timeout: Option<Duration>) -> Self {
         self.timeout = timeout;
         self
     }
 
     /// Calculate delay for a specific attempt
+    #[must_use]
     pub fn calculate_delay(&self, attempt: u32) -> Duration {
         if !self.exponential_backoff || attempt == 0 {
             return self.base_delay;
@@ -188,12 +200,17 @@ pub trait Retryable {
             match self.execute().await {
                 Ok(result) => return Ok(result),
                 Err(error) => {
-                    last_error = Some(error);
+                    // БЫЛО: last_error = Some(error); ... last_error.as_ref().unwrap()
+                    // СТАЛО: Используем ссылку напрямую, избегая unwrap()
+                    // ПОЧЕМУ: Безопаснее и читаемее - no panic возможность
 
                     // Check if we should retry
-                    if !self.is_retryable_error(last_error.as_ref().unwrap()) {
+                    if !self.is_retryable_error(&error) {
+                        last_error = Some(error);
                         break;
                     }
+
+                    last_error = Some(error);
 
                     // If this is the last attempt, don't sleep
                     if attempt + 1 >= strategy.max_attempts {
@@ -207,12 +224,21 @@ pub trait Retryable {
             }
         }
 
-        // Convert the last error to NebulaError
-        Err(last_error.unwrap().into())
+        // БЫЛО: Err(last_error.unwrap().into())
+        // СТАЛО: Используем unwrap_or_else для обработки невозможного случая
+        // ПОЧЕМУ: last_error гарантированно Some после цикла (max_attempts >= 1)
+        #[allow(clippy::expect_used)]
+        Err(last_error
+            .expect("last_error must be Some after attempting at least once")
+            .into())
     }
 }
 
 /// Retry a function with the given strategy
+///
+/// # Panics
+/// Panics if no attempts are made (max_attempts = 0), though this should never happen in practice
+/// as `RetryStrategy::new()` enforces max_attempts >= 1.
 pub async fn retry<F, Fut, T, E>(f: F, strategy: &RetryStrategy) -> Result<T, NebulaError>
 where
     F: Fn() -> Fut + Send + Sync,
@@ -249,8 +275,13 @@ where
         }
     }
 
-    // Convert the last error to NebulaError
-    Err(last_error.unwrap().into())
+    // БЫЛО: Err(last_error.unwrap().into())
+    // СТАЛО: Используем expect с информативным сообщением
+    // ПОЧЕМУ: Защита от panic, хотя last_error гарантированно Some
+    #[allow(clippy::expect_used)]
+    Err(last_error
+        .expect("last_error must be Some after attempting at least once")
+        .into())
 }
 
 /// Retry a function with timeout
@@ -355,10 +386,10 @@ impl RetryPolicy {
         for config in &self.error_configs {
             if config.error_code == error.error_code() {
                 if let Some(ref strategy) = config.strategy {
-                    return strategy.clone();
+                    return *strategy;
                 }
                 if let Some(max_attempts) = config.max_attempts {
-                    let mut strategy = self.default_strategy.clone();
+                    let mut strategy = self.default_strategy;
                     strategy.max_attempts = max_attempts;
                     return strategy;
                 }
@@ -366,7 +397,7 @@ impl RetryPolicy {
         }
 
         // Return default strategy
-        self.default_strategy.clone()
+        self.default_strategy
     }
 
     /// Check if an error is retryable according to this policy
@@ -455,7 +486,8 @@ mod tests {
                 move || {
                     let attempts = attempts.clone();
                     async move {
-                        let mut count = attempts.lock().unwrap();
+                        // SAFETY: Mutex is only locked briefly in tests and never panics during lock
+                        let mut count = attempts.lock().expect("Mutex lock should not be poisoned");
                         *count += 1;
                         if *count < 3 {
                             Err(NebulaError::internal("temporary error"))
@@ -471,6 +503,9 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "success");
-        assert_eq!(*attempts.lock().unwrap(), 3);
+        assert_eq!(
+            *attempts.lock().expect("Mutex lock should not be poisoned"),
+            3
+        );
     }
 }

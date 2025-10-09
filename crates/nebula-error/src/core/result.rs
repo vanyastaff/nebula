@@ -136,7 +136,7 @@ mod tests {
         let error = nebula_result.unwrap_err();
         let context = error.context().unwrap();
         assert_eq!(context.description, "Operation failed");
-        assert_eq!(context.component, Some("user-service".to_string()));
-        assert_eq!(context.operation, Some("create_user".to_string()));
+        assert_eq!(context.component(), Some("user-service"));
+        assert_eq!(context.operation(), Some("create_user"));
     }
 }

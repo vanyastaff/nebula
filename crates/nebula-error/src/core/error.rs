@@ -1,4 +1,4 @@
-//! Main NebulaError struct and core error functionality
+//! Main [`NebulaError`] struct and core error functionality
 
 // Standard library
 use std::fmt;
@@ -21,6 +21,15 @@ use crate::kinds::ErrorKind;
 /// Large fields are boxed to keep the error size small (≤128 bytes).
 /// This improves performance when returning Results, as small errors
 /// can be passed on the stack efficiently.
+///
+/// # Memory Layout Optimizations Applied
+/// - `Box<ErrorKind>`: Reduces size on stack
+/// - `Box<ErrorContext>`: Lazy allocation, only when needed
+/// - `Box<str>`: More efficient than `Box<String>` (no capacity field)
+/// - `#[inline]` on hot-path methods for better performance
+///
+/// TODO(optimization): Consider using `Cow<'static, str>` for static error messages
+/// TODO(performance): Add benchmarks to measure error creation overhead
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NebulaError {
     /// The specific kind/variant of error (boxed to reduce size)
@@ -35,12 +44,13 @@ pub struct NebulaError {
     pub code: String,
     /// User-friendly error message
     pub message: String,
-    /// Technical details for debugging (boxed - only for detailed errors)
-    pub details: Option<Box<String>>,
+    /// Technical details for debugging (boxed to reduce size, immutable after creation)
+    pub details: Option<Box<str>>,
 }
 
 impl NebulaError {
-    /// Create a new NebulaError with the given kind
+    /// Create a new [`NebulaError`] with the given kind
+    #[must_use]
     pub fn new(kind: ErrorKind) -> Self {
         let retryable = kind.is_retryable();
         let code = kind.error_code().to_string();
@@ -58,18 +68,26 @@ impl NebulaError {
     }
 
     /// Add context to the error
+    #[must_use]
     pub fn with_context(mut self, context: ErrorContext) -> Self {
         self.context = Some(Box::new(context));
         self
     }
 
     /// Add details to the error
+    ///
+    /// **Why `Box<str>` instead of `Box<String>`:**
+    /// - `Box<str>` is more memory-efficient (no capacity field)
+    /// - Details are immutable after creation
+    /// - Reduces `NebulaError` size and improves performance
+    #[must_use]
     pub fn with_details(mut self, details: impl Into<String>) -> Self {
-        self.details = Some(Box::new(details.into()));
+        self.details = Some(details.into().into_boxed_str());
         self
     }
 
     /// Set retry information
+    #[must_use]
     pub fn with_retry_info(mut self, retryable: bool, retry_after: Option<Duration>) -> Self {
         self.retryable = retryable;
         self.retry_after = retry_after;
@@ -77,46 +95,76 @@ impl NebulaError {
     }
 
     /// Check if this error is retryable
+    ///
+    /// Hot path: called frequently during error handling
+    #[inline]
+    #[must_use]
     pub fn is_retryable(&self) -> bool {
         self.retryable
     }
 
     /// Check if this is a client error (4xx equivalent)
+    ///
+    /// Hot path: used for error classification
+    #[inline]
+    #[must_use]
     pub fn is_client_error(&self) -> bool {
         self.kind.is_client_error()
     }
 
     /// Check if this is a server error (5xx equivalent)
+    ///
+    /// Hot path: used for error classification
+    #[inline]
+    #[must_use]
     pub fn is_server_error(&self) -> bool {
         self.kind.is_server_error()
     }
 
     /// Check if this is a system error (infrastructure/system level)
+    ///
+    /// Hot path: used for error classification
+    #[inline]
+    #[must_use]
     pub fn is_system_error(&self) -> bool {
         self.kind.is_system_error()
     }
 
     /// Get the suggested retry delay
+    ///
+    /// Hot path: called during retry logic
+    #[inline]
+    #[must_use]
     pub fn retry_after(&self) -> Option<Duration> {
         self.retry_after
     }
 
     /// Get the error code
+    ///
+    /// Hot path: frequently accessed for logging and telemetry
+    #[inline]
+    #[must_use]
     pub fn error_code(&self) -> &str {
         &self.code
     }
 
     /// Get the user-friendly message
+    #[inline]
+    #[must_use]
     pub fn user_message(&self) -> &str {
         &self.message
     }
 
     /// Get the error details
+    #[inline]
+    #[must_use]
     pub fn details(&self) -> Option<&str> {
-        self.details.as_deref().map(|s| s.as_str())
+        self.details.as_deref()
     }
 
     /// Get the error context
+    #[inline]
+    #[must_use]
     pub fn context(&self) -> Option<&ErrorContext> {
         self.context.as_deref()
     }
@@ -507,7 +555,7 @@ mod tests {
         let error = NebulaError::timeout("API call", Duration::from_secs(30))
             .with_details("Connection to external service timed out");
 
-        let display = format!("{}", error);
+        let display = format!("{error}");
         assert!(display.contains("TIMEOUT_ERROR"));
         assert!(display.contains("API call"));
         assert!(display.contains("Connection to external service timed out"));

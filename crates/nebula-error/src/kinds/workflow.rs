@@ -3,11 +3,14 @@
 //! This module defines error types specific to workflow execution,
 //! node processing, triggers, and workflow orchestration.
 
+#![allow(missing_docs)] // Enum variant fields are self-explanatory
+
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
 
 /// Errors related to workflow definition and execution
+#[non_exhaustive]
 #[derive(Debug, Clone, Error, Serialize, Deserialize)]
 pub enum WorkflowError {
     /// Invalid workflow definition
@@ -54,6 +57,7 @@ pub enum WorkflowError {
 }
 
 /// Errors related to individual workflow nodes
+#[non_exhaustive]
 #[derive(Debug, Clone, Error, Serialize, Deserialize)]
 pub enum NodeError {
     /// Node execution failed
@@ -94,6 +98,7 @@ pub enum NodeError {
 }
 
 /// Errors related to workflow triggers
+#[non_exhaustive]
 #[derive(Debug, Clone, Error, Serialize, Deserialize)]
 pub enum TriggerError {
     /// Webhook trigger configuration invalid
@@ -130,6 +135,7 @@ pub enum TriggerError {
 }
 
 /// Errors related to external service connections
+#[non_exhaustive]
 #[derive(Debug, Clone, Error, Serialize, Deserialize)]
 pub enum ConnectorError {
     /// Connection to external service failed
@@ -166,6 +172,7 @@ pub enum ConnectorError {
 }
 
 /// Errors related to credentials and authentication
+#[non_exhaustive]
 #[derive(Debug, Clone, Error, Serialize, Deserialize)]
 pub enum CredentialError {
     /// Credentials not found
@@ -204,6 +211,7 @@ pub enum CredentialError {
 }
 
 /// Errors related to workflow execution runtime
+#[non_exhaustive]
 #[derive(Debug, Clone, Error, Serialize, Deserialize)]
 pub enum ExecutionError {
     /// Execution context is invalid
@@ -333,19 +341,21 @@ impl TriggerError {
 
 impl ConnectorError {
     /// Check if this connector error is retryable
+    #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
-            ConnectorError::ConnectionFailed { .. } => true,
-            ConnectorError::ServiceUnavailable { .. } => true,
             ConnectorError::ApiCallFailed { status, .. } => *status >= 500,
-            ConnectorError::QuotaExceeded { .. } => true,
-            ConnectorError::InvalidConfiguration { .. } => false,
-            ConnectorError::TransformationFailed { .. } => false,
-            ConnectorError::UnsupportedOperation { .. } => false,
+            ConnectorError::ConnectionFailed { .. }
+            | ConnectorError::ServiceUnavailable { .. }
+            | ConnectorError::QuotaExceeded { .. } => true,
+            ConnectorError::InvalidConfiguration { .. }
+            | ConnectorError::TransformationFailed { .. }
+            | ConnectorError::UnsupportedOperation { .. } => false,
         }
     }
 
     /// Get error code for this connector error
+    #[must_use]
     pub fn error_code(&self) -> &'static str {
         match self {
             ConnectorError::ConnectionFailed { .. } => "CONNECTOR_CONNECTION_FAILED",
@@ -361,19 +371,22 @@ impl ConnectorError {
 
 impl CredentialError {
     /// Check if this credential error is retryable
+    #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
-            CredentialError::TokenRefreshFailed { .. } => true,
-            CredentialError::OAuthFailed { .. } => true,
-            CredentialError::NotFound { .. } => false,
-            CredentialError::InvalidCredentials { .. } => false,
-            CredentialError::MissingFields { .. } => false,
-            CredentialError::DecryptionFailed { .. } => false,
-            CredentialError::InvalidApiKey { .. } => false,
+            CredentialError::TokenRefreshFailed { .. } | CredentialError::OAuthFailed { .. } => {
+                true
+            }
+            CredentialError::NotFound { .. }
+            | CredentialError::InvalidCredentials { .. }
+            | CredentialError::MissingFields { .. }
+            | CredentialError::DecryptionFailed { .. }
+            | CredentialError::InvalidApiKey { .. } => false,
         }
     }
 
     /// Get error code for this credential error
+    #[must_use]
     pub fn error_code(&self) -> &'static str {
         match self {
             CredentialError::NotFound { .. } => "CREDENTIAL_NOT_FOUND",
@@ -389,20 +402,23 @@ impl CredentialError {
 
 impl ExecutionError {
     /// Check if this execution error is retryable
+    #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
-            ExecutionError::MemoryLimitExceeded { .. } => false,
-            ExecutionError::CpuLimitExceeded { .. } => false,
-            ExecutionError::DataSizeLimitExceeded { .. } => false,
-            ExecutionError::ConcurrencyLimitReached { .. } => true,
-            ExecutionError::QueueFull { .. } => true,
-            ExecutionError::InvalidContext { .. } => false,
-            ExecutionError::Cancelled { .. } => false,
-            ExecutionError::VariableResolutionFailed { .. } => false,
+            ExecutionError::ConcurrencyLimitReached { .. } | ExecutionError::QueueFull { .. } => {
+                true
+            }
+            ExecutionError::MemoryLimitExceeded { .. }
+            | ExecutionError::CpuLimitExceeded { .. }
+            | ExecutionError::DataSizeLimitExceeded { .. }
+            | ExecutionError::InvalidContext { .. }
+            | ExecutionError::Cancelled { .. }
+            | ExecutionError::VariableResolutionFailed { .. } => false,
         }
     }
 
     /// Get error code for this execution error
+    #[must_use]
     pub fn error_code(&self) -> &'static str {
         match self {
             ExecutionError::InvalidContext { .. } => "EXECUTION_INVALID_CONTEXT",

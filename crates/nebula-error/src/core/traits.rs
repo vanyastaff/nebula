@@ -51,7 +51,7 @@ pub trait ErrorCode {
     fn error_code(&self) -> &str;
 
     /// Get the error category
-    fn error_category(&self) -> &str {
+    fn error_category(&self) -> &'static str {
         "UNKNOWN"
     }
 }

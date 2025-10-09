@@ -3,13 +3,17 @@
 //! These errors are typically caused by internal server issues, service failures,
 //! or other server-side problems. Many of these may be retryable.
 
+#![allow(missing_docs)] // Enum variant fields are self-explanatory
+
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
 
 use crate::core::traits::{ErrorCode, RetryableError};
+use crate::kinds::codes;
 
 /// Server-side error variants
+#[non_exhaustive]
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum ServerError {
     /// Internal server error
@@ -73,19 +77,19 @@ impl RetryableError for ServerError {
 impl ErrorCode for ServerError {
     fn error_code(&self) -> &str {
         match self {
-            ServerError::Internal { .. } => "INTERNAL_ERROR",
-            ServerError::ServiceUnavailable { .. } => "SERVICE_UNAVAILABLE_ERROR",
-            ServerError::ServiceOverloaded { .. } => "SERVICE_OVERLOADED_ERROR",
-            ServerError::Configuration { .. } => "CONFIGURATION_ERROR",
-            ServerError::DependencyFailure { .. } => "DEPENDENCY_FAILURE_ERROR",
-            ServerError::Maintenance { .. } => "MAINTENANCE_ERROR",
-            ServerError::NotImplemented { .. } => "NOT_IMPLEMENTED_ERROR",
-            ServerError::VersionMismatch { .. } => "VERSION_MISMATCH_ERROR",
+            ServerError::Internal { .. } => codes::INTERNAL_ERROR,
+            ServerError::ServiceUnavailable { .. } => codes::SERVICE_UNAVAILABLE_ERROR,
+            ServerError::ServiceOverloaded { .. } => codes::SERVICE_OVERLOADED_ERROR,
+            ServerError::Configuration { .. } => codes::CONFIGURATION_ERROR,
+            ServerError::DependencyFailure { .. } => codes::DEPENDENCY_FAILURE_ERROR,
+            ServerError::Maintenance { .. } => codes::MAINTENANCE_ERROR,
+            ServerError::NotImplemented { .. } => codes::NOT_IMPLEMENTED_ERROR,
+            ServerError::VersionMismatch { .. } => codes::VERSION_MISMATCH_ERROR,
         }
     }
 
-    fn error_category(&self) -> &str {
-        "SERVER"
+    fn error_category(&self) -> &'static str {
+        codes::CATEGORY_SERVER
     }
 }
 

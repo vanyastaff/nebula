@@ -8,15 +8,15 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // Validation error
     let validation_err = NebulaError::validation("Email format is invalid");
-    println!("   Validation: {}", validation_err);
+    println!("   Validation: {validation_err}");
 
     // Not found error
     let not_found_err = NebulaError::not_found("user", "user-123");
-    println!("   Not found: {}", not_found_err);
+    println!("   Not found: {not_found_err}");
 
     // Internal error
     let internal_err = NebulaError::internal("Database connection failed");
-    println!("   Internal: {}", internal_err);
+    println!("   Internal: {internal_err}");
 
     // Check error properties
     println!("\n🔍 Error properties:");
@@ -31,8 +31,8 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // Function that returns an error
     match risky_function() {
-        Ok(value) => println!("   Success: {}", value),
-        Err(e) => println!("   Error: {}", e),
+        Ok(value) => println!("   Success: {value}"),
+        Err(e) => println!("   Error: {e}"),
     }
 
     Ok(())

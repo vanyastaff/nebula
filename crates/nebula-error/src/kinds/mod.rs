@@ -3,13 +3,57 @@
 //! This module contains all the specific error variants organized into logical
 //! categories for better maintainability and understanding.
 //!
-//! ## Categories
-//! - [`client`] - Client errors (4xx equivalent) - user errors, validation, etc.
-//! - [`server`] - Server errors (5xx equivalent) - internal errors, service issues
-//! - [`system`] - System errors - infrastructure, network, resource issues
-//! - [`workflow`] - Workflow-specific errors for the Nebula workflow engine
+//! ## Error Categories
+//!
+//! ### Client Errors (4xx equivalent)
+//! - [`ClientError`] - User-facing errors, validation failures, not found, permission denied
+//! - **Not retryable** by default (except authentication for token refresh)
+//! - Indicate problems with the request that need user intervention
+//!
+//! ### Server Errors (5xx equivalent)
+//! - [`ServerError`] - Internal server issues, service unavailable, configuration errors
+//! - **Often retryable** - transient failures that may resolve on retry
+//! - Indicate problems on the server side
+//!
+//! ### System Errors
+//! - [`SystemError`] - Infrastructure issues: network, database, timeouts, rate limits
+//! - **Usually retryable** - temporary resource constraints
+//! - Indicate problems with external dependencies
+//!
+//! ### Workflow-Specific Errors
+//! - [`WorkflowError`] - Workflow definition and execution errors
+//! - [`NodeError`] - Individual node execution failures
+//! - [`TriggerError`] - Webhook, cron, and event trigger errors
+//! - [`ConnectorError`] - External service integration failures
+//! - [`CredentialError`] - Authentication and credential management
+//! - [`ExecutionError`] - Runtime limits, cancellation, queue overflow
+//!
+//! ## Design Principles
+//!
+//! 1. **Clear Categorization**: Errors grouped by domain for easy navigation
+//! 2. **Future-Proof**: All enums marked `#[non_exhaustive]` for backward compatibility
+//! 3. **Retry Logic**: Built-in retry eligibility based on error type
+//! 4. **Error Codes**: Unique codes for programmatic handling and logging
+//!
+//! ## Usage
+//!
+//! ```rust
+//! use nebula_error::{NebulaError, ErrorKind};
+//! use nebula_error::kinds::{ClientError, ServerError};
+//!
+//! // Client error - not retryable
+//! let err = NebulaError::validation("Invalid email format");
+//! assert!(!err.is_retryable());
+//! assert!(err.is_client_error());
+//!
+//! // Server error - retryable
+//! let err = NebulaError::service_unavailable("database", "connection pool exhausted");
+//! assert!(err.is_retryable());
+//! assert!(err.is_server_error());
+//! ```
 
 pub mod client;
+pub mod codes;
 pub mod server;
 pub mod system;
 pub mod workflow;
@@ -28,6 +72,10 @@ pub use workflow::{
 use crate::core::traits::{ErrorClassification, ErrorCode, RetryableError};
 
 /// Main error kind enum that categorizes all possible errors
+///
+/// TODO(refactor): Consider splitting into more granular error hierarchies for better type safety
+/// TODO(feature): Add HTTP status code mapping for web API integration
+#[non_exhaustive]
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum ErrorKind {
     /// Client-side errors (4xx equivalent)
@@ -126,17 +174,17 @@ impl ErrorCode for ErrorKind {
         }
     }
 
-    fn error_category(&self) -> &str {
+    fn error_category(&self) -> &'static str {
         match self {
-            ErrorKind::Client(_) => "CLIENT",
-            ErrorKind::Server(_) => "SERVER",
-            ErrorKind::System(_) => "SYSTEM",
-            ErrorKind::Workflow(_) => "WORKFLOW",
-            ErrorKind::Node(_) => "NODE",
-            ErrorKind::Trigger(_) => "TRIGGER",
-            ErrorKind::Connector(_) => "CONNECTOR",
-            ErrorKind::Credential(_) => "CREDENTIAL",
-            ErrorKind::Execution(_) => "EXECUTION",
+            ErrorKind::Client(_) => codes::CATEGORY_CLIENT,
+            ErrorKind::Server(_) => codes::CATEGORY_SERVER,
+            ErrorKind::System(_) => codes::CATEGORY_SYSTEM,
+            ErrorKind::Workflow(_) => codes::CATEGORY_WORKFLOW,
+            ErrorKind::Node(_) => codes::CATEGORY_NODE,
+            ErrorKind::Trigger(_) => codes::CATEGORY_TRIGGER,
+            ErrorKind::Connector(_) => codes::CATEGORY_CONNECTOR,
+            ErrorKind::Credential(_) => codes::CATEGORY_CREDENTIAL,
+            ErrorKind::Execution(_) => codes::CATEGORY_EXECUTION,
         }
     }
 }

@@ -39,3 +39,14 @@ uuid = { workspace = true, features = ["v4", "serde"] }
 pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = "0.4"
+
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# Use workspace lints configuration
+[lints]
+workspace = true
+
+[[bench]]
+name = "error_creation"
+harness = false

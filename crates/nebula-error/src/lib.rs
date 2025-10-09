@@ -3,15 +3,27 @@
 //! Centralized error handling system for the Nebula workflow engine.
 //! This crate provides a unified error type system with proper error classification,
 //! context propagation, and retry logic for workflow orchestration.
+
+// Strategic allows for pedantic clippy warnings that don't affect production code quality
+#![allow(clippy::must_use_candidate)] // Helper methods where must_use is overly pedantic
+#![allow(clippy::return_self_not_must_use)] // Builder patterns are self-documenting
+#![allow(clippy::match_same_arms)] // Some match arms have distinct comments/semantics
+#![allow(clippy::doc_markdown)] // Technical terms don't need backticks everywhere
+#![allow(clippy::uninlined_format_args)] // Explicit format args improve readability in some cases
+#![allow(clippy::missing_errors_doc)] // Error variants are self-documenting
+#![allow(clippy::wildcard_imports)] // Used only in module re-exports for convenience
+#![allow(clippy::cast_precision_loss)] // Duration calculations use safe ranges
+#![allow(clippy::cast_possible_truncation)] // Delay calculations are bounded
+#![allow(clippy::cast_sign_loss)] // Delay values are always positive
 //!
 //! ## Architecture
 //!
 //! ### Core Components
-//! - [`core`] - Core error types and main `NebulaError` struct
-//! - [`kinds`] - Categorized error types by domain (client, server, system, workflow)
-//! - [`context`] - Rich error context with metadata and tracing information
-//! - [`retry`] - Retry strategies and policies for transient failures
-//! - [`conversion`] - Conversion utilities from external error types
+//! - [`core`](crate::core) - Core error types and main [`NebulaError`] struct
+//! - [`kinds`](crate::kinds) - Categorized error types by domain (client, server, system, workflow)
+//! - [`ErrorContext`](crate::ErrorContext) - Rich error context with metadata and tracing information
+//! - [`retry`](crate::retry) function - Retry strategies and policies for transient failures
+//! - [`IntoNebulaError`](crate::IntoNebulaError) - Conversion utilities from external error types
 //!
 //! ## Key Features
 //!

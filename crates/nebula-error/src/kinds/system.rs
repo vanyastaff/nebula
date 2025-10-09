@@ -3,13 +3,17 @@
 //! These errors are typically caused by infrastructure issues, network problems,
 //! resource constraints, or other system-level problems. Many are retryable.
 
+#![allow(missing_docs)] // Enum variant fields are self-explanatory
+
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
 
 use crate::core::traits::{ErrorCode, RetryableError};
+use crate::kinds::codes;
 
 /// System-level error variants
+#[non_exhaustive]
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum SystemError {
     /// Operation timed out
@@ -100,23 +104,23 @@ impl RetryableError for SystemError {
 impl ErrorCode for SystemError {
     fn error_code(&self) -> &str {
         match self {
-            SystemError::Timeout { .. } => "TIMEOUT_ERROR",
-            SystemError::RateLimitExceeded { .. } => "RATE_LIMIT_ERROR",
-            SystemError::ResourceExhausted { .. } => "RESOURCE_EXHAUSTED_ERROR",
-            SystemError::Network { .. } => "NETWORK_ERROR",
-            SystemError::Database { .. } => "DATABASE_ERROR",
-            SystemError::ExternalService { .. } => "EXTERNAL_SERVICE_ERROR",
-            SystemError::FileSystem { .. } => "FILE_SYSTEM_ERROR",
-            SystemError::Memory { .. } => "MEMORY_ERROR",
-            SystemError::DiskSpace { .. } => "DISK_SPACE_ERROR",
-            SystemError::Connection { .. } => "CONNECTION_ERROR",
-            SystemError::Ssl { .. } => "SSL_ERROR",
-            SystemError::DnsResolution { .. } => "DNS_RESOLUTION_ERROR",
+            SystemError::Timeout { .. } => codes::TIMEOUT_ERROR,
+            SystemError::RateLimitExceeded { .. } => codes::RATE_LIMIT_ERROR,
+            SystemError::ResourceExhausted { .. } => codes::RESOURCE_EXHAUSTED_ERROR,
+            SystemError::Network { .. } => codes::NETWORK_ERROR,
+            SystemError::Database { .. } => codes::DATABASE_ERROR,
+            SystemError::ExternalService { .. } => codes::EXTERNAL_SERVICE_ERROR,
+            SystemError::FileSystem { .. } => codes::FILE_SYSTEM_ERROR,
+            SystemError::Memory { .. } => codes::MEMORY_ERROR,
+            SystemError::DiskSpace { .. } => codes::DISK_SPACE_ERROR,
+            SystemError::Connection { .. } => codes::CONNECTION_ERROR,
+            SystemError::Ssl { .. } => codes::SSL_ERROR,
+            SystemError::DnsResolution { .. } => codes::DNS_RESOLUTION_ERROR,
         }
     }
 
-    fn error_category(&self) -> &str {
-        "SYSTEM"
+    fn error_category(&self) -> &'static str {
+        codes::CATEGORY_SYSTEM
     }
 }
 
