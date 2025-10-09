@@ -3,8 +3,12 @@
 //! Cache eviction policies
 //! This module provides various cache eviction policies that determine
 //! which entries to remove when a cache is full.
+
 pub mod fifo;
+mod lru;
 pub mod random;
+mod ttl;
+
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
@@ -19,9 +23,6 @@ use {
 use super::compute::CacheEntry;
 
 // Re-export policy modules
-mod lru;
-mod ttl;
-
 pub use fifo::FifoPolicy;
 pub use lru::LruPolicy;
 pub use random::RandomPolicy;
@@ -89,6 +90,3 @@ mod tests {
         }
     }
 }
-
-
-
