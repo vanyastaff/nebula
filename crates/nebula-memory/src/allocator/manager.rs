@@ -35,7 +35,8 @@ impl AllocatorId {
         Self(NonZeroUsize::new(id).unwrap_or_else(|| {
             // Overflow protection: restart from 1
             COUNTER.store(1, Ordering::Relaxed);
-            // SAFETY: 1 is always non-zero by definition
+            // SAFETY: 1 is always non-zero by definition. This is only reached on counter
+            // overflow (after ~2^64 allocations), and restarting from 1 is safe.
             unsafe { NonZeroUsize::new_unchecked(1) }
         }))
     }
@@ -56,12 +57,29 @@ impl Default for AllocatorId {
 /// Type-erased allocator for storage in manager
 pub trait ManagedAllocator: Send + Sync {
     /// Allocate memory
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `layout` has non-zero size and valid alignment.
+    /// The returned pointer must be deallocated with the same layout.
     unsafe fn managed_allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>>;
 
     /// Deallocate memory
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must have been allocated by this allocator with `layout`
+    /// - `ptr` must not be used after deallocation
+    /// - Must not be called more than once for the same pointer
     unsafe fn managed_deallocate(&self, ptr: NonNull<u8>, layout: Layout);
 
     /// Reallocate memory
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must have been allocated with `old_layout`
+    /// - `old_layout` and `new_layout` must have the same alignment
+    /// - `ptr` becomes invalid after this call (use returned pointer instead)
     unsafe fn managed_reallocate(
         &self,
         ptr: NonNull<u8>,
@@ -76,10 +94,14 @@ pub trait ManagedAllocator: Send + Sync {
 /// Blanket implementation for any thread-safe allocator
 impl<A: ThreadSafeAllocator + 'static> ManagedAllocator for A {
     unsafe fn managed_allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+        // SAFETY: Caller's safety requirements are forwarded to the underlying allocator.
+        // This is a simple delegation - all preconditions documented in trait apply.
         unsafe { self.allocate(layout) }
     }
 
     unsafe fn managed_deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        // SAFETY: Caller guarantees ptr was allocated with layout. We forward these
+        // guarantees to the underlying allocator's deallocate method.
         unsafe { self.deallocate(ptr, layout) }
     }
 
@@ -89,6 +111,8 @@ impl<A: ThreadSafeAllocator + 'static> ManagedAllocator for A {
         old_layout: Layout,
         new_layout: Layout,
     ) -> AllocResult<NonNull<[u8]>> {
+        // SAFETY: Caller's invariants (ptr validity, matching old_layout, aligned layouts)
+        // are forwarded to the underlying allocator without modification.
         unsafe { self.reallocate(ptr, old_layout, new_layout) }
     }
 
@@ -266,23 +290,49 @@ impl AllocatorManager {
     }
 
     /// Allocate using the currently active allocator
+    ///
+    /// # Safety
+    ///
+    /// Same requirements as the underlying allocator's `allocate` method:
+    /// - `layout` must have non-zero size and valid alignment
+    /// - Returned pointer must be deallocated with the same layout
+    /// - Caller must ensure an allocator is active before calling
     pub unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+        // SAFETY: We delegate to the active allocator. Caller's safety requirements
+        // are forwarded unchanged. Returns error if no allocator is active.
         self.with_active_allocator(|alloc| unsafe { alloc.managed_allocate(layout) })
             .unwrap_or_else(|| Err(AllocError::invalid_layout("no active allocator")))
     }
 
     /// Deallocate using the currently active allocator
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must have been allocated by the current active allocator
+    /// - `layout` must be the same as used for allocation
+    /// - `ptr` must not be used after this call
+    /// - Must not be called more than once for the same pointer
     pub unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        // SAFETY: Caller guarantees ptr was allocated with layout. We forward to the
+        // active allocator. If no allocator is active, this is a silent no-op (defensive).
         self.with_active_allocator(|alloc| unsafe { alloc.managed_deallocate(ptr, layout) });
     }
 
     /// Reallocate using the currently active allocator
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must have been allocated with `old_layout` by the active allocator
+    /// - `old_layout` and `new_layout` must have the same alignment
+    /// - `ptr` becomes invalid after this call (use returned pointer instead)
     pub unsafe fn reallocate(
         &self,
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
     ) -> AllocResult<NonNull<[u8]>> {
+        // SAFETY: Caller's invariants are forwarded to the active allocator.
+        // Returns error if no allocator is active.
         self.with_active_allocator(|alloc| unsafe {
             alloc.managed_reallocate(ptr, old_layout, new_layout)
         })
@@ -385,12 +435,24 @@ macro_rules! set_active_allocator {
 }
 
 /// Implement Allocator for the manager itself
+///
+/// # Safety
+///
+/// This impl is safe because AllocatorManager correctly implements the Allocator contract:
+/// - All allocations are delegated to registered allocators that uphold memory safety
+/// - Active allocator switching is atomic and properly synchronized
+/// - No data races can occur in allocation/deallocation paths
+/// - Pointers returned are valid and properly aligned (guaranteed by underlying allocators)
 unsafe impl Allocator for AllocatorManager {
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+        // SAFETY: Simple delegation to our own allocate method, which forwards
+        // to the active allocator. Safety requirements are inherited from trait.
         unsafe { self.allocate(layout) }
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        // SAFETY: Delegation to our deallocate method. Caller must guarantee ptr
+        // was allocated with layout, and we forward that guarantee.
         unsafe { self.deallocate(ptr, layout) }
     }
 
@@ -400,10 +462,19 @@ unsafe impl Allocator for AllocatorManager {
         old_layout: Layout,
         new_layout: Layout,
     ) -> AllocResult<NonNull<[u8]>> {
+        // SAFETY: Delegation to our reallocate method. All caller invariants
+        // (ptr validity, layout matching) are preserved.
         unsafe { self.reallocate(ptr, old_layout, new_layout) }
     }
 }
 
+/// # Safety
+///
+/// AllocatorManager is thread-safe because:
+/// - Registry uses lock-free DashMap (std) or RwLock (no_std) for concurrent access
+/// - Active allocator ID is stored in AtomicUsize with proper memory ordering
+/// - All registered allocators must be Send + Sync by trait bound
+/// - Allocator switching is atomic and properly synchronized (SeqCst ordering)
 unsafe impl ThreadSafeAllocator for AllocatorManager {}
 
 #[cfg(test)]
