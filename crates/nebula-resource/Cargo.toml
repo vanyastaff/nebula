@@ -111,7 +111,7 @@ rdkafka = { version = "0.36", features = ["tokio"], optional = true }
 
 # Configuration and validation
 config = "0.13"
-validator = { version = "0.16", features = ["derive"] }
+validator = { version = "0.19", features = ["derive"] }
 base64 = "0.22.1"
 
 # Development and testing

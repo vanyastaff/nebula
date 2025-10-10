@@ -19,7 +19,7 @@ tokio = { version = "1", features = ["time", "sync"], optional = true }
 tracing = "0.1.41"
 tracing-appender = { version = "0.2.3", optional = true }
 tracing-log = { version = "0.2", optional = true }
-tracing-subscriber = { version = "0.3.19", features = [
+tracing-subscriber = { version = "0.3.20", features = [
     "env-filter",
     "fmt",
     "json",
