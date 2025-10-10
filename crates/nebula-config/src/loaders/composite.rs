@@ -83,14 +83,12 @@ impl CompositeLoader {
                     last_error = Some(e);
 
                     if self.fail_fast {
-                        if let Some(err) = last_error {
-                            return Err(err);
-                        } else {
-                            return Err(ConfigError::source_error(
+                        return Err(last_error.unwrap_or_else(|| {
+                            ConfigError::source_error(
                                 "Loader failed without an error".to_string(),
                                 source.name(),
-                            ));
-                        }
+                            )
+                        }));
                     }
                 }
             }

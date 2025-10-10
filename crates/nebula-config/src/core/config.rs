@@ -247,10 +247,7 @@ impl Config {
 
     /// Check if watching for changes
     pub fn is_watching(&self) -> bool {
-        self.watcher
-            .as_ref()
-            .map(|w| w.is_watching())
-            .unwrap_or(false)
+        self.watcher.as_ref().is_some_and(|w| w.is_watching())
     }
 
     /// Get nested value from JSON using dot notation
