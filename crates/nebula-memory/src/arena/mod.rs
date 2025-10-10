@@ -73,7 +73,7 @@ mod macros;
 pub use macros::StrictArena;
 
 pub use self::allocator::{ArenaAllocator, ArenaBackedVec};
-pub use self::arena::{Arena, ArenaRef, ArenaRefMut};
+pub use self::arena::{Arena, ArenaRef, ArenaRefMut, Position};
 #[cfg(feature = "compression")]
 pub use self::compressed::{CompressedArena, CompressionLevel, CompressionStats};
 pub use self::cross_thread::{
@@ -83,7 +83,7 @@ pub use self::local::{
     LocalArena, LocalRef, LocalRefMut, alloc_local, local_arena, reset_local_arena,
     with_local_arena, with_local_arena_mut,
 };
-pub use self::scope::ArenaScope;
+pub use self::scope::{ArenaGuard, ArenaScope};
 pub use self::stats::{ArenaStats, ArenaStatsSnapshot};
 #[cfg(feature = "streaming")]
 pub use self::streaming::{StreamCheckpoint, StreamOptions, StreamingArena, StreamingArenaRef};

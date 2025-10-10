@@ -10,6 +10,36 @@ use super::{ArenaAllocate, ArenaConfig, ArenaStats};
 use crate::error::MemoryError;
 use crate::utils::align_up;
 
+/// Position marker for arena state
+///
+/// This opaque type represents a specific position in an arena's allocation
+/// history. It can be used with `reset_to_position` to restore the arena
+/// to a previous state.
+///
+/// # Safety
+///
+/// Positions must only be used with the arena they were created from.
+/// Using a position from a different arena will result in undefined behavior.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Position {
+    /// Current pointer offset from chunk start
+    offset: usize,
+    /// Pointer to verify arena identity
+    chunk_ptr: *const u8,
+}
+
+impl Position {
+    /// Creates a new position marker
+    #[inline]
+    fn new(offset: usize, chunk_ptr: *const u8) -> Self {
+        Self { offset, chunk_ptr }
+    }
+}
+
+// SAFETY: Position is just a marker and doesn't own any data
+unsafe impl Send for Position {}
+unsafe impl Sync for Position {}
+
 /// Memory chunk managed by the arena
 struct Chunk {
     ptr: NonNull<u8>,
@@ -277,6 +307,119 @@ impl Arena {
         if let Some(start) = start_time {
             self.stats.record_reset(start.elapsed().as_nanos() as u64);
         }
+    }
+
+    /// Returns the current position in the arena
+    ///
+    /// This position can be used with `reset_to_position` to restore the arena
+    /// to its current state, effectively creating a scoped allocation region.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_memory::arena::{Arena, ArenaConfig};
+    ///
+    /// let arena = Arena::new(ArenaConfig::default());
+    /// let pos = arena.current_position();
+    /// let _value = arena.alloc(42).unwrap();
+    /// // Can reset back to pos later
+    /// ```
+    #[must_use]
+    pub fn current_position(&self) -> Position {
+        let chunks = self.chunks.borrow();
+        let chunk_ptr = chunks
+            .as_ref()
+            .map(|c| c.start() as *const u8)
+            .unwrap_or(ptr::null());
+
+        let offset = if chunk_ptr.is_null() {
+            0
+        } else {
+            let current = self.current_ptr.get();
+            if current.is_null() {
+                0
+            } else {
+                (current as usize).saturating_sub(chunk_ptr as usize)
+            }
+        };
+
+        Position::new(offset, chunk_ptr)
+    }
+
+    /// Resets the arena to a previously saved position
+    ///
+    /// This allows for scoped allocations where temporary allocations can be
+    /// rolled back to a specific point.
+    ///
+    /// # Safety
+    ///
+    /// The position must have been created from this arena instance. Using a
+    /// position from a different arena will result in undefined behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The position is from a different arena
+    /// - The position is invalid (offset beyond current position)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_memory::arena::{Arena, ArenaConfig};
+    ///
+    /// let mut arena = Arena::new(ArenaConfig::default());
+    /// let pos = arena.current_position();
+    /// let _temp = arena.alloc(42).unwrap();
+    /// arena.reset_to_position(pos).unwrap();
+    /// // Temporary allocation is now invalid
+    /// ```
+    pub fn reset_to_position(&mut self, position: Position) -> Result<(), MemoryError> {
+        let chunks = self.chunks.borrow();
+
+        // Verify position is from this arena
+        let chunk_ptr = chunks
+            .as_ref()
+            .map(|c| c.start() as *const u8)
+            .unwrap_or(ptr::null());
+
+        if position.chunk_ptr != chunk_ptr {
+            return Err(MemoryError::invalid_argument(
+                "Position is from a different arena or arena has been reset",
+            ));
+        }
+
+        // Calculate new pointer
+        let new_ptr = if chunk_ptr.is_null() {
+            ptr::null_mut()
+        } else {
+            unsafe { (chunk_ptr as *mut u8).add(position.offset) }
+        };
+
+        // Validate offset is within bounds
+        if !new_ptr.is_null() {
+            let current = self.current_ptr.get();
+            if !current.is_null() && new_ptr > current {
+                return Err(MemoryError::invalid_argument(
+                    "Position offset is beyond current allocation point",
+                ));
+            }
+        }
+
+        // Zero memory if requested
+        if self.config.zero_memory && !new_ptr.is_null() {
+            let current = self.current_ptr.get();
+            if !current.is_null() && new_ptr < current {
+                let size = current as usize - new_ptr as usize;
+                unsafe {
+                    ptr::write_bytes(new_ptr, 0, size);
+                }
+            }
+        }
+
+        // Update pointer
+        self.current_ptr.set(new_ptr);
+
+        Ok(())
     }
 
     /// Returns reference to statistics

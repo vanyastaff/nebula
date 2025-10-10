@@ -2,7 +2,7 @@
 //!
 //! This module provides RAII wrappers that automatically manage arena lifecycle.
 
-use super::{Arena, ArenaConfig};
+use super::{Arena, ArenaConfig, Position};
 use crate::error::MemoryResult;
 
 /// RAII wrapper for arena that automatically resets on drop
@@ -76,26 +76,77 @@ impl Drop for ArenaScope {
     }
 }
 
-// TODO: ArenaGuard - requires Arena::current_position() and Arena::reset_to_position()
-//
-// /// RAII guard for scoped allocations within an arena
-// pub struct ArenaGuard<'a> {
-//     arena: &'a mut Arena,
-//     saved_position: usize,
-// }
-//
-// impl<'a> ArenaGuard<'a> {
-//     pub fn new(arena: &'a mut Arena) -> Self {
-//         let saved_position = arena.current_position();
-//         Self { arena, saved_position }
-//     }
-// }
-//
-// impl<'a> Drop for ArenaGuard<'a> {
-//     fn drop(&mut self) {
-//         self.arena.reset_to_position(self.saved_position);
-//     }
-// }
+/// RAII guard for scoped allocations within an arena
+///
+/// This guard saves the current position of an arena and automatically resets
+/// it to that position when dropped. This allows for temporary allocations
+/// that are automatically cleaned up.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_memory::arena::{Arena, ArenaConfig, ArenaGuard};
+///
+/// let mut arena = Arena::new(ArenaConfig::default());
+/// let outer = arena.alloc(1).unwrap();
+///
+/// {
+///     let _guard = ArenaGuard::new(&mut arena);
+///     let _temp = arena.alloc(2).unwrap();
+///     // temp is automatically freed when guard is dropped
+/// }
+///
+/// assert_eq!(*outer, 1);
+/// ```
+#[must_use = "ArenaGuard does nothing unless held"]
+pub struct ArenaGuard<'a> {
+    arena: &'a mut Arena,
+    position: Position,
+    active: bool,
+}
+
+impl<'a> ArenaGuard<'a> {
+    /// Creates a new arena guard that will reset to current position on drop
+    pub fn new(arena: &'a mut Arena) -> Self {
+        let position = arena.current_position();
+        Self {
+            arena,
+            position,
+            active: true,
+        }
+    }
+
+    /// Manually resets the arena to the saved position
+    ///
+    /// After calling this, the guard will not reset again on drop.
+    pub fn reset(&mut self) -> MemoryResult<()> {
+        if self.active {
+            self.arena.reset_to_position(self.position)?;
+            self.active = false;
+        }
+        Ok(())
+    }
+
+    /// Leaks the guard, preventing it from resetting the arena on drop
+    ///
+    /// This is useful when you want to keep allocations made within the guard's scope.
+    pub fn leak(mut self) {
+        self.active = false;
+    }
+
+    /// Returns the saved position
+    pub fn position(&self) -> Position {
+        self.position
+    }
+}
+
+impl<'a> Drop for ArenaGuard<'a> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.arena.reset_to_position(self.position);
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -129,16 +180,136 @@ mod tests {
         assert_eq!(*value2, 2);
     }
 
-    // TODO: Re-enable when ArenaGuard is implemented
-    // #[test]
-    // fn test_arena_guard_nested_scopes() {
-    //     let mut arena = Arena::new(ArenaConfig::default());
-    //     let outer = arena.alloc(1).unwrap();
-    //     {
-    //         let _guard = ArenaGuard::new(&mut arena);
-    //         let inner = arena.alloc(2).unwrap();
-    //         assert_eq!(*inner, 2);
-    //     }
-    //     assert_eq!(*outer, 1);
-    // }
+    #[test]
+    fn test_arena_guard_nested_scopes() {
+        let mut arena = Arena::new(ArenaConfig::default());
+        let outer = arena.alloc(1).unwrap();
+        let pos_outer = arena.current_position();
+
+        {
+            let _guard = ArenaGuard::new(&mut arena);
+            let inner = arena.alloc(2).unwrap();
+            assert_eq!(*inner, 2);
+            // Guard drops here, resetting arena
+        }
+
+        // Arena should be reset to outer position
+        assert_eq!(*outer, 1);
+        assert_eq!(arena.current_position(), pos_outer);
+    }
+
+    #[test]
+    fn test_arena_guard_manual_reset() {
+        let mut arena = Arena::new(ArenaConfig::default());
+        let _outer = arena.alloc(100).unwrap();
+        let pos = arena.current_position();
+
+        let mut guard = ArenaGuard::new(&mut arena);
+        let _temp = arena.alloc(200).unwrap();
+
+        // Manually reset
+        guard.reset().unwrap();
+        assert_eq!(arena.current_position(), pos);
+
+        // Guard drop should not reset again
+    }
+
+    #[test]
+    fn test_arena_guard_leak() {
+        let mut arena = Arena::new(ArenaConfig::default());
+        let pos_before = arena.current_position();
+
+        {
+            let guard = ArenaGuard::new(&mut arena);
+            let temp = arena.alloc(42).unwrap();
+            assert_eq!(*temp, 42);
+
+            // Leak the guard - allocation should persist
+            guard.leak();
+        }
+
+        // Position should not be reset
+        assert_ne!(arena.current_position(), pos_before);
+    }
+
+    #[test]
+    fn test_arena_guard_multiple_nested() {
+        let mut arena = Arena::new(ArenaConfig::default());
+        let val1 = arena.alloc(1).unwrap();
+        let pos1 = arena.current_position();
+
+        {
+            let _guard1 = ArenaGuard::new(&mut arena);
+            let val2 = arena.alloc(2).unwrap();
+            let pos2 = arena.current_position();
+
+            {
+                let _guard2 = ArenaGuard::new(&mut arena);
+                let val3 = arena.alloc(3).unwrap();
+                assert_eq!(*val3, 3);
+                // guard2 drops, resets to pos2
+            }
+
+            assert_eq!(arena.current_position(), pos2);
+            assert_eq!(*val2, 2);
+            // guard1 drops, resets to pos1
+        }
+
+        assert_eq!(arena.current_position(), pos1);
+        assert_eq!(*val1, 1);
+    }
+
+    #[test]
+    fn test_position_validation() {
+        let mut arena1 = Arena::new(ArenaConfig::default());
+        let mut arena2 = Arena::new(ArenaConfig::default());
+
+        let _val1 = arena1.alloc(1).unwrap();
+        let pos1 = arena1.current_position();
+
+        // Try to use position from arena1 with arena2 - should fail
+        let result = arena2.reset_to_position(pos1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_arena_guard_with_early_return() {
+        fn allocate_temp(arena: &mut Arena, should_fail: bool) -> Result<i32, &'static str> {
+            let _guard = ArenaGuard::new(arena);
+            let temp = arena.alloc(42).unwrap();
+
+            if should_fail {
+                return Err("failed");
+            }
+
+            Ok(*temp)
+        }
+
+        let mut arena = Arena::new(ArenaConfig::default());
+        let pos = arena.current_position();
+
+        // Early return should still trigger guard drop
+        let result = allocate_temp(&mut arena, true);
+        assert!(result.is_err());
+        assert_eq!(arena.current_position(), pos);
+    }
+
+    #[test]
+    fn test_position_offset_validation() {
+        let mut arena = Arena::new(ArenaConfig::default());
+        let _val = arena.alloc(42).unwrap();
+
+        // Create position at current point
+        let pos = arena.current_position();
+
+        // Allocate more
+        let _val2 = arena.alloc(100).unwrap();
+
+        // Reset to earlier position should succeed
+        assert!(arena.reset_to_position(pos).is_ok());
+
+        // Try to reset to a position "in the future" should fail
+        // (we can't actually create such a position without unsafe code,
+        // so this test just verifies current behavior)
+    }
 }
