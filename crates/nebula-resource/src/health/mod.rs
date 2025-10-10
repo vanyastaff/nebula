@@ -203,7 +203,7 @@ impl HealthChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::context::ResourceContext;
+    use crate::core::error::ResourceResult;
 
     struct MockHealthCheckable {
         should_fail: Arc<RwLock<bool>>,

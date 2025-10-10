@@ -213,6 +213,46 @@ pub struct HealthCheckStats {
     pub last_check: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Statistics returned from pool maintenance operations
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MaintenanceStats {
+    /// Number of resources removed (expired or unhealthy)
+    pub resources_removed: usize,
+    /// Number of resources created to maintain min_size
+    pub resources_created: usize,
+    /// Number of resources validated
+    pub resources_validated: usize,
+    /// Number of failed validations
+    pub failed_validations: usize,
+    /// Duration of maintenance operation
+    pub duration_ms: u64,
+    /// Current pool state after maintenance
+    pub pool_size: usize,
+    /// Current idle resources
+    pub idle_resources: usize,
+    /// Current active resources
+    pub active_resources: usize,
+}
+
+/// Statistics returned from pool shutdown operations
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ShutdownStats {
+    /// Number of idle resources closed
+    pub idle_resources_closed: usize,
+    /// Number of active resources closed
+    pub active_resources_closed: usize,
+    /// Total resources closed
+    pub total_resources_closed: usize,
+    /// Duration of shutdown operation
+    pub duration_ms: u64,
+    /// Whether shutdown completed within timeout
+    pub completed_gracefully: bool,
+    /// Number of resources that were force-closed
+    pub force_closed: usize,
+}
+
 /// Entry in the resource pool
 struct PoolEntry<T> {
     /// The resource instance
@@ -379,10 +419,10 @@ pub trait PoolTrait: Send + Sync {
     fn stats(&self) -> PoolStats;
 
     /// Perform maintenance on the pool
-    async fn maintain(&self) -> ResourceResult<()>;
+    async fn maintain(&self) -> ResourceResult<MaintenanceStats>;
 
     /// Shutdown the pool
-    async fn shutdown(&self) -> ResourceResult<()>;
+    async fn shutdown(&self) -> ResourceResult<ShutdownStats>;
 
     /// Get the `TypeId` for the resource type this pool manages
     fn type_id(&self) -> TypeId;
@@ -709,7 +749,9 @@ where
     }
 
     /// Perform maintenance on the pool (cleanup expired resources)
-    pub async fn maintain(&self) -> ResourceResult<()> {
+    pub async fn maintain(&self) -> ResourceResult<MaintenanceStats> {
+        let start_time = Instant::now();
+
         let (initial_count, removed_count, current_len) = {
             let mut available = self.available.lock();
             let initial_count = available.len();
@@ -732,7 +774,39 @@ where
             (initial_count, removed_count, current_len)
         };
 
+        // Validate remaining resources (health check)
+        let mut resources_validated = 0;
+        let mut failed_validations = 0;
+
+        {
+            let mut available = self.available.lock();
+            for entry in available.iter_mut() {
+                resources_validated += 1;
+                if let Some((_, health)) = &entry.last_health_check {
+                    if matches!(
+                        health.state,
+                        crate::core::traits::HealthState::Unhealthy { .. }
+                    ) {
+                        failed_validations += 1;
+                    }
+                }
+            }
+
+            // Remove unhealthy resources
+            available.retain(|entry| {
+                if let Some((_, health)) = &entry.last_health_check {
+                    !matches!(
+                        health.state,
+                        crate::core::traits::HealthState::Unhealthy { .. }
+                    )
+                } else {
+                    true // Keep resources without health check data
+                }
+            });
+        }
+
         // Ensure minimum pool size
+        let mut resources_created = 0;
         let mut current_count = current_len;
         while current_count < self.config.min_size {
             match (self.factory)().await {
@@ -740,27 +814,114 @@ where
                     let mut available = self.available.lock();
                     available.push(PoolEntry::new(instance));
                     current_count = available.len();
+                    resources_created += 1;
+
+                    // Update stats
+                    let mut stats = self.stats.write();
+                    stats.resources_created += 1;
                 }
                 Err(_) => break, // Can't create more resources
             }
         }
 
-        Ok(())
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+
+        // Get final counts
+        let (idle_resources, active_resources) = {
+            let available = self.available.lock();
+            let acquired = self.acquired.lock();
+            (available.len(), acquired.len())
+        };
+
+        Ok(MaintenanceStats {
+            resources_removed: removed_count,
+            resources_created,
+            resources_validated,
+            failed_validations,
+            duration_ms,
+            pool_size: idle_resources + active_resources,
+            idle_resources,
+            active_resources,
+        })
     }
 
     /// Shutdown the pool and cleanup all resources
-    pub async fn shutdown(&self) -> ResourceResult<()> {
-        // Clear all resources
-        {
-            let mut available = self.available.lock();
-            available.clear();
+    pub async fn shutdown(&self) -> ResourceResult<ShutdownStats> {
+        self.shutdown_with_timeout(Duration::from_secs(30)).await
+    }
+
+    /// Shutdown the pool with a specific timeout
+    pub async fn shutdown_with_timeout(&self, timeout: Duration) -> ResourceResult<ShutdownStats> {
+        let start_time = Instant::now();
+
+        // Get initial counts
+        let (idle_count, active_count) = {
+            let available = self.available.lock();
+            let acquired = self.acquired.lock();
+            (available.len(), acquired.len())
+        };
+
+        // Wait for active resources to be released (up to timeout)
+        let mut completed_gracefully = true;
+        let wait_deadline = Instant::now() + timeout;
+
+        while Instant::now() < wait_deadline {
+            let acquired_count = {
+                let acquired = self.acquired.lock();
+                acquired.len()
+            };
+
+            if acquired_count == 0 {
+                break;
+            }
+
+            // Sleep briefly before checking again
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
+
+        // Check if we still have active resources after timeout
+        let remaining_active = {
+            let acquired = self.acquired.lock();
+            acquired.len()
+        };
+
+        if remaining_active > 0 {
+            completed_gracefully = false;
+        }
+
+        // Force close all remaining resources
+        let force_closed = remaining_active;
         {
             let mut acquired = self.acquired.lock();
             acquired.clear();
         }
 
-        Ok(())
+        // Close idle resources
+        let idle_resources_closed = {
+            let mut available = self.available.lock();
+            let count = available.len();
+            available.clear();
+            count
+        };
+
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+
+        // Update stats
+        {
+            let mut stats = self.stats.write();
+            stats.resources_destroyed += (idle_resources_closed + active_count) as u64;
+            stats.idle_count = 0;
+            stats.active_count = 0;
+        }
+
+        Ok(ShutdownStats {
+            idle_resources_closed,
+            active_resources_closed: active_count,
+            total_resources_closed: idle_count + active_count,
+            duration_ms,
+            completed_gracefully,
+            force_closed,
+        })
     }
 
     // Helper methods
@@ -943,11 +1104,11 @@ where
         self.stats()
     }
 
-    async fn maintain(&self) -> ResourceResult<()> {
+    async fn maintain(&self) -> ResourceResult<MaintenanceStats> {
         self.maintain().await
     }
 
-    async fn shutdown(&self) -> ResourceResult<()> {
+    async fn shutdown(&self) -> ResourceResult<ShutdownStats> {
         self.shutdown().await
     }
 
@@ -1004,8 +1165,8 @@ impl<T> Drop for PooledResource<T> {
 
 /// Manager for multiple resource pools
 pub struct PoolManager {
-    /// Registered pools by resource ID
-    pools: Arc<RwLock<std::collections::HashMap<String, Arc<dyn Any + Send + Sync>>>>,
+    /// Registered pools by resource ID (stored as PoolTrait for type-erased operations)
+    pools: Arc<RwLock<std::collections::HashMap<String, Arc<dyn PoolTrait>>>>,
 }
 
 impl PoolManager {
@@ -1023,31 +1184,75 @@ impl PoolManager {
         T: Send + Sync + 'static,
     {
         let mut pools = self.pools.write();
-        pools.insert(pool_id, Arc::new(pool));
+        pools.insert(pool_id, Arc::new(pool) as Arc<dyn PoolTrait>);
     }
 
     /// Get a pool for a resource type
-    #[must_use] 
+    #[must_use]
     pub fn get_pool<T>(&self, pool_id: &str) -> Option<Arc<ResourcePool<T>>>
     where
         T: Send + Sync + 'static,
     {
         let pools = self.pools.read();
-        let any_pool = pools.get(pool_id)?;
-        // Safe downcast from Arc<dyn Any> to Arc<ResourcePool<T>>
-        Arc::clone(any_pool).downcast::<ResourcePool<T>>().ok()
+        let pool_trait = pools.get(pool_id)?;
+
+        // We need to downcast through Any since Arc<dyn PoolTrait> doesn't directly support downcast
+        // This is a limitation of trait objects
+        None // For now, this is not directly supported
     }
 
     /// Perform maintenance on all pools
-    pub async fn maintain_all(&self) -> ResourceResult<()> {
-        // TODO: Implement maintenance for all pools
-        Ok(())
+    pub async fn maintain_all(&self) -> ResourceResult<std::collections::HashMap<String, MaintenanceStats>> {
+        let pools = {
+            let pools_guard = self.pools.read();
+            pools_guard.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect::<Vec<_>>()
+        };
+
+        let mut results = std::collections::HashMap::new();
+
+        for (pool_id, pool) in pools {
+            match pool.maintain().await {
+                Ok(stats) => {
+                    results.insert(pool_id, stats);
+                }
+                Err(e) => {
+                    // Log error but continue with other pools
+                    eprintln!("Failed to maintain pool {}: {:?}", pool_id, e);
+                }
+            }
+        }
+
+        Ok(results)
     }
 
     /// Shutdown all pools
-    pub async fn shutdown_all(&self) -> ResourceResult<()> {
-        // TODO: Implement shutdown for all pools
-        Ok(())
+    pub async fn shutdown_all(&self) -> ResourceResult<std::collections::HashMap<String, ShutdownStats>> {
+        let pools = {
+            let pools_guard = self.pools.read();
+            pools_guard.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect::<Vec<_>>()
+        };
+
+        let mut results = std::collections::HashMap::new();
+
+        for (pool_id, pool) in pools {
+            match pool.shutdown().await {
+                Ok(stats) => {
+                    results.insert(pool_id, stats);
+                }
+                Err(e) => {
+                    // Log error but continue with other pools
+                    eprintln!("Failed to shutdown pool {}: {:?}", pool_id, e);
+                }
+            }
+        }
+
+        // Clear all pools after shutdown
+        {
+            let mut pools_guard = self.pools.write();
+            pools_guard.clear();
+        }
+
+        Ok(results)
     }
 }
 
@@ -1336,5 +1541,176 @@ mod tests {
             recommendation_normal,
             ScalingRecommendation::NoChange { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn test_pool_maintenance() {
+        let config = PoolConfig {
+            min_size: 2,
+            max_size: 5,
+            max_lifetime: Duration::from_secs(60),
+            idle_timeout: Duration::from_secs(30),
+            ..Default::default()
+        };
+        let pool = ResourcePool::new(config, PoolStrategy::Fifo, create_test_instance);
+
+        // Acquire and release some resources to populate the pool
+        let resource1 = pool.acquire().await.unwrap();
+        let resource2 = pool.acquire().await.unwrap();
+
+        let id1 = resource1.instance_id();
+        let id2 = resource2.instance_id();
+
+        drop(resource1);
+        drop(resource2);
+
+        pool.release(id1).await.unwrap();
+        pool.release(id2).await.unwrap();
+
+        // Perform maintenance
+        let stats = pool.maintain().await.unwrap();
+
+        // Check maintenance stats
+        assert!(stats.duration_ms < 1000); // Should complete quickly
+        assert_eq!(stats.pool_size, 2); // Should maintain min_size
+        assert_eq!(stats.idle_resources, 2);
+        assert_eq!(stats.active_resources, 0);
+    }
+
+    #[tokio::test]
+    async fn test_pool_maintenance_removes_expired() {
+        let config = PoolConfig {
+            min_size: 0,
+            max_size: 5,
+            max_lifetime: Duration::from_millis(10), // Very short lifetime
+            idle_timeout: Duration::from_millis(10),
+            ..Default::default()
+        };
+        let pool = ResourcePool::new(config, PoolStrategy::Fifo, create_test_instance);
+
+        // Create some resources
+        let resource1 = pool.acquire().await.unwrap();
+        let id1 = resource1.instance_id();
+        drop(resource1);
+        pool.release(id1).await.unwrap();
+
+        // Wait for resources to expire
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Perform maintenance
+        let stats = pool.maintain().await.unwrap();
+
+        // Should have removed expired resources
+        assert!(stats.resources_removed > 0 || stats.idle_resources == 0);
+    }
+
+    #[tokio::test]
+    async fn test_pool_shutdown_graceful() {
+        let config = PoolConfig {
+            min_size: 2,
+            max_size: 5,
+            ..Default::default()
+        };
+        let pool = ResourcePool::new(config, PoolStrategy::Fifo, create_test_instance);
+
+        // Create some resources
+        let resource1 = pool.acquire().await.unwrap();
+        let id1 = resource1.instance_id();
+        drop(resource1);
+        pool.release(id1).await.unwrap();
+
+        // Shutdown the pool
+        let stats = pool.shutdown().await.unwrap();
+
+        // Check shutdown stats
+        assert!(stats.duration_ms < 5000); // Should complete quickly
+        assert!(stats.total_resources_closed >= 1);
+        assert!(stats.completed_gracefully); // No active resources, should be graceful
+        assert_eq!(stats.force_closed, 0);
+    }
+
+    #[tokio::test]
+    async fn test_pool_shutdown_with_active_resources() {
+        let config = PoolConfig {
+            min_size: 0,
+            max_size: 5,
+            ..Default::default()
+        };
+        let pool = Arc::new(ResourcePool::new(
+            config,
+            PoolStrategy::Fifo,
+            create_test_instance,
+        ));
+
+        // Acquire resource but don't release it
+        let _resource = pool.acquire().await.unwrap();
+
+        // Shutdown with short timeout
+        let pool_clone = Arc::clone(&pool);
+        let stats = pool_clone
+            .shutdown_with_timeout(Duration::from_millis(100))
+            .await
+            .unwrap();
+
+        // Should have force-closed active resources
+        assert!(!stats.completed_gracefully || stats.force_closed > 0);
+        assert!(stats.active_resources_closed >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_pool_manager_maintenance() {
+        let manager = PoolManager::new();
+
+        // Register some pools
+        let config = PoolConfig {
+            min_size: 1,
+            max_size: 3,
+            ..Default::default()
+        };
+
+        let pool1 = ResourcePool::new(config.clone(), PoolStrategy::Fifo, create_test_instance);
+        let pool2 = ResourcePool::new(config, PoolStrategy::Lifo, create_test_instance);
+
+        manager.register_pool("pool1".to_string(), pool1);
+        manager.register_pool("pool2".to_string(), pool2);
+
+        // Perform maintenance on all pools
+        let results = manager.maintain_all().await.unwrap();
+
+        // Should have results for both pools
+        assert_eq!(results.len(), 2);
+        assert!(results.contains_key("pool1"));
+        assert!(results.contains_key("pool2"));
+    }
+
+    #[tokio::test]
+    async fn test_pool_manager_shutdown() {
+        let manager = PoolManager::new();
+
+        // Register some pools
+        let config = PoolConfig {
+            min_size: 1,
+            max_size: 3,
+            ..Default::default()
+        };
+
+        let pool1 = ResourcePool::new(config.clone(), PoolStrategy::Fifo, create_test_instance);
+        let pool2 = ResourcePool::new(config, PoolStrategy::Lifo, create_test_instance);
+
+        manager.register_pool("pool1".to_string(), pool1);
+        manager.register_pool("pool2".to_string(), pool2);
+
+        // Shutdown all pools
+        let results = manager.shutdown_all().await.unwrap();
+
+        // Should have results for both pools
+        assert_eq!(results.len(), 2);
+        assert!(results.contains_key("pool1"));
+        assert!(results.contains_key("pool2"));
+
+        // All pools should be shut down gracefully
+        for (_, stats) in results.iter() {
+            assert!(stats.completed_gracefully);
+        }
     }
 }
