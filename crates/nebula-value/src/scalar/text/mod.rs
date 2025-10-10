@@ -110,7 +110,7 @@ impl Text {
     pub fn split(&self, delimiter: &str) -> Vec<Text> {
         self.inner
             .split(delimiter)
-            .map(|s| Text::from_str(s))
+            .map(Text::from_str)
             .collect()
     }
 

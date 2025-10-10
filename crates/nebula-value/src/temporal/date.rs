@@ -155,7 +155,7 @@ impl Date {
     /// Creates from Julian day number
     pub fn from_julian_day(jd: i32) -> ValueResult<Self> {
         NaiveDate::from_num_days_from_ce_opt(jd - 1721425)
-            .map(|d| Self::from_naive_date(d))
+            .map(Self::from_naive_date)
             .ok_or_else(|| NebulaError::validation(format!("Invalid Julian day: {}", jd)))
     }
 
@@ -200,10 +200,10 @@ impl Date {
             )));
         }
 
-        let weekday_chrono = Weekday::try_from((weekday - 1) as u8)
-            .expect("weekday 1-7 maps to Weekday enum 0-6");
+        let weekday_chrono =
+            Weekday::try_from((weekday - 1) as u8).expect("weekday 1-7 maps to Weekday enum 0-6");
         NaiveDate::from_isoywd_opt(year, week, weekday_chrono)
-            .map(|d| Self::from_naive_date(d))
+            .map(Self::from_naive_date)
             .ok_or_else(|| {
                 NebulaError::validation(format!(
                     "Invalid ISO week date: {}-W{:02}-{}",
@@ -360,7 +360,7 @@ impl Date {
     pub fn add_days(&self, days: i64) -> ValueResult<Self> {
         let date = self.inner.to_naive();
         date.checked_add_signed(Duration::days(days))
-            .map(|d| Self::from_naive_date(d))
+            .map(Self::from_naive_date)
             .ok_or_else(|| NebulaError::validation("Date arithmetic overflow"))
     }
 

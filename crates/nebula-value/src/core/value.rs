@@ -18,8 +18,10 @@ use rust_decimal::Decimal;
 /// This enum combines all scalar types (Integer, Float, Text, Bytes)
 /// and collection types (Array, Object) along with temporal and file types.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum Value {
     /// Null/None value
+    #[default]
     Null,
 
     /// Boolean value
@@ -351,11 +353,6 @@ impl Value {
     }
 }
 
-impl Default for Value {
-    fn default() -> Self {
-        Self::Null
-    }
-}
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {

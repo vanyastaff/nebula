@@ -646,13 +646,15 @@ impl Time {
                 .with_nanosecond(0)
                 .expect("0 is always a valid nanosecond")
         } else {
-            self.with_nanosecond(0).expect("0 is always a valid nanosecond")
+            self.with_nanosecond(0)
+                .expect("0 is always a valid nanosecond")
         }
     }
 
     /// Truncates to hour precision
     pub fn truncate_to_hour(&self) -> Self {
-        Self::new(self.hour(), 0, 0).expect("existing hour with 0 minute and 0 second is always valid")
+        Self::new(self.hour(), 0, 0)
+            .expect("existing hour with 0 minute and 0 second is always valid")
     }
 
     /// Truncates to minute precision

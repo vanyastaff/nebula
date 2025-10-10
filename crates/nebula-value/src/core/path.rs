@@ -72,7 +72,7 @@ impl Value {
 
         // For other types, path access doesn't make sense
         let current = self;
-        for segment in segments {
+        if let Some(segment) = segments.iter().next() {
             current = match (current, segment) {
                 // Type mismatch errors
                 (val, PathSegment::Key(key)) => {
@@ -159,7 +159,11 @@ fn parse_path(path: &str) -> ValueResult<Vec<PathSegment>> {
                         chars.next(); // consume ']'
                         break;
                     }
-                    index_str.push(chars.next().expect("peek() returned Some, so next() must succeed"));
+                    index_str.push(
+                        chars
+                            .next()
+                            .expect("peek() returned Some, so next() must succeed"),
+                    );
                 }
 
                 let index = index_str

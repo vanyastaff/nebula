@@ -152,11 +152,10 @@ impl Value {
         use std::fmt::Write;
 
         // Check max depth
-        if let Some(max) = config.max_depth {
-            if depth >= max {
+        if let Some(max) = config.max_depth
+            && depth >= max {
                 return write!(output, "...");
             }
-        }
 
         match self {
             Value::Null => write!(output, "null"),

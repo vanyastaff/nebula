@@ -85,6 +85,7 @@ impl ValueLimits {
 
     /// Validate array length
     #[inline]
+    #[must_use = "validation result must be handled"]
     pub fn check_array_length(&self, len: usize) -> Result<(), NebulaError> {
         if len > self.max_array_length {
             Err(NebulaError::validation(format!(
@@ -98,6 +99,7 @@ impl ValueLimits {
 
     /// Validate object key count
     #[inline]
+    #[must_use = "validation result must be handled"]
     pub fn check_object_keys(&self, count: usize) -> Result<(), NebulaError> {
         if count > self.max_object_keys {
             Err(NebulaError::validation(format!(
@@ -111,6 +113,7 @@ impl ValueLimits {
 
     /// Validate string byte length
     #[inline]
+    #[must_use = "validation result must be handled"]
     pub fn check_string_bytes(&self, bytes: usize) -> Result<(), NebulaError> {
         if bytes > self.max_string_bytes {
             Err(NebulaError::validation(format!(
@@ -124,6 +127,7 @@ impl ValueLimits {
 
     /// Validate bytes length
     #[inline]
+    #[must_use = "validation result must be handled"]
     pub fn check_bytes_length(&self, len: usize) -> Result<(), NebulaError> {
         if len > self.max_bytes_length {
             Err(NebulaError::validation(format!(
@@ -137,6 +141,7 @@ impl ValueLimits {
 
     /// Validate nesting depth
     #[inline]
+    #[must_use = "validation result must be handled"]
     pub fn check_nesting_depth(&self, depth: usize) -> Result<(), NebulaError> {
         if depth > self.max_nesting_depth {
             Err(NebulaError::validation(format!(
