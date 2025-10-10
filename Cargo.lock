@@ -2907,7 +2907,7 @@ dependencies = [
 name = "nebula-derive"
 version = "0.1.0"
 dependencies = [
- "darling 0.20.11",
+ "darling 0.21.3",
  "nebula-parameter",
  "nebula-validator",
  "proc-macro-error",
