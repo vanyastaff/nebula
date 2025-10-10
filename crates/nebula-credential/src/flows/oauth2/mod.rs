@@ -1,4 +1,4 @@
-//! OAuth2 flows
+//! `OAuth2` flows
 
 pub mod authorization_code;
 pub mod client_credentials;

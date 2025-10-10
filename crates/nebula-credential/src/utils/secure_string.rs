@@ -14,11 +14,13 @@ impl SecureString {
     }
 
     /// Expose the inner value (use carefully!)
+    #[must_use] 
     pub fn expose(&self) -> &str {
         &self.0
     }
 
     /// Convert to String (consumes self, use carefully!)
+    #[must_use] 
     pub fn into_string(mut self) -> String {
         std::mem::take(&mut self.0)
     }

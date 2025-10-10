@@ -1,7 +1,7 @@
-//! OAuth2 Client Credentials flow
+//! `OAuth2` Client Credentials flow
 
 use async_trait::async_trait;
-use nebula_log::prelude::*;
+use nebula_log::prelude::{debug, error, info};
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
@@ -11,7 +11,7 @@ use crate::core::{
 
 use super::common::{OAuth2State, TokenResponse};
 
-/// Input for OAuth2 Client Credentials flow
+/// Input for `OAuth2` Client Credentials flow
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ClientCredentialsInput {
     pub client_id: String,
@@ -21,7 +21,7 @@ pub struct ClientCredentialsInput {
     pub scopes: Vec<String>,
 }
 
-/// OAuth2 Client Credentials flow implementation
+/// `OAuth2` Client Credentials flow implementation
 pub struct ClientCredentialsFlow;
 
 #[async_trait]
@@ -102,7 +102,8 @@ impl CredentialFlow for ClientCredentialsFlow {
 pub type OAuth2ClientCredentials = crate::core::adapter::FlowCredential<ClientCredentialsFlow>;
 
 impl OAuth2ClientCredentials {
-    /// Create a new OAuth2 client credentials credential
+    /// Create a new `OAuth2` client credentials credential
+    #[must_use] 
     pub fn create() -> Self {
         Self::from_flow(ClientCredentialsFlow)
     }

@@ -4,7 +4,7 @@
 //!
 //! # Features
 //!
-//! - **Protocol-agnostic flows** - OAuth2, API Keys, JWT, SAML, Kerberos, mTLS
+//! - **Protocol-agnostic flows** - `OAuth2`, API Keys, JWT, SAML, Kerberos, mTLS
 //! - **Type-safe credentials** - Compile-time verification with generic flows
 //! - **Interactive authentication** - Multi-step flows with user interaction
 //! - **Secure storage** - Zero-copy secrets with automatic zeroization

@@ -3,6 +3,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Get current Unix timestamp in seconds
+#[must_use] 
 pub fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -10,14 +11,16 @@ pub fn unix_now() -> u64 {
         .as_secs()
 }
 
-/// Convert SystemTime to Unix timestamp
+/// Convert `SystemTime` to Unix timestamp
+#[must_use] 
 pub fn to_unix_timestamp(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH)
         .expect("System time before Unix epoch")
         .as_secs()
 }
 
-/// Convert Unix timestamp to SystemTime
+/// Convert Unix timestamp to `SystemTime`
+#[must_use] 
 pub fn from_unix_timestamp(timestamp: u64) -> SystemTime {
     UNIX_EPOCH + std::time::Duration::from_secs(timestamp)
 }

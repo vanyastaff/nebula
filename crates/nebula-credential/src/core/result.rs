@@ -45,7 +45,7 @@ pub enum InitializeResult<S: CredentialState> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InteractionRequest {
-    /// Redirect user to URL (OAuth2, SAML, OpenID Connect, etc.)
+    /// Redirect user to URL (`OAuth2`, SAML, `OpenID` Connect, etc.)
     Redirect {
         url: String,
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -84,7 +84,7 @@ pub enum InteractionRequest {
         poll_interval: Option<u64>,
     },
 
-    /// Cryptographic challenge (WebAuthn, client certificate, FIDO2)
+    /// Cryptographic challenge (`WebAuthn`, client certificate, FIDO2)
     Challenge {
         challenge_data: String,
         challenge_type: String,
@@ -119,7 +119,7 @@ pub enum DisplayData {
         #[serde(skip_serializing_if = "Option::is_none")]
         image_url: Option<String>,
     },
-    /// User code for manual entry (OAuth2 device flow, etc.)
+    /// User code for manual entry (`OAuth2` device flow, etc.)
     UserCode {
         code: String,
         verification_url: String,
@@ -153,7 +153,7 @@ pub enum CaptchaType {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UserInput {
-    /// Callback from redirect (OAuth2, SAML, etc.)
+    /// Callback from redirect (`OAuth2`, SAML, etc.)
     Callback { params: HashMap<String, String> },
 
     /// Code entered by user
@@ -169,7 +169,7 @@ pub enum UserInput {
     /// Poll for status (device flow, async operations)
     Poll,
 
-    /// Challenge response (WebAuthn, cryptographic)
+    /// Challenge response (`WebAuthn`, cryptographic)
     ChallengeResponse { response: serde_json::Value },
 
     /// Confirmation token
@@ -182,7 +182,7 @@ pub enum UserInput {
     },
 }
 
-/// Universal trait for any credential flow (OAuth2, SAML, JWT, Kerberos, mTLS, etc.)
+/// Universal trait for any credential flow (`OAuth2`, SAML, JWT, Kerberos, mTLS, etc.)
 #[async_trait]
 pub trait CredentialFlow: Send + Sync + 'static {
     /// Input type for flow initialization

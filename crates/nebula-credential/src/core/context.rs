@@ -20,6 +20,7 @@ impl Default for CredentialContext {
 
 impl CredentialContext {
     /// Create new context
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             http_client: reqwest::Client::new(),
@@ -29,6 +30,7 @@ impl CredentialContext {
     }
 
     /// Get HTTP client
+    #[must_use] 
     pub fn http_client(&self) -> &reqwest::Client {
         &self.http_client
     }
@@ -39,6 +41,7 @@ impl CredentialContext {
     }
 
     /// Get parameter
+    #[must_use] 
     pub fn get_param(&self, key: &str) -> Option<&serde_json::Value> {
         self.params.get(key)
     }
@@ -49,6 +52,7 @@ impl CredentialContext {
     }
 
     /// Get metadata
+    #[must_use] 
     pub fn get_metadata(&self, key: &str) -> Option<&String> {
         self.metadata.get(key)
     }

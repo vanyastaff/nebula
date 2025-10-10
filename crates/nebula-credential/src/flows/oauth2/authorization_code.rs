@@ -1,7 +1,7 @@
-//! OAuth2 Authorization Code flow (interactive)
+//! `OAuth2` Authorization Code flow (interactive)
 
 use async_trait::async_trait;
-use nebula_log::prelude::*;
+use nebula_log::prelude::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -15,7 +15,7 @@ use crate::utils::{generate_code_challenge, generate_pkce_verifier, generate_ran
 
 use super::common::{OAuth2State, TokenResponse};
 
-/// Input for OAuth2 Authorization Code flow
+/// Input for `OAuth2` Authorization Code flow
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AuthorizationCodeInput {
     pub client_id: String,
@@ -27,7 +27,7 @@ pub struct AuthorizationCodeInput {
     pub use_pkce: bool,
 }
 
-/// OAuth2 Authorization Code flow implementation
+/// `OAuth2` Authorization Code flow implementation
 pub struct AuthorizationCodeFlow;
 
 #[async_trait]
@@ -69,7 +69,7 @@ impl CredentialFlow for AuthorizationCodeFlow {
                 error = %e,
                 "Invalid authorization endpoint URL"
             );
-            CredentialError::invalid_input("authorization_endpoint", &e.to_string())
+            CredentialError::invalid_input("authorization_endpoint", e.to_string())
         })?;
 
         auth_url
@@ -134,13 +134,14 @@ impl CredentialFlow for AuthorizationCodeFlow {
     }
 }
 
-/// OAuth2 Authorization Code credential with interactive support
+/// `OAuth2` Authorization Code credential with interactive support
 pub struct OAuth2AuthorizationCode {
     flow: AuthorizationCodeFlow,
 }
 
 impl OAuth2AuthorizationCode {
-    /// Create new OAuth2 Authorization Code credential
+    /// Create new `OAuth2` Authorization Code credential
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             flow: AuthorizationCodeFlow,
@@ -272,20 +273,18 @@ impl InteractiveCredential for OAuth2AuthorizationCode {
         ];
 
         // Add PKCE verifier if used
-        if let Some(pkce_verifier) = partial_state.data.get("pkce_verifier") {
-            if !pkce_verifier.is_null() {
+        if let Some(pkce_verifier) = partial_state.data.get("pkce_verifier")
+            && !pkce_verifier.is_null() {
                 let verifier: String = serde_json::from_value(pkce_verifier.clone())
                     .map_err(|e| CredentialError::Internal(e.to_string()))?;
                 form_data.push(("code_verifier", verifier));
             }
-        }
 
         // Add client_secret if provided
-        if let Some(client_secret) = partial_state.data.get("client_secret") {
-            if let Some(secret) = client_secret.as_str() {
+        if let Some(client_secret) = partial_state.data.get("client_secret")
+            && let Some(secret) = client_secret.as_str() {
                 form_data.push(("client_secret", secret.to_string()));
             }
-        }
 
         // Exchange code for token
         let response = ctx
@@ -309,7 +308,7 @@ impl InteractiveCredential for OAuth2AuthorizationCode {
                 "Token exchange failed"
             );
             return Err(CredentialError::AuthenticationFailed {
-                reason: format!("HTTP {} - {}", status, body),
+                reason: format!("HTTP {status} - {body}"),
             });
         }
 
@@ -320,8 +319,7 @@ impl InteractiveCredential for OAuth2AuthorizationCode {
                 "Failed to parse token response"
             );
             CredentialError::NetworkFailed(format!(
-                "Failed to parse token response: {}. Body: {}",
-                e, body
+                "Failed to parse token response: {e}. Body: {body}"
             ))
         })?;
 

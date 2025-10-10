@@ -1,4 +1,4 @@
-//! Adapter from CredentialFlow to Credential trait
+//! Adapter from `CredentialFlow` to Credential trait
 
 use async_trait::async_trait;
 
@@ -8,7 +8,7 @@ use super::{
 };
 use crate::traits::Credential;
 
-/// Generic wrapper that adapts any CredentialFlow to the Credential trait
+/// Generic wrapper that adapts any `CredentialFlow` to the Credential trait
 ///
 /// This adapter makes it easy to use flow-based credentials without
 /// manually implementing the Credential trait.
@@ -96,10 +96,10 @@ impl<F: CredentialFlow> Credential for FlowCredential<F> {
     }
 }
 
-/// Auto-implement InteractiveCredential for flows that need it
+/// Auto-implement `InteractiveCredential` for flows that need it
 ///
 /// Note: This is a blanket implementation. For flows that support interaction,
-/// you should manually implement InteractiveCredential to handle continue_initialization.
+/// you should manually implement `InteractiveCredential` to handle `continue_initialization`.
 impl<F: CredentialFlow> FlowCredential<F> {
     /// Helper to continue an interactive flow
     ///

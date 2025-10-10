@@ -1,10 +1,10 @@
-//! Common OAuth2 types and utilities
+//! Common `OAuth2` types and utilities
 
 use serde::{Deserialize, Serialize};
 
 use crate::core::{CredentialContext, CredentialError, CredentialState, SecureString};
 
-/// OAuth2 credential state
+/// `OAuth2` credential state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuth2State {
     pub access_token: SecureString,
@@ -21,7 +21,7 @@ impl CredentialState for OAuth2State {
 }
 
 impl OAuth2State {
-    /// Create OAuth2State from TokenResponse
+    /// Create `OAuth2State` from `TokenResponse`
     pub fn from_token_response(token: TokenResponse) -> Self {
         use crate::core::unix_now;
         let expires_in = token.expires_in.unwrap_or(3600); // Default 1 hour
@@ -38,7 +38,7 @@ fn default_token_type() -> String {
     "Bearer".to_string()
 }
 
-/// OAuth2 token response from authorization server
+/// `OAuth2` token response from authorization server
 #[derive(Debug, Deserialize)]
 pub struct TokenResponse {
     pub access_token: String,
@@ -52,7 +52,7 @@ pub struct TokenResponse {
     pub scope: Option<String>,
 }
 
-/// Refresh OAuth2 token using refresh_token grant
+/// Refresh `OAuth2` token using `refresh_token` grant
 pub async fn oauth2_refresh_token(
     state: &mut OAuth2State,
     ctx: &mut CredentialContext,

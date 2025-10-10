@@ -1,4 +1,4 @@
-use nebula_error::prelude::*;
+use nebula_error::prelude::{ThisError, NebulaError};
 
 /// Main error type for credential operations
 #[derive(ThisError, Debug, Clone)]
@@ -188,6 +188,7 @@ impl CredentialError {
     }
 
     /// Check if this error indicates the credential needs refresh
+    #[must_use] 
     pub fn needs_refresh(&self) -> bool {
         matches!(
             self,
@@ -196,6 +197,7 @@ impl CredentialError {
     }
 
     /// Get the error category for logging/metrics
+    #[must_use] 
     pub fn category(&self) -> &'static str {
         match self {
             Self::NotFound { .. } => "not_found",
@@ -222,6 +224,7 @@ impl CredentialError {
     }
 
     /// Check if this error is retryable
+    #[must_use] 
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -248,29 +251,29 @@ impl From<serde_json::Error> for CredentialError {
     }
 }
 
-/// Convert CredentialError to NebulaError for unified error handling
+/// Convert `CredentialError` to `NebulaError` for unified error handling
 impl From<CredentialError> for NebulaError {
     fn from(err: CredentialError) -> Self {
         match err {
             // Client errors (4xx equivalent) - not retryable
             CredentialError::NotFound { id } => NebulaError::credential_not_found(&id),
             CredentialError::InvalidInput { field, reason } => {
-                NebulaError::validation(format!("Invalid {}: {}", field, reason))
+                NebulaError::validation(format!("Invalid {field}: {reason}"))
             }
             CredentialError::InvalidConfiguration { reason } => {
-                NebulaError::validation(format!("Invalid configuration: {}", reason))
+                NebulaError::validation(format!("Invalid configuration: {reason}"))
             }
             CredentialError::AlreadyExists { id } => {
-                NebulaError::validation(format!("Credential already exists: {}", id))
+                NebulaError::validation(format!("Credential already exists: {id}"))
             }
             CredentialError::TypeNotRegistered { credential_type } => NebulaError::validation(
-                format!("Credential type not registered: {}", credential_type),
+                format!("Credential type not registered: {credential_type}"),
             ),
             CredentialError::PermissionDenied { operation, reason } => {
                 NebulaError::permission_denied(&operation, &reason)
             }
             CredentialError::RefreshNotSupported { credential_type } => {
-                NebulaError::validation(format!("Refresh not supported: {}", credential_type))
+                NebulaError::validation(format!("Refresh not supported: {credential_type}"))
             }
 
             // Authentication errors
@@ -285,13 +288,13 @@ impl From<CredentialError> for NebulaError {
                 NebulaError::timeout(&operation, std::time::Duration::from_secs(30))
             }
             CredentialError::StorageFailed { operation, reason } => {
-                NebulaError::database(format!("{}: {}", operation, reason))
+                NebulaError::database(format!("{operation}: {reason}"))
             }
             CredentialError::CacheFailed { operation, reason } => {
-                NebulaError::internal(format!("Cache {}: {}", operation, reason))
+                NebulaError::internal(format!("Cache {operation}: {reason}"))
             }
             CredentialError::LockFailed { resource, reason } => {
-                NebulaError::internal(format!("Lock failed {}: {}", resource, reason))
+                NebulaError::internal(format!("Lock failed {resource}: {reason}"))
             }
             CredentialError::RefreshFailed { id, reason } => {
                 NebulaError::credential_invalid(&id, &reason)
