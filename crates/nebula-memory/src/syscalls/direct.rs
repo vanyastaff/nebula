@@ -2,6 +2,25 @@
 //!
 //! This module provides direct, unsafe system call wrappers for memory-related
 //! operations used by custom allocators. These bypass standard library overhead.
+//!
+//! # Safety
+//!
+//! All functions in this module perform unsafe FFI calls to OS primitives:
+//! - **Unix**: libc functions (mmap, munmap, mprotect, madvise, msync, etc.)
+//! - **Windows**: WinAPI functions (VirtualAlloc, VirtualFree, VirtualProtect, etc.)
+//! - **Fallback**: std::alloc for unsupported platforms
+//!
+//! ## Safety Contracts
+//!
+//! Callers must ensure:
+//! 1. **Alignment**: Addresses and sizes respect page boundaries
+//! 2. **Validity**: Pointers refer to mapped memory regions
+//! 3. **Lifecycle**: Memory is unmapped exactly once
+//! 4. **Access**: Memory access respects protection flags
+//! 5. **Concurrency**: No data races on mapped regions
+//!
+//! The OS validates parameters and returns errors for invalid inputs,
+//! but callers remain responsible for upholding memory safety contracts.
 
 use std::io;
 
@@ -74,6 +93,14 @@ impl MemoryProtection {
 /// Memory mapping with direct syscalls
 ///
 /// Uses direct system calls to map memory - more efficient than stdlib for allocator use.
+///
+/// # Safety
+///
+/// This function performs unsafe FFI calls to the OS. Callers must ensure:
+/// - `size` is non-zero and page-aligned (or will be rounded up by OS)
+/// - If `addr` is Some, it must be a valid, unused memory region
+/// - Returned pointer must be unmapped with `memory_unmap` before program exit
+/// - Access to returned memory must respect `protection` flags
 pub fn memory_map(
     addr: Option<*mut u8>,
     size: usize,
@@ -109,6 +136,12 @@ pub fn memory_map(
             };
         }
 
+        // SAFETY: FFI call to libc mmap. We pass:
+        // - addr: valid or null (null lets OS choose)
+        // - size: validated by caller
+        // - prot/flags: constructed from safe enums
+        // - fd=-1, offset=0: anonymous mapping (no file)
+        // OS validates all parameters and returns MAP_FAILED on error.
         let ptr = unsafe {
             mmap(
                 addr.unwrap_or(ptr::null_mut()) as *mut libc::c_void,
@@ -144,6 +177,12 @@ pub fn memory_map(
 
         let addr_ptr = addr.unwrap_or(ptr::null_mut());
 
+        // SAFETY: FFI call to Windows VirtualAlloc. We pass:
+        // - addr_ptr: valid or null (null lets OS choose)
+        // - size: validated by caller
+        // - alloc_type: MEM_COMMIT | MEM_RESERVE (safe flags)
+        // - page_protection: constructed from safe enum
+        // OS validates parameters and returns null on error.
         let ptr = unsafe {
             VirtualAlloc(
                 addr_ptr as *mut winapi::ctypes::c_void,
@@ -166,6 +205,7 @@ pub fn memory_map(
         let layout = std::alloc::Layout::from_size_align(size, 64)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
+        // SAFETY: Fallback using Rust global allocator. Layout is valid (checked above).
         let ptr = unsafe { std::alloc::alloc(layout) };
         if ptr.is_null() {
             Err(io::Error::new(
@@ -179,9 +219,17 @@ pub fn memory_map(
 }
 
 /// Unmap memory
+///
+/// # Safety
+///
+/// - `addr` must have been returned by `memory_map`
+/// - `size` must match the size used in `memory_map`
+/// - Memory region must not be accessed after this call
+/// - Must not be called more than once for the same region
 pub fn memory_unmap(addr: *mut u8, size: usize) -> io::Result<()> {
     #[cfg(unix)]
     {
+        // SAFETY: FFI call to libc munmap. Caller guarantees addr/size are from mmap.
         let result = unsafe { libc::munmap(addr as *mut libc::c_void, size) };
         if result == -1 {
             Err(io::Error::last_os_error())
@@ -195,6 +243,8 @@ pub fn memory_unmap(addr: *mut u8, size: usize) -> io::Result<()> {
         use winapi::um::memoryapi::VirtualFree;
         use winapi::um::winnt::MEM_RELEASE;
 
+        // SAFETY: FFI call to Windows VirtualFree. Caller guarantees addr is from VirtualAlloc.
+        // MEM_RELEASE with size=0 releases entire region.
         let result = unsafe { VirtualFree(addr as *mut winapi::ctypes::c_void, 0, MEM_RELEASE) };
         if result == 0 {
             Err(io::Error::last_os_error())
@@ -209,16 +259,24 @@ pub fn memory_unmap(addr: *mut u8, size: usize) -> io::Result<()> {
         let layout = std::alloc::Layout::from_size_align(size, 64)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
+        // SAFETY: Fallback using Rust global allocator. Caller guarantees addr/layout match allocation.
         unsafe { std::alloc::dealloc(addr, layout) };
         Ok(())
     }
 }
 
 /// Change memory protection
+///
+/// # Safety
+///
+/// - `addr` must be page-aligned
+/// - Memory region [addr, addr+size) must be valid and mapped
+/// - Changing protection doesn't invalidate existing safe references
 pub fn memory_protect(addr: *mut u8, size: usize, protection: MemoryProtection) -> io::Result<()> {
     #[cfg(unix)]
     {
         let prot = protection.to_unix_flags();
+        // SAFETY: FFI call to mprotect. Caller guarantees addr/size are valid mapped region.
         let result = unsafe { libc::mprotect(addr as *mut libc::c_void, size, prot) };
         if result == -1 {
             Err(io::Error::last_os_error())
