@@ -1,4 +1,21 @@
 //! High-performance thread-safe arena allocator
+//!
+//! # Safety
+//!
+//! This module implements a thread-safe arena using atomic operations and careful synchronization:
+//! - Chunks use atomic bump pointers (compare-and-swap) for lock-free allocations
+//! - A global current_chunk pointer enables fast-path allocations without locks
+//! - Chunk allocation is synchronized with a mutex to prevent races
+//! - All memory is properly aligned and lifetime-bound to the arena
+//! - Memory is never deallocated until the arena is reset or dropped
+//!
+//! ## Memory Safety
+//!
+//! - **Allocation**: Atomic CAS ensures no two threads allocate overlapping memory
+//! - **Deallocation**: Chunks are deallocated only when arena is dropped (no use-after-free)
+//! - **Alignment**: All allocations respect type alignment requirements
+//! - **Lifetime**: References are bound to arena lifetime ('a), preventing dangling pointers
+//! - **Concurrency**: Send/Sync bounds ensure proper thread safety
 
 use parking_lot::{Mutex, RwLock};
 use std::alloc::{Layout, alloc, dealloc};
@@ -26,7 +43,10 @@ impl ThreadSafeChunk {
         let layout = Layout::from_size_align(size, 1)
             .map_err(|_| MemoryError::invalid_layout("layout creation failed"))?;
 
-        // Safety: Layout is non-zero and properly aligned
+        // SAFETY: Allocating raw memory from global allocator.
+        // - Layout has non-zero size (at least 64 bytes) and valid alignment (1)
+        // - Returned pointer is checked for null via NonNull::new
+        // - Memory will be deallocated in Drop impl with same layout
         let ptr = unsafe { alloc(layout) };
         let ptr = NonNull::new(ptr).ok_or_else(|| MemoryError::out_of_memory(size, 0))?;
 
@@ -56,6 +76,11 @@ impl ThreadSafeChunk {
                 Ordering::AcqRel,
                 Ordering::Relaxed,
             ) {
+                // SAFETY: Pointer arithmetic within allocated chunk bounds.
+                // - self.ptr is a valid pointer from alloc() in new()
+                // - aligned_pos is within [0, capacity) due to check above
+                // - CAS success means we exclusively own [aligned_pos, new_used) range
+                // - AcqRel ordering synchronizes with other threads
                 Ok(_) => return Some(unsafe { self.ptr.as_ptr().add(aligned_pos) }),
                 Err(actual) => current = actual,
             }
@@ -65,6 +90,12 @@ impl ThreadSafeChunk {
 
 impl Drop for ThreadSafeChunk {
     fn drop(&mut self) {
+        // SAFETY: Deallocating memory allocated in new().
+        // - self.ptr was allocated with alloc() in new() with same layout
+        // - Layout::from_size_align_unchecked is safe because:
+        //   * capacity was validated in new() (at least 64, within isize::MAX)
+        //   * align=1 is always valid
+        // - This is the only deallocation (Drop is called exactly once)
         unsafe {
             dealloc(
                 self.ptr.as_ptr(),
@@ -74,7 +105,19 @@ impl Drop for ThreadSafeChunk {
     }
 }
 
+// SAFETY: ThreadSafeChunk is Send because:
+// - ptr: NonNull<u8> is Send (raw pointer to untyped memory)
+// - capacity: usize is Send (primitive type)
+// - used: AtomicUsize is Send (atomic primitive)
+// - No interior references or thread-local state
 unsafe impl Send for ThreadSafeChunk {}
+
+// SAFETY: ThreadSafeChunk is Sync because:
+// - All mutations go through atomic operations (used.compare_exchange_weak)
+// - Memory pointed to by ptr is allocated but uninitialized (no aliasing concerns)
+// - Chunk allocation is bump-pointer style (disjoint regions per thread)
+// - AcqRel memory ordering ensures proper synchronization between threads
+// - No shared mutable state (ptr/capacity are immutable after creation)
 unsafe impl Sync for ThreadSafeChunk {}
 
 /// Thread-safe arena allocator using atomic operations and lock-free fast paths
@@ -145,6 +188,10 @@ impl ThreadSafeArena {
         // Double-check if another thread already allocated
         let current = self.current_chunk.load(Ordering::Acquire);
         if !current.is_null() {
+            // SAFETY: current_chunk is only set to non-null pointers created from Arc::as_ptr.
+            // - The Arc is stored in self.chunks, keeping the chunk alive
+            // - Acquire ordering synchronizes with Release store in allocate_chunk
+            // - Multiple threads can safely read the chunk (Chunk is Sync)
             let chunk = unsafe { &*current };
             if chunk.try_alloc(min_size, 1).is_some() {
                 return Ok(());
@@ -165,6 +212,11 @@ impl ThreadSafeArena {
         // Create and initialize new chunk
         let chunk = ThreadSafeChunk::new(chunk_size)?;
         if self.config.zero_memory {
+            // SAFETY: Writing zeros to freshly allocated memory.
+            // - chunk.ptr is a valid pointer from ThreadSafeChunk::new
+            // - chunk_size is the exact allocation size (within bounds)
+            // - Memory is exclusively owned (no other references exist yet)
+            // - write_bytes is safe for any byte value (0)
             unsafe {
                 ptr::write_bytes(chunk.ptr.as_ptr(), 0, chunk_size);
             }
@@ -201,6 +253,10 @@ impl ThreadSafeArena {
         // Fast path: try current chunk first
         let current = self.current_chunk.load(Ordering::Acquire);
         if !current.is_null() {
+            // SAFETY: Dereferencing current_chunk pointer (fast path).
+            // - Pointer is from Arc::as_ptr, kept alive by Arc in self.chunks
+            // - Acquire ordering synchronizes with Release in allocate_chunk
+            // - Chunk is Sync, so concurrent access is safe
             let chunk = unsafe { &*current };
             if let Some(ptr) = chunk.try_alloc(size, align) {
                 if let Some(start) = start_time {
@@ -216,6 +272,10 @@ impl ThreadSafeArena {
 
         // Try again with new chunk
         let current = self.current_chunk.load(Ordering::Acquire);
+        // SAFETY: Dereferencing current_chunk after successful chunk allocation.
+        // - allocate_chunk() just set current_chunk to a valid Arc pointer
+        // - Acquire ordering synchronizes with Release store
+        // - Chunk cannot be deallocated (still in self.chunks)
         let chunk = unsafe { &*current };
         chunk
             .try_alloc(size, align)
@@ -235,7 +295,12 @@ impl ThreadSafeArena {
     pub fn alloc<T>(&self, value: T) -> Result<&T, MemoryError> {
         let ptr = self.alloc_bytes_aligned(mem::size_of::<T>(), mem::align_of::<T>())? as *mut T;
 
-        // Safety: We just allocated properly aligned space for T
+        // SAFETY: Writing initialized value to freshly allocated memory.
+        // - ptr is properly aligned for T (alloc_bytes_aligned ensures this)
+        // - ptr points to size_of::<T>() bytes of valid memory
+        // - Memory is uninitialized, so write() is correct (doesn't drop old value)
+        // - Returned reference is bound to arena lifetime (no use-after-free)
+        // - Arena never deallocates until reset/drop (reference stays valid)
         unsafe {
             ptr.write(value);
             Ok(&*ptr)
@@ -253,7 +318,13 @@ impl ThreadSafeArena {
         let ptr =
             self.alloc_bytes_aligned(mem::size_of_val(slice), mem::align_of::<T>())? as *mut T;
 
-        // Safety: We just allocated properly aligned space for the slice
+        // SAFETY: Copying slice data to freshly allocated memory.
+        // - ptr is properly aligned for T (alloc_bytes_aligned ensures this)
+        // - ptr has space for slice.len() elements (size_of_val checks this)
+        // - slice.as_ptr() and ptr don't overlap (ptr is freshly allocated)
+        // - T is Copy, so bitwise copy is safe
+        // - Returned slice reference is bound to arena lifetime
+        // - Arena never deallocates until reset/drop (slice stays valid)
         unsafe {
             ptr::copy_nonoverlapping(slice.as_ptr(), ptr, slice.len());
             Ok(&*ptr::slice_from_raw_parts(ptr, slice.len()))
@@ -264,7 +335,11 @@ impl ThreadSafeArena {
     #[must_use = "allocated memory must be used"]
     pub fn alloc_str(&self, s: &str) -> Result<&str, MemoryError> {
         let bytes = self.alloc_slice(s.as_bytes())?;
-        // Safety: Input is valid UTF-8 since it comes from &str
+        // SAFETY: Creating &str from copied bytes.
+        // - Input s is &str, so bytes are valid UTF-8
+        // - alloc_slice performs exact byte-for-byte copy
+        // - No mutations occur (bytes slice is immutable)
+        // - UTF-8 validity is preserved through the copy
         unsafe { Ok(std::str::from_utf8_unchecked(bytes)) }
     }
 
@@ -288,6 +363,12 @@ impl ThreadSafeArena {
 }
 
 impl ArenaAllocate for ThreadSafeArena {
+    /// # Safety
+    ///
+    /// Caller must ensure:
+    /// - `size` is non-zero and within allocator limits
+    /// - `align` is a power of two
+    /// - Returned pointer is not used after arena reset/drop
     unsafe fn alloc_bytes(&self, size: usize, align: usize) -> Result<*mut u8, MemoryError> {
         self.alloc_bytes_aligned(size, align)
     }
@@ -301,7 +382,23 @@ impl ArenaAllocate for ThreadSafeArena {
     }
 }
 
+// SAFETY: ThreadSafeArena is Send because:
+// - chunks: RwLock<Vec<Arc<ThreadSafeChunk>>> is Send (all components are Send)
+// - current_chunk: AtomicPtr<ThreadSafeChunk> is Send (atomic primitive)
+// - config: ArenaConfig is Send (simple config struct)
+// - stats: ArenaStats is Send (atomic counters)
+// - chunk_mutex: Mutex<()> is Send
+// - All owned data can be safely transferred to another thread
 unsafe impl Send for ThreadSafeArena {}
+
+// SAFETY: ThreadSafeArena is Sync because:
+// - All allocation operations are thread-safe (atomic CAS in chunks)
+// - current_chunk uses Acquire/Release ordering for synchronization
+// - chunk_mutex protects chunk allocation from races
+// - RwLock protects chunks Vec from concurrent modification
+// - All public methods are either &self (immutable) or &mut self (exclusive)
+// - Stats recording uses atomic operations
+// - Allocated memory is never freed until reset/drop (no dangling pointers)
 unsafe impl Sync for ThreadSafeArena {}
 
 /// Thread-safe reference to an arena-allocated value
@@ -318,7 +415,11 @@ impl<'a, T: ?Sized + Sync> ThreadSafeArenaRef<'a, T> {
 
     /// Gets immutable reference to the value
     pub fn get(&self) -> &T {
-        // Safety: The pointer is valid for the lifetime of the arena
+        // SAFETY: Converting NonNull<T> to &T.
+        // - ptr was created from arena allocation (valid, aligned, initialized)
+        // - Lifetime 'a is bound to the arena, ensuring ptr stays valid
+        // - Arena never deallocates memory until reset/drop
+        // - T: Sync bound ensures shared access is safe
         unsafe { self.ptr.as_ref() }
     }
 }
@@ -331,8 +432,18 @@ impl<'a, T: ?Sized + Sync> std::ops::Deref for ThreadSafeArenaRef<'a, T> {
     }
 }
 
-// Implement Send and Sync for ThreadSafeArenaRef if T is Sync
+// SAFETY: ThreadSafeArenaRef<'a, T> is Send if T is Sync because:
+// - ptr: NonNull<T> is Send (raw pointer to T)
+// - _arena: &'a ThreadSafeArena is Send (immutable reference to Sync type)
+// - T: Sync means &T can be sent to another thread safely
+// - The reference is immutable, so no exclusive access issues
 unsafe impl<'a, T: ?Sized + Sync> Send for ThreadSafeArenaRef<'a, T> {}
+
+// SAFETY: ThreadSafeArenaRef<'a, T> is Sync if T is Sync because:
+// - ThreadSafeArenaRef only provides immutable access via Deref
+// - T: Sync means multiple threads can share &T safely
+// - Arena is Sync, ensuring underlying memory is properly synchronized
+// - No interior mutability in ThreadSafeArenaRef itself
 unsafe impl<'a, T: ?Sized + Sync> Sync for ThreadSafeArenaRef<'a, T> {}
 
 #[cfg(test)]
