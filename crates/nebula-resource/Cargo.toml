@@ -20,7 +20,6 @@ alloc = []
 
 # Runtime features
 tokio = ["dep:tokio"]
-async-std = ["dep:async-std"]
 
 # Serialization
 serde = ["dep:serde", "dep:serde_json", "dep:serde_yaml"]
@@ -66,7 +65,6 @@ nebula-resilience = { path = "../nebula-resilience" }
 
 # Async runtime
 tokio = { version = "1.0", features = ["rt-multi-thread", "time", "sync", "macros"], optional = true }
-async-std = { version = "1.12", optional = true }
 futures = "0.3"
 
 # Core utilities
