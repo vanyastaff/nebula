@@ -98,17 +98,18 @@ impl PolicyBuilder {
 }
 
 /// Execution context for resilience operations
+///
+/// Tracks execution metadata for observability and metrics collection.
+/// Fields are preserved for future logging/metrics integration.
 #[derive(Debug)]
 pub(crate) struct ExecutionContext {
     /// Name of the service being executed
     pub service_name: String,
-    /// Name of the operation being performed
-    #[allow(dead_code)]
+    /// Name of the operation being performed (for metrics/logging)
     pub operation_name: String,
     /// Current attempt number (starts at 1)
     pub attempt: usize,
-    /// Timestamp when execution started
-    #[allow(dead_code)]
+    /// Timestamp when execution started (for latency metrics)
     pub start_time: std::time::Instant,
 }
 
@@ -123,14 +124,12 @@ impl ExecutionContext {
         }
     }
 
-    /// Increment attempt counter
-    #[allow(dead_code)]
+    /// Increment attempt counter (for retry tracking)
     pub(crate) fn next_attempt(&mut self) {
         self.attempt += 1;
     }
 
-    /// Get elapsed time since start
-    #[allow(dead_code)]
+    /// Get elapsed time since start (for latency metrics)
     pub(crate) fn elapsed(&self) -> Duration {
         self.start_time.elapsed()
     }

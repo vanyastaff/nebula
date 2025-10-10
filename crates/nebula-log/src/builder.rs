@@ -22,7 +22,8 @@ pub struct LoggerBuilder {
 /// This guard ensures that all logging infrastructure stays alive for the lifetime
 /// of the guard. When dropped, the logger will be properly shut down.
 pub struct LoggerGuard {
-    #[allow(dead_code)]
+    /// RAII guard - field must exist even if never accessed directly
+    /// to keep file guards and other resources alive
     inner: Option<Box<Inner>>,
 }
 
@@ -40,9 +41,9 @@ struct Inner {
 /// Handle for runtime configuration changes
 #[derive(Clone)]
 pub struct ReloadHandle {
-    #[allow(dead_code)]
+    /// Filter reload handle - used by public reload() method
     filter: tracing_subscriber::reload::Handle<EnvFilter, Registry>,
-    #[allow(dead_code)]
+    /// Current filter string - used by public current_filter() method
     current_filter: Arc<Mutex<String>>,
 }
 
@@ -503,7 +504,10 @@ impl LoggerBuilder {
 
 impl ReloadHandle {
     /// Reload the log filter
-    #[allow(dead_code)]
+    /// Reload the log filter at runtime
+    ///
+    /// # Errors
+    /// Returns error if filter parsing fails or reload fails
     pub fn reload(&self, filter: &str) -> LogResult<()> {
         use crate::core::LogError;
         let new_filter = EnvFilter::try_new(filter)
@@ -516,7 +520,7 @@ impl ReloadHandle {
     }
 
     /// Get current filter string
-    #[allow(dead_code)]
+    /// Get the current filter string
     pub fn current_filter(&self) -> String {
         self.current_filter.lock().clone()
     }

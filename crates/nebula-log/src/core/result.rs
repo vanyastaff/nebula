@@ -163,8 +163,8 @@ mod tests {
         let error = log_result.unwrap_err();
         assert!(error.context().is_some());
         assert_eq!(
-            error.context().unwrap().component,
-            Some("file-appender".to_string())
+            error.context().unwrap().component(),
+            &Some("file-appender".to_string())
         );
     }
 }
