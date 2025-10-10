@@ -58,8 +58,19 @@ pub struct MemoryInfo {
 pub fn current() -> MemoryInfo {
     let sys_memory = SystemInfo::current_memory();
     let used = sys_memory.total.saturating_sub(sys_memory.available);
+
+    // Calculate usage percent with checked arithmetic to avoid precision loss
+    // For very large memory values, direct f64 conversion can lose precision.
+    // We use checked_mul to compute (used * 10000) / total, then divide by 100
+    // to get percentage with 2 decimal precision.
     let usage_percent = if sys_memory.total > 0 {
-        (used as f64 / sys_memory.total as f64) * 100.0
+        used.checked_mul(10000)
+            .and_then(|v| v.checked_div(sys_memory.total))
+            .map(|v| v as f64 / 100.0)
+            .unwrap_or_else(|| {
+                // Fallback to direct f64 if overflow (extremely rare)
+                (used as f64 / sys_memory.total as f64) * 100.0
+            })
     } else {
         0.0
     };

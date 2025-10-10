@@ -22,6 +22,7 @@ pub enum MemoryPressureLevel {
 
 impl MemoryPressureLevel {
     /// Check if memory pressure is concerning
+    #[inline]
     pub fn is_concerning(&self) -> bool {
         matches!(self, Self::High | Self::Critical)
     }

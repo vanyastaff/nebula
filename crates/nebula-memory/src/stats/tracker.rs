@@ -121,6 +121,7 @@ impl MemoryTracker {
     }
 
     /// Check if we should sample based on interval
+    #[inline]
     pub fn should_sample(&self) -> bool {
         if self.config.level == TrackingLevel::Disabled {
             return false;
