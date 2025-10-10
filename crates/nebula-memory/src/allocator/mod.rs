@@ -52,4 +52,3 @@ mod tests {
         let _manager = AllocatorManager::new();
     }
 }
-

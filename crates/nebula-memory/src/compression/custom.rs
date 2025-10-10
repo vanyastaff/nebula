@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+use parking_lot::Mutex;
 
 use crate::compression::CompressionAlgorithm;
 
@@ -37,7 +38,7 @@ static CUSTOM_COMPRESSORS: OnceLock<Mutex<HashMap<&'static str, Box<dyn Compress
 /// ```
 pub fn register_compressor(name: &'static str, compressor: Box<dyn CompressionAlgorithm>) {
     let compressors = CUSTOM_COMPRESSORS.get_or_init(|| Mutex::new(HashMap::new()));
-    compressors.lock().unwrap().insert(name, compressor);
+    compressors.lock().insert(name, compressor);
 }
 
 /// Получает зарегистрированный пользовательский компрессор по имени
@@ -67,7 +68,7 @@ pub fn register_compressor(name: &'static str, compressor: Box<dyn CompressionAl
 pub fn get_custom_compressor(name: &str) -> Option<Box<dyn CompressionAlgorithm>> {
     // Проверяем, есть ли такой компрессор в реестре
     let compressors = CUSTOM_COMPRESSORS.get()?;
-    let guard = compressors.lock().unwrap();
+    let guard = compressors.lock();
 
     // Получаем компрессор по имени
     guard.get(name).map(|original| {

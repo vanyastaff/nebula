@@ -8,7 +8,9 @@ use alloc::string::String;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+#[cfg(feature = "std")]
+use parking_lot::RwLock;
 #[cfg(feature = "std")]
 use std::thread::{self, JoinHandle};
 #[cfg(feature = "std")]
@@ -143,7 +145,7 @@ impl RealTimeMonitor {
 
             loop {
                 // Check stop signal
-                if *stop_signal_arc.read().unwrap() {
+                if *stop_signal_arc.read() {
                     break;
                 }
 
@@ -154,14 +156,14 @@ impl RealTimeMonitor {
 
                 let mut current_histogram_data = None;
                 if collect_histograms {
-                    if let Some(hist) = histogram_arc.write().unwrap().as_mut() {
+                    if let Some(hist) = histogram_arc.write().as_mut() {
                         current_histogram_data = Some(hist.export());
                     }
                 }
 
                 let mut active_alerts: Vec<MemoryAlert> = Vec::new();
                 if alert_enabled {
-                    let mut last_triggered = last_alert_triggered_arc.write().unwrap(); // Acquire write lock for alerts
+                    let mut last_triggered = last_alert_triggered_arc.write(); // Acquire write lock for alerts
 
                     // Check global memory threshold
                     if let Some(mem_threshold) = alert_memory_threshold {
@@ -342,15 +344,15 @@ impl RealTimeMonitor {
                                     * component_metrics: HashMap::new(), // Placeholder */
                 };
 
-                *live_data_arc.write().unwrap() = Some(live_monitor_data);
+                *live_data_arc.write() = Some(live_monitor_data);
 
                 // Update for next rate calculation
                 last_snapshot_time = now;
                 last_allocations_count = monitored_stats.allocations();
             }
             // Clear data on shutdown or reset
-            *live_data_arc.write().unwrap() = None;
-            *histogram_arc.write().unwrap() = None;
+            *live_data_arc.write() = None;
+            *histogram_arc.write() = None;
         });
 
         self.monitor_handle = Some(handle);
@@ -360,27 +362,27 @@ impl RealTimeMonitor {
     /// Stops the real-time monitoring thread.
     pub fn stop(&mut self) {
         if self.monitor_handle.is_some() {
-            *self.stop_signal.write().unwrap() = true;
+            *self.stop_signal.write() = true;
             if let Some(handle) = self.monitor_handle.take() {
                 // It's crucial to join the thread to ensure it cleans up.
                 // In a production system, you might want a timeout for joining.
                 let _ = handle.join();
             }
-            *self.stop_signal.write().unwrap() = false; // Reset for potential
+            *self.stop_signal.write() = false; // Reset for potential
             // restart
         }
     }
 
     /// Retrieves the latest live monitoring data.
     pub fn get_latest_data(&self) -> Option<RealTimeData> {
-        self.live_data.read().unwrap().clone()
+        self.live_data.read().clone()
     }
 
     /// Allows adding a sample to the internal histogram (if enabled).
     /// This method would typically be called by the allocator or profiler
     /// when an allocation occurs, providing the size.
     pub fn add_histogram_sample(&self, value: u64) {
-        if let Some(hist) = self.histogram.write().unwrap().as_mut() {
+        if let Some(hist) = self.histogram.write().as_mut() {
             hist.add_sample(value);
         }
     }
@@ -435,9 +437,9 @@ mod tests {
         let monitor = RealTimeMonitor::new(config.clone(), alert_config, stats);
 
         assert_eq!(monitor.config.interval, config.interval);
-        assert!(monitor.live_data.read().unwrap().is_none());
+        assert!(monitor.live_data.read().is_none());
         assert!(!monitor.is_running());
-        assert!(monitor.last_alert_triggered.read().unwrap().is_empty());
+        assert!(monitor.last_alert_triggered.read().is_empty());
     }
 
     #[test]
@@ -470,7 +472,7 @@ mod tests {
         assert!(!monitor.is_running());
         std::thread::sleep(Duration::from_millis(20)); // Give time for thread to truly stop
         // After stop, live data should be cleared by the monitoring thread.
-        assert!(monitor.live_data.read().unwrap().is_none());
+        assert!(monitor.live_data.read().is_none());
     }
 
     #[test]
@@ -559,7 +561,7 @@ mod tests {
         )));
 
         {
-            let mut monitor_guard = monitor_arc.write().unwrap();
+            let mut monitor_guard = monitor_arc.write();
             monitor_guard.start().unwrap();
             assert!(monitor_guard.is_running());
         } // `monitor_guard` goes out of scope here, but `monitor_arc` still holds a

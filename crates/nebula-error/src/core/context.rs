@@ -181,9 +181,7 @@ impl ErrorContext {
     /// Check if context has specific metadata
     #[must_use]
     pub fn has_metadata(&self, key: &str) -> bool {
-        self.metadata
-            .as_ref()
-            .is_some_and(|m| m.contains_key(key))
+        self.metadata.as_ref().is_some_and(|m| m.contains_key(key))
     }
 
     /// Get all metadata keys

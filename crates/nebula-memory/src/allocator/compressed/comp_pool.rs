@@ -39,7 +39,12 @@ impl CompressedPool {
     pub fn new(block_size: usize, block_align: usize) -> AllocResult<Self> {
         const DEFAULT_BLOCK_COUNT: usize = 1024;
         Ok(Self {
-            pool: PoolAllocator::with_config(block_size, block_align, DEFAULT_BLOCK_COUNT, PoolConfig::default())?,
+            pool: PoolAllocator::with_config(
+                block_size,
+                block_align,
+                DEFAULT_BLOCK_COUNT,
+                PoolConfig::default(),
+            )?,
             strategy: CompressionStrategy::default(),
             stats: Arc::new(CompressionStats::new()),
             compressed: Arc::new(Mutex::new(HashMap::new())),
@@ -55,7 +60,12 @@ impl CompressedPool {
     ) -> AllocResult<Self> {
         const DEFAULT_BLOCK_COUNT: usize = 1024;
         Ok(Self {
-            pool: PoolAllocator::with_config(block_size, block_align, DEFAULT_BLOCK_COUNT, PoolConfig::default())?,
+            pool: PoolAllocator::with_config(
+                block_size,
+                block_align,
+                DEFAULT_BLOCK_COUNT,
+                PoolConfig::default(),
+            )?,
             strategy,
             stats: Arc::new(CompressionStats::new()),
             compressed: Arc::new(Mutex::new(HashMap::new())),

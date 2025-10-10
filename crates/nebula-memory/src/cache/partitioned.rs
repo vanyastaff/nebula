@@ -11,10 +11,13 @@ extern crate alloc;
 #[cfg(feature = "std")]
 use std::{
     hash::{Hash, Hasher},
-    sync::{Arc, RwLock},
+    sync::Arc,
     thread,
     time::Instant,
 };
+
+#[cfg(feature = "std")]
+use parking_lot::RwLock;
 
 #[cfg(not(feature = "std"))]
 use {
@@ -381,11 +384,11 @@ where
 
         // Try read lock first for cache hit
         {
-            let mut cache = partition.write().unwrap();
+            let mut cache = partition.write();
             if let Some(value) = cache.get(&key) {
                 #[cfg(feature = "std")]
                 if self.config.partition_metrics {
-                    let mut stats = self.stats.write().unwrap();
+                    let mut stats = self.stats.write();
                     stats.total_requests += 1;
                     stats.total_hits += 1;
                 }
@@ -395,13 +398,13 @@ where
         }
 
         // Cache miss - get write lock and compute
-        let mut cache = partition.write().unwrap();
+        let mut cache = partition.write();
 
         // Double-check pattern
         if let Some(value) = cache.get(&key) {
             #[cfg(feature = "std")]
             if self.config.partition_metrics {
-                let mut stats = self.stats.write().unwrap();
+                let mut stats = self.stats.write();
                 stats.total_requests += 1;
                 stats.total_hits += 1;
             }
@@ -414,7 +417,7 @@ where
 
         #[cfg(feature = "std")]
         if self.config.partition_metrics {
-            let mut stats = self.stats.write().unwrap();
+            let mut stats = self.stats.write();
             stats.total_requests += 1;
             if result.is_ok() {
                 stats.total_misses += 1;
@@ -429,12 +432,12 @@ where
         let partition_idx = self.get_partition_index(key);
         let partition = &self.partitions[partition_idx];
 
-        let mut cache = partition.write().unwrap();
+        let mut cache = partition.write();
         let result = cache.get(key);
 
         #[cfg(feature = "std")]
         if self.config.partition_metrics {
-            let mut stats = self.stats.write().unwrap();
+            let mut stats = self.stats.write();
             stats.total_requests += 1;
             if result.is_some() {
                 stats.total_hits += 1;
@@ -451,7 +454,7 @@ where
         let partition_idx = self.get_partition_index(&key);
         let partition = &self.partitions[partition_idx];
 
-        let mut cache = partition.write().unwrap();
+        let mut cache = partition.write();
         cache.insert(key, value)
     }
 
@@ -460,7 +463,7 @@ where
         let partition_idx = self.get_partition_index(key);
         let partition = &self.partitions[partition_idx];
 
-        let mut cache = partition.write().unwrap();
+        let mut cache = partition.write();
         cache.remove(key)
     }
 
@@ -469,7 +472,7 @@ where
         let partition_idx = self.get_partition_index(key);
         let partition = &self.partitions[partition_idx];
 
-        let cache = partition.read().unwrap();
+        let cache = partition.read();
         cache.contains_key(key)
     }
 
@@ -504,7 +507,7 @@ where
         self.partitions
             .iter()
             .map(|partition| {
-                let cache = partition.read().unwrap();
+                let cache = partition.read();
                 cache.len()
             })
             .sum()
@@ -513,7 +516,7 @@ where
     /// Check if the cache is empty
     pub fn is_empty(&self) -> bool {
         self.partitions.iter().all(|partition| {
-            let cache = partition.read().unwrap();
+            let cache = partition.read();
             cache.is_empty()
         })
     }
@@ -521,13 +524,13 @@ where
     /// Clear all entries from the cache
     pub fn clear(&self) {
         for partition in &self.partitions {
-            let mut cache = partition.write().unwrap();
+            let mut cache = partition.write();
             cache.clear();
         }
 
         #[cfg(feature = "std")]
         if self.config.partition_metrics {
-            let mut stats = self.stats.write().unwrap();
+            let mut stats = self.stats.write();
             *stats = PartitionedStats::default();
         }
     }
@@ -543,7 +546,7 @@ where
             return None;
         }
 
-        let cache = self.partitions[partition_idx].read().unwrap();
+        let cache = self.partitions[partition_idx].read();
 
         #[cfg(feature = "std")]
         let metrics = if self.config.partition_metrics {
@@ -586,7 +589,7 @@ where
             return PartitionedStats::default();
         }
 
-        let mut stats = self.stats.read().unwrap().clone();
+        let mut stats = self.stats.read().clone();
         stats.partition_stats = self.all_partitions_info();
         stats
     }
@@ -595,12 +598,12 @@ where
     #[cfg(feature = "std")]
     pub fn reset_stats(&self) {
         if self.config.partition_metrics {
-            let mut stats = self.stats.write().unwrap();
+            let mut stats = self.stats.write();
             *stats = PartitionedStats::default();
         }
 
         for partition in &self.partitions {
-            let cache = partition.read().unwrap();
+            let cache = partition.read();
             cache.reset_metrics();
         }
     }
@@ -611,7 +614,7 @@ where
         let mut combined = CacheMetrics::default();
 
         for partition in &self.partitions {
-            let cache = partition.read().unwrap();
+            let cache = partition.read();
             let metrics = cache.metrics();
             combined.merge(&metrics);
         }
@@ -625,7 +628,7 @@ where
         self.partitions
             .iter()
             .map(|partition| {
-                let mut cache = partition.write().unwrap();
+                let mut cache = partition.write();
                 cache.cleanup_expired()
             })
             .sum()
@@ -673,7 +676,7 @@ where
             // In a real implementation, you would migrate some keys
             // from max_partition to min_partition
 
-            let mut stats = self.stats.write().unwrap();
+            let mut stats = self.stats.write();
             stats.rebalance_operations += 1;
 
             return Ok(1);
@@ -699,7 +702,7 @@ where
         // Warm up each partition
         for (partition_idx, entries) in partition_entries.into_iter().enumerate() {
             if !entries.is_empty() {
-                let mut cache = self.partitions[partition_idx].write().unwrap();
+                let mut cache = self.partitions[partition_idx].write();
                 for (key, value) in entries {
                     cache.insert(key, value)?;
                 }
@@ -942,11 +945,9 @@ mod tests {
         let cache = PartitionedCache::<String, usize>::new(10, 2);
 
         // Error should be propagated
-        let result =
-            cache.get_or_compute(
-                "error".to_string(),
-                || Err(MemoryError::allocation_failed(0, 1)),
-            );
+        let result = cache.get_or_compute("error".to_string(), || {
+            Err(MemoryError::allocation_failed(0, 1))
+        });
 
         assert!(result.is_err());
 

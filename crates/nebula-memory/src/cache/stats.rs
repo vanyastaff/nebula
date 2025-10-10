@@ -91,7 +91,8 @@ impl AtomicCacheStats {
     pub fn record_insertion(&self, size_bytes: usize) {
         self.insertions.fetch_add(1, Ordering::Relaxed);
         self.entry_count.fetch_add(1, Ordering::Relaxed);
-        self.size_bytes.fetch_add(size_bytes as u64, Ordering::Relaxed);
+        self.size_bytes
+            .fetch_add(size_bytes as u64, Ordering::Relaxed);
     }
 
     /// Record a deletion
@@ -99,7 +100,8 @@ impl AtomicCacheStats {
     pub fn record_deletion(&self, size_bytes: usize) {
         self.deletions.fetch_add(1, Ordering::Relaxed);
         self.entry_count.fetch_sub(1, Ordering::Relaxed);
-        self.size_bytes.fetch_sub(size_bytes as u64, Ordering::Relaxed);
+        self.size_bytes
+            .fetch_sub(size_bytes as u64, Ordering::Relaxed);
     }
 
     /// Get current hit count

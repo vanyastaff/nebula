@@ -74,6 +74,25 @@ impl TimeInner {
         Ok(Self { nanos: total_nanos })
     }
 
+    /// Creates a new TimeInner without validation (for compile-time constants)
+    ///
+    /// # Safety
+    ///
+    /// Caller must guarantee that:
+    /// - `hour < 24`
+    /// - `minute < 60`
+    /// - `second < 60`
+    /// - `nanos < 1_000_000_000`
+    #[inline]
+    pub const unsafe fn new_unchecked(hour: u32, minute: u32, second: u32, nanos: u32) -> Self {
+        let total_nanos = hour as u64 * Self::NANOS_PER_HOUR
+            + minute as u64 * Self::NANOS_PER_MINUTE
+            + second as u64 * Self::NANOS_PER_SECOND
+            + nanos as u64;
+
+        Self { nanos: total_nanos }
+    }
+
     /// Creates from total nanoseconds since midnight
     pub fn from_nanos(nanos: u64) -> ValueResult<Self> {
         if nanos > Self::MAX_NANOS {
@@ -84,6 +103,16 @@ impl TimeInner {
             )));
         }
         Ok(Self { nanos })
+    }
+
+    /// Creates from total nanoseconds without validation
+    ///
+    /// # Safety
+    ///
+    /// Caller must guarantee that `nanos <= 86_399_999_999_999`
+    #[inline]
+    pub const unsafe fn from_nanos_unchecked(nanos: u64) -> Self {
+        Self { nanos }
     }
 
     /// Returns the hour component (0-23)
@@ -124,11 +153,13 @@ impl TimeInner {
 
     /// Converts to chrono NaiveTime
     pub fn to_naive(&self) -> NaiveTime {
+        // SAFETY: TimeInner guarantees nanos <= MAX_NANOS, which ensures
+        // seconds < 86400 and nanos < 1_000_000_000, both valid for NaiveTime
         NaiveTime::from_num_seconds_from_midnight_opt(
             (self.nanos / Self::NANOS_PER_SECOND) as u32,
             (self.nanos % Self::NANOS_PER_SECOND) as u32,
         )
-        .expect("Valid time")
+        .unwrap()
     }
 
     /// Creates from chrono NaiveTime
@@ -213,7 +244,12 @@ impl Time {
 
     /// Creates Time at noon (12:00:00)
     pub fn noon() -> Self {
-        Self::new(12, 0, 0).unwrap()
+        // SAFETY: 12:00:00 is always valid (hour=12 < 24, minute=0 < 60, second=0 < 60)
+        Self {
+            inner: Arc::new(unsafe { TimeInner::new_unchecked(12, 0, 0, 0) }),
+            iso_string_cache: OnceCell::new(),
+            format_12h_cache: OnceCell::new(),
+        }
     }
 
     /// Creates Time at end of day (23:59:59.999999999)
@@ -538,7 +574,8 @@ impl Time {
     /// Adds hours to the time (with wrapping)
     pub fn add_hours(&self, hours: i32) -> Self {
         let total_hours = (self.hour() as i32 + hours).rem_euclid(24);
-        Self::new(total_hours as u32, self.minute(), self.second()).unwrap()
+        Self::new(total_hours as u32, self.minute(), self.second())
+            .expect("rem_euclid(24) guarantees hour is 0-23")
     }
 
     /// Adds minutes to the time (with wrapping)
@@ -547,7 +584,8 @@ impl Time {
         let new_minutes = total_minutes.rem_euclid(1440);
         let new_hours = (new_minutes / 60) as u32;
         let new_mins = (new_minutes % 60) as u32;
-        Self::new(new_hours, new_mins, self.second()).unwrap()
+        Self::new(new_hours, new_mins, self.second())
+            .expect("rem_euclid(1440) and modulo arithmetic guarantee valid time components")
     }
 
     /// Adds seconds to the time (with wrapping)
@@ -579,45 +617,54 @@ impl Time {
         if self.minute() >= 30 {
             self.add_hours(1)
                 .with_minute(0)
-                .unwrap()
+                .expect("0 is always a valid minute")
                 .with_second(0)
-                .unwrap()
+                .expect("0 is always a valid second")
         } else {
-            self.with_minute(0).unwrap().with_second(0).unwrap()
+            self.with_minute(0)
+                .expect("0 is always a valid minute")
+                .with_second(0)
+                .expect("0 is always a valid second")
         }
     }
 
     /// Rounds to the nearest minute
     pub fn round_to_minute(&self) -> Self {
         if self.second() >= 30 {
-            self.add_minutes(1).with_second(0).unwrap()
+            self.add_minutes(1)
+                .with_second(0)
+                .expect("0 is always a valid second")
         } else {
-            self.with_second(0).unwrap()
+            self.with_second(0).expect("0 is always a valid second")
         }
     }
 
     /// Rounds to the nearest second
     pub fn round_to_second(&self) -> Self {
         if self.nanosecond() >= 500_000_000 {
-            self.add_seconds(1).with_nanosecond(0).unwrap()
+            self.add_seconds(1)
+                .with_nanosecond(0)
+                .expect("0 is always a valid nanosecond")
         } else {
-            self.with_nanosecond(0).unwrap()
+            self.with_nanosecond(0).expect("0 is always a valid nanosecond")
         }
     }
 
     /// Truncates to hour precision
     pub fn truncate_to_hour(&self) -> Self {
-        Self::new(self.hour(), 0, 0).unwrap()
+        Self::new(self.hour(), 0, 0).expect("existing hour with 0 minute and 0 second is always valid")
     }
 
     /// Truncates to minute precision
     pub fn truncate_to_minute(&self) -> Self {
-        Self::new(self.hour(), self.minute(), 0).unwrap()
+        Self::new(self.hour(), self.minute(), 0)
+            .expect("existing hour and minute with 0 second is always valid")
     }
 
     /// Truncates to second precision
     pub fn truncate_to_second(&self) -> Self {
-        Self::with_nanos(self.hour(), self.minute(), self.second(), 0).unwrap()
+        Self::with_nanos(self.hour(), self.minute(), self.second(), 0)
+            .expect("existing time components with 0 nanosecond is always valid")
     }
 
     // ==================== Component Updates ====================
@@ -923,7 +970,8 @@ impl Borrow<TimeInner> for Time {
 impl From<StdDuration> for Time {
     fn from(duration: StdDuration) -> Self {
         let nanos = duration.as_nanos() as u64;
-        Self::from_nanos(nanos % (TimeInner::MAX_NANOS + 1)).unwrap()
+        Self::from_nanos(nanos % (TimeInner::MAX_NANOS + 1))
+            .expect("modulo MAX_NANOS+1 guarantees value is within valid time range")
     }
 }
 

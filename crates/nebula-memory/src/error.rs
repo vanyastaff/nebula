@@ -7,13 +7,11 @@ use core::alloc::Layout;
 use core::fmt;
 
 pub use nebula_error::{
-    kinds::MemoryError as MemoryErrorKind,
-    NebulaError,
-    Result as NebulaResult,
+    NebulaError, Result as NebulaResult, kinds::MemoryError as MemoryErrorKind,
 };
 
 #[cfg(feature = "logging")]
-use nebula_log::{error, warn, debug};
+use nebula_log::{debug, error, warn};
 
 // ============================================================================
 // Main Error Type
@@ -64,7 +62,9 @@ impl MemoryError {
         K: Into<String>,
         V: fmt::Display,
     {
-        self.inner = self.inner.with_details(format!("{}: {}", key.into(), value));
+        self.inner = self
+            .inner
+            .with_details(format!("{}: {}", key.into(), value));
         self
     }
 
@@ -183,9 +183,7 @@ impl MemoryError {
 
     /// Creates a cache miss error
     pub fn cache_miss(key: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::CacheMiss {
-            key: key.into(),
-        })
+        Self::new(MemoryErrorKind::CacheMiss { key: key.into() })
     }
 
     /// Creates a cache full error
@@ -247,11 +245,7 @@ impl MemoryError {
     }
 
     /// Creates a fragmentation error
-    pub fn fragmentation(
-        available: usize,
-        largest_block: usize,
-        requested: usize,
-    ) -> Self {
+    pub fn fragmentation(available: usize, largest_block: usize, requested: usize) -> Self {
         Self::new(MemoryErrorKind::InvalidState {
             reason: format!(
                 "fragmentation: {} bytes available, largest block {}, requested {}",

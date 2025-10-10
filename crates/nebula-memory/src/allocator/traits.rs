@@ -279,7 +279,10 @@ pub unsafe trait BulkAllocator: Allocator {
 
         // Check against maximum allocation size
         if total_size > Self::max_allocation_size() {
-            return Err(AllocError::allocation_too_large(total_size, Self::max_allocation_size()));
+            return Err(AllocError::allocation_too_large(
+                total_size,
+                Self::max_allocation_size(),
+            ));
         }
 
         // Create layout for the total allocation
@@ -505,8 +508,7 @@ pub trait TypedAllocator: Allocator {
             return Ok(NonNull::dangling());
         }
 
-        let layout =
-            Layout::array::<T>(count).map_err(|_| AllocError::size_overflow(0, 0))?;
+        let layout = Layout::array::<T>(count).map_err(|_| AllocError::size_overflow(0, 0))?;
 
         let ptr = unsafe { self.allocate(layout)? };
         Ok(unsafe { NonNull::new_unchecked(ptr.as_ptr() as *mut T) })

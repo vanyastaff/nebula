@@ -12,9 +12,12 @@ extern crate alloc;
 #[cfg(feature = "std")]
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, RwLock},
+    sync::Arc,
     time::{Duration, Instant},
 };
+
+#[cfg(feature = "std")]
+use parking_lot::{Mutex, RwLock};
 
 #[cfg(not(feature = "std"))]
 use {
@@ -476,7 +479,7 @@ where
         let start_time = Instant::now();
 
         if self.config.track_stats {
-            let mut stats = self.stats.write().unwrap();
+            let mut stats = self.stats.write();
             stats.requests += 1;
         }
 
@@ -485,7 +488,7 @@ where
             if let Some(value) = level.get(key) {
                 // Found in this level
                 if self.config.track_stats {
-                    let mut stats = self.stats.write().unwrap();
+                    let mut stats = self.stats.write();
                     stats.level_hits[level_idx] += 1;
 
                     #[cfg(feature = "std")]
@@ -504,7 +507,7 @@ where
                     self.config.promotion_policy,
                     PromotionPolicy::AfterNAccesses(_) | PromotionPolicy::FrequencyBased(_)
                 ) {
-                    let mut access_counts = self.access_counts.write().unwrap();
+                    let mut access_counts = self.access_counts.write();
                     *access_counts.entry(key.clone()).or_insert(0) += 1;
                 }
 
@@ -517,7 +520,7 @@ where
 
         // Not found in any level
         if self.config.track_stats {
-            let mut stats = self.stats.write().unwrap();
+            let mut stats = self.stats.write();
             stats.misses += 1;
         }
 
@@ -543,7 +546,7 @@ where
         #[cfg(feature = "std")]
         if self.config.track_stats {
             let compute_time = start_time.elapsed().as_nanos() as u64;
-            let mut stats = self.stats.write().unwrap();
+            let mut stats = self.stats.write();
             stats.compute_time_ns += compute_time;
         }
 
@@ -610,7 +613,7 @@ where
             self.config.promotion_policy,
             PromotionPolicy::AfterNAccesses(_) | PromotionPolicy::FrequencyBased(_)
         ) {
-            let mut access_counts = self.access_counts.write().unwrap();
+            let mut access_counts = self.access_counts.write();
             access_counts.remove(key);
         }
 
@@ -624,12 +627,12 @@ where
         }
 
         // Also clear access counts
-        let mut access_counts = self.access_counts.write().unwrap();
+        let mut access_counts = self.access_counts.write();
         access_counts.clear();
 
         // Reset stats
         if self.config.track_stats {
-            let mut stats = self.stats.write().unwrap();
+            let mut stats = self.stats.write();
             stats.reset();
         }
     }
@@ -662,7 +665,7 @@ where
     /// Get the statistics for the multi-level cache
     pub fn stats(&self) -> MultiLevelStats {
         if self.config.track_stats {
-            let mut stats = self.stats.read().unwrap().clone();
+            let mut stats = self.stats.read().clone();
 
             // Update efficiency metrics
             let level_metrics: Vec<_> = self
@@ -690,7 +693,7 @@ where
     /// Reset all statistics
     pub fn reset_stats(&self) {
         if self.config.track_stats {
-            let mut stats = self.stats.write().unwrap();
+            let mut stats = self.stats.write();
             stats.reset();
         }
 
@@ -798,15 +801,15 @@ where
         let should_promote = match self.config.promotion_policy {
             PromotionPolicy::Always => true,
             PromotionPolicy::AfterNAccesses(threshold) => {
-                let access_counts = self.access_counts.read().unwrap();
+                let access_counts = self.access_counts.read();
                 access_counts
                     .get(key)
                     .map_or(false, |&count| count >= threshold)
             }
             PromotionPolicy::FrequencyBased(threshold) => {
-                let access_counts = self.access_counts.read().unwrap();
+                let access_counts = self.access_counts.read();
                 let count = access_counts.get(key).copied().unwrap_or(0);
-                let total_requests = self.stats.read().unwrap().requests;
+                let total_requests = self.stats.read().requests;
                 if total_requests > 0 {
                     (count as f64 / total_requests as f64) >= threshold
                 } else {
@@ -816,7 +819,7 @@ where
             PromotionPolicy::Never => false,
             PromotionPolicy::Adaptive => {
                 // Simple adaptive logic: promote if cache hit rate in current level is high
-                let stats = self.stats.read().unwrap();
+                let stats = self.stats.read();
                 stats.level_hit_rate(found_level) > 0.8
             }
         };
@@ -843,7 +846,7 @@ where
                 promotions += 1;
 
                 if self.config.track_stats {
-                    let mut stats = self.stats.write().unwrap();
+                    let mut stats = self.stats.write();
                     stats.promotions += 1;
                 }
             }
@@ -854,7 +857,7 @@ where
             self.config.promotion_policy,
             PromotionPolicy::AfterNAccesses(_)
         ) {
-            let mut access_counts = self.access_counts.write().unwrap();
+            let mut access_counts = self.access_counts.write();
             if let Some(count) = access_counts.get_mut(key) {
                 *count = 0;
             }
@@ -928,32 +931,32 @@ where
     V: Clone + Send + Sync,
 {
     fn get(&self, key: &K) -> Option<V> {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         cache.get(key)
     }
 
     fn insert(&self, key: K, value: V) -> MemoryResult<()> {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         cache.insert(key, value)
     }
 
     fn remove(&self, key: &K) -> Option<V> {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         cache.remove(key)
     }
 
     fn clear(&self) {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         cache.clear();
     }
 
     fn len(&self) -> usize {
-        let cache = self.cache.lock().unwrap();
+        let cache = self.cache.lock();
         cache.len()
     }
 
     fn is_empty(&self) -> bool {
-        let cache = self.cache.lock().unwrap();
+        let cache = self.cache.lock();
         cache.is_empty()
     }
 
@@ -966,24 +969,24 @@ where
     }
 
     fn capacity(&self) -> usize {
-        let cache = self.cache.lock().unwrap();
+        let cache = self.cache.lock();
         cache.capacity()
     }
 
     fn load_factor(&self) -> f32 {
-        let cache = self.cache.lock().unwrap();
+        let cache = self.cache.lock();
         cache.load_factor()
     }
 
     #[cfg(feature = "std")]
     fn metrics(&self) -> Option<CacheMetrics> {
-        let cache = self.cache.lock().unwrap();
+        let cache = self.cache.lock();
         Some(cache.metrics())
     }
 
     #[cfg(feature = "std")]
     fn reset_metrics(&self) {
-        let cache = self.cache.lock().unwrap();
+        let cache = self.cache.lock();
         cache.reset_metrics();
     }
 
@@ -992,7 +995,7 @@ where
         K: Clone,
         V: Clone,
     {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         for (key, value) in entries {
             cache.insert(key.clone(), value.clone())?;
         }
@@ -1005,7 +1008,7 @@ where
 
     #[cfg(feature = "std")]
     fn cleanup_expired(&self) -> usize {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         cache.cleanup_expired()
     }
 }

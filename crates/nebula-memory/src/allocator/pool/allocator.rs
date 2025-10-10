@@ -7,8 +7,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 use super::{PoolConfig, PoolStats};
 use crate::allocator::{
-    AllocError, AllocResult, Allocator, AllocatorStats, MemoryUsage, Resettable,
-    StatisticsProvider,
+    AllocError, AllocResult, Allocator, AllocatorStats, MemoryUsage, Resettable, StatisticsProvider,
 };
 use crate::utils::{Backoff, align_up, atomic_max, is_power_of_two};
 
@@ -477,7 +476,9 @@ unsafe impl Allocator for PoolAllocator {
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
         // Check if the requested layout matches our pool configuration
         if layout.size() > self.block_size || layout.align() > self.block_align {
-            return Err(AllocError::invalid_layout("layout exceeds pool configuration"));
+            return Err(AllocError::invalid_layout(
+                "layout exceeds pool configuration",
+            ));
         }
 
         // Handle zero-sized allocations
@@ -512,7 +513,9 @@ unsafe impl Allocator for PoolAllocator {
     ) -> AllocResult<NonNull<[u8]>> {
         // Pool allocator can only handle allocations of the configured size
         if new_layout.size() > self.block_size || new_layout.align() > self.block_align {
-            return Err(AllocError::invalid_layout("new layout exceeds pool configuration"));
+            return Err(AllocError::invalid_layout(
+                "new layout exceeds pool configuration",
+            ));
         }
 
         // If the new size fits within the same block, we can reuse it

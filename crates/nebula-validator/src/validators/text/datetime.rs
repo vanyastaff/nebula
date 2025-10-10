@@ -226,7 +226,10 @@ impl DateTime {
             ));
         }
 
-        let sign = tz.chars().next().unwrap();
+        let sign = tz
+            .chars()
+            .next()
+            .expect("tz.len() == 6 guarantees chars().next() succeeds");
         if sign != '+' && sign != '-' {
             return Err(ValidationError::new(
                 "invalid_timezone_format",

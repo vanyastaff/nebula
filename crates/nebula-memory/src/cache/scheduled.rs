@@ -9,12 +9,14 @@ use std::{
     collections::HashMap,
     hash::Hash,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+
+use parking_lot::Mutex;
 
 use super::compute::{CacheKey, CacheResult, ComputeCache};
 use super::config::CacheConfig;
@@ -76,8 +78,8 @@ where
 
                 // Clean up expired entries
                 let now = Instant::now();
-                let mut ttls_guard = ttls_clone.lock().unwrap();
-                let mut cache_guard = cache_clone.lock().unwrap();
+                let mut ttls_guard = ttls_clone.lock();
+                let mut cache_guard = cache_clone.lock();
 
                 // Collect expired keys
                 let expired_keys: Vec<K> = ttls_guard
@@ -118,8 +120,8 @@ where
                 thread::sleep(cleanup_interval);
 
                 let now = Instant::now();
-                let mut ttls_guard = ttls_clone.lock().unwrap();
-                let mut cache_guard = cache_clone.lock().unwrap();
+                let mut ttls_guard = ttls_clone.lock();
+                let mut cache_guard = cache_clone.lock();
 
                 let expired_keys: Vec<K> = ttls_guard
                     .iter()
@@ -146,8 +148,8 @@ where
     /// Insert a value with TTL
     #[inline]
     pub fn insert_with_ttl(&self, key: K, value: V, ttl: Duration) {
-        let mut cache = self.cache.lock().unwrap();
-        let mut ttls = self.ttls.lock().unwrap();
+        let mut cache = self.cache.lock();
+        let mut ttls = self.ttls.lock();
 
         cache.insert(key.clone(), value);
         ttls.insert(key, Instant::now() + ttl);
@@ -156,7 +158,7 @@ where
     /// Get a value from the cache
     #[inline]
     pub fn get(&self, key: &K) -> Option<V> {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         cache.get(key)
     }
 
@@ -165,7 +167,7 @@ where
     where
         F: FnOnce() -> Result<V, MemoryError>,
     {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock();
         cache.get_or_compute(key, f)
     }
 
@@ -176,7 +178,7 @@ where
     {
         // Check if value exists
         {
-            let mut cache = self.cache.lock().unwrap();
+            let mut cache = self.cache.lock();
             if let Some(value) = cache.get(&key) {
                 return Ok(value);
             }
@@ -191,8 +193,8 @@ where
     /// Remove a value from the cache
     #[inline]
     pub fn remove(&self, key: &K) -> Option<V> {
-        let mut cache = self.cache.lock().unwrap();
-        let mut ttls = self.ttls.lock().unwrap();
+        let mut cache = self.cache.lock();
+        let mut ttls = self.ttls.lock();
 
         ttls.remove(key);
         cache.remove(key)
@@ -201,8 +203,8 @@ where
     /// Clear all entries
     #[inline]
     pub fn clear(&self) {
-        let mut cache = self.cache.lock().unwrap();
-        let mut ttls = self.ttls.lock().unwrap();
+        let mut cache = self.cache.lock();
+        let mut ttls = self.ttls.lock();
 
         cache.clear();
         ttls.clear();
@@ -211,7 +213,7 @@ where
     /// Get current size
     #[inline]
     pub fn len(&self) -> usize {
-        let cache = self.cache.lock().unwrap();
+        let cache = self.cache.lock();
         cache.len()
     }
 
@@ -224,8 +226,8 @@ where
     /// Manually trigger cleanup of expired entries
     pub fn cleanup_expired(&self) {
         let now = Instant::now();
-        let mut ttls = self.ttls.lock().unwrap();
-        let mut cache = self.cache.lock().unwrap();
+        let mut ttls = self.ttls.lock();
+        let mut cache = self.cache.lock();
 
         let expired_keys: Vec<K> = ttls
             .iter()
@@ -342,25 +344,25 @@ mod tests {
         let c = counter.clone();
         let result = cache
             .get_or_compute_with_ttl("key", Duration::from_secs(10), move || {
-                *c.lock().unwrap() += 1;
+                *c.lock() += 1;
                 Ok::<_, MemoryError>(42)
             })
             .unwrap();
 
         assert_eq!(result, 42);
-        assert_eq!(*counter.lock().unwrap(), 1);
+        assert_eq!(*counter.lock(), 1);
 
         // Second call: cached
         let c = counter.clone();
         let result = cache
             .get_or_compute_with_ttl("key", Duration::from_secs(10), move || {
-                *c.lock().unwrap() += 1;
+                *c.lock() += 1;
                 Ok::<_, MemoryError>(42)
             })
             .unwrap();
 
         assert_eq!(result, 42);
-        assert_eq!(*counter.lock().unwrap(), 1); // Not incremented
+        assert_eq!(*counter.lock(), 1); // Not incremented
     }
 
     #[test]

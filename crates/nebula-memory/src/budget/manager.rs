@@ -5,7 +5,8 @@
 //! memory allocation and usage.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock, Once};
+use std::sync::{Arc, Once};
+use parking_lot::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::error::{MemoryError, MemoryResult};
@@ -123,7 +124,7 @@ impl GlobalBudgetManager {
     /// Register a budget with the manager
     fn register_budget(&self, budget: Arc<MemoryBudget>) {
         let name = budget.name();
-        let mut all_budgets = self.all_budgets.write().unwrap();
+        let mut all_budgets = self.all_budgets.write();
         
         // Only register if not already present
         if !all_budgets.contains_key(&name) {
@@ -131,7 +132,7 @@ impl GlobalBudgetManager {
             
             // If this is a root budget, add to root_budgets as well
             if budget.parent().is_none() {
-                let mut root_budgets = self.root_budgets.write().unwrap();
+                let mut root_budgets = self.root_budgets.write();
                 root_budgets.insert(name, budget);
             }
         }
@@ -139,12 +140,12 @@ impl GlobalBudgetManager {
     
     /// Update system metrics
     fn update_metrics(&self) -> SystemMemoryMetrics {
-        let mut last_update = self.last_update.lock().unwrap();
+        let mut last_update = self.last_update.lock();
         let now = Instant::now();
         
         // Only update if interval has passed
         if now.duration_since(*last_update) < self.metrics_interval {
-            return self.last_metrics.lock().unwrap().clone().unwrap_or_else(|| {
+            return self.last_metrics.lock().clone().unwrap_or_else(|| {
                 // If no metrics exist yet, force an update
                 drop(last_update);
                 self.calculate_metrics()
@@ -153,15 +154,15 @@ impl GlobalBudgetManager {
         
         *last_update = now;
         let metrics = self.calculate_metrics();
-        *self.last_metrics.lock().unwrap() = Some(metrics.clone());
+        *self.last_metrics.lock() = Some(metrics.clone());
         
         metrics
     }
     
     /// Calculate system metrics
     fn calculate_metrics(&self) -> SystemMemoryMetrics {
-        let root_budgets = self.root_budgets.read().unwrap();
-        let all_budgets = self.all_budgets.read().unwrap();
+        let root_budgets = self.root_budgets.read();
+        let all_budgets = self.all_budgets.read();
         
         let total_limit: usize = root_budgets.values().map(|b| b.limit()).sum();
         let total_used: usize = root_budgets.values().map(|b| b.used()).sum();
@@ -184,7 +185,7 @@ impl GlobalBudgetManager {
 
 impl BudgetManager for GlobalBudgetManager {
     fn get_budget(&self, name: &str) -> Option<Arc<MemoryBudget>> {
-        self.all_budgets.read().unwrap().get(name).cloned()
+        self.all_budgets.read().get(name).cloned()
     }
     
     fn create_budget(&self, config: BudgetConfig) -> Arc<MemoryBudget> {

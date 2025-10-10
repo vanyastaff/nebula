@@ -200,7 +200,9 @@ impl Date {
             )));
         }
 
-        NaiveDate::from_isoywd_opt(year, week, Weekday::try_from((weekday - 1) as u8).unwrap())
+        let weekday_chrono = Weekday::try_from((weekday - 1) as u8)
+            .expect("weekday 1-7 maps to Weekday enum 0-6");
+        NaiveDate::from_isoywd_opt(year, week, weekday_chrono)
             .map(|d| Self::from_naive_date(d))
             .ok_or_else(|| {
                 NebulaError::validation(format!(
@@ -560,7 +562,7 @@ impl Date {
 
     /// Returns the number of days since Unix epoch
     pub fn days_since_epoch(&self) -> i64 {
-        self.days_between(&Self::unix_epoch().unwrap())
+        self.days_between(&Self::unix_epoch().expect("1970-01-01 is always a valid date"))
     }
 
     // ==================== Validation ====================

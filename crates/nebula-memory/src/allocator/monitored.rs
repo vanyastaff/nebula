@@ -250,10 +250,7 @@ where
             Ok(false) => {
                 // Allocation denied by monitor
                 self.stats.record_allocation_failure();
-                Err(AllocError::with_layout(
-                    0,
-                    layout,
-                ))
+                Err(AllocError::with_layout(0, layout))
             }
             Err(monitor_error) => {
                 // Monitor error - log and allow allocation
@@ -311,10 +308,7 @@ where
             },
             Ok(false) => {
                 self.stats.record_allocation_failure();
-                Err(AllocError::with_layout(
-                    0,
-                    new_layout,
-                ))
+                Err(AllocError::with_layout(0, new_layout))
             }
             Err(_) => {
                 // Monitor error - allow growth

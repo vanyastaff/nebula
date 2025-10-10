@@ -50,7 +50,7 @@ macro_rules! client_error {
         #[doc = concat!("Create a client error: ", stringify!($name))]
         pub fn $name($arg: impl Into<$ty>) -> Self {
             Self::new(crate::kinds::ErrorKind::Client(
-                crate::kinds::ClientError::$name($arg.into())
+                crate::kinds::ClientError::$name($arg.into()),
             ))
         }
     };
@@ -60,7 +60,7 @@ macro_rules! client_error {
         #[doc = concat!("Create a client error: ", stringify!($name))]
         pub fn $name($arg1: impl Into<$ty1>, $arg2: impl Into<$ty2>) -> Self {
             Self::new(crate::kinds::ErrorKind::Client(
-                crate::kinds::ClientError::$name($arg1.into(), $arg2.into())
+                crate::kinds::ClientError::$name($arg1.into(), $arg2.into()),
             ))
         }
     };
@@ -68,9 +68,13 @@ macro_rules! client_error {
     // Three arguments
     ($name:ident, $arg1:ident: $ty1:ty, $arg2:ident: $ty2:ty, $arg3:ident: $ty3:ty) => {
         #[doc = concat!("Create a client error: ", stringify!($name))]
-        pub fn $name($arg1: impl Into<$ty1>, $arg2: impl Into<$ty2>, $arg3: impl Into<$ty3>) -> Self {
+        pub fn $name(
+            $arg1: impl Into<$ty1>,
+            $arg2: impl Into<$ty2>,
+            $arg3: impl Into<$ty3>,
+        ) -> Self {
             Self::new(crate::kinds::ErrorKind::Client(
-                crate::kinds::ClientError::$name($arg1.into(), $arg2.into(), $arg3.into())
+                crate::kinds::ClientError::$name($arg1.into(), $arg2.into(), $arg3.into()),
             ))
         }
     };
@@ -82,7 +86,7 @@ macro_rules! server_error {
         #[doc = concat!("Create a server error: ", stringify!($name))]
         pub fn $name($arg: impl Into<$ty>) -> Self {
             Self::new(crate::kinds::ErrorKind::Server(
-                crate::kinds::ServerError::$name($arg.into())
+                crate::kinds::ServerError::$name($arg.into()),
             ))
         }
     };
@@ -91,7 +95,7 @@ macro_rules! server_error {
         #[doc = concat!("Create a server error: ", stringify!($name))]
         pub fn $name($arg1: impl Into<$ty1>, $arg2: impl Into<$ty2>) -> Self {
             Self::new(crate::kinds::ErrorKind::Server(
-                crate::kinds::ServerError::$name($arg1.into(), $arg2.into())
+                crate::kinds::ServerError::$name($arg1.into(), $arg2.into()),
             ))
         }
     };
@@ -103,7 +107,7 @@ macro_rules! system_error {
         #[doc = concat!("Create a system error: ", stringify!($name))]
         pub fn $name($arg: impl Into<$ty>) -> Self {
             Self::new(crate::kinds::ErrorKind::System(
-                crate::kinds::SystemError::$name($arg.into())
+                crate::kinds::SystemError::$name($arg.into()),
             ))
         }
     };
@@ -112,7 +116,7 @@ macro_rules! system_error {
         #[doc = concat!("Create a system error: ", stringify!($name))]
         pub fn $name($arg1: impl Into<$ty1>, $arg2: impl Into<$ty2>) -> Self {
             Self::new(crate::kinds::ErrorKind::System(
-                crate::kinds::SystemError::$name($arg1.into(), $arg2.into())
+                crate::kinds::SystemError::$name($arg1.into(), $arg2.into()),
             ))
         }
     };
@@ -124,7 +128,7 @@ macro_rules! memory_error {
         #[doc = concat!("Create a memory error: ", stringify!($name))]
         pub fn $name($arg: impl Into<$ty>) -> Self {
             Self::new(crate::kinds::ErrorKind::Memory(
-                crate::kinds::MemoryError::$name($arg.into())
+                crate::kinds::MemoryError::$name($arg.into()),
             ))
         }
     };
@@ -133,7 +137,7 @@ macro_rules! memory_error {
         #[doc = concat!("Create a memory error: ", stringify!($name))]
         pub fn $name($arg1: impl Into<$ty1>, $arg2: impl Into<$ty2>) -> Self {
             Self::new(crate::kinds::ErrorKind::Memory(
-                crate::kinds::MemoryError::$name($arg1.into(), $arg2.into())
+                crate::kinds::MemoryError::$name($arg1.into(), $arg2.into()),
             ))
         }
     };
@@ -145,7 +149,7 @@ macro_rules! resource_error {
         #[doc = concat!("Create a resource error: ", stringify!($name))]
         pub fn $name($arg: impl Into<$ty>) -> Self {
             Self::new(crate::kinds::ErrorKind::Resource(
-                crate::kinds::ResourceError::$name($arg.into())
+                crate::kinds::ResourceError::$name($arg.into()),
             ))
         }
     };
@@ -154,7 +158,7 @@ macro_rules! resource_error {
         #[doc = concat!("Create a resource error: ", stringify!($name))]
         pub fn $name($arg1: impl Into<$ty1>, $arg2: impl Into<$ty2>) -> Self {
             Self::new(crate::kinds::ErrorKind::Resource(
-                crate::kinds::ResourceError::$name($arg1.into(), $arg2.into())
+                crate::kinds::ResourceError::$name($arg1.into(), $arg2.into()),
             ))
         }
     };

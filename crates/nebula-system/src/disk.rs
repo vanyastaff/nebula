@@ -331,8 +331,13 @@ pub fn filesystem_info(path: &str) -> Option<FileSystemInfo> {
         use std::ffi::CString;
 
         let c_path = CString::new(path).ok()?;
+        // SAFETY: `statvfs` is a C struct with no Drop implementation or pointers.
+        // Zeroing it creates a valid (though uninitialized) instance that statvfs() will fill.
         let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
 
+        // SAFETY: `c_path.as_ptr()` is a valid null-terminated C string from CString.
+        // `stat` is a valid mutable reference to an allocated statvfs struct.
+        // The statvfs() syscall will either fill it (return 0) or fail (return -1).
         unsafe {
             if statvfs(c_path.as_ptr(), &mut stat) == 0 {
                 return Some(FileSystemInfo {

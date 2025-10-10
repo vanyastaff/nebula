@@ -185,7 +185,7 @@ impl DateTime {
 
     /// Creates DateTime at Unix epoch
     pub fn unix_epoch() -> Self {
-        Self::new(1970, 1, 1, 0, 0, 0).unwrap()
+        Self::new(1970, 1, 1, 0, 0, 0).expect("1970-01-01 00:00:00 is always a valid datetime")
     }
 
     /// Parses from ISO 8601 string
@@ -260,12 +260,13 @@ impl DateTime {
             self.inner.date.month as u32,
             self.inner.date.day as u32,
         )
-        .unwrap()
+        .expect("datetime date component is always valid")
     }
 
     /// Returns the time component
     pub fn time(&self) -> Time {
-        Time::from_nanos(self.inner.time.nanos).unwrap()
+        Time::from_nanos(self.inner.time.nanos)
+            .expect("datetime time component is always valid")
     }
 
     /// Returns the year

@@ -91,7 +91,7 @@ impl Email {
         // Simple email pattern - can be made more strict
         let pattern = regex::Regex::new(
             r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
-        ).unwrap();
+        ).expect("hardcoded email regex pattern is valid");
 
         Self { pattern }
     }
@@ -150,7 +150,8 @@ pub struct Url {
 
 impl Url {
     pub fn new() -> Self {
-        let pattern = regex::Regex::new(r"^https?://[^\s/$.?#].[^\s]*$").unwrap();
+        let pattern = regex::Regex::new(r"^https?://[^\s/$.?#].[^\s]*$")
+            .expect("hardcoded URL regex pattern is valid");
 
         Self { pattern }
     }

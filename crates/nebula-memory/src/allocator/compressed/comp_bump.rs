@@ -103,7 +103,9 @@ impl CompressedBump {
     /// Reset allocator and clear compressed buffers
     pub fn reset_allocator(&mut self) {
         unsafe {
-            unsafe { self.bump.reset(); }
+            unsafe {
+                self.bump.reset();
+            }
         }
         if let Ok(mut buffers) = self.buffers.lock() {
             buffers.clear();
@@ -155,7 +157,9 @@ impl CompressedBump {
 
     pub fn reset_allocator(&mut self) {
         unsafe {
-            unsafe { self.bump.reset(); }
+            unsafe {
+                self.bump.reset();
+            }
         }
     }
 }

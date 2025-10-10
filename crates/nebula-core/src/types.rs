@@ -473,7 +473,9 @@ pub mod utils {
         }
 
         let mut chars = s.chars();
-        let first = chars.next().unwrap();
+        let first = chars
+            .next()
+            .expect("s is non-empty, checked above");
 
         // First character must be alphabetic or underscore
         if !first.is_alphabetic() && first != '_' {

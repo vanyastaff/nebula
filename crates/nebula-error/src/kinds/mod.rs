@@ -287,5 +287,3 @@ mod tests {
         assert_eq!(internal_error.error_category(), "SERVER");
     }
 }
-
-

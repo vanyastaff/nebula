@@ -86,6 +86,7 @@ debug = true
 rust_2018_idioms = { level = "deny", priority = -1 }
 missing_docs = "warn"
 unsafe_code = "warn"
+unsafe_op_in_unsafe_fn = "deny"  # Edition 2024: require explicit unsafe blocks in unsafe fns
 unused_import_braces = "warn"
 unused_lifetimes = "warn"
 unreachable_pub = "warn"
@@ -102,10 +103,13 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
 # Restriction (selective)
-unwrap_used = "warn"
+unwrap_used = "deny"  # Strengthened: force proper error handling
 expect_used = "warn"
 panic = "warn"
 unimplemented = "warn"
+must_use_candidate = "warn"  # New: suggest #[must_use] where appropriate
+missing_safety_doc = "deny"  # New: require SAFETY docs on unsafe functions
+undocumented_unsafe_blocks = "deny"  # New: require SAFETY comments on unsafe blocks
 
 # Performance
 large_enum_variant = "warn"

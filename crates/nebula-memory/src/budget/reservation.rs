@@ -3,7 +3,8 @@
 //! This module provides a memory reservation system that allows components
 //! to reserve memory in advance, ensuring it will be available when needed.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::error::{MemoryError, MemoryResult};
@@ -102,18 +103,18 @@ impl MemoryReservation {
     
     /// Check if the reservation has been claimed
     pub fn is_claimed(&self) -> bool {
-        *self.claimed.lock().unwrap()
+        *self.claimed.lock()
     }
     
     /// Check if the reservation has been canceled
     pub fn is_canceled(&self) -> bool {
-        *self.canceled.lock().unwrap()
+        *self.canceled.lock()
     }
     
     /// Claim the reservation
     pub fn claim(self: &Arc<Self>) -> MemoryResult<ReservationToken> {
-        let mut claimed = self.claimed.lock().unwrap();
-        let canceled = self.canceled.lock().unwrap();
+        let mut claimed = self.claimed.lock();
+        let canceled = self.canceled.lock();
         
         if *claimed {
             return Err(MemoryError::InvalidOperation {
@@ -148,8 +149,8 @@ impl MemoryReservation {
     
     /// Cancel the reservation
     pub fn cancel(&self) -> MemoryResult<()> {
-        let mut canceled = self.canceled.lock().unwrap();
-        let claimed = self.claimed.lock().unwrap();
+        let mut canceled = self.canceled.lock();
+        let claimed = self.claimed.lock();
         
         if *claimed {
             return Err(MemoryError::InvalidOperation {
@@ -179,8 +180,8 @@ impl Drop for MemoryReservation {
         // If the reservation is strict and hasn't been claimed or canceled,
         // release the memory
         if self.mode == ReservationMode::Strict
-            && !*self.claimed.lock().unwrap()
-            && !*self.canceled.lock().unwrap()
+            && !*self.claimed.lock()
+            && !*self.canceled.lock()
         {
             self.budget.release_memory(self.amount);
         }
@@ -200,7 +201,7 @@ impl ReservationToken {
     
     /// Release the reserved memory
     pub fn release(&self) {
-        let mut released = self.released.lock().unwrap();
+        let mut released = self.released.lock();
         
         if !*released {
             self.reservation.budget.release_memory(self.reservation.amount);
@@ -210,14 +211,14 @@ impl ReservationToken {
     
     /// Check if the token has been released
     pub fn is_released(&self) -> bool {
-        *self.released.lock().unwrap()
+        *self.released.lock()
     }
 }
 
 impl Drop for ReservationToken {
     fn drop(&mut self) {
         // Automatically release the memory if not already released
-        if !*self.released.lock().unwrap() {
+        if !*self.released.lock() {
             self.reservation.budget.release_memory(self.reservation.amount);
         }
     }

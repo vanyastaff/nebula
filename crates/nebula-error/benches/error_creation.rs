@@ -1,7 +1,7 @@
 // Baseline benchmarks for NebulaError performance
 // Run with: cargo bench
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use nebula_error::{ErrorContext, NebulaError};
 
 /// Benchmark creating basic error without context
@@ -75,8 +75,7 @@ fn bench_error_classification(c: &mut Criterion) {
 
 /// Benchmark error message access (logging hot path)
 fn bench_error_message_access(c: &mut Criterion) {
-    let error = NebulaError::internal("Server error")
-        .with_details("Detailed error information");
+    let error = NebulaError::internal("Server error").with_details("Detailed error information");
 
     c.bench_function("error_message_access", |b| {
         b.iter(|| {

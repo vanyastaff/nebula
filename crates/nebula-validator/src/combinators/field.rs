@@ -450,7 +450,10 @@ impl<T> TypedValidator for MultiField<T> {
         if errors.is_empty() {
             Ok(())
         } else if errors.len() == 1 {
-            Err(errors.into_iter().next().unwrap())
+            Err(errors
+                .into_iter()
+                .next()
+                .expect("errors.len() == 1 guarantees next() succeeds"))
         } else {
             Err(
                 ValidationError::new("multiple_field_errors", "Multiple field validation errors")

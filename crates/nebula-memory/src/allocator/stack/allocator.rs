@@ -7,8 +7,7 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use super::{StackConfig, StackMarker};
 use crate::allocator::{
-    AllocError, AllocResult, Allocator, AllocatorStats, MemoryUsage, Resettable,
-    StatisticsProvider,
+    AllocError, AllocResult, Allocator, AllocatorStats, MemoryUsage, Resettable, StatisticsProvider,
 };
 use crate::utils::{Backoff, align_up, atomic_max};
 

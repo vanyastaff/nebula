@@ -315,8 +315,8 @@ pub trait ValidatorExt: TypedValidator + Sized {
     fn cached(self) -> Cached<Self>
     where
         Self::Input: std::hash::Hash + Eq,
-        Self::Output: Clone,
-        Self::Error: Clone,
+        Self::Output: Clone + Send + Sync + 'static,
+        Self::Error: Clone + Send + Sync + 'static,
     {
         Cached::new(self)
     }
@@ -340,8 +340,8 @@ pub trait ValidatorExt: TypedValidator + Sized {
     fn cached_with_capacity(self, capacity: usize) -> Cached<Self>
     where
         Self::Input: std::hash::Hash + Eq,
-        Self::Output: Clone,
-        Self::Error: Clone,
+        Self::Output: Clone + Send + Sync + 'static,
+        Self::Error: Clone + Send + Sync + 'static,
     {
         Cached::with_capacity(self, capacity)
     }

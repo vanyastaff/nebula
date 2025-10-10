@@ -12,9 +12,12 @@ extern crate alloc;
 use std::{
     collections::HashMap,
     hash::Hash,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
+
+#[cfg(feature = "std")]
+use parking_lot::Mutex;
 
 #[cfg(not(feature = "std"))]
 use {
@@ -166,7 +169,7 @@ where
                     self.entries.remove(&key);
 
                     if self.config.track_metrics {
-                        let mut metrics = self.metrics.lock().unwrap();
+                        let mut metrics = self.metrics.lock();
                         metrics.evictions += 1;
                     }
                 } else {
@@ -174,7 +177,7 @@ where
                     entry.mark_accessed();
 
                     if self.config.track_metrics {
-                        let mut metrics = self.metrics.lock().unwrap();
+                        let mut metrics = self.metrics.lock();
                         metrics.hits += 1;
                     }
 
@@ -193,7 +196,7 @@ where
 
                 #[cfg(feature = "std")]
                 if self.config.track_metrics {
-                    let mut metrics = self.metrics.lock().unwrap();
+                    let mut metrics = self.metrics.lock();
                     metrics.hits += 1;
                 }
 
@@ -204,7 +207,7 @@ where
         // Key not in cache or entry expired, compute the value
         #[cfg(feature = "std")]
         if self.config.track_metrics {
-            let mut metrics = self.metrics.lock().unwrap();
+            let mut metrics = self.metrics.lock();
             metrics.misses += 1;
         }
 
@@ -222,7 +225,7 @@ where
         #[cfg(feature = "std")]
         if self.config.track_metrics {
             let compute_time = start_time.elapsed().as_nanos() as u64;
-            let mut metrics = self.metrics.lock().unwrap();
+            let mut metrics = self.metrics.lock();
             metrics.compute_time_ns += compute_time;
             metrics.insertions += 1;
         }
@@ -265,7 +268,7 @@ where
 
             #[cfg(feature = "std")]
             if self.config.track_metrics {
-                let mut metrics = self.metrics.lock().unwrap();
+                let mut metrics = self.metrics.lock();
                 metrics.hits += 1;
             }
 
@@ -273,7 +276,7 @@ where
         } else {
             #[cfg(feature = "std")]
             if self.config.track_metrics {
-                let mut metrics = self.metrics.lock().unwrap();
+                let mut metrics = self.metrics.lock();
                 metrics.misses += 1;
             }
             None
@@ -298,7 +301,7 @@ where
 
         #[cfg(feature = "std")]
         if self.config.track_metrics {
-            let mut metrics = self.metrics.lock().unwrap();
+            let mut metrics = self.metrics.lock();
             metrics.insertions += 1;
         }
 
@@ -382,7 +385,7 @@ where
             }
 
             if count > 0 && self.config.track_metrics {
-                let mut metrics = self.metrics.lock().unwrap();
+                let mut metrics = self.metrics.lock();
                 metrics.evictions += count;
             }
 
@@ -420,7 +423,7 @@ where
             self.entries.remove(&key);
 
             if self.config.track_metrics {
-                let mut metrics = self.metrics.lock().unwrap();
+                let mut metrics = self.metrics.lock();
                 metrics.evictions += 1;
             }
         }
@@ -455,7 +458,7 @@ where
 
             #[cfg(feature = "std")]
             if self.config.track_metrics {
-                let mut metrics = self.metrics.lock().unwrap();
+                let mut metrics = self.metrics.lock();
                 metrics.evictions += 1;
             }
         }
@@ -475,7 +478,7 @@ where
             self.entries.remove(&key);
 
             if self.config.track_metrics {
-                let mut metrics = self.metrics.lock().unwrap();
+                let mut metrics = self.metrics.lock();
                 metrics.evictions += 1;
             }
         }
@@ -514,7 +517,7 @@ where
                 self.entries.remove(key);
 
                 if self.config.track_metrics {
-                    let mut metrics = self.metrics.lock().unwrap();
+                    let mut metrics = self.metrics.lock();
                     metrics.evictions += 1;
                 }
             }
@@ -551,7 +554,7 @@ where
             }
 
             if count > 0 && self.config.track_metrics {
-                let mut metrics = self.metrics.lock().unwrap();
+                let mut metrics = self.metrics.lock();
                 metrics.evictions += count;
             }
 
@@ -614,7 +617,7 @@ where
     #[cfg(feature = "std")]
     pub fn metrics(&self) -> CacheMetrics {
         if self.config.track_metrics {
-            self.metrics.lock().unwrap().clone()
+            self.metrics.lock().clone()
         } else {
             CacheMetrics::default()
         }
@@ -624,7 +627,7 @@ where
     #[cfg(feature = "std")]
     pub fn reset_metrics(&self) {
         if self.config.track_metrics {
-            self.metrics.lock().unwrap().reset();
+            self.metrics.lock().reset();
         }
     }
 }
@@ -661,42 +664,42 @@ where
     where
         F: FnOnce() -> Result<V, MemoryError>,
     {
-        let mut cache = self.inner.lock().unwrap();
+        let mut cache = self.inner.lock();
         cache.get_or_compute(key, compute_fn)
     }
 
     pub fn get(&self, key: &K) -> Option<V> {
-        let mut cache = self.inner.lock().unwrap();
+        let mut cache = self.inner.lock();
         cache.get(key)
     }
 
     pub fn insert(&self, key: K, value: V) -> CacheResult<()> {
-        let mut cache = self.inner.lock().unwrap();
+        let mut cache = self.inner.lock();
         cache.insert(key, value)
     }
 
     pub fn contains_key(&self, key: &K) -> bool {
-        let cache = self.inner.lock().unwrap();
+        let cache = self.inner.lock();
         cache.contains_key(key)
     }
 
     pub fn remove(&self, key: &K) -> Option<V> {
-        let mut cache = self.inner.lock().unwrap();
+        let mut cache = self.inner.lock();
         cache.remove(key)
     }
 
     pub fn len(&self) -> usize {
-        let cache = self.inner.lock().unwrap();
+        let cache = self.inner.lock();
         cache.len()
     }
 
     pub fn clear(&self) {
-        let mut cache = self.inner.lock().unwrap();
+        let mut cache = self.inner.lock();
         cache.clear()
     }
 
     pub fn metrics(&self) -> CacheMetrics {
-        let cache = self.inner.lock().unwrap();
+        let cache = self.inner.lock();
         cache.metrics()
     }
 }
@@ -768,11 +771,9 @@ mod tests {
         let mut cache = ComputeCache::<String, usize>::new(10);
 
         // Error should be propagated
-        let result =
-            cache.get_or_compute(
-                "error".to_string(),
-                || Err(MemoryError::allocation_failed(0, 1)),
-            );
+        let result = cache.get_or_compute("error".to_string(), || {
+            Err(MemoryError::allocation_failed(0, 1))
+        });
 
         assert!(result.is_err());
 

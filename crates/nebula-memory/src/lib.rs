@@ -68,7 +68,7 @@ pub mod allocator;
 pub mod utils;
 
 // Re-export core types for convenience
-pub use crate::core::{MemoryConfig};
+pub use crate::core::MemoryConfig;
 pub use crate::error::{MemoryError, MemoryResult};
 
 // Core features that depend on allocators
@@ -118,8 +118,8 @@ pub mod prelude {
     //! Convenient re-exports of commonly used types and traits.
 
     // Core types
+    pub use crate::core::MemoryConfig;
     pub use crate::core::traits::{MemoryManager, MemoryUsage, Resettable};
-    pub use crate::core::{MemoryConfig};
     pub use crate::error::{MemoryError, MemoryResult};
 
     // Allocator types

@@ -499,19 +499,20 @@ impl NebulaError {
 
     /// Create a memory allocation failed error
     pub fn memory_allocation_failed(size: usize, align: usize) -> Self {
-        Self::new(ErrorKind::Memory(crate::kinds::MemoryError::AllocationFailed {
-            size,
-            align,
-        }))
+        Self::new(ErrorKind::Memory(
+            crate::kinds::MemoryError::AllocationFailed { size, align },
+        ))
         .with_retry_info(true, Some(Duration::from_millis(100)))
     }
 
     /// Create a memory pool exhausted error
     pub fn memory_pool_exhausted(pool_id: impl Into<String>, capacity: usize) -> Self {
-        Self::new(ErrorKind::Memory(crate::kinds::MemoryError::PoolExhausted {
-            pool_id: pool_id.into(),
-            capacity,
-        }))
+        Self::new(ErrorKind::Memory(
+            crate::kinds::MemoryError::PoolExhausted {
+                pool_id: pool_id.into(),
+                capacity,
+            },
+        ))
         .with_retry_info(true, Some(Duration::from_millis(500)))
     }
 
@@ -521,11 +522,13 @@ impl NebulaError {
         requested: usize,
         available: usize,
     ) -> Self {
-        Self::new(ErrorKind::Memory(crate::kinds::MemoryError::ArenaExhausted {
-            arena_id: arena_id.into(),
-            requested,
-            available,
-        }))
+        Self::new(ErrorKind::Memory(
+            crate::kinds::MemoryError::ArenaExhausted {
+                arena_id: arena_id.into(),
+                requested,
+                available,
+            },
+        ))
         .with_retry_info(true, Some(Duration::from_millis(200)))
     }
 
@@ -539,10 +542,9 @@ impl NebulaError {
 
     /// Create a memory budget exceeded error
     pub fn memory_budget_exceeded(used: usize, limit: usize) -> Self {
-        Self::new(ErrorKind::Memory(crate::kinds::MemoryError::BudgetExceeded {
-            used,
-            limit,
-        }))
+        Self::new(ErrorKind::Memory(
+            crate::kinds::MemoryError::BudgetExceeded { used, limit },
+        ))
         .with_retry_info(true, Some(Duration::from_millis(500)))
     }
 
@@ -557,9 +559,11 @@ impl NebulaError {
 
     /// Create a memory invalid layout error
     pub fn memory_invalid_layout(reason: impl Into<String>) -> Self {
-        Self::new(ErrorKind::Memory(crate::kinds::MemoryError::InvalidLayout {
-            reason: reason.into(),
-        }))
+        Self::new(ErrorKind::Memory(
+            crate::kinds::MemoryError::InvalidLayout {
+                reason: reason.into(),
+            },
+        ))
         .with_retry_info(false, None)
     }
 
@@ -578,11 +582,13 @@ impl NebulaError {
         } else {
             None
         };
-        Self::new(ErrorKind::Resource(crate::kinds::ResourceError::Unavailable {
-            resource_id: resource_id.into(),
-            reason: reason.into(),
-            retryable,
-        }))
+        Self::new(ErrorKind::Resource(
+            crate::kinds::ResourceError::Unavailable {
+                resource_id: resource_id.into(),
+                reason: reason.into(),
+                retryable,
+            },
+        ))
         .with_retry_info(retryable, retry_after)
     }
 

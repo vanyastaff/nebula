@@ -138,7 +138,9 @@ fn detect_from_path(type_path: &TypePath) -> TypeCategory {
     }
 
     // Get the last segment (most specific type)
-    let last_segment = segments.last().unwrap();
+    let last_segment = segments
+        .last()
+        .expect("segments is non-empty, checked above");
     let type_name = last_segment.ident.to_string();
 
     // Check for primitive types first

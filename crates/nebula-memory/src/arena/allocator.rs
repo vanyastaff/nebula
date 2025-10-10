@@ -56,7 +56,8 @@ impl<A: ArenaAllocate> ArenaAllocator<A> {
     pub unsafe fn allocate(&self, layout: Layout) -> Result<NonNull<u8>, MemoryError> {
         unsafe {
             let ptr = self.arena.alloc_bytes(layout.size(), layout.align())?;
-            NonNull::new(ptr).ok_or_else(|| MemoryError::allocation_failed(layout.size(), layout.align()))
+            NonNull::new(ptr)
+                .ok_or_else(|| MemoryError::allocation_failed(layout.size(), layout.align()))
         }
     }
 
@@ -180,7 +181,8 @@ impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
             return Ok(Self::new(allocator));
         }
 
-        let layout = Layout::array::<T>(capacity).map_err(|_| MemoryError::invalid_layout("array layout error"))?;
+        let layout = Layout::array::<T>(capacity)
+            .map_err(|_| MemoryError::invalid_layout("array layout error"))?;
 
         let ptr = unsafe { allocator.alloc_bytes(layout.size(), layout.align())? };
 
@@ -196,7 +198,10 @@ impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
     /// Push a value onto the vector
     pub fn push(&mut self, value: T) -> Result<(), MemoryError> {
         if self.len >= self.capacity {
-            return Err(MemoryError::allocation_too_large(self.len + 1, self.capacity));
+            return Err(MemoryError::allocation_too_large(
+                self.len + 1,
+                self.capacity,
+            ));
         }
 
         unsafe {

@@ -29,7 +29,7 @@ impl CompressionStats {
 #[derive(Debug)]
 pub struct InstrumentedCompressor {
     inner: Box<dyn super::CompressionAlgorithm>,
-    stats: std::sync::Arc<std::sync::Mutex<CompressionStats>>,
+    stats: std::sync::Arc<parking_lot::Mutex<CompressionStats>>,
 }
 
 impl InstrumentedCompressor {
@@ -38,7 +38,7 @@ impl InstrumentedCompressor {
     }
 
     pub fn stats(&self) -> CompressionStats {
-        self.stats.lock().unwrap().clone()
+        self.stats.lock().clone()
     }
 }
 
@@ -48,7 +48,7 @@ impl super::CompressionAlgorithm for InstrumentedCompressor {
         let result = self.inner.compress(data)?;
         let duration = start.elapsed();
 
-        let mut stats = self.stats.lock().unwrap();
+        let mut stats = self.stats.lock();
         stats.compressed_bytes += result.len() as u64;
         stats.uncompressed_bytes += data.len() as u64;
         stats.compression_time_ns += duration.as_nanos() as u64;
@@ -61,7 +61,7 @@ impl super::CompressionAlgorithm for InstrumentedCompressor {
         let result = self.inner.decompress(data)?;
         let duration = start.elapsed();
 
-        let mut stats = self.stats.lock().unwrap();
+        let mut stats = self.stats.lock();
         stats.compressed_bytes += data.len() as u64;
         stats.uncompressed_bytes += result.len() as u64;
         stats.decompression_time_ns += duration.as_nanos() as u64;
@@ -102,7 +102,7 @@ impl super::StreamingCompression for InstrumentedCompressor {
 
         let duration = start.elapsed();
 
-        let mut stats = self.stats.lock().unwrap();
+        let mut stats = self.stats.lock();
         stats.uncompressed_bytes += counted_reader.count as u64;
         stats.compressed_bytes += counted_writer.count as u64;
         stats.compression_time_ns += duration.as_nanos() as u64;
@@ -130,7 +130,7 @@ impl super::StreamingCompression for InstrumentedCompressor {
 
         let duration = start.elapsed();
 
-        let mut stats = self.stats.lock().unwrap();
+        let mut stats = self.stats.lock();
         stats.compressed_bytes += counted_reader.count as u64;
         stats.uncompressed_bytes += counted_writer.count as u64;
         stats.decompression_time_ns += duration.as_nanos() as u64;

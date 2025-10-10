@@ -48,7 +48,9 @@ pub enum ResourceError {
     },
 
     /// Resource pool has been exhausted
-    #[error("Resource pool exhausted: {resource_id} ({current_size}/{max_size}, {waiters} waiting)")]
+    #[error(
+        "Resource pool exhausted: {resource_id} ({current_size}/{max_size}, {waiters} waiting)"
+    )]
     PoolExhausted {
         /// Resource identifier
         resource_id: String,
@@ -340,10 +342,7 @@ mod tests {
             from: "stopped".to_string(),
             to: "running".to_string(),
         };
-        assert_eq!(
-            err.error_code(),
-            codes::RESOURCE_INVALID_STATE_TRANSITION
-        );
+        assert_eq!(err.error_code(), codes::RESOURCE_INVALID_STATE_TRANSITION);
         assert!(!err.is_retryable());
         assert!(err.is_client_error());
     }

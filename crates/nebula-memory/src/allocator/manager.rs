@@ -8,6 +8,9 @@ use core::num::NonZeroUsize;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(feature = "std")]
+use dashmap::DashMap;
+
 use super::{AllocError, AllocResult, Allocator, ThreadSafeAllocator};
 
 /// Unique identifier for registered allocators
@@ -32,7 +35,8 @@ impl AllocatorId {
         Self(NonZeroUsize::new(id).unwrap_or_else(|| {
             // Overflow protection: restart from 1
             COUNTER.store(1, Ordering::Relaxed);
-            NonZeroUsize::new(1).unwrap()
+            // SAFETY: 1 is always non-zero by definition
+            unsafe { NonZeroUsize::new_unchecked(1) }
         }))
     }
 
@@ -95,10 +99,9 @@ impl<A: ThreadSafeAllocator + 'static> ManagedAllocator for A {
 
 /// Manager for multiple allocators with registry
 pub struct AllocatorManager {
-    /// Registry of allocators
+    /// Registry of allocators (lock-free concurrent map)
     #[cfg(feature = "std")]
-    allocators:
-        std::sync::RwLock<std::collections::HashMap<AllocatorId, Box<dyn ManagedAllocator>>>,
+    allocators: DashMap<AllocatorId, Box<dyn ManagedAllocator>>,
 
     #[cfg(not(feature = "std"))]
     allocators: spin::RwLock<heapless::FnvIndexMap<AllocatorId, &'static dyn ManagedAllocator, 16>>,
@@ -124,8 +127,7 @@ impl AllocatorManager {
     #[cfg(feature = "std")]
     pub fn register<A: ManagedAllocator + 'static>(&self, allocator: A) -> AllocatorId {
         let id = AllocatorId::new();
-        let mut registry = self.allocators.write().unwrap();
-        registry.insert(id, Box::new(allocator));
+        self.allocators.insert(id, Box::new(allocator));
         id
     }
 
@@ -146,7 +148,7 @@ impl AllocatorManager {
     /// Set the default allocator (must be already registered)
     pub fn set_default(&mut self, allocator_id: AllocatorId) -> Result<(), &'static str> {
         #[cfg(feature = "std")]
-        let exists = self.allocators.read().unwrap().contains_key(&allocator_id);
+        let exists = self.allocators.contains_key(&allocator_id);
 
         #[cfg(not(feature = "std"))]
         let exists = self.allocators.read().contains_key(&allocator_id);
@@ -165,7 +167,7 @@ impl AllocatorManager {
     pub fn set_active_allocator(&self, allocator_id: AllocatorId) -> Result<(), &'static str> {
         // Verify allocator exists
         #[cfg(feature = "std")]
-        let exists = self.allocators.read().unwrap().contains_key(&allocator_id);
+        let exists = self.allocators.contains_key(&allocator_id);
 
         #[cfg(not(feature = "std"))]
         let exists = self.allocators.read().contains_key(&allocator_id);
@@ -199,8 +201,9 @@ impl AllocatorManager {
     {
         #[cfg(feature = "std")]
         {
-            let registry = self.allocators.read().unwrap();
-            registry.get(&allocator_id).map(|alloc| f(alloc.as_ref()))
+            self.allocators
+                .get(&allocator_id)
+                .map(|alloc| f(alloc.as_ref()))
         }
 
         #[cfg(not(feature = "std"))]
@@ -244,10 +247,9 @@ impl AllocatorManager {
     pub fn list_allocators(&self) -> Vec<(AllocatorId, &'static str)> {
         #[cfg(feature = "std")]
         {
-            let registry = self.allocators.read().unwrap();
-            registry
+            self.allocators
                 .iter()
-                .map(|(&id, alloc)| (id, alloc.name()))
+                .map(|entry| (*entry.key(), entry.value().name()))
                 .collect()
         }
 

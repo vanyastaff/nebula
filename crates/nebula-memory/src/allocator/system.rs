@@ -14,10 +14,7 @@ use std::alloc::System;
 #[cfg(not(feature = "std"))]
 compile_error!("SystemAllocator requires either 'std' or 'alloc' feature to be enabled");
 
-use super::{
-    AllocError, AllocResult, Allocator, BulkAllocator, MemoryUsage,
-    ThreadSafeAllocator,
-};
+use super::{AllocError, AllocResult, Allocator, BulkAllocator, MemoryUsage, ThreadSafeAllocator};
 
 /// Wrapper for the system's default allocator
 ///

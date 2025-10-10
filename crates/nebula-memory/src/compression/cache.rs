@@ -2,9 +2,10 @@
 use std::any::Any;
 use std::fmt;
 use std::hash::Hash;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use parking_lot::{Mutex, RwLock};
 
 use super::{Algorithm, CompressionAlgorithm, StreamingCompression};
 
@@ -115,7 +116,7 @@ where
         let compressed_value = if serialized.len() < self.threshold {
             // Маленькие объекты не сжимаем
             {
-                let mut stats = self.stats.lock().unwrap();
+                let mut stats = self.stats.lock();
                 stats.uncompressed_items += 1;
                 stats.uncompressed_bytes += serialized.len();
             }
@@ -124,7 +125,7 @@ where
             // Сжимаем большие объекты
             let compressed = self.compressor.compress(&serialized)?;
 
-            let mut stats = self.stats.lock().unwrap();
+            let mut stats = self.stats.lock();
             if compressed.len() < serialized.len() {
                 stats.compressed_items += 1;
                 stats.compressed_bytes += compressed.len();
@@ -145,11 +146,11 @@ where
         };
 
         // Обновляем кэш
-        let mut cache = self.data.write().unwrap();
+        let mut cache = self.data.write();
         cache.insert(key, compressed_value);
 
         {
-            let mut stats = self.stats.lock().unwrap();
+            let mut stats = self.stats.lock();
             stats.items_count = cache.len();
         }
 
@@ -158,7 +159,7 @@ where
 
     /// Получает значение из кэша
     pub fn get(&self, key: &K) -> Option<V> {
-        let cache = self.data.read().unwrap();
+        let cache = self.data.read();
         let value = cache.get(key)?;
 
         let result = match value {
@@ -182,7 +183,7 @@ where
 
         // Обновляем статистику
         {
-            let mut stats = self.stats.lock().unwrap();
+            let mut stats = self.stats.lock();
             if result.is_some() {
                 stats.hits += 1;
             } else {
@@ -195,11 +196,11 @@ where
 
     /// Удаляет значение из кэша
     pub fn remove(&self, key: &K) -> bool {
-        let mut cache = self.data.write().unwrap();
+        let mut cache = self.data.write();
         let removed = cache.remove(key).is_some();
 
         if removed {
-            let mut stats = self.stats.lock().unwrap();
+            let mut stats = self.stats.lock();
             stats.items_count = cache.len();
         }
 
@@ -208,16 +209,16 @@ where
 
     /// Очищает кэш
     pub fn clear(&self) {
-        let mut cache = self.data.write().unwrap();
+        let mut cache = self.data.write();
         cache.clear();
 
-        let mut stats = self.stats.lock().unwrap();
+        let mut stats = self.stats.lock();
         *stats = CompressedCacheStats::default();
     }
 
     /// Возвращает количество элементов в кэше
     pub fn len(&self) -> usize {
-        let cache = self.data.read().unwrap();
+        let cache = self.data.read();
         cache.len()
     }
 
@@ -228,7 +229,7 @@ where
 
     /// Возвращает статистику кэша
     pub fn stats(&self) -> CompressedCacheStats {
-        let stats = self.stats.lock().unwrap();
+        let stats = self.stats.lock();
         stats.clone()
     }
 
@@ -250,7 +251,7 @@ where
     V: Clone + Send + Sync + 'static
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let stats = self.stats.lock().unwrap();
+        let stats = self.stats.lock();
         f.debug_struct("CompressedCache")
             .field("items_count", &stats.items_count)
             .field("compressed_items", &stats.compressed_items)

@@ -37,9 +37,6 @@ pub use stats::{AtomicCacheStats, CacheStats, StatsCollector, StatsProvider};
 #[cfg(test)]
 mod tests {
 
-
-
-
     use super::*;
 
     #[test]
@@ -47,15 +44,3 @@ mod tests {
         let _config = CacheConfig::default();
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-

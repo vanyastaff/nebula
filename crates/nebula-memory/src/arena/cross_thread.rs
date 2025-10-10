@@ -2,7 +2,8 @@
 
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 
 use super::{Arena, ArenaConfig, ArenaStats};
 use crate::error::MemoryError;
@@ -31,7 +32,7 @@ impl CrossThreadArena {
     /// Lock the arena for exclusive access
     pub fn lock(&self) -> CrossThreadArenaGuard<'_> {
         CrossThreadArenaGuard {
-            guard: self.inner.lock().unwrap(),
+            guard: self.inner.lock(),
         }
     }
 
@@ -39,23 +40,22 @@ impl CrossThreadArena {
     pub fn try_lock(&self) -> Option<CrossThreadArenaGuard<'_>> {
         self.inner
             .try_lock()
-            .ok()
             .map(|guard| CrossThreadArenaGuard { guard })
     }
 
     /// Reset the arena
     pub fn reset(&mut self) {
-        self.inner.lock().unwrap().reset();
+        self.inner.lock().reset();
     }
 
     /// Get statistics
     pub fn stats(&self) -> ArenaStats {
-        self.inner.lock().unwrap().stats().snapshot().into()
+        self.inner.lock().stats().snapshot().into()
     }
 
     /// Create a reference that can be sent across threads
     pub fn create_ref<T>(&self, value: T) -> Result<CrossThreadArenaRef<T>, MemoryError> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.lock();
         let ptr = guard.alloc(value)?;
 
         Ok(CrossThreadArenaRef {
@@ -125,7 +125,7 @@ impl<T> CrossThreadArenaRef<T> {
     where
         F: FnOnce(&T) -> R,
     {
-        let _guard = self.arena.lock().unwrap();
+        let _guard = self.arena.lock();
         unsafe {
             let ptr = *self.ptr.get();
             f(&*ptr)
@@ -139,7 +139,7 @@ impl<T> CrossThreadArenaRef<T> {
     where
         F: FnOnce(&mut T) -> R,
     {
-        let _guard = self.arena.lock().unwrap();
+        let _guard = self.arena.lock();
         unsafe {
             let ptr = *self.ptr.get();
             f(&mut *ptr)
@@ -153,7 +153,7 @@ unsafe impl<T: Send> Sync for CrossThreadArenaRef<T> {}
 impl<T: Clone> Clone for CrossThreadArenaRef<T> {
     fn clone(&self) -> Self {
         let value = self.with(|v| v.clone());
-        let guard = self.arena.lock().unwrap();
+        let guard = self.arena.lock();
         let ptr = guard.alloc(value).unwrap();
 
         CrossThreadArenaRef {

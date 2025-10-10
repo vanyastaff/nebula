@@ -116,7 +116,7 @@ impl AllocationPolicy for PriorityPolicy {
         }
         
         // If we're here, the budget can't allocate normally
-        let config = budget.config.read().unwrap();
+        let config = budget.config.read();
         
         // Check if we're under pressure
         let is_under_pressure = matches!(budget.state(), BudgetState::Critical | BudgetState::Exceeded);
@@ -163,8 +163,8 @@ impl AllocationPolicy for PriorityPolicy {
         // Sort budgets by priority (lowest priority first)
         let mut sorted_budgets = budgets.to_vec();
         sorted_budgets.sort_by(|a, b| {
-            let a_priority = a.config.read().unwrap().priority;
-            let b_priority = b.config.read().unwrap().priority;
+            let a_priority = a.config.read().priority;
+            let b_priority = b.config.read().priority;
             a_priority.cmp(&b_priority)
         });
         
@@ -174,7 +174,7 @@ impl AllocationPolicy for PriorityPolicy {
         // Suggest reclaiming from lowest priority budgets first
         for budget in sorted_budgets {
             let used = budget.used();
-            let config = budget.config.read().unwrap();
+            let config = budget.config.read();
             
             // Skip empty budgets
             if used == 0 {

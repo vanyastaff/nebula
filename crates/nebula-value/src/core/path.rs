@@ -159,7 +159,7 @@ fn parse_path(path: &str) -> ValueResult<Vec<PathSegment>> {
                         chars.next(); // consume ']'
                         break;
                     }
-                    index_str.push(chars.next().unwrap());
+                    index_str.push(chars.next().expect("peek() returned Some, so next() must succeed"));
                 }
 
                 let index = index_str

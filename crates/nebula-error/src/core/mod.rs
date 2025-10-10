@@ -16,8 +16,6 @@ pub mod result;
 pub mod retry;
 pub mod traits;
 
-
-
 // Re-export core types
 pub use context::{ErrorContext, ErrorContextBuilder};
 pub use conversion::IntoNebulaError;
@@ -25,6 +23,3 @@ pub use error::NebulaError;
 pub use result::{NebulaResultExt, Result, ResultExt};
 pub use retry::{RetryStrategy, Retryable, retry, retry_with_timeout};
 pub use traits::*;
-
-
-

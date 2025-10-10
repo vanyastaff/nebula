@@ -17,7 +17,7 @@ use alloc::{
 use core::any::{Any, TypeId};
 use core::fmt::Debug;
 #[cfg(feature = "std")]
-use std::sync::RwLock;
+use parking_lot::RwLock;
 #[cfg(feature = "std")]
 use std::{
     collections::BTreeMap,
@@ -96,7 +96,7 @@ impl ExtensionRegistry {
         let type_id = TypeId::of::<E>();
 
         // Check for duplicate extension name
-        if self.extensions.read().unwrap().contains_key(&name) {
+        if self.extensions.read().contains_key(&name) {
             return Err(MemoryError::InvalidOperation(format!(
                 "Extension with name '{}' is already registered",
                 name
@@ -107,22 +107,22 @@ impl ExtensionRegistry {
         ext_arc.on_register()?;
 
         // Register the extension
-        self.extensions.write().unwrap().insert(name.clone(), ext_arc);
-        self.type_registry.write().unwrap().insert(type_id, name);
+        self.extensions.write().insert(name.clone(), ext_arc);
+        self.type_registry.write().insert(type_id, name);
 
         Ok(())
     }
 
     /// Unregister an extension by name
     pub fn unregister(&self, name: &str) -> MemoryResult<()> {
-        let mut extensions = self.extensions.write().unwrap();
+        let mut extensions = self.extensions.write();
 
         if let Some(ext) = extensions.remove(name) {
             // Call extension's unregistration hook
             ext.on_unregister()?;
 
             // Remove from type registry
-            let mut type_registry = self.type_registry.write().unwrap();
+            let mut type_registry = self.type_registry.write();
             let type_ids_to_remove: Vec<TypeId> = type_registry
                 .iter()
                 .filter_map(
@@ -148,16 +148,16 @@ impl ExtensionRegistry {
 
     /// Get extension by name
     pub fn get(&self, name: &str) -> Option<Arc<dyn MemoryExtension>> {
-        self.extensions.read().unwrap().get(name).cloned()
+        self.extensions.read().get(name).cloned()
     }
 
     /// Get extension by type
     pub fn get_by_type<E: MemoryExtension + 'static>(&self) -> Option<Arc<dyn MemoryExtension>> {
         let type_id = TypeId::of::<E>();
-        let type_registry = self.type_registry.read().unwrap();
+        let type_registry = self.type_registry.read();
 
         if let Some(name) = type_registry.get(&type_id) {
-            let extensions = self.extensions.read().unwrap();
+            let extensions = self.extensions.read();
             if let Some(ext) = extensions.get(name) {
                 return Some(ext.clone());
             }
@@ -176,36 +176,36 @@ impl ExtensionRegistry {
 
     /// List all registered extensions
     pub fn list(&self) -> Vec<String> {
-        self.extensions.read().unwrap().keys().cloned().collect()
+        self.extensions.read().keys().cloned().collect()
     }
 
     /// Find extensions by category
     pub fn find_by_category(&self, category: &str) -> Vec<Arc<dyn MemoryExtension>> {
-        let extensions = self.extensions.read().unwrap();
+        let extensions = self.extensions.read();
         extensions.values().filter(|ext| ext.category() == category).cloned().collect()
     }
 
     /// Find extensions by tag
     pub fn find_by_tag(&self, tag: &str) -> Vec<Arc<dyn MemoryExtension>> {
-        let extensions = self.extensions.read().unwrap();
+        let extensions = self.extensions.read();
         extensions.values().filter(|ext| ext.tags().contains(&tag)).cloned().collect()
     }
 
     /// Find extensions using a predicate function
     pub fn find<F>(&self, predicate: F) -> Vec<Arc<dyn MemoryExtension>>
     where F: Fn(&Arc<dyn MemoryExtension>) -> bool {
-        let extensions = self.extensions.read().unwrap();
+        let extensions = self.extensions.read();
         extensions.values().filter(|ext| predicate(ext)).cloned().collect()
     }
 
     /// Check if an extension is registered
     pub fn is_registered(&self, name: &str) -> bool {
-        self.extensions.read().unwrap().contains_key(name)
+        self.extensions.read().contains_key(name)
     }
 
     /// Get the number of registered extensions
     pub fn count(&self) -> usize {
-        self.extensions.read().unwrap().len()
+        self.extensions.read().len()
     }
 }
 

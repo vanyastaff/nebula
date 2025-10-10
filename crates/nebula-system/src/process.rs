@@ -314,6 +314,11 @@ pub fn set_priority(pid: u32, priority: Priority) -> Result<()> {
             Priority::Realtime => -20,
         };
 
+        // SAFETY: `setpriority` is a POSIX syscall that modifies process scheduling priority.
+        // - PRIO_PROCESS targets a specific process by PID
+        // - `pid` is validated to be a valid u32
+        // - `nice_value` is within valid range (-20 to 19)
+        // The syscall returns 0 on success or -1 on failure (sets errno).
         unsafe {
             if setpriority(PRIO_PROCESS, pid as u32, nice_value) != 0 {
                 return Err(SystemError::PlatformError {

@@ -9,7 +9,8 @@ use alloc::{
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
 #[cfg(feature = "std")]
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
+use parking_lot::Mutex;
 
 #[cfg(feature = "stats")]
 use super::PoolStats;
@@ -95,7 +96,7 @@ impl<T: Poolable> HierarchicalPool<T> {
         }));
 
         // Register child with parent
-        parent.lock().unwrap().children.push(Arc::downgrade(&child));
+        parent.lock().children.push(Arc::downgrade(&child));
 
         child
     }
@@ -114,13 +115,10 @@ impl<T: Poolable> HierarchicalPool<T> {
         // Try to borrow from parent
         let borrowed_result = if let Some(parent) = &self.parent {
             if self.borrowed_count < self.max_borrow {
-                if let Ok(mut parent_guard) = parent.lock() {
-                    if let Ok(value) = parent_guard.get() {
-                        // Сохраняем значение, которое вернём из функции
-                        Some(value.detach())
-                    } else {
-                        None
-                    }
+                let mut parent_guard = parent.lock();
+                if let Ok(value) = parent_guard.get() {
+                    // Сохраняем значение, которое вернём из функции
+                    Some(value.detach())
                 } else {
                     None
                 }
@@ -150,11 +148,10 @@ impl<T: Poolable> HierarchicalPool<T> {
         if was_borrowed {
             // Return to parent
             if let Some(parent) = &self.parent {
-                if let Ok(mut parent_guard) = parent.lock() {
-                    parent_guard.local.return_object(obj);
-                    self.borrowed_count = self.borrowed_count.saturating_sub(1);
-                    return;
-                }
+                let mut parent_guard = parent.lock();
+                parent_guard.local.return_object(obj);
+                self.borrowed_count = self.borrowed_count.saturating_sub(1);
+                return;
             }
         }
 
@@ -178,11 +175,10 @@ impl<T: Poolable> HierarchicalPool<T> {
         // Aggregate child stats
         for child_weak in &self.children {
             if let Some(child) = child_weak.upgrade() {
-                if let Ok(child_guard) = child.lock() {
-                    let child_stats = child_guard.hierarchy_stats();
-                    total_stats.levels.extend(child_stats.levels);
-                    total_stats.total_borrowed += child_stats.total_borrowed;
-                }
+                let child_guard = child.lock();
+                let child_stats = child_guard.hierarchy_stats();
+                total_stats.levels.extend(child_stats.levels);
+                total_stats.total_borrowed += child_stats.total_borrowed;
             }
         }
 
@@ -291,7 +287,7 @@ impl<T: Poolable + 'static> HierarchicalPoolExt<T> for Arc<Mutex<HierarchicalPoo
     }
 
     fn get(&self) -> MemoryResult<HierarchicalPooledValue<T>> {
-        self.lock().unwrap().get()
+        self.lock().get()
     }
 }
 
@@ -326,14 +322,14 @@ mod tests {
 
         // Get from parent
         {
-            let mut parent_guard = parent.lock().unwrap();
+            let mut parent_guard = parent.lock();
             let obj = parent_guard.get().unwrap();
             assert_eq!(obj.value, 0); // Reset
             assert!(!obj.is_borrowed());
         }
 
         // Stats should show activity
-        let stats = parent.lock().unwrap().hierarchy_stats();
+        let stats = parent.lock().hierarchy_stats();
         assert_eq!(stats.total_borrowed, 0);
     }
 }

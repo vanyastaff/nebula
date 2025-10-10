@@ -364,6 +364,13 @@ pub mod affinity {
         use libc::{CPU_SET, CPU_ZERO, cpu_set_t, sched_setaffinity};
         use std::mem;
 
+        // SAFETY: Using libc CPU affinity macros and syscalls:
+        // - `cpu_set_t` is a C struct with no Drop or pointers, safe to zero-initialize
+        // - `CPU_ZERO` macro safely initializes the cpu_set_t
+        // - `CPU_SET` macro safely sets individual CPU bits (cpus validated by caller)
+        // - `sched_setaffinity(0, ...)` targets current thread (PID=0)
+        // - Size and pointer to `set` are valid for the duration of the syscall
+        // Returns 0 on success, -1 on failure (sets errno).
         unsafe {
             let mut set: cpu_set_t = mem::zeroed();
             CPU_ZERO(&mut set);

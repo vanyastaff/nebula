@@ -3,7 +3,8 @@
 //! This module provides the core implementation of the memory budgeting system,
 //! including the MemoryBudget struct and related types.
 
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Weak};
+use parking_lot::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use super::config::BudgetConfig;
@@ -200,7 +201,6 @@ impl MemoryBudget {
         parent
             .children
             .lock()
-            .unwrap()
             .push(Arc::downgrade(&budget));
 
         budget
@@ -208,22 +208,22 @@ impl MemoryBudget {
 
     /// Get the budget name
     pub fn name(&self) -> String {
-        self.config.read().unwrap().name.clone()
+        self.config.read().name.clone()
     }
 
     /// Get the memory limit
     pub fn limit(&self) -> usize {
-        self.config.read().unwrap().limit
+        self.config.read().limit
     }
 
     /// Get the current memory usage
     pub fn used(&self) -> usize {
-        *self.used.lock().unwrap()
+        *self.used.lock()
     }
 
     /// Get the peak memory usage
     pub fn peak(&self) -> usize {
-        *self.peak.lock().unwrap()
+        *self.peak.lock()
     }
 
     /// Get the parent budget (if any)
@@ -234,7 +234,7 @@ impl MemoryBudget {
     /// Get the current budget state
     pub fn state(&self) -> BudgetState {
         let used = self.used();
-        let config = self.config.read().unwrap();
+        let config = self.config.read();
 
         if config.limit == 0 {
             return BudgetState::Disabled;
@@ -258,7 +258,7 @@ impl MemoryBudget {
         let used = self.used();
         let limit = self.limit();
         let peak = self.peak();
-        let stats = self.stats.lock().unwrap();
+        let stats = self.stats.lock();
 
         BudgetMetrics {
             used,
@@ -277,15 +277,15 @@ impl MemoryBudget {
             return Ok(());
         }
 
-        let mut used = self.used.lock().unwrap();
-        let config = self.config.read().unwrap();
+        let mut used = self.used.lock();
+        let config = self.config.read();
 
         // Check if we can allocate
         let new_used = *used + size;
         let effective_limit = config.effective_limit();
 
         if new_used > effective_limit {
-            let mut stats = self.stats.lock().unwrap();
+            let mut stats = self.stats.lock();
             stats.failed += 1;
 
             return Err(MemoryError::allocation_failed(0, 1));
@@ -299,12 +299,12 @@ impl MemoryBudget {
         // Update usage statistics
         *used = new_used;
 
-        let mut peak = self.peak.lock().unwrap();
+        let mut peak = self.peak.lock();
         if new_used > *peak {
             *peak = new_used;
         }
 
-        let mut stats = self.stats.lock().unwrap();
+        let mut stats = self.stats.lock();
         stats.successful += 1;
         stats.total_bytes += size;
         if size > stats.largest_allocation {
@@ -312,7 +312,7 @@ impl MemoryBudget {
         }
 
         // Update history if enabled
-        if let Some(ref mut history) = *self.history.lock().unwrap() {
+        if let Some(ref mut history) = *self.history.lock() {
             history.add(new_used);
         }
 
@@ -325,13 +325,13 @@ impl MemoryBudget {
             return;
         }
 
-        let mut used = self.used.lock().unwrap();
+        let mut used = self.used.lock();
 
         // Ensure we don't underflow
         *used = used.saturating_sub(size);
 
         // Update history if enabled
-        if let Some(ref mut history) = *self.history.lock().unwrap() {
+        if let Some(ref mut history) = *self.history.lock() {
             history.add(*used);
         }
 
@@ -348,7 +348,7 @@ impl MemoryBudget {
         }
 
         let used = self.used();
-        let config = self.config.read().unwrap();
+        let config = self.config.read();
         let effective_limit = config.effective_limit();
 
         // Check if we have enough memory
@@ -368,11 +368,11 @@ impl MemoryBudget {
 
     /// Reset usage statistics
     pub fn reset_stats(&self) {
-        *self.stats.lock().unwrap() = AllocationStats::default();
-        *self.peak.lock().unwrap() = self.used();
+        *self.stats.lock() = AllocationStats::default();
+        *self.peak.lock() = self.used();
 
         // Reset history if enabled
-        if let Some(ref mut history) = *self.history.lock().unwrap() {
+        if let Some(ref mut history) = *self.history.lock() {
             history.timestamps.clear();
             history.usage.clear();
             history.last_update = Instant::now();

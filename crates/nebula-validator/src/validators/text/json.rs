@@ -77,7 +77,10 @@ impl Json {
         }
 
         // Check if it starts with allowed character
-        let first_char = trimmed.chars().next().unwrap();
+        let first_char = trimmed
+            .chars()
+            .next()
+            .expect("trimmed is non-empty, checked above");
 
         match first_char {
             '{' | '[' => {
@@ -120,7 +123,10 @@ impl Json {
             return Err(ValidationError::new("empty_json_value", "Empty JSON value"));
         }
 
-        let first_char = trimmed.chars().next().unwrap();
+        let first_char = trimmed
+            .chars()
+            .next()
+            .expect("trimmed is non-empty, checked above");
 
         match first_char {
             '{' => self.parse_object(trimmed, depth),

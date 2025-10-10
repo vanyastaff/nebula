@@ -4,7 +4,8 @@ use std::alloc::{Layout, alloc, dealloc};
 use std::mem;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
+use parking_lot::{Mutex, RwLock};
 use std::time::Instant;
 
 use super::{ArenaAllocate, ArenaConfig, ArenaStats};
@@ -22,7 +23,8 @@ impl ThreadSafeChunk {
     /// Creates a new chunk with specified size (minimum 64 bytes)
     fn new(size: usize) -> Result<Self, MemoryError> {
         let size = size.max(64); // Minimum chunk size to reduce overhead
-        let layout = Layout::from_size_align(size, 1).map_err(|_| MemoryError::invalid_layout("layout creation failed"))?;
+        let layout = Layout::from_size_align(size, 1)
+            .map_err(|_| MemoryError::invalid_layout("layout creation failed"))?;
 
         // Safety: Layout is non-zero and properly aligned
         let ptr = unsafe { alloc(layout) };
@@ -138,7 +140,7 @@ impl ThreadSafeArena {
 
     /// Allocates a new chunk when needed
     fn allocate_chunk(&self, min_size: usize) -> Result<(), MemoryError> {
-        let _lock = self.chunk_mutex.lock().unwrap();
+        let _lock = self.chunk_mutex.lock();
 
         // Double-check if another thread already allocated
         let current = self.current_chunk.load(Ordering::Acquire);
@@ -150,7 +152,7 @@ impl ThreadSafeArena {
         }
 
         // Calculate new chunk size
-        let chunks = self.chunks.read().unwrap();
+        let chunks = self.chunks.read();
         let chunk_size = if chunks.is_empty() {
             self.config.initial_size.max(min_size)
         } else {
@@ -175,7 +177,7 @@ impl ThreadSafeArena {
         self.current_chunk.store(chunk_ptr, Ordering::Release);
 
         // Add to chunks list
-        let mut chunks = self.chunks.write().unwrap();
+        let mut chunks = self.chunks.write();
         chunks.push(chunk);
 
         // Update statistics
@@ -266,7 +268,7 @@ impl ThreadSafeArena {
     pub fn reset(&mut self) {
         let start_time = self.config.track_stats.then(Instant::now);
 
-        let mut chunks = self.chunks.write().unwrap();
+        let mut chunks = self.chunks.write();
         chunks.clear();
         self.current_chunk.store(ptr::null_mut(), Ordering::Release);
 
