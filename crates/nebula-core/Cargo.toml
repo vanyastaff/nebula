@@ -16,7 +16,7 @@ documentation.workspace = true
 async-trait = "0.1"
 
 # Collections
-dashmap = "5.5"
+dashmap = "6.1.0"
 
 # Errors
 thiserror = { workspace = true }

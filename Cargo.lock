@@ -925,32 +925,6 @@ dependencies = [
 
 [[package]]
 name = "criterion"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2b12d017a929603d80db1831cd3a24082f8137ce19c69e6447f54f5fc8d692f"
-dependencies = [
- "anes",
- "cast",
- "ciborium",
- "clap",
- "criterion-plot 0.5.0",
- "is-terminal",
- "itertools 0.10.5",
- "num-traits",
- "once_cell",
- "oorandom",
- "plotters",
- "rayon",
- "regex",
- "serde",
- "serde_derive",
- "serde_json",
- "tinytemplate",
- "walkdir",
-]
-
-[[package]]
-name = "criterion"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1c047a62b0cc3e145fa84415a3191f628e980b194c2755aa12300a4e6cbd928"
@@ -959,7 +933,7 @@ dependencies = [
  "cast",
  "ciborium",
  "clap",
- "criterion-plot 0.6.0",
+ "criterion-plot",
  "itertools 0.13.0",
  "num-traits",
  "oorandom",
@@ -970,16 +944,6 @@ dependencies = [
  "serde_json",
  "tinytemplate",
  "walkdir",
-]
-
-[[package]]
-name = "criterion-plot"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b50826342786a51a89e2da3a28f1c32b06e387201bc2d19791f622c673706b1"
-dependencies = [
- "cast",
- "itertools 0.10.5",
 ]
 
 [[package]]
@@ -1167,19 +1131,6 @@ dependencies = [
  "darling_core 0.21.3",
  "quote",
  "syn 2.0.104",
-]
-
-[[package]]
-name = "dashmap"
-version = "5.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
-dependencies = [
- "cfg-if",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
 ]
 
 [[package]]
@@ -2345,17 +2296,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "is-terminal"
-version = "0.4.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e04d7f318608d35d4b61ddd75cbdaee86b023ebe2bd5a66ee0915f0bf93095a9"
-dependencies = [
- "hermit-abi",
- "libc",
- "windows-sys 0.59.0",
-]
-
-[[package]]
 name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2901,7 +2841,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
- "dashmap 6.1.0",
+ "dashmap",
  "futures",
  "nebula-derive",
  "nebula-error",
@@ -2926,7 +2866,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "chrono",
- "dashmap 5.5.3",
+ "dashmap",
  "domain-key",
  "nebula-error",
  "nebula-log",
@@ -2985,7 +2925,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "chrono",
- "criterion 0.5.1",
+ "criterion",
  "pretty_assertions",
  "rand 0.8.5",
  "serde",
@@ -3001,7 +2941,7 @@ name = "nebula-expression"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "criterion 0.5.1",
+ "criterion",
  "nebula-core",
  "nebula-error",
  "nebula-log",
@@ -3020,7 +2960,7 @@ dependencies = [
 name = "nebula-log"
 version = "0.1.0"
 dependencies = [
- "criterion 0.7.0",
+ "criterion",
  "flate2",
  "nebula-error",
  "once_cell",
@@ -3054,9 +2994,9 @@ dependencies = [
  "backtrace",
  "cfg-if",
  "chrono",
- "criterion 0.5.1",
+ "criterion",
  "crossbeam-queue",
- "dashmap 5.5.3",
+ "dashmap",
  "dyn-clone",
  "futures",
  "futures-core",
@@ -3128,9 +3068,9 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "config",
- "criterion 0.5.1",
+ "criterion",
  "crossbeam",
- "dashmap 5.5.3",
+ "dashmap",
  "futures",
  "metrics",
  "metrics-exporter-prometheus",
@@ -3169,7 +3109,7 @@ dependencies = [
 name = "nebula-system"
 version = "0.1.0"
 dependencies = [
- "criterion 0.5.1",
+ "criterion",
  "libc",
  "nebula-error",
  "once_cell",
@@ -3194,8 +3134,8 @@ dependencies = [
  "base64 0.22.1",
  "bon",
  "chrono",
- "criterion 0.5.1",
- "dashmap 5.5.3",
+ "criterion",
+ "dashmap",
  "futures",
  "moka",
  "nebula-error",
@@ -3221,8 +3161,8 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
- "criterion 0.5.1",
- "dashmap 5.5.3",
+ "criterion",
+ "dashmap",
  "im",
  "lazy_static",
  "nebula-error",
