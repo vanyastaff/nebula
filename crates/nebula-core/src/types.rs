@@ -417,6 +417,7 @@ pub mod utils {
     }
 
     /// Parse a version string
+    #[must_use = "parsed version must be used"]
     pub fn parse_version(version_str: &str) -> Result<Version, String> {
         // Handle pre-release and build metadata
         let (version_part, pre_build) = if let Some(idx) = version_str.find('-') {
@@ -473,9 +474,7 @@ pub mod utils {
         }
 
         let mut chars = s.chars();
-        let first = chars
-            .next()
-            .expect("s is non-empty, checked above");
+        let first = chars.next().expect("s is non-empty, checked above");
 
         // First character must be alphabetic or underscore
         if !first.is_alphabetic() && first != '_' {

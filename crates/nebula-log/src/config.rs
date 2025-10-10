@@ -74,8 +74,10 @@ impl std::fmt::Display for Level {
 /// Writer configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
+#[derive(Default)]
 pub enum WriterConfig {
     /// Write to stderr
+    #[default]
     Stderr,
     /// Write to stdout
     Stdout,
@@ -322,11 +324,6 @@ impl Fields {
     }
 }
 
-impl Default for WriterConfig {
-    fn default() -> Self {
-        Self::Stderr
-    }
-}
 
 #[allow(dead_code)]
 fn default_non_blocking() -> bool {

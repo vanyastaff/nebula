@@ -11,8 +11,8 @@ use syn::Ident;
 
 /// Add string validators to the validators list
 ///
-/// Handles: min_length, max_length, exact_length, email, url, regex,
-/// alphanumeric, contains, starts_with, ends_with
+/// Handles: `min_length`, `max_length`, `exact_length`, email, url, regex,
+/// alphanumeric, contains, `starts_with`, `ends_with`
 pub(super) fn add_string_validators(validators: &mut Vec<TokenStream>, attrs: &ValidationAttrs) {
     // Length validators
     if let Some(val) = attrs.min_length {
@@ -74,7 +74,7 @@ pub(super) fn add_string_validators(validators: &mut Vec<TokenStream>, attrs: &V
     }
 }
 
-/// Add text format validators (UUID, DateTime, JSON, etc.)
+/// Add text format validators (UUID, `DateTime`, JSON, etc.)
 ///
 /// These validators use the builder pattern with `Validator::new()`
 pub(super) fn add_text_validators(validators: &mut Vec<TokenStream>, attrs: &ValidationAttrs) {
@@ -159,7 +159,7 @@ pub(super) fn add_numeric_validators(validators: &mut Vec<TokenStream>, attrs: &
 
 /// Add collection validators based on attributes
 ///
-/// Handles: min_size, max_size, unique, non_empty
+/// Handles: `min_size`, `max_size`, unique, `non_empty`
 pub(super) fn add_collection_validators(
     validators: &mut Vec<TokenStream>,
     attrs: &ValidationAttrs,
@@ -214,7 +214,7 @@ pub(super) fn add_custom_validator(
 
 /// Chain validators with `.and()` combinator
 ///
-/// Takes a vector of validator TokenStreams and combines them:
+/// Takes a vector of validator `TokenStreams` and combines them:
 /// - Single validator: returns it as-is
 /// - Multiple validators: chains with `.and()`
 ///

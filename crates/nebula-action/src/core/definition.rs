@@ -1,4 +1,4 @@
 #[derive(Debug, Clone)]
-pub struct ActionDefinition {
+pub(super) struct ActionDefinition {
     id: String,
 }

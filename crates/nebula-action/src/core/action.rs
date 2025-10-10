@@ -1,1 +1,1 @@
-pub trait Action {}
+pub(super) trait Action {}
