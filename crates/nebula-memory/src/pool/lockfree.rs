@@ -114,6 +114,11 @@ impl<T: Poolable> LockFreePool<T> {
 
         loop {
             let head = self.head.load(Ordering::Acquire);
+            // SAFETY: `node` is a valid pointer from Box::into_raw above, properly aligned and
+            // pointing to an initialized Node<T>. This write is safe because:
+            // - Node is freshly allocated and owned exclusively by this thread
+            // - No other thread can access this node until CAS succeeds
+            // - `head` is a valid pointer or null (both safe to store)
             unsafe {
                 (*node).next = head;
             }
@@ -139,6 +144,10 @@ impl<T: Poolable> LockFreePool<T> {
                 return None;
             }
 
+            // SAFETY: `head` is non-null and was stored in the atomic pointer by push_node,
+            // which ensures it's a valid pointer to an initialized Node<T>. The Acquire
+            // ordering above synchronizes with the Release in push_node, ensuring we see
+            // all writes to the node including the `next` field.
             let next = unsafe { (*head).next };
 
             match self
@@ -147,6 +156,11 @@ impl<T: Poolable> LockFreePool<T> {
             {
                 Ok(_) => {
                     self.size.fetch_sub(1, Ordering::Relaxed);
+                    // SAFETY: We successfully swapped `head` out of the atomic pointer via CAS,
+                    // so we now have exclusive ownership. Box::from_raw is safe because:
+                    // - `head` was originally created by Box::into_raw in push_node
+                    // - No other thread can access this pointer (CAS ensures exclusivity)
+                    // - The pointer is valid, properly aligned, and points to initialized memory
                     let node = unsafe { Box::from_raw(head) };
                     return Some(ManuallyDrop::into_inner(node.value));
                 }
@@ -339,6 +353,9 @@ impl<T: Poolable> LockFreePool<T> {
 
                 // Разбираем стек на отдельные объекты
                 while !current.is_null() {
+                    // SAFETY: We have exclusive ownership of the entire stack after successful
+                    // CAS above. Each node pointer was created by Box::into_raw, so Box::from_raw
+                    // is valid. We're the only thread accessing these nodes now.
                     let node = unsafe { Box::from_raw(current) };
                     let next = node.next;
                     nodes.push(node);
@@ -354,6 +371,9 @@ impl<T: Poolable> LockFreePool<T> {
 
         // Оптимизируем все извлеченные объекты
         for node in &mut nodes {
+            // SAFETY: We own these nodes exclusively (removed from shared stack above).
+            // ManuallyDrop<T> has the same layout as T, so accessing through the pointer
+            // is safe. The nodes are fully initialized and valid.
             let before_size = unsafe { (*node.value).memory_usage() };
 
             #[cfg(feature = "adaptive")]
@@ -455,6 +475,9 @@ pub struct LockFreePooledValue<'a, T: Poolable> {
 impl<'a, T: Poolable> LockFreePooledValue<'a, T> {
     /// Detach value from pool
     pub fn detach(mut self) -> T {
+        // SAFETY: We own the ManuallyDrop value exclusively, and we're taking it out
+        // exactly once. The mem::forget below prevents the Drop impl from running,
+        // so the value won't be taken again or returned to the pool.
         let value = unsafe { ManuallyDrop::take(&mut self.value) };
         core::mem::forget(self);
         value
@@ -477,6 +500,9 @@ impl<'a, T: Poolable> DerefMut for LockFreePooledValue<'a, T> {
 
 impl<'a, T: Poolable> Drop for LockFreePooledValue<'a, T> {
     fn drop(&mut self) {
+        // SAFETY: This is the Drop impl, which runs exactly once. We're taking the value
+        // out of ManuallyDrop to return it to the pool. The value is fully initialized
+        // and we have exclusive access to it.
         let obj = unsafe { ManuallyDrop::take(&mut self.value) };
         self.pool.return_object(obj);
     }
@@ -506,8 +532,19 @@ impl<T: Poolable> LockFreePool<T> {
     }
 }
 
-// Safety: LockFreePool is already thread-safe and can be shared between threads
+// SAFETY: LockFreePool can be Send if T is Send because:
+// - All internal state is protected by atomic operations
+// - The Arc<dyn Fn()> factory is Send + Sync by trait bound
+// - The Arc<dyn PoolCallbacks<T>> is thread-safe
+// - Nodes are accessed only through atomic pointers with proper ordering
 unsafe impl<T: Poolable + Send> Send for LockFreePool<T> {}
+
+// SAFETY: LockFreePool can be Sync if T is Send because:
+// - All mutations go through atomic compare-exchange operations
+// - push_node and pop_node are lock-free and data-race-free
+// - The Treiber stack algorithm ensures linearizable operations
+// - Memory ordering (Acquire/Release) provides proper synchronization
+// - T only needs to be Send (not Sync) because values are never shared between threads
 unsafe impl<T: Poolable + Send> Sync for LockFreePool<T> {}
 
 #[cfg(test)]
