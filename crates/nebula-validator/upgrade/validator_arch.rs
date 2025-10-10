@@ -319,9 +319,21 @@ where
         if (self.condition)(input) {
             self.validator.validate(input)
         } else {
-            // Пропускаем валидацию - нужен способ вернуть "success without validation"
-            // Возможно, нужно переосмыслить это
-            todo!("Conditional skip handling")
+            // NOTE: This is a design limitation of the TypedValidator trait.
+            // When the condition is false, we skip validation, but we have no way
+            // to produce an Output value since we never called the inner validator.
+            //
+            // Possible solutions:
+            // 1. Change trait to allow Option<Output>
+            // 2. Require Output: Default
+            // 3. Use a different approach like Optional<V> wrapper that wraps the result
+            // 4. Remove When combinator from this architecture
+            //
+            // For now, this is a conceptual example showing the limitation.
+            panic!(
+                "When combinator with false condition has no way to produce Output. \
+                 This is a design limitation documented in validator_arch.rs"
+            )
         }
     }
 }

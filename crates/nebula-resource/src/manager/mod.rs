@@ -905,6 +905,32 @@ mod tests {
 
     struct TestInstance {
         id: Uuid,
+        resource_id: ResourceId,
+        context: ResourceContext,
+        created_at: chrono::DateTime<chrono::Utc>,
+    }
+
+    impl TestInstance {
+        fn new(resource_id: ResourceId, context: ResourceContext) -> Self {
+            Self {
+                id: Uuid::new_v4(),
+                resource_id,
+                context,
+                created_at: chrono::Utc::now(),
+            }
+        }
+
+        fn with_id(resource_id: ResourceId) -> Self {
+            Self::new(
+                resource_id,
+                ResourceContext::new(
+                    "default-workflow".to_string(),
+                    "Default Workflow".to_string(),
+                    "default-execution".to_string(),
+                    "development".to_string(),
+                ),
+            )
+        }
     }
 
     impl ResourceInstance for TestInstance {
@@ -912,16 +938,16 @@ mod tests {
             self.id
         }
         fn resource_id(&self) -> &ResourceId {
-            todo!()
+            &self.resource_id
         }
         fn lifecycle_state(&self) -> LifecycleState {
             LifecycleState::Ready
         }
         fn context(&self) -> &ResourceContext {
-            todo!()
+            &self.context
         }
         fn created_at(&self) -> chrono::DateTime<chrono::Utc> {
-            chrono::Utc::now()
+            self.created_at
         }
         fn last_accessed_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
             None
@@ -941,9 +967,12 @@ mod tests {
         async fn create(
             &self,
             _config: &Self::Config,
-            _context: &ResourceContext,
+            context: &ResourceContext,
         ) -> ResourceResult<Self::Instance> {
-            Ok(TestInstance { id: Uuid::new_v4() })
+            Ok(TestInstance::new(
+                ResourceId::new("test", "1.0"),
+                context.clone(),
+            ))
         }
     }
 
@@ -1004,5 +1033,53 @@ mod tests {
         if let Err(e) = result {
             assert!(e.to_string().contains("shutting down"));
         }
+    }
+
+    #[test]
+    fn test_instance_complete_implementation() {
+        // Test that all TestInstance methods work without panicking
+        let resource_id = ResourceId::new("test-resource", "1.0");
+        let context = ResourceContext::new(
+            "test-workflow".to_string(),
+            "Test Workflow".to_string(),
+            "test-exec".to_string(),
+            "development".to_string(),
+        );
+
+        let instance = TestInstance::new(resource_id.clone(), context.clone());
+
+        // Test all ResourceInstance trait methods
+        let instance_id = instance.instance_id();
+        assert!(!instance_id.is_nil());
+
+        let returned_resource_id = instance.resource_id();
+        assert_eq!(returned_resource_id.name, "test-resource");
+        assert_eq!(returned_resource_id.version, "1.0");
+
+        let state = instance.lifecycle_state();
+        assert_eq!(state, LifecycleState::Ready);
+
+        let returned_context = instance.context();
+        assert_eq!(returned_context.workflow.workflow_id, "test-workflow");
+        assert_eq!(returned_context.execution.execution_id, "test-exec");
+
+        let created = instance.created_at();
+        assert!(created <= chrono::Utc::now());
+
+        let last_accessed = instance.last_accessed_at();
+        assert!(last_accessed.is_none());
+
+        // Touch should not panic
+        instance.touch();
+    }
+
+    #[test]
+    fn test_instance_with_id_constructor() {
+        // Test the convenience constructor
+        let resource_id = ResourceId::new("simple", "2.0");
+        let instance = TestInstance::with_id(resource_id.clone());
+
+        assert_eq!(instance.resource_id().name, "simple");
+        assert!(!instance.context().workflow.workflow_id.is_empty());
     }
 }

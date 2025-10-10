@@ -55,8 +55,9 @@
 //!         config: &Self::Config,
 //!         context: &ResourceContext,
 //!     ) -> Result<Self::Instance, ResourceError> {
-//!         // Your implementation here
-//!         todo!()
+//!         // Create database connection
+//!         let connection = connect_to_database(config).await?;
+//!         Ok(DatabaseInstance::new(connection, context.clone()))
 //!     }
 //! }
 //! ```
