@@ -2,6 +2,21 @@
 //!
 //! Provides an allocator that tracks memory usage statistics
 //! by wrapping another allocator implementation.
+//!
+//! # Safety
+//!
+//! This module wraps an underlying allocator and tracks all allocation operations:
+//! - All unsafe operations are forwarded to the inner allocator with proper contracts
+//! - Statistics collection is thread-safe via atomic operations
+//! - No memory safety invariants are added beyond those of the inner allocator
+//! - Send/Sync/ThreadSafeAllocator traits are conditionally forwarded
+//!
+//! ## Invariants
+//!
+//! - Every successful allocation is tracked in stats
+//! - Every deallocation adjusts stats to match
+//! - Failed allocations don't affect memory counters (only failure count)
+//! - Reallocation is treated as dealloc + alloc for stats purposes
 
 use core::alloc::Layout;
 use core::ptr::NonNull;
@@ -102,9 +117,22 @@ impl<A> TrackedAllocator<A> {
     }
 }
 
+// SAFETY: TrackedAllocator implements Allocator by forwarding to inner allocator.
+// - All unsafe trait methods forward to A's implementation with same contracts
+// - Statistics tracking is side-effect only (no memory safety impact)
+// - Layout and pointer validity requirements are preserved
 unsafe impl<A: Allocator> Allocator for TrackedAllocator<A> {
+    /// # Safety
+    ///
+    /// Caller must ensure:
+    /// - `layout` has non-zero size (unless A::supports_zero_sized_allocs())
+    /// - `layout.align()` is a power of two
+    /// - `layout.size()` when rounded up to nearest multiple of align does not overflow isize
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
-        // Forward allocation to inner allocator
+        // SAFETY: Forwarding to inner allocator's allocate.
+        // - layout validity is enforced by caller's contract (see above)
+        // - Inner allocator upholds Allocator trait safety requirements
+        // - Statistics recording doesn't affect memory safety
         match unsafe { self.inner.allocate(layout) } {
             Ok(ptr) => {
                 // Record successful allocation
@@ -119,21 +147,40 @@ unsafe impl<A: Allocator> Allocator for TrackedAllocator<A> {
         }
     }
 
+    /// # Safety
+    ///
+    /// Caller must ensure:
+    /// - `ptr` was allocated by this allocator (via inner) with the same `layout`
+    /// - `ptr` is currently allocated (not already deallocated)
+    /// - `layout` matches the layout used for allocation
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        // Forward deallocation to inner allocator
+        // SAFETY: Forwarding to inner allocator's deallocate.
+        // - ptr was allocated by self.inner (TrackedAllocator doesn't allocate directly)
+        // - layout matches the original allocation (caller's responsibility)
+        // - Statistics recording happens after deallocation (safe)
         unsafe { self.inner.deallocate(ptr, layout) };
 
         // Record deallocation
         self.stats.record_deallocation(layout.size());
     }
 
+    /// # Safety
+    ///
+    /// Caller must ensure:
+    /// - `ptr` was allocated by this allocator with `old_layout`
+    /// - `old_layout` matches the layout used for the original allocation
+    /// - `new_layout.align()` equals `old_layout.align()`
+    /// - If reallocation fails, `ptr` remains valid with `old_layout`
     unsafe fn reallocate(
         &self,
         ptr: NonNull<u8>,
         old_layout: Layout,
         new_layout: Layout,
     ) -> AllocResult<NonNull<[u8]>> {
-        // Forward reallocation to inner allocator
+        // SAFETY: Forwarding to inner allocator's reallocate.
+        // - ptr was allocated by self.inner with old_layout (caller's contract)
+        // - new_layout.align() == old_layout.align() (caller's contract)
+        // - Inner allocator preserves ptr validity on failure
         match unsafe { self.inner.reallocate(ptr, old_layout, new_layout) } {
             Ok(new_ptr) => {
                 // Record successful reallocation
@@ -158,8 +205,18 @@ unsafe impl<A: Allocator> Allocator for TrackedAllocator<A> {
     }
 }
 
-// Forward BulkAllocator if the inner allocator supports it
+// SAFETY: TrackedAllocator implements BulkAllocator if inner does.
+// - All bulk operations are forwarded to A's implementation
+// - Statistics track total sizes (layout.size() * count)
+// - No additional memory safety requirements beyond A's contracts
 unsafe impl<A: BulkAllocator> BulkAllocator for TrackedAllocator<A> {
+    /// # Safety
+    ///
+    /// Caller must ensure:
+    /// - `layout` is valid (non-zero size, power-of-two align)
+    /// - `count` > 0
+    /// - `layout.size() * count` does not overflow
+    /// - Returned memory is suitable for `count` consecutive objects of type T with `layout`
     unsafe fn allocate_contiguous(
         &self,
         layout: Layout,
@@ -167,6 +224,9 @@ unsafe impl<A: BulkAllocator> BulkAllocator for TrackedAllocator<A> {
     ) -> AllocResult<NonNull<[u8]>> {
         let total_size = layout.size().saturating_mul(count);
 
+        // SAFETY: Forwarding to inner's bulk allocate.
+        // - layout and count validity enforced by caller (see contract above)
+        // - Inner allocator returns properly aligned contiguous memory
         match unsafe { self.inner.allocate_contiguous(layout, count) } {
             Ok(ptr) => {
                 self.stats.record_allocation(total_size);
@@ -179,13 +239,28 @@ unsafe impl<A: BulkAllocator> BulkAllocator for TrackedAllocator<A> {
         }
     }
 
+    /// # Safety
+    ///
+    /// Caller must ensure:
+    /// - `ptr` was allocated by this allocator via allocate_contiguous with same `layout` and `count`
+    /// - `ptr` is currently allocated (not already deallocated)
     unsafe fn deallocate_contiguous(&self, ptr: NonNull<u8>, layout: Layout, count: usize) {
+        // SAFETY: Forwarding to inner's bulk deallocate.
+        // - ptr was allocated by self.inner.allocate_contiguous (caller's contract)
+        // - layout and count match original allocation (caller's contract)
         unsafe { self.inner.deallocate_contiguous(ptr, layout, count) };
 
         let total_size = layout.size().saturating_mul(count);
         self.stats.record_deallocation(total_size);
     }
 
+    /// # Safety
+    ///
+    /// Caller must ensure:
+    /// - `ptr` was allocated via allocate_contiguous with `layout` and `old_count`
+    /// - `layout` matches the original allocation
+    /// - `old_count` matches the original count
+    /// - If reallocation fails, `ptr` remains valid with original layout/count
     unsafe fn reallocate_contiguous(
         &self,
         ptr: NonNull<u8>,
@@ -196,6 +271,10 @@ unsafe impl<A: BulkAllocator> BulkAllocator for TrackedAllocator<A> {
         let old_total_size = layout.size().saturating_mul(old_count);
         let new_total_size = layout.size().saturating_mul(new_count);
 
+        // SAFETY: Forwarding to inner's bulk reallocate.
+        // - ptr was allocated by self.inner with layout and old_count (caller's contract)
+        // - Inner allocator preserves ptr validity on failure
+        // - Statistics correctly track size change (old_total -> new_total)
         match unsafe {
             self.inner
                 .reallocate_contiguous(ptr, layout, old_count, new_count)
@@ -255,8 +334,17 @@ impl<A: MemoryUsage> MemoryUsage for TrackedAllocator<A> {
 
 // Forward Resettable if the inner allocator supports it
 impl<A: Resettable> Resettable for TrackedAllocator<A> {
+    /// # Safety
+    ///
+    /// Caller must ensure:
+    /// - No outstanding references to allocated memory exist
+    /// - All allocated memory from this allocator is no longer in use
+    /// - Reset is properly synchronized with other threads (if applicable)
     unsafe fn reset(&self) {
-        // Reset the inner allocator first
+        // SAFETY: Forwarding to inner allocator's reset.
+        // - Caller ensures no outstanding allocations are in use (contract above)
+        // - Inner allocator's reset contract is satisfied by caller's contract
+        // - Statistics reset is safe (atomic operations)
         unsafe { self.inner.reset() };
 
         // Reset our statistics
@@ -283,9 +371,22 @@ impl<A> StatisticsProvider for TrackedAllocator<A> {
     }
 }
 
-// Thread safety: TrackedAllocator is thread-safe if the inner allocator is
+// SAFETY: TrackedAllocator is Send if inner is Send.
+// - inner: A is Send (by bound)
+// - stats: AtomicAllocatorStats is Send (atomic primitives)
+// - All owned data can be safely transferred to another thread
 unsafe impl<A: Send> Send for TrackedAllocator<A> {}
+
+// SAFETY: TrackedAllocator is Sync if inner is Sync.
+// - inner: A is Sync (by bound)
+// - stats: AtomicAllocatorStats is Sync (uses atomic operations for mutations)
+// - All shared access is synchronized via inner's Sync + stats' atomics
 unsafe impl<A: Sync> Sync for TrackedAllocator<A> {}
+
+// SAFETY: TrackedAllocator is ThreadSafeAllocator if inner is.
+// - All allocator operations forward to A which is ThreadSafeAllocator
+// - Statistics tracking uses atomic operations (thread-safe)
+// - No additional synchronization needed beyond what A provides
 unsafe impl<A: ThreadSafeAllocator> ThreadSafeAllocator for TrackedAllocator<A> {}
 
 // Convenience trait for easy wrapping
