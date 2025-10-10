@@ -11,6 +11,7 @@ use std::hash::Hash;
 /// Validates that all elements satisfy a condition.
 #[derive(Debug, Clone)]
 pub struct All<V> {
+    /// The validator applied to all elements in the collection.
     pub validator: V,
 }
 
@@ -32,7 +33,7 @@ where
     fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
         for (i, item) in input.iter().enumerate() {
             self.validator.validate(item).map_err(|e| {
-                ValidationError::new("all", format!("Element at index {} failed validation", i))
+                ValidationError::new("all", format!("Element at index {i} failed validation"))
                     .with_nested_error(e.into())
             })?;
         }
@@ -57,6 +58,7 @@ pub fn all<V>(validator: V) -> All<V> {
 /// Validates that at least one element satisfies a condition.
 #[derive(Debug, Clone)]
 pub struct Any<V> {
+    /// The validator checked against all elements (at least one must pass).
     pub validator: V,
 }
 
@@ -75,7 +77,7 @@ where
     type Error = ValidationError;
 
     fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
-        for item in input.iter() {
+        for item in input {
             if self.validator.validate(item).is_ok() {
                 return Ok(());
             }
@@ -104,6 +106,7 @@ pub fn any<V>(validator: V) -> Any<V> {
 /// Validates that collection contains a specific element.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainsElement<T> {
+    /// The element to search for in the collection.
     pub element: T,
 }
 
@@ -163,7 +166,7 @@ where
 
     fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
         let mut seen = HashSet::new();
-        for item in input.iter() {
+        for item in input {
             if !seen.insert(item) {
                 return Err(ValidationError::new(
                     "unique",
@@ -181,6 +184,7 @@ where
     }
 }
 
+#[must_use] 
 pub fn unique<T>() -> Unique<T>
 where
     T: Hash + Eq,

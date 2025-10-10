@@ -104,7 +104,7 @@ where
             name: format!("Map({})", inner_meta.name),
             description: inner_meta
                 .description
-                .map(|desc| format!("Mapped: {}", desc)),
+                .map(|desc| format!("Mapped: {desc}")),
             complexity: inner_meta.complexity,
             cacheable: inner_meta.cacheable,
             estimated_time: inner_meta.estimated_time,
@@ -236,7 +236,7 @@ where
 /// let validator = map_unit(some_validator);
 /// validator.validate(input)?; // Just succeeds or fails
 /// ```
-pub fn map_unit<V>(validator: V) -> Map<V, impl Fn(V::Output) -> ()>
+pub fn map_unit<V>(validator: V) -> Map<V, impl Fn(V::Output)>
 where
     V: TypedValidator,
 {

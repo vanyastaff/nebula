@@ -304,6 +304,7 @@ impl StatsConfig {
     }
 
     /// Validate configuration
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.tracking.validate()?;
         self.monitoring.validate()?;
@@ -554,6 +555,7 @@ impl TrackingConfig {
         level_score + sampling_score + profiling_score
     }
 
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.max_history > 1_000_000 {
             return Err(ConfigError::HistoryTooLarge);
@@ -632,6 +634,7 @@ impl SamplingConfig {
         base + if self.adaptive { 1 } else { 0 }
     }
 
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), ConfigError> {
         if !(0.0..=1.0).contains(&self.rate) {
             return Err(ConfigError::InvalidSamplingRate);
@@ -732,6 +735,7 @@ impl MonitoringConfig {
         interval_score + histogram_score + component_score
     }
 
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), ConfigError> {
         #[cfg(feature = "std")]
         if self.enabled && self.interval.is_zero() {
@@ -782,6 +786,7 @@ impl AlertConfig {
         if self.enabled { 256 } else { 0 }
     }
 
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), ConfigError> {
         if let Some(rate) = self.allocation_rate_threshold {
             if rate <= 0.0 {
@@ -857,6 +862,7 @@ impl AnalyticsConfig {
         score
     }
 
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.ml_config.validate()
     }
@@ -902,6 +908,7 @@ impl MLConfig {
         }
     }
 
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), ConfigError> {
         if !(0.0..=1.0).contains(&self.confidence_threshold) {
             return Err(ConfigError::InvalidConfidenceThreshold);

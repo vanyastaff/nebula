@@ -3,8 +3,8 @@
 //! This module provides the core implementation of the memory budgeting system,
 //! including the MemoryBudget struct and related types.
 
-use std::sync::{Arc, Weak};
 use parking_lot::{Mutex, RwLock};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use super::config::BudgetConfig;
@@ -198,10 +198,7 @@ impl MemoryBudget {
         // Set parent and add self to parent's children
         let budget_mut = Arc::get_mut(&mut budget).unwrap();
         budget_mut.parent = Some(parent.clone());
-        parent
-            .children
-            .lock()
-            .push(Arc::downgrade(&budget));
+        parent.children.lock().push(Arc::downgrade(&budget));
 
         budget
     }

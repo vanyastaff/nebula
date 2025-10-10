@@ -114,8 +114,9 @@ pub use optional::{Nullable, Optional, RequiredSome, nullable, optional, require
 pub use or::{Or, OrAny, OrAnyError, or, or_any};
 pub use when::{When, unless, when, when_not_empty, when_some};
 
-#[cfg(feature = "lru")]
-pub use cached::{LruCached, lru_cached};
+// TODO: Re-enable when lru crate is added as dependency
+// #[cfg(feature = "lru")]
+// pub use cached::{LruCached, lru_cached};
 
 // ============================================================================
 // PRELUDE
@@ -139,8 +140,9 @@ pub mod prelude {
         required_some, unless, when, when_not_empty,
     };
 
-    #[cfg(feature = "lru")]
-    pub use super::{LruCached, lru_cached};
+    // TODO: Re-enable when lru crate is added as dependency
+    // #[cfg(feature = "lru")]
+    // pub use super::{LruCached, lru_cached};
 }
 
 // ============================================================================

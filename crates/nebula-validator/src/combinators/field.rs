@@ -150,7 +150,9 @@ where
 /// This error type wraps the inner validator's error and adds field context.
 #[derive(Debug, Clone)]
 pub struct FieldError<E> {
+    /// Name of the field that failed validation
     pub field_name: Option<String>,
+    /// The underlying validation error
     pub inner: E,
 }
 
@@ -187,6 +189,7 @@ impl<E> FieldError<E> {
     }
 
     /// Adds a field name to an unnamed error.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_field_name(mut self, name: impl Into<String>) -> Self {
         self.field_name = Some(name.into());
         self
@@ -213,7 +216,7 @@ impl<E: std::error::Error + 'static> std::error::Error for FieldError<E> {
 // CONVERSIONS
 // ============================================================================
 
-/// Convert FieldError to CombinatorError
+/// Convert `FieldError` to `CombinatorError`
 impl<E> From<FieldError<E>> for CombinatorError<E> {
     fn from(error: FieldError<E>) -> Self {
         CombinatorError::FieldFailed {
@@ -223,7 +226,7 @@ impl<E> From<FieldError<E>> for CombinatorError<E> {
     }
 }
 
-/// Convert FieldError to ValidationError
+/// Convert `FieldError` to `ValidationError`
 impl<E: std::fmt::Display> From<FieldError<E>> for ValidationError {
     fn from(error: FieldError<E>) -> Self {
         let mut validation_error =
@@ -272,7 +275,7 @@ where
                 "Validates field{} using {}",
                 self.name
                     .as_ref()
-                    .map(|n| format!(" '{}'", n))
+                    .map(|n| format!(" '{n}'"))
                     .unwrap_or_default(),
                 inner_meta.name
             )),
@@ -401,6 +404,7 @@ pub struct MultiField<T> {
 
 impl<T> MultiField<T> {
     /// Creates a new multi-field validator.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             validators: Vec::new(),
@@ -408,6 +412,7 @@ impl<T> MultiField<T> {
     }
 
     /// Adds a field validator.
+    #[must_use = "builder methods must be chained or built"]
     pub fn add_field<U, V, F>(mut self, name: impl Into<String>, validator: V, accessor: F) -> Self
     where
         U: ?Sized,
@@ -419,7 +424,7 @@ impl<T> MultiField<T> {
         self.validators.push(Box::new(move |input: &T| {
             let field_value = accessor(input);
             validator.validate(field_value).map(|_| ()).map_err(|err| {
-                ValidationError::new("field_validation", format!("{}", err))
+                ValidationError::new("field_validation", format!("{err}"))
                     .with_field(name.clone())
             })
         }));

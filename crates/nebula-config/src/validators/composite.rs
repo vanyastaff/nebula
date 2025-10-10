@@ -38,24 +38,28 @@ impl CompositeValidator {
     }
 
     /// Set whether to fail fast
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_fail_fast(mut self, fail_fast: bool) -> Self {
         self.fail_fast = fail_fast;
         self
     }
 
     /// Set whether to run validators in parallel
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_parallel(mut self, parallel: bool) -> Self {
         self.parallel = parallel;
         self
     }
 
     /// Add a validator
+    #[must_use = "builder methods must be chained or built"]
     pub fn add_validator<V: ConfigValidator + 'static>(mut self, validator: V) -> Self {
         self.validators.push(Arc::new(validator));
         self
     }
 
     /// Add a shared validator
+    #[must_use = "builder methods must be chained or built"]
     pub fn add_shared_validator(mut self, validator: Arc<dyn ConfigValidator>) -> Self {
         self.validators.push(validator);
         self

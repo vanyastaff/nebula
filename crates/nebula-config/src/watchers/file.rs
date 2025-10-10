@@ -62,6 +62,7 @@ impl FileWatcher {
     }
 
     /// Set debounce duration
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_debounce(mut self, duration: std::time::Duration) -> Self {
         self.debounce_duration = duration;
         self

@@ -53,9 +53,10 @@ impl Slug {
     /// Creates a new slug validator with default settings.
     ///
     /// Default settings:
-    /// - min_length: 1
-    /// - max_length: 255
-    /// - allow_consecutive_hyphens: false
+    /// - `min_length`: 1
+    /// - `max_length`: 255
+    /// - `allow_consecutive_hyphens`: false
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             min_length: 1,
@@ -65,18 +66,21 @@ impl Slug {
     }
 
     /// Sets the minimum length for the slug.
+    #[must_use = "builder methods must be chained or built"]
     pub fn min_length(mut self, min: usize) -> Self {
         self.min_length = min;
         self
     }
 
     /// Sets the maximum length for the slug.
+    #[must_use = "builder methods must be chained or built"]
     pub fn max_length(mut self, max: usize) -> Self {
         self.max_length = max;
         self
     }
 
     /// Allows consecutive hyphens in the slug.
+    #[must_use = "builder methods must be chained or built"]
     pub fn allow_consecutive_hyphens(mut self) -> Self {
         self.allow_consecutive_hyphens = true;
         self
@@ -141,8 +145,7 @@ impl TypedValidator for Slug {
                 return Err(ValidationError::new(
                     "invalid_slug_char",
                     format!(
-                        "Slug contains invalid character '{}'. Only lowercase letters, numbers, and hyphens are allowed",
-                        c
+                        "Slug contains invalid character '{c}'. Only lowercase letters, numbers, and hyphens are allowed"
                     ),
                 ));
             }

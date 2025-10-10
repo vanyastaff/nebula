@@ -48,18 +48,21 @@ impl ConfigBuilder {
     }
 
     /// Add a configuration source
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_source(mut self, source: ConfigSource) -> Self {
         self.sources.push(source);
         self
     }
 
     /// Add multiple configuration sources
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_sources(mut self, sources: Vec<ConfigSource>) -> Self {
         self.sources.extend(sources);
         self
     }
 
     /// Set default values
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_defaults<T>(mut self, defaults: T) -> ConfigResult<Self>
     where
         T: serde::Serialize,
@@ -69,42 +72,49 @@ impl ConfigBuilder {
     }
 
     /// Set default values from JSON
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_defaults_json(mut self, defaults: serde_json::Value) -> Self {
         self.defaults = Some(defaults);
         self
     }
 
     /// Set configuration loader
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_loader(mut self, loader: Arc<dyn ConfigLoader>) -> Self {
         self.loader = Some(loader);
         self
     }
 
     /// Set configuration validator
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_validator(mut self, validator: Arc<dyn ConfigValidator>) -> Self {
         self.validator = Some(validator);
         self
     }
 
     /// Set configuration watcher
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_watcher(mut self, watcher: Arc<dyn ConfigWatcher>) -> Self {
         self.watcher = Some(watcher);
         self
     }
 
     /// Enable hot reload
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_hot_reload(mut self, enabled: bool) -> Self {
         self.hot_reload = enabled;
         self
     }
 
     /// Set auto-reload interval
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_auto_reload_interval(mut self, interval: std::time::Duration) -> Self {
         self.auto_reload_interval = Some(interval);
         self
     }
 
     /// Set whether to fail on missing optional sources
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_fail_on_missing(mut self, fail: bool) -> Self {
         self.fail_on_missing = fail;
         self

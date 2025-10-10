@@ -171,6 +171,7 @@ pub trait Validatable {
 ///
 /// let validator = nested_validator::<User>();
 /// ```
+#[must_use] 
 pub fn nested_validator<T>() -> NestedValidator<T, impl Fn(&T) -> Result<(), ValidationError>>
 where
     T: Validatable,
@@ -305,6 +306,7 @@ where
 ///
 /// let validator = optional_nested::<User>();
 /// ```
+#[must_use] 
 pub fn optional_nested<T>() -> OptionalNested<T, impl Fn(&T) -> Result<(), ValidationError>>
 where
     T: Validatable,
@@ -418,6 +420,7 @@ where
 ///
 /// let validator = collection_nested::<User>();
 /// ```
+#[must_use] 
 pub fn collection_nested<T>() -> CollectionNested<T, impl Fn(&T) -> Result<(), ValidationError>>
 where
     T: Validatable,

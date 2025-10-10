@@ -10,6 +10,7 @@ use std::fmt::Display;
 /// Validates that a number is at least a minimum value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Min<T> {
+    /// The minimum allowed value.
     pub min: T,
 }
 
@@ -64,6 +65,7 @@ pub fn min<T>(value: T) -> Min<T> {
 /// Validates that a number does not exceed a maximum value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Max<T> {
+    /// The maximum allowed value.
     pub max: T,
 }
 
@@ -118,7 +120,9 @@ pub fn max<T>(value: T) -> Max<T> {
 /// Validates that a number is within a range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InRange<T> {
+    /// The minimum bound of the range (inclusive).
     pub min: T,
+    /// The maximum bound of the range (inclusive).
     pub max: T,
 }
 

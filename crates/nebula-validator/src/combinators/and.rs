@@ -243,6 +243,7 @@ where
 ///
 /// let combined = and_all(validators);
 /// ```
+#[must_use] 
 pub fn and_all<V>(
     validators: Vec<V>,
 ) -> impl TypedValidator<Input = V::Input, Output = (), Error = V::Error>

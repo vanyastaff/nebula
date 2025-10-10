@@ -102,6 +102,7 @@ pub struct TokenBucket {
 
 impl TokenBucket {
     /// Create new token bucket with validation
+    #[must_use] 
     pub fn new(capacity: usize, refill_rate: f64) -> Self {
         // Security: prevent creating token buckets with invalid parameters
         let safe_capacity = capacity.min(100_000); // Prevent memory exhaustion
@@ -117,6 +118,7 @@ impl TokenBucket {
     }
 
     /// Set burst size
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_burst(mut self, burst_size: usize) -> Self {
         self.burst_size = burst_size;
         self
@@ -192,6 +194,7 @@ pub struct LeakyBucket {
 
 impl LeakyBucket {
     /// Create new leaky bucket
+    #[must_use] 
     pub fn new(capacity: usize, leak_rate: f64) -> Self {
         Self {
             capacity,
@@ -267,6 +270,7 @@ pub struct SlidingWindow {
 
 impl SlidingWindow {
     /// Create new sliding window rate limiter
+    #[must_use] 
     pub fn new(window_duration: Duration, max_requests: usize) -> Self {
         Self {
             window_duration,
@@ -278,7 +282,7 @@ impl SlidingWindow {
     /// Clean old requests outside the window
     async fn clean_old_requests(&self) {
         let mut requests = self.requests.lock().await;
-        let cutoff = Instant::now() - self.window_duration;
+        let cutoff = Instant::now().checked_sub(self.window_duration).unwrap();
 
         while let Some(&front) = requests.front() {
             if front < cutoff {
@@ -303,8 +307,7 @@ impl RateLimiter for SlidingWindow {
             // Calculate retry after based on oldest request
             let retry_after = requests
                 .front()
-                .map(|&oldest| self.window_duration - oldest.elapsed())
-                .unwrap_or(Duration::from_secs(1));
+                .map_or(Duration::from_secs(1), |&oldest| self.window_duration.checked_sub(oldest.elapsed()).unwrap());
 
             Err(ResilienceError::RateLimitExceeded {
                 retry_after: Some(retry_after),
@@ -358,6 +361,7 @@ pub struct AdaptiveRateLimiter {
 
 impl AdaptiveRateLimiter {
     /// Create new adaptive rate limiter
+    #[must_use] 
     pub fn new(initial_rate: f64, min_rate: f64, max_rate: f64) -> Self {
         let token_bucket = TokenBucket::new(initial_rate as usize, initial_rate);
 

@@ -53,6 +53,7 @@ where
 /// assert!(validator.validate(&0).is_err());
 /// assert!(validator.validate(&-5).is_err());
 /// ```
+#[must_use] 
 pub fn positive<T>() -> Positive<T>
 where
     T: PartialOrd + Default + Display,
@@ -111,6 +112,7 @@ where
 /// assert!(validator.validate(&0).is_err());
 /// assert!(validator.validate(&5).is_err());
 /// ```
+#[must_use] 
 pub fn negative<T>() -> Negative<T>
 where
     T: PartialOrd + Default + Display,
@@ -166,6 +168,7 @@ where
 /// assert!(validator.validate(&0).is_ok());
 /// assert!(validator.validate(&3).is_err());
 /// ```
+#[must_use] 
 pub fn even<T>() -> Even<T>
 where
     T: Copy + std::ops::Rem<Output = T> + PartialEq + From<u8>,
@@ -194,10 +197,10 @@ where
     type Error = ValidationError;
 
     fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
-        if *input % T::from(2) != T::from(0) {
-            Ok(())
-        } else {
+        if *input % T::from(2) == T::from(0) {
             Err(ValidationError::new("odd", "Number must be odd"))
+        } else {
+            Ok(())
         }
     }
 
@@ -222,6 +225,7 @@ where
 /// assert!(validator.validate(&0).is_err());
 /// assert!(validator.validate(&4).is_err());
 /// ```
+#[must_use] 
 pub fn odd<T>() -> Odd<T>
 where
     T: Copy + std::ops::Rem<Output = T> + PartialEq + From<u8>,

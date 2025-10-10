@@ -1,11 +1,11 @@
 //! High-performance thread-safe arena allocator
 
+use parking_lot::{Mutex, RwLock};
 use std::alloc::{Layout, alloc, dealloc};
 use std::mem;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Arc;
-use parking_lot::{Mutex, RwLock};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use super::{ArenaAllocate, ArenaConfig, ArenaStats};
@@ -190,6 +190,7 @@ impl ThreadSafeArena {
 
     /// Allocates aligned memory block (thread-safe)
     #[inline]
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_bytes_aligned(&self, size: usize, align: usize) -> Result<*mut u8, MemoryError> {
         if !align.is_power_of_two() {
             return Err(MemoryError::invalid_alignment(align));
@@ -230,6 +231,7 @@ impl ThreadSafeArena {
 
     /// Allocates and initializes a value (thread-safe)
     #[inline]
+    #[must_use = "allocated memory must be used"]
     pub fn alloc<T>(&self, value: T) -> Result<&T, MemoryError> {
         let ptr = self.alloc_bytes_aligned(mem::size_of::<T>(), mem::align_of::<T>())? as *mut T;
 
@@ -242,6 +244,7 @@ impl ThreadSafeArena {
 
     /// Allocates and copies a slice (thread-safe)
     #[inline]
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_slice<T: Copy>(&self, slice: &[T]) -> Result<&[T], MemoryError> {
         if slice.is_empty() {
             return Ok(&[]);
@@ -258,6 +261,7 @@ impl ThreadSafeArena {
     }
 
     /// Allocates a string (thread-safe)
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_str(&self, s: &str) -> Result<&str, MemoryError> {
         let bytes = self.alloc_slice(s.as_bytes())?;
         // Safety: Input is valid UTF-8 since it comes from &str

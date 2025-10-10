@@ -36,12 +36,14 @@ impl ConfigWatchEvent {
     }
 
     /// Set the path
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_path(mut self, path: PathBuf) -> Self {
         self.path = Some(path);
         self
     }
 
     /// Set metadata
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
         self.metadata = Some(metadata);
         self

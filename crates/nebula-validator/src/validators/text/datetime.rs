@@ -1,4 +1,4 @@
-//! DateTime validator for ISO 8601 date/time strings.
+//! `DateTime` validator for ISO 8601 date/time strings.
 //!
 //! Validates date and time strings in ISO 8601 format.
 
@@ -12,9 +12,9 @@ use crate::core::{TypedValidator, ValidationComplexity, ValidationError, Validat
 ///
 /// Supports various ISO 8601 formats:
 /// - Date: `YYYY-MM-DD`
-/// - DateTime: `YYYY-MM-DDTHH:MM:SS`
-/// - DateTime with timezone: `YYYY-MM-DDTHH:MM:SS+00:00`
-/// - DateTime with milliseconds: `YYYY-MM-DDTHH:MM:SS.sss`
+/// - `DateTime`: `YYYY-MM-DDTHH:MM:SS`
+/// - `DateTime` with timezone: `YYYY-MM-DDTHH:MM:SS+00:00`
+/// - `DateTime` with milliseconds: `YYYY-MM-DDTHH:MM:SS.sss`
 ///
 /// # Examples
 ///
@@ -44,12 +44,13 @@ pub struct DateTime {
 }
 
 impl DateTime {
-    /// Creates a new DateTime validator with default settings.
+    /// Creates a new `DateTime` validator with default settings.
     ///
     /// Default settings:
-    /// - allow_date_only: true (accepts YYYY-MM-DD)
-    /// - require_timezone: false
-    /// - allow_milliseconds: true
+    /// - `allow_date_only`: true (accepts YYYY-MM-DD)
+    /// - `require_timezone`: false
+    /// - `allow_milliseconds`: true
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             allow_date_only: true,
@@ -59,18 +60,21 @@ impl DateTime {
     }
 
     /// Require full date-time format (no date-only).
+    #[must_use = "builder methods must be chained or built"]
     pub fn require_time(mut self) -> Self {
         self.allow_date_only = false;
         self
     }
 
     /// Require timezone information (Z or ±HH:MM).
+    #[must_use = "builder methods must be chained or built"]
     pub fn require_timezone(mut self) -> Self {
         self.require_timezone = true;
         self
     }
 
     /// Disallow milliseconds in time.
+    #[must_use = "builder methods must be chained or built"]
     pub fn no_milliseconds(mut self) -> Self {
         self.allow_milliseconds = false;
         self
@@ -123,7 +127,7 @@ impl DateTime {
         if day < 1 || day > max_day {
             return Err(ValidationError::new(
                 "invalid_day",
-                format!("Day must be between 1 and {}", max_day),
+                format!("Day must be between 1 and {max_day}"),
             ));
         }
 

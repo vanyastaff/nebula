@@ -144,6 +144,7 @@ pub mod prelude {
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Returns the version string.
+#[must_use] 
 pub fn version() -> &'static str {
     VERSION
 }
@@ -153,6 +154,7 @@ pub fn version() -> &'static str {
 // ============================================================================
 
 /// Returns information about enabled features.
+#[must_use] 
 pub fn features() -> Features {
     Features {
         async_support: cfg!(feature = "async"),
@@ -189,6 +191,7 @@ pub struct Features {
 ///
 /// let result = validate_value("hello", &min_length(5))?;
 /// ```
+#[must_use = "validation result must be checked"]
 pub fn validate_value<V>(value: &V::Input, validator: &V) -> Result<V::Output, V::Error>
 where
     V: TypedValidator,

@@ -8,7 +8,7 @@
 //! - **Unified**: Single error type for all combinators
 //! - **Composable**: Easy to combine and nest errors
 //! - **Debuggable**: Rich context for error diagnosis
-//! - **Interoperable**: Converts to/from ValidationError
+//! - **Interoperable**: Converts to/from `ValidationError`
 //!
 //! # Examples
 //!
@@ -101,6 +101,7 @@ impl<E> CombinatorError<E> {
     }
 
     /// Creates a NOT error when validator unexpectedly passes.
+    #[must_use] 
     pub fn not_passed() -> Self {
         Self::NotValidatorPassed
     }
@@ -122,6 +123,7 @@ impl<E> CombinatorError<E> {
     }
 
     /// Creates a required value missing error.
+    #[must_use] 
     pub fn required_missing() -> Self {
         Self::RequiredValueMissing
     }
@@ -132,6 +134,7 @@ impl<E> CombinatorError<E> {
     }
 
     /// Creates a multiple failures error.
+    #[must_use] 
     pub fn multiple_failed(errors: Vec<E>) -> Self {
         Self::MultipleFailed(errors)
     }
@@ -171,32 +174,32 @@ impl<E: fmt::Display> fmt::Display for CombinatorError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OrAllFailed { left, right } => {
-                write!(f, "All validators failed. Left: {}; Right: {}", left, right)
+                write!(f, "All validators failed. Left: {left}; Right: {right}")
             }
             Self::AndFailed(e) => {
-                write!(f, "AND combinator failed: {}", e)
+                write!(f, "AND combinator failed: {e}")
             }
             Self::NotValidatorPassed => {
                 write!(f, "Validation must NOT pass, but it did")
             }
             Self::FieldFailed { field_name, error } => {
                 if let Some(name) = field_name {
-                    write!(f, "Validation failed for field '{}': {}", name, error)
+                    write!(f, "Validation failed for field '{name}': {error}")
                 } else {
-                    write!(f, "Validation failed for field: {}", error)
+                    write!(f, "Validation failed for field: {error}")
                 }
             }
             Self::RequiredValueMissing => {
                 write!(f, "Value is required but was None")
             }
             Self::ValidationFailed(e) => {
-                write!(f, "Validation failed: {}", e)
+                write!(f, "Validation failed: {e}")
             }
             Self::MultipleFailed(errors) => {
                 write!(f, "Multiple validations failed ({} errors)", errors.len())
             }
             Self::Custom { code, message } => {
-                write!(f, "[{}] {}", code, message)
+                write!(f, "[{code}] {message}")
             }
         }
     }
@@ -210,9 +213,8 @@ impl<E: std::error::Error + 'static> std::error::Error for CombinatorError<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::OrAllFailed { left, .. } => Some(left.as_ref()),
-            Self::AndFailed(e) => Some(e),
+            Self::AndFailed(e) | Self::ValidationFailed(e) => Some(e),
             Self::FieldFailed { error, .. } => Some(error.as_ref()),
-            Self::ValidationFailed(e) => Some(e),
             Self::MultipleFailed(errors) if !errors.is_empty() => Some(&errors[0]),
             _ => None,
         }
@@ -241,10 +243,10 @@ where
         match error {
             CombinatorError::OrAllFailed { left, right } => ValidationError::new(
                 "or_all_failed",
-                format!("All validators failed. Left: {}; Right: {}", left, right),
+                format!("All validators failed. Left: {left}; Right: {right}"),
             ),
             CombinatorError::AndFailed(e) => {
-                ValidationError::new("and_failed", format!("AND combinator failed: {}", e))
+                ValidationError::new("and_failed", format!("AND combinator failed: {e}"))
             }
             CombinatorError::NotValidatorPassed => ValidationError::new(
                 "not_validator_passed",
@@ -253,7 +255,7 @@ where
             CombinatorError::FieldFailed { field_name, error } => {
                 let mut ve = ValidationError::new(
                     "field_validation_failed",
-                    format!("Field validation failed: {}", error),
+                    format!("Field validation failed: {error}"),
                 );
                 if let Some(name) = field_name {
                     ve = ve.with_field(&name);
@@ -264,7 +266,7 @@ where
                 ValidationError::new("required", "Value is required but was None")
             }
             CombinatorError::ValidationFailed(e) => {
-                ValidationError::new("validation_failed", format!("{}", e))
+                ValidationError::new("validation_failed", format!("{e}"))
             }
             CombinatorError::MultipleFailed(errors) => {
                 let mut ve = ValidationError::new(
@@ -274,7 +276,7 @@ where
                 // Add nested errors
                 let nested: Vec<ValidationError> = errors
                     .into_iter()
-                    .map(|e| ValidationError::new("nested_error", format!("{}", e)))
+                    .map(|e| ValidationError::new("nested_error", format!("{e}")))
                     .collect();
                 ve = ve.with_nested(nested);
                 ve

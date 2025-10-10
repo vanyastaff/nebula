@@ -38,6 +38,7 @@ impl FileLoader {
     }
 
     /// Set whether to allow missing files
+    #[must_use = "builder methods must be chained or built"]
     pub fn allow_missing(mut self, allow: bool) -> Self {
         self.allow_missing = allow;
         self

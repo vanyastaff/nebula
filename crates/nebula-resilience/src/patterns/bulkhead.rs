@@ -227,14 +227,14 @@ impl BulkheadBuilder {
     }
 
     /// Set the maximum queue size
-    #[must_use]
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_queue_size(mut self, queue_size: usize) -> Self {
         self.config.queue_size = queue_size;
         self
     }
 
     /// Set the timeout for acquiring permits
-    #[must_use]
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
         self.config.timeout = timeout;
         self

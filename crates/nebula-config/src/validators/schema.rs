@@ -32,12 +32,14 @@ impl SchemaValidator {
     }
 
     /// Set whether to allow additional properties
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_allow_additional(mut self, allow: bool) -> Self {
         self.allow_additional = allow;
         self
     }
 
     /// Set whether to coerce types
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_coerce_types(mut self, coerce: bool) -> Self {
         self.coerce_types = coerce;
         self

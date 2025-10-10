@@ -90,6 +90,7 @@ impl<T: Poolable> ObjectPool<T> {
     }
 
     /// Set callbacks for pool events
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_callbacks<C: PoolCallbacks<T> + 'static>(mut self, callbacks: C) -> Self {
         self.callbacks = Box::new(callbacks);
         self

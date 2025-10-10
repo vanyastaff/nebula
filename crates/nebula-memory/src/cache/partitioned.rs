@@ -94,18 +94,21 @@ impl PartitionedConfig {
     }
 
     /// Set hash strategy
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_hash_strategy(mut self, strategy: HashStrategy) -> Self {
         self.hash_strategy = strategy;
         self
     }
 
     /// Enable partition metrics
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_partition_metrics(mut self) -> Self {
         self.partition_metrics = true;
         self
     }
 
     /// Enable auto rebalancing
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_auto_rebalance(mut self, threshold: f32) -> Self {
         self.auto_rebalance = true;
         self.rebalance_threshold = threshold;
@@ -113,6 +116,7 @@ impl PartitionedConfig {
     }
 
     /// Set concurrency level
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_concurrency_level(mut self, level: usize) -> Self {
         self.concurrency_level = level.max(1);
         self

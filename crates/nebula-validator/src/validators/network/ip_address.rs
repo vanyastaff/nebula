@@ -40,6 +40,7 @@ pub struct IpAddress {
 
 impl IpAddress {
     /// Creates a new IP address validator (allows both IPv4 and IPv6).
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             allow_v4: true,
@@ -48,6 +49,7 @@ impl IpAddress {
     }
 
     /// Only allow IPv4 addresses.
+    #[must_use = "builder methods must be chained or built"]
     pub fn v4_only(mut self) -> Self {
         self.allow_v4 = true;
         self.allow_v6 = false;
@@ -55,6 +57,7 @@ impl IpAddress {
     }
 
     /// Only allow IPv6 addresses.
+    #[must_use = "builder methods must be chained or built"]
     pub fn v6_only(mut self) -> Self {
         self.allow_v4 = false;
         self.allow_v6 = true;
@@ -62,6 +65,7 @@ impl IpAddress {
     }
 
     /// Check if address is private (RFC 1918, RFC 4193).
+    #[must_use] 
     pub fn is_private(&self, addr: &IpAddr) -> bool {
         match addr {
             IpAddr::V4(ipv4) => {
@@ -80,6 +84,7 @@ impl IpAddress {
     }
 
     /// Check if address is loopback.
+    #[must_use] 
     pub fn is_loopback(&self, addr: &IpAddr) -> bool {
         addr.is_loopback()
     }
@@ -100,7 +105,7 @@ impl TypedValidator for IpAddress {
         let addr = IpAddr::from_str(input).map_err(|_| {
             ValidationError::new(
                 "invalid_ip_address",
-                format!("'{}' is not a valid IP address", input),
+                format!("'{input}' is not a valid IP address"),
             )
         })?;
 
@@ -151,7 +156,7 @@ impl TypedValidator for Ipv4 {
         Ipv4Addr::from_str(input).map_err(|_| {
             ValidationError::new(
                 "invalid_ipv4",
-                format!("'{}' is not a valid IPv4 address", input),
+                format!("'{input}' is not a valid IPv4 address"),
             )
         })
     }
@@ -187,7 +192,7 @@ impl TypedValidator for Ipv6 {
         Ipv6Addr::from_str(input).map_err(|_| {
             ValidationError::new(
                 "invalid_ipv6",
-                format!("'{}' is not a valid IPv6 address", input),
+                format!("'{input}' is not a valid IPv6 address"),
             )
         })
     }

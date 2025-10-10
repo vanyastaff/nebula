@@ -9,7 +9,7 @@
 //! - **Numeric**: Range, properties (even, odd, positive)
 //! - **Collection**: Size, elements, structure
 //! - **Logical**: Boolean, nullable
-//! - **Bridge**: Legacy support for nebula-value::Value
+//! - **Bridge**: Legacy support for `nebula-value::Value`
 //!
 //! # Examples
 //!
@@ -37,19 +37,31 @@ pub mod string;
 pub mod text;
 
 // Re-export all validators
+#[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
 pub use collection::*;
+#[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
 pub use logical::*;
+#[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
 pub use network::*;
+#[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
 pub use numeric::*;
+#[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
 pub use string::*;
+#[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
 pub use text::*;
 
 /// Prelude with all validators.
 pub mod prelude {
+    #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
     pub use super::collection::prelude::*;
+    #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
     pub use super::logical::prelude::*;
+    #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
     pub use super::network::*;
+    #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
     pub use super::numeric::prelude::*;
+    #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
     pub use super::string::prelude::*;
+    #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
     pub use super::text::*;
 }

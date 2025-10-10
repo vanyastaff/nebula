@@ -50,10 +50,11 @@ impl Uuid {
     /// Creates a new UUID validator with default settings.
     ///
     /// Default settings:
-    /// - allow_uppercase: true
-    /// - allow_lowercase: true
-    /// - allow_braces: false
-    /// - specific_version: None (any version)
+    /// - `allow_uppercase`: true
+    /// - `allow_lowercase`: true
+    /// - `allow_braces`: false
+    /// - `specific_version`: None (any version)
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             allow_uppercase: true,
@@ -64,24 +65,28 @@ impl Uuid {
     }
 
     /// Only allow uppercase hex digits.
+    #[must_use = "builder methods must be chained or built"]
     pub fn uppercase_only(mut self) -> Self {
         self.allow_lowercase = false;
         self
     }
 
     /// Only allow lowercase hex digits.
+    #[must_use = "builder methods must be chained or built"]
     pub fn lowercase_only(mut self) -> Self {
         self.allow_uppercase = false;
         self
     }
 
     /// Allow UUID wrapped in braces: `{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}`.
+    #[must_use = "builder methods must be chained or built"]
     pub fn allow_braces(mut self) -> Self {
         self.allow_braces = true;
         self
     }
 
     /// Only accept specific UUID version (1-5).
+    #[must_use = "builder methods must be chained or built"]
     pub fn version(mut self, version: u8) -> Self {
         self.specific_version = Some(version);
         self
@@ -167,7 +172,7 @@ impl TypedValidator for Uuid {
             if uuid.chars().nth(pos) != Some('-') {
                 return Err(ValidationError::new(
                     "invalid_uuid_format",
-                    format!("Expected hyphen at position {}", pos),
+                    format!("Expected hyphen at position {pos}"),
                 ));
             }
         }
@@ -189,8 +194,7 @@ impl TypedValidator for Uuid {
                 return Err(ValidationError::new(
                     "invalid_uuid_char",
                     format!(
-                        "Invalid UUID character '{}' at position {}{}",
-                        c, i, case_hint
+                        "Invalid UUID character '{c}' at position {i}{case_hint}"
                     ),
                 ));
             }
@@ -203,8 +207,7 @@ impl TypedValidator for Uuid {
                     return Err(ValidationError::new(
                         "invalid_uuid_version",
                         format!(
-                            "Expected UUID version {}, found {}",
-                            expected_version, version
+                            "Expected UUID version {expected_version}, found {version}"
                         ),
                     ));
                 }
@@ -223,8 +226,7 @@ impl TypedValidator for Uuid {
                 return Err(ValidationError::new(
                     "invalid_uuid_variant",
                     format!(
-                        "Invalid UUID variant (expected RFC 4122, found variant bits: {:x})",
-                        variant
+                        "Invalid UUID variant (expected RFC 4122, found variant bits: {variant:x})"
                     ),
                 ));
             }

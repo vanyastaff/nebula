@@ -40,6 +40,7 @@ pub struct HedgeExecutor {
 
 impl HedgeExecutor {
     /// Create new hedge executor
+    #[must_use] 
     pub fn new(config: HedgeConfig) -> Self {
         Self { config }
     }
@@ -72,7 +73,7 @@ impl HedgeExecutor {
                     // Primary completed first
                     return result;
                 }
-                Either::Right((_, _)) => {
+                Either::Right(((), _)) => {
                     // Delay expired, send hedge request
                     if hedges_sent < self.config.max_hedges {
                         hedge_futures.push(Box::pin(operation()));
@@ -92,7 +93,7 @@ impl HedgeExecutor {
             }
 
             // Check if any hedge completed
-            for (_i, hedge) in hedge_futures.iter_mut().enumerate() {
+            for hedge in &mut hedge_futures {
                 if let Some(result) = hedge.now_or_never() {
                     return result;
                 }
@@ -126,6 +127,7 @@ pub struct AdaptiveHedgeExecutor {
 
 impl AdaptiveHedgeExecutor {
     /// Create new adaptive hedge executor
+    #[must_use] 
     pub fn new(config: HedgeConfig) -> Self {
         Self {
             base_config: config,
@@ -135,6 +137,7 @@ impl AdaptiveHedgeExecutor {
     }
 
     /// Set target percentile for hedge delay calculation
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_target_percentile(mut self, percentile: f64) -> Self {
         self.target_percentile = percentile;
         self
@@ -223,6 +226,7 @@ pub struct BimodalHedgeExecutor {
 
 impl BimodalHedgeExecutor {
     /// Create new bimodal hedge executor
+    #[must_use] 
     pub fn new(
         fast_threshold: Duration,
         fast_config: HedgeConfig,
@@ -252,7 +256,7 @@ impl BimodalHedgeExecutor {
                 // Operation completed within fast threshold
                 return result;
             }
-            _ = sleep(self.fast_threshold) => {
+            () = sleep(self.fast_threshold) => {
                 // Operation is slow, use slow config
                 let executor = HedgeExecutor::new(self.slow_config.clone());
                 return executor.execute(operation).await;

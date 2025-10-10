@@ -779,24 +779,28 @@ impl MemoryConfigBuilder {
     }
 
     /// Set allocator configuration
+    #[must_use = "builder methods must be chained or built"]
     pub fn allocator(mut self, allocator: AllocatorConfig) -> Self {
         self.config.allocator = allocator;
         self
     }
 
     /// Set the default allocator type
+    #[must_use = "builder methods must be chained or built"]
     pub fn default_allocator(mut self, allocator_type: AllocatorType) -> Self {
         self.config.allocator.default_allocator = allocator_type;
         self
     }
 
     /// Set maximum allocation size
+    #[must_use = "builder methods must be chained or built"]
     pub fn max_allocation_size(mut self, size: usize) -> Self {
         self.config.allocator.max_allocation_size = size;
         self
     }
 
     /// Enable or disable allocation tracking
+    #[must_use = "builder methods must be chained or built"]
     pub fn enable_tracking(mut self, enable: bool) -> Self {
         self.config.allocator.enable_tracking = enable;
         self
@@ -804,6 +808,7 @@ impl MemoryConfigBuilder {
 
     #[cfg(feature = "pool")]
     /// Set pool configuration
+    #[must_use = "builder methods must be chained or built"]
     pub fn pool(mut self, pool: PoolConfig) -> Self {
         self.config.pool = pool;
         self
@@ -811,6 +816,7 @@ impl MemoryConfigBuilder {
 
     #[cfg(feature = "arena")]
     /// Set arena configuration
+    #[must_use = "builder methods must be chained or built"]
     pub fn arena(mut self, arena: ArenaConfig) -> Self {
         self.config.arena = arena;
         self
@@ -818,6 +824,7 @@ impl MemoryConfigBuilder {
 
     #[cfg(feature = "cache")]
     /// Set cache configuration
+    #[must_use = "builder methods must be chained or built"]
     pub fn cache(mut self, cache: CacheConfig) -> Self {
         self.config.cache = cache;
         self

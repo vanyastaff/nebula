@@ -42,7 +42,7 @@
 //! }
 //! ```
 
-use crate::core::{TypedValidator, ValidationError};
+use crate::core::TypedValidator;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
@@ -109,6 +109,7 @@ where
     /// let invalid = Refined::new("hi".to_string(), &validator);
     /// assert!(invalid.is_err());
     /// ```
+    #[must_use = "validation result must be checked"]
     pub fn new(value: T, validator: &V) -> Result<Self, V::Error> {
         validator.validate(value.borrow())?;
         Ok(Self {
@@ -208,6 +209,7 @@ impl<T, V> Refined<T, V> {
     ///     &validator
     /// )?;
     /// ```
+    #[must_use = "mapped value must be used"]
     pub fn try_map<U, F>(self, f: F, validator: &V) -> Result<Refined<U, V>, V::Error>
     where
         F: FnOnce(T) -> U,
@@ -228,6 +230,7 @@ impl<T, V> Refined<T, V> {
     /// let min_validated = Refined::new("hello".to_string(), &min_validator)?;
     /// let fully_validated = min_validated.refine(&max_validator)?;
     /// ```
+    #[must_use = "refined value must be used"]
     pub fn refine<V2>(self, validator: &V2) -> Result<Refined<T, V2>, V2::Error>
     where
         V2: TypedValidator<Output = ()>,
@@ -334,6 +337,7 @@ impl<T, V> Refined<T, V> {
     /// Attempts to create a refined type from a reference.
     ///
     /// This clones the value if validation succeeds.
+    #[must_use = "validation result must be checked"]
     pub fn try_from_ref(value: &T, validator: &V) -> Result<Self, V::Error>
     where
         T: Clone,

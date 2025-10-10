@@ -38,6 +38,7 @@ impl LocalArena {
     }
 
     /// Allocates raw memory in arena
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_bytes(&self, size: usize, align: usize) -> Result<NonNull<u8>, MemoryError> {
         self.arena
             .alloc_bytes_aligned(size, align)
@@ -45,6 +46,7 @@ impl LocalArena {
     }
 
     /// Allocates and initializes a value
+    #[must_use = "allocated memory must be used"]
     pub fn alloc<T>(&self, value: T) -> Result<LocalRef<T>, MemoryError> {
         Ok(LocalRef {
             ptr: self.arena.alloc(value)?.into(),
@@ -54,6 +56,7 @@ impl LocalArena {
     }
 
     /// Allocates uninitialized memory
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_uninit<T>(&self) -> Result<LocalRefMut<MaybeUninit<T>>, MemoryError> {
         Ok(LocalRefMut {
             ptr: self.arena.alloc_uninit::<T>()?.into(),
@@ -63,6 +66,7 @@ impl LocalArena {
     }
 
     /// Allocates and copies a slice
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_slice<T: Copy>(&self, slice: &[T]) -> Result<LocalRef<[T]>, MemoryError> {
         Ok(LocalRef {
             ptr: self.arena.alloc_slice(slice)?.into(),
@@ -72,6 +76,7 @@ impl LocalArena {
     }
 
     /// Allocates a string
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_str(&self, s: &str) -> Result<LocalRef<str>, MemoryError> {
         Ok(LocalRef {
             ptr: self.arena.alloc_str(s)?.into(),
@@ -205,6 +210,7 @@ where
 }
 
 /// Allocates value in thread-local arena
+#[must_use = "allocated memory must be used"]
 pub fn alloc_local<T>(value: T) -> Result<LocalRef<T>, MemoryError> {
     with_local_arena(|arena| arena.alloc(value))
 }

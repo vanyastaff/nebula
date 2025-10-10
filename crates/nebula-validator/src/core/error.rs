@@ -53,7 +53,7 @@ use std::fmt;
 pub struct ValidationError {
     /// Error code for programmatic handling and i18n.
     ///
-    /// Examples: "min_length", "email_invalid", "required"
+    /// Examples: "`min_length`", "`email_invalid`", "required"
     pub code: String,
 
     /// Human-readable error message in English.
@@ -86,8 +86,10 @@ pub struct ValidationError {
 
 /// Severity level of a validation error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ErrorSeverity {
     /// Error that must be fixed (default).
+    #[default]
     Error,
     /// Warning that should be addressed but doesn't block validation.
     Warning,
@@ -95,11 +97,6 @@ pub enum ErrorSeverity {
     Info,
 }
 
-impl Default for ErrorSeverity {
-    fn default() -> Self {
-        Self::Error
-    }
-}
 
 impl ValidationError {
     /// Creates a new validation error with a code and message.
@@ -140,6 +137,7 @@ impl ValidationError {
     ///     .with_field("user.email");
     /// assert_eq!(error.field.unwrap(), "user.email");
     /// ```
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_field(mut self, field: impl Into<String>) -> Self {
         self.field = Some(field.into());
         self
@@ -159,6 +157,7 @@ impl ValidationError {
     ///     .with_param("max", "100")
     ///     .with_param("actual", "150");
     /// ```
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_param(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.params.insert(key.into(), value.into());
         self
@@ -179,6 +178,7 @@ impl ValidationError {
     /// let error = ValidationError::new("length", "Invalid length")
     ///     .with_params(params);
     /// ```
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_params(mut self, params: HashMap<String, String>) -> Self {
         self.params.extend(params);
         self
@@ -199,12 +199,14 @@ impl ValidationError {
     ///         ValidationError::new("age", "Must be 18+").with_field("age"),
     ///     ]);
     /// ```
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_nested(mut self, errors: Vec<ValidationError>) -> Self {
         self.nested = errors;
         self
     }
 
     /// Adds a single nested error.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_nested_error(mut self, error: ValidationError) -> Self {
         self.nested.push(error);
         self
@@ -220,6 +222,7 @@ impl ValidationError {
     /// let warning = ValidationError::new("deprecated", "This field is deprecated")
     ///     .with_severity(ErrorSeverity::Warning);
     /// ```
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_severity(mut self, severity: ErrorSeverity) -> Self {
         self.severity = severity;
         self
@@ -235,26 +238,30 @@ impl ValidationError {
     /// let error = ValidationError::new("email", "Invalid email")
     ///     .with_help("Email should be in format: user@example.com");
     /// ```
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
         self.help = Some(help.into());
         self
     }
 
     /// Returns true if this error has nested errors.
+    #[must_use] 
     pub fn has_nested(&self) -> bool {
         !self.nested.is_empty()
     }
 
     /// Returns the number of errors (including nested).
+    #[must_use] 
     pub fn total_error_count(&self) -> usize {
         1 + self
             .nested
             .iter()
-            .map(|e| e.total_error_count())
+            .map(ValidationError::total_error_count)
             .sum::<usize>()
     }
 
     /// Flattens all errors into a single list (depth-first).
+    #[must_use] 
     pub fn flatten(&self) -> Vec<&ValidationError> {
         let mut result = vec![self];
         for nested in &self.nested {
@@ -293,7 +300,7 @@ impl fmt::Display for ValidationError {
         }
 
         if let Some(help) = &self.help {
-            write!(f, "\n  Help: {}", help)?;
+            write!(f, "\n  Help: {help}")?;
         }
 
         if !self.nested.is_empty() {
@@ -319,30 +326,30 @@ impl ValidationError {
         Self::new("required", "This field is required").with_field(field)
     }
 
-    /// Creates a "min_length" error.
+    /// Creates a "`min_length`" error.
     pub fn min_length(field: impl Into<String>, min: usize, actual: usize) -> Self {
-        Self::new("min_length", format!("Must be at least {} characters", min))
+        Self::new("min_length", format!("Must be at least {min} characters"))
             .with_field(field)
             .with_param("min", min.to_string())
             .with_param("actual", actual.to_string())
     }
 
-    /// Creates a "max_length" error.
+    /// Creates a "`max_length`" error.
     pub fn max_length(field: impl Into<String>, max: usize, actual: usize) -> Self {
-        Self::new("max_length", format!("Must be at most {} characters", max))
+        Self::new("max_length", format!("Must be at most {max} characters"))
             .with_field(field)
             .with_param("max", max.to_string())
             .with_param("actual", actual.to_string())
     }
 
-    /// Creates an "invalid_format" error.
+    /// Creates an "`invalid_format`" error.
     pub fn invalid_format(field: impl Into<String>, expected: impl Into<String>) -> Self {
         Self::new("invalid_format", "Invalid format")
             .with_field(field)
             .with_param("expected", expected.into())
     }
 
-    /// Creates a "type_mismatch" error.
+    /// Creates a "`type_mismatch`" error.
     pub fn type_mismatch(
         field: impl Into<String>,
         expected: impl Into<String>,
@@ -363,7 +370,7 @@ impl ValidationError {
     ) -> Self {
         Self::new(
             "out_of_range",
-            format!("Value must be between {} and {}", min, max),
+            format!("Value must be between {min} and {max}"),
         )
         .with_field(field)
         .with_param("min", min.to_string())
@@ -391,6 +398,7 @@ pub struct ValidationErrors {
 
 impl ValidationErrors {
     /// Creates a new empty error collection.
+    #[must_use] 
     pub fn new() -> Self {
         Self { errors: Vec::new() }
     }
@@ -406,21 +414,25 @@ impl ValidationErrors {
     }
 
     /// Returns true if there are any errors.
+    #[must_use] 
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
     }
 
     /// Returns the number of errors.
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.errors.len()
     }
 
     /// Returns true if empty.
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.errors.is_empty()
     }
 
     /// Returns all errors.
+    #[must_use] 
     pub fn errors(&self) -> &[ValidationError] {
         &self.errors
     }
@@ -431,6 +443,7 @@ impl ValidationErrors {
     }
 
     /// Converts to a Result.
+    #[must_use = "result must be used"]
     pub fn into_result<T>(self, ok_value: T) -> Result<T, ValidationErrors> {
         if self.is_empty() {
             Ok(ok_value)
@@ -529,13 +542,13 @@ mod tests {
 // NEBULA ERROR INTEGRATION
 // ============================================================================
 
-/// Convert ValidationError to NebulaError
+/// Convert `ValidationError` to `NebulaError`
 impl From<ValidationError> for nebula_error::NebulaError {
     fn from(err: ValidationError) -> Self {
         let mut message = format!("[{}] {}", err.code, err.message);
 
         if let Some(field) = &err.field {
-            message = format!("{} (field: {})", message, field);
+            message = format!("{message} (field: {field})");
         }
 
         if !err.params.is_empty() {
@@ -546,7 +559,7 @@ impl From<ValidationError> for nebula_error::NebulaError {
     }
 }
 
-/// Convert NebulaError to ValidationError
+/// Convert `NebulaError` to `ValidationError`
 impl From<nebula_error::NebulaError> for ValidationError {
     fn from(err: nebula_error::NebulaError) -> Self {
         ValidationError::new("nebula_error", err.to_string())

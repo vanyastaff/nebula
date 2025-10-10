@@ -35,16 +35,19 @@ impl<'a> ResourceContext<'a> {
         }
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_search(mut self, search: String) -> Self {
         self.search = Some(search);
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_pagination(mut self, pagination: Pagination) -> Self {
         self.pagination = Some(pagination);
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_data(mut self, data: nebula_value::Value) -> Self {
         self.data = Some(data);
         self
@@ -138,12 +141,14 @@ impl ResourceParameter {
     }
 
     /// Set options
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_options(mut self, options: ResourceParameterOptions) -> Self {
         self.options = Some(options);
         self
     }
 
     /// Set the resource loader
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_loader<F>(mut self, loader: F) -> Self
     where
         F: Fn(&ResourceContext<'_>) -> Result<OptionsResponse, ParameterError>

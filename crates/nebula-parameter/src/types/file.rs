@@ -76,16 +76,19 @@ impl FileReference {
         }
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_size(mut self, size: u64) -> Self {
         self.size = Some(size);
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_mime_type(mut self, mime_type: impl Into<String>) -> Self {
         self.mime_type = Some(mime_type.into());
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn as_temporary(mut self) -> Self {
         self.is_temporary = true;
         self
@@ -96,21 +99,27 @@ impl FileReference {
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
 pub struct FileParameter {
     #[serde(flatten)]
+    /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Current value of the parameter
     pub value: Option<FileReference>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Default value if parameter is not set
     pub default: Option<FileReference>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Configuration options for this parameter type
     pub options: Option<FileParameterOptions>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Display rules controlling when this parameter is shown
     pub display: Option<ParameterDisplay>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Validation rules for this parameter
     pub validation: Option<ParameterValidation>,
 }
 

@@ -59,7 +59,7 @@ where
     }
 
     fn is_retryable_error(&self) -> bool {
-        matches!(self, Err(_))
+        self.is_err()
     }
 
     fn error_class(&self) -> Option<ErrorClass> {
@@ -149,11 +149,13 @@ pub enum ErrorStrategy {
 
 impl ErrorCollector {
     /// Create new error collector
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set error strategy
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_strategy(mut self, strategy: ErrorStrategy) -> Self {
         self.strategy = strategy;
         self
@@ -176,6 +178,7 @@ impl ErrorCollector {
     }
 
     /// Check if any errors collected
+    #[must_use] 
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
     }
@@ -208,10 +211,10 @@ impl ErrorCollector {
                 Err(most_severe)
             }
             ErrorStrategy::CombineAll => {
-                let messages: Vec<String> = self.errors.iter().map(|e| e.to_string()).collect();
+                let messages: Vec<String> = self.errors.iter().map(std::string::ToString::to_string).collect();
                 Err(ResilienceError::Custom {
                     message: format!("Multiple errors: {}", messages.join("; ")),
-                    retryable: self.errors.iter().any(|e| e.is_retryable()),
+                    retryable: self.errors.iter().any(super::error::ResilienceError::is_retryable),
                     source: None,
                 })
             }

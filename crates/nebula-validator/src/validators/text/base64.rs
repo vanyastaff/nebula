@@ -56,8 +56,9 @@ impl Base64 {
     ///
     /// Default settings:
     /// - alphabet: Standard
-    /// - require_padding: false (padding is optional)
-    /// - allow_whitespace: false
+    /// - `require_padding`: false (padding is optional)
+    /// - `allow_whitespace`: false
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             alphabet: Base64Alphabet::Standard,
@@ -67,18 +68,21 @@ impl Base64 {
     }
 
     /// Use URL-safe alphabet (- and _ instead of + and /).
+    #[must_use = "builder methods must be chained or built"]
     pub fn url_safe(mut self) -> Self {
         self.alphabet = Base64Alphabet::UrlSafe;
         self
     }
 
     /// Allow both standard and URL-safe characters.
+    #[must_use = "builder methods must be chained or built"]
     pub fn mixed_alphabet(mut self) -> Self {
         self.alphabet = Base64Alphabet::Mixed;
         self
     }
 
     /// Require padding with `=` characters.
+    #[must_use = "builder methods must be chained or built"]
     pub fn require_padding(mut self) -> Self {
         self.require_padding = true;
         self
@@ -86,6 +90,7 @@ impl Base64 {
 
     /// Allow whitespace characters (space, tab, newline) in the input.
     /// Whitespace will be ignored during validation.
+    #[must_use = "builder methods must be chained or built"]
     pub fn allow_whitespace(mut self) -> Self {
         self.allow_whitespace = true;
         self
@@ -162,8 +167,7 @@ impl TypedValidator for Base64 {
                 return Err(ValidationError::new(
                     "invalid_base64_padding",
                     format!(
-                        "Expected {} padding characters, found {}",
-                        expected_padding, padding_count
+                        "Expected {expected_padding} padding characters, found {padding_count}"
                     ),
                 ));
             }
@@ -189,8 +193,7 @@ impl TypedValidator for Base64 {
                 return Err(ValidationError::new(
                     "invalid_base64_char",
                     format!(
-                        "Invalid Base64 character '{}' at position {}{}",
-                        c, i, alphabet_hint
+                        "Invalid Base64 character '{c}' at position {i}{alphabet_hint}"
                     ),
                 ));
             }
@@ -205,7 +208,7 @@ impl TypedValidator for Base64 {
         }
 
         // Validate length (with padding, must be multiple of 4)
-        if padding_count > 0 && cleaned.len() % 4 != 0 {
+        if padding_count > 0 && !cleaned.len().is_multiple_of(4) {
             return Err(ValidationError::new(
                 "invalid_base64_length",
                 "Base64 string with padding must have length that is a multiple of 4",

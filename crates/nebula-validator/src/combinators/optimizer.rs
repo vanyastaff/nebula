@@ -42,6 +42,7 @@ pub struct ValidatorChainOptimizer {
 
 impl ValidatorChainOptimizer {
     /// Creates a new optimizer with default settings.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             reorder_by_complexity: true,
@@ -51,18 +52,21 @@ impl ValidatorChainOptimizer {
     }
 
     /// Enables or disables complexity-based reordering.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_reorder_by_complexity(mut self, enabled: bool) -> Self {
         self.reorder_by_complexity = enabled;
         self
     }
 
     /// Enables or disables short-circuit optimization.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_short_circuit(mut self, enabled: bool) -> Self {
         self.short_circuit = enabled;
         self
     }
 
     /// Sets minimum complexity difference for reordering.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_min_complexity_diff(mut self, diff: u32) -> Self {
         self.min_complexity_diff = diff;
         self
@@ -71,12 +75,13 @@ impl ValidatorChainOptimizer {
     /// Checks if one validator should run before another.
     ///
     /// Returns true if `a` should run before `b`.
+    #[must_use] 
     pub fn should_run_first(&self, meta_a: &ValidatorMetadata, meta_b: &ValidatorMetadata) -> bool {
         if !self.reorder_by_complexity {
             return false; // No reordering
         }
 
-        let complexity_diff = meta_b.complexity.score() as i32 - meta_a.complexity.score() as i32;
+        let complexity_diff = i32::from(meta_b.complexity.score()) - i32::from(meta_a.complexity.score());
 
         // Only reorder if difference is significant
         if complexity_diff.unsigned_abs() < self.min_complexity_diff {
@@ -199,6 +204,7 @@ impl ValidatorChainOptimizer {
     /// let optimized = optimizer.optimize_chain(validators);
     /// // Result: [cheap_validator, medium_validator, expensive_validator]
     /// ```
+    #[must_use] 
     pub fn optimize_chain<V>(&self, validators: Vec<V>) -> Vec<V>
     where
         V: TypedValidator,
@@ -224,6 +230,7 @@ impl ValidatorChainOptimizer {
     /// Optimizes a chain using runtime statistics.
     ///
     /// Considers both complexity and selectivity scores from stats.
+    #[must_use] 
     pub fn optimize_chain_with_stats<V>(&self, validators: Vec<(V, ValidatorStats)>) -> Vec<V>
     where
         V: TypedValidator,
@@ -237,7 +244,7 @@ impl ValidatorChainOptimizer {
             .map(|(v, stats)| {
                 let meta = v.metadata();
                 // Combined score: lower complexity + higher selectivity = run first
-                let complexity_score = meta.complexity.score() as f64;
+                let complexity_score = f64::from(meta.complexity.score());
                 let selectivity_score = stats.selectivity_score();
 
                 // Lower score = run first
@@ -270,26 +277,28 @@ impl Default for ValidatorChainOptimizer {
 /// Report of optimization analysis.
 #[derive(Debug, Clone)]
 pub struct OptimizationReport {
-    /// Original complexity of the validator.
+    /// The original complexity level of the validator.
     pub original_complexity: ValidationComplexity,
 
-    /// Whether the validator is cacheable.
+    /// Whether the validator supports caching of results.
     pub cacheable: bool,
 
-    /// Estimated performance improvement multiplier.
+    /// The estimated performance improvement multiplier from optimization.
     pub estimated_speedup: f64,
 
-    /// Optimization recommendations.
+    /// A list of optimization recommendations for the validator.
     pub recommendations: Vec<String>,
 }
 
 impl OptimizationReport {
     /// Checks if optimization is recommended.
+    #[must_use] 
     pub fn is_optimization_recommended(&self) -> bool {
         !self.recommendations.is_empty() || self.estimated_speedup > 1.1
     }
 
     /// Returns a human-readable summary.
+    #[must_use] 
     pub fn summary(&self) -> String {
         let mut lines = vec![
             format!("Complexity: {:?}", self.original_complexity),
@@ -300,7 +309,7 @@ impl OptimizationReport {
         if !self.recommendations.is_empty() {
             lines.push("Recommendations:".to_string());
             for rec in &self.recommendations {
-                lines.push(format!("  - {}", rec));
+                lines.push(format!("  - {rec}"));
             }
         }
 
@@ -317,7 +326,7 @@ pub trait ValidatorOrdering: TypedValidator {
     /// Returns the optimization priority score (lower = run earlier).
     fn optimization_priority(&self) -> i32 {
         let metadata = self.metadata();
-        metadata.complexity.score() as i32
+        i32::from(metadata.complexity.score())
     }
 
     /// Checks if this validator should run before another.
@@ -351,6 +360,7 @@ pub enum OptimizationStrategy {
 
 impl OptimizationStrategy {
     /// Returns a description of the strategy.
+    #[must_use] 
     pub fn description(&self) -> &str {
         match self {
             Self::None => "No optimization applied",
@@ -361,6 +371,7 @@ impl OptimizationStrategy {
     }
 
     /// Applies the strategy to determine run order.
+    #[must_use] 
     pub fn compare_validators(
         &self,
         meta_a: &ValidatorMetadata,
@@ -390,12 +401,12 @@ impl OptimizationStrategy {
 
                 // Higher selectivity = more likely to fail = run first
                 // If no stats, fall back to complexity
-                if selectivity_a != selectivity_b {
+                if selectivity_a == selectivity_b {
+                    meta_a.complexity.cmp(&meta_b.complexity)
+                } else {
                     selectivity_b
                         .partial_cmp(&selectivity_a)
                         .unwrap_or(Ordering::Equal)
-                } else {
-                    meta_a.complexity.cmp(&meta_b.complexity)
                 }
             }
 
@@ -424,21 +435,22 @@ impl OptimizationStrategy {
 /// Statistics collector for validator performance.
 #[derive(Debug, Clone, Default)]
 pub struct ValidatorStats {
-    /// Number of times validator was called.
+    /// The total number of times the validator was called.
     pub call_count: u64,
 
-    /// Number of times validator passed.
+    /// The number of times the validator passed validation.
     pub pass_count: u64,
 
-    /// Number of times validator failed.
+    /// The number of times the validator failed validation.
     pub fail_count: u64,
 
-    /// Total time spent in validation (nanoseconds).
+    /// The total time spent in validation, measured in nanoseconds.
     pub total_time_ns: u64,
 }
 
 impl ValidatorStats {
     /// Creates new empty statistics.
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -455,6 +467,7 @@ impl ValidatorStats {
     }
 
     /// Returns the failure rate (0.0 to 1.0).
+    #[must_use] 
     pub fn failure_rate(&self) -> f64 {
         if self.call_count == 0 {
             return 0.0;
@@ -463,6 +476,7 @@ impl ValidatorStats {
     }
 
     /// Returns the average time per call (nanoseconds).
+    #[must_use] 
     pub fn average_time_ns(&self) -> f64 {
         if self.call_count == 0 {
             return 0.0;
@@ -471,6 +485,7 @@ impl ValidatorStats {
     }
 
     /// Returns a selectivity score (higher = more selective/likely to fail).
+    #[must_use] 
     pub fn selectivity_score(&self) -> f64 {
         self.failure_rate()
     }

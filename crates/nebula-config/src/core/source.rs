@@ -206,54 +206,63 @@ impl SourceMetadata {
     }
 
     /// Set last modified timestamp
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_last_modified(mut self, timestamp: chrono::DateTime<chrono::Utc>) -> Self {
         self.last_modified = Some(timestamp);
         self
     }
 
     /// Set version
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_version(mut self, version: impl Into<String>) -> Self {
         self.version = Some(version.into());
         self
     }
 
     /// Set checksum
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_checksum(mut self, checksum: impl Into<String>) -> Self {
         self.checksum = Some(checksum.into());
         self
     }
 
     /// Set size
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_size(mut self, size: u64) -> Self {
         self.size = Some(size);
         self
     }
 
     /// Set format
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_format(mut self, format: ConfigFormat) -> Self {
         self.format = Some(format);
         self
     }
 
     /// Set encoding
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_encoding(mut self, encoding: impl Into<String>) -> Self {
         self.encoding = Some(encoding.into());
         self
     }
 
     /// Set compression
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_compression(mut self, compression: impl Into<String>) -> Self {
         self.compression = Some(compression.into());
         self
     }
 
     /// Set encryption
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_encryption(mut self, encryption: impl Into<String>) -> Self {
         self.encryption = Some(encryption.into());
         self
     }
 
     /// Add extra metadata
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_extra(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
         self.extra.insert(key.into(), value);
         self

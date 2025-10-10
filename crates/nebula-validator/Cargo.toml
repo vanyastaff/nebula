@@ -56,6 +56,7 @@ default = ["full"]
 async = ["tokio/full"]
 # Optional subsystems
 caching = []
+lru = []  # LRU cache support (deprecated, use caching instead)
 performance = []
 registry = []
 # Convenience umbrella

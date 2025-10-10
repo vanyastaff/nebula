@@ -36,18 +36,21 @@ impl CompositeLoader {
     }
 
     /// Set whether to fail fast on first error
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_fail_fast(mut self, fail_fast: bool) -> Self {
         self.fail_fast = fail_fast;
         self
     }
 
     /// Add a loader
+    #[must_use = "builder methods must be chained or built"]
     pub fn add_loader<L: ConfigLoader + 'static>(mut self, loader: L) -> Self {
         self.loaders.push(Arc::new(loader));
         self
     }
 
     /// Add a shared loader
+    #[must_use = "builder methods must be chained or built"]
     pub fn add_shared_loader(mut self, loader: Arc<dyn ConfigLoader>) -> Self {
         self.loaders.push(loader);
         self

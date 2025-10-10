@@ -9,24 +9,31 @@ use crate::core::{
 use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
+/// Parameter for multi-line text input
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
 pub struct TextareaParameter {
     #[serde(flatten)]
+    /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Current value of the parameter
     pub value: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Default value if parameter is not set
     pub default: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Configuration options for this parameter type
     pub options: Option<TextareaParameterOptions>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Display rules controlling when this parameter is shown
     pub display: Option<ParameterDisplay>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Validation rules for this parameter
     pub validation: Option<ParameterValidation>,
 }
 

@@ -10,21 +10,25 @@ use nebula_value::Value;
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
 pub struct NoticeParameter {
     #[serde(flatten)]
+    /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
 
     /// The text content of the notice
     pub content: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Configuration options for this parameter type
     pub options: Option<NoticeParameterOptions>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Display rules controlling when this parameter is shown
     pub display: Option<ParameterDisplay>,
 }
 
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
 pub struct NoticeParameterOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Type of notice (info, warning, error, success)
     pub notice_type: Option<NoticeType>,
 
     /// Whether the notice can be dismissed by the user

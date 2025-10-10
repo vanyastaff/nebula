@@ -108,24 +108,28 @@ impl ParameterValidation {
     }
 
     /// Set whether the parameter is required
+    #[must_use = "builder methods must be chained or built"]
     pub fn required(mut self) -> Self {
         self.required = true;
         self
     }
 
     /// Set whether the parameter is optional
+    #[must_use = "builder methods must be chained or built"]
     pub fn optional(mut self) -> Self {
         self.required = false;
         self
     }
 
     /// Set custom validation message
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = Some(message.into());
         self
     }
 
     /// Set parameter key for error context
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_key(mut self, key: ParameterKey) -> Self {
         self.key = Some(key);
         self
@@ -221,51 +225,61 @@ impl StringValidationBuilder {
         }
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn min_length(mut self, min: usize) -> Self {
         self.min_len = Some(min);
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn max_length(mut self, max: usize) -> Self {
         self.max_len = Some(max);
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn pattern(mut self, pattern: impl Into<String>) -> Self {
         self.pattern = Some(pattern.into());
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn contains(mut self, s: impl Into<String>) -> Self {
         self.contains_str = Some(s.into());
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn starts_with(mut self, s: impl Into<String>) -> Self {
         self.starts_with_str = Some(s.into());
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn ends_with(mut self, s: impl Into<String>) -> Self {
         self.ends_with_str = Some(s.into());
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn email(mut self) -> Self {
         self.is_email = true;
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn url(mut self) -> Self {
         self.is_url = true;
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn required(mut self) -> Self {
         self.required = true;
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn message(mut self, msg: impl Into<String>) -> Self {
         self.message = Some(msg.into());
         self
@@ -368,41 +382,49 @@ impl NumberValidationBuilder {
         }
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn min(mut self, min: f64) -> Self {
         self.min_val = Some(min);
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn max(mut self, max: f64) -> Self {
         self.max_val = Some(max);
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn positive(mut self) -> Self {
         self.must_be_positive = true;
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn negative(mut self) -> Self {
         self.must_be_negative = true;
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn even(mut self) -> Self {
         self.must_be_even = true;
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn odd(mut self) -> Self {
         self.must_be_odd = true;
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn required(mut self) -> Self {
         self.required = true;
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn message(mut self, msg: impl Into<String>) -> Self {
         self.message = Some(msg.into());
         self

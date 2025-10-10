@@ -147,16 +147,16 @@ impl fmt::Display for ResilienceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Timeout { duration, context } => {
-                write!(f, "Operation timed out after {:?}", duration)?;
+                write!(f, "Operation timed out after {duration:?}")?;
                 if let Some(ctx) = context {
-                    write!(f, " - {}", ctx)?;
+                    write!(f, " - {ctx}")?;
                 }
                 Ok(())
             }
             Self::CircuitBreakerOpen { state, retry_after } => {
-                write!(f, "Circuit breaker is {} ", state)?;
+                write!(f, "Circuit breaker is {state} ")?;
                 if let Some(duration) = retry_after {
-                    write!(f, "(retry after {:?})", duration)?;
+                    write!(f, "(retry after {duration:?})")?;
                 }
                 Ok(())
             }
@@ -166,8 +166,7 @@ impl fmt::Display for ResilienceError {
             } => {
                 write!(
                     f,
-                    "Bulkhead full: max={}, queued={}",
-                    max_concurrency, queued
+                    "Bulkhead full: max={max_concurrency}, queued={queued}"
                 )
             }
             Self::RateLimitExceeded {
@@ -177,11 +176,10 @@ impl fmt::Display for ResilienceError {
             } => {
                 write!(
                     f,
-                    "Rate limit exceeded: limit={}/s, current={}/s",
-                    limit, current
+                    "Rate limit exceeded: limit={limit}/s, current={current}/s"
                 )?;
                 if let Some(duration) = retry_after {
-                    write!(f, " (retry after {:?})", duration)?;
+                    write!(f, " (retry after {duration:?})")?;
                 }
                 Ok(())
             }
@@ -189,27 +187,27 @@ impl fmt::Display for ResilienceError {
                 attempts,
                 last_error,
             } => {
-                write!(f, "Retry limit exceeded after {} attempts", attempts)?;
+                write!(f, "Retry limit exceeded after {attempts} attempts")?;
                 if let Some(err) = last_error {
-                    write!(f, " - last error: {}", err)?;
+                    write!(f, " - last error: {err}")?;
                 }
                 Ok(())
             }
             Self::FallbackFailed { reason, .. } => {
-                write!(f, "Fallback failed: {}", reason)
+                write!(f, "Fallback failed: {reason}")
             }
             Self::Cancelled { reason } => {
                 write!(f, "Operation cancelled")?;
                 if let Some(r) = reason {
-                    write!(f, ": {}", r)?;
+                    write!(f, ": {r}")?;
                 }
                 Ok(())
             }
             Self::InvalidConfig { message } => {
-                write!(f, "Invalid configuration: {}", message)
+                write!(f, "Invalid configuration: {message}")
             }
             Self::Custom { message, .. } => {
-                write!(f, "{}", message)
+                write!(f, "{message}")
             }
         }
     }
@@ -243,6 +241,7 @@ pub enum ErrorClass {
 
 impl ResilienceError {
     /// Create a timeout error
+    #[must_use] 
     pub fn timeout(duration: Duration) -> Self {
         Self::Timeout {
             duration,
@@ -259,6 +258,7 @@ impl ResilienceError {
     }
 
     /// Create a bulkhead full error
+    #[must_use] 
     pub fn bulkhead_full(max_concurrency: usize) -> Self {
         Self::BulkheadFull {
             max_concurrency,
@@ -267,6 +267,7 @@ impl ResilienceError {
     }
 
     /// Create a retry limit exceeded error with cause
+    #[must_use] 
     pub fn retry_limit_exceeded_with_cause(attempts: usize, last_error: Option<Box<Self>>) -> Self {
         Self::RetryLimitExceeded {
             attempts,
@@ -275,6 +276,7 @@ impl ResilienceError {
     }
 
     /// Classify the error for decision making
+    #[must_use] 
     pub fn classify(&self) -> ErrorClass {
         match self {
             Self::Timeout { .. } => ErrorClass::Transient,
@@ -296,6 +298,7 @@ impl ResilienceError {
     }
 
     /// Check if the error is retryable
+    #[must_use] 
     pub fn is_retryable(&self) -> bool {
         matches!(
             self.classify(),
@@ -304,6 +307,7 @@ impl ResilienceError {
     }
 
     /// Check if the error is terminal
+    #[must_use] 
     pub fn is_terminal(&self) -> bool {
         matches!(
             self.classify(),
@@ -312,6 +316,7 @@ impl ResilienceError {
     }
 
     /// Get retry delay hint if available
+    #[must_use] 
     pub fn retry_after(&self) -> Option<Duration> {
         match self {
             Self::RateLimitExceeded { retry_after, .. }
@@ -346,6 +351,7 @@ impl ErrorContext {
     }
 
     /// Add metadata
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.metadata.insert(key.into(), value.into());
         self
@@ -359,17 +365,17 @@ impl From<ResilienceError> for NebulaError {
         match err {
             ResilienceError::Timeout { duration, context } => {
                 let msg = match context {
-                    Some(ctx) => format!("Operation timed out after {:?}: {}", duration, ctx),
-                    None => format!("Operation timed out after {:?}", duration),
+                    Some(ctx) => format!("Operation timed out after {duration:?}: {ctx}"),
+                    None => format!("Operation timed out after {duration:?}"),
                 };
                 NebulaError::timeout("resilience-operation", duration).with_details(msg)
             }
             ResilienceError::CircuitBreakerOpen { state, retry_after } => {
                 let msg = match retry_after {
                     Some(duration) => {
-                        format!("Circuit breaker is {} (retry after {:?})", state, duration)
+                        format!("Circuit breaker is {state} (retry after {duration:?})")
                     }
-                    None => format!("Circuit breaker is {}", state),
+                    None => format!("Circuit breaker is {state}"),
                 };
                 NebulaError::service_unavailable("circuit-breaker", msg)
             }
@@ -378,8 +384,7 @@ impl From<ResilienceError> for NebulaError {
                 queued,
             } => NebulaError::new(nebula_error::ErrorKind::System(
                 nebula_error::kinds::SystemError::resource_exhausted(format!(
-                    "Bulkhead full: max={}, queued={}",
-                    max_concurrency, queued
+                    "Bulkhead full: max={max_concurrency}, queued={queued}"
                 )),
             )),
             ResilienceError::RateLimitExceeded {
@@ -398,9 +403,9 @@ impl From<ResilienceError> for NebulaError {
             } => {
                 let msg = match last_error {
                     Some(err) => {
-                        format!("Retry limit exceeded after {} attempts: {}", attempts, err)
+                        format!("Retry limit exceeded after {attempts} attempts: {err}")
                     }
-                    None => format!("Retry limit exceeded after {} attempts", attempts),
+                    None => format!("Retry limit exceeded after {attempts} attempts"),
                 };
                 NebulaError::internal(msg)
             }
@@ -409,8 +414,8 @@ impl From<ResilienceError> for NebulaError {
                 original_error,
             } => {
                 let msg = match original_error {
-                    Some(err) => format!("Fallback failed: {} (original: {})", reason, err),
-                    None => format!("Fallback failed: {}", reason),
+                    Some(err) => format!("Fallback failed: {reason} (original: {err})"),
+                    None => format!("Fallback failed: {reason}"),
                 };
                 NebulaError::internal(msg)
             }
@@ -422,7 +427,7 @@ impl From<ResilienceError> for NebulaError {
                 NebulaError::execution_cancelled(msg)
             }
             ResilienceError::InvalidConfig { message } => {
-                NebulaError::validation(format!("Invalid resilience configuration: {}", message))
+                NebulaError::validation(format!("Invalid resilience configuration: {message}"))
             }
             ResilienceError::Custom {
                 message,

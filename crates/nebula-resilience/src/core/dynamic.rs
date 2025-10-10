@@ -32,6 +32,7 @@ impl Default for DynamicConfig {
 
 impl DynamicConfig {
     /// Create a new dynamic configuration
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -68,6 +69,7 @@ impl DynamicConfig {
     }
 
     /// Convert to a flat key-value map for debugging
+    #[must_use] 
     pub fn to_flat_map(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
         self.flatten_object(&self.values, "", &mut map);
@@ -108,8 +110,7 @@ impl DynamicConfig {
                     Ok(obj.insert(key.to_string(), updated_json))
                 }
                 _ => Err(ConfigError::validation(format!(
-                    "Path '{}' exists but is not an object",
-                    key
+                    "Path '{key}' exists but is not an object"
                 ))),
             }
         }
@@ -133,8 +134,7 @@ impl DynamicConfig {
             match value {
                 Value::Object(nested_obj) => self.get_nested_value(&nested_obj, &path[1..]),
                 _ => Err(ConfigError::validation(format!(
-                    "Path '{}' is not an object",
-                    key
+                    "Path '{key}' is not an object"
                 ))),
             }
         }
@@ -145,7 +145,7 @@ impl DynamicConfig {
             let full_key = if prefix.is_empty() {
                 key.clone()
             } else {
-                format!("{}.{}", prefix, key)
+                format!("{prefix}.{key}")
             };
 
             // Convert to nebula Value to check if it's an object
@@ -155,7 +155,7 @@ impl DynamicConfig {
                     self.flatten_object(&nested_obj, &full_key, map);
                 }
                 _ => {
-                    map.insert(full_key, format!("{}", json_value));
+                    map.insert(full_key, format!("{json_value}"));
                 }
             }
         }
@@ -185,6 +185,7 @@ pub struct ResiliencePresets;
 
 impl ResiliencePresets {
     /// Get database operation configuration
+    #[must_use] 
     pub fn database() -> DynamicConfig {
         let mut config = DynamicConfig::new();
 
@@ -222,6 +223,7 @@ impl ResiliencePresets {
     }
 
     /// Get HTTP API configuration
+    #[must_use] 
     pub fn http_api() -> DynamicConfig {
         let mut config = DynamicConfig::new();
 
@@ -267,6 +269,7 @@ impl ResiliencePresets {
     }
 
     /// Get file I/O configuration
+    #[must_use] 
     pub fn file_io() -> DynamicConfig {
         let mut config = DynamicConfig::new();
 

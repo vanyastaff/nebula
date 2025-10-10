@@ -14,21 +14,26 @@ use nebula_value::Value;
 #[derive(Debug, Serialize)]
 pub struct ModeParameter {
     #[serde(flatten)]
+    /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Current value of the parameter
     pub value: Option<ModeValue>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Default value if parameter is not set
     pub default: Option<ModeValue>,
 
     /// Available modes with their parameters
     pub modes: Vec<ModeItem>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Display rules controlling when this parameter is shown
     pub display: Option<ParameterDisplay>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Validation rules for this parameter
     pub validation: Option<ParameterValidation>,
 }
 
@@ -272,6 +277,7 @@ impl ModeParameter {
     }
 
     /// Switch to a different mode by key
+    #[must_use = "operation result must be checked"]
     pub fn switch_mode(&mut self, mode_key: &str) -> Result<(), ParameterError> {
         if !self.modes.iter().any(|m| m.key == mode_key) {
             return Err(ParameterError::InvalidValue {

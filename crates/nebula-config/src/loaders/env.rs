@@ -44,18 +44,21 @@ impl EnvLoader {
     }
 
     /// Set separator for nested keys
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_separator(mut self, separator: impl Into<String>) -> Self {
         self.separator = separator.into();
         self
     }
 
     /// Set case sensitivity
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_case_sensitive(mut self, case_sensitive: bool) -> Self {
         self.case_sensitive = case_sensitive;
         self
     }
 
     /// Set whether to log sensitive values
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_log_sensitive(mut self, log_sensitive: bool) -> Self {
         self.log_sensitive = log_sensitive;
         self

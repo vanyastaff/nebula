@@ -171,6 +171,7 @@ impl<T> StreamingArena<T> {
     }
 
     /// Allocate bytes in the streaming arena
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_bytes(&self, size: usize, align: usize) -> Result<*mut u8, MemoryError> {
         if size > self.options.buffer_size {
             return Err(MemoryError::allocation_too_large(0));
@@ -219,6 +220,7 @@ impl<T> StreamingArena<T> {
     }
 
     /// Allocate a value
+    #[must_use = "allocated memory must be used"]
     pub fn alloc(&self, value: T) -> Result<StreamingArenaRef<T>, MemoryError> {
         let size = std::mem::size_of::<T>();
         let align = std::mem::align_of::<T>();
@@ -236,6 +238,7 @@ impl<T> StreamingArena<T> {
     }
 
     /// Allocate a slice
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_slice<U>(&self, slice: &[U]) -> Result<StreamingArenaRef<[U]>, MemoryError>
     where
         U: Copy,

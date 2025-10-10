@@ -126,24 +126,28 @@ impl PoolConfig {
 
     /// Set time-to-live for objects
     #[cfg(feature = "std")]
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_ttl(mut self, ttl: Duration) -> Self {
         self.ttl = Some(ttl);
         self
     }
 
     /// Set growth strategy
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_growth_strategy(mut self, strategy: GrowthStrategy) -> Self {
         self.growth_strategy = strategy;
         self
     }
 
     /// Enable or disable validation on return
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_validation(mut self, validate: bool) -> Self {
         self.validate_on_return = validate;
         self
     }
 
     /// Enable or disable pre-warming
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_pre_warm(mut self, pre_warm: bool) -> Self {
         self.pre_warm = pre_warm;
         self
@@ -151,12 +155,14 @@ impl PoolConfig {
 
     #[cfg(feature = "stats")]
     /// Enable or disable statistics tracking
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_stats(mut self, track_stats: bool) -> Self {
         self.track_stats = track_stats;
         self
     }
 
     /// Set maximum capacity
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_max_capacity(mut self, max_capacity: Option<usize>) -> Self {
         self.max_capacity = max_capacity;
         self
@@ -164,6 +170,7 @@ impl PoolConfig {
 
     #[cfg(feature = "adaptive")]
     /// Set memory pressure threshold
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_pressure_threshold(mut self, threshold: u8) -> Self {
         assert!(
             threshold <= 100,

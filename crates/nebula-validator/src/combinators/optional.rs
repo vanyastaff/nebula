@@ -241,7 +241,7 @@ where
     }
 }
 
-/// Error type for RequiredSome validator.
+/// Error type for `RequiredSome` validator.
 #[derive(Debug, Clone)]
 pub enum RequiredError<E> {
     /// Value was None when Some was required.
@@ -254,7 +254,7 @@ impl<E: std::fmt::Display> std::fmt::Display for RequiredError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RequiredError::NoneValue => write!(f, "Value is required but was None"),
-            RequiredError::ValidationFailed(e) => write!(f, "Validation failed: {}", e),
+            RequiredError::ValidationFailed(e) => write!(f, "Validation failed: {e}"),
         }
     }
 }

@@ -38,7 +38,7 @@
 //! }
 //! ```
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata};
+use crate::core::{TypedValidator, ValidatorMetadata};
 use std::any::Any;
 use std::collections::HashMap;
 
@@ -64,11 +64,13 @@ pub struct ValidationContext {
 
 impl ValidationContext {
     /// Creates a new empty validation context.
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Creates a context with a parent.
+    #[must_use] 
     pub fn with_parent(parent: ValidationContext) -> Self {
         Self {
             data: HashMap::new(),
@@ -104,6 +106,7 @@ impl ValidationContext {
     /// let max: Option<&usize> = ctx.get("max_length");
     /// assert_eq!(max, Some(&100));
     /// ```
+    #[must_use] 
     pub fn get<T: 'static>(&self, key: &str) -> Option<&T> {
         // Try local data first
         if let Some(value) = self.data.get(key) {
@@ -126,8 +129,9 @@ impl ValidationContext {
     }
 
     /// Checks if a key exists in the context.
+    #[must_use] 
     pub fn contains(&self, key: &str) -> bool {
-        self.data.contains_key(key) || self.parent.as_ref().map_or(false, |p| p.contains(key))
+        self.data.contains_key(key) || self.parent.as_ref().is_some_and(|p| p.contains(key))
     }
 
     /// Pushes a field name onto the path for nested validation.
@@ -156,6 +160,7 @@ impl ValidationContext {
     ///
     /// assert_eq!(ctx.field_path(), "user.address.zipcode");
     /// ```
+    #[must_use] 
     pub fn field_path(&self) -> String {
         self.field_path.join(".")
     }
@@ -166,6 +171,7 @@ impl ValidationContext {
     }
 
     /// Creates a child context with this context as parent.
+    #[must_use] 
     pub fn child(&self) -> Self {
         Self {
             data: HashMap::new(),
@@ -175,11 +181,13 @@ impl ValidationContext {
     }
 
     /// Returns the number of items in the local context (excluding parent).
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
     /// Checks if the local context is empty (excluding parent).
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
@@ -191,7 +199,7 @@ impl Clone for ValidationContext {
         // with the same parent and field path
         Self {
             data: HashMap::new(),
-            parent: self.parent.as_ref().map(|p| p.clone()),
+            parent: self.parent.clone(),
             field_path: self.field_path.clone(),
         }
     }
@@ -257,10 +265,10 @@ pub trait ContextualValidator {
 // ADAPTER: TypedValidator -> ContextualValidator
 // ============================================================================
 
-/// Adapter that allows any TypedValidator to be used as a ContextualValidator.
+/// Adapter that allows any `TypedValidator` to be used as a `ContextualValidator`.
 ///
 /// This provides backward compatibility - existing validators can be used
-/// in contexts that expect ContextualValidator.
+/// in contexts that expect `ContextualValidator`.
 pub struct ContextAdapter<V> {
     validator: V,
 }
@@ -302,7 +310,7 @@ where
 // BUILDER FOR CONTEXT
 // ============================================================================
 
-/// Builder for creating ValidationContext with fluent API.
+/// Builder for creating `ValidationContext` with fluent API.
 ///
 /// # Examples
 ///
@@ -320,6 +328,7 @@ pub struct ValidationContextBuilder {
 
 impl ValidationContextBuilder {
     /// Creates a new context builder.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             context: ValidationContext::new(),
@@ -327,18 +336,21 @@ impl ValidationContextBuilder {
     }
 
     /// Adds a value to the context being built.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with<T: Send + Sync + 'static>(mut self, key: impl Into<String>, value: T) -> Self {
         self.context.insert(key, value);
         self
     }
 
     /// Sets the parent context.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_parent(mut self, parent: ValidationContext) -> Self {
         self.context.parent = Some(Box::new(parent));
         self
     }
 
     /// Builds the validation context.
+    #[must_use] 
     pub fn build(self) -> ValidationContext {
         self.context
     }

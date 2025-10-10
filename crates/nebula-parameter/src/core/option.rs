@@ -64,11 +64,13 @@ impl<'a> OptionLoadContext<'a> {
         }
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_search(mut self, search: String) -> Self {
         self.search = Some(search);
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_pagination(mut self, pagination: Pagination) -> Self {
         self.pagination = Some(pagination);
         self
@@ -193,6 +195,7 @@ pub struct DynamicOptions {
 
 impl DynamicOptions {
     /// Load options using the loader
+    #[must_use = "loaded options must be used"]
     pub fn load(&self, context: &OptionLoadContext<'_>) -> Result<OptionsResponse, ParameterError> {
         (self.loader)(context)
     }

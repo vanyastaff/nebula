@@ -128,6 +128,7 @@ impl<T> TypedArena<T> {
     }
 
     /// Allocate a value in the arena
+    #[must_use = "allocated memory must be used"]
     pub fn alloc(&self, value: T) -> Result<&mut T, MemoryError> {
         let index = self.current_index.get();
 
@@ -167,6 +168,7 @@ impl<T> TypedArena<T> {
     }
 
     /// Allocate space for a value without initializing it
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_uninit(&self) -> Result<&mut MaybeUninit<T>, MemoryError> {
         let index = self.current_index.get();
 
@@ -201,6 +203,7 @@ impl<T> TypedArena<T> {
     }
 
     /// Allocate multiple values at once
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_slice(&self, values: &[T]) -> Result<&mut [T], MemoryError>
     where
         T: Copy,
@@ -226,6 +229,7 @@ impl<T> TypedArena<T> {
     }
 
     /// Allocate an iterator of values
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_iter<I>(&self, iter: I) -> Result<Vec<&mut T>, MemoryError>
     where
         I: IntoIterator<Item = T>,

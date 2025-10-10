@@ -174,6 +174,7 @@ impl Arena {
     }
 
     /// Allocates aligned memory block
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_bytes_aligned(&self, size: usize, align: usize) -> Result<*mut u8, MemoryError> {
         if !align.is_power_of_two() {
             return Err(MemoryError::invalid_alignment(align));
@@ -209,6 +210,7 @@ impl Arena {
     }
 
     /// Allocates and initializes a value
+    #[must_use = "allocated memory must be used"]
     pub fn alloc<T>(&self, value: T) -> Result<&mut T, MemoryError> {
         let ptr = self.alloc_bytes_aligned(mem::size_of::<T>(), mem::align_of::<T>())? as *mut T;
 
@@ -220,6 +222,7 @@ impl Arena {
     }
 
     /// Allocates space for uninitialized value
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_uninit<T>(&self) -> Result<&mut MaybeUninit<T>, MemoryError> {
         let ptr = self.alloc_bytes_aligned(mem::size_of::<T>(), mem::align_of::<T>())?
             as *mut MaybeUninit<T>;
@@ -229,6 +232,7 @@ impl Arena {
     }
 
     /// Allocates and copies a slice
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_slice<T: Copy>(&self, slice: &[T]) -> Result<&mut [T], MemoryError> {
         if slice.is_empty() {
             return Ok(&mut []);
@@ -245,6 +249,7 @@ impl Arena {
     }
 
     /// Allocates a string
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_str(&self, s: &str) -> Result<&str, MemoryError> {
         let bytes = self.alloc_slice(s.as_bytes())?;
         // Safety: We know the bytes are valid UTF-8 since they came from &str

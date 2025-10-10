@@ -44,6 +44,7 @@ impl ParameterCollection {
     }
 
     /// Add a parameter using builder-style chaining
+    #[must_use = "builder methods must be chained or built"]
     pub fn with<P>(mut self, param: P) -> Self
     where
         P: ParameterValue + 'static,
@@ -80,6 +81,7 @@ impl ParameterCollection {
     }
 
     /// Get a typed value from a parameter
+    #[must_use = "typed value must be used"]
     pub fn typed_value<T>(&self, key: impl Into<ParameterKey>) -> Result<T, ParameterError>
     where
         T: TryFrom<Value>,
@@ -230,6 +232,7 @@ impl ParameterCollection {
     }
 
     /// Restore parameter values from a snapshot
+    #[must_use = "operation result must be checked"]
     pub fn restore(&mut self, snapshot: &Snapshot) -> Result<(), ParameterError> {
         for (key, value) in &snapshot.values {
             if let Some(param) = self.parameters.get_mut(key) {

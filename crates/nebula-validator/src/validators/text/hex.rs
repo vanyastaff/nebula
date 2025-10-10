@@ -58,10 +58,11 @@ impl Hex {
     /// Creates a new hex validator with default settings.
     ///
     /// Default settings:
-    /// - allow_prefix: true (allows "0x" or "0X")
-    /// - min_length: None (no minimum)
-    /// - max_length: None (no maximum)
-    /// - case_sensitive: None (allows any case)
+    /// - `allow_prefix`: true (allows "0x" or "0X")
+    /// - `min_length`: None (no minimum)
+    /// - `max_length`: None (no maximum)
+    /// - `case_sensitive`: None (allows any case)
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             allow_prefix: true,
@@ -72,12 +73,14 @@ impl Hex {
     }
 
     /// Disallow the "0x" prefix.
+    #[must_use = "builder methods must be chained or built"]
     pub fn no_prefix(mut self) -> Self {
         self.allow_prefix = false;
         self
     }
 
     /// Require the "0x" prefix.
+    #[must_use] 
     pub fn require_prefix(self) -> RequirePrefixHex {
         RequirePrefixHex {
             min_length: self.min_length,
@@ -87,24 +90,28 @@ impl Hex {
     }
 
     /// Sets minimum length for hex string (excluding prefix).
+    #[must_use = "builder methods must be chained or built"]
     pub fn min_length(mut self, min: usize) -> Self {
         self.min_length = Some(min);
         self
     }
 
     /// Sets maximum length for hex string (excluding prefix).
+    #[must_use = "builder methods must be chained or built"]
     pub fn max_length(mut self, max: usize) -> Self {
         self.max_length = Some(max);
         self
     }
 
     /// Only allow lowercase hex digits.
+    #[must_use = "builder methods must be chained or built"]
     pub fn lowercase_only(mut self) -> Self {
         self.case_sensitive = Some(HexCase::Lower);
         self
     }
 
     /// Only allow uppercase hex digits.
+    #[must_use = "builder methods must be chained or built"]
     pub fn uppercase_only(mut self) -> Self {
         self.case_sensitive = Some(HexCase::Upper);
         self
@@ -160,23 +167,21 @@ impl TypedValidator for Hex {
         }
 
         // Check length constraints
-        if let Some(min) = self.min_length {
-            if hex_str.len() < min {
+        if let Some(min) = self.min_length
+            && hex_str.len() < min {
                 return Err(ValidationError::new(
                     "hex_too_short",
-                    format!("Hex string must be at least {} characters", min),
+                    format!("Hex string must be at least {min} characters"),
                 ));
             }
-        }
 
-        if let Some(max) = self.max_length {
-            if hex_str.len() > max {
+        if let Some(max) = self.max_length
+            && hex_str.len() > max {
                 return Err(ValidationError::new(
                     "hex_too_long",
-                    format!("Hex string must not exceed {} characters", max),
+                    format!("Hex string must not exceed {max} characters"),
                 ));
             }
-        }
 
         // Validate characters
         for c in hex_str.chars() {
@@ -188,7 +193,7 @@ impl TypedValidator for Hex {
                 };
                 return Err(ValidationError::new(
                     "invalid_hex_char",
-                    format!("Invalid hex character '{}'{}", c, case_hint),
+                    format!("Invalid hex character '{c}'{case_hint}"),
                 ));
             }
         }
@@ -201,7 +206,7 @@ impl TypedValidator for Hex {
                     &hex_str[i..i + 2]
                 } else {
                     // Odd length - pad with 0
-                    return u8::from_str_radix(&format!("0{}", &hex_str[i..i + 1]), 16).map_err(
+                    return u8::from_str_radix(&format!("0{}", &hex_str[i..=i]), 16).map_err(
                         |_| ValidationError::new("hex_parse_error", "Failed to parse hex string"),
                     );
                 };
@@ -254,24 +259,28 @@ pub struct RequirePrefixHex {
 
 impl RequirePrefixHex {
     /// Sets minimum length for hex string (excluding prefix).
+    #[must_use = "builder methods must be chained or built"]
     pub fn min_length(mut self, min: usize) -> Self {
         self.min_length = Some(min);
         self
     }
 
     /// Sets maximum length for hex string (excluding prefix).
+    #[must_use = "builder methods must be chained or built"]
     pub fn max_length(mut self, max: usize) -> Self {
         self.max_length = Some(max);
         self
     }
 
     /// Only allow lowercase hex digits.
+    #[must_use = "builder methods must be chained or built"]
     pub fn lowercase_only(mut self) -> Self {
         self.case_sensitive = Some(HexCase::Lower);
         self
     }
 
     /// Only allow uppercase hex digits.
+    #[must_use = "builder methods must be chained or built"]
     pub fn uppercase_only(mut self) -> Self {
         self.case_sensitive = Some(HexCase::Upper);
         self

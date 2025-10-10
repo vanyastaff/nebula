@@ -78,11 +78,13 @@ impl<A: ArenaAllocate> ArenaAllocator<A> {
     }
 
     /// Allocate and initialize a value
+    #[must_use = "allocated memory must be used"]
     pub fn alloc<T>(&self, value: T) -> Result<&mut T, MemoryError> {
         self.arena.alloc(value)
     }
 
     /// Allocate and initialize a slice
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_slice_copy<T: Copy>(&self, slice: &[T]) -> Result<&mut [T], MemoryError> {
         self.arena.alloc_slice(slice)
     }
@@ -176,6 +178,7 @@ impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
     }
 
     /// Create a new vector with the given capacity
+    #[must_use = "allocated vector must be used"]
     pub fn with_capacity(capacity: usize, allocator: Arc<A>) -> Result<Self, MemoryError> {
         if capacity == 0 {
             return Ok(Self::new(allocator));
@@ -196,6 +199,7 @@ impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
     }
 
     /// Push a value onto the vector
+    #[must_use = "operation result must be checked"]
     pub fn push(&mut self, value: T) -> Result<(), MemoryError> {
         if self.len >= self.capacity {
             return Err(MemoryError::allocation_too_large(
@@ -317,6 +321,7 @@ pub type ArenaString<A> = ArenaBackedVec<u8, A>;
 
 impl<A: ArenaAllocate> ArenaString<A> {
     /// Create a new arena string from a str
+    #[must_use = "allocated string must be used"]
     pub fn from_str(s: &str, allocator: Arc<A>) -> Result<Self, MemoryError> {
         let mut vec = Self::with_capacity(s.len(), allocator)?;
         for &byte in s.as_bytes() {

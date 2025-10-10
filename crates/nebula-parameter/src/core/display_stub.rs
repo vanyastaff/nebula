@@ -8,6 +8,7 @@ use std::collections::HashMap;
 /// Temporary stub for DisplayContext
 #[derive(Debug, Clone, Default)]
 pub struct DisplayContext {
+    /// Map of parameter keys to their current values
     pub values: HashMap<ParameterKey, Value>,
 }
 
@@ -16,6 +17,7 @@ impl DisplayContext {
         Self::default()
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_value(mut self, key: impl Into<ParameterKey>, value: Value) -> Self {
         self.values.insert(key.into(), value);
         self

@@ -409,6 +409,7 @@ impl RoutingParameter {
     }
 
     /// Validate the routing parameter
+    #[must_use = "validation result must be checked"]
     pub fn validate_routing(&self) -> Result<(), ParameterError> {
         // Check if connection is required but missing
         if self.is_connection_required() && !self.is_connected() {

@@ -47,12 +47,15 @@ impl ListValue {
 #[derive(Serialize)]
 pub struct ListParameter {
     #[serde(flatten)]
+    /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Current value of the parameter
     pub value: Option<nebula_value::Array>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Default value if parameter is not set
     pub default: Option<nebula_value::Array>,
 
     /// Child parameters in this list
@@ -64,12 +67,15 @@ pub struct ListParameter {
     pub item_template: Option<Box<dyn Parameter>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Configuration options for this parameter type
     pub options: Option<ListParameterOptions>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Display rules controlling when this parameter is shown
     pub display: Option<ParameterDisplay>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Validation rules for this parameter
     pub validation: Option<ParameterValidation>,
 }
 
@@ -289,6 +295,7 @@ impl ListParameter {
     }
 
     /// Add an item to the list value
+    #[must_use = "operation result must be checked"]
     pub fn add_item(&mut self, item: nebula_value::Value) -> Result<(), ParameterError> {
         use crate::ValueRefExt;
         if let Some(items) = &self.value {
@@ -300,6 +307,7 @@ impl ListParameter {
     }
 
     /// Remove an item from the list value by index
+    #[must_use = "operation result must be checked"]
     pub fn remove_item(&mut self, index: usize) -> Result<bool, ParameterError> {
         if let Some(items) = &self.value {
             if index < items.len() {
@@ -319,6 +327,7 @@ impl ListParameter {
     }
 
     /// Move an item to a different position
+    #[must_use = "operation result must be checked"]
     pub fn move_item(&mut self, old_index: usize, new_index: usize) -> Result<(), ParameterError> {
         if let Some(items) = &self.value {
             if old_index < items.len() && new_index < items.len() && old_index != new_index {
@@ -357,6 +366,7 @@ impl ListParameter {
     }
 
     /// Create a new item from the template parameter
+    #[must_use = "operation result must be used"]
     pub fn create_item_from_template(&self) -> Result<nebula_value::Value, ParameterError> {
         if let Some(template) = &self.item_template {
             // Create a default value based on the template parameter type

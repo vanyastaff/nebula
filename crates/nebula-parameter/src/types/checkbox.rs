@@ -15,30 +15,38 @@ use nebula_value::Value;
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
 pub struct CheckboxParameter {
     #[serde(flatten)]
+    /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Current value of the parameter
     pub value: Option<Boolean>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Default value if parameter is not set
     pub default: Option<Boolean>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Configuration options for this parameter type
     pub options: Option<CheckboxParameterOptions>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Display rules controlling when this parameter is shown
     pub display: Option<ParameterDisplay>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Validation rules for this parameter
     pub validation: Option<ParameterValidation>,
 }
 
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
 pub struct CheckboxParameterOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Custom label text for the checkbox
     pub label: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Help text displayed below the checkbox
     pub help_text: Option<String>,
 }
 

@@ -10,15 +10,18 @@ use nebula_value::Value;
 #[derive(Serialize)]
 pub struct PanelParameter {
     #[serde(flatten)]
+    /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
 
     /// Panel sections with their parameters
     pub panels: Vec<Panel>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Configuration options for this parameter type
     pub options: Option<PanelParameterOptions>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Display rules controlling when this parameter is shown
     pub display: Option<ParameterDisplay>,
 }
 
@@ -98,30 +101,35 @@ impl Panel {
     }
 
     /// Set the description
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
     }
 
     /// Set the icon
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = Some(icon.into());
         self
     }
 
     /// Add a child parameter
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_child(mut self, child: Box<dyn Parameter>) -> Self {
         self.children.push(child);
         self
     }
 
     /// Add multiple child parameters
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_children(mut self, children: Vec<Box<dyn Parameter>>) -> Self {
         self.children.extend(children);
         self
     }
 
     /// Set enabled state
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self

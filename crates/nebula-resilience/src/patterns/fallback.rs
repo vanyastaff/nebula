@@ -94,6 +94,7 @@ impl<T: Clone + Send + Sync> CacheFallback<T> {
     }
 
     /// Set TTL for cached value
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_ttl(mut self, ttl: std::time::Duration) -> Self {
         self.ttl = Some(ttl);
         self
@@ -107,11 +108,10 @@ impl<T: Clone + Send + Sync> CacheFallback<T> {
 
     /// Check if cache is valid
     async fn is_valid(&self) -> bool {
-        if let Some(ttl) = self.ttl {
-            if let Some(last_update) = *self.last_update.read().await {
+        if let Some(ttl) = self.ttl
+            && let Some(last_update) = *self.last_update.read().await {
                 return last_update.elapsed() < ttl;
             }
-        }
         true
     }
 }
@@ -144,6 +144,7 @@ pub struct ChainFallback<T> {
 
 impl<T> ChainFallback<T> {
     /// Create new chain fallback
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             fallbacks: Vec::new(),
@@ -151,6 +152,7 @@ impl<T> ChainFallback<T> {
     }
 
     /// Add a fallback to the chain
+    #[must_use = "builder methods must be chained or built"]
     pub fn add(mut self, fallback: Arc<dyn FallbackStrategy<T>>) -> Self {
         self.fallbacks.push(fallback);
         self
@@ -183,6 +185,7 @@ pub struct PriorityFallback<T> {
 
 impl<T> PriorityFallback<T> {
     /// Create new priority fallback
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             fallbacks: HashMap::new(),
@@ -191,12 +194,14 @@ impl<T> PriorityFallback<T> {
     }
 
     /// Register fallback for specific error type
+    #[must_use = "builder methods must be chained or built"]
     pub fn register(mut self, error_type: &str, fallback: Arc<dyn FallbackStrategy<T>>) -> Self {
         self.fallbacks.insert(error_type.to_string(), fallback);
         self
     }
 
     /// Set default fallback
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_default(mut self, fallback: Arc<dyn FallbackStrategy<T>>) -> Self {
         self.default = Some(fallback);
         self

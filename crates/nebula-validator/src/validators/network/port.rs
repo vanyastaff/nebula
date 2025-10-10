@@ -32,6 +32,7 @@ pub struct Port {
 
 impl Port {
     /// Creates a new port validator (allows all valid ports 1-65535).
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             allow_well_known: true,
@@ -41,6 +42,7 @@ impl Port {
     }
 
     /// Only allow well-known ports (1-1023).
+    #[must_use = "builder methods must be chained or built"]
     pub fn well_known_only(mut self) -> Self {
         self.allow_well_known = true;
         self.allow_registered = false;
@@ -49,6 +51,7 @@ impl Port {
     }
 
     /// Only allow registered ports (1024-49151).
+    #[must_use = "builder methods must be chained or built"]
     pub fn registered_only(mut self) -> Self {
         self.allow_well_known = false;
         self.allow_registered = true;
@@ -57,6 +60,7 @@ impl Port {
     }
 
     /// Only allow dynamic/private ports (49152-65535).
+    #[must_use = "builder methods must be chained or built"]
     pub fn dynamic_only(mut self) -> Self {
         self.allow_well_known = false;
         self.allow_registered = false;
@@ -65,6 +69,7 @@ impl Port {
     }
 
     /// Exclude well-known ports.
+    #[must_use = "builder methods must be chained or built"]
     pub fn no_well_known(mut self) -> Self {
         self.allow_well_known = false;
         self
@@ -109,21 +114,21 @@ impl TypedValidator for Port {
         if self.is_well_known(port) && !self.allow_well_known {
             return Err(ValidationError::new(
                 "well_known_port_not_allowed",
-                format!("Well-known port {} (1-1023) is not allowed", port),
+                format!("Well-known port {port} (1-1023) is not allowed"),
             ));
         }
 
         if self.is_registered(port) && !self.allow_registered {
             return Err(ValidationError::new(
                 "registered_port_not_allowed",
-                format!("Registered port {} (1024-49151) is not allowed", port),
+                format!("Registered port {port} (1024-49151) is not allowed"),
             ));
         }
 
         if self.is_dynamic(port) && !self.allow_dynamic {
             return Err(ValidationError::new(
                 "dynamic_port_not_allowed",
-                format!("Dynamic port {} (49152-65535) is not allowed", port),
+                format!("Dynamic port {port} (49152-65535) is not allowed"),
             ));
         }
 

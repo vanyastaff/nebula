@@ -87,36 +87,42 @@ impl CacheConfig {
     }
 
     /// Set the eviction policy
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_policy(mut self, policy: EvictionPolicy) -> Self {
         self.policy = policy;
         self
     }
 
     /// Set the time-to-live for cache entries
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_ttl(mut self, ttl: Duration) -> Self {
         self.ttl = Some(ttl);
         self
     }
 
     /// Enable metrics tracking
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_metrics(mut self) -> Self {
         self.track_metrics = true;
         self
     }
 
     /// Set the initial capacity hint
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_initial_capacity(mut self, capacity: usize) -> Self {
         self.initial_capacity = Some(capacity);
         self
     }
 
     /// Set the load factor for hash-based caches
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_load_factor(mut self, load_factor: f32) -> Self {
         self.load_factor = load_factor.max(0.1).min(0.95);
         self
     }
 
     /// Enable automatic cleanup of expired entries
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_auto_cleanup(mut self) -> Self {
         self.auto_cleanup = true;
         self
@@ -124,6 +130,7 @@ impl CacheConfig {
 
     /// Set cleanup interval for expired entries (std only)
     #[cfg(feature = "std")]
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_cleanup_interval(mut self, interval: Duration) -> Self {
         self.cleanup_interval = Some(interval);
         self.auto_cleanup = true;

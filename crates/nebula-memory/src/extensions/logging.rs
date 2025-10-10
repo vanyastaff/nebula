@@ -78,7 +78,8 @@ impl MemoryEvent {
     }
 
     /// Add structured data to the event
-    pub fn with_data(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    #[must_use = "builder methods must be chained or built"]
+pub fn with_data(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.data.push((key.into(), value.into()));
         self
     }
@@ -160,6 +161,7 @@ impl LoggingExtension {
     }
 
     /// Set the minimum log level
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_min_level(mut self, level: LogLevel) -> Self {
         self.min_level = level;
         self

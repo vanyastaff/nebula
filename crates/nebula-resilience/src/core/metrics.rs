@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 /// Maximum number of unique metrics to prevent memory exhaustion attacks
 const MAX_METRICS_COUNT: usize = 10_000;
 
-/// Maximum metric name length to prevent DoS attacks
+/// Maximum metric name length to prevent `DoS` attacks
 const MAX_METRIC_NAME_LENGTH: usize = 256;
 
 /// Metrics collector
@@ -20,6 +20,7 @@ pub struct MetricsCollector {
 
 impl MetricsCollector {
     /// Create new metrics collector
+    #[must_use] 
     pub fn new(enabled: bool) -> Self {
         Self {
             metrics: Arc::new(RwLock::new(HashMap::new())),
@@ -74,12 +75,14 @@ impl MetricsCollector {
     }
 
     /// Get metric snapshot
+    #[must_use] 
     pub fn snapshot(&self, name: &str) -> Option<MetricSnapshot> {
         let metrics = self.metrics.read();
-        metrics.get(name).map(|m| m.snapshot())
+        metrics.get(name).map(Metric::snapshot)
     }
 
     /// Get all metrics
+    #[must_use] 
     pub fn all_metrics(&self) -> HashMap<String, MetricSnapshot> {
         let metrics = self.metrics.read();
         metrics
@@ -95,7 +98,7 @@ impl MetricsCollector {
 }
 
 /// Individual metric
-pub struct Metric {
+pub(super) struct Metric {
     count: AtomicU64,
     sum: AtomicU64,
     min: AtomicU64,
@@ -205,12 +208,12 @@ impl MetricTimer {
 
 /// Global metrics instance
 #[allow(dead_code)]
-static GLOBAL_METRICS: once_cell::sync::Lazy<MetricsCollector> =
-    once_cell::sync::Lazy::new(|| MetricsCollector::new(true));
+static GLOBAL_METRICS: std::sync::LazyLock<MetricsCollector> =
+    std::sync::LazyLock::new(|| MetricsCollector::new(true));
 
 /// Get global metrics collector
 #[allow(dead_code)]
-pub fn global_metrics() -> &'static MetricsCollector {
+pub(super) fn global_metrics() -> &'static MetricsCollector {
     &GLOBAL_METRICS
 }
 
@@ -245,6 +248,7 @@ impl Metrics {
     }
 
     /// Add tag
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_tag(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.tags.insert(key.into(), value.into());
         self
@@ -270,6 +274,7 @@ impl Metrics {
     }
 
     /// Start timer
+    #[must_use] 
     pub fn timer(&self, name: &str) -> MetricTimer {
         self.collector.start_timer(self.format_name(name))
     }

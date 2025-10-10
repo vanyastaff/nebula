@@ -12,12 +12,15 @@ use nebula_value::Value;
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
 pub struct HiddenParameter {
     #[serde(flatten)]
+    /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Current value of the parameter
     pub value: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Default value if parameter is not set
     pub default: Option<String>,
 }
 

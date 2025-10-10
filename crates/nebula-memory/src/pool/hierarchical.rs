@@ -8,9 +8,9 @@ use alloc::{
 };
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
+use parking_lot::Mutex;
 #[cfg(feature = "std")]
 use std::sync::{Arc, Weak};
-use parking_lot::Mutex;
 
 #[cfg(feature = "stats")]
 use super::PoolStats;

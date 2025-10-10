@@ -2,8 +2,7 @@
 //!
 //! This module defines the fundamental traits that all validators must implement.
 
-use crate::core::{ValidationError, ValidatorMetadata};
-use std::future::Future;
+use crate::core::ValidatorMetadata;
 
 // ============================================================================
 // CORE VALIDATOR TRAIT

@@ -17,7 +17,7 @@
 //! assert!(validator.validate("hi").is_err());        // neither
 //! ```
 
-use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{TypedValidator, ValidationComplexity, ValidatorMetadata};
 
 // ============================================================================
 // OR COMBINATOR
@@ -306,6 +306,7 @@ where
 ///
 /// let combined = or_any(validators);
 /// ```
+#[must_use] 
 pub fn or_any<V>(
     validators: Vec<V>,
 ) -> impl TypedValidator<Input = V::Input, Output = V::Output, Error = OrAnyError<V::Error>>
@@ -321,7 +322,7 @@ pub struct OrAny<V> {
     validators: Vec<V>,
 }
 
-/// Error type for OrAny combinator.
+/// Error type for `OrAny` combinator.
 #[derive(Debug, Clone)]
 pub struct OrAnyError<E> {
     /// All errors from failed validators.

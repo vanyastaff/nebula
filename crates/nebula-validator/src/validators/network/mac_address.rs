@@ -45,6 +45,7 @@ pub struct MacAddress {
 
 impl MacAddress {
     /// Creates a new MAC address validator (allows all formats).
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             allow_colon: true,
@@ -55,6 +56,7 @@ impl MacAddress {
     }
 
     /// Only allow colon-separated format (AA:BB:CC:DD:EE:FF).
+    #[must_use = "builder methods must be chained or built"]
     pub fn colon_only(mut self) -> Self {
         self.allow_colon = true;
         self.allow_hyphen = false;
@@ -64,6 +66,7 @@ impl MacAddress {
     }
 
     /// Only allow hyphen-separated format (AA-BB-CC-DD-EE-FF).
+    #[must_use = "builder methods must be chained or built"]
     pub fn hyphen_only(mut self) -> Self {
         self.allow_colon = false;
         self.allow_hyphen = true;
@@ -73,6 +76,7 @@ impl MacAddress {
     }
 
     /// Only allow dot-separated format (AABB.CCDD.EEFF).
+    #[must_use = "builder methods must be chained or built"]
     pub fn dot_only(mut self) -> Self {
         self.allow_colon = false;
         self.allow_hyphen = false;
@@ -82,6 +86,7 @@ impl MacAddress {
     }
 
     /// Only allow no-separator format (AABBCCDDEEFF).
+    #[must_use = "builder methods must be chained or built"]
     pub fn no_separator_only(mut self) -> Self {
         self.allow_colon = false;
         self.allow_hyphen = false;
@@ -131,11 +136,11 @@ impl MacAddress {
             }
 
             bytes[i * 2] = u8::from_str_radix(&part[0..2], 16).map_err(|_| {
-                ValidationError::new("invalid_hex", format!("Invalid hex digits: {}", part))
+                ValidationError::new("invalid_hex", format!("Invalid hex digits: {part}"))
             })?;
 
             bytes[i * 2 + 1] = u8::from_str_radix(&part[2..4], 16).map_err(|_| {
-                ValidationError::new("invalid_hex", format!("Invalid hex digits: {}", part))
+                ValidationError::new("invalid_hex", format!("Invalid hex digits: {part}"))
             })?;
         }
 
@@ -169,12 +174,12 @@ impl MacAddress {
             if part.len() != 2 {
                 return Err(ValidationError::new(
                     "invalid_mac_format",
-                    format!("Each part must be exactly 2 hex digits, got '{}'", part),
+                    format!("Each part must be exactly 2 hex digits, got '{part}'"),
                 ));
             }
 
             bytes[i] = u8::from_str_radix(part, 16).map_err(|_| {
-                ValidationError::new("invalid_hex", format!("Invalid hex digits: {}", part))
+                ValidationError::new("invalid_hex", format!("Invalid hex digits: {part}"))
             })?;
         }
         Ok(bytes)

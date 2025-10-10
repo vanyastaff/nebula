@@ -13,24 +13,30 @@ use nebula_value::Value;
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
 pub struct GroupParameter {
     #[serde(flatten)]
+    /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Current value of the parameter
     pub value: Option<GroupValue>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Default value if parameter is not set
     pub default: Option<GroupValue>,
 
     /// Field definitions for this group
     pub fields: Vec<GroupField>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Configuration options for this parameter type
     pub options: Option<GroupParameterOptions>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Display rules controlling when this parameter is shown
     pub display: Option<ParameterDisplay>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Validation rules for this parameter
     pub validation: Option<ParameterValidation>,
 }
 
@@ -79,7 +85,7 @@ pub struct GroupParameterOptions {}
 /// Value container for group parameter
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GroupValue {
-    /// Field values as an Object
+    /// Field values stored as an Object
     pub values: nebula_value::Object,
 }
 

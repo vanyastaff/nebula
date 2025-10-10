@@ -58,6 +58,7 @@ where
 /// assert!(validator.validate(&vec![1, 2, 3]).is_ok());
 /// assert!(validator.validate(&vec![1, 2]).is_err());
 /// ```
+#[must_use] 
 pub fn min_size<T>(min: usize) -> MinSize<T>
 where
     T: Clone,
@@ -121,6 +122,7 @@ where
 /// assert!(validator.validate(&vec![1, 2, 3]).is_ok());
 /// assert!(validator.validate(&vec![1, 2, 3, 4]).is_err());
 /// ```
+#[must_use] 
 pub fn max_size<T>(max: usize) -> MaxSize<T>
 where
     T: Clone,
@@ -185,6 +187,7 @@ where
 /// assert!(validator.validate(&vec![1, 2]).is_err());
 /// assert!(validator.validate(&vec![1, 2, 3, 4]).is_err());
 /// ```
+#[must_use] 
 pub fn exact_size<T>(size: usize) -> ExactSize<T>
 where
     T: Clone,
@@ -214,13 +217,13 @@ where
     type Error = ValidationError;
 
     fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
-        if !input.is_empty() {
-            Ok(())
-        } else {
+        if input.is_empty() {
             Err(ValidationError::new(
                 "not_empty",
                 "Collection must not be empty",
             ))
+        } else {
+            Ok(())
         }
     }
 
@@ -243,6 +246,7 @@ where
 /// assert!(validator.validate(&vec![1]).is_ok());
 /// assert!(validator.validate(&vec![]).is_err());
 /// ```
+#[must_use] 
 pub fn not_empty_collection<T>() -> NotEmptyCollection<T>
 where
     T: Clone,

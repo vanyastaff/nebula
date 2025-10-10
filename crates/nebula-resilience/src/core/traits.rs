@@ -87,6 +87,7 @@ pub struct PatternMetrics {
 
 impl PatternMetrics {
     /// Calculate error rate
+    #[must_use] 
     pub fn error_rate(&self) -> f64 {
         if self.total_calls == 0 {
             0.0
@@ -96,6 +97,7 @@ impl PatternMetrics {
     }
 
     /// Calculate average latency
+    #[must_use] 
     pub fn avg_latency_ms(&self) -> f64 {
         if self.total_calls == 0 {
             0.0
@@ -105,6 +107,7 @@ impl PatternMetrics {
     }
 
     /// Success rate
+    #[must_use] 
     pub fn success_rate(&self) -> f64 {
         1.0 - self.error_rate()
     }

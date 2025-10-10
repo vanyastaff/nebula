@@ -8,36 +8,46 @@ use crate::core::{
 use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
+/// Parameter for single-line text input
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextParameter {
     #[serde(flatten)]
+    /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Current value of the parameter
     pub value: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Default value if parameter is not set
     pub default: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Configuration options for this parameter type
     pub options: Option<TextParameterOptions>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Display rules controlling when this parameter is shown
     pub display: Option<ParameterDisplay>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Validation rules for this parameter
     pub validation: Option<ParameterValidation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextParameterOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Regex pattern for validation
     pub pattern: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Maximum number of characters
     pub max_length: Option<usize>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Minimum number of characters
     pub min_length: Option<usize>,
 }
 

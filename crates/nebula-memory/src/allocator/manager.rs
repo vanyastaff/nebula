@@ -146,6 +146,7 @@ impl AllocatorManager {
     }
 
     /// Set the default allocator (must be already registered)
+    #[must_use = "operation result must be checked"]
     pub fn set_default(&mut self, allocator_id: AllocatorId) -> Result<(), &'static str> {
         #[cfg(feature = "std")]
         let exists = self.allocators.contains_key(&allocator_id);
@@ -164,6 +165,7 @@ impl AllocatorManager {
     }
 
     /// Sets the active allocator
+    #[must_use = "operation result must be checked"]
     pub fn set_active_allocator(&self, allocator_id: AllocatorId) -> Result<(), &'static str> {
         // Verify allocator exists
         #[cfg(feature = "std")]
@@ -304,6 +306,7 @@ pub struct GlobalAllocatorManager;
 
 impl GlobalAllocatorManager {
     /// Initializes the global allocator manager
+    #[must_use = "initialization result must be checked"]
     pub fn init() -> Result<(), &'static str> {
         #[cfg(feature = "std")]
         {

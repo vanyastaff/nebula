@@ -113,6 +113,7 @@ impl CompressedArena {
     }
 
     /// Allocates bytes with alignment
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_bytes(&self, size: usize, align: usize) -> Result<*mut u8, MemoryError> {
         if size > self.block_size {
             return Err(MemoryError::allocation_too_large(0));
@@ -141,6 +142,7 @@ impl CompressedArena {
     }
 
     /// Allocates and initializes a value
+    #[must_use = "allocated memory must be used"]
     pub fn alloc<T>(&self, value: T) -> Result<&mut T, MemoryError> {
         let ptr = self.alloc_bytes(std::mem::size_of::<T>(), std::mem::align_of::<T>())? as *mut T;
 
@@ -210,6 +212,7 @@ impl CompressedArena {
     }
 
     /// Decompresses a block by index
+    #[must_use = "decompressed data must be used"]
     pub fn decompress_block(&self, index: usize) -> Result<Vec<u8>, MemoryError> {
         let blocks = self.compressed_blocks.borrow();
         let block = blocks.get(index).ok_or(MemoryError::invalid_index(0, 0))?;
@@ -233,6 +236,7 @@ impl CompressedArena {
     }
 
     /// Flushes active block to compressed storage
+    #[must_use = "operation result must be checked"]
     pub fn flush(&self) -> Result<(), MemoryError> {
         self.compress_active()
     }

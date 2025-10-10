@@ -382,6 +382,7 @@ impl ExpirableParameter {
     }
 
     /// Refresh the current value's expiration time
+    #[must_use = "operation result must be checked"]
     pub fn refresh_ttl(&mut self) -> Result<(), ParameterError> {
         if let Some(value) = &mut self.value {
             let ttl = self.options.as_ref().map(|o| o.ttl).unwrap_or(DEFAULT_TTL);

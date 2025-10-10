@@ -1,9 +1,9 @@
 //! Cross-thread arena implementation that can be safely moved between threads
 
+use parking_lot::Mutex;
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 use super::{Arena, ArenaConfig, ArenaStats};
 use crate::error::MemoryError;
@@ -54,6 +54,7 @@ impl CrossThreadArena {
     }
 
     /// Create a reference that can be sent across threads
+    #[must_use = "allocated memory must be used"]
     pub fn create_ref<T>(&self, value: T) -> Result<CrossThreadArenaRef<T>, MemoryError> {
         let guard = self.inner.lock();
         let ptr = guard.alloc(value)?;
@@ -84,16 +85,19 @@ pub struct CrossThreadArenaGuard<'a> {
 
 impl<'a> CrossThreadArenaGuard<'a> {
     /// Allocate bytes
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_bytes(&self, size: usize, align: usize) -> Result<*mut u8, MemoryError> {
         self.guard.alloc_bytes_aligned(size, align)
     }
 
     /// Allocate a value
+    #[must_use = "allocated memory must be used"]
     pub fn alloc<T>(&self, value: T) -> Result<&mut T, MemoryError> {
         self.guard.alloc(value)
     }
 
     /// Allocate a slice
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_slice<T>(&self, slice: &[T]) -> Result<&mut [T], MemoryError>
     where
         T: Copy,
@@ -102,6 +106,7 @@ impl<'a> CrossThreadArenaGuard<'a> {
     }
 
     /// Allocate a string
+    #[must_use = "allocated memory must be used"]
     pub fn alloc_str(&self, s: &str) -> Result<&str, MemoryError> {
         self.guard.alloc_str(s)
     }
@@ -176,26 +181,31 @@ impl CrossThreadArenaBuilder {
         }
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn initial_size(mut self, size: usize) -> Self {
         self.config.initial_size = size;
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn growth_factor(mut self, factor: f64) -> Self {
         self.config.growth_factor = factor;
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn max_chunk_size(mut self, size: usize) -> Self {
         self.config.max_chunk_size = size;
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn track_stats(mut self, enabled: bool) -> Self {
         self.config.track_stats = enabled;
         self
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn zero_memory(mut self, enabled: bool) -> Self {
         self.config.zero_memory = enabled;
         self

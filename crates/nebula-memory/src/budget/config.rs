@@ -95,42 +95,49 @@ impl BudgetConfig {
     }
 
     /// Set the overcommit policy
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_overcommit(mut self, policy: OvercommitPolicy) -> Self {
         self.overcommit_policy = policy;
         self
     }
 
     /// Set the reservation mode
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_reservation_mode(mut self, mode: ReservationMode) -> Self {
         self.reservation_mode = mode;
         self
     }
 
     /// Set the minimum guaranteed memory
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_min_guaranteed(mut self, min: usize) -> Self {
         self.min_guaranteed = min;
         self
     }
 
     /// Set the tracking window
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_tracking_window(mut self, window: Option<Duration>) -> Self {
         self.tracking_window = window;
         self
     }
 
     /// Enable or disable adaptive behavior
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_adaptive(mut self, adaptive: bool) -> Self {
         self.adaptive = adaptive;
         self
     }
 
     /// Set the priority level
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_priority(mut self, priority: u8) -> Self {
         self.priority = priority;
         self
     }
 
     /// Enable or disable statistics collection
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_stats(mut self, collect_stats: bool) -> Self {
         self.collect_stats = collect_stats;
         self
@@ -147,6 +154,7 @@ impl BudgetConfig {
     }
 
     /// Validate the configuration
+    #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), String> {
         if self.limit == 0 {
             return Err("Memory limit cannot be zero".to_string());

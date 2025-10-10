@@ -134,6 +134,7 @@ impl DisplayContext {
 
     /// Builder pattern: add a value and return self
     #[inline]
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_value(mut self, key: impl Into<ParameterKey>, value: impl Into<Value>) -> Self {
         self.values.insert(key.into(), value.into());
         self
@@ -333,12 +334,14 @@ impl DisplayRule {
     }
 
     /// Specify which parameters this rule depends on (for optimization)
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_dependencies(mut self, deps: impl IntoIterator<Item = impl Into<ParameterKey>>) -> Self {
         self.dependencies = Some(deps.into_iter().map(Into::into).collect());
         self
     }
 
     /// Add a description for debugging/documentation
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
@@ -749,36 +752,42 @@ impl ParameterDisplayBuilder {
     }
 
     /// Add a show condition
+    #[must_use = "builder methods must be chained or built"]
     pub fn show_when(mut self, rule: impl Into<DisplayRuleSet>) -> Self {
         self.show_rules.push(rule.into());
         self
     }
 
     /// Add a hide condition
+    #[must_use = "builder methods must be chained or built"]
     pub fn hide_when(mut self, rule: impl Into<DisplayRuleSet>) -> Self {
         self.hide_rules.push(rule.into());
         self
     }
 
     /// Add multiple show conditions (all must pass)
+    #[must_use = "builder methods must be chained or built"]
     pub fn show_when_all(mut self, rules: impl IntoIterator<Item = impl Into<DisplayRuleSet>>) -> Self {
         self.show_rules.push(DisplayRuleSet::all(rules));
         self
     }
 
     /// Add multiple show conditions (any must pass)
+    #[must_use = "builder methods must be chained or built"]
     pub fn show_when_any(mut self, rules: impl IntoIterator<Item = impl Into<DisplayRuleSet>>) -> Self {
         self.show_rules.push(DisplayRuleSet::any(rules));
         self
     }
 
     /// Add multiple hide conditions (all must pass)
+    #[must_use = "builder methods must be chained or built"]
     pub fn hide_when_all(mut self, rules: impl IntoIterator<Item = impl Into<DisplayRuleSet>>) -> Self {
         self.hide_rules.push(DisplayRuleSet::all(rules));
         self
     }
 
     /// Add multiple hide conditions (any must pass)
+    #[must_use = "builder methods must be chained or built"]
     pub fn hide_when_any(mut self, rules: impl IntoIterator<Item = impl Into<DisplayRuleSet>>) -> Self {
         self.hide_rules.push(DisplayRuleSet::any(rules));
         self
@@ -787,26 +796,31 @@ impl ParameterDisplayBuilder {
     // Convenience methods for common cases
 
     /// Show when parameter equals value
+    #[must_use = "builder methods must be chained or built"]
     pub fn show_when_equals(self, parameter: impl Into<ParameterKey>, value: impl Into<Value>) -> Self {
         self.show_when(DisplayRule::when_equals(parameter, value.into()))
     }
 
     /// Hide when parameter equals value
+    #[must_use = "builder methods must be chained or built"]
     pub fn hide_when_equals(self, parameter: impl Into<ParameterKey>, value: impl Into<Value>) -> Self {
         self.hide_when(DisplayRule::when_equals(parameter, value.into()))
     }
 
     /// Show when parameter is set (not null)
+    #[must_use = "builder methods must be chained or built"]
     pub fn show_when_set(self, parameter: impl Into<ParameterKey>) -> Self {
         self.show_when(DisplayRule::when_set(parameter))
     }
 
     /// Show when parameter is true
+    #[must_use = "builder methods must be chained or built"]
     pub fn show_when_true(self, parameter: impl Into<ParameterKey>) -> Self {
         self.show_when(DisplayRule::when_true(parameter))
     }
 
     /// Hide when parameter is false
+    #[must_use = "builder methods must be chained or built"]
     pub fn hide_when_false(self, parameter: impl Into<ParameterKey>) -> Self {
         self.hide_when(DisplayRule::when_false(parameter))
     }

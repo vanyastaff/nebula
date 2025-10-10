@@ -352,24 +352,28 @@ impl MultiLevelConfig {
     }
 
     /// Set promotion policy
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_promotion_policy(mut self, policy: PromotionPolicy) -> Self {
         self.promotion_policy = policy;
         self
     }
 
     /// Set demotion policy
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_demotion_policy(mut self, policy: DemotionPolicy) -> Self {
         self.demotion_policy = policy;
         self
     }
 
     /// Enable statistics tracking
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_stats(mut self) -> Self {
         self.track_stats = true;
         self
     }
 
     /// Enable background cleanup
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_background_cleanup(mut self) -> Self {
         self.background_cleanup = true;
         self
@@ -377,6 +381,7 @@ impl MultiLevelConfig {
 
     /// Set cleanup interval
     #[cfg(feature = "std")]
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_cleanup_interval(mut self, interval: Duration) -> Self {
         self.cleanup_interval = Some(interval);
         self.background_cleanup = true;

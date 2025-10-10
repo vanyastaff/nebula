@@ -80,7 +80,7 @@ where
     fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
         match self.inner.validate(input) {
             Ok(_) => Err(NotError::ValidatorPassed),
-            Err(inner_error) => {
+            Err(_inner_error) => {
                 // Inner validator failed, so NOT succeeds
                 Ok(())
             }

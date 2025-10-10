@@ -75,6 +75,7 @@ impl FunctionValidatorBuilder {
 
     /// Add a validation function
     #[allow(dead_code)]
+    #[must_use = "builder methods must be chained or built"]
     pub fn add_validator<F>(mut self, f: F) -> Self
     where
         F: Fn(&serde_json::Value) -> ConfigResult<()> + Send + Sync + 'static,
@@ -117,6 +118,7 @@ impl FunctionValidatorBuilder {
 
     /// Set schema
     #[allow(dead_code)]
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_schema(mut self, schema: serde_json::Value) -> Self {
         self.schema = Some(schema);
         self

@@ -13,23 +13,30 @@ use nebula_value::Value;
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
 pub struct MultiSelectParameter {
     #[serde(flatten)]
+    /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Current value of the parameter
     pub value: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Default value if parameter is not set
     pub default: Option<Vec<String>>,
 
+    /// Available options for selection
     pub options: Vec<SelectOption>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Configuration options for this parameter type
     pub multi_select_options: Option<MultiSelectParameterOptions>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Display rules controlling when this parameter is shown
     pub display: Option<ParameterDisplay>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Validation rules for this parameter
     pub validation: Option<ParameterValidation>,
 }
 
@@ -257,6 +264,7 @@ impl MultiSelectParameter {
     }
 
     /// Add a selection if it's valid and not already selected
+    #[must_use = "operation result must be checked"]
     pub fn add_selection(&mut self, value: String) -> Result<(), ParameterError> {
         if !self.is_valid_option(&value) {
             return Err(ParameterError::InvalidValue {
@@ -281,6 +289,7 @@ impl MultiSelectParameter {
     }
 
     /// Remove a selection
+    #[must_use = "operation result must be checked"]
     pub fn remove_selection(&mut self, value: &str) -> Result<(), ParameterError> {
         if let Some(current) = &mut self.value {
             current.retain(|v| v != value);
@@ -294,6 +303,7 @@ impl MultiSelectParameter {
     }
 
     /// Toggle a selection (add if not present, remove if present)
+    #[must_use = "operation result must be checked"]
     pub fn toggle_selection(&mut self, value: String) -> Result<(), ParameterError> {
         if let Some(current) = &self.value {
             if current.contains(&value) {

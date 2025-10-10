@@ -12,6 +12,7 @@ use std::marker::PhantomData;
 /// Validates that a map has a specific key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HasKey<K, V> {
+    /// The key that must exist in the map.
     pub key: K,
     _phantom: PhantomData<V>,
 }

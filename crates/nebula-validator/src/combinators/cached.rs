@@ -194,16 +194,17 @@ where
 /// Statistics about the cache.
 #[derive(Debug, Clone, Copy)]
 pub struct CacheStats {
-    /// Number of entries currently in the cache.
+    /// The number of entries currently stored in the cache.
     pub entries: u64,
-    /// Maximum number of entries the cache can hold.
+    /// The maximum number of entries the cache can hold.
     pub capacity: u64,
-    /// Weighted size (for caches with entry weighting).
+    /// The weighted size of the cache (for caches with entry weighting).
     pub weighted_size: u64,
 }
 
 impl CacheStats {
     /// Returns the cache utilization as a percentage (0.0 to 1.0).
+    #[must_use] 
     pub fn utilization(&self) -> f64 {
         if self.capacity == 0 {
             0.0
@@ -361,7 +362,9 @@ where
 /// // Cache up to 100 results
 /// let validator = lru_cached(expensive_validator(), 100);
 /// ```
-#[cfg(feature = "lru")]
+// TODO: Re-enable when lru crate is added as dependency
+#[cfg(any())] // Disabled until lru crate is added
+#[allow(dead_code)]
 pub fn lru_cached<V>(validator: V, capacity: usize) -> LruCached<V>
 where
     V: TypedValidator,
@@ -372,14 +375,15 @@ where
     LruCached::new(validator, capacity)
 }
 
-#[cfg(feature = "lru")]
+// TODO: Re-enable when lru crate is added as dependency
+#[cfg(any())] // Disabled until lru crate is added
 #[derive(Debug)]
 pub struct LruCached<V> {
     validator: V,
     cache: RwLock<lru::LruCache<u64, CacheEntry<V>>>,
 }
 
-#[cfg(feature = "lru")]
+#[cfg(any())] // Disabled until lru crate is added
 impl<V> LruCached<V>
 where
     V: TypedValidator,
@@ -402,7 +406,7 @@ where
     }
 }
 
-#[cfg(feature = "lru")]
+#[cfg(any())] // Disabled until lru crate is added
 impl<V> TypedValidator for LruCached<V>
 where
     V: TypedValidator,

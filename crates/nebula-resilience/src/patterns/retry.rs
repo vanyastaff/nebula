@@ -26,14 +26,14 @@ pub enum BackoffPolicy {
         /// Fixed delay duration
         delay: Duration,
     },
-    /// Linear backoff: delay = base_delay * attempt
+    /// Linear backoff: delay = `base_delay` * attempt
     Linear {
         /// Base delay for calculations
         base_delay: Duration,
         /// Maximum delay cap
         max_delay: Duration,
     },
-    /// Exponential backoff: delay = base_delay * multiplier^attempt
+    /// Exponential backoff: delay = `base_delay` * multiplier^attempt
     Exponential {
         /// Base delay for calculations
         base_delay: Duration,
@@ -56,11 +56,11 @@ pub enum BackoffPolicy {
 pub enum JitterPolicy {
     /// No jitter
     None,
-    /// Full jitter: random(0, calculated_delay)
+    /// Full jitter: random(0, `calculated_delay`)
     Full,
-    /// Equal jitter: calculated_delay/2 + random(0, calculated_delay/2)
+    /// Equal jitter: `calculated_delay/2` + random(0, `calculated_delay/2`)
     Equal,
-    /// Decorrelated jitter: random(base_delay, previous_delay * 3)
+    /// Decorrelated jitter: `random(base_delay`, `previous_delay` * 3)
     Decorrelated,
 }
 
@@ -87,6 +87,7 @@ impl Default for RetryStrategy {
 
 impl RetryStrategy {
     /// Create a fixed delay retry strategy
+    #[must_use] 
     pub fn fixed_delay(max_attempts: usize, delay: Duration) -> Self {
         Self {
             max_attempts,
@@ -96,6 +97,7 @@ impl RetryStrategy {
     }
 
     /// Create a linear backoff retry strategy
+    #[must_use] 
     pub fn linear_backoff(max_attempts: usize, base_delay: Duration) -> Self {
         Self {
             max_attempts,
@@ -108,6 +110,7 @@ impl RetryStrategy {
     }
 
     /// Create an exponential backoff retry strategy
+    #[must_use] 
     pub fn exponential_backoff(max_attempts: usize, base_delay: Duration) -> Self {
         Self {
             max_attempts,
@@ -122,6 +125,7 @@ impl RetryStrategy {
     }
 
     /// Create a custom retry strategy with specific delays
+    #[must_use] 
     pub fn custom_delays(delays: Vec<Duration>) -> Self {
         let max_attempts = delays.len();
         Self {
@@ -132,12 +136,14 @@ impl RetryStrategy {
     }
 
     /// Set custom retry condition
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_condition(mut self, condition: RetryCondition) -> Self {
         self.retry_condition = condition;
         self
     }
 
     /// Check if an error should be retried
+    #[must_use] 
     pub fn should_retry(&self, error: &ResilienceError) -> bool {
         match error {
             ResilienceError::Timeout { .. } => self.retry_condition.on_timeout,
@@ -156,6 +162,7 @@ impl RetryStrategy {
     }
 
     /// Calculate delay for a specific attempt (1-indexed)
+    #[must_use] 
     pub fn delay_for_attempt(&self, attempt: usize) -> Option<Duration> {
         if attempt > self.max_attempts {
             return None;
@@ -236,6 +243,7 @@ impl Default for RetryCondition {
 
 impl RetryCondition {
     /// Create a permissive retry condition (retry most errors)
+    #[must_use] 
     pub fn permissive() -> Self {
         Self {
             on_timeout: true,
@@ -247,6 +255,7 @@ impl RetryCondition {
     }
 
     /// Create a conservative retry condition (retry only safe errors)
+    #[must_use] 
     pub fn conservative() -> Self {
         Self {
             on_timeout: true,
@@ -258,6 +267,7 @@ impl RetryCondition {
     }
 
     /// Exclude specific error types from retry
+    #[must_use = "builder methods must be chained or built"]
     pub fn exclude_error(mut self, error_type: impl Into<String>) -> Self {
         self.exclude_errors.push(error_type.into());
         self

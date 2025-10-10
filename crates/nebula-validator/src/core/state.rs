@@ -122,6 +122,7 @@ impl<T> Parameter<T, Unvalidated> {
     /// let validator = MinLength { min: 5 };
     /// let validated = param.validate(&validator)?;
     /// ```
+    #[must_use = "validation result must be checked"]
     pub fn validate<V>(self, validator: &V) -> Result<Parameter<T, Validated<V>>, V::Error>
     where
         V: TypedValidator<Output = ()>,
@@ -167,6 +168,7 @@ impl<T> Parameter<T, Unvalidated> {
     /// Validates without changing the state marker.
     ///
     /// Useful when you want to validate but don't need the type-level proof.
+    #[must_use = "validation result must be checked"]
     pub fn validate_in_place<V>(&self, validator: &V) -> Result<(), V::Error>
     where
         V: TypedValidator<Output = ()>,
@@ -224,6 +226,7 @@ impl<T, V> Parameter<T, Validated<V>> {
     /// Re-validates with a different validator.
     ///
     /// Changes the validation marker to the new validator.
+    #[must_use = "validation result must be checked"]
     pub fn revalidate<V2>(self, validator: &V2) -> Result<Parameter<T, Validated<V2>>, V2::Error>
     where
         V2: TypedValidator<Input = T, Output = ()>,
@@ -329,6 +332,7 @@ pub struct ParameterBuilder<T, S = Unvalidated> {
 
 impl<T> ParameterBuilder<T, Unvalidated> {
     /// Creates a new parameter builder.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             value: None,
@@ -337,12 +341,14 @@ impl<T> ParameterBuilder<T, Unvalidated> {
     }
 
     /// Sets the value.
+    #[must_use = "builder methods must be chained or built"]
     pub fn value(mut self, value: T) -> Self {
         self.value = Some(value);
         self
     }
 
     /// Validates the value.
+    #[must_use = "validation result must be checked"]
     pub fn validate<V>(self, validator: &V) -> Result<ParameterBuilder<T, Validated<V>>, V::Error>
     where
         V: TypedValidator<Input = T, Output = ()>,
@@ -428,6 +434,7 @@ pub struct ValidationGroup<S = Unvalidated> {
 
 impl ValidationGroup<Unvalidated> {
     /// Creates a new validation group.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             params: Vec::new(),
@@ -436,6 +443,7 @@ impl ValidationGroup<Unvalidated> {
     }
 
     /// Adds a parameter to the group.
+    #[must_use = "builder methods must be chained or built"]
     pub fn add<T: 'static>(mut self, param: Parameter<T, Unvalidated>) -> Self {
         self.params.push(Box::new(param));
         self

@@ -42,7 +42,7 @@ pub trait ResilienceConfig: Send + Sync + Serialize + for<'de> Deserialize<'de> 
         // Convert using From trait (idiomatic Rust), then deserialize
         let json_val: serde_json::Value = value.clone().into();
         serde_json::from_value(json_val)
-            .map_err(|e| ConfigError::validation(format!("Failed to deserialize config: {}", e)))
+            .map_err(|e| ConfigError::validation(format!("Failed to deserialize config: {e}")))
     }
 }
 
@@ -135,20 +135,17 @@ impl ResilienceConfig for CommonConfig {
 /// Environment enumeration for configuration context
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Environment {
     /// Development environment with relaxed constraints
     Development,
     /// Staging environment for testing
     Staging,
     /// Production environment with strict settings
+    #[default]
     Production,
 }
 
-impl Default for Environment {
-    fn default() -> Self {
-        Self::Production
-    }
-}
 
 /// Configurable trait for resilience patterns
 pub trait Configurable {
@@ -179,6 +176,7 @@ impl ResilienceConfigManager {
     }
 
     /// Create from existing nebula config
+    #[must_use] 
     pub fn from_config(config: NebulaConfig) -> Self {
         Self { config }
     }

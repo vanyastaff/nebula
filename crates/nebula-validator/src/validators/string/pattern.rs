@@ -190,12 +190,14 @@ pub struct Alphanumeric {
 }
 
 impl Alphanumeric {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             allow_spaces: false,
         }
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_spaces(mut self) -> Self {
         self.allow_spaces = true;
         self
@@ -244,6 +246,7 @@ impl TypedValidator for Alphanumeric {
     }
 }
 
+#[must_use] 
 pub fn alphanumeric() -> Alphanumeric {
     Alphanumeric::new()
 }
@@ -255,16 +258,19 @@ pub fn alphanumeric() -> Alphanumeric {
 /// Validates that a string contains only alphabetic characters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Alphabetic {
+    /// Whether to allow spaces in the alphabetic string.
     pub allow_spaces: bool,
 }
 
 impl Alphabetic {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             allow_spaces: false,
         }
     }
 
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_spaces(mut self) -> Self {
         self.allow_spaces = true;
         self
@@ -311,6 +317,7 @@ impl TypedValidator for Alphabetic {
     }
 }
 
+#[must_use] 
 pub fn alphabetic() -> Alphabetic {
     Alphabetic::new()
 }
@@ -329,7 +336,7 @@ impl TypedValidator for Numeric {
     type Error = ValidationError;
 
     fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
-        if input.chars().all(|c| c.is_numeric()) {
+        if input.chars().all(char::is_numeric) {
             Ok(())
         } else {
             Err(ValidationError::new(
@@ -353,6 +360,7 @@ impl TypedValidator for Numeric {
     }
 }
 
+#[must_use] 
 pub const fn numeric() -> Numeric {
     Numeric
 }
@@ -391,6 +399,7 @@ impl TypedValidator for Lowercase {
     }
 }
 
+#[must_use] 
 pub const fn lowercase() -> Lowercase {
     Lowercase
 }
@@ -425,6 +434,7 @@ impl TypedValidator for Uppercase {
     }
 }
 
+#[must_use] 
 pub const fn uppercase() -> Uppercase {
     Uppercase
 }

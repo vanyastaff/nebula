@@ -44,8 +44,9 @@ impl Json {
     /// Creates a new JSON validator with default settings.
     ///
     /// Default settings:
-    /// - allow_primitives: true (allows strings, numbers, booleans, null)
-    /// - max_depth: None (no limit)
+    /// - `allow_primitives`: true (allows strings, numbers, booleans, null)
+    /// - `max_depth`: None (no limit)
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             allow_primitives: true,
@@ -54,12 +55,14 @@ impl Json {
     }
 
     /// Require JSON to be an object or array (no primitives).
+    #[must_use = "builder methods must be chained or built"]
     pub fn objects_only(mut self) -> Self {
         self.allow_primitives = false;
         self
     }
 
     /// Set maximum nesting depth.
+    #[must_use = "builder methods must be chained or built"]
     pub fn max_depth(mut self, depth: usize) -> Self {
         self.max_depth = Some(depth);
         self
@@ -100,7 +103,7 @@ impl Json {
             _ => {
                 return Err(ValidationError::new(
                     "invalid_json_start",
-                    format!("Invalid JSON start character: '{}'", first_char),
+                    format!("Invalid JSON start character: '{first_char}'"),
                 ));
             }
         }
@@ -109,14 +112,13 @@ impl Json {
     }
 
     fn parse_value(&self, input: &str, depth: usize) -> Result<(), ValidationError> {
-        if let Some(max) = self.max_depth {
-            if depth > max {
+        if let Some(max) = self.max_depth
+            && depth > max {
                 return Err(ValidationError::new(
                     "json_too_deep",
-                    format!("JSON nesting exceeds maximum depth of {}", max),
+                    format!("JSON nesting exceeds maximum depth of {max}"),
                 ));
             }
-        }
 
         let trimmed = input.trim();
         if trimmed.is_empty() {
@@ -137,12 +139,12 @@ impl Json {
             '-' | '0'..='9' => self.parse_number(trimmed),
             _ => Err(ValidationError::new(
                 "invalid_json_value",
-                format!("Invalid JSON value starting with '{}'", first_char),
+                format!("Invalid JSON value starting with '{first_char}'"),
             )),
         }
     }
 
-    fn parse_object(&self, input: &str, depth: usize) -> Result<(), ValidationError> {
+    fn parse_object(&self, input: &str, _depth: usize) -> Result<(), ValidationError> {
         if !input.starts_with('{') || !input.ends_with('}') {
             return Err(ValidationError::new(
                 "invalid_json_object",
@@ -195,7 +197,7 @@ impl Json {
         Ok(())
     }
 
-    fn parse_array(&self, input: &str, depth: usize) -> Result<(), ValidationError> {
+    fn parse_array(&self, input: &str, _depth: usize) -> Result<(), ValidationError> {
         if !input.starts_with('[') || !input.ends_with(']') {
             return Err(ValidationError::new(
                 "invalid_json_array",
@@ -286,7 +288,7 @@ impl Json {
                     _ => {
                         return Err(ValidationError::new(
                             "invalid_json_escape",
-                            format!("Invalid escape sequence: \\{}", c),
+                            format!("Invalid escape sequence: \\{c}"),
                         ));
                     }
                 }
@@ -373,14 +375,13 @@ impl Json {
         }
 
         // Optional exponent
-        if let Some(&c) = chars.peek() {
-            if c == 'e' || c == 'E' {
+        if let Some(&c) = chars.peek()
+            && (c == 'e' || c == 'E') {
                 chars.next();
-                if let Some(&sign) = chars.peek() {
-                    if sign == '+' || sign == '-' {
+                if let Some(&sign) = chars.peek()
+                    && (sign == '+' || sign == '-') {
                         chars.next();
                     }
-                }
                 let mut has_digit = false;
                 while let Some(&c) = chars.peek() {
                     if c.is_ascii_digit() {
@@ -397,7 +398,6 @@ impl Json {
                     ));
                 }
             }
-        }
 
         if chars.next().is_some() {
             return Err(ValidationError::new(
@@ -415,7 +415,7 @@ impl Json {
         } else {
             Err(ValidationError::new(
                 "invalid_json_boolean",
-                format!("Invalid boolean value: {}", input),
+                format!("Invalid boolean value: {input}"),
             ))
         }
     }
@@ -426,7 +426,7 @@ impl Json {
         } else {
             Err(ValidationError::new(
                 "invalid_json_null",
-                format!("Invalid null value: {}", input),
+                format!("Invalid null value: {input}"),
             ))
         }
     }

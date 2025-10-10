@@ -30,6 +30,7 @@ impl TypedValidator for IsTrue {
     }
 }
 
+#[must_use] 
 pub const fn is_true() -> IsTrue {
     IsTrue
 }
@@ -48,10 +49,10 @@ impl TypedValidator for IsFalse {
     type Error = ValidationError;
 
     fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
-        if !*input {
-            Ok(())
-        } else {
+        if *input {
             Err(ValidationError::new("is_false", "Value must be false"))
+        } else {
+            Ok(())
         }
     }
 
@@ -62,6 +63,7 @@ impl TypedValidator for IsFalse {
     }
 }
 
+#[must_use] 
 pub const fn is_false() -> IsFalse {
     IsFalse
 }

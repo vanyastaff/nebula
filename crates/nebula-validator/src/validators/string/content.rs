@@ -24,10 +24,12 @@ use crate::core::{TypedValidator, ValidationComplexity, ValidationError, Validat
 /// ```
 #[derive(Debug, Clone)]
 pub struct MatchesRegex {
+    /// The compiled regex pattern to match against.
     pub pattern: regex::Regex,
 }
 
 impl MatchesRegex {
+    #[must_use = "constructor result must be handled"]
     pub fn new(pattern: &str) -> Result<Self, regex::Error> {
         Ok(Self {
             pattern: regex::Regex::new(pattern)?,
@@ -70,6 +72,7 @@ impl TypedValidator for MatchesRegex {
     }
 }
 
+#[must_use = "validator must be used"]
 pub fn matches_regex(pattern: &str) -> Result<MatchesRegex, regex::Error> {
     MatchesRegex::new(pattern)
 }
@@ -87,6 +90,7 @@ pub struct Email {
 }
 
 impl Email {
+    #[must_use] 
     pub fn new() -> Self {
         // Simple email pattern - can be made more strict
         let pattern = regex::Regex::new(
@@ -134,6 +138,7 @@ impl TypedValidator for Email {
     }
 }
 
+#[must_use] 
 pub fn email() -> Email {
     Email::new()
 }
@@ -149,6 +154,7 @@ pub struct Url {
 }
 
 impl Url {
+    #[must_use] 
     pub fn new() -> Self {
         let pattern = regex::Regex::new(r"^https?://[^\s/$.?#].[^\s]*$")
             .expect("hardcoded URL regex pattern is valid");
@@ -194,6 +200,7 @@ impl TypedValidator for Url {
     }
 }
 
+#[must_use] 
 pub fn url() -> Url {
     Url::new()
 }
@@ -227,6 +234,7 @@ impl TypedValidator for Uuid {
     }
 }
 
+#[must_use] 
 pub const fn uuid() -> Uuid {
     Uuid
 }

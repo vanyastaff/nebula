@@ -8,9 +8,9 @@ use alloc::string::String;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
-use std::sync::Arc;
-#[cfg(feature = "std")]
 use parking_lot::RwLock;
+#[cfg(feature = "std")]
+use std::sync::Arc;
 #[cfg(feature = "std")]
 use std::thread::{self, JoinHandle};
 #[cfg(feature = "std")]

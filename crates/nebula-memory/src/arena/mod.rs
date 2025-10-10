@@ -303,12 +303,14 @@ impl ArenaConfig {
     }
 
     /// Sets initial chunk size
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_initial_size(mut self, size: usize) -> Self {
         self.initial_size = size;
         self
     }
 
     /// Sets growth factor (must be >= 1.0)
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_growth_factor(mut self, factor: f64) -> Self {
         assert!(factor >= 1.0, "Growth factor must be >= 1.0");
         self.growth_factor = factor;
@@ -316,24 +318,28 @@ impl ArenaConfig {
     }
 
     /// Sets maximum chunk size
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_max_chunk_size(mut self, size: usize) -> Self {
         self.max_chunk_size = size;
         self
     }
 
     /// Enables/disables statistics tracking
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_stats(mut self, enabled: bool) -> Self {
         self.track_stats = enabled;
         self
     }
 
     /// Enables/disables zeroing memory
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_zero_memory(mut self, enabled: bool) -> Self {
         self.zero_memory = enabled;
         self
     }
 
     /// Sets default alignment (must be power of 2)
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_alignment(mut self, align: usize) -> Self {
         assert!(align.is_power_of_two(), "Alignment must be power of 2");
         self.default_alignment = align;
@@ -342,6 +348,7 @@ impl ArenaConfig {
 
     /// Enables NUMA awareness
     #[cfg(feature = "numa-aware")]
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_numa_aware(mut self, enabled: bool) -> Self {
         self.numa_aware = enabled;
         self
@@ -349,6 +356,7 @@ impl ArenaConfig {
 
     /// Sets preferred NUMA node
     #[cfg(feature = "numa-aware")]
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_numa_node(mut self, node: i32) -> Self {
         self.numa_node = node;
         self

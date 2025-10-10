@@ -73,6 +73,7 @@ impl MemoryMetric {
     }
 
     /// Add a label to this metric
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_label(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.labels.insert(key.into(), value.into());
         self
@@ -183,6 +184,7 @@ impl Counter {
     }
 
     /// Add a label to this counter
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_label(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.metric = self.metric.with_label(key, value);
         self
@@ -229,6 +231,7 @@ impl Gauge {
     }
 
     /// Add a label to this gauge
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_label(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.metric = self.metric.with_label(key, value);
         self

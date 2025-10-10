@@ -76,6 +76,7 @@ impl Default for ValidatorMetadata {
 
 impl ValidatorMetadata {
     /// Creates a new metadata builder.
+    #[must_use] 
     pub fn builder() -> ValidatorMetadataBuilder {
         ValidatorMetadataBuilder::default()
     }
@@ -98,12 +99,14 @@ impl ValidatorMetadata {
     }
 
     /// Adds a tag to the metadata.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
         self.tags.push(tag.into());
         self
     }
 
     /// Adds custom metadata.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_custom(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.custom.insert(key.into(), value.into());
         self
@@ -158,6 +161,7 @@ pub enum ValidationComplexity {
 
 impl ValidationComplexity {
     /// Returns a numeric score for comparison (lower is cheaper).
+    #[must_use] 
     pub fn score(&self) -> u8 {
         match self {
             Self::Constant => 1,
@@ -168,6 +172,7 @@ impl ValidationComplexity {
     }
 
     /// Returns true if this complexity is more expensive than another.
+    #[must_use] 
     pub fn is_more_expensive_than(&self, other: &Self) -> bool {
         self.score() > other.score()
     }
@@ -205,60 +210,70 @@ pub struct ValidatorMetadataBuilder {
 
 impl ValidatorMetadataBuilder {
     /// Sets the validator name.
+    #[must_use = "builder methods must be chained or built"]
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
     }
 
     /// Sets the description.
+    #[must_use = "builder methods must be chained or built"]
     pub fn description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
     }
 
     /// Sets the complexity.
+    #[must_use = "builder methods must be chained or built"]
     pub fn complexity(mut self, complexity: ValidationComplexity) -> Self {
         self.complexity = complexity;
         self
     }
 
     /// Sets whether the validator is cacheable.
+    #[must_use = "builder methods must be chained or built"]
     pub fn cacheable(mut self, cacheable: bool) -> Self {
         self.cacheable = cacheable;
         self
     }
 
     /// Sets the estimated execution time.
+    #[must_use = "builder methods must be chained or built"]
     pub fn estimated_time(mut self, time: Duration) -> Self {
         self.estimated_time = Some(time);
         self
     }
 
     /// Adds a tag.
+    #[must_use = "builder methods must be chained or built"]
     pub fn tag(mut self, tag: impl Into<String>) -> Self {
         self.tags.push(tag.into());
         self
     }
 
     /// Adds multiple tags.
+    #[must_use = "builder methods must be chained or built"]
     pub fn tags(mut self, tags: Vec<String>) -> Self {
         self.tags.extend(tags);
         self
     }
 
     /// Sets the version.
+    #[must_use = "builder methods must be chained or built"]
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = Some(version.into());
         self
     }
 
     /// Adds custom metadata.
+    #[must_use = "builder methods must be chained or built"]
     pub fn custom(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.custom.insert(key.into(), value.into());
         self
     }
 
     /// Builds the metadata.
+    #[must_use] 
     pub fn build(self) -> ValidatorMetadata {
         ValidatorMetadata {
             name: self.name.unwrap_or_else(|| "Unknown".to_string()),
@@ -315,6 +330,7 @@ impl RegisteredValidatorMetadata {
     }
 
     /// Marks the validator as deprecated.
+    #[must_use = "builder methods must be chained or built"]
     pub fn deprecate(mut self, message: impl Into<String>) -> Self {
         self.deprecated = true;
         self.deprecation_message = Some(message.into());
@@ -363,6 +379,7 @@ pub struct ValidatorStatistics {
 
 impl ValidatorStatistics {
     /// Creates new empty statistics.
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -393,6 +410,7 @@ impl ValidatorStatistics {
     }
 
     /// Returns the success rate as a percentage.
+    #[must_use] 
     pub fn success_rate(&self) -> f64 {
         if self.total_validations == 0 {
             0.0
@@ -402,6 +420,7 @@ impl ValidatorStatistics {
     }
 
     /// Returns the failure rate as a percentage.
+    #[must_use] 
     pub fn failure_rate(&self) -> f64 {
         100.0 - self.success_rate()
     }
@@ -425,13 +444,13 @@ impl fmt::Display for ValidatorStatistics {
         )?;
         writeln!(f, "  Average time: {:?}", self.average_time)?;
         if let Some(min) = self.min_time {
-            writeln!(f, "  Min time: {:?}", min)?;
+            writeln!(f, "  Min time: {min:?}")?;
         }
         if let Some(max) = self.max_time {
-            writeln!(f, "  Max time: {:?}", max)?;
+            writeln!(f, "  Max time: {max:?}")?;
         }
         if let Some(hit_rate) = self.cache_hit_rate {
-            writeln!(f, "  Cache hit rate: {:.2}%", hit_rate)?;
+            writeln!(f, "  Cache hit rate: {hit_rate:.2}%")?;
         }
         Ok(())
     }
