@@ -57,6 +57,7 @@ impl MemoryError {
     }
 
     /// Adds context to the error
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_context<K, V>(mut self, key: K, value: V) -> Self
     where
         K: Into<String>,

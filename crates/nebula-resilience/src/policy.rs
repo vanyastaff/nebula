@@ -77,6 +77,7 @@ impl ResiliencePolicy {
     }
 
     /// Create a basic policy with timeout and retry
+    #[must_use] 
     pub fn basic(timeout: Duration, retry_attempts: usize) -> Self {
         Self {
             timeout: Some(timeout),
@@ -95,6 +96,7 @@ impl ResiliencePolicy {
     }
 
     /// Create a robust policy with all resilience patterns
+    #[must_use] 
     pub fn robust(
         timeout: Duration,
         retry_attempts: usize,
@@ -120,6 +122,7 @@ impl ResiliencePolicy {
     }
 
     /// Create a policy optimized for microservices
+    #[must_use] 
     pub fn microservice() -> Self {
         Self {
             timeout: Some(Duration::from_secs(10)),
@@ -140,84 +143,98 @@ impl ResiliencePolicy {
     }
 
     /// Set metadata
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_metadata(mut self, metadata: PolicyMetadata) -> Self {
         self.metadata = metadata;
         self
     }
 
     /// Set name
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.metadata.name = name.into();
         self
     }
 
     /// Set description
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.metadata.description = Some(description.into());
         self
     }
 
     /// Add tag
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
         self.metadata.tags.push(tag.into());
         self
     }
 
     /// Set priority
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_priority(mut self, priority: u32) -> Self {
         self.metadata.priority = priority;
         self
     }
 
     /// Set timeout
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
 
     /// Set retry strategy
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_retry(mut self, strategy: RetryStrategy) -> Self {
         self.retry = Some(strategy);
         self
     }
 
     /// Set circuit breaker
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_circuit_breaker(mut self, config: CircuitBreakerConfig) -> Self {
         self.circuit_breaker = Some(config);
         self
     }
 
     /// Set bulkhead
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_bulkhead(mut self, config: BulkheadConfig) -> Self {
         self.bulkhead = Some(config);
         self
     }
 
     /// Remove timeout
+    #[must_use = "builder methods must be chained or built"]
     pub fn without_timeout(mut self) -> Self {
         self.timeout = None;
         self
     }
 
     /// Remove retry
+    #[must_use = "builder methods must be chained or built"]
     pub fn without_retry(mut self) -> Self {
         self.retry = None;
         self
     }
 
     /// Remove circuit breaker
+    #[must_use = "builder methods must be chained or built"]
     pub fn without_circuit_breaker(mut self) -> Self {
         self.circuit_breaker = None;
         self
     }
 
     /// Remove bulkhead
+    #[must_use = "builder methods must be chained or built"]
     pub fn without_bulkhead(mut self) -> Self {
         self.bulkhead = None;
         self
     }
 
     /// Check if policy has any resilience patterns enabled
+    #[must_use] 
     pub fn is_enabled(&self) -> bool {
         self.timeout.is_some()
             || self.retry.is_some()
@@ -226,6 +243,7 @@ impl ResiliencePolicy {
     }
 
     /// Get estimated maximum execution time including retries
+    #[must_use] 
     pub fn max_execution_time(&self) -> Option<Duration> {
         let base_timeout = self.timeout.unwrap_or(Duration::from_secs(60));
 
@@ -242,6 +260,7 @@ impl ResiliencePolicy {
     }
 
     /// Merge with another policy (other takes precedence)
+    #[must_use = "builder methods must be chained or built"]
     pub fn merge(mut self, other: Self) -> Self {
         if other.timeout.is_some() {
             self.timeout = other.timeout;
@@ -308,15 +327,13 @@ impl ResilienceConfig for ResiliencePolicy {
         }
 
         // Check for conflicting configurations
-        if let (Some(_timeout), Some(_retry)) = (self.timeout, &self.retry) {
-            if let Some(max_exec_time) = self.max_execution_time() {
-                if max_exec_time > Duration::from_secs(600) {
+        if let (Some(_timeout), Some(_retry)) = (self.timeout, &self.retry)
+            && let Some(max_exec_time) = self.max_execution_time()
+                && max_exec_time > Duration::from_secs(600) {
                     return Err(ConfigError::validation(
                         "Combined timeout and retry configuration would exceed 10 minutes",
                     ));
                 }
-            }
-        }
 
         Ok(())
     }

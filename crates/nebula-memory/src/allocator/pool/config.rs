@@ -6,8 +6,9 @@ pub struct PoolConfig {
     /// Enable statistics tracking
     pub track_stats: bool,
 
-    /// Fill patterns for debugging
+    /// Fill pattern byte for newly allocated memory (for debugging)
     pub alloc_pattern: Option<u8>,
+    /// Fill pattern byte for deallocated memory (for debugging)
     pub dealloc_pattern: Option<u8>,
 
     /// Use exponential backoff for CAS retries

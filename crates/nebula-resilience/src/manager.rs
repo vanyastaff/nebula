@@ -28,7 +28,7 @@ pub trait RetryableOperation<T> {
     async fn execute(&self) -> ResilienceResult<T>;
 }
 
-/// Implement RetryableOperation for async closures that can be called multiple times
+/// Implement `RetryableOperation` for async closures that can be called multiple times
 #[async_trait::async_trait]
 impl<F, Fut, T> RetryableOperation<T> for F
 where
@@ -51,35 +51,41 @@ pub struct PolicyBuilder {
 
 impl PolicyBuilder {
     /// Create a new policy builder
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set timeout
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
 
     /// Set retry strategy
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_retry(mut self, strategy: RetryStrategy) -> Self {
         self.retry = Some(strategy);
         self
     }
 
     /// Set circuit breaker configuration
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_circuit_breaker(mut self, config: CircuitBreakerConfig) -> Self {
         self.circuit_breaker = Some(config);
         self
     }
 
     /// Set bulkhead configuration
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_bulkhead(mut self, config: BulkheadConfig) -> Self {
         self.bulkhead = Some(config);
         self
     }
 
     /// Build the policy
+    #[must_use] 
     pub fn build(self) -> ResiliencePolicy {
         ResiliencePolicy {
             timeout: self.timeout,
@@ -93,18 +99,22 @@ impl PolicyBuilder {
 
 /// Execution context for resilience operations
 #[derive(Debug)]
-pub struct ExecutionContext {
+pub(crate) struct ExecutionContext {
+    /// Name of the service being executed
     pub service_name: String,
+    /// Name of the operation being performed
     #[allow(dead_code)]
     pub operation_name: String,
+    /// Current attempt number (starts at 1)
     pub attempt: usize,
+    /// Timestamp when execution started
     #[allow(dead_code)]
     pub start_time: std::time::Instant,
 }
 
 impl ExecutionContext {
     /// Create new execution context
-    pub fn new(service: impl Into<String>, operation: impl Into<String>) -> Self {
+    pub(crate) fn new(service: impl Into<String>, operation: impl Into<String>) -> Self {
         Self {
             service_name: service.into(),
             operation_name: operation.into(),
@@ -115,13 +125,13 @@ impl ExecutionContext {
 
     /// Increment attempt counter
     #[allow(dead_code)]
-    pub fn next_attempt(&mut self) {
+    pub(crate) fn next_attempt(&mut self) {
         self.attempt += 1;
     }
 
     /// Get elapsed time since start
     #[allow(dead_code)]
-    pub fn elapsed(&self) -> Duration {
+    pub(crate) fn elapsed(&self) -> Duration {
         self.start_time.elapsed()
     }
 }
@@ -141,6 +151,7 @@ pub struct ResilienceManager {
 
 impl ResilienceManager {
     /// Create new resilience manager with default policy
+    #[must_use] 
     pub fn new(default_policy: ResiliencePolicy) -> Self {
         Self {
             policies: Arc::new(RwLock::new(HashMap::new())),
@@ -151,6 +162,7 @@ impl ResilienceManager {
     }
 
     /// Create manager with default settings
+    #[must_use] 
     pub fn with_defaults() -> Self {
         let default_policy = PolicyBuilder::new()
             .with_timeout(Duration::from_secs(30))
@@ -228,9 +240,7 @@ impl ResilienceManager {
     async fn get_policy(&self, service: &str) -> ResiliencePolicy {
         let policies = self.policies.read().await;
         policies
-            .get(service)
-            .map(|p| (**p).clone())
-            .unwrap_or_else(|| self.default_policy.clone())
+            .get(service).map_or_else(|| self.default_policy.clone(), |p| (**p).clone())
     }
 
     /// Core execution logic with proper composition and optimized locking

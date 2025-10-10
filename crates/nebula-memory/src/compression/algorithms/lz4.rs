@@ -24,12 +24,14 @@ impl Lz4Compressor {
     }
 
     /// Устанавливает уровень сжатия (1-12)
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_compression_level(mut self, level: u32) -> Self {
         self.compression_level = level.clamp(1, 12);
         self
     }
 
     /// Включает/выключает потоковый формат
+    #[must_use = "builder methods must be chained or built"]
     pub fn use_frame_format(mut self, enabled: bool) -> Self {
         self.use_frame_format = enabled;
         self

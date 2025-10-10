@@ -17,6 +17,7 @@ pub struct PoolBox<T> {
 
 impl<T> PoolBox<T> {
     /// Creates a new PoolBox by allocating from the given pool
+    #[must_use = "allocated value must be used"]
     pub fn new_in(value: T, allocator: &PoolAllocator) -> Result<Self, AllocError> {
         let layout = Layout::new::<T>();
 

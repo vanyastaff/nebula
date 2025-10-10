@@ -68,7 +68,7 @@ pub trait LayerStack<T>: Send + Sync {
 }
 
 /// Terminal layer that just executes the operation
-pub struct TerminalLayer;
+pub(crate) struct TerminalLayer;
 
 #[async_trait::async_trait]
 impl<T: Send + 'static> LayerStack<T> for TerminalLayer {
@@ -78,7 +78,7 @@ impl<T: Send + 'static> LayerStack<T> for TerminalLayer {
 }
 
 /// A composed stack of resilience layers
-pub struct ComposedStack<T> {
+pub(crate) struct ComposedStack<T> {
     layer: Arc<dyn ResilienceLayer<T> + Send + Sync>,
     next: Arc<dyn LayerStack<T> + Send + Sync>,
 }
@@ -91,12 +91,12 @@ impl<T: Send + 'static> LayerStack<T> for ComposedStack<T> {
 }
 
 /// Timeout layer
-pub struct TimeoutLayer {
+pub(crate) struct TimeoutLayer {
     duration: Duration,
 }
 
 impl TimeoutLayer {
-    pub fn new(duration: Duration) -> Self {
+    pub(crate) fn new(duration: Duration) -> Self {
         Self { duration }
     }
 }
@@ -123,12 +123,12 @@ impl<T: Send + 'static> ResilienceLayer<T> for TimeoutLayer {
 }
 
 /// Retry layer
-pub struct RetryLayer {
+pub(crate) struct RetryLayer {
     strategy: RetryStrategy,
 }
 
 impl RetryLayer {
-    pub fn new(strategy: RetryStrategy) -> Self {
+    pub(crate) fn new(strategy: RetryStrategy) -> Self {
         Self { strategy }
     }
 }
@@ -179,12 +179,12 @@ impl<T: Send + 'static> ResilienceLayer<T> for RetryLayer {
 }
 
 /// Circuit breaker layer
-pub struct CircuitBreakerLayer {
+pub(crate) struct CircuitBreakerLayer {
     circuit_breaker: Arc<CircuitBreaker>,
 }
 
 impl CircuitBreakerLayer {
-    pub fn new(circuit_breaker: Arc<CircuitBreaker>) -> Self {
+    pub(crate) fn new(circuit_breaker: Arc<CircuitBreaker>) -> Self {
         Self { circuit_breaker }
     }
 }
@@ -217,12 +217,12 @@ impl<T: Send + 'static> ResilienceLayer<T> for CircuitBreakerLayer {
 }
 
 /// Bulkhead layer
-pub struct BulkheadLayer {
+pub(crate) struct BulkheadLayer {
     bulkhead: Arc<Bulkhead>,
 }
 
 impl BulkheadLayer {
-    pub fn new(bulkhead: Arc<Bulkhead>) -> Self {
+    pub(crate) fn new(bulkhead: Arc<Bulkhead>) -> Self {
         Self { bulkhead }
     }
 }
@@ -259,23 +259,27 @@ impl<T: Send + 'static> Default for LayerBuilder<T> {
 
 impl<T: Send + 'static> LayerBuilder<T> {
     /// Create new layer builder
+    #[must_use] 
     pub fn new() -> Self {
         Self { layers: Vec::new() }
     }
 
     /// Add timeout layer
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_timeout(mut self, duration: Duration) -> Self {
         self.layers.push(Arc::new(TimeoutLayer::new(duration)));
         self
     }
 
     /// Add retry layer
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_retry(mut self, strategy: RetryStrategy) -> Self {
         self.layers.push(Arc::new(RetryLayer::new(strategy)));
         self
     }
 
     /// Add circuit breaker layer
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_circuit_breaker(mut self, circuit_breaker: Arc<CircuitBreaker>) -> Self {
         self.layers
             .push(Arc::new(CircuitBreakerLayer::new(circuit_breaker)));
@@ -283,18 +287,21 @@ impl<T: Send + 'static> LayerBuilder<T> {
     }
 
     /// Add bulkhead layer
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_bulkhead(mut self, bulkhead: Arc<Bulkhead>) -> Self {
         self.layers.push(Arc::new(BulkheadLayer::new(bulkhead)));
         self
     }
 
     /// Add custom layer
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_layer(mut self, layer: Arc<dyn ResilienceLayer<T> + Send + Sync>) -> Self {
         self.layers.push(layer);
         self
     }
 
     /// Build the composed stack
+    #[must_use] 
     pub fn build(self) -> Arc<dyn LayerStack<T> + Send + Sync> {
         // Build stack from outermost to innermost
         let mut stack: Arc<dyn LayerStack<T> + Send + Sync> = Arc::new(TerminalLayer);
@@ -313,13 +320,13 @@ pub type ResilienceChain<T> = Arc<dyn LayerStack<T> + Send + Sync>;
 
 /// Create a chain from a builder
 #[allow(dead_code)]
-pub fn create_chain<T: Send + 'static>() -> LayerBuilder<T> {
+pub(crate) fn create_chain<T: Send + 'static>() -> LayerBuilder<T> {
     LayerBuilder::new()
 }
 
 /// Helper function to execute operation with a resilience chain
 #[allow(dead_code)]
-pub async fn execute_with_chain<T, Op>(
+pub(crate) async fn execute_with_chain<T, Op>(
     chain: ResilienceChain<T>,
     operation: Op,
 ) -> ResilienceResult<T>

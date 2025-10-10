@@ -25,6 +25,7 @@ pub fn compress(data: &[u8]) -> Vec<u8> {
 }
 /// Decompresses LZ4 data
 #[cfg(feature = "compression")]
+#[must_use = "decompressed data must be used"]
 pub fn decompress(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     decompress_size_prepended(data)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))

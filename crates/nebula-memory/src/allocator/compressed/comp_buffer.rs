@@ -51,6 +51,7 @@ impl CompressedBuffer {
 
     /// Decompress and return data
     #[cfg(feature = "compression")]
+    #[must_use = "decompressed data must be used"]
     pub fn decompress(&self) -> Result<Vec<u8>, std::io::Error> {
         self.decompress_count.fetch_add(1, Ordering::Relaxed);
         decompress(&self.data)
