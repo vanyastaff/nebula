@@ -38,7 +38,7 @@ use syn::{Ident, Type};
 /// );
 /// // Generates: |obj: &User| obj.name.as_str()
 /// ```
-pub fn generate_accessor(
+pub(crate) fn generate_accessor(
     struct_name: &Ident,
     field_name: &Ident,
     field_type: &Type,
@@ -82,7 +82,7 @@ pub fn generate_accessor(
 ///     &TypeCategory::Integer(IntegerType::U32),
 /// );
 /// ```
-pub fn generate_accessor_for_category(
+pub(crate) fn generate_accessor_for_category(
     struct_name: &Ident,
     field_name: &Ident,
     type_category: &TypeCategory,
@@ -123,7 +123,7 @@ pub fn generate_accessor_for_category(
 /// );
 /// // Returns: Some(quote! { .as_str() })
 /// ```
-pub fn generate_conversion(from: &TypeCategory, to: &TypeCategory) -> Option<TokenStream> {
+pub(crate) fn generate_conversion(from: &TypeCategory, to: &TypeCategory) -> Option<TokenStream> {
     match (from, to) {
         // String → &str
         (TypeCategory::String, TypeCategory::Str) => Some(quote! { .as_str() }),
@@ -159,7 +159,7 @@ pub fn generate_conversion(from: &TypeCategory, to: &TypeCategory) -> Option<Tok
 /// let clone_expr = generate_clone(&TypeCategory::Integer(IntegerType::I32));
 /// // Returns: Some(quote! { })  (Copy types don't need .clone())
 /// ```
-pub fn generate_clone(type_category: &TypeCategory) -> Option<CloneStrategy> {
+pub(crate) fn generate_clone(type_category: &TypeCategory) -> Option<CloneStrategy> {
     match type_category {
         // Primitives are Copy
         TypeCategory::Bool | TypeCategory::Integer(_) | TypeCategory::Float(_) => {
@@ -194,16 +194,16 @@ pub fn generate_clone(type_category: &TypeCategory) -> Option<CloneStrategy> {
 
 /// Strategy for cloning a value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CloneStrategy {
-    /// Type is Copy, no .clone() needed
+pub(crate) enum CloneStrategy {
+    /// Type is Copy, no .`clone()` needed
     Copy,
-    /// Type needs .clone()
+    /// Type needs .`clone()`
     Clone,
 }
 
 impl CloneStrategy {
     /// Generate the appropriate clone expression.
-    pub fn to_tokens(self) -> TokenStream {
+    pub(crate) fn to_tokens(self) -> TokenStream {
         match self {
             CloneStrategy::Copy => quote! {},
             CloneStrategy::Clone => quote! { .clone() },
@@ -236,7 +236,7 @@ impl CloneStrategy {
 ///
 /// let impl_block = builder.build();
 /// ```
-pub struct ImplBlockBuilder {
+pub(crate) struct ImplBlockBuilder {
     struct_name: Ident,
     generics: syn::Generics,
     methods: Vec<TokenStream>,
@@ -245,7 +245,7 @@ pub struct ImplBlockBuilder {
 
 impl ImplBlockBuilder {
     /// Create a new impl block builder.
-    pub fn new(struct_name: Ident, generics: syn::Generics) -> Self {
+    pub(crate) fn new(struct_name: Ident, generics: syn::Generics) -> Self {
         Self {
             struct_name,
             generics,
@@ -255,7 +255,11 @@ impl ImplBlockBuilder {
     }
 
     /// Create a new impl block builder for a trait.
-    pub fn new_trait(struct_name: Ident, generics: syn::Generics, trait_path: syn::Path) -> Self {
+    pub(crate) fn new_trait(
+        struct_name: Ident,
+        generics: syn::Generics,
+        trait_path: syn::Path,
+    ) -> Self {
         Self {
             struct_name,
             generics,
@@ -265,13 +269,13 @@ impl ImplBlockBuilder {
     }
 
     /// Add a method to the impl block.
-    pub fn add_method(&mut self, method: TokenStream) -> &mut Self {
+    pub(crate) fn add_method(&mut self, method: TokenStream) -> &mut Self {
         self.methods.push(method);
         self
     }
 
     /// Build the final impl block.
-    pub fn build(self) -> TokenStream {
+    pub(crate) fn build(self) -> TokenStream {
         let struct_name = &self.struct_name;
         let (impl_generics, ty_generics, where_clause) = self.generics.split_for_impl();
         let methods = &self.methods;
@@ -304,7 +308,7 @@ impl ImplBlockBuilder {
 /// let default = generate_default(&TypeCategory::String);
 /// // Returns: Some(quote! { String::new() })
 /// ```
-pub fn generate_default(type_category: &TypeCategory) -> Option<TokenStream> {
+pub(crate) fn generate_default(type_category: &TypeCategory) -> Option<TokenStream> {
     match type_category {
         TypeCategory::String => Some(quote! { String::new() }),
         TypeCategory::Bool => Some(quote! { false }),

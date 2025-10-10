@@ -4,7 +4,7 @@ use syn::{Attribute, Expr};
 
 /// Validation attributes for a field.
 #[derive(Debug, Default, Clone)]
-pub struct ValidationAttrs {
+pub(super) struct ValidationAttrs {
     // String validators
     pub min_length: Option<usize>,
     pub max_length: Option<usize>,
@@ -51,14 +51,14 @@ pub struct ValidationAttrs {
     pub skip: bool,
 
     // Universal validator expression (для новых валидаторов без изменения derive)
-    /// Raw expression like "min_length(5).and(alphanumeric())"
+    /// Raw expression like "`min_length(5).and(alphanumeric())`"
     /// Это позволяет использовать ЛЮБОЙ валидатор без изменения nebula-derive!
     pub expr: Option<String>,
 }
 
 impl ValidationAttrs {
     /// Parse validation attributes from a list of attributes.
-    pub fn from_attributes(attrs: &[Attribute]) -> syn::Result<Self> {
+    pub(super) fn from_attributes(attrs: &[Attribute]) -> syn::Result<Self> {
         let mut result = Self::default();
 
         for attr in attrs {
@@ -284,12 +284,12 @@ impl ValidationAttrs {
              - Meta: message, skip, expr\n\
              \n\
              Use 'expr' for any validator not listed above: #[validate(expr = \"CustomValidator::new()\")]",
-            path.get_ident().map(|i| i.to_string()).unwrap_or_else(|| format!("{:?}", path))
+            path.get_ident().map_or_else(|| format!("{path:?}"), std::string::ToString::to_string)
         )))
     }
 
     /// Check if any validators are specified.
-    pub fn has_validators(&self) -> bool {
+    pub(super) fn has_validators(&self) -> bool {
         self.min_length.is_some()
             || self.max_length.is_some()
             || self.exact_length.is_some()

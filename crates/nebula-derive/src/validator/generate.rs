@@ -17,7 +17,7 @@ use syn::{DeriveInput, Ident, Type};
 /// This function orchestrates the entire validation code generation process:
 /// 1. Validates the input struct structure
 /// 2. Processes each field to generate validators
-/// 3. Builds the final impl block with validate() method
+/// 3. Builds the final impl block with `validate()` method
 ///
 /// # Errors
 ///
@@ -25,7 +25,7 @@ use syn::{DeriveInput, Ident, Type};
 /// - Input is not a struct with named fields
 /// - Field attributes are invalid
 /// - No validators are specified for any field
-pub fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream> {
+pub(super) fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream> {
     let name = &input.ident;
 
     // Use shared validation to check struct requirements
@@ -35,7 +35,7 @@ pub fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream> {
     let mut field_additions = Vec::new();
 
     for field in &fields.named {
-        let field_name = field.ident.as_ref().unwrap();
+        let field_name = field.ident.as_ref().expect("named fields must have idents");
         let field_type = &field.ty;
 
         // Use shared attrs to check if field should be skipped
@@ -81,10 +81,10 @@ pub fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream> {
     Ok(builder.build())
 }
 
-/// Generate a .add_field() call for a single field.
+/// Generate a .`add_field()` call for a single field.
 ///
 /// This combines the validator generation and accessor generation into
-/// a single `.add_field()` call for the MultiField combinator.
+/// a single `.add_field()` call for the `MultiField` combinator.
 ///
 /// # Arguments
 ///
@@ -95,7 +95,7 @@ pub fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream> {
 ///
 /// # Returns
 ///
-/// A TokenStream representing the `.add_field()` call
+/// A `TokenStream` representing the `.add_field()` call
 fn generate_field_addition(
     struct_name: &Ident,
     field_name: &Ident,
@@ -131,7 +131,7 @@ fn generate_field_addition(
 ///
 /// # Returns
 ///
-/// A TokenStream representing the validator or chain of validators
+/// A `TokenStream` representing the validator or chain of validators
 fn generate_field_validator(
     field_type: &Type,
     attrs: &ValidationAttrs,
@@ -303,10 +303,13 @@ fn generate_field_validator(
     }
 
     if validators.len() == 1 {
-        Ok(validators.into_iter().next().unwrap())
+        Ok(validators
+            .into_iter()
+            .next()
+            .expect("validators vec has exactly 1 element"))
     } else {
         let mut iter = validators.into_iter();
-        let first = iter.next().unwrap();
+        let first = iter.next().expect("validators vec has at least 2 elements");
         let rest: Vec<_> = iter.collect();
         Ok(quote! {
             #first #(.and(#rest))*

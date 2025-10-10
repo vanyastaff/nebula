@@ -11,7 +11,7 @@ use syn::{GenericArgument, PathArguments, PathSegment, Type, TypePath};
 
 /// Comprehensive type categorization for derive macros
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TypeCategory {
+pub(crate) enum TypeCategory {
     // Primitives
     String,
     Str,
@@ -67,7 +67,7 @@ pub enum TypeCategory {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IntegerType {
+pub(crate) enum IntegerType {
     I8,
     I16,
     I32,
@@ -83,13 +83,13 @@ pub enum IntegerType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FloatType {
+pub(crate) enum FloatType {
     F32,
     F64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DateTimeType {
+pub(crate) enum DateTimeType {
     /// String with ISO 8601 validation
     IsoString,
 
@@ -108,7 +108,7 @@ pub enum DateTimeType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StructInfo {
+pub(crate) struct StructInfo {
     pub name: String,
     pub path: Option<String>,
     pub is_nebula_type: bool,
@@ -119,7 +119,7 @@ pub struct StructInfo {
 // ============================================================================
 
 /// Main type detection function
-pub fn detect_type(ty: &Type) -> TypeCategory {
+pub(crate) fn detect_type(ty: &Type) -> TypeCategory {
     match ty {
         Type::Path(type_path) => detect_from_path(type_path),
         Type::Reference(type_ref) => TypeCategory::Reference {
@@ -197,43 +197,42 @@ fn detect_from_path(type_path: &TypePath) -> TypeCategory {
     }
 
     // Check for nebula types
-    if has_module_in_path(segments, "nebula_value") || has_module_in_path(segments, "nebula-value")
+    if (has_module_in_path(segments, "nebula_value")
+        || has_module_in_path(segments, "nebula-value"))
+        && type_name == "Value"
     {
-        if type_name == "Value" {
-            return TypeCategory::NebulaValue;
-        }
+        return TypeCategory::NebulaValue;
     }
 
-    if has_module_in_path(segments, "nebula_parameter")
-        || has_module_in_path(segments, "nebula-parameter")
+    if (has_module_in_path(segments, "nebula_parameter")
+        || has_module_in_path(segments, "nebula-parameter"))
+        && type_name == "Parameter"
     {
-        if type_name == "Parameter" {
-            return TypeCategory::Parameter;
-        }
+        return TypeCategory::Parameter;
     }
 
     // Check for generic types
     match type_name.as_str() {
         "Vec" => {
-            if let Some(inner_ty) = extract_first_generic(&last_segment) {
+            if let Some(inner_ty) = extract_first_generic(last_segment) {
                 return TypeCategory::Vec(Box::new(detect_type(&inner_ty)));
             }
         }
 
         "HashSet" => {
-            if let Some(inner_ty) = extract_first_generic(&last_segment) {
+            if let Some(inner_ty) = extract_first_generic(last_segment) {
                 return TypeCategory::HashSet(Box::new(detect_type(&inner_ty)));
             }
         }
 
         "BTreeSet" => {
-            if let Some(inner_ty) = extract_first_generic(&last_segment) {
+            if let Some(inner_ty) = extract_first_generic(last_segment) {
                 return TypeCategory::BTreeSet(Box::new(detect_type(&inner_ty)));
             }
         }
 
         "HashMap" => {
-            if let Some((key_ty, value_ty)) = extract_two_generics(&last_segment) {
+            if let Some((key_ty, value_ty)) = extract_two_generics(last_segment) {
                 return TypeCategory::HashMap {
                     key: Box::new(detect_type(&key_ty)),
                     value: Box::new(detect_type(&value_ty)),
@@ -242,7 +241,7 @@ fn detect_from_path(type_path: &TypePath) -> TypeCategory {
         }
 
         "BTreeMap" => {
-            if let Some((key_ty, value_ty)) = extract_two_generics(&last_segment) {
+            if let Some((key_ty, value_ty)) = extract_two_generics(last_segment) {
                 return TypeCategory::BTreeMap {
                     key: Box::new(detect_type(&key_ty)),
                     value: Box::new(detect_type(&value_ty)),
@@ -251,13 +250,13 @@ fn detect_from_path(type_path: &TypePath) -> TypeCategory {
         }
 
         "Option" => {
-            if let Some(inner_ty) = extract_first_generic(&last_segment) {
+            if let Some(inner_ty) = extract_first_generic(last_segment) {
                 return TypeCategory::Option(Box::new(detect_type(&inner_ty)));
             }
         }
 
         "Result" => {
-            if let Some((ok_ty, err_ty)) = extract_two_generics(&last_segment) {
+            if let Some((ok_ty, err_ty)) = extract_two_generics(last_segment) {
                 return TypeCategory::Result {
                     ok: Box::new(detect_type(&ok_ty)),
                     err: Box::new(detect_type(&err_ty)),
@@ -266,25 +265,25 @@ fn detect_from_path(type_path: &TypePath) -> TypeCategory {
         }
 
         "Arc" => {
-            if let Some(inner_ty) = extract_first_generic(&last_segment) {
+            if let Some(inner_ty) = extract_first_generic(last_segment) {
                 return TypeCategory::Arc(Box::new(detect_type(&inner_ty)));
             }
         }
 
         "Rc" => {
-            if let Some(inner_ty) = extract_first_generic(&last_segment) {
+            if let Some(inner_ty) = extract_first_generic(last_segment) {
                 return TypeCategory::Rc(Box::new(detect_type(&inner_ty)));
             }
         }
 
         "Box" => {
-            if let Some(inner_ty) = extract_first_generic(&last_segment) {
+            if let Some(inner_ty) = extract_first_generic(last_segment) {
                 return TypeCategory::Box(Box::new(detect_type(&inner_ty)));
             }
         }
 
         "Cow" => {
-            if let Some(inner_ty) = extract_first_generic(&last_segment) {
+            if let Some(inner_ty) = extract_first_generic(last_segment) {
                 return TypeCategory::Cow(Box::new(detect_type(&inner_ty)));
             }
         }
@@ -293,12 +292,7 @@ fn detect_from_path(type_path: &TypePath) -> TypeCategory {
     }
 
     // Check if it's a custom struct (uppercase first letter)
-    if type_name
-        .chars()
-        .next()
-        .map(|c| c.is_uppercase())
-        .unwrap_or(false)
-    {
+    if type_name.chars().next().is_some_and(char::is_uppercase) {
         let full_path = segments
             .iter()
             .map(|s| s.ident.to_string())
@@ -336,23 +330,23 @@ fn has_module_in_path(
 
 /// Extract the first generic type argument
 fn extract_first_generic(segment: &PathSegment) -> Option<Type> {
-    if let PathArguments::AngleBracketed(args) = &segment.arguments {
-        if let Some(GenericArgument::Type(ty)) = args.args.first() {
-            return Some(ty.clone());
-        }
+    if let PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(GenericArgument::Type(ty)) = args.args.first()
+    {
+        return Some(ty.clone());
     }
     None
 }
 
-/// Extract two generic type arguments (for HashMap, Result, etc.)
+/// Extract two generic type arguments (for `HashMap`, Result, etc.)
 fn extract_two_generics(segment: &PathSegment) -> Option<(Type, Type)> {
     if let PathArguments::AngleBracketed(args) = &segment.arguments {
         let mut iter = args.args.iter();
 
-        if let Some(GenericArgument::Type(first)) = iter.next() {
-            if let Some(GenericArgument::Type(second)) = iter.next() {
-                return Some((first.clone(), second.clone()));
-            }
+        if let Some(GenericArgument::Type(first)) = iter.next()
+            && let Some(GenericArgument::Type(second)) = iter.next()
+        {
+            return Some((first.clone(), second.clone()));
         }
     }
     None
@@ -364,12 +358,12 @@ fn extract_two_generics(segment: &PathSegment) -> Option<(Type, Type)> {
 
 impl TypeCategory {
     /// Check if this type is a date/time type
-    pub fn is_datetime(&self) -> bool {
+    pub(crate) fn is_datetime(&self) -> bool {
         matches!(self, TypeCategory::DateTime(_))
     }
 
     /// Check if this type supports date validation
-    pub fn supports_date_validation(&self) -> bool {
+    pub(crate) fn supports_date_validation(&self) -> bool {
         match self {
             TypeCategory::DateTime(_) => true,
             TypeCategory::String => true, // Can validate ISO strings
@@ -379,7 +373,7 @@ impl TypeCategory {
     }
 
     /// Check if this is a collection type
-    pub fn is_collection(&self) -> bool {
+    pub(crate) fn is_collection(&self) -> bool {
         matches!(
             self,
             TypeCategory::Vec(_)
@@ -391,7 +385,7 @@ impl TypeCategory {
     }
 
     /// Check if this is a wrapper type (Option, Result, Arc, etc.)
-    pub fn is_wrapper(&self) -> bool {
+    pub(crate) fn is_wrapper(&self) -> bool {
         matches!(
             self,
             TypeCategory::Option(_)
@@ -403,7 +397,7 @@ impl TypeCategory {
     }
 
     /// Get the inner type if this is a wrapper
-    pub fn unwrap_wrapper(&self) -> Option<&TypeCategory> {
+    pub(crate) fn unwrap_wrapper(&self) -> Option<&TypeCategory> {
         match self {
             TypeCategory::Option(inner)
             | TypeCategory::Arc(inner)
@@ -416,15 +410,15 @@ impl TypeCategory {
     }
 
     /// Check if this is a custom user-defined type
-    pub fn is_custom(&self) -> bool {
+    pub(crate) fn is_custom(&self) -> bool {
         matches!(
             self,
             TypeCategory::CustomStruct(_) | TypeCategory::CustomEnum(_)
         )
     }
 
-    /// Check if type needs special accessor (like String -> .as_str())
-    pub fn needs_special_accessor(&self) -> bool {
+    /// Check if type needs special accessor (like String -> .`as_str()`)
+    pub(crate) fn needs_special_accessor(&self) -> bool {
         match self {
             TypeCategory::String => true,
             TypeCategory::Option(inner) => matches!(**inner, TypeCategory::String),

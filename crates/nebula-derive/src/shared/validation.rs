@@ -5,7 +5,7 @@
 use syn::{Data, DeriveInput, Fields, FieldsNamed};
 
 // Re-export attribute utilities from attrs module
-pub use super::attrs::{extract_doc_comments, has_attribute};
+pub(crate) use super::attrs::{extract_doc_comments, has_attribute};
 
 // ============================================================================
 // STRUCT VALIDATION
@@ -34,7 +34,7 @@ pub use super::attrs::{extract_doc_comments, has_attribute};
 ///     // ... use fields
 /// }
 /// ```
-pub fn require_named_struct(input: &DeriveInput) -> syn::Result<&FieldsNamed> {
+pub(crate) fn require_named_struct(input: &DeriveInput) -> syn::Result<&FieldsNamed> {
     match &input.data {
         Data::Struct(data) => match &data.fields {
             Fields::Named(fields) => Ok(fields),
@@ -84,7 +84,7 @@ pub fn require_named_struct(input: &DeriveInput) -> syn::Result<&FieldsNamed> {
 /// let fields = require_named_struct(&input)?;
 /// require_non_empty(fields)?;
 /// ```
-pub fn require_non_empty(fields: &FieldsNamed) -> syn::Result<()> {
+pub(crate) fn require_non_empty(fields: &FieldsNamed) -> syn::Result<()> {
     if fields.named.is_empty() {
         Err(syn::Error::new_spanned(
             fields,
@@ -123,7 +123,7 @@ pub fn require_non_empty(fields: &FieldsNamed) -> syn::Result<()> {
 ///
 /// check_conflicting_attrs(&field.attrs, conflicts)?;
 /// ```
-pub fn check_conflicting_attrs(
+pub(crate) fn check_conflicting_attrs(
     attrs: &[syn::Attribute],
     conflicts: &[(&str, &str)],
 ) -> syn::Result<()> {
@@ -135,10 +135,9 @@ pub fn check_conflicting_attrs(
             return Err(syn::Error::new_spanned(
                 &attrs[0],
                 format!(
-                    "Attributes '{}' and '{}' cannot be used together.\n\
+                    "Attributes '{attr1}' and '{attr2}' cannot be used together.\n\
                      \n\
-                     These attributes are mutually exclusive.",
-                    attr1, attr2
+                     These attributes are mutually exclusive."
                 ),
             ));
         }
@@ -155,7 +154,7 @@ pub fn check_conflicting_attrs(
 ///     eprintln!("Warning: This struct is deprecated");
 /// }
 /// ```
-pub fn is_deprecated(attrs: &[syn::Attribute]) -> bool {
+pub(crate) fn is_deprecated(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| attr.path().is_ident("deprecated"))
 }
 
@@ -168,30 +167,27 @@ pub fn is_deprecated(attrs: &[syn::Attribute]) -> bool {
 ///     eprintln!("Field is deprecated: {}", msg);
 /// }
 /// ```
-pub fn get_deprecation_message(attrs: &[syn::Attribute]) -> Option<String> {
+pub(crate) fn get_deprecation_message(attrs: &[syn::Attribute]) -> Option<String> {
     for attr in attrs {
         if attr.path().is_ident("deprecated") {
             // Try to extract message from #[deprecated = "..."]
-            if let syn::Meta::NameValue(meta_name_value) = &attr.meta {
-                if let syn::Expr::Lit(expr_lit) = &meta_name_value.value {
-                    if let syn::Lit::Str(lit_str) = &expr_lit.lit {
-                        return Some(lit_str.value());
-                    }
-                }
+            if let syn::Meta::NameValue(meta_name_value) = &attr.meta
+                && let syn::Expr::Lit(expr_lit) = &meta_name_value.value
+                && let syn::Lit::Str(lit_str) = &expr_lit.lit
+            {
+                return Some(lit_str.value());
             }
 
             // Try to extract from #[deprecated(note = "...")]
             if let Ok(meta_list) = attr.meta.require_list() {
                 let tokens = meta_list.tokens.to_string();
                 // Simple extraction - would need proper parsing for production
-                if let Some(start) = tokens.find("note") {
-                    if let Some(quote_start) = tokens[start..].find('"') {
-                        if let Some(quote_end) = tokens[start + quote_start + 1..].find('"') {
-                            let msg = &tokens
-                                [start + quote_start + 1..start + quote_start + 1 + quote_end];
-                            return Some(msg.to_string());
-                        }
-                    }
+                if let Some(start) = tokens.find("note")
+                    && let Some(quote_start) = tokens[start..].find('"')
+                    && let Some(quote_end) = tokens[start + quote_start + 1..].find('"')
+                {
+                    let msg = &tokens[start + quote_start + 1..start + quote_start + 1 + quote_end];
+                    return Some(msg.to_string());
                 }
             }
 
@@ -208,7 +204,7 @@ pub fn get_deprecation_message(attrs: &[syn::Attribute]) -> Option<String> {
 
 /// Common attributes that multiple derive macros might use.
 #[derive(Debug, Clone, Default)]
-pub struct CommonAttrs {
+pub(crate) struct CommonAttrs {
     /// Skip this field in code generation
     pub skip: bool,
 
@@ -236,7 +232,7 @@ impl CommonAttrs {
     ///     continue; // Skip this field
     /// }
     /// ```
-    pub fn from_attributes(attrs: &[syn::Attribute]) -> Self {
+    pub(crate) fn from_attributes(attrs: &[syn::Attribute]) -> Self {
         Self {
             skip: has_attribute(attrs, "skip"),
             rename: None, // Would need proper parsing
