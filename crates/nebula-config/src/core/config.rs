@@ -270,22 +270,19 @@ impl Config {
             match current {
                 serde_json::Value::Object(obj) => {
                     current = obj.get(*part).ok_or_else(|| {
-                        ConfigError::path_error(
-                            format!("Key '{}' not found", part),
-                            path.to_string(),
-                        )
+                        ConfigError::path_error(format!("Key '{part}' not found"), path.to_string())
                     })?;
                 }
                 serde_json::Value::Array(arr) => {
                     let index: usize = part.parse().map_err(|_| {
                         ConfigError::path_error(
-                            format!("Invalid array index '{}'", part),
+                            format!("Invalid array index '{part}'"),
                             path.to_string(),
                         )
                     })?;
                     current = arr.get(index).ok_or_else(|| {
                         ConfigError::path_error(
-                            format!("Array index {} out of bounds (size: {})", index, arr.len()),
+                            format!("Array index {index} out of bounds (size: {})", arr.len()),
                             path.to_string(),
                         )
                     })?;
@@ -339,7 +336,7 @@ impl Config {
                 serde_json::Value::Array(arr) => {
                     let index: usize = part.parse().map_err(|_| {
                         ConfigError::path_error(
-                            format!("Invalid array index '{}'", part),
+                            format!("Invalid array index '{part}'"),
                             path.to_string(),
                         )
                     })?;
@@ -378,7 +375,7 @@ impl Config {
             serde_json::Value::Array(arr) => {
                 let index: usize = final_key.parse().map_err(|_| {
                     ConfigError::path_error(
-                        format!("Invalid array index '{}'", final_key),
+                        format!("Invalid array index '{final_key}'"),
                         path.to_string(),
                     )
                 })?;
@@ -470,7 +467,7 @@ impl Config {
         let json_value = self.get_nested_value(&data, path)?;
         serde_json::from_value(json_value.clone()).map_err(|e| {
             ConfigError::type_error(
-                format!("Failed to deserialize: {}", e),
+                format!("Failed to deserialize: {e}"),
                 std::any::type_name::<T>(),
                 "JSON value",
             )
@@ -484,7 +481,7 @@ impl Config {
     {
         let json_value = serde_json::to_value(value).map_err(|e| {
             ConfigError::type_error(
-                format!("Failed to serialize: {}", e),
+                format!("Failed to serialize: {e}"),
                 "JSON value",
                 std::any::type_name::<T>(),
             )
@@ -578,7 +575,7 @@ fn flatten_value(prefix: &str, value: &NebulaValue) -> HashMap<String, NebulaVal
                 let full_key = if prefix.is_empty() {
                     key.clone()
                 } else {
-                    format!("{}.{}", prefix, key)
+                    format!("{prefix}.{key}")
                 };
 
                 // Convert serde_json::Value to NebulaValue
@@ -592,7 +589,7 @@ fn flatten_value(prefix: &str, value: &NebulaValue) -> HashMap<String, NebulaVal
                 let full_key = if prefix.is_empty() {
                     index.to_string()
                 } else {
-                    format!("{}[{}]", prefix, index)
+                    format!("{prefix}[{index}]")
                 };
 
                 // Convert serde_json::Value to NebulaValue

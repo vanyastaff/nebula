@@ -143,11 +143,12 @@ impl std::fmt::Display for ConfigSource {
             ConfigSource::CommandLine => write!(f, "command line arguments"),
             ConfigSource::Inline(data) => {
                 let preview = if data.len() > 50 {
-                    format!("{}...", &data[..50])
+                    let slice = &data[..50];
+                    format!("{slice}...")
                 } else {
                     data.clone()
                 };
-                write!(f, "inline: {}", preview)
+                write!(f, "inline: {preview}")
             }
         }
     }

@@ -312,7 +312,7 @@ impl From<std::io::Error> for ConfigError {
             ErrorKind::NotFound => ConfigError::file_not_found(PathBuf::from("unknown")),
             ErrorKind::PermissionDenied => ConfigError::file_read_error(
                 PathBuf::from("unknown"),
-                format!("Permission denied: {}", err),
+                format!("Permission denied: {err}"),
             ),
             _ => ConfigError::file_read_error(PathBuf::from("unknown"), err.to_string()),
         }
@@ -321,19 +321,19 @@ impl From<std::io::Error> for ConfigError {
 
 impl From<serde_json::Error> for ConfigError {
     fn from(err: serde_json::Error) -> Self {
-        ConfigError::parse_error(PathBuf::from("json"), format!("JSON error: {}", err))
+        ConfigError::parse_error(PathBuf::from("json"), format!("JSON error: {err}"))
     }
 }
 
 impl From<toml::de::Error> for ConfigError {
     fn from(err: toml::de::Error) -> Self {
-        ConfigError::parse_error(PathBuf::from("toml"), format!("TOML error: {}", err))
+        ConfigError::parse_error(PathBuf::from("toml"), format!("TOML error: {err}"))
     }
 }
 
 impl From<yaml_rust::ScanError> for ConfigError {
     fn from(err: yaml_rust::ScanError) -> Self {
-        ConfigError::parse_error(PathBuf::from("yaml"), format!("YAML error: {:?}", err))
+        ConfigError::parse_error(PathBuf::from("yaml"), format!("YAML error: {err:?}"))
     }
 }
 
@@ -363,11 +363,10 @@ impl From<ConfigError> for NebulaError {
             )),
             ConfigError::ValidationError { message, field } => {
                 let msg = match field {
-                    Some(field) => format!(
-                        "Configuration validation failed for field '{}': {}",
-                        field, message
-                    ),
-                    None => format!("Configuration validation failed: {}", message),
+                    Some(field) => {
+                        format!("Configuration validation failed for field '{field}': {message}")
+                    }
+                    None => format!("Configuration validation failed: {message}"),
                 };
                 NebulaError::validation(msg)
             }
@@ -383,13 +382,13 @@ impl From<ConfigError> for NebulaError {
                 name, value
             )),
             ConfigError::ReloadError { message } => {
-                NebulaError::internal(format!("Configuration reload failed: {}", message))
+                NebulaError::internal(format!("Configuration reload failed: {message}"))
             }
             ConfigError::WatchError { message } => {
-                NebulaError::internal(format!("Configuration watch error: {}", message))
+                NebulaError::internal(format!("Configuration watch error: {message}"))
             }
             ConfigError::MergeError { message } => {
-                NebulaError::internal(format!("Configuration merge failed: {}", message))
+                NebulaError::internal(format!("Configuration merge failed: {message}"))
             }
             ConfigError::TypeError {
                 message,
@@ -400,16 +399,16 @@ impl From<ConfigError> for NebulaError {
                 message, expected, actual
             )),
             ConfigError::PathError { message, path } => {
-                NebulaError::validation(format!("Path error for '{}': {}", path, message))
+                NebulaError::validation(format!("Path error for '{path}': {message}"))
             }
             ConfigError::FormatNotSupported { format } => {
-                NebulaError::validation(format!("Configuration format not supported: {}", format))
+                NebulaError::validation(format!("Configuration format not supported: {format}"))
             }
             ConfigError::EncryptionError { message } => {
-                NebulaError::internal(format!("Configuration encryption error: {}", message))
+                NebulaError::internal(format!("Configuration encryption error: {message}"))
             }
             ConfigError::DecryptionError { message } => {
-                NebulaError::internal(format!("Configuration decryption error: {}", message))
+                NebulaError::internal(format!("Configuration decryption error: {message}"))
             }
         }
     }
@@ -450,7 +449,7 @@ impl ConfigError {
         match resource_type_str.as_str() {
             "file" => Self::file_not_found(PathBuf::from(resource_id_str)),
             "env" => Self::env_var_not_found(resource_id_str),
-            _ => Self::source_error(format!("{} not found", resource_type_str), resource_id_str),
+            _ => Self::source_error(format!("{resource_type_str} not found"), resource_id_str),
         }
     }
 

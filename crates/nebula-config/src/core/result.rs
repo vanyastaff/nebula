@@ -33,10 +33,13 @@ impl<T> ConfigResultExt<T> for ConfigResult<T> {
         F: FnOnce() -> String,
     {
         self.map_err(|e| match e {
-            ConfigError::SourceError { message, origin } => ConfigError::SourceError {
-                message: format!("{}: {}", f(), message),
-                origin,
-            },
+            ConfigError::SourceError { message, origin } => {
+                let ctx = f();
+                ConfigError::SourceError {
+                    message: format!("{ctx}: {message}"),
+                    origin,
+                }
+            }
             other => ConfigError::SourceError {
                 message: f(),
                 origin: other.to_string(),
@@ -153,7 +156,7 @@ impl ConfigResultAggregator {
                     self.errors
                         .iter()
                         .enumerate()
-                        .map(|(i, e)| format!("  {}. {}", i + 1, e))
+                        .map(|(i, e)| format!("  {}. {e}", i + 1))
                         .collect::<Vec<_>>()
                         .join("\n")
                 )
@@ -164,7 +167,7 @@ impl ConfigResultAggregator {
                     self.errors
                         .iter()
                         .enumerate()
-                        .map(|(i, e)| format!("  {}. {}", i + 1, e))
+                        .map(|(i, e)| format!("  {}. {e}", i + 1))
                         .collect::<Vec<_>>()
                         .join("\n")
                 )
