@@ -85,7 +85,7 @@ pub(crate) fn should_skip(attrs: &[Attribute]) -> bool {
 
 /// Extract rename from attributes
 ///
-/// Looks for #[rename = "`new_name`"] or #[serde(rename = "`new_name`")]
+/// Looks for `#[rename = "new_name"]` or `#[serde(rename = "new_name")]`
 pub(crate) fn extract_rename(attrs: &[Attribute]) -> Option<String> {
     // Direct rename
     if let Some(name) = extract_string_attr(attrs, "rename") {

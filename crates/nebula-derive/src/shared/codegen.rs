@@ -166,24 +166,19 @@ pub(crate) fn generate_clone(type_category: &TypeCategory) -> Option<CloneStrate
             Some(CloneStrategy::Copy)
         }
 
-        // String needs .clone()
-        TypeCategory::String => Some(CloneStrategy::Clone),
-
-        // Arc/Rc can be cloned cheaply
-        TypeCategory::Arc(_) | TypeCategory::Rc(_) => Some(CloneStrategy::Clone),
-
-        // References are Copy
-        TypeCategory::Reference { .. } => Some(CloneStrategy::Copy),
-
-        // Custom types might implement Clone
-        TypeCategory::CustomStruct(_) => Some(CloneStrategy::Clone),
-
-        // Collections need clone
-        TypeCategory::Vec(_)
+        // String, Arc/Rc, custom types, and collections need .clone()
+        TypeCategory::String
+        | TypeCategory::Arc(_)
+        | TypeCategory::Rc(_)
+        | TypeCategory::CustomStruct(_)
+        | TypeCategory::Vec(_)
         | TypeCategory::HashSet(_)
         | TypeCategory::HashMap { .. }
         | TypeCategory::BTreeMap { .. }
         | TypeCategory::BTreeSet(_) => Some(CloneStrategy::Clone),
+
+        // References are Copy
+        TypeCategory::Reference { .. } => Some(CloneStrategy::Copy),
 
         // Option/Result clone if inner clones
         TypeCategory::Option(inner) | TypeCategory::Box(inner) => generate_clone(inner),

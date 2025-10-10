@@ -229,14 +229,14 @@ pub(super) fn chain_validators(validators: Vec<TokenStream>) -> syn::Result<Toke
         ));
     }
 
+    #[allow(clippy::unwrap_used)] // Safe: we just checked len above
     if validators.len() == 1 {
-        Ok(validators
-            .into_iter()
-            .next()
-            .expect("validators vec has exactly 1 element"))
+        // Safety: we just checked that len == 1
+        Ok(validators.into_iter().next().unwrap())
     } else {
         let mut iter = validators.into_iter();
-        let first = iter.next().expect("validators vec has at least 2 elements");
+        // Safety: we know len > 1 from the if condition
+        let first = iter.next().unwrap();
         let rest: Vec<_> = iter.collect();
         Ok(quote! {
             #first #(.and(#rest))*

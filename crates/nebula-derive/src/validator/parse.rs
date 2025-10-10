@@ -3,6 +3,7 @@
 use syn::{Attribute, Expr};
 
 /// Validation attributes for a field.
+#[allow(clippy::struct_excessive_bools)] // Each bool represents a distinct validation flag
 #[derive(Debug, Default, Clone)]
 pub(super) struct ValidationAttrs {
     // String validators
@@ -72,6 +73,7 @@ impl ValidationAttrs {
         Ok(result)
     }
 
+    #[allow(clippy::too_many_lines)] // Parses many different validation attributes
     fn parse_meta(&mut self, meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<()> {
         let path = meta.path.clone();
 

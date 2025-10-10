@@ -130,6 +130,7 @@ pub(crate) fn detect_type(ty: &Type) -> TypeCategory {
     }
 }
 
+#[allow(clippy::too_many_lines)] // Detects many different type categories
 fn detect_from_path(type_path: &TypePath) -> TypeCategory {
     let segments = &type_path.path.segments;
 
@@ -138,9 +139,9 @@ fn detect_from_path(type_path: &TypePath) -> TypeCategory {
     }
 
     // Get the last segment (most specific type)
-    let last_segment = segments
-        .last()
-        .expect("segments is non-empty, checked above");
+    // Safety: we just checked that segments is non-empty above
+    #[allow(clippy::unwrap_used)]
+    let last_segment = segments.last().unwrap();
     let type_name = last_segment.ident.to_string();
 
     // Check for primitive types first
@@ -367,8 +368,8 @@ impl TypeCategory {
     /// Check if this type supports date validation
     pub(crate) fn supports_date_validation(&self) -> bool {
         match self {
-            TypeCategory::DateTime(_) => true,
-            TypeCategory::String => true, // Can validate ISO strings
+            // Both DateTime and String support date validation
+            TypeCategory::DateTime(_) | TypeCategory::String => true,
             TypeCategory::Option(inner) => inner.supports_date_validation(),
             _ => false,
         }
@@ -405,8 +406,8 @@ impl TypeCategory {
             | TypeCategory::Arc(inner)
             | TypeCategory::Rc(inner)
             | TypeCategory::Box(inner)
-            | TypeCategory::Cow(inner) => Some(inner),
-            TypeCategory::Reference { inner, .. } => Some(inner),
+            | TypeCategory::Cow(inner)
+            | TypeCategory::Reference { inner, .. } => Some(inner),
             _ => None,
         }
     }

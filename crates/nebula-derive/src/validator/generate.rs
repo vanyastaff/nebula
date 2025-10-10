@@ -39,7 +39,9 @@ pub(super) fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream
     let mut field_additions = Vec::new();
 
     for field in &fields.named {
-        let field_name = field.ident.as_ref().expect("named fields must have idents");
+        let Some(field_name) = &field.ident else {
+            return Err(syn::Error::new_spanned(field, "named fields must have idents"));
+        };
         let field_type = &field.ty;
 
         // Use shared attrs to check if field should be skipped

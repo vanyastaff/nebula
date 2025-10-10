@@ -33,8 +33,8 @@ pub(crate) fn field_name_to_error_field(field: &str) -> String {
 pub(crate) fn pluralize(word: &str) -> String {
     if word.ends_with('s') {
         format!("{word}es")
-    } else if word.ends_with('y') {
-        format!("{}ies", &word[..word.len() - 1])
+    } else if let Some(stripped) = word.strip_suffix('y') {
+        format!("{stripped}ies")
     } else {
         format!("{word}s")
     }
