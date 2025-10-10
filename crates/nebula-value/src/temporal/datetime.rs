@@ -144,8 +144,8 @@ impl DateTime {
         let seconds = nanos / 1_000_000_000;
         let nano_part = (nanos % 1_000_000_000) as u32;
 
-        NaiveDateTime::from_timestamp_opt(seconds, nano_part)
-            .map(|dt| Self::from_naive_datetime(dt))
+        chrono::DateTime::from_timestamp(seconds, nano_part)
+            .map(|dt| Self::from_naive_datetime(dt.naive_utc()))
             .ok_or_else(|| {
                 NebulaError::value_out_of_range(
                     format!("{} nanos", nanos),
@@ -242,7 +242,7 @@ impl DateTime {
     /// Parses with custom format
     pub fn parse_from_str(s: &str, fmt: &str) -> ValueResult<Self> {
         NaiveDateTime::parse_from_str(s, fmt)
-            .map(|dt| Self::from_naive_datetime(dt))
+            .map(Self::from_naive_datetime)
             .map_err(|e| {
                 NebulaError::value_parse_error(
                     format!("datetime with format '{}'", fmt),
@@ -265,8 +265,7 @@ impl DateTime {
 
     /// Returns the time component
     pub fn time(&self) -> Time {
-        Time::from_nanos(self.inner.time.nanos)
-            .expect("datetime time component is always valid")
+        Time::from_nanos(self.inner.time.nanos).expect("datetime time component is always valid")
     }
 
     /// Returns the year
@@ -339,7 +338,7 @@ impl DateTime {
     pub fn timestamp(&self) -> i64 {
         *self
             .timestamp_cache
-            .get_or_init(|| self.inner.to_naive().timestamp())
+            .get_or_init(|| self.inner.to_naive().and_utc().timestamp())
     }
 
     /// Returns Unix timestamp in milliseconds
