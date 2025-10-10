@@ -5,7 +5,7 @@ use nebula_error::{ErrorContext, NebulaError};
 
 /// Extension trait for Result types (system-specific)
 pub trait SystemResultExt<T> {
-    /// Convert to SystemResult with custom system error message
+    /// Convert to `SystemResult` with custom system error message
     fn or_system_error<S: Into<String>>(self, msg: S) -> SystemResult<T>;
 
     /// Add system context to error
@@ -40,7 +40,7 @@ where
 
     fn with_component(self, component: impl Into<String>) -> SystemResult<T> {
         self.map_err(|e| {
-            NebulaError::internal(format!("{}", e)).with_context(
+            NebulaError::internal(format!("{e}")).with_context(
                 ErrorContext::new("System operation failed").with_component(component),
             )
         })
@@ -48,7 +48,7 @@ where
 
     fn with_operation(self, operation: impl Into<String>) -> SystemResult<T> {
         self.map_err(|e| {
-            NebulaError::internal(format!("{}", e)).with_context(
+            NebulaError::internal(format!("{e}")).with_context(
                 ErrorContext::new("System operation failed").with_operation(operation),
             )
         })
@@ -56,7 +56,7 @@ where
 
     fn with_platform_context(self, platform: impl Into<String>) -> SystemResult<T> {
         self.map_err(|e| {
-            NebulaError::internal(format!("{}", e)).with_context(
+            NebulaError::internal(format!("{e}")).with_context(
                 ErrorContext::new("Platform-specific operation failed")
                     .with_metadata("platform", platform.into()),
             )
@@ -66,7 +66,7 @@ where
 
 /// Extension trait specifically for IO Result types in system context
 pub trait SystemIoResultExt {
-    /// Convert IO error to SystemResult with custom message
+    /// Convert IO error to `SystemResult` with custom message
     fn or_system_error<S: Into<String>>(self, msg: S) -> SystemResult<()>;
 
     /// Add system context to IO error
@@ -103,7 +103,7 @@ impl SystemIoResultExt for Result<(), std::io::Error> {
     fn with_component(self, component: impl Into<String>) -> SystemResult<()> {
         self.map_err(|e| {
             let code = e.raw_os_error();
-            NebulaError::system_platform_error(format!("{}", e), code)
+            NebulaError::system_platform_error(format!("{e}"), code)
                 .with_context(ErrorContext::new("IO operation failed").with_component(component))
         })
     }
@@ -111,7 +111,7 @@ impl SystemIoResultExt for Result<(), std::io::Error> {
     fn with_operation(self, operation: impl Into<String>) -> SystemResult<()> {
         self.map_err(|e| {
             let code = e.raw_os_error();
-            NebulaError::system_platform_error(format!("{}", e), code)
+            NebulaError::system_platform_error(format!("{e}"), code)
                 .with_context(ErrorContext::new("IO operation failed").with_operation(operation))
         })
     }

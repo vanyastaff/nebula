@@ -5,7 +5,7 @@
 //! ## Core Components
 //!
 //! ### [`error`] - Error handling
-//! Unified error handling using NebulaError for all system operations.
+//! Unified error handling using `NebulaError` for all system operations.
 //! Provides structured error types for platform-specific, I/O, and system errors.
 //!
 //! ### [`result`] - Result types

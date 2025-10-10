@@ -28,11 +28,13 @@ pub enum MemoryPressure {
 
 impl MemoryPressure {
     /// Check if memory pressure is concerning (High or Critical)
+    #[must_use] 
     pub fn is_concerning(&self) -> bool {
         *self >= MemoryPressure::High
     }
 
     /// Check if memory pressure is critical
+    #[must_use] 
     pub fn is_critical(&self) -> bool {
         *self == MemoryPressure::Critical
     }
@@ -55,6 +57,7 @@ pub struct MemoryInfo {
 }
 
 /// Get current memory information
+#[must_use] 
 pub fn current() -> MemoryInfo {
     let sys_memory = SystemInfo::current_memory();
     let used = sys_memory.total.saturating_sub(sys_memory.available);
@@ -95,6 +98,7 @@ pub fn current() -> MemoryInfo {
 }
 
 /// Get current memory pressure
+#[must_use] 
 pub fn pressure() -> MemoryPressure {
     current().pressure
 }
@@ -108,7 +112,7 @@ pub use crate::utils::format_bytes_usize as format_bytes;
 #[cfg(feature = "memory")]
 /// Low-level memory management helpers backed by the `region` crate.
 pub mod management {
-    use super::*;
+    use super::{MemoryProtection, SystemError, SystemResult, NebulaError};
 
     /// Memory region information
     #[derive(Debug, Clone)]
@@ -254,8 +258,8 @@ pub mod management {
     /// - `ptr` must point to valid, accessible memory
     /// - `ptr` must be page-aligned (typically 4KB on most systems)
     /// - `size` must be a multiple of the system page size
-    /// - The process must have sufficient privileges (may require CAP_IPC_LOCK on Linux)
-    /// - Total locked memory must not exceed system limits (RLIMIT_MEMLOCK)
+    /// - The process must have sufficient privileges (may require `CAP_IPC_LOCK` on Linux)
+    /// - Total locked memory must not exceed system limits (`RLIMIT_MEMLOCK`)
     ///
     /// ## Use Cases
     ///
@@ -265,8 +269,8 @@ pub mod management {
     ///
     /// ## Platform Notes
     ///
-    /// - Linux: Requires CAP_IPC_LOCK or root for large amounts
-    /// - Windows: Requires SeLockMemoryPrivilege for large amounts
+    /// - Linux: Requires `CAP_IPC_LOCK` or root for large amounts
+    /// - Windows: Requires `SeLockMemoryPrivilege` for large amounts
     /// - macOS: Subject to system-wide limits
     ///
     /// ## Caller Responsibilities

@@ -1,16 +1,16 @@
 //! Error handling for nebula-system
 //!
-//! This module provides unified error handling using NebulaError from the nebula-error crate.
+//! This module provides unified error handling using `NebulaError` from the nebula-error crate.
 //! All system operations return `SystemResult<T>` which is an alias for `Result<T, NebulaError>`.
 
 use nebula_error::{NebulaError, Result as NebulaResult};
 
-/// Type alias for Result with NebulaError for system operations
+/// Type alias for Result with `NebulaError` for system operations
 pub type SystemResult<T> = NebulaResult<T>;
 
 // ==================== System-specific NebulaError Extensions ====================
 
-/// Extension trait for creating system-specific NebulaErrors
+/// Extension trait for creating system-specific `NebulaErrors`
 pub trait SystemError {
     /// Create a platform-specific error
     fn system_platform_error(message: impl Into<String>, code: Option<i32>) -> Self;

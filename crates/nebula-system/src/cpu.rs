@@ -108,11 +108,13 @@ pub enum CpuPressure {
 
 impl CpuPressure {
     /// Check if CPU pressure is concerning
+    #[must_use] 
     pub fn is_concerning(&self) -> bool {
         *self >= CpuPressure::High
     }
 
     /// Create from usage percentage
+    #[must_use] 
     pub fn from_usage(usage: f32) -> Self {
         if usage > 85.0 {
             CpuPressure::Critical
@@ -167,12 +169,14 @@ pub fn usage() -> CpuUsage {
 }
 
 /// Get CPU pressure level
+#[must_use] 
 pub fn pressure() -> CpuPressure {
     let usage = usage();
     CpuPressure::from_usage(usage.average)
 }
 
 /// Get CPU features
+#[must_use] 
 pub fn features() -> CpuFeatures {
     #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "sysinfo"))]
     {
@@ -199,6 +203,7 @@ pub fn features() -> CpuFeatures {
 }
 
 /// Get CPU cache information
+#[must_use] 
 pub fn cache_info() -> CacheInfo {
     let info = SystemInfo::get();
 
@@ -252,6 +257,7 @@ fn read_cache_size(path: &str) -> Option<usize> {
 }
 
 /// Get CPU topology
+#[must_use] 
 pub fn topology() -> CpuTopology {
     let info = SystemInfo::get();
 
@@ -339,6 +345,7 @@ fn parse_cpu_list(s: &str) -> Option<Vec<usize>> {
 }
 
 /// Get optimal number of threads for parallel work
+#[must_use] 
 pub fn optimal_thread_count() -> usize {
     let info = SystemInfo::get();
     let topology = topology();
@@ -356,7 +363,7 @@ pub fn optimal_thread_count() -> usize {
 /// CPU affinity management
 #[cfg(feature = "sysinfo")]
 pub mod affinity {
-    use super::*;
+    use super::{SystemResult, NebulaError, SystemError};
 
     /// Set CPU affinity for current thread
     #[cfg(target_os = "linux")]

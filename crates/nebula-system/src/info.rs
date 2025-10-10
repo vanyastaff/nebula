@@ -107,8 +107,9 @@ impl SystemInfo {
     /// Get cached system information
     ///
     /// Returns a cheap reference-counted pointer to the cached system info.
-    /// Arc::clone is cheap (just increments a counter).
+    /// `Arc::clone` is cheap (just increments a counter).
     #[inline]
+    #[must_use] 
     pub fn get() -> Arc<SystemInfo> {
         Arc::clone(&SYSTEM_INFO)
     }
@@ -323,6 +324,7 @@ pub fn init() -> SystemResult<()> {
 }
 
 /// Get a formatted summary of system information
+#[must_use] 
 pub fn summary() -> String {
     let info = SystemInfo::get();
 

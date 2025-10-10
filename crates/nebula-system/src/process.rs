@@ -77,6 +77,7 @@ pub struct ProcessStats {
 }
 
 /// Get information about current process
+#[must_use = "process info must be handled"]
 pub fn current() -> Result<ProcessInfo> {
     #[cfg(feature = "process")]
     {
@@ -93,6 +94,7 @@ pub fn current() -> Result<ProcessInfo> {
 }
 
 /// Get information about a specific process
+#[must_use = "process info must be handled"]
 pub fn get_process(pid: u32) -> Result<ProcessInfo> {
     #[cfg(feature = "process")]
     {
@@ -247,6 +249,7 @@ pub fn find_by_name(name: &str) -> Vec<ProcessInfo> {
 }
 
 /// Kill a process
+#[must_use = "operation result must be checked"]
 pub fn kill(pid: u32) -> Result<()> {
     #[cfg(feature = "process")]
     {
@@ -300,6 +303,7 @@ pub enum Priority {
 }
 
 /// Set process priority
+#[must_use = "operation result must be checked"]
 pub fn set_priority(pid: u32, priority: Priority) -> Result<()> {
     #[cfg(all(feature = "process", unix))]
     {

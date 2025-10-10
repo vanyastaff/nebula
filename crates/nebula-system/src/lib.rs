@@ -89,6 +89,7 @@ pub fn init() -> SystemResult<()> {
 }
 
 /// Get a formatted summary of system information
+#[must_use] 
 pub fn summary() -> String {
     info::summary()
 }
