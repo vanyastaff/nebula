@@ -21,10 +21,7 @@ quote = "1.0"
 proc-macro2 = "1.0"
 
 # Error handling in proc-macros
-darling = "0.21"  # For parsing attributes elegantly
-
-# Optional: for generating better error messages
-proc-macro-error = "1.0"
+darling = "0.21"  # For parsing attributes elegantly and handling errors
 
 [dev-dependencies]
 # For testing proc-macros
