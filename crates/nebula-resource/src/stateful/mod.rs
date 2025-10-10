@@ -29,6 +29,7 @@ pub struct StateVersion {
 
 impl StateVersion {
     /// Create a new state version
+    #[must_use] 
     pub fn new(major: u32, minor: u32, patch: u32) -> Self {
         Self {
             major,
@@ -38,11 +39,13 @@ impl StateVersion {
     }
 
     /// Check if this version is compatible with another
+    #[must_use] 
     pub fn is_compatible_with(&self, other: &StateVersion) -> bool {
         self.major == other.major
     }
 
     /// Check if this version is newer than another
+    #[must_use] 
     pub fn is_newer_than(&self, other: &StateVersion) -> bool {
         self.major > other.major
             || (self.major == other.major && self.minor > other.minor)
@@ -76,6 +79,7 @@ pub struct PersistedState {
 
 impl PersistedState {
     /// Create a new persisted state
+    #[must_use] 
     pub fn new(resource_id: ResourceId, version: StateVersion, data: serde_json::Value) -> Self {
         let saved_at = chrono::Utc::now();
         let checksum = Self::calculate_checksum(&data, &saved_at);
@@ -91,12 +95,14 @@ impl PersistedState {
     }
 
     /// Verify the integrity of the persisted state
+    #[must_use] 
     pub fn verify_integrity(&self) -> bool {
         let expected_checksum = Self::calculate_checksum(&self.data, &self.saved_at);
         self.checksum == expected_checksum
     }
 
     /// Add metadata
+    #[must_use] 
     pub fn with_metadata(mut self, key: String, value: String) -> Self {
         self.metadata.insert(key, value);
         self
@@ -142,6 +148,7 @@ pub struct InMemoryStatePersistence {
 
 impl InMemoryStatePersistence {
     /// Create a new in-memory persistence backend
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             states: Arc::new(RwLock::new(HashMap::new())),
@@ -183,7 +190,7 @@ impl StatePersistence for InMemoryStatePersistence {
             .collect())
     }
 
-    fn backend_name(&self) -> &str {
+    fn backend_name(&self) -> &'static str {
         "in_memory"
     }
 }
@@ -223,8 +230,7 @@ impl StateMigration for NoOpStateMigration {
             Err(ResourceError::internal(
                 "migration",
                 format!(
-                    "Migration from {} to {} is not supported",
-                    from_version, to_version
+                    "Migration from {from_version} to {to_version} is not supported"
                 ),
             ))
         }
@@ -251,6 +257,7 @@ pub struct StateManager {
 
 impl StateManager {
     /// Create a new state manager with in-memory persistence
+    #[must_use] 
     pub fn new() -> Self {
         Self::with_persistence(Arc::new(InMemoryStatePersistence::new()))
     }
@@ -284,7 +291,7 @@ impl StateManager {
         let serialized = serde_json::to_value(&state_data).map_err(|e| {
             ResourceError::internal(
                 resource_id.unique_key(),
-                format!("Failed to serialize state: {}", e),
+                format!("Failed to serialize state: {e}"),
             )
         })?;
 
@@ -364,6 +371,7 @@ impl StateManager {
     }
 
     /// Get statistics about the state manager
+    #[must_use] 
     pub fn stats(&self) -> StateManagerStats {
         let cache = self.cache.read();
         StateManagerStats {
@@ -408,7 +416,7 @@ impl StateManager {
         let typed_state: T::State = serde_json::from_value(state_data).map_err(|e| {
             ResourceError::internal(
                 persisted_state.resource_id.unique_key(),
-                format!("Failed to deserialize state: {}", e),
+                format!("Failed to deserialize state: {e}"),
             )
         })?;
 

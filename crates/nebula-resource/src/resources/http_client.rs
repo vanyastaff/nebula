@@ -274,7 +274,7 @@ impl HttpClientInstance {
         let json = serde_json::to_vec(body).map_err(|e| {
             ResourceError::internal(
                 "http_client:1.0",
-                format!("Failed to serialize JSON: {}", e),
+                format!("Failed to serialize JSON: {e}"),
             )
         })?;
 
@@ -570,7 +570,7 @@ impl HealthCheckable for HttpClientInstance {
                 Err(e) => {
                     let latency = start.elapsed();
                     Ok(
-                        HealthStatus::unhealthy(format!("Health check failed: {}", e))
+                        HealthStatus::unhealthy(format!("Health check failed: {e}"))
                             .with_latency(latency),
                     )
                 }
@@ -581,15 +581,14 @@ impl HealthCheckable for HttpClientInstance {
                 let state = cb.state().await;
                 let is_closed = cb.is_closed().await;
                 let mut status = HealthStatus::healthy();
-                status = status.with_metadata("circuit_state", format!("{:?}", state));
+                status = status.with_metadata("circuit_state", format!("{state:?}"));
 
-                if !is_closed {
-                    Ok(HealthStatus::unhealthy(format!(
-                        "Circuit breaker is {:?}",
-                        state
-                    )))
-                } else {
+                if is_closed {
                     Ok(status)
+                } else {
+                    Ok(HealthStatus::unhealthy(format!(
+                        "Circuit breaker is {state:?}"
+                    )))
                 }
             } else {
                 Ok(HealthStatus::healthy())
@@ -642,6 +641,7 @@ pub struct HttpClientResource;
 
 impl HttpClientResource {
     /// Create a new HTTP client resource
+    #[must_use] 
     pub fn new() -> Self {
         Self
     }
@@ -718,6 +718,7 @@ pub struct HttpResponse {
 
 impl HttpResponse {
     /// Check if the response indicates success (2xx status code)
+    #[must_use] 
     pub fn is_success(&self) -> bool {
         (200..300).contains(&self.status)
     }
@@ -727,7 +728,7 @@ impl HttpResponse {
         String::from_utf8(self.body.clone()).map_err(|e| {
             ResourceError::internal(
                 "http_client",
-                format!("Failed to parse response as UTF-8: {}", e),
+                format!("Failed to parse response as UTF-8: {e}"),
             )
         })
     }
@@ -742,7 +743,7 @@ impl HttpResponse {
         serde_json::from_str(&text).map_err(|e| {
             ResourceError::internal(
                 "http_client",
-                format!("Failed to parse response as JSON: {}", e),
+                format!("Failed to parse response as JSON: {e}"),
             )
         })
     }

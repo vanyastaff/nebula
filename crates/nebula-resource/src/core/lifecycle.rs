@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 /// Represents the current state of a resource in its lifecycle
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Default)]
 pub enum LifecycleState {
     /// Resource has been created but not yet initialized
+    #[default]
     Created,
     /// Resource is currently being initialized
     Initializing,
@@ -33,28 +35,33 @@ pub enum LifecycleState {
 
 impl LifecycleState {
     /// Check if the resource is available for use
+    #[must_use] 
     pub fn is_available(&self) -> bool {
         matches!(self, Self::Ready | Self::Idle)
     }
 
     /// Check if the resource is in a terminal state
+    #[must_use] 
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Terminated | Self::Failed)
     }
 
     /// Check if the resource is in a transitional state
+    #[must_use] 
     pub fn is_transitional(&self) -> bool {
         matches!(self, Self::Initializing | Self::Draining | Self::Cleanup)
     }
 
     /// Check if the resource can be acquired
+    #[must_use] 
     pub fn can_acquire(&self) -> bool {
         matches!(self, Self::Ready | Self::Idle)
     }
 
     /// Check if the resource can transition to the target state
+    #[must_use] 
     pub fn can_transition_to(&self, target: LifecycleState) -> bool {
-        use LifecycleState::*;
+        use LifecycleState::{Created, Initializing, Failed, Terminated, Ready, InUse, Idle, Maintenance, Draining, Cleanup};
 
         match (self, target) {
             // From Created
@@ -115,8 +122,9 @@ impl LifecycleState {
     }
 
     /// Get the next logical state(s) for this lifecycle state
+    #[must_use] 
     pub fn next_states(&self) -> &'static [LifecycleState] {
-        use LifecycleState::*;
+        use LifecycleState::{Created, Initializing, Failed, Terminated, Ready, InUse, Idle, Maintenance, Draining, Cleanup};
 
         match self {
             Created => &[Initializing, Failed, Terminated],
@@ -133,6 +141,7 @@ impl LifecycleState {
     }
 
     /// Get a human-readable description of the state
+    #[must_use] 
     pub fn description(&self) -> &'static str {
         match self {
             Self::Created => "Resource has been created but not initialized",
@@ -163,15 +172,10 @@ impl fmt::Display for LifecycleState {
             Self::Terminated => "Terminated",
             Self::Failed => "Failed",
         };
-        write!(f, "{}", name)
+        write!(f, "{name}")
     }
 }
 
-impl Default for LifecycleState {
-    fn default() -> Self {
-        Self::Created
-    }
-}
 
 /// Lifecycle event that can be observed
 #[derive(Debug, Clone)]
@@ -191,6 +195,7 @@ pub struct LifecycleEvent {
 
 impl LifecycleEvent {
     /// Create a new lifecycle event
+    #[must_use] 
     pub fn new(resource_id: String, from_state: LifecycleState, to_state: LifecycleState) -> Self {
         Self {
             resource_id,
@@ -202,6 +207,7 @@ impl LifecycleEvent {
     }
 
     /// Create a new lifecycle event with metadata
+    #[must_use] 
     pub fn with_metadata(
         resource_id: String,
         from_state: LifecycleState,

@@ -11,7 +11,7 @@ use crate::core::{
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TracerConfig {
-    /// OpenTelemetry collector endpoint (e.g., "http://localhost:4317")
+    /// OpenTelemetry collector endpoint (e.g., "<http://localhost:4317>")
     pub endpoint: String,
     /// Service name for traces
     pub service_name: String,

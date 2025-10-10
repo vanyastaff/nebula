@@ -12,7 +12,7 @@ use crate::core::{
 pub struct MetricsConfig {
     /// Metrics HTTP endpoint (e.g., "0.0.0.0:9090")
     pub endpoint: String,
-    /// Metrics namespace prefix (e.g., "nebula_resource")
+    /// Metrics namespace prefix (e.g., "`nebula_resource`")
     pub namespace: String,
     /// Enable automatic process metrics (CPU, memory, etc.)
     #[cfg(feature = "metrics")]

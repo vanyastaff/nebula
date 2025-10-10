@@ -251,7 +251,7 @@ impl MemoryCacheInstance {
     /// Get cache statistics
     pub fn stats(&self) -> Option<CacheStatistics> {
         let stats = self.stats.lock();
-        stats.as_ref().map(|s| s.snapshot())
+        stats.as_ref().map(CacheStats::snapshot)
     }
 
     /// Reset statistics
@@ -427,6 +427,7 @@ pub struct CacheStatistics {
 
 impl CacheStatistics {
     /// Calculate hit rate (0.0 to 1.0)
+    #[must_use] 
     pub fn hit_rate(&self) -> f64 {
         let total = self.hits + self.misses;
         if total == 0 {
@@ -437,6 +438,7 @@ impl CacheStatistics {
     }
 
     /// Calculate total requests
+    #[must_use] 
     pub fn total_requests(&self) -> u64 {
         self.hits + self.misses
     }

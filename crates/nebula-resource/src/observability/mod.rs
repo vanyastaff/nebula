@@ -52,6 +52,7 @@ pub struct ResourceMetrics {
 
 impl ResourceMetrics {
     /// Create new resource metrics
+    #[must_use] 
     pub fn new(resource_id: &ResourceId, labels: HashMap<String, String>) -> Self {
         let mut all_labels = labels;
         all_labels.insert("resource_id".to_string(), resource_id.unique_key());
@@ -144,6 +145,7 @@ impl ResourceMetrics {
     }
 
     /// Get current metrics as key-value pairs
+    #[must_use] 
     pub fn snapshot(&self) -> HashMap<String, f64> {
         // This would require access to the metrics registry
         // For now, return empty map
@@ -190,6 +192,7 @@ impl PerformanceMetrics {
     }
 
     /// Get average duration
+    #[must_use] 
     pub fn average_duration(&self) -> Duration {
         if self.count == 0 {
             Duration::ZERO
@@ -199,6 +202,7 @@ impl PerformanceMetrics {
     }
 
     /// Get operations per second (based on total time span)
+    #[must_use] 
     pub fn ops_per_second(&self) -> f64 {
         if self.count == 0 || self.total_duration.is_zero() {
             0.0
@@ -223,6 +227,7 @@ pub struct TracingContext {
 
 impl TracingContext {
     /// Create a new tracing context
+    #[must_use] 
     pub fn new(resource_id: ResourceId, operation: String) -> Self {
         Self {
             resource_id,
@@ -243,6 +248,7 @@ impl TracingContext {
     }
 
     /// Get the elapsed time
+    #[must_use] 
     pub fn elapsed(&self) -> Duration {
         self.start_time.elapsed()
     }
@@ -356,6 +362,7 @@ impl Default for ObservabilityConfig {
 
 impl ObservabilityCollector {
     /// Create a new observability collector
+    #[must_use] 
     pub fn new(config: ObservabilityConfig) -> Self {
         Self {
             resource_metrics: Arc::new(RwLock::new(HashMap::new())),
@@ -366,6 +373,7 @@ impl ObservabilityCollector {
     }
 
     /// Get or create metrics for a resource type
+    #[must_use] 
     pub fn get_resource_metrics(&self, resource_id: &ResourceId) -> ResourceMetrics {
         let metrics = self.resource_metrics.read();
         if let Some(m) = metrics.get(resource_id) {
@@ -437,16 +445,19 @@ impl ObservabilityCollector {
     }
 
     /// Get performance metrics summary
+    #[must_use] 
     pub fn performance_summary(&self) -> HashMap<String, PerformanceMetrics> {
         self.performance_metrics.read().clone()
     }
 
     /// Start tracing an operation
+    #[must_use] 
     pub fn start_trace(&self, resource_id: ResourceId, operation: String) -> TracingContext {
         TracingContext::new(resource_id, operation)
     }
 
     /// Get observability statistics
+    #[must_use] 
     pub fn stats(&self) -> ObservabilityStats {
         let resource_metrics = self.resource_metrics.read();
         let performance_metrics = self.performance_metrics.read();

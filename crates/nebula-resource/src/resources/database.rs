@@ -141,9 +141,9 @@ impl DatabaseInstance {
 /// Generic database resource (mock implementation)
 ///
 /// For production use, consider using specific database resources:
-/// - `PostgresResource` - PostgreSQL
+/// - `PostgresResource` - `PostgreSQL`
 /// - `MySqlResource` - MySQL/MariaDB
-/// - `MongoDbResource` - MongoDB
+/// - `MongoDbResource` - `MongoDB`
 pub struct DatabaseResource;
 
 #[async_trait::async_trait]

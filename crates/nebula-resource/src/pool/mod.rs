@@ -24,10 +24,12 @@ pub use crate::core::traits::PoolConfig;
 /// Strategy for selecting resources from the pool
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Default)]
 pub enum PoolStrategy {
     /// First In, First Out - maintains order, spreads load evenly
     Fifo,
     /// Last In, First Out - keeps recently used resources warm
+    #[default]
     Lifo,
     /// Least Recently Used - evicts oldest used resources first
     Lru,
@@ -37,11 +39,6 @@ pub enum PoolStrategy {
     Adaptive,
 }
 
-impl Default for PoolStrategy {
-    fn default() -> Self {
-        Self::Lifo
-    }
-}
 
 /// Statistics about pool usage
 #[derive(Debug, Clone)]
@@ -100,6 +97,7 @@ impl Default for PoolStats {
 
 impl PoolStats {
     /// Calculate current utilization percentage (0.0 to 1.0)
+    #[must_use] 
     pub fn calculate_utilization(&self, max_size: usize) -> f64 {
         if max_size == 0 {
             0.0
@@ -109,16 +107,19 @@ impl PoolStats {
     }
 
     /// Check if pool is under-utilized (< 30% used)
+    #[must_use] 
     pub fn is_underutilized(&self) -> bool {
         self.utilization < 0.3
     }
 
     /// Check if pool is over-utilized (> 80% used)
+    #[must_use] 
     pub fn is_overutilized(&self) -> bool {
         self.utilization > 0.8
     }
 
     /// Get scaling recommendation based on utilization
+    #[must_use] 
     pub fn scaling_recommendation(&self, max_size: usize) -> ScalingRecommendation {
         if self.is_overutilized() && self.active_count >= max_size {
             ScalingRecommendation::ScaleUp {
@@ -358,7 +359,7 @@ impl<T> PoolEntry<T> {
 
 /// Type-erased trait for resource pool operations
 ///
-/// This trait allows ResourceManager to work with pools of different types
+/// This trait allows `ResourceManager` to work with pools of different types
 /// without knowing the concrete type parameter at compile time.
 #[async_trait]
 pub trait PoolTrait: Send + Sync {
@@ -383,7 +384,7 @@ pub trait PoolTrait: Send + Sync {
     /// Shutdown the pool
     async fn shutdown(&self) -> ResourceResult<()>;
 
-    /// Get the TypeId for the resource type this pool manages
+    /// Get the `TypeId` for the resource type this pool manages
     fn type_id(&self) -> TypeId;
 }
 
@@ -617,7 +618,10 @@ where
 
         if let Some(entry) = entry {
             // Check if resource should be kept in pool
-            if !entry.is_expired(self.config.max_lifetime, self.config.idle_timeout) {
+            if entry.is_expired(self.config.max_lifetime, self.config.idle_timeout) {
+                // Resource expired, destroy it
+                self.update_destroy_stats();
+            } else {
                 // Health check if enabled
                 if let Some(health_checker) = &self.health_checker {
                     match health_checker.health_check().await {
@@ -636,9 +640,6 @@ where
                     let mut available = self.available.lock();
                     available.push(entry);
                 }
-            } else {
-                // Resource expired, destroy it
-                self.update_destroy_stats();
             }
 
             // Update stats
@@ -654,11 +655,13 @@ where
     }
 
     /// Get current pool statistics
+    #[must_use] 
     pub fn stats(&self) -> PoolStats {
         self.stats.read().clone()
     }
 
     /// Get pool monitoring insights
+    #[must_use] 
     pub fn monitoring_insights(&self) -> PoolMonitoringInsights {
         let stats = self.stats.read();
         let recommendation = stats.scaling_recommendation(self.config.max_size);
@@ -778,8 +781,7 @@ where
                     .iter()
                     .enumerate()
                     .min_by_key(|(_, entry)| entry.last_accessed)
-                    .map(|(i, _)| i)
-                    .unwrap_or(0)
+                    .map_or(0, |(i, _)| i)
             }
             PoolStrategy::WeightedRoundRobin => self.select_weighted_round_robin(&mut available),
             PoolStrategy::Adaptive => self.select_adaptive(&mut available),
@@ -797,7 +799,7 @@ where
         // Calculate weights for all resources
         let weights: Vec<f64> = available
             .iter_mut()
-            .map(|entry| entry.calculate_weight())
+            .map(PoolEntry::calculate_weight)
             .collect();
 
         // Calculate total weight
@@ -867,8 +869,7 @@ where
                         .partial_cmp(score2)
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
-                .map(|(idx, _)| idx)
-                .unwrap_or(0)
+                .map_or(0, |(idx, _)| idx)
         }
     }
 
@@ -891,9 +892,9 @@ where
     }
 }
 
-/// Implementation of PoolTrait for ResourcePool<T>
+/// Implementation of `PoolTrait` for `ResourcePool`<T>
 ///
-/// This provides type-erased access to pool operations, allowing the ResourceManager
+/// This provides type-erased access to pool operations, allowing the `ResourceManager`
 /// to store and use pools of different types uniformly.
 #[async_trait]
 impl<T> PoolTrait for ResourcePool<T>
@@ -979,6 +980,7 @@ impl<T> PooledResource<T> {
     }
 
     /// Get a cloned Arc to the underlying resource
+    #[must_use] 
     pub fn get_instance(&self) -> Option<Arc<T>> {
         let acquired = self.acquired.lock();
         acquired
@@ -987,6 +989,7 @@ impl<T> PooledResource<T> {
     }
 
     /// Get the instance ID
+    #[must_use] 
     pub fn instance_id(&self) -> Uuid {
         self.instance_id
     }
@@ -1007,6 +1010,7 @@ pub struct PoolManager {
 
 impl PoolManager {
     /// Create a new pool manager
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             pools: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -1023,6 +1027,7 @@ impl PoolManager {
     }
 
     /// Get a pool for a resource type
+    #[must_use] 
     pub fn get_pool<T>(&self, pool_id: &str) -> Option<Arc<ResourcePool<T>>>
     where
         T: Send + Sync + 'static,

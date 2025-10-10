@@ -7,7 +7,6 @@
 //! - Automatic unhealthy resource detection
 
 use crate::core::{
-    error::ResourceResult,
     resource::ResourceId,
     traits::{HealthCheckable, HealthStatus},
 };
@@ -67,6 +66,7 @@ pub struct HealthChecker {
 
 impl HealthChecker {
     /// Create a new health checker
+    #[must_use] 
     pub fn new(config: HealthCheckConfig) -> Self {
         Self {
             config,
@@ -115,7 +115,7 @@ impl HealthChecker {
                     }
                     Ok(Err(e)) => {
                         consecutive_failures += 1;
-                        HealthStatus::unhealthy(format!("Health check failed: {}", e))
+                        HealthStatus::unhealthy(format!("Health check failed: {e}"))
                     }
                     Err(_) => {
                         consecutive_failures += 1;
@@ -160,11 +160,13 @@ impl HealthChecker {
     }
 
     /// Get the current health status of an instance
+    #[must_use] 
     pub fn get_health(&self, instance_id: &uuid::Uuid) -> Option<HealthRecord> {
         self.records.get(instance_id).map(|r| r.value().clone())
     }
 
     /// Get all health records
+    #[must_use] 
     pub fn get_all_health(&self) -> Vec<HealthRecord> {
         self.records
             .iter()
@@ -173,6 +175,7 @@ impl HealthChecker {
     }
 
     /// Get unhealthy instances
+    #[must_use] 
     pub fn get_unhealthy_instances(&self) -> Vec<HealthRecord> {
         self.records
             .iter()
@@ -182,6 +185,7 @@ impl HealthChecker {
     }
 
     /// Get instances that have exceeded the failure threshold
+    #[must_use] 
     pub fn get_critical_instances(&self) -> Vec<HealthRecord> {
         self.records
             .iter()

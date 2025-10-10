@@ -322,6 +322,7 @@ impl ResourceError {
     }
 
     /// Check if this error is retryable
+    #[must_use] 
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::Unavailable { retryable, .. } => *retryable,
@@ -333,6 +334,7 @@ impl ResourceError {
     }
 
     /// Get the resource ID associated with this error (if any)
+    #[must_use] 
     pub fn resource_id(&self) -> Option<&str> {
         match self {
             Self::Configuration { .. } => None,

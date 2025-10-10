@@ -7,11 +7,13 @@ use serde::{Deserialize, Serialize};
 
 /// Defines the scope and visibility of a resource
 ///
-/// Note: Hash is not derived because the Custom variant contains HashMap
+/// Note: Hash is not derived because the Custom variant contains `HashMap`
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Default)]
 pub enum ResourceScope {
     /// Global scope - shared across all workflows and tenants
+    #[default]
     Global,
     /// Tenant scope - isolated per tenant for multi-tenancy
     Tenant {
@@ -83,6 +85,7 @@ impl ResourceScope {
     }
 
     /// Get the scope hierarchy level (lower numbers = broader scope)
+    #[must_use] 
     pub fn hierarchy_level(&self) -> u8 {
         match self {
             Self::Global => 0,
@@ -95,33 +98,35 @@ impl ResourceScope {
     }
 
     /// Check if this scope is broader than another scope
+    #[must_use] 
     pub fn is_broader_than(&self, other: &ResourceScope) -> bool {
         self.hierarchy_level() < other.hierarchy_level()
     }
 
     /// Check if this scope is narrower than another scope
+    #[must_use] 
     pub fn is_narrower_than(&self, other: &ResourceScope) -> bool {
         self.hierarchy_level() > other.hierarchy_level()
     }
 
     /// Check if this scope contains another scope
+    #[must_use] 
     pub fn contains(&self, other: &ResourceScope) -> bool {
         match (self, other) {
             // Global contains everything
             (Self::Global, _) => true,
 
             // Tenant contains workflow, execution, and action in same tenant
-            (Self::Tenant { tenant_id: t1 }, Self::Workflow { .. })
-            | (Self::Tenant { tenant_id: t1 }, Self::Execution { .. })
-            | (Self::Tenant { tenant_id: t1 }, Self::Action { .. }) => {
+            (Self::Tenant { tenant_id: t1 },
+Self::Workflow { .. } | Self::Execution { .. } | Self::Action { .. }) => {
                 // Note: This is simplified - in reality we'd need context to check tenant ownership
                 true
             }
             (Self::Tenant { tenant_id: t1 }, Self::Tenant { tenant_id: t2 }) => t1 == t2,
 
             // Workflow contains execution and action in same workflow
-            (Self::Workflow { workflow_id: w1 }, Self::Execution { .. })
-            | (Self::Workflow { workflow_id: w1 }, Self::Action { .. }) => {
+            (Self::Workflow { workflow_id: w1 },
+Self::Execution { .. } | Self::Action { .. }) => {
                 // Note: This is simplified - in reality we'd need context to check workflow ownership
                 true
             }
@@ -157,17 +162,18 @@ impl ResourceScope {
     }
 
     /// Generate a scope key for storage/lookup
+    #[must_use] 
     pub fn scope_key(&self) -> String {
         match self {
             Self::Global => "global".to_string(),
-            Self::Tenant { tenant_id } => format!("tenant:{}", tenant_id),
-            Self::Workflow { workflow_id } => format!("workflow:{}", workflow_id),
-            Self::Execution { execution_id } => format!("execution:{}", execution_id),
-            Self::Action { action_id } => format!("action:{}", action_id),
+            Self::Tenant { tenant_id } => format!("tenant:{tenant_id}"),
+            Self::Workflow { workflow_id } => format!("workflow:{workflow_id}"),
+            Self::Execution { execution_id } => format!("execution:{execution_id}"),
+            Self::Action { action_id } => format!("action:{action_id}"),
             Self::Custom { name, attributes } => {
-                let mut key = format!("custom:{}", name);
+                let mut key = format!("custom:{name}");
                 for (k, v) in attributes {
-                    key.push_str(&format!(":{}={}", k, v));
+                    key.push_str(&format!(":{k}={v}"));
                 }
                 key
             }
@@ -175,15 +181,16 @@ impl ResourceScope {
     }
 
     /// Get a human-readable description of the scope
+    #[must_use] 
     pub fn description(&self) -> String {
         match self {
             Self::Global => "Global scope (shared across all workflows and tenants)".to_string(),
-            Self::Tenant { tenant_id } => format!("Tenant scope (tenant: {})", tenant_id),
-            Self::Workflow { workflow_id } => format!("Workflow scope (workflow: {})", workflow_id),
+            Self::Tenant { tenant_id } => format!("Tenant scope (tenant: {tenant_id})"),
+            Self::Workflow { workflow_id } => format!("Workflow scope (workflow: {workflow_id})"),
             Self::Execution { execution_id } => {
-                format!("Execution scope (execution: {})", execution_id)
+                format!("Execution scope (execution: {execution_id})")
             }
-            Self::Action { action_id } => format!("Action scope (action: {})", action_id),
+            Self::Action { action_id } => format!("Action scope (action: {action_id})"),
             Self::Custom { name, attributes } => {
                 format!(
                     "Custom scope '{}' with {} attributes",
@@ -201,19 +208,16 @@ impl fmt::Display for ResourceScope {
     }
 }
 
-impl Default for ResourceScope {
-    fn default() -> Self {
-        Self::Global
-    }
-}
 
 /// Scoping strategy for resource allocation
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Default)]
 pub enum ScopingStrategy {
     /// Strict scoping - only exact scope matches
     Strict,
     /// Hierarchical scoping - allows broader scopes to be used
+    #[default]
     Hierarchical,
     /// Fallback scoping - tries exact match, then falls back to broader scopes
     Fallback,
@@ -221,6 +225,7 @@ pub enum ScopingStrategy {
 
 impl ScopingStrategy {
     /// Check if a resource scope is compatible with a requested scope using this strategy
+    #[must_use] 
     pub fn is_compatible(
         &self,
         resource_scope: &ResourceScope,
@@ -236,11 +241,6 @@ impl ScopingStrategy {
     }
 }
 
-impl Default for ScopingStrategy {
-    fn default() -> Self {
-        Self::Hierarchical
-    }
-}
 
 #[cfg(test)]
 mod tests {

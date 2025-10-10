@@ -27,6 +27,7 @@ pub struct Version {
 
 impl Version {
     /// Create a new version
+    #[must_use] 
     pub fn new(major: u32, minor: u32, patch: u32) -> Self {
         Self {
             major,
@@ -55,6 +56,7 @@ impl Version {
     /// - Major version must match
     /// - This version's minor must be >= required minor
     /// - Patch version doesn't matter for compatibility
+    #[must_use] 
     pub fn is_compatible_with(&self, required: &Version) -> bool {
         if self.major != required.major {
             return false;
@@ -74,6 +76,7 @@ impl Version {
     /// Migration is possible if:
     /// - Major versions differ by at most 1
     /// - If same major, any minor/patch is acceptable
+    #[must_use] 
     pub fn can_migrate_to(&self, target: &Version) -> bool {
         if self.major == target.major {
             // Same major version - always possible
@@ -127,11 +130,11 @@ impl fmt::Display for Version {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
 
         if let Some(ref pre) = self.pre_release {
-            write!(f, "-{}", pre)?;
+            write!(f, "-{pre}")?;
         }
 
         if let Some(ref build) = self.build {
-            write!(f, "+{}", build)?;
+            write!(f, "+{build}")?;
         }
 
         Ok(())
@@ -163,8 +166,7 @@ impl FromStr for Version {
         let parts: Vec<&str> = core_part.split('.').collect();
         if parts.len() != 3 {
             return Err(ResourceError::configuration(format!(
-                "Invalid version format: expected 'major.minor.patch', got '{}'",
-                s
+                "Invalid version format: expected 'major.minor.patch', got '{s}'"
             )));
         }
 
@@ -203,6 +205,7 @@ pub struct VersionChecker {
 
 impl VersionChecker {
     /// Create a new version checker
+    #[must_use] 
     pub fn new(min_version: Version) -> Self {
         Self {
             min_version,
@@ -212,18 +215,21 @@ impl VersionChecker {
     }
 
     /// Set maximum supported version
+    #[must_use] 
     pub fn with_max_version(mut self, max_version: Version) -> Self {
         self.max_version = Some(max_version);
         self
     }
 
     /// Add a deprecated version
+    #[must_use] 
     pub fn with_deprecated(mut self, version: Version) -> Self {
         self.deprecated.push(version);
         self
     }
 
     /// Check if a version is supported
+    #[must_use] 
     pub fn is_supported(&self, version: &Version) -> bool {
         if version < &self.min_version {
             return false;
@@ -239,6 +245,7 @@ impl VersionChecker {
     }
 
     /// Check if a version is deprecated
+    #[must_use] 
     pub fn is_deprecated(&self, version: &Version) -> bool {
         self.deprecated.contains(version)
     }

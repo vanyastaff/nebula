@@ -48,6 +48,7 @@ pub enum HealthState {
 
 impl HealthStatus {
     /// Create a healthy status
+    #[must_use] 
     pub fn healthy() -> Self {
         Self {
             state: HealthState::Healthy,
@@ -81,6 +82,7 @@ impl HealthStatus {
     }
 
     /// Add latency information
+    #[must_use] 
     pub fn with_latency(mut self, latency: std::time::Duration) -> Self {
         self.latency = Some(latency);
         self
@@ -93,6 +95,7 @@ impl HealthStatus {
     }
 
     /// Check if the resource is considered healthy enough to use
+    #[must_use] 
     pub fn is_usable(&self) -> bool {
         match &self.state {
             HealthState::Healthy => true,
@@ -104,6 +107,7 @@ impl HealthStatus {
     }
 
     /// Get a numeric score for the health status (0.0 = unhealthy, 1.0 = healthy)
+    #[must_use] 
     pub fn score(&self) -> f64 {
         match &self.state {
             HealthState::Healthy => 1.0,
@@ -220,14 +224,13 @@ pub trait Stateful: Send + Sync {
     ) -> ResourceResult<Self::State> {
         if from_version == to_version {
             serde_json::from_value(old_state).map_err(|e| {
-                ResourceError::internal("unknown", format!("Failed to deserialize state: {}", e))
+                ResourceError::internal("unknown", format!("Failed to deserialize state: {e}"))
             })
         } else {
             Err(ResourceError::internal(
                 "unknown",
                 format!(
-                    "State migration from version {} to {} is not supported",
-                    from_version, to_version
+                    "State migration from version {from_version} to {to_version} is not supported"
                 ),
             ))
         }

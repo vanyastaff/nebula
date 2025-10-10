@@ -1,7 +1,5 @@
 //! Authenticated resource trait for credential-based resources
 
-use crate::core::error::ResourceResult;
-use async_trait::async_trait;
 
 #[cfg(feature = "credentials")]
 use crate::credentials::ResourceCredentialProvider;

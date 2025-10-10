@@ -50,6 +50,7 @@ impl ResourceId {
     }
 
     /// Get the full qualified name of the resource
+    #[must_use] 
     pub fn full_name(&self) -> String {
         match &self.namespace {
             Some(ns) => format!("{}/{}", ns, self.name),
@@ -58,6 +59,7 @@ impl ResourceId {
     }
 
     /// Get a unique string representation for this resource ID
+    #[must_use] 
     pub fn unique_key(&self) -> String {
         format!("{}:{}", self.full_name(), self.version)
     }
@@ -114,6 +116,7 @@ pub struct ResourceMetadata {
 
 impl ResourceMetadata {
     /// Create new resource metadata
+    #[must_use] 
     pub fn new(id: ResourceId, description: String) -> Self {
         Self {
             id,
@@ -140,30 +143,35 @@ impl ResourceMetadata {
     }
 
     /// Mark the resource as poolable
+    #[must_use] 
     pub fn poolable(mut self) -> Self {
         self.poolable = true;
         self
     }
 
     /// Mark the resource as health checkable
+    #[must_use] 
     pub fn health_checkable(mut self) -> Self {
         self.health_checkable = true;
         self
     }
 
     /// Mark the resource as stateful
+    #[must_use] 
     pub fn stateful(mut self) -> Self {
         self.stateful = true;
         self
     }
 
     /// Add a dependency
+    #[must_use] 
     pub fn with_dependency(mut self, dependency: ResourceId) -> Self {
         self.dependencies.push(dependency);
         self
     }
 
     /// Set the default scope
+    #[must_use] 
     pub fn with_default_scope(mut self, scope: ResourceScope) -> Self {
         self.default_scope = scope;
         self
@@ -182,6 +190,7 @@ impl ResourceMetadata {
     }
 
     /// Check if a version is deprecated
+    #[must_use] 
     pub fn is_version_deprecated(&self, version: &str) -> bool {
         self.deprecated_versions.iter().any(|v| v == version)
     }
@@ -201,8 +210,7 @@ impl ResourceMetadata {
             let min_ver = min_ver_str.parse::<Version>()?;
             if version < &min_ver {
                 return Err(ResourceError::configuration(format!(
-                    "Version {} is below minimum compatible version {}",
-                    version, min_ver
+                    "Version {version} is below minimum compatible version {min_ver}"
                 )));
             }
         }
@@ -294,7 +302,7 @@ pub trait Resource: Send + Sync + 'static {
         Ok(true)
     }
 
-    /// Get the TypeId for this resource type (for type-safe operations)
+    /// Get the `TypeId` for this resource type (for type-safe operations)
     fn type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
@@ -362,21 +370,25 @@ where
     }
 
     /// Get a reference to the underlying instance
+    #[must_use] 
     pub fn as_ref(&self) -> &T {
         &self.instance
     }
 
     /// Get the instance ID
+    #[must_use] 
     pub fn instance_id(&self) -> Uuid {
         self.metadata.instance_id
     }
 
     /// Get the resource ID
+    #[must_use] 
     pub fn resource_id(&self) -> &ResourceId {
         &self.metadata.resource_id
     }
 
     /// Get the current state
+    #[must_use] 
     pub fn state(&self) -> LifecycleState {
         self.metadata.state
     }
@@ -437,16 +449,19 @@ where
     }
 
     /// Get a reference to the resource
+    #[must_use] 
     pub fn as_ref(&self) -> Option<&T> {
-        self.resource.as_ref().map(|r| r.as_ref())
+        self.resource.as_ref().map(TypedResourceInstance::as_ref)
     }
 
     /// Get the resource metadata
+    #[must_use] 
     pub fn metadata(&self) -> Option<&ResourceInstanceMetadata> {
         self.resource.as_ref().map(|r| &r.metadata)
     }
 
     /// Release the resource manually (consumes the guard)
+    #[must_use] 
     pub fn release(mut self) -> Option<TypedResourceInstance<T>> {
         self.resource.take()
     }

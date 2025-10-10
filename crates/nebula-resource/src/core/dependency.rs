@@ -12,14 +12,15 @@ use std::collections::{HashMap, HashSet, VecDeque};
 /// Dependency graph for managing resource initialization order
 #[derive(Debug, Clone, Default)]
 pub struct DependencyGraph {
-    /// ResourceId -> list of dependencies (what this resource depends on)
+    /// `ResourceId` -> list of dependencies (what this resource depends on)
     dependencies: HashMap<ResourceId, Vec<ResourceId>>,
-    /// ResourceId -> list of dependents (what depends on this resource)
+    /// `ResourceId` -> list of dependents (what depends on this resource)
     dependents: HashMap<ResourceId, Vec<ResourceId>>,
 }
 
 impl DependencyGraph {
     /// Create a new empty dependency graph
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             dependencies: HashMap::new(),
@@ -40,7 +41,7 @@ impl DependencyGraph {
         if resource == depends_on {
             return Err(ResourceError::internal(
                 resource.to_string(),
-                format!("Resource cannot depend on itself: {}", resource),
+                format!("Resource cannot depend on itself: {resource}"),
             ));
         }
 
@@ -62,7 +63,7 @@ impl DependencyGraph {
             self.remove_dependency(&resource, &depends_on);
             return Err(ResourceError::internal(
                 resource.to_string(),
-                format!("Adding dependency would create cycle: {:?}", cycle),
+                format!("Adding dependency would create cycle: {cycle:?}"),
             ));
         }
 
@@ -80,11 +81,13 @@ impl DependencyGraph {
     }
 
     /// Get all dependencies for a resource
+    #[must_use] 
     pub fn get_dependencies(&self, resource: &ResourceId) -> Vec<ResourceId> {
         self.dependencies.get(resource).cloned().unwrap_or_default()
     }
 
     /// Get all dependents of a resource (what depends on this resource)
+    #[must_use] 
     pub fn get_dependents(&self, resource: &ResourceId) -> Vec<ResourceId> {
         self.dependents.get(resource).cloned().unwrap_or_default()
     }
@@ -92,7 +95,8 @@ impl DependencyGraph {
     /// Detect if there's a cycle in the dependency graph
     ///
     /// # Returns
-    /// Some(cycle_path) if a cycle is detected, None otherwise
+    /// `Some(cycle_path)` if a cycle is detected, None otherwise
+    #[must_use] 
     pub fn detect_cycle(&self) -> Option<Vec<ResourceId>> {
         let mut visited = HashSet::new();
         let mut rec_stack = HashSet::new();
@@ -144,7 +148,7 @@ impl DependencyGraph {
     /// Perform topological sort to get initialization order
     ///
     /// # Returns
-    /// Ordered list of ResourceIds where dependencies come before dependents
+    /// Ordered list of `ResourceIds` where dependencies come before dependents
     ///
     /// # Errors
     /// Returns error if there's a cycle in the graph
@@ -204,7 +208,7 @@ impl DependencyGraph {
         {
             return Err(ResourceError::internal(
                 cycle[0].to_string(),
-                format!("Circular dependency detected: {:?}", cycle),
+                format!("Circular dependency detected: {cycle:?}"),
             ));
         }
 
@@ -248,6 +252,7 @@ impl DependencyGraph {
     }
 
     /// Get all transitive dependencies of a resource
+    #[must_use] 
     pub fn get_all_dependencies(&self, resource: &ResourceId) -> HashSet<ResourceId> {
         let mut all_deps = HashSet::new();
         self.collect_dependencies(resource, &mut all_deps);
@@ -266,6 +271,7 @@ impl DependencyGraph {
     }
 
     /// Check if resource A depends on resource B (directly or transitively)
+    #[must_use] 
     pub fn depends_on(&self, resource: &ResourceId, depends_on: &ResourceId) -> bool {
         let all_deps = self.get_all_dependencies(resource);
         all_deps.contains(depends_on)

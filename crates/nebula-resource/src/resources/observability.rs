@@ -1,9 +1,9 @@
 //! Observability resource implementations
 //!
 //! This module provides re-exports for observability resources:
-//! - **LoggerResource**: Structured logging with nebula-log integration
-//! - **MetricsResource**: Prometheus metrics collection and export
-//! - **TracerResource**: OpenTelemetry distributed tracing
+//! - **`LoggerResource`**: Structured logging with nebula-log integration
+//! - **`MetricsResource`**: Prometheus metrics collection and export
+//! - **`TracerResource`**: OpenTelemetry distributed tracing
 //!
 //! # Features
 //!

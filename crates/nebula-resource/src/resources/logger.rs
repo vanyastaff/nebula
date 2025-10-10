@@ -154,7 +154,7 @@ impl Resource for LoggerResource {
         let _guard = nebula_log::init_with(logger_config).map_err(|e| {
             ResourceError::initialization(
                 "logger:1.0",
-                format!("Failed to initialize logger: {}", e),
+                format!("Failed to initialize logger: {e}"),
             )
         })?;
 

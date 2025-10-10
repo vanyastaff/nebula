@@ -36,7 +36,7 @@ pub struct ResourceManager {
     /// Registry of resource factories
     registry: Arc<RwLock<HashMap<ResourceId, Arc<dyn ResourceFactory>>>>,
 
-    /// Resource pools by TypeId
+    /// Resource pools by `TypeId`
     pools: Arc<DashMap<TypeId, Arc<dyn PoolTrait + Send + Sync>>>,
 
     /// Resource metadata cache
@@ -93,11 +93,13 @@ impl Default for ResourceManagerConfig {
 
 impl ResourceManager {
     /// Create a new resource manager with default configuration
+    #[must_use] 
     pub fn new() -> Self {
         Self::with_config(ResourceManagerConfig::default())
     }
 
     /// Create a new resource manager with custom configuration
+    #[must_use] 
     pub fn with_config(config: ResourceManagerConfig) -> Self {
         let (cleanup_tx, mut cleanup_rx) = tokio::sync::mpsc::unbounded_channel();
         let pools: Arc<DashMap<TypeId, Arc<dyn PoolTrait + Send + Sync>>> =
@@ -144,6 +146,7 @@ impl ResourceManager {
     }
 
     /// Create a builder for more advanced configuration
+    #[must_use] 
     pub fn builder() -> ResourceManagerBuilder {
         ResourceManagerBuilder::new()
     }
@@ -166,7 +169,7 @@ impl ResourceManager {
                     .map_err(|e| {
                         ResourceError::internal(
                             resource_id.to_string(),
-                            format!("Failed to register dependency: {}", e),
+                            format!("Failed to register dependency: {e}"),
                         )
                     })?;
             }
@@ -344,6 +347,7 @@ impl ResourceManager {
     }
 
     /// Subscribe to lifecycle events
+    #[must_use] 
     pub fn subscribe_to_events(&self) -> futures::channel::mpsc::UnboundedReceiver<LifecycleEvent> {
         let (sender, receiver) = futures::channel::mpsc::unbounded();
         {
@@ -354,6 +358,7 @@ impl ResourceManager {
     }
 
     /// Get metadata for all registered resource types
+    #[must_use] 
     pub fn list_registered_types(&self) -> Vec<ResourceMetadata> {
         self.metadata_cache
             .iter()
@@ -362,6 +367,7 @@ impl ResourceManager {
     }
 
     /// Get metadata for a specific resource type
+    #[must_use] 
     pub fn get_metadata(&self, resource_id: &ResourceId) -> Option<ResourceMetadata> {
         self.metadata_cache
             .get(resource_id)
@@ -452,7 +458,7 @@ impl ResourceManager {
         };
 
         // Initialize each dependency in order (excluding the resource itself)
-        for dep_id in init_order.iter() {
+        for dep_id in &init_order {
             if dep_id == resource_id {
                 // Skip self
                 continue;
@@ -497,39 +503,46 @@ impl ResourceManager {
     }
 
     /// Get all dependencies of a resource
+    #[must_use] 
     pub fn get_dependencies(&self, resource_id: &ResourceId) -> Vec<ResourceId> {
         let dep_graph = self.dependency_graph.read();
         dep_graph.get_dependencies(resource_id)
     }
 
     /// Get all resources that depend on this resource
+    #[must_use] 
     pub fn get_dependents(&self, resource_id: &ResourceId) -> Vec<ResourceId> {
         let dep_graph = self.dependency_graph.read();
         dep_graph.get_dependents(resource_id)
     }
 
     /// Check if one resource depends on another (directly or transitively)
+    #[must_use] 
     pub fn depends_on(&self, resource: &ResourceId, depends_on: &ResourceId) -> bool {
         let dep_graph = self.dependency_graph.read();
         dep_graph.depends_on(resource, depends_on)
     }
 
     /// Get the health status of a specific instance
+    #[must_use] 
     pub fn get_instance_health(&self, instance_id: &Uuid) -> Option<crate::health::HealthRecord> {
         self.health_checker.get_health(instance_id)
     }
 
     /// Get all health records for monitored instances
+    #[must_use] 
     pub fn get_all_health(&self) -> Vec<crate::health::HealthRecord> {
         self.health_checker.get_all_health()
     }
 
     /// Get all unhealthy instances
+    #[must_use] 
     pub fn get_unhealthy_instances(&self) -> Vec<crate::health::HealthRecord> {
         self.health_checker.get_unhealthy_instances()
     }
 
     /// Get instances that have exceeded the failure threshold
+    #[must_use] 
     pub fn get_critical_instances(&self) -> Vec<crate::health::HealthRecord> {
         self.health_checker.get_critical_instances()
     }
@@ -640,8 +653,7 @@ impl ResourceManager {
                     Err(ResourceError::unavailable(
                         resource_id.to_string(),
                         format!(
-                            "Tenant mismatch: resource is scoped to tenant '{}', but context is in tenant '{}'",
-                            res_tenant, ctx_tenant
+                            "Tenant mismatch: resource is scoped to tenant '{res_tenant}', but context is in tenant '{ctx_tenant}'"
                         ),
                         false,
                     ))
@@ -670,8 +682,7 @@ impl ResourceManager {
                     Err(ResourceError::unavailable(
                         resource_id.to_string(),
                         format!(
-                            "Workflow mismatch: resource is scoped to workflow '{}', but context is in workflow '{}'",
-                            res_wf, ctx_wf
+                            "Workflow mismatch: resource is scoped to workflow '{res_wf}', but context is in workflow '{ctx_wf}'"
                         ),
                         false,
                     ))
@@ -679,18 +690,8 @@ impl ResourceManager {
             }
 
             // Workflow resources can be accessed from narrower scopes within the same workflow
-            (
-                ResourceScope::Workflow {
-                    workflow_id: res_wf,
-                },
-                ResourceScope::Execution { .. },
-            )
-            | (
-                ResourceScope::Workflow {
-                    workflow_id: res_wf,
-                },
-                ResourceScope::Action { .. },
-            ) => {
+            (ResourceScope::Workflow { workflow_id: res_wf },
+ResourceScope::Execution { .. } | ResourceScope::Action { .. }) => {
                 // In a real implementation, we'd verify the execution/action belongs to this workflow
                 // For now, we allow it (this would be enhanced with proper context tracking)
                 Ok(())
@@ -751,8 +752,7 @@ impl ResourceManager {
             _ => Err(ResourceError::unavailable(
                 resource_id.to_string(),
                 format!(
-                    "Scope mismatch: resource scope {:?} cannot be accessed from context scope {:?}",
-                    resource_scope, context_scope
+                    "Scope mismatch: resource scope {resource_scope:?} cannot be accessed from context scope {context_scope:?}"
                 ),
                 false,
             )),
@@ -766,7 +766,7 @@ impl Default for ResourceManager {
     }
 }
 
-/// Builder for ResourceManager with advanced configuration options
+/// Builder for `ResourceManager` with advanced configuration options
 pub struct ResourceManagerBuilder {
     config: ResourceManagerConfig,
     scoping_strategy: ScopingStrategy,
@@ -774,6 +774,7 @@ pub struct ResourceManagerBuilder {
 
 impl ResourceManagerBuilder {
     /// Create a new builder
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             config: ResourceManagerConfig::default(),
@@ -782,36 +783,42 @@ impl ResourceManagerBuilder {
     }
 
     /// Set the default timeout
+    #[must_use] 
     pub fn default_timeout(mut self, timeout: Duration) -> Self {
         self.config.default_timeout = timeout;
         self
     }
 
     /// Set the maximum instances per type
+    #[must_use] 
     pub fn max_instances_per_type(mut self, max: usize) -> Self {
         self.config.max_instances_per_type = max;
         self
     }
 
     /// Set the health check interval
+    #[must_use] 
     pub fn health_check_interval(mut self, interval: Duration) -> Self {
         self.config.health_check_interval = interval;
         self
     }
 
     /// Enable or disable automatic cleanup
+    #[must_use] 
     pub fn auto_cleanup(mut self, enabled: bool) -> Self {
         self.config.auto_cleanup_enabled = enabled;
         self
     }
 
     /// Set the scoping strategy
+    #[must_use] 
     pub fn scoping_strategy(mut self, strategy: ScopingStrategy) -> Self {
         self.scoping_strategy = strategy;
         self
     }
 
     /// Build the resource manager
+    #[must_use] 
     pub fn build(self) -> ResourceManager {
         let mut manager = ResourceManager::with_config(self.config);
         manager.scoping_strategy = self.scoping_strategy;
@@ -825,7 +832,7 @@ impl Default for ResourceManagerBuilder {
     }
 }
 
-/// Wrapper that adapts Resource trait to ResourceFactory trait
+/// Wrapper that adapts Resource trait to `ResourceFactory` trait
 struct ResourceFactoryWrapper<R> {
     resource: R,
 }
@@ -854,7 +861,7 @@ where
         // For now, create a default config
         // In a real implementation, we'd deserialize the JSON config
         let default_config = serde_json::from_value(config).map_err(|e| {
-            ResourceError::configuration(format!("Failed to deserialize config: {}", e))
+            ResourceError::configuration(format!("Failed to deserialize config: {e}"))
         })?;
 
         // Create the instance

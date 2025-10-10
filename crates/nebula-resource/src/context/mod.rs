@@ -261,6 +261,7 @@ impl ResourceQuotas {
     }
 
     /// Allocate resources
+    #[must_use = "allocation result must be checked"]
     pub fn allocate(&mut self, resource_type: &str, count: u32) -> Result<(), String> {
         if !self.can_allocate(resource_type, count) {
             return Err(format!("Cannot allocate {} resources of type {}", count, resource_type));
