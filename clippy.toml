@@ -1,4 +1,4 @@
-msrv = "1.89"
+msrv = "1.90"
 cognitive-complexity-threshold = 25
 excessive-nesting-threshold = 5
 
