@@ -18,10 +18,10 @@ use im::Vector;
 use crate::core::NebulaError;
 use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::limits::ValueLimits;
+use crate::core::Value;
 
-// Forward declaration - will be replaced with actual Value type
-// For now, use a placeholder that can hold any value
-type ValueItem = serde_json::Value;
+/// Type alias for items stored in arrays
+pub type ValueItem = Value;
 
 /// Persistent array with efficient structural sharing
 ///
@@ -106,9 +106,9 @@ impl Array {
 
     /// Push an element (returns new Array, original unchanged)
     #[must_use = "immutable methods return a new instance"]
-    pub fn push(&self, value: ValueItem) -> Self {
+    pub fn push(&self, value: impl Into<ValueItem>) -> Self {
         let mut new_vec = self.inner.clone();
-        new_vec.push_back(value);
+        new_vec.push_back(value.into());
         Self { inner: new_vec }
     }
 
@@ -117,7 +117,7 @@ impl Array {
     /// # Errors
     ///
     /// Returns `ValueError::LimitExceeded` if array length would exceed `max_array_length`
-    pub fn push_with_limit(&self, value: ValueItem, limits: &ValueLimits) -> ValueResult<Self> {
+    pub fn push_with_limit(&self, value: impl Into<ValueItem>, limits: &ValueLimits) -> ValueResult<Self> {
         limits.check_array_length(self.len() + 1)?;
         Ok(self.push(value))
     }
@@ -134,13 +134,13 @@ impl Array {
     /// # Errors
     ///
     /// Returns `ValueError::IndexOutOfBounds` if `index >= len()`
-    pub fn set(&self, index: usize, value: ValueItem) -> ValueResult<Self> {
+    pub fn set(&self, index: usize, value: impl Into<ValueItem>) -> ValueResult<Self> {
         if index >= self.len() {
             return Err(NebulaError::value_index_out_of_bounds(index, self.len()));
         }
 
         let mut new_vec = self.inner.clone();
-        new_vec.set(index, value);
+        new_vec.set(index, value.into());
         Ok(Self { inner: new_vec })
     }
 
@@ -149,13 +149,13 @@ impl Array {
     /// # Errors
     ///
     /// Returns `ValueError::IndexOutOfBounds` if `index > len()`
-    pub fn insert(&self, index: usize, value: ValueItem) -> ValueResult<Self> {
+    pub fn insert(&self, index: usize, value: impl Into<ValueItem>) -> ValueResult<Self> {
         if index > self.len() {
             return Err(NebulaError::value_index_out_of_bounds(index, self.len()));
         }
 
         let mut new_vec = self.inner.clone();
-        new_vec.insert(index, value);
+        new_vec.insert(index, value.into());
         Ok(Self { inner: new_vec })
     }
 

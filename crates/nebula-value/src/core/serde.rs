@@ -238,12 +238,19 @@ impl From<Value> for serde_json::Value {
                 serde_json::Value::String(encoded)
             }
             Value::Array(arr) => {
-                let vec: Vec<serde_json::Value> = arr.iter().cloned().collect();
+                // Recursively convert each array element
+                let vec: Vec<serde_json::Value> = arr
+                    .iter()
+                    .map(|item| serde_json::Value::from(item.clone()))
+                    .collect();
                 serde_json::Value::Array(vec)
             }
             Value::Object(obj) => {
-                let map: serde_json::Map<String, serde_json::Value> =
-                    obj.entries().map(|(k, v)| (k.clone(), v.clone())).collect();
+                // Recursively convert each object value
+                let map: serde_json::Map<String, serde_json::Value> = obj
+                    .entries()
+                    .map(|(k, v)| (k.clone(), serde_json::Value::from(v.clone())))
+                    .collect();
                 serde_json::Value::Object(map)
             }
             #[cfg(feature = "temporal")]
@@ -258,41 +265,8 @@ impl From<Value> for serde_json::Value {
     }
 }
 
-/// Convert from serde_json::Value
-impl TryFrom<serde_json::Value> for Value {
-    type Error = NebulaError;
-
-    fn try_from(json: serde_json::Value) -> ValueResult<Self> {
-        match json {
-            serde_json::Value::Null => Ok(Value::Null),
-            serde_json::Value::Bool(b) => Ok(Value::Boolean(b)),
-            serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    Ok(Value::Integer(Integer::new(i)))
-                } else if let Some(f) = n.as_f64() {
-                    Ok(Value::Float(Float::new(f)))
-                } else {
-                    Err(NebulaError::value_conversion_error("JSON Number", "Value"))
-                }
-            }
-            serde_json::Value::String(s) => Ok(Value::Text(Text::new(s))),
-            serde_json::Value::Array(arr) => {
-                let mut result = Array::new();
-                for item in arr {
-                    result = result.push(item);
-                }
-                Ok(Value::Array(result))
-            }
-            serde_json::Value::Object(obj) => {
-                let mut result = Object::new();
-                for (key, value) in obj {
-                    result = result.insert(key, value);
-                }
-                Ok(Value::Object(result))
-            }
-        }
-    }
-}
+// NOTE: TryFrom<serde_json::Value> and From<serde_json::Value> are now defined
+// in core/conversions.rs (always available, not gated by "serde" feature)
 
 #[cfg(test)]
 mod tests {

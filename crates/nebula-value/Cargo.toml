@@ -40,13 +40,13 @@ async-trait = { workspace = true }
 
 # Serialization (optional)
 serde = { workspace = true, optional = true }
-# TEMP: not optional for v2 placeholder (Array/Object use serde_json::Value)
+# serde_json: Used for Value <-> JSON conversion (From/TryFrom implementations)
 serde_json = { workspace = true }
 
 # Temporal (optional)
 chrono = { workspace = true, optional = true }
 
-# Decimal (TEMP: not optional for v1 compat)
+# Decimal: Required for Decimal variant in Value enum
 rust_decimal = { version = "1.35", features = ["serde"] }
 
 # Utilities
@@ -63,9 +63,9 @@ rand = "0.9"
 default = ["std", "temporal"]
 std = []
 temporal = ["dep:chrono"]
-# decimal = ["dep:rust_decimal"]  # TEMP: not optional
-# memory-pooling = ["dep:nebula-memory"]  # TEMP: disabled
-# validation = ["dep:nebula-validator"]  # TEMP: disabled
+# decimal = ["dep:rust_decimal"]  # Always enabled - part of Value enum
+# memory-pooling = ["dep:nebula-memory"]  # Disabled - pending docs
+# validation = ["dep:nebula-validator"]  # Disabled - cyclic dependency resolution needed
 serde = ["dep:serde", "im/serde"]
 full = ["std", "serde", "temporal"]
 

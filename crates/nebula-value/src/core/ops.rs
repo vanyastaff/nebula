@@ -291,11 +291,14 @@ impl Value {
     }
 
     /// Shallow merge - only merge top level, no recursion
+    ///
+    /// For objects, this replaces entire nested structures rather than
+    /// recursively merging them. This is faster and useful when you want
+    /// to completely override nested values.
     pub fn merge_shallow(&self, other: &Value) -> ValueResult<Value> {
         match (self, other) {
             (Value::Object(a), Value::Object(b)) => {
-                // Use Object::merge_shallow if available, otherwise fallback
-                Ok(Value::Object(a.merge(b))) // TODO: add shallow variant to Object
+                Ok(Value::Object(a.merge_shallow(b)))
             }
             _ => self.merge(other),
         }

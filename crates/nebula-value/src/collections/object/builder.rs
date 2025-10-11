@@ -5,9 +5,10 @@
 use crate::collections::Object;
 use crate::core::error::ValueResult;
 use crate::core::limits::ValueLimits;
+use crate::core::Value;
 
-// TEMP: using serde_json::Value as placeholder
-type ValueItem = serde_json::Value;
+/// Type alias for values stored in objects
+type ValueItem = Value;
 
 /// Builder for creating Object with validation and limits
 ///
@@ -58,9 +59,9 @@ impl ObjectBuilder {
 
     /// Insert a key-value pair
     #[must_use = "builder methods return a new instance"]
-    pub fn insert(mut self, key: impl Into<String>, value: ValueItem) -> Self {
+    pub fn insert(mut self, key: impl Into<String>, value: impl Into<ValueItem>) -> Self {
         let key = key.into();
-        self.entries.push((key, value));
+        self.entries.push((key, value.into()));
         self
     }
 
@@ -71,7 +72,7 @@ impl ObjectBuilder {
     /// Returns `ValueError::LimitExceeded` if:
     /// - Key length exceeds `max_string_bytes`
     /// - Object key count would exceed `max_object_keys`
-    pub fn try_insert(mut self, key: impl Into<String>, value: ValueItem) -> ValueResult<Self> {
+    pub fn try_insert(mut self, key: impl Into<String>, value: impl Into<ValueItem>) -> ValueResult<Self> {
         let key = key.into();
 
         if let Some(ref limits) = self.limits {
@@ -79,7 +80,7 @@ impl ObjectBuilder {
             limits.check_object_keys(self.entries.len() + 1)?;
         }
 
-        self.entries.push((key, value));
+        self.entries.push((key, value.into()));
         Ok(self)
     }
 

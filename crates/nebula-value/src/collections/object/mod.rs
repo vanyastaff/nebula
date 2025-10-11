@@ -17,9 +17,10 @@ use im::HashMap;
 use crate::core::NebulaError;
 use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::limits::ValueLimits;
+use crate::core::Value;
 
-// Forward declaration - will be replaced with actual Value type
-type ValueItem = serde_json::Value;
+/// Type alias for values stored in objects
+pub type ValueItem = Value;
 
 /// Persistent key-value map with efficient structural sharing
 ///
@@ -91,9 +92,9 @@ impl Object {
     }
 
     /// Insert key-value pair (returns new Object, original unchanged)
-    pub fn insert(&self, key: String, value: ValueItem) -> Self {
+    pub fn insert(&self, key: String, value: impl Into<ValueItem>) -> Self {
         let mut new_map = self.inner.clone();
-        new_map.insert(key, value);
+        new_map.insert(key, value.into());
         Self { inner: new_map }
     }
 
@@ -101,7 +102,7 @@ impl Object {
     pub fn insert_with_limit(
         &self,
         key: String,
-        value: ValueItem,
+        value: impl Into<ValueItem>,
         limits: &ValueLimits,
     ) -> ValueResult<Self> {
         let new_size = if self.contains_key(&key) {
@@ -137,7 +138,44 @@ impl Object {
     }
 
     /// Merge with another object (right wins on conflicts)
+    ///
+    /// This performs a deep merge, recursively merging nested objects.
     pub fn merge(&self, other: &Object) -> Self {
+        let mut new_map = self.inner.clone();
+        for (k, v) in other.inner.iter() {
+            new_map.insert(k.clone(), v.clone());
+        }
+        Self { inner: new_map }
+    }
+
+    /// Shallow merge with another object (right wins on conflicts)
+    ///
+    /// Unlike `merge()`, this only merges the top level and does not
+    /// recursively merge nested objects. This is faster and suitable
+    /// when you want to replace entire nested structures.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_value::collections::Object;
+    /// use serde_json::json;
+    ///
+    /// let obj1 = Object::from_iter(vec![
+    ///     ("a".to_string(), json!(1)),
+    ///     ("b".to_string(), json!({"x": 10})),
+    /// ]);
+    ///
+    /// let obj2 = Object::from_iter(vec![
+    ///     ("b".to_string(), json!({"y": 20})),
+    ///     ("c".to_string(), json!(3)),
+    /// ]);
+    ///
+    /// let merged = obj1.merge_shallow(&obj2);
+    /// assert_eq!(merged.len(), 3);
+    /// // obj2's "b" completely replaces obj1's "b" (not merged)
+    /// ```
+    #[must_use = "merge_shallow returns a new instance"]
+    pub fn merge_shallow(&self, other: &Object) -> Self {
         let mut new_map = self.inner.clone();
         for (k, v) in other.inner.iter() {
             new_map.insert(k.clone(), v.clone());
@@ -291,6 +329,29 @@ mod tests {
         assert_eq!(merged.get("a"), Some(&json!(1)));
         assert_eq!(merged.get("b"), Some(&json!(99))); // obj2 wins
         assert_eq!(merged.get("c"), Some(&json!(3)));
+    }
+
+    #[test]
+    fn test_object_merge_shallow() {
+        let obj1 = Object::from_iter(vec![
+            ("a".to_string(), json!(1)),
+            ("b".to_string(), json!({"x": 10, "y": 20})),
+        ]);
+        let obj2 = Object::from_iter(vec![
+            ("b".to_string(), json!({"z": 30})),
+            ("c".to_string(), json!(3)),
+        ]);
+
+        let merged = obj1.merge_shallow(&obj2);
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged.get("a"), Some(&json!(1)));
+        // Shallow merge: obj2's "b" completely replaces obj1's "b"
+        assert_eq!(merged.get("b"), Some(&json!({"z": 30})));
+        assert_eq!(merged.get("c"), Some(&json!(3)));
+
+        // Verify original objects are unchanged (immutability)
+        assert_eq!(obj1.len(), 2);
+        assert_eq!(obj2.len(), 2);
     }
 
     #[test]

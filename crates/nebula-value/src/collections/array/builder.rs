@@ -6,9 +6,10 @@ use crate::collections::Array;
 use crate::core::NebulaError;
 use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::limits::ValueLimits;
+use crate::core::Value;
 
-// TEMP: using serde_json::Value as placeholder
-type ValueItem = serde_json::Value;
+/// Type alias for items stored in arrays
+type ValueItem = Value;
 
 /// Builder for creating Array with validation and limits
 ///
@@ -60,8 +61,8 @@ impl ArrayBuilder {
 
     /// Add an item to the array
     #[must_use = "builder methods return a new instance"]
-    pub fn push(mut self, item: ValueItem) -> Self {
-        self.items.push(item);
+    pub fn push(mut self, item: impl Into<ValueItem>) -> Self {
+        self.items.push(item.into());
         self
     }
 
@@ -70,11 +71,11 @@ impl ArrayBuilder {
     /// # Errors
     ///
     /// Returns `ValueError::LimitExceeded` if array length would exceed `max_array_length`
-    pub fn try_push(mut self, item: ValueItem) -> ValueResult<Self> {
+    pub fn try_push(mut self, item: impl Into<ValueItem>) -> ValueResult<Self> {
         if let Some(ref limits) = self.limits {
             limits.check_array_length(self.items.len() + 1)?;
         }
-        self.items.push(item);
+        self.items.push(item.into());
         Ok(self)
     }
 
@@ -114,7 +115,7 @@ impl ArrayBuilder {
     /// Returns `ValueError::IndexOutOfBounds` if `index > len()`
     ///
     /// Returns `ValueError::LimitExceeded` if array length would exceed `max_array_length`
-    pub fn insert(mut self, index: usize, item: ValueItem) -> ValueResult<Self> {
+    pub fn insert(mut self, index: usize, item: impl Into<ValueItem>) -> ValueResult<Self> {
         if index > self.items.len() {
             return Err(NebulaError::value_index_out_of_bounds(
                 index,
@@ -126,7 +127,7 @@ impl ArrayBuilder {
             limits.check_array_length(self.items.len() + 1)?;
         }
 
-        self.items.insert(index, item);
+        self.items.insert(index, item.into());
         Ok(self)
     }
 

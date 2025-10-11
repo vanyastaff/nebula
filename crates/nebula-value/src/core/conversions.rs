@@ -443,3 +443,49 @@ mod tests {
         assert_eq!(result, 42);
     }
 }
+
+// ==================== Conversion to/from serde_json::Value ====================
+
+/// Infallible conversion from serde_json::Value
+///
+/// This implementation is always available (not gated by "serde" feature)
+/// because serde_json is a required dependency used for Value conversions.
+///
+/// # Panics
+///
+/// Panics if the JSON number cannot be converted to i64 or f64 (rare edge case).
+/// For fallible conversion, use the helper method or manually handle errors.
+impl From<serde_json::Value> for Value {
+    fn from(json: serde_json::Value) -> Self {
+        match json {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Boolean(b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Integer(Integer::new(i))
+                } else if let Some(f) = n.as_f64() {
+                    Value::Float(Float::new(f))
+                } else {
+                    panic!("Failed to convert JSON Number to Value: unsupported number format")
+                }
+            }
+            serde_json::Value::String(s) => Value::Text(Text::new(s)),
+            serde_json::Value::Array(arr) => {
+                let mut result = Array::new();
+                for item in arr {
+                    // Recursively convert each array element
+                    result = result.push(Value::from(item));
+                }
+                Value::Array(result)
+            }
+            serde_json::Value::Object(obj) => {
+                let mut result = Object::new();
+                for (key, value) in obj {
+                    // Recursively convert each object value
+                    result = result.insert(key, Value::from(value));
+                }
+                Value::Object(result)
+            }
+        }
+    }
+}

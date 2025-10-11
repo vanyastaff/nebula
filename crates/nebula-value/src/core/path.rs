@@ -104,7 +104,7 @@ impl Value {
     // ==================== Convenience Methods ====================
 
     /// Get value from object by key (if this is an object)
-    pub fn get_key(&self, key: &str) -> ValueResult<Option<serde_json::Value>> {
+    pub fn get_key(&self, key: &str) -> ValueResult<Option<Value>> {
         match self {
             Value::Object(obj) => Ok(obj.get(key).cloned()),
             _ => Err(NebulaError::value_type_mismatch(
@@ -115,7 +115,7 @@ impl Value {
     }
 
     /// Get value from array by index (if this is an array)
-    pub fn get_index(&self, index: usize) -> ValueResult<Option<serde_json::Value>> {
+    pub fn get_index(&self, index: usize) -> ValueResult<Option<Value>> {
         match self {
             Value::Array(arr) => Ok(arr.get(index).cloned()),
             _ => Err(NebulaError::value_type_mismatch(
