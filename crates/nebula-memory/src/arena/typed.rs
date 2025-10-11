@@ -102,6 +102,7 @@ impl<T> TypedArena<T> {
         // - MaybeUninit allows uninitialized access
         // - as_mut_ptr returns raw pointer for writing
         let chunk = &mut *chunk_ptr.as_ptr();
+        debug_assert!(index < chunk.capacity(), "index must be within chunk capacity");
         chunk.storage[index].as_mut_ptr()
     }
 
@@ -117,6 +118,12 @@ impl<T> TypedArena<T> {
         // - elem_ptr valid (caller contract)
         // - Memory uninitialized (safe to write via ptr::write)
         // - Takes ownership of value
+        debug_assert!(!elem_ptr.is_null(), "elem_ptr must not be null");
+        debug_assert_eq!(
+            elem_ptr as usize % std::mem::align_of::<T>(),
+            0,
+            "elem_ptr must be properly aligned for T"
+        );
         elem_ptr.write(value);
     }
 

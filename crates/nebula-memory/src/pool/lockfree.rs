@@ -86,6 +86,7 @@ impl<T: Poolable> LockFreePool<T> {
         // SAFETY: node is valid pointer from Box::into_raw (caller contract)
         // - Node is freshly allocated and owned exclusively
         // - next is valid pointer or null (both safe to store)
+        debug_assert!(!node.is_null(), "node must not be null");
         (*node).next = next;
     }
 
@@ -99,6 +100,7 @@ impl<T: Poolable> LockFreePool<T> {
         // SAFETY: node is non-null and valid (caller contract)
         // - Acquire ordering ensures we see all writes to node
         // - next field access is safe
+        debug_assert!(!node.is_null(), "node must be non-null");
         (*node).next
     }
 
@@ -113,6 +115,12 @@ impl<T: Poolable> LockFreePool<T> {
         // SAFETY: node was created by Box::into_raw (caller contract)
         // - Exclusive ownership via CAS (caller contract)
         // - Valid, aligned, initialized pointer (caller contract)
+        debug_assert!(!node.is_null(), "node must be non-null");
+        debug_assert_eq!(
+            node as usize % core::mem::align_of::<Node<T>>(),
+            0,
+            "node must be properly aligned"
+        );
         Box::from_raw(node)
     }
 

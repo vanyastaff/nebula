@@ -348,15 +348,16 @@ impl BumpAllocator {
 
                     // Calculate return pointer with proper provenance through UnsafeCell
                     let offset = aligned - self.start_addr;
-                    // SAFETY: Calculating pointer to freshly allocated memory.
+                    // SAFETY: Getting pointer to freshly allocated memory using slice indexing.
                     // - memory.get() returns *mut [u8] to our buffer
                     // - offset is within bounds: aligned < new_current <= end_addr (checked above)
                     // - CAS success means we exclusively own [aligned, new_current) range
-                    // - as_mut_ptr() + offset gives pointer to start of allocation
+                    // - get_unchecked_mut provides bounds-checked access in debug mode
                     // - No other thread can allocate overlapping range (cursor advanced)
                     let ptr = unsafe {
                         let memory_ptr = self.memory.get();
-                        (*memory_ptr).as_mut_ptr().add(offset)
+                        let slice = &mut *memory_ptr;
+                        slice.get_unchecked_mut(offset..).as_mut_ptr()
                     };
 
                     // Fill with pattern if configured
