@@ -58,12 +58,12 @@ fn bench_try_from_value(c: &mut Criterion) {
     });
 
     // Collection conversions
-    let array_val = Value::Array(Array::from_vec(vec![json!(1), json!(2), json!(3)]));
+    let array_val = Value::Array(Array::from_vec(vec![1.into(), 2.into(), 3.into()]));
     group.bench_function("value_to_array", |b| {
         b.iter(|| Array::try_from(black_box(array_val.clone())).unwrap());
     });
 
-    let object_val = Value::Object(Object::from_iter(vec![("key".to_string(), json!(1))]));
+    let object_val = Value::Object(Object::from_iter(vec![("key".to_string(), 1.into())]));
     group.bench_function("value_to_object", |b| {
         b.iter(|| Object::try_from(black_box(object_val.clone())).unwrap());
     });

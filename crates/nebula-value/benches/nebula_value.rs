@@ -82,18 +82,18 @@ fn bench_array(c: &mut Criterion) {
 
     for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::new("from_vec", size), size, |b, &size| {
-            let items: Vec<_> = (0..size).map(|i| json!(i)).collect();
+            let items: Vec<_> = (0..size).map(|i| Value::integer(i as i64)).collect();
             b.iter(|| Array::from_vec(black_box(items.clone())));
         });
 
         group.bench_with_input(BenchmarkId::new("clone", size), size, |b, &size| {
-            let items: Vec<_> = (0..size).map(|i| json!(i)).collect();
+            let items: Vec<_> = (0..size).map(|i| Value::integer(i as i64)).collect();
             let array = Array::from_vec(items);
             b.iter(|| black_box(&array).clone());
         });
 
         group.bench_with_input(BenchmarkId::new("get", size), size, |b, &size| {
-            let items: Vec<_> = (0..size).map(|i| json!(i)).collect();
+            let items: Vec<_> = (0..size).map(|i| Value::integer(i as i64)).collect();
             let array = Array::from_vec(items);
             let mid = size / 2;
             b.iter(|| black_box(&array).get(black_box(mid)));
@@ -101,12 +101,12 @@ fn bench_array(c: &mut Criterion) {
     }
 
     group.bench_function("push", |b| {
-        let base = Array::from_vec(vec![json!(1), json!(2), json!(3)]);
-        b.iter(|| base.push(black_box(json!(4))));
+        let base = Array::from_vec(vec![Value::integer(1), Value::integer(2), Value::integer(3)]);
+        b.iter(|| base.push(black_box(Value::integer(4))));
     });
 
     group.bench_function("concat", |b| {
-        let base = Array::from_vec(vec![json!(1), json!(2), json!(3)]);
+        let base = Array::from_vec(vec![Value::integer(1), Value::integer(2), Value::integer(3)]);
         b.iter(|| base.concat(black_box(&base)));
     });
 
@@ -120,18 +120,18 @@ fn bench_object(c: &mut Criterion) {
 
     for size in [10, 100, 1000].iter() {
         group.bench_with_input(BenchmarkId::new("from_iter", size), size, |b, &size| {
-            let entries: Vec<_> = (0..size).map(|i| (format!("key{}", i), json!(i))).collect();
+            let entries: Vec<_> = (0..size).map(|i| (format!("key{}", i), Value::integer(i as i64))).collect();
             b.iter(|| Object::from_iter(black_box(entries.clone())));
         });
 
         group.bench_with_input(BenchmarkId::new("clone", size), size, |b, &size| {
-            let entries: Vec<_> = (0..size).map(|i| (format!("key{}", i), json!(i))).collect();
+            let entries: Vec<_> = (0..size).map(|i| (format!("key{}", i), Value::integer(i as i64))).collect();
             let object = Object::from_iter(entries);
             b.iter(|| black_box(&object).clone());
         });
 
         group.bench_with_input(BenchmarkId::new("get", size), size, |b, &size| {
-            let entries: Vec<_> = (0..size).map(|i| (format!("key{}", i), json!(i))).collect();
+            let entries: Vec<_> = (0..size).map(|i| (format!("key{}", i), Value::integer(i as i64))).collect();
             let object = Object::from_iter(entries);
             b.iter(|| black_box(&object).get(black_box("key50")));
         });
@@ -139,16 +139,16 @@ fn bench_object(c: &mut Criterion) {
 
     group.bench_function("insert", |b| {
         let base = Object::from_iter(vec![
-            ("a".to_string(), json!(1)),
-            ("b".to_string(), json!(2)),
+            ("a".to_string(), Value::integer(1)),
+            ("b".to_string(), Value::integer(2)),
         ]);
-        b.iter(|| base.insert("c".to_string(), black_box(json!(3))));
+        b.iter(|| base.insert("c".to_string(), black_box(Value::integer(3))));
     });
 
     group.bench_function("merge", |b| {
         let base = Object::from_iter(vec![
-            ("a".to_string(), json!(1)),
-            ("b".to_string(), json!(2)),
+            ("a".to_string(), Value::integer(1)),
+            ("b".to_string(), Value::integer(2)),
         ]);
         b.iter(|| base.merge(black_box(&base)));
     });
@@ -193,7 +193,7 @@ fn bench_value_ops(c: &mut Criterion) {
     let text_large = Value::text(&"hello".repeat(100));
     group.bench_function("clone_text", |b| b.iter(|| black_box(&text_large).clone()));
 
-    let arr = Value::Array(Array::from_vec((0..1000).map(|i| json!(i)).collect()));
+    let arr = Value::Array(Array::from_vec((0..1000).map(|i| Value::integer(i)).collect()));
     group.bench_function("clone_array_1000", |b| b.iter(|| black_box(&arr).clone()));
 
     group.finish();
@@ -206,9 +206,9 @@ fn bench_serde(c: &mut Criterion) {
     let mut group = c.benchmark_group("serde");
 
     let simple = Value::Object(Object::from_iter(vec![
-        ("id".to_string(), json!(1)),
-        ("name".to_string(), json!("test")),
-        ("active".to_string(), json!(true)),
+        ("id".to_string(), Value::integer(1)),
+        ("name".to_string(), Value::text("test")),
+        ("active".to_string(), Value::boolean(true)),
     ]));
 
     group.bench_function("serialize_simple", |b| {
@@ -220,7 +220,7 @@ fn bench_serde(c: &mut Criterion) {
         b.iter(|| serde_json::from_str::<Value>(black_box(json_str)).unwrap());
     });
 
-    let array = Value::Array(Array::from_vec((0..100).map(|i| json!(i)).collect()));
+    let array = Value::Array(Array::from_vec((0..100).map(|i| Value::integer(i)).collect()));
     group.bench_function("serialize_array_100", |b| {
         b.iter(|| serde_json::to_string(black_box(&array)).unwrap());
     });
