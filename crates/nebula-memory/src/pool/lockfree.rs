@@ -1,4 +1,20 @@
 //! Lock-free object pool implementation
+//!
+//! # Safety
+//!
+//! This module implements a lock-free Treiber stack for object pooling:
+//! - Atomic operations for concurrent access
+//! - CAS-based push/pop operations
+//! - ManuallyDrop for controlled object lifecycle
+//! - Memory ordering: Acquire/Release for synchronization
+//!
+//! ## Invariants
+//!
+//! - Nodes created by Box::into_raw, destroyed by Box::from_raw
+//! - CAS ensures exclusive ownership transfer
+//! - ManuallyDrop prevents double-drop
+//! - Treiber stack algorithm guarantees linearizability
+//! - Memory ordering provides proper synchronization
 
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
