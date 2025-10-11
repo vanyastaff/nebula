@@ -140,6 +140,8 @@ impl Value {
     // ==================== Type queries ====================
 
     /// Get the kind of this value
+    #[inline]
+    #[must_use]
     pub fn kind(&self) -> ValueKind {
         match self {
             Self::Null => ValueKind::Null,
@@ -163,56 +165,78 @@ impl Value {
     }
 
     /// Check if this is null
+    #[inline]
+    #[must_use]
     pub fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
 
     /// Check if this is a boolean
+    #[inline]
+    #[must_use]
     pub fn is_boolean(&self) -> bool {
         matches!(self, Self::Boolean(_))
     }
 
     /// Check if this is an integer
+    #[inline]
+    #[must_use]
     pub fn is_integer(&self) -> bool {
         matches!(self, Self::Integer(_))
     }
 
     /// Check if this is a float
+    #[inline]
+    #[must_use]
     pub fn is_float(&self) -> bool {
         matches!(self, Self::Float(_))
     }
 
     /// Check if this is a decimal
+    #[inline]
+    #[must_use]
     pub fn is_decimal(&self) -> bool {
         matches!(self, Self::Decimal(_))
     }
 
     /// Check if this is numeric (integer, float, or decimal)
+    #[inline]
+    #[must_use]
     pub fn is_numeric(&self) -> bool {
         matches!(self, Self::Integer(_) | Self::Float(_) | Self::Decimal(_))
     }
 
     /// Check if this is text
+    #[inline]
+    #[must_use]
     pub fn is_text(&self) -> bool {
         matches!(self, Self::Text(_))
     }
 
     /// Check if this is bytes
+    #[inline]
+    #[must_use]
     pub fn is_bytes(&self) -> bool {
         matches!(self, Self::Bytes(_))
     }
 
     /// Check if this is an array
+    #[inline]
+    #[must_use]
     pub fn is_array(&self) -> bool {
         matches!(self, Self::Array(_))
     }
 
     /// Check if this is an object
+    #[inline]
+    #[must_use]
     pub fn is_object(&self) -> bool {
         matches!(self, Self::Object(_))
     }
 
     /// Check if this is a collection (array or object)
+    #[inline]
+    #[must_use]
     pub fn is_collection(&self) -> bool {
         matches!(self, Self::Array(_) | Self::Object(_))
     }
@@ -220,6 +244,8 @@ impl Value {
     // ==================== Conversions (as_*) ====================
 
     /// Try to get as boolean
+    #[inline]
+    #[must_use]
     pub fn as_boolean(&self) -> Option<bool> {
         match self {
             Self::Boolean(b) => Some(*b),
@@ -228,6 +254,8 @@ impl Value {
     }
 
     /// Try to get as integer
+    #[inline]
+    #[must_use]
     pub fn as_integer(&self) -> Option<i64> {
         match self {
             Self::Integer(i) => Some(i.value()),
@@ -236,6 +264,8 @@ impl Value {
     }
 
     /// Try to get as float
+    #[inline]
+    #[must_use]
     pub fn as_float(&self) -> Option<f64> {
         match self {
             Self::Float(f) => Some(f.value()),
@@ -244,6 +274,8 @@ impl Value {
     }
 
     /// Try to get as text reference
+    #[inline]
+    #[must_use]
     pub fn as_text(&self) -> Option<&Text> {
         match self {
             Self::Text(t) => Some(t),
@@ -252,6 +284,8 @@ impl Value {
     }
 
     /// Try to get as string slice
+    #[inline]
+    #[must_use]
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Self::Text(t) => Some(t.as_str()),
@@ -260,6 +294,8 @@ impl Value {
     }
 
     /// Try to get as bytes reference
+    #[inline]
+    #[must_use]
     pub fn as_bytes_ref(&self) -> Option<&Bytes> {
         match self {
             Self::Bytes(b) => Some(b),
@@ -268,6 +304,8 @@ impl Value {
     }
 
     /// Try to get as array reference
+    #[inline]
+    #[must_use]
     pub fn as_array(&self) -> Option<&Array> {
         match self {
             Self::Array(a) => Some(a),
@@ -276,6 +314,8 @@ impl Value {
     }
 
     /// Try to get as object reference
+    #[inline]
+    #[must_use]
     pub fn as_object(&self) -> Option<&Object> {
         match self {
             Self::Object(o) => Some(o),
