@@ -7,7 +7,9 @@ use std::io;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
 // Internal crates
-use crate::config::{Rolling, WriterConfig};
+#[cfg(feature = "file")]
+use crate::config::Rolling;
+use crate::config::WriterConfig;
 use crate::core::LogResult;
 
 // Define a type alias for the return type of make_writer
