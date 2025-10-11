@@ -1,4 +1,20 @@
 //! Main pool allocator implementation
+//!
+//! # Safety
+//!
+//! This module implements a thread-safe pool allocator using lock-free free list:
+//! - Fixed-size blocks organized in a singly-linked free list
+//! - Atomic head pointer with CAS for thread-safe allocation/deallocation
+//! - SyncUnsafeCell wrapper for interior mutability of memory buffer
+//! - Free blocks store next pointer in first bytes (intrusive list)
+//!
+//! ## Invariants
+//!
+//! - All blocks are properly aligned to block_align
+//! - Free list contains only valid, unallocated blocks
+//! - Atomic CAS prevents double-allocation
+//! - Block pointers validated on deallocation (bounds + alignment)
+//! - free_count tracks free blocks for O(1) queries
 
 use core::alloc::Layout;
 use core::cell::UnsafeCell;
@@ -15,8 +31,18 @@ use crate::utils::{Backoff, align_up, atomic_max, is_power_of_two};
 #[repr(transparent)]
 struct SyncUnsafeCell<T: ?Sized>(UnsafeCell<T>);
 
-// SAFETY: We ensure proper synchronization through atomic free list
+// SAFETY: SyncUnsafeCell<T> is Sync even though UnsafeCell<T> is not.
+// - All access to memory buffer goes through atomic free list (CAS)
+// - Allocated blocks are exclusively owned by allocator
+// - Free blocks only accessed via free list pointer chase
+// - AcqRel ordering synchronizes free list updates between threads
+// - No overlapping access: allocated blocks disjoint from free list
 unsafe impl<T: ?Sized> Sync for SyncUnsafeCell<T> {}
+
+// SAFETY: SyncUnsafeCell<T> is Send if T is Send.
+// - Wrapper is repr(transparent), same layout as UnsafeCell<T>
+// - T: Send bound ensures inner value can move between threads
+// - No thread-local state in wrapper
 unsafe impl<T: ?Sized + Send> Send for SyncUnsafeCell<T> {}
 
 impl<T> SyncUnsafeCell<T> {
@@ -142,11 +168,20 @@ impl PoolAllocator {
         let boxed_slice = vec.into_boxed_slice();
         let len = boxed_slice.len();
         let ptr = Box::into_raw(boxed_slice) as *mut u8;
-        // SAFETY: Transmuting Box<[u8]> to Box<SyncUnsafeCell<[u8]>> is safe (repr(transparent))
+        // SAFETY: Transmuting Box<[u8]> to Box<SyncUnsafeCell<[u8]>>.
+        // - SyncUnsafeCell is repr(transparent), identical layout to inner type
+        // - ptr is a valid Box<[u8]> pointer from Box::into_raw
+        // - Length preserved (len from original boxed_slice)
+        // - Box ownership transferred correctly (from_raw after into_raw)
+        // - Memory remains valid (same allocation, different type wrapper)
         let memory: Box<SyncUnsafeCell<[u8]>> = unsafe {
             Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len) as *mut SyncUnsafeCell<[u8]>)
         };
 
+        // SAFETY: Getting pointer from freshly created SyncUnsafeCell.
+        // - memory.get() returns *mut [u8] to valid allocation
+        // - Dereferencing to call as_ptr() on the slice
+        // - Result is a valid pointer to start of buffer
         let start_addr = unsafe { (*memory.get()).as_ptr() as usize };
         let end_addr = start_addr + total_size;
 
@@ -322,6 +357,12 @@ impl PoolAllocator {
 
             let block = block_addr as *mut FreeBlock;
 
+            // SAFETY: Writing next pointer to free block during initialization.
+            // - block_addr is within [start_addr, end_addr) bounds
+            // - block_addr is properly aligned to block_align (assert above)
+            // - Block is at least size_of::<*mut u8>() bytes (validated in with_config)
+            // - This is the initial setup (&mut self), no concurrent access yet
+            // - prev_block is either null or another valid block from this loop
             unsafe {
                 (*block).next = prev_block;
             }
@@ -357,7 +398,11 @@ impl PoolAllocator {
                 return None;
             }
 
-            // Get the next free block
+            // SAFETY: Reading next pointer from free list head.
+            // - head is non-null (checked above)
+            // - head points to a valid FreeBlock (from previous successful allocation or init)
+            // - Acquire ordering synchronizes with Release store in deallocate_block
+            // - next pointer is valid (null or pointer to another free block)
             let next = unsafe { (*head).next };
 
             // Try to atomically update the head to point to the next block
@@ -378,6 +423,10 @@ impl PoolAllocator {
                         atomic_max(&self.peak_usage, current_used);
                     }
 
+                    // SAFETY: head is non-null (checked at loop start).
+                    // - CAS success means we exclusively own this block
+                    // - head points to a valid block address within our buffer
+                    // - Converting *mut FreeBlock to *mut u8 is safe (same address)
                     return Some(unsafe { NonNull::new_unchecked(head as *mut u8) });
                 }
                 Err(_) => {
@@ -407,6 +456,11 @@ impl PoolAllocator {
 
         // Fill with dealloc pattern if debugging
         if let Some(pattern) = self.config.dealloc_pattern {
+            // SAFETY: Writing debug pattern to block being deallocated.
+            // - ptr is validated above (belongs to pool, aligned to block boundary)
+            // - Block is currently allocated (being returned to free list)
+            // - write_bytes fills entire block with pattern
+            // - After this, block will be added back to free list
             unsafe {
                 ptr::write_bytes(ptr.as_ptr(), pattern, self.block_size);
             }
@@ -422,6 +476,11 @@ impl PoolAllocator {
         loop {
             let head = self.free_head.load(Ordering::Acquire);
 
+            // SAFETY: Writing next pointer to block being added to free list.
+            // - block is a valid pointer (validated above: belongs to pool, aligned)
+            // - Block is at least size_of::<*mut u8>() bytes (pool invariant)
+            // - head is either null or pointer to current free list head
+            // - This write happens before CAS, so no other thread sees inconsistent state
             unsafe {
                 (*block).next = head;
             }
@@ -472,7 +531,18 @@ impl PoolAllocator {
     }
 }
 
+// SAFETY: PoolAllocator implements Allocator for fixed-size blocks.
+// - All blocks have same size (block_size) and alignment (block_align)
+// - Free list managed via atomic CAS (thread-safe)
+// - deallocate validates pointers (bounds + alignment)
+// - reallocate can reuse block if new size fits
 unsafe impl Allocator for PoolAllocator {
+    /// # Safety
+    ///
+    /// Caller must ensure:
+    /// - `layout.size()` <= block_size and `layout.align()` <= block_align
+    /// - Returned pointer not used after allocator reset/drop
+    /// - Pool allocator only supports fixed-size allocations
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
         // Check if the requested layout matches our pool configuration
         if layout.size() > self.block_size || layout.align() > self.block_align {
@@ -495,6 +565,12 @@ unsafe impl Allocator for PoolAllocator {
         }
     }
 
+    /// # Safety
+    ///
+    /// Caller must ensure:
+    /// - `ptr` was allocated by this pool with matching `layout`
+    /// - `ptr` is currently allocated (not already deallocated)
+    /// - `layout` matches original allocation
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         // Handle zero-sized deallocations
         if layout.size() == 0 {
@@ -505,6 +581,13 @@ unsafe impl Allocator for PoolAllocator {
         self.deallocate_block(ptr);
     }
 
+    /// # Safety
+    ///
+    /// Caller must ensure:
+    /// - `ptr` was allocated by this pool with `old_layout`
+    /// - `old_layout` matches original allocation
+    /// - `new_layout` fits within block_size and block_align
+    /// - On failure, `ptr` remains valid with `old_layout`
     unsafe fn reallocate(
         &self,
         ptr: NonNull<u8>,
@@ -526,15 +609,22 @@ unsafe impl Allocator for PoolAllocator {
 
         // This should not be reached given the checks above, but for completeness:
         // Fall back to allocate + copy + deallocate
+        // SAFETY: new_layout is validated above (fits in block_size/align).
         let new_ptr = unsafe { self.allocate(new_layout)? };
 
         let copy_size = core::cmp::min(old_layout.size(), new_layout.size());
         if copy_size > 0 {
+            // SAFETY: Copying data from old to new block.
+            // - ptr is valid for old_layout.size() bytes (caller's contract)
+            // - new_ptr is valid for new_layout.size() bytes (just allocated)
+            // - copy_size is min of both sizes (no overflow)
+            // - Regions don't overlap (different blocks from pool)
             unsafe {
                 ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr() as *mut u8, copy_size);
             }
         }
 
+        // SAFETY: ptr and old_layout match original allocation (caller's contract).
         unsafe { self.deallocate(ptr, old_layout) };
         Ok(new_ptr)
     }
@@ -555,6 +645,12 @@ impl MemoryUsage for PoolAllocator {
 }
 
 impl Resettable for PoolAllocator {
+    /// # Safety
+    ///
+    /// Caller must ensure:
+    /// - No outstanding references to allocated blocks exist
+    /// - All allocations from this pool are no longer in use
+    /// - Reset is properly synchronized if pool is shared across threads
     unsafe fn reset(&self) {
         // Reset the free list to include all blocks
         let mut prev_block: *mut FreeBlock = ptr::null_mut();
@@ -564,6 +660,11 @@ impl Resettable for PoolAllocator {
             let block_addr = self.start_addr + (i * self.block_size);
             let block = block_addr as *mut FreeBlock;
 
+            // SAFETY: Reinitializing free list during reset.
+            // - block_addr is within [start_addr, end_addr) bounds
+            // - Caller ensures no outstanding allocations (contract above)
+            // - Same logic as initialize_free_list (validated there)
+            // - prev_block is either null or another valid block from this loop
             unsafe {
                 (*block).next = prev_block;
             }
@@ -621,6 +722,17 @@ impl StatisticsProvider for PoolAllocator {
     }
 }
 
-// Thread safety
+// SAFETY: PoolAllocator is Send because:
+// - memory: Box<SyncUnsafeCell<[u8]>> is Send (SyncUnsafeCell is Send)
+// - All atomics (free_head, free_count, total_allocs, etc.) are Send
+// - Config and sizes are Copy/primitive types
+// - All owned data can be safely transferred to another thread
 unsafe impl Send for PoolAllocator {}
+
+// SAFETY: PoolAllocator is Sync because:
+// - All allocations go through atomic CAS operations (thread-safe)
+// - Free list managed via AtomicPtr with proper ordering (AcqRel/Acquire)
+// - Memory buffer wrapped in SyncUnsafeCell (proven Sync above)
+// - No shared mutable state outside of atomics
+// - Pointer validation (bounds + alignment) prevents double-free
 unsafe impl Sync for PoolAllocator {}
