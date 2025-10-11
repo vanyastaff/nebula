@@ -3,6 +3,27 @@
 //! This module provides the [`ArenaAllocator`] type, which can be used to
 //! allocate memory from an arena. It also provides the [`ArenaBackedVec`] type
 //! for arena-allocated vectors.
+//!
+//! # Safety
+//!
+//! This module contains arena-based allocation utilities:
+//! - ArenaAllocator: Wrapper providing allocator interface
+//! - ArenaBackedVec: Arena-allocated vector with manual growth
+//!
+//! ## Safety Contracts
+//!
+//! - allocate/allocate_slice: Caller must initialize before use
+//! - ArenaBackedVec: Internal pointer valid while arena alive
+//! - push: Bounds-checked, writes to allocated capacity
+//! - pop/get: Pointer arithmetic within allocated range
+//! - clear: drop_in_place for all elements
+//! - as_slice: Creates slice from valid pointer and len
+//!
+//! ## Memory Management
+//!
+//! - Arc<Arena>: Shared ownership of arena
+//! - ArenaBackedVec: Doesn't deallocate (arena manages memory)
+//! - Drop: Calls clear but doesn't free memory (arena-owned)
 
 use std::alloc::Layout;
 use std::marker::PhantomData;
@@ -54,6 +75,10 @@ impl<A: ArenaAllocate> ArenaAllocator<A> {
     ///
     /// The caller must ensure the memory is properly initialized before use
     pub unsafe fn allocate(&self, layout: Layout) -> Result<NonNull<u8>, MemoryError> {
+        // SAFETY: Allocating from arena.
+        // - Forwarding to arena.alloc_bytes with layout parameters
+        // - arena.alloc_bytes returns null on failure (handled by NonNull::new)
+        // - Caller must initialize memory before use (documented contract)
         unsafe {
             let ptr = self.arena.alloc_bytes(layout.size(), layout.align())?;
             NonNull::new(ptr)
@@ -67,6 +92,12 @@ impl<A: ArenaAllocate> ArenaAllocator<A> {
     ///
     /// The caller must ensure the memory is properly initialized before use
     pub unsafe fn allocate_slice(&self, layout: Layout) -> Result<NonNull<[u8]>, MemoryError> {
+        // SAFETY: Allocating slice from arena.
+        // - arena.alloc_bytes allocates layout.size() bytes with proper alignment
+        // - from_raw_parts_mut creates slice from valid pointer and size
+        // - ptr is valid for layout.size() bytes (arena guarantees)
+        // - Caller must initialize memory before use (documented contract)
+        // - NonNull::from converts &mut [u8] to NonNull<[u8]>
         unsafe {
             let ptr = self.arena.alloc_bytes(layout.size(), layout.align())?;
 
@@ -187,6 +218,9 @@ impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
         let layout = Layout::array::<T>(capacity)
             .map_err(|_| MemoryError::invalid_layout("array layout error"))?;
 
+        // SAFETY: Allocating capacity from arena.
+        // - allocator.alloc_bytes allocates layout.size() bytes
+        // - Cast to *mut T safe (proper size and alignment from Layout::array)
         let ptr = unsafe { allocator.alloc_bytes(layout.size(), layout.align())? };
 
         Ok(Self {
@@ -208,6 +242,10 @@ impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
             ));
         }
 
+        // SAFETY: Writing value to allocated slot.
+        // - data.add(len) is within capacity (checked above)
+        // - Slot is uninitialized or previously popped (safe to write)
+        // - len incremented after write (maintains invariant)
         unsafe {
             self.data.add(self.len).write(value);
         }
@@ -223,12 +261,20 @@ impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
         }
 
         self.len -= 1;
+        // SAFETY: Reading last element.
+        // - len decremented before read
+        // - data.add(len) was valid element (len > 0 before decrement)
+        // - read() moves value out (slot becomes uninitialized)
         unsafe { Some(self.data.add(self.len).read()) }
     }
 
     /// Get a reference to an element
     pub fn get(&self, index: usize) -> Option<&T> {
         if index < self.len {
+            // SAFETY: Creating reference to element.
+            // - index < len (checked above)
+            // - data.add(index) points to valid initialized element
+            // - Reference lifetime bound to &self
             unsafe { Some(&*self.data.add(index)) }
         } else {
             None
@@ -238,6 +284,11 @@ impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
     /// Get a mutable reference to an element
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         if index < self.len {
+            // SAFETY: Creating mutable reference to element.
+            // - index < len (checked above)
+            // - data.add(index) points to valid initialized element
+            // - &mut self ensures exclusive access
+            // - Reference lifetime bound to &mut self
             unsafe { Some(&mut *self.data.add(index)) }
         } else {
             None
@@ -261,6 +312,11 @@ impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
 
     /// Clear the vector
     pub fn clear(&mut self) {
+        // SAFETY: Dropping all elements.
+        // - Loop iterates from 0 to len
+        // - Each data.add(i) points to valid initialized element
+        // - drop_in_place runs destructor
+        // - len set to 0 after loop (elements become uninitialized)
         unsafe {
             // Drop all elements
             for i in 0..self.len {
@@ -272,11 +328,22 @@ impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
 
     /// Get a slice of the vector
     pub fn as_slice(&self) -> &[T] {
+        // SAFETY: Creating slice from vector data.
+        // - data is valid pointer (allocated from arena)
+        // - len represents number of initialized elements
+        // - from_raw_parts creates slice [0..len)
+        // - Slice lifetime bound to &self
         unsafe { std::slice::from_raw_parts(self.data, self.len) }
     }
 
     /// Get a mutable slice of the vector
     pub fn as_mut_slice(&mut self) -> &mut [T] {
+        // SAFETY: Creating mutable slice from vector data.
+        // - data is valid pointer (allocated from arena)
+        // - len represents number of initialized elements
+        // - from_raw_parts_mut creates slice [0..len)
+        // - &mut self ensures exclusive access
+        // - Slice lifetime bound to &mut self
         unsafe { std::slice::from_raw_parts_mut(self.data, self.len) }
     }
 }
@@ -332,6 +399,11 @@ impl<A: ArenaAllocate> ArenaString<A> {
 
     /// Get the string as a str
     pub fn as_str(&self) -> &str {
+        // SAFETY: Creating &str from bytes.
+        // - ArenaString constructed from valid UTF-8 in from_str
+        // - as_slice() returns valid byte slice
+        // - UTF-8 validity preserved (no mutation outside from_str)
+        // - from_utf8_unchecked safe with guaranteed UTF-8 bytes
         unsafe { std::str::from_utf8_unchecked(self.as_slice()) }
     }
 }
