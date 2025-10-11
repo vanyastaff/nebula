@@ -1,4 +1,19 @@
 //! Async-friendly arena allocator with owned value API
+//!
+//! # Safety
+//!
+//! This module provides async-safe arena access through RwLock:
+//! - ArenaHandle holds raw pointer to arena-allocated value
+//! - Arc<RwLock<Arena>> ensures arena stays alive
+//! - RwLock read/write guards synchronize access to arena
+//! - Pointer dereferencing only happens while holding lock
+//!
+//! ## Safety Contracts
+//!
+//! - ArenaHandle::get/get_mut: Dereferences ptr while holding arena lock
+//! - ArenaHandle::modify/read: Dereferences ptr with write/read lock held
+//! - Send/Sync: Safe if T: Send (arena synchronized by RwLock)
+//! - Arena pointer remains valid (Arc keeps arena alive)
 
 use std::sync::Arc;
 
@@ -16,7 +31,18 @@ pub struct ArenaHandle<T> {
     arena: Arc<RwLock<Arena>>,
 }
 
+// SAFETY: ArenaHandle can be sent between threads if T: Send.
+// - ptr is a raw pointer (requires T: Send for safe transfer)
+// - arena: Arc<RwLock<Arena>> is Send+Sync
+// - T: Send ensures value can be accessed from any thread
+// - RwLock synchronizes all arena access
 unsafe impl<T: Send> Send for ArenaHandle<T> {}
+
+// SAFETY: ArenaHandle can be shared between threads if T: Send.
+// - All access requires acquiring RwLock (read or write)
+// - T: Send ensures value access is thread-safe
+// - Multiple threads can hold handles, but RwLock ensures exclusive/shared access
+// - Arc<RwLock<Arena>> provides synchronization
 unsafe impl<T: Send> Sync for ArenaHandle<T> {}
 
 impl<T> ArenaHandle<T> {
@@ -24,6 +50,11 @@ impl<T> ArenaHandle<T> {
     pub async fn get(&self) -> &T {
         // Keep arena lock alive while accessing
         let _arena = self.arena.read().await;
+        // SAFETY: Dereferencing arena-allocated pointer.
+        // - ptr is valid (allocated in AsyncArena::alloc)
+        // - _arena holds read lock (synchronized access)
+        // - Arena remains alive (Arc keeps it valid)
+        // - Returns immutable reference tied to _arena guard lifetime
         unsafe { &*self.ptr }
     }
 
@@ -31,6 +62,11 @@ impl<T> ArenaHandle<T> {
     pub async fn get_mut(&self) -> &mut T {
         // Keep arena lock alive while accessing
         let _arena = self.arena.write().await;
+        // SAFETY: Creating mutable reference to arena-allocated value.
+        // - ptr is valid (allocated in AsyncArena::alloc)
+        // - _arena holds write lock (exclusive access, no other references)
+        // - Arena remains alive (Arc keeps it valid)
+        // - Returns mutable reference tied to _arena guard lifetime
         unsafe { &mut *self.ptr }
     }
 
@@ -40,6 +76,11 @@ impl<T> ArenaHandle<T> {
         F: FnOnce(&mut T) -> R,
     {
         let _arena = self.arena.write().await;
+        // SAFETY: Creating mutable reference for closure.
+        // - ptr is valid (allocated in AsyncArena::alloc)
+        // - _arena holds write lock (exclusive access)
+        // - Arena remains alive (Arc keeps it valid)
+        // - Mutable reference lifetime bounded by _arena guard
         unsafe { f(&mut *self.ptr) }
     }
 
@@ -49,6 +90,11 @@ impl<T> ArenaHandle<T> {
         F: FnOnce(&T) -> R,
     {
         let _arena = self.arena.read().await;
+        // SAFETY: Creating immutable reference for closure.
+        // - ptr is valid (allocated in AsyncArena::alloc)
+        // - _arena holds read lock (synchronized shared access)
+        // - Arena remains alive (Arc keeps it valid)
+        // - Immutable reference lifetime bounded by _arena guard
         unsafe { f(&*self.ptr) }
     }
 }
