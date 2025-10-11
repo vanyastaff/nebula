@@ -111,6 +111,9 @@ cargo install cargo-fuzz
 
 **Note**: Fuzzing only works on Linux and macOS with nightly Rust. On Windows, use WSL.
 
+**Status**: All fuzz targets have been migrated to native `Value` type (Sprint 7).
+Fuzzing code compiles successfully on Linux/macOS.
+
 ## Running Fuzz Tests
 
 ### Quick Test (for development)

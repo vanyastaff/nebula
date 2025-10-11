@@ -15,6 +15,9 @@ members = [
     "crates/nebula-validator",
     "crates/nebula-value",
 ]
+exclude = [
+    "crates/*/fuzz",
+]
 resolver = "3"
 
 [workspace.package]

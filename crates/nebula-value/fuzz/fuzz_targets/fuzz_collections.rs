@@ -1,8 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use nebula_value::{Array, Object};
-use serde_json::json;
+use nebula_value::{Array, Object, Value};
 use arbitrary::Arbitrary;
 
 #[derive(Arbitrary, Debug)]
@@ -19,19 +18,19 @@ fuzz_target!(|data: (Vec<i32>, Vec<(String, i32)>, CollectionOp)| {
     let (array_data, object_data, op) = data;
 
     // Create array
-    let array_items: Vec<_> = array_data.iter().map(|&i| json!(i)).collect();
+    let array_items: Vec<_> = array_data.iter().map(|&i| Value::integer(i as i64)).collect();
     let array = Array::from_vec(array_items);
 
     // Create object
     let object_items: Vec<_> = object_data.iter()
-        .map(|(k, v)| (k.clone(), json!(v)))
+        .map(|(k, v)| (k.clone(), Value::integer(*v as i64)))
         .collect();
     let object = Object::from_iter(object_items);
 
     // Execute operation
     match op {
         CollectionOp::ArrayPush => {
-            let _ = array.push(json!(42));
+            let _ = array.push(42);
         }
         CollectionOp::ArrayConcat => {
             let _ = array.concat(&array);
@@ -40,7 +39,7 @@ fuzz_target!(|data: (Vec<i32>, Vec<(String, i32)>, CollectionOp)| {
             let _ = array.get(idx);
         }
         CollectionOp::ObjectInsert(key) => {
-            let _ = object.insert(key, json!(123));
+            let _ = object.insert(key, 123);
         }
         CollectionOp::ObjectGet(key) => {
             let _ = object.get(&key);
