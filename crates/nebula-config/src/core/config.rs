@@ -516,14 +516,15 @@ fn json_to_value(json: &serde_json::Value) -> NebulaValue {
         }
         serde_json::Value::String(s) => NebulaValue::text(s.clone()),
         serde_json::Value::Array(arr) => {
-            // Array::from accepts Vec<serde_json::Value>, not Vec<NebulaValue>
-            NebulaValue::Array(nebula_value::Array::from(arr.clone()))
+            // Recursively convert each JSON value to NebulaValue
+            let items: Vec<NebulaValue> = arr.iter().map(|v| json_to_value(v)).collect();
+            NebulaValue::Array(nebula_value::Array::from(items))
         }
         serde_json::Value::Object(obj) => {
             let mut map = nebula_value::Object::new();
             for (k, v) in obj {
-                // Object stores serde_json::Value internally, not NebulaValue
-                map = map.insert(k.clone(), v.clone());
+                // Recursively convert JSON values to NebulaValues
+                map = map.insert(k.clone(), json_to_value(v));
             }
             NebulaValue::Object(map)
         }
@@ -543,14 +544,18 @@ fn value_to_json(value: NebulaValue) -> ConfigResult<serde_json::Value> {
             }),
         NebulaValue::Text(t) => Ok(serde_json::Value::String(t.to_string())),
         NebulaValue::Array(arr) => {
-            // Array stores serde_json::Value internally
-            let items: Vec<_> = arr.iter().map(|v| v.clone()).collect();
+            // Recursively convert NebulaValues to JSON values
+            let items: Vec<serde_json::Value> = arr
+                .iter()
+                .map(|v| value_to_json(v.clone()))
+                .collect::<ConfigResult<Vec<_>>>()?;
             Ok(serde_json::Value::Array(items))
         }
         NebulaValue::Object(obj) => {
             let mut map = serde_json::Map::new();
             for (k, v) in obj.entries() {
-                map.insert(k.clone(), v.clone());
+                // Recursively convert NebulaValues to JSON values
+                map.insert(k.clone(), value_to_json(v.clone())?);
             }
             Ok(serde_json::Value::Object(map))
         }
@@ -575,9 +580,8 @@ fn flatten_value(prefix: &str, value: &NebulaValue) -> HashMap<String, NebulaVal
                     format!("{prefix}.{key}")
                 };
 
-                // Convert serde_json::Value to NebulaValue
-                let nebula_val = json_to_value(val);
-                let nested = flatten_value(&full_key, &nebula_val);
+                // val is already NebulaValue
+                let nested = flatten_value(&full_key, val);
                 map.extend(nested);
             }
         }
@@ -589,9 +593,8 @@ fn flatten_value(prefix: &str, value: &NebulaValue) -> HashMap<String, NebulaVal
                     format!("{prefix}[{index}]")
                 };
 
-                // Convert serde_json::Value to NebulaValue
-                let nebula_val = json_to_value(val);
-                let nested = flatten_value(&full_key, &nebula_val);
+                // val is already NebulaValue from iter()
+                let nested = flatten_value(&full_key, &val);
                 map.extend(nested);
             }
         }
