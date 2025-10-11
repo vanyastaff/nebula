@@ -63,7 +63,7 @@ pub struct RealTimeMonitor {
     // Optional histogram, if configured.
     histogram: Arc<RwLock<Option<MemoryHistogram>>>,
     // Handle for the monitoring thread, allowing it to be joined/stopped.
-    #[allow(dead_code)] // Will be used when `stop` is implemented fully
+    // Used in start(), stop(), and is_running() methods.
     monitor_handle: Option<JoinHandle<()>>,
     // Signal to stop the monitoring thread.
     stop_signal: Arc<RwLock<bool>>,

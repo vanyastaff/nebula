@@ -16,7 +16,9 @@ pub trait IntoNebulaError {
 
 /// Extension trait for `Result`s to add context (conversion variant)
 ///
-/// Note: This provides the same interface as `ResultExt` but for conversion contexts
+/// Note: This provides the same interface as `ResultExt` but for conversion contexts.
+/// Currently unused - the public `ResultExt` trait in result.rs is preferred.
+/// Kept for potential future use with specific conversion scenarios.
 #[allow(dead_code)]
 trait ConversionResultExt<T, E> {
     /// Add context to a Result

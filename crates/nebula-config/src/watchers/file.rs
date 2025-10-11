@@ -69,6 +69,9 @@ impl FileWatcher {
     }
 
     /// Convert notify event to config watch event
+    ///
+    /// TODO: Use this helper in file watching implementation to convert
+    /// raw notify events to ConfigWatchEvent with proper categorization.
     #[allow(dead_code)]
     fn convert_event(&self, event: Event, source: &ConfigSource) -> Option<ConfigWatchEvent> {
         let event_type = match event.kind {
