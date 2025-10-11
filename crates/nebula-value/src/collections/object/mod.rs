@@ -1,10 +1,11 @@
+//! Object (key-value map) type for nebula-value
+//!
+//! This module provides an Object type that:
 //!
 //! - Key count limits for DoS protection
 //! - O(log n) operations
 //! - Thread-safe via Arc
-//! - Uses persistent data structures (im::HashMap) for efficient cloning
-//! Object (key-value map) type for nebula-value
-//! This module provides an Object type that:
+//! - Uses persistent data structures (`im::HashMap`) for efficient cloning
 pub mod builder;
 
 pub use builder::ObjectBuilder;
@@ -44,6 +45,10 @@ impl Object {
     }
 
     /// Create from iterator of key-value pairs
+    ///
+    /// Note: This is a convenience method. The type also implements
+    /// the standard `FromIterator` trait.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_iter<I>(iter: I) -> Self
     where
         I: IntoIterator<Item = (String, ValueItem)>,
