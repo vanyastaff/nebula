@@ -1,6 +1,6 @@
 //! Array manipulation functions
 
-use super::{check_arg_count, check_min_arg_count};
+use super::{check_arg_count, check_min_arg_count, get_array_arg};
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
@@ -15,9 +15,7 @@ pub fn length(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("length", args, 1)?;
-    let arr = args[0]
-        .as_array()
-        .ok_or_else(|| NebulaError::expression_type_error("array", args[0].kind().name()))?;
+    let arr = get_array_arg("length", args, 0, "array")?;
     Ok(Value::integer(arr.len() as i64))
 }
 
@@ -28,9 +26,7 @@ pub fn first(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("first", args, 1)?;
-    let arr = args[0]
-        .as_array()
-        .ok_or_else(|| NebulaError::expression_type_error("array", args[0].kind().name()))?;
+    let arr = get_array_arg("first", args, 0, "array")?;
     let json_val = arr
         .get(0)
         .ok_or_else(|| NebulaError::expression_eval_error("Array is empty"))?;
@@ -44,9 +40,7 @@ pub fn last(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("last", args, 1)?;
-    let arr = args[0]
-        .as_array()
-        .ok_or_else(|| NebulaError::expression_type_error("array", args[0].kind().name()))?;
+    let arr = get_array_arg("last", args, 0, "array")?;
     let len = arr.len();
     if len == 0 {
         return Err(NebulaError::expression_eval_error("Array is empty"));
@@ -98,9 +92,7 @@ pub fn sort(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("sort", args, 1)?;
-    let arr = args[0]
-        .as_array()
-        .ok_or_else(|| NebulaError::expression_type_error("array", args[0].kind().name()))?;
+    let arr = get_array_arg("sort", args, 0, "array")?;
 
     let mut elements: Vec<serde_json::Value> = arr.iter().cloned().collect();
 
@@ -126,9 +118,7 @@ pub fn reverse(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("reverse", args, 1)?;
-    let arr = args[0]
-        .as_array()
-        .ok_or_else(|| NebulaError::expression_type_error("array", args[0].kind().name()))?;
+    let arr = get_array_arg("reverse", args, 0, "array")?;
 
     let mut elements: Vec<serde_json::Value> = arr.iter().cloned().collect();
     elements.reverse();
@@ -143,9 +133,7 @@ pub fn join(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("join", args, 2)?;
-    let arr = args[0]
-        .as_array()
-        .ok_or_else(|| NebulaError::expression_type_error("array", args[0].kind().name()))?;
+    let arr = get_array_arg("join", args, 0, "array")?;
     let separator = args[1]
         .as_str()
         .ok_or_else(|| NebulaError::expression_type_error("string", args[1].kind().name()))?;
@@ -167,9 +155,7 @@ pub fn slice(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("slice", args, 2)?;
-    let arr = args[0]
-        .as_array()
-        .ok_or_else(|| NebulaError::expression_type_error("array", args[0].kind().name()))?;
+    let arr = get_array_arg("slice", args, 0, "array")?;
     let start = args[1].to_integer()? as usize;
     let end = if args.len() > 2 {
         args[2].to_integer()? as usize
@@ -198,10 +184,8 @@ pub fn concat(
         .sum();
 
     let mut result = Vec::with_capacity(total_size);
-    for arg in args {
-        let arr = arg
-            .as_array()
-            .ok_or_else(|| NebulaError::expression_type_error("array", arg.kind().name()))?;
+    for (i, arg) in args.iter().enumerate() {
+        let arr = get_array_arg("concat", args, i, "array")?;
         result.extend(arr.iter().cloned());
     }
 
@@ -215,9 +199,7 @@ pub fn flatten(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("flatten", args, 1)?;
-    let arr = args[0]
-        .as_array()
-        .ok_or_else(|| NebulaError::expression_type_error("array", args[0].kind().name()))?;
+    let arr = get_array_arg("flatten", args, 0, "array")?;
 
     // Use iterator + flat_map for more efficient flattening
     let result: Vec<_> = arr

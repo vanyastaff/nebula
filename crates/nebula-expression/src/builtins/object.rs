@@ -1,6 +1,6 @@
 //! Object manipulation functions
 
-use super::check_arg_count;
+use super::{check_arg_count, get_object_arg};
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
@@ -14,9 +14,7 @@ pub fn keys(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("keys", args, 1)?;
-    let obj = args[0]
-        .as_object()
-        .ok_or_else(|| NebulaError::expression_type_error("object", args[0].kind().name()))?;
+    let obj = get_object_arg("keys", args, 0, "object")?;
 
     // Pre-allocate with known size to avoid reallocations
     let keys: Vec<_> = obj
@@ -34,9 +32,7 @@ pub fn values(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("values", args, 1)?;
-    let obj = args[0]
-        .as_object()
-        .ok_or_else(|| NebulaError::expression_type_error("object", args[0].kind().name()))?;
+    let obj = get_object_arg("values", args, 0, "object")?;
 
     // Collect into Vec directly - single allocation
     let values: Vec<_> = obj.values().cloned().collect();
@@ -47,9 +43,7 @@ pub fn values(
 /// Check if an object has a specific key
 pub fn has(args: &[Value], _eval: &Evaluator, _ctx: &EvaluationContext) -> ExpressionResult<Value> {
     check_arg_count("has", args, 2)?;
-    let obj = args[0]
-        .as_object()
-        .ok_or_else(|| NebulaError::expression_type_error("object", args[0].kind().name()))?;
+    let obj = get_object_arg("has", args, 0, "object")?;
     let key = args[1]
         .as_str()
         .ok_or_else(|| NebulaError::expression_type_error("string", args[1].kind().name()))?;

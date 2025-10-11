@@ -297,7 +297,6 @@ pub(crate) fn get_number_arg(
 }
 
 /// Helper to get an array argument with better error message
-#[allow(dead_code)]
 pub(crate) fn get_array_arg<'a>(
     func_name: &str,
     args: &'a [Value],
@@ -325,7 +324,6 @@ pub(crate) fn get_array_arg<'a>(
 }
 
 /// Helper to get an object argument with better error message
-#[allow(dead_code)]
 pub(crate) fn get_object_arg<'a>(
     func_name: &str,
     args: &'a [Value],
