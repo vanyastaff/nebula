@@ -49,7 +49,7 @@ fn strict_limits() -> ValueResult<()> {
     // Try to create array that exceeds strict limits
     let result = ArrayBuilder::new()
         .with_limits(limits)
-        .extend((0..2000).map(|i| serde_json::json!(i)))
+        .extend((0..2000).map(|i| Value::integer(i as i64)))
         .build();
 
     match result {

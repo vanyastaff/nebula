@@ -53,18 +53,18 @@ fn working_with_collections() -> ValueResult<()> {
 
     // Create array
     let mut array = Array::new();
-    array = array.push(serde_json::json!(1));
-    array = array.push(serde_json::json!(2));
-    array = array.push(serde_json::json!(3));
+    array = array.push(1);
+    array = array.push(2);
+    array = array.push(3);
 
     println!("  Array length: {}", array.len());
     println!("  Array[0]: {:?}", array.get(0));
 
     // Create object
     let mut object = Object::new();
-    object = object.insert("name".to_string(), serde_json::json!("Alice"));
-    object = object.insert("age".to_string(), serde_json::json!(30));
-    object = object.insert("active".to_string(), serde_json::json!(true));
+    object = object.insert("name".to_string(), "Alice");
+    object = object.insert("age".to_string(), 30);
+    object = object.insert("active".to_string(), true);
 
     println!("  Object keys: {}", object.len());
     println!("  Object['name']: {:?}\n", object.get("name"));
@@ -103,18 +103,18 @@ fn using_builders() -> ValueResult<()> {
 
     // ArrayBuilder
     let array = ArrayBuilder::new()
-        .push(serde_json::json!(1))
-        .push(serde_json::json!(2))
-        .push(serde_json::json!(3))
+        .push(1)
+        .push(2)
+        .push(3)
         .build()?;
 
     println!("  Built array: {} items", array.len());
 
     // ObjectBuilder
     let object = ObjectBuilder::new()
-        .insert("name", serde_json::json!("Bob"))
-        .insert("score", serde_json::json!(95))
-        .insert("passed", serde_json::json!(true))
+        .insert("name", "Bob")
+        .insert("score", 95)
+        .insert("passed", true)
         .build()?;
 
     println!("  Built object: {} keys\n", object.len());

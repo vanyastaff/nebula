@@ -113,13 +113,13 @@ fn merge_operations() -> ValueResult<()> {
 
     // Merge objects
     let obj1 = ObjectBuilder::new()
-        .insert("a", serde_json::json!(1))
-        .insert("b", serde_json::json!(2))
+        .insert("a", 1)
+        .insert("b", 2)
         .build()?;
 
     let obj2 = ObjectBuilder::new()
-        .insert("c", serde_json::json!(3))
-        .insert("d", serde_json::json!(4))
+        .insert("c", 3)
+        .insert("d", 4)
         .build()?;
 
     let merged = Value::Object(obj1).merge(&Value::Object(obj2))?;
@@ -134,13 +134,13 @@ fn merge_operations() -> ValueResult<()> {
 
     // Merge arrays (concatenation)
     let arr1 = ArrayBuilder::new()
-        .push(serde_json::json!(1))
-        .push(serde_json::json!(2))
+        .push(1)
+        .push(2)
         .build()?;
 
     let arr2 = ArrayBuilder::new()
-        .push(serde_json::json!(3))
-        .push(serde_json::json!(4))
+        .push(3)
+        .push(4)
         .build()?;
 
     let merged_arr = Value::Array(arr1).merge(&Value::Array(arr2))?;
@@ -163,8 +163,8 @@ fn path_access_examples() -> ValueResult<()> {
     // Will be fully functional once Array/Object use Value internally
 
     let obj = ObjectBuilder::new()
-        .insert("name", serde_json::json!("Alice"))
-        .insert("age", serde_json::json!(30))
+        .insert("name", "Alice")
+        .insert("age", 30)
         .build()?;
 
     let value = Value::Object(obj);
