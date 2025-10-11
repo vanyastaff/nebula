@@ -292,6 +292,11 @@ pub fn memory_protect(addr: *mut u8, size: usize, protection: MemoryProtection) 
         let prot = protection.to_windows_flags();
         let mut old_protect = 0;
 
+        // SAFETY: FFI call to Windows VirtualProtect. Caller guarantees addr/size are valid mapped region.
+        // - addr is page-aligned (caller contract)
+        // - size covers mapped pages
+        // - prot is valid protection flags from enum
+        // - old_protect receives previous protection value
         let result = unsafe {
             VirtualProtect(
                 addr as *mut winapi::ctypes::c_void,
@@ -364,6 +369,8 @@ pub fn memory_advise(addr: *mut u8, size: usize, advice: MemoryAdvice) -> io::Re
             }
         };
 
+        // SAFETY: FFI call to madvise with advice hint. Advice is just a hint to kernel,
+        // doesn't change memory validity. Caller should ensure addr/size are valid.
         let result = unsafe { madvise(addr as *mut libc::c_void, size, advice_val) };
         if result == -1 {
             Err(io::Error::last_os_error())
@@ -378,8 +385,13 @@ pub fn memory_advise(addr: *mut u8, size: usize, advice: MemoryAdvice) -> io::Re
         use winapi::um::winnt::MEM_DECOMMIT;
 
         let result = match advice {
-            MemoryAdvice::DontNeed | MemoryAdvice::Free => unsafe {
-                VirtualFree(addr as *mut winapi::ctypes::c_void, size, MEM_DECOMMIT)
+            MemoryAdvice::DontNeed | MemoryAdvice::Free => {
+                // SAFETY: FFI call to VirtualFree with MEM_DECOMMIT to mark pages as don't need.
+                // - addr/size should be valid (caller responsibility)
+                // - MEM_DECOMMIT decommits but doesn't release (reversible)
+                unsafe {
+                    VirtualFree(addr as *mut winapi::ctypes::c_void, size, MEM_DECOMMIT)
+                }
             },
             _ => 1, // No-op for other advice types
         };
@@ -423,6 +435,9 @@ pub fn memory_sync(addr: *mut u8, size: usize, sync_type: MemorySyncType) -> io:
             MemorySyncType::Invalidate => MS_INVALIDATE,
         };
 
+        // SAFETY: FFI call to msync to flush memory to disk.
+        // - addr/size should be valid mapped region (caller responsibility)
+        // - flags determine sync behavior (sync/async/invalidate)
         let result = unsafe { msync(addr as *mut libc::c_void, size, flags) };
         if result == -1 {
             Err(io::Error::last_os_error())
@@ -435,6 +450,8 @@ pub fn memory_sync(addr: *mut u8, size: usize, sync_type: MemorySyncType) -> io:
     {
         use winapi::um::memoryapi::FlushViewOfFile;
 
+        // SAFETY: FFI call to FlushViewOfFile to flush memory to disk.
+        // - addr/size should be valid mapped region (caller responsibility)
         let result = unsafe { FlushViewOfFile(addr as *const winapi::ctypes::c_void, size) };
         if result == 0 {
             Err(io::Error::last_os_error())
@@ -458,6 +475,11 @@ pub fn memory_prefetch(addr: *const u8, size: usize) -> io::Result<()> {
     {
         // Use simple loop for small regions
         if size <= 4096 {
+            // SAFETY: Prefetching with volatile reads to load into cache.
+            // - addr.add(size) computes end pointer
+            // - Loop reads every 64 bytes (cache line size)
+            // - read_volatile prevents optimization
+            // - Caller should ensure addr/size are valid
             unsafe {
                 let end = addr.add(size);
                 let mut ptr = addr;
@@ -470,6 +492,9 @@ pub fn memory_prefetch(addr: *const u8, size: usize) -> io::Result<()> {
         }
 
         // For larger regions, use madvise
+        // SAFETY: FFI call to madvise with MADV_WILLNEED to prefetch pages.
+        // - Hints kernel to load pages into memory
+        // - Caller should ensure addr/size are valid
         unsafe {
             let result = libc::madvise(addr as *mut libc::c_void, size, libc::MADV_WILLNEED);
 
@@ -484,6 +509,11 @@ pub fn memory_prefetch(addr: *const u8, size: usize) -> io::Result<()> {
     #[cfg(not(target_os = "linux"))]
     {
         // Simple prefetch using volatile reads
+        // SAFETY: Prefetching with volatile reads to load into cache.
+        // - addr.add(size) computes end pointer
+        // - Loop reads every 64 bytes (cache line size)
+        // - read_volatile prevents optimization
+        // - Caller should ensure addr/size are valid
         unsafe {
             let end = addr.add(size);
             let mut ptr = addr;
@@ -522,6 +552,7 @@ pub fn get_memory_page_info(addr: *const u8) -> io::Result<MemoryPageInfo> {
         use std::fs::File;
         use std::io::Read;
 
+        // SAFETY: FFI call to getpid - always safe, returns current process ID
         let pid = unsafe { libc::getpid() };
         let page_size = crate::syscalls::get_page_size();
         let page_addr = (addr as usize / page_size) * page_size;
@@ -577,6 +608,10 @@ pub fn get_memory_page_info(addr: *const u8) -> io::Result<MemoryPageInfo> {
             PAGE_READONLY, PAGE_READWRITE,
         };
 
+        // SAFETY: Querying memory information from Windows.
+        // - zeroed() initializes MEMORY_BASIC_INFORMATION structure
+        // - VirtualQuery fills structure with page info
+        // - addr is queried address (may be invalid, VirtualQuery handles that)
         unsafe {
             let mut info: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
             let result = VirtualQuery(
