@@ -292,7 +292,7 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scalar::{Float, Integer, Text};
+    
 
     #[test]
     fn test_display_null() {

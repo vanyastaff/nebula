@@ -8,4 +8,3 @@ mod integration {
 }
 
 // Re-export for test runner
-pub use integration::*;

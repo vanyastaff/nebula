@@ -71,30 +71,29 @@ impl Value {
         }
 
         // For other types, path access doesn't make sense
-        let current = self;
         if let Some(segment) = segments.iter().next() {
-            current = match (current, segment) {
+            return match (self, segment) {
                 // Type mismatch errors
                 (val, PathSegment::Key(key)) => {
-                    return Err(
+                    Err(
                         NebulaError::value_type_mismatch("Object", val.kind().name()).with_details(
                             format!("Cannot access key '{}' on {}", key, val.kind().name()),
                         ),
-                    );
+                    )
                 }
 
                 (val, PathSegment::Index(idx)) => {
-                    return Err(NebulaError::value_type_mismatch("Array", val.kind().name())
+                    Err(NebulaError::value_type_mismatch("Array", val.kind().name())
                         .with_details(format!(
                             "Cannot access index {} on {}",
                             idx,
                             val.kind().name()
-                        )));
+                        )))
                 }
             };
         }
 
-        Ok(current)
+        Ok(self)
     }
 
     /// Check if path exists

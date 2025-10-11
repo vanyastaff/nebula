@@ -233,7 +233,7 @@ fn test_persistent_data_structures() {
 
 #[test]
 fn test_hash_and_equality() {
-    use nebula_value::core::hash::{HashableValue, HashableValueExt};
+    use nebula_value::core::hash::HashableValueExt;
     use std::collections::HashMap;
 
     // Test that hashable values work in HashMap

@@ -887,7 +887,7 @@ mod tests {
 
     #[test]
     fn test_truncation() {
-        let dt = DateTime::with_nanos(2024, 12, 25, 14, 35, 45, 123456789).unwrap();
+        let dt = DateTime::with_nanos(2024, 12, 25, 14, 35, 45, 123_456_789).unwrap();
 
         let day = dt.truncate_to_day();
         assert_eq!(day.hour(), 0);

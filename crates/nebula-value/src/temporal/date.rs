@@ -17,6 +17,11 @@ use chrono::{Datelike, Duration, Local, NaiveDate, Utc, Weekday};
 
 use crate::core::{NebulaError, ValueResult};
 
+/// Unix epoch as Julian Day Number (used for conversions)
+/// This is the number of days from January 1, 4713 BCE (proleptic Gregorian calendar)
+/// to the Unix epoch (January 1, 1970 CE)
+const UNIX_EPOCH_JULIAN_DAY: i32 = 1_721_425;
+
 /// Internal date storage
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -154,7 +159,7 @@ impl Date {
 
     /// Creates from Julian day number
     pub fn from_julian_day(jd: i32) -> ValueResult<Self> {
-        NaiveDate::from_num_days_from_ce_opt(jd - 1721425)
+        NaiveDate::from_num_days_from_ce_opt(jd - UNIX_EPOCH_JULIAN_DAY)
             .map(Self::from_naive_date)
             .ok_or_else(|| NebulaError::validation(format!("Invalid Julian day: {}", jd)))
     }
@@ -345,7 +350,7 @@ impl Date {
 
     /// Returns the Julian day number
     pub fn julian_day(&self) -> i32 {
-        self.inner.to_naive().num_days_from_ce() + 1721425
+        self.inner.to_naive().num_days_from_ce() + UNIX_EPOCH_JULIAN_DAY
     }
 
     /// Gets the internal representation
