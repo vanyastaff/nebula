@@ -3,7 +3,12 @@
 //! Tests how different nebula-value modules interact
 
 use nebula_value::{Array, Bytes, Float, Integer, Object, Text, Value};
-use serde_json::json;
+
+// Helper to parse JSON strings into Value for tests
+#[allow(dead_code)]
+fn parse_json(json_str: &str) -> Value {
+    json_str.parse().expect("valid JSON")
+}
 
 #[test]
 fn test_scalar_to_value_integration() {
@@ -37,11 +42,11 @@ fn test_scalar_to_value_integration() {
 fn test_collection_with_mixed_types() {
     // Array with mixed types
     let mixed_array = Array::from_vec(vec![
-        json!(42),
-        json!(3.14),
-        json!("hello"),
-        json!(true),
-        json!(null),
+        42.into(),
+        3.14.into(),
+        "hello".into(),
+        true.into(),
+        Value::Null,
     ]);
 
     assert_eq!(mixed_array.len(), 5);
@@ -58,17 +63,14 @@ fn test_collection_with_mixed_types() {
 fn test_nested_collections() {
     // Object containing arrays and objects
     let nested = Object::from_iter(vec![
-        ("numbers".to_string(), json!([1, 2, 3, 4, 5])),
+        ("numbers".to_string(), parse_json("[1, 2, 3, 4, 5]")),
         (
             "config".to_string(),
-            json!({
-                "enabled": true,
-                "level": 3
-            }),
+            parse_json(r#"{"enabled": true, "level": 3}"#),
         ),
         (
             "tags".to_string(),
-            json!(["rust", "workflow", "automation"]),
+            parse_json(r#"["rust", "workflow", "automation"]"#),
         ),
     ]);
 
@@ -135,11 +137,11 @@ fn test_builder_with_limits() {
     // Array builder with limits
     let array = ArrayBuilder::new()
         .with_limits(limits.clone())
-        .try_push(json!(1))
+        .try_push(1)
         .unwrap()
-        .try_push(json!(2))
+        .try_push(2)
         .unwrap()
-        .try_push(json!(3))
+        .try_push(3)
         .unwrap()
         .build()
         .unwrap();
@@ -149,9 +151,9 @@ fn test_builder_with_limits() {
     // Object builder with limits
     let object = ObjectBuilder::new()
         .with_limits(limits)
-        .try_insert("a", json!(1))
+        .try_insert("a", 1)
         .unwrap()
-        .try_insert("b", json!(2))
+        .try_insert("b", 2)
         .unwrap()
         .build()
         .unwrap();
@@ -166,13 +168,13 @@ fn test_serde_integration_all_types() {
 
     // Create value with all types
     let complex = Value::Object(Object::from_iter(vec![
-        ("null".to_string(), json!(null)),
-        ("bool".to_string(), json!(true)),
-        ("integer".to_string(), json!(42)),
-        ("float".to_string(), json!(3.14)),
-        ("text".to_string(), json!("hello")),
-        ("array".to_string(), json!([1, 2, 3])),
-        ("object".to_string(), json!({"key": "value"})),
+        ("null".to_string(), Value::Null),
+        ("bool".to_string(), true.into()),
+        ("integer".to_string(), 42),
+        ("float".to_string(), 3.14.into()),
+        ("text".to_string(), "hello".into()),
+        ("array".to_string(), parse_json("[1, 2, 3]")),
+        ("object".to_string(), parse_json(r#"{"key": "value"}"#)),
     ]));
 
     // Serialize
@@ -216,15 +218,15 @@ fn test_error_propagation() {
 fn test_persistent_data_structures() {
     // Test that mutations don't affect originals
 
-    let original_array = Array::from_vec(vec![json!(1), json!(2), json!(3)]);
-    let modified_array = original_array.push(json!(4));
+    let original_array = Array::from_vec(vec![1.into(), 2.into(), 3.into()]);
+    let modified_array = original_array.push(4);
 
     // Original unchanged
     assert_eq!(original_array.len(), 3);
     assert_eq!(modified_array.len(), 4);
 
-    let original_object = Object::from_iter(vec![("a".to_string(), json!(1))]);
-    let modified_object = original_object.insert("b".to_string(), json!(2));
+    let original_object = Object::from_iter(vec![("a".to_string(), 1.into())]);
+    let modified_object = original_object.insert("b".to_string(), 2);
 
     // Original unchanged
     assert_eq!(original_object.len(), 1);
