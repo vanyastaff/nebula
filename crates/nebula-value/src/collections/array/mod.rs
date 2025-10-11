@@ -38,6 +38,7 @@ pub struct Array {
 
 impl Array {
     /// Create an empty array
+    #[must_use]
     pub fn new() -> Self {
         Self {
             inner: Vector::new(),
@@ -45,6 +46,7 @@ impl Array {
     }
 
     /// Create from a Vec
+    #[must_use]
     pub fn from_vec(vec: Vec<ValueItem>) -> Self {
         Self {
             inner: Vector::from(vec),
@@ -70,17 +72,20 @@ impl Array {
 
     /// Get the length
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.inner.len()
     }
 
     /// Check if empty
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
 
     /// Get element at index
+    #[must_use]
     pub fn get(&self, index: usize) -> Option<&ValueItem> {
         self.inner.get(index)
     }
@@ -92,6 +97,7 @@ impl Array {
     }
 
     /// Push an element (returns new Array, original unchanged)
+    #[must_use = "immutable methods return a new instance"]
     pub fn push(&self, value: ValueItem) -> Self {
         let mut new_vec = self.inner.clone();
         new_vec.push_back(value);
@@ -105,6 +111,7 @@ impl Array {
     }
 
     /// Pop last element (returns new Array and popped value)
+    #[must_use = "immutable methods return a new instance"]
     pub fn pop(&self) -> Option<(Self, ValueItem)> {
         let mut new_vec = self.inner.clone();
         new_vec.pop_back().map(|val| (Self { inner: new_vec }, val))
@@ -144,16 +151,19 @@ impl Array {
     }
 
     /// Get first element
+    #[must_use]
     pub fn first(&self) -> Option<&ValueItem> {
         self.inner.front()
     }
 
     /// Get last element
+    #[must_use]
     pub fn last(&self) -> Option<&ValueItem> {
         self.inner.back()
     }
 
     /// Concatenate with another array
+    #[must_use = "immutable methods return a new instance"]
     pub fn concat(&self, other: &Array) -> Self {
         let mut new_vec = self.inner.clone();
         new_vec.append(other.inner.clone());

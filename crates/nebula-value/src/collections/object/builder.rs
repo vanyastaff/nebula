@@ -32,6 +32,7 @@ pub struct ObjectBuilder {
 
 impl ObjectBuilder {
     /// Create a new empty builder
+    #[must_use]
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -40,6 +41,7 @@ impl ObjectBuilder {
     }
 
     /// Create a builder with initial capacity
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             entries: Vec::with_capacity(capacity),
@@ -48,12 +50,14 @@ impl ObjectBuilder {
     }
 
     /// Set value limits for validation
+    #[must_use = "builder methods return a new instance"]
     pub fn with_limits(mut self, limits: ValueLimits) -> Self {
         self.limits = Some(limits);
         self
     }
 
     /// Insert a key-value pair
+    #[must_use = "builder methods return a new instance"]
     pub fn insert(mut self, key: impl Into<String>, value: ValueItem) -> Self {
         let key = key.into();
         self.entries.push((key, value));
@@ -74,6 +78,7 @@ impl ObjectBuilder {
     }
 
     /// Insert multiple key-value pairs
+    #[must_use = "builder methods return a new instance"]
     pub fn extend<I>(mut self, entries: I) -> Self
     where
         I: IntoIterator<Item = (String, ValueItem)>,
@@ -102,33 +107,39 @@ impl ObjectBuilder {
     }
 
     /// Remove a key
+    #[must_use = "builder methods return a new instance"]
     pub fn remove(mut self, key: &str) -> Self {
         self.entries.retain(|(k, _)| k != key);
         self
     }
 
     /// Clear all entries
+    #[must_use = "builder methods return a new instance"]
     pub fn clear(mut self) -> Self {
         self.entries.clear();
         self
     }
 
     /// Get the current number of entries
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Check if the builder is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
     /// Check if a key exists
+    #[must_use]
     pub fn contains_key(&self, key: &str) -> bool {
         self.entries.iter().any(|(k, _)| k == key)
     }
 
     /// Merge with another ObjectBuilder
+    #[must_use = "builder methods return a new instance"]
     pub fn merge(mut self, other: ObjectBuilder) -> Self {
         self.entries.extend(other.entries);
         self
