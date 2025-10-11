@@ -1,4 +1,18 @@
-//! Compressed pool allocator
+//! Compressed pool allocator with inactive object compression
+//!
+//! # Safety
+//!
+//! This module wraps PoolAllocator with optional compression:
+//! - Forwards all allocation operations to underlying pool allocator
+//! - Tracks active allocations to identify compression candidates
+//! - Compression happens on inactive objects (doesn't affect allocator safety)
+//! - All safety contracts preserved through delegation to PoolAllocator
+//!
+//! ## Safety Contracts
+//!
+//! - allocate/deallocate: Forwarded to PoolAllocator (inherits its contracts)
+//! - Active tracking: Uses HashMap protected by Mutex (thread-safe)
+//! - Compression is transparent (doesn't change memory safety semantics)
 
 use std::alloc::Layout;
 use std::collections::HashMap;
@@ -129,12 +143,22 @@ impl CompressedPool {
 }
 
 #[cfg(feature = "compression")]
+// SAFETY: CompressedPool forwards all operations to PoolAllocator.
+// - All safety contracts preserved through delegation
+// - Active tracking is orthogonal to memory safety (uses thread-safe HashMap)
+// - allocate/deallocate forward to pool (inherits PoolAllocator contracts)
 unsafe impl Allocator for CompressedPool {
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+        // SAFETY: Forwarding to pool.allocate.
+        // - layout is valid (caller contract)
+        // - pool.allocate upholds Allocator trait contract
         let ptr = self.pool.allocate(layout)?;
 
         // Track active allocation
         if let Ok(mut active) = self.active.lock() {
+            // SAFETY: Converting pointer to usize for HashMap key.
+            // - ptr is NonNull (from successful allocation)
+            // - usize is purely for tracking (doesn't affect memory safety)
             active.insert(ptr.as_ptr() as *mut u8 as usize, layout.size());
         }
 
@@ -144,9 +168,15 @@ unsafe impl Allocator for CompressedPool {
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         // Remove from active
         if let Ok(mut active) = self.active.lock() {
+            // SAFETY: Converting pointer to usize for HashMap key.
+            // - ptr is NonNull (caller contract)
+            // - usize is purely for tracking (doesn't affect deallocation safety)
             active.remove(&(ptr.as_ptr() as usize));
         }
 
+        // SAFETY: Forwarding to pool.deallocate.
+        // - ptr/layout match allocation (caller contract)
+        // - pool.deallocate upholds Allocator trait contract
         self.pool.deallocate(ptr, layout)
     }
 }
@@ -175,12 +205,21 @@ impl CompressedPool {
 }
 
 #[cfg(not(feature = "compression"))]
+// SAFETY: CompressedPool (no compression) forwards to PoolAllocator.
+// - Placeholder implementation when compression feature disabled
+// - All safety contracts preserved through delegation
 unsafe impl Allocator for CompressedPool {
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
+        // SAFETY: Forwarding to pool.allocate.
+        // - layout is valid (caller contract)
+        // - pool.allocate upholds Allocator trait contract
         self.pool.allocate(layout)
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        // SAFETY: Forwarding to pool.deallocate.
+        // - ptr/layout match allocation (caller contract)
+        // - pool.deallocate upholds Allocator trait contract
         self.pool.deallocate(ptr, layout)
     }
 }
@@ -193,6 +232,10 @@ mod tests {
     fn test_compressed_pool_basic() {
         let alloc = CompressedPool::new(128, 8).unwrap();
 
+        // SAFETY: Test allocate/deallocate cycle.
+        // - layout is valid
+        // - ptr/layout match for deallocation
+        // - No outstanding references when deallocating
         unsafe {
             let layout = Layout::from_size_align(128, 8).unwrap();
             let ptr = alloc.allocate(layout).unwrap();
