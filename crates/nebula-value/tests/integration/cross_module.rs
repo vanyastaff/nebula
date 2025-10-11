@@ -164,13 +164,12 @@ fn test_builder_with_limits() {
 #[test]
 #[cfg(feature = "serde")]
 fn test_serde_integration_all_types() {
-    use std::convert::TryFrom;
 
     // Create value with all types
     let complex = Value::Object(Object::from_iter(vec![
         ("null".to_string(), Value::Null),
         ("bool".to_string(), true.into()),
-        ("integer".to_string(), 42),
+        ("integer".to_string(), 42.into()),
         ("float".to_string(), 3.14.into()),
         ("text".to_string(), "hello".into()),
         ("array".to_string(), parse_json("[1, 2, 3]")),
