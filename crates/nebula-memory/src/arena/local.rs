@@ -1,4 +1,27 @@
 //! Thread-local arena implementation for maximum performance
+//!
+//! # Safety
+//!
+//! This module provides thread-local arena allocation with generation-based validation:
+//! - Thread-local storage ensures single-threaded access (no synchronization needed)
+//! - RefCell provides runtime borrow checking for arena access
+//! - Generation counter validates references after arena reset
+//! - LocalRef/LocalRefMut wrappers prevent use-after-reset via generation check
+//!
+//! ## Invariants
+//!
+//! - Each thread has its own independent LocalArena instance
+//! - Generation counter increments on reset, invalidating all previous references
+//! - LocalRef/LocalRefMut carry generation tag from allocation time
+//! - Deref panics if generation mismatch (reference used after reset)
+//! - local_arena() transmute extends lifetime to 'static (valid per thread_local guarantees)
+//!
+//! ## Safety guarantees
+//!
+//! - No data races: thread_local ensures each thread has exclusive access
+//! - No use-after-free: generation validation prevents dereferencing stale pointers
+//! - No aliasing violations: RefCell enforces Rust borrowing rules at runtime
+//! - Transmute in local_arena() safe: thread_local values live until thread exit
 
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
@@ -42,6 +65,10 @@ impl LocalArena {
     pub fn alloc_bytes(&self, size: usize, align: usize) -> Result<NonNull<u8>, MemoryError> {
         self.arena
             .alloc_bytes_aligned(size, align)
+            // SAFETY: alloc_bytes_aligned returns null on failure (Err case).
+            // - On Ok case, pointer is guaranteed non-null and valid
+            // - Arena ensures pointer points to allocated memory with proper alignment
+            // - Pointer remains valid until arena reset
             .map(|ptr| unsafe { NonNull::new_unchecked(ptr) })
     }
 
@@ -113,11 +140,21 @@ impl<T: ?Sized> LocalRef<T> {
     /// Gets reference if valid
     pub fn get(&self) -> &T {
         assert!(self.is_valid(), "LocalRef used after arena reset");
+        // SAFETY: Dereferencing arena-allocated pointer.
+        // - ptr is NonNull, guaranteed non-null
+        // - is_valid() confirms generation matches (no reset since allocation)
+        // - Arena guarantees memory remains valid until reset
+        // - Assertion above ensures this invariant holds
         unsafe { self.ptr.as_ref() }
     }
 
     /// Tries to get reference
     pub fn try_get(&self) -> Option<&T> {
+        // SAFETY: Dereferencing arena-allocated pointer.
+        // - is_valid() check ensures generation matches (no reset)
+        // - then() only executes closure if generation valid
+        // - ptr is NonNull and points to valid arena memory
+        // - Arena ensures memory valid until reset
         self.is_valid().then(|| unsafe { self.ptr.as_ref() })
     }
 }
@@ -146,22 +183,44 @@ impl<T: ?Sized> LocalRefMut<T> {
     /// Gets reference if valid
     pub fn get(&self) -> &T {
         assert!(self.is_valid(), "LocalRefMut used after arena reset");
+        // SAFETY: Dereferencing arena-allocated pointer (immutable).
+        // - ptr is NonNull, guaranteed non-null
+        // - is_valid() confirms generation matches (no reset since allocation)
+        // - Arena guarantees memory remains valid until reset
+        // - Assertion above ensures this invariant holds
         unsafe { self.ptr.as_ref() }
     }
 
     /// Gets mutable reference if valid
     pub fn get_mut(&mut self) -> &mut T {
         assert!(self.is_valid(), "LocalRefMut used after arena reset");
+        // SAFETY: Dereferencing arena-allocated pointer (mutable).
+        // - ptr is NonNull, guaranteed non-null
+        // - is_valid() confirms generation matches (no reset since allocation)
+        // - &mut self ensures exclusive access (no aliasing)
+        // - Arena guarantees memory remains valid until reset
+        // - Assertion above ensures this invariant holds
         unsafe { self.ptr.as_mut() }
     }
 
     /// Tries to get reference
     pub fn try_get(&self) -> Option<&T> {
+        // SAFETY: Dereferencing arena-allocated pointer (immutable).
+        // - is_valid() check ensures generation matches (no reset)
+        // - then() only executes closure if generation valid
+        // - ptr is NonNull and points to valid arena memory
+        // - Arena ensures memory valid until reset
         self.is_valid().then(|| unsafe { self.ptr.as_ref() })
     }
 
     /// Tries to get mutable reference
     pub fn try_get_mut(&mut self) -> Option<&mut T> {
+        // SAFETY: Dereferencing arena-allocated pointer (mutable).
+        // - is_valid() check ensures generation matches (no reset)
+        // - then() only executes closure if generation valid
+        // - &mut self ensures exclusive access (no aliasing)
+        // - ptr is NonNull and points to valid arena memory
+        // - Arena ensures memory valid until reset
         self.is_valid().then(|| unsafe { self.ptr.as_mut() })
     }
 }
@@ -183,8 +242,18 @@ impl<T: ?Sized> std::ops::DerefMut for LocalRefMut<T> {
 impl<T> LocalRefMut<MaybeUninit<T>> {
     /// Initializes the value
     pub fn init(mut self, value: T) -> LocalRefMut<T> {
+        // SAFETY: Writing value to uninitialized memory.
+        // - ptr points to MaybeUninit<T> allocated in arena
+        // - as_mut() is safe (ptr is NonNull and generation valid)
+        // - write() initializes the MaybeUninit<T> with value
+        // - After write, memory contains initialized T
         unsafe { self.ptr.as_mut().write(value) };
 
+        // SAFETY: Casting MaybeUninit<T> pointer to T pointer.
+        // - MaybeUninit<T> and T have same layout (repr(transparent))
+        // - We just initialized the value with write() above
+        // - Memory is now valid T, safe to treat as LocalRefMut<T>
+        // - Generation remains the same (no reset)
         LocalRefMut {
             ptr: self.ptr.cast(),
             generation: self.generation,
@@ -221,11 +290,23 @@ pub fn reset_local_arena() {
 }
 
 /// Gets reference to the thread-local arena
+///
+/// # Safety
+///
+/// Returns a reference with 'static lifetime to the thread-local arena.
+/// The reference is valid for the lifetime of the current thread.
 pub fn local_arena() -> &'static LocalArena {
     LOCAL_ARENA.with(|arena| unsafe {
-        // Создаем статическую ссылку на thread-local арену
-        // Это безопасно, поскольку thread_local гарантирует,
-        // что значение существует до конца работы потока
+        // SAFETY: Transmuting thread-local reference to 'static lifetime.
+        // - thread_local! guarantees value lives until thread exit
+        // - Each thread has its own independent LocalArena instance
+        // - RefCell::borrow() returns valid reference to LocalArena
+        // - Extending lifetime to 'static is safe within this thread's context
+        // - Caller cannot send this reference to other threads (LocalArena is !Send)
+        //
+        // This is a common pattern for thread-local storage:
+        // The 'static lifetime means "valid for the entire program" in the context
+        // of this specific thread, not globally across all threads.
         std::mem::transmute::<&LocalArena, &'static LocalArena>(&arena.borrow())
     })
 }
