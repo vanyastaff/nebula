@@ -1,6 +1,6 @@
 //! Basic usage examples for nebula-value
 //!
-//! Run with: cargo run --example basic_usage
+//! Run with: cargo run --example basic_usage --features serde
 
 use nebula_value::collections::array::ArrayBuilder;
 use nebula_value::collections::object::ObjectBuilder;
@@ -145,14 +145,17 @@ fn hashing_examples() {
 fn serialization_examples() -> Result<(), Box<dyn std::error::Error>> {
     println!("6. Serialization:");
 
-    // Serialize to JSON
-    let value = Value::integer(42);
-    let json = serde_json::to_string(&value)?;
-    println!("  Serialized: {}", json);
+    #[cfg(feature = "serde")]
+    {
+        // Serialize to JSON
+        let value = Value::integer(42);
+        let json = serde_json::to_string(&value)?;
+        println!("  Serialized: {}", json);
 
-    // Deserialize from JSON
-    let deserialized: Value = serde_json::from_str(&json)?;
-    println!("  Deserialized: {}", deserialized);
+        // Deserialize from JSON
+        let deserialized: Value = serde_json::from_str(&json)?;
+        println!("  Deserialized: {}", deserialized);
+    }
 
     // Pretty print
     let complex = Value::integer(123);

@@ -1,48 +1,50 @@
-//! Example demonstrating the re-exported json! macro
+//! Example demonstrating native Value construction
 //!
-//! Instead of importing serde_json::json!, you can use nebula_value::json!
+//! Run with: cargo run --example json_reexport
 
 use nebula_value::collections::array::ArrayBuilder;
 use nebula_value::collections::object::ObjectBuilder;
 use nebula_value::prelude::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Use json! macro from nebula_value (re-exported from serde_json)
+    // Build array with native Values
     let array = ArrayBuilder::new()
-        .push(json!(1))
-        .push(json!("hello"))
-        .push(json!(true))
-        .push(json!(null))
+        .push(1)
+        .push("hello")
+        .push(true)
+        .push(Value::Null)
         .build()?;
 
     println!("Array: {:?}", array);
 
     // Build complex objects
+    let tags = Array::from_vec(vec!["admin".into(), "developer".into()]);
     let user = ObjectBuilder::new()
-        .insert("id", json!(42))
-        .insert("name", json!("Alice"))
-        .insert("email", json!("alice@example.com"))
-        .insert("active", json!(true))
-        .insert("tags", json!(["admin", "developer"]))
+        .insert("id", 42)
+        .insert("name", "Alice")
+        .insert("email", "alice@example.com")
+        .insert("active", true)
+        .insert("tags", Value::Array(tags))
         .build()?;
 
     println!("User: {:?}", user);
 
-    // Nested structures
+    // Nested structures with parse_json helper
+    let settings: Value = r#"{
+        "timeout": 30,
+        "retries": 3,
+        "verbose": true
+    }"#.parse()?;
+
+    let endpoints = Array::from_vec(vec![
+        "https://api.example.com".into(),
+        "https://backup.example.com".into()
+    ]);
+
     let config = ObjectBuilder::new()
-        .insert("version", json!("1.0.0"))
-        .insert(
-            "settings",
-            json!({
-                "timeout": 30,
-                "retries": 3,
-                "verbose": true
-            }),
-        )
-        .insert(
-            "endpoints",
-            json!(["https://api.example.com", "https://backup.example.com"]),
-        )
+        .insert("version", "1.0.0")
+        .insert("settings", settings)
+        .insert("endpoints", Value::Array(endpoints))
         .build()?;
 
     println!("Config: {:?}", config);
