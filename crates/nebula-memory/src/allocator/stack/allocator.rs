@@ -1,4 +1,35 @@
 //! Main stack allocator implementation
+//!
+//! # Safety
+//!
+//! This module implements a thread-safe LIFO stack allocator:
+//! - Memory buffer wrapped in SyncUnsafeCell for interior mutability
+//! - Atomic top pointer for lock-free allocation via CAS
+//! - Deallocations only supported for most recent allocation (stack discipline)
+//! - Markers enable batch deallocation by restoring stack position
+//!
+//! ## Invariants
+//!
+//! - All pointers within [start_addr, end_addr) bounds
+//! - top pointer moves monotonically upward (or resets to start)
+//! - Allocations aligned properly via align_up
+//! - CAS loop ensures exclusive ownership of allocated ranges
+//! - try_pop verifies pointer matches most recent allocation
+//! - restore_to_marker validates marker is within valid range
+//!
+//! ## Thread Safety
+//!
+//! - Atomic top pointer with AcqRel ordering for allocation CAS
+//! - Acquire loads ensure visibility of previous allocations
+//! - Release stores ensure new allocations visible to other threads
+//! - Statistics tracked with atomic operations (Relaxed ordering)
+//!
+//! ## Memory Ordering
+//!
+//! - Acquire: Loading top pointer (read barrier, see previous writes)
+//! - Release: Storing top pointer (write barrier, publish changes)
+//! - AcqRel: CAS success (both acquire and release semantics)
+//! - Relaxed: Statistics updates (ordering not critical)
 
 use core::alloc::Layout;
 use core::cell::UnsafeCell;
@@ -15,8 +46,16 @@ use crate::utils::{Backoff, align_up, atomic_max};
 #[repr(transparent)]
 struct SyncUnsafeCell<T: ?Sized>(UnsafeCell<T>);
 
-// SAFETY: We ensure proper synchronization through atomic top pointer
+// SAFETY: SyncUnsafeCell provides interior mutability with external synchronization.
+// - UnsafeCell allows shared mutation via raw pointers
+// - Atomic top pointer ensures allocations don't overlap
+// - CAS operations provide exclusive access to allocated ranges
+// - repr(transparent) ensures same layout as UnsafeCell<T>
 unsafe impl<T: ?Sized> Sync for SyncUnsafeCell<T> {}
+
+// SAFETY: SyncUnsafeCell can be sent between threads if T: Send.
+// - Wraps UnsafeCell<T>, inherits Send requirement from T
+// - No thread-local state or thread-specific invariants
 unsafe impl<T: ?Sized + Send> Send for SyncUnsafeCell<T> {}
 
 impl<T> SyncUnsafeCell<T> {
@@ -87,11 +126,22 @@ impl StackAllocator {
         let boxed_slice = vec.into_boxed_slice();
         let len = boxed_slice.len();
         let ptr = Box::into_raw(boxed_slice) as *mut u8;
-        // SAFETY: Transmuting Box<[u8]> to Box<SyncUnsafeCell<[u8]>> is safe (repr(transparent))
+        // SAFETY: Transmuting Box<[u8]> to Box<SyncUnsafeCell<[u8]>>.
+        // - SyncUnsafeCell is repr(transparent), has same layout as UnsafeCell<T>
+        // - UnsafeCell<T> is repr(transparent), has same layout as T
+        // - Therefore SyncUnsafeCell<[u8]> has same layout as [u8]
+        // - Box ownership transferred via into_raw/from_raw
+        // - Pointer cast is safe due to layout guarantee
+        // - Length preserved correctly
         let memory: Box<SyncUnsafeCell<[u8]>> = unsafe {
             Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len) as *mut SyncUnsafeCell<[u8]>)
         };
 
+        // SAFETY: Getting raw pointer from memory buffer.
+        // - memory.get() returns *mut [u8] pointing to buffer
+        // - Dereferencing to get slice, then as_ptr() to get element pointer
+        // - Casting to usize for address arithmetic
+        // - Buffer is valid (just allocated above)
         let start_addr = unsafe { (*memory.get()).as_ptr() as usize };
         let end_addr = start_addr + capacity;
 
@@ -135,11 +185,20 @@ impl StackAllocator {
         // Wrap in SyncUnsafeCell for interior mutability
         let len = memory.len();
         let ptr = Box::into_raw(memory) as *mut u8;
-        // SAFETY: Transmuting Box<[u8]> to Box<SyncUnsafeCell<[u8]>> is safe (repr(transparent))
+        // SAFETY: Transmuting Box<[u8]> to Box<SyncUnsafeCell<[u8]>>.
+        // - SyncUnsafeCell is repr(transparent) over UnsafeCell
+        // - UnsafeCell is repr(transparent) over T
+        // - Therefore SyncUnsafeCell<[u8]> has same layout as [u8]
+        // - Box ownership transferred via into_raw/from_raw
+        // - Pointer cast safe due to layout guarantee
         let memory: Box<SyncUnsafeCell<[u8]>> = unsafe {
             Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len) as *mut SyncUnsafeCell<[u8]>)
         };
 
+        // SAFETY: Getting raw pointer from memory buffer.
+        // - memory.get() returns *mut [u8] to buffer
+        // - Dereferencing to access slice, then as_ptr() for element pointer
+        // - Casting to usize for address arithmetic
         let start_addr = unsafe { (*memory.get()).as_ptr() as usize };
         let end_addr = start_addr + capacity;
 
@@ -221,6 +280,9 @@ impl StackAllocator {
     /// - The pointer must have been allocated by this allocator
     /// - The layout must match the original allocation layout
     pub unsafe fn try_pop(&self, ptr: NonNull<u8>, layout: Layout) -> bool {
+        // SAFETY: Attempting to pop most recent allocation.
+        // - Caller guarantees ptr was allocated by this allocator (contract)
+        // - Caller guarantees layout matches original allocation (contract)
         unsafe {
             let current_top = self.top.load(Ordering::Acquire);
             let expected_start = current_top.saturating_sub(layout.size());
@@ -228,6 +290,10 @@ impl StackAllocator {
             // Check if this pointer matches the most recent allocation
             if ptr.as_ptr() as usize == align_up(expected_start, layout.align()) {
                 // Fill with dealloc pattern if debugging
+                // SAFETY: Writing pattern to allocated memory before deallocation.
+                // - ptr is valid (verified to match most recent allocation above)
+                // - layout.size() is the original allocation size
+                // - Memory about to be freed, overwriting is safe
                 if let Some(pattern) = self.config.dealloc_pattern {
                     ptr::write_bytes(ptr.as_ptr(), pattern, layout.size());
                 }
@@ -301,12 +367,21 @@ impl StackAllocator {
                     }
 
                     // Fill with alloc pattern if debugging
+                    // SAFETY: Writing pattern to newly allocated memory.
+                    // - CAS success guarantees exclusive ownership of [aligned_addr, new_top)
+                    // - aligned_addr is valid (within [start_addr, end_addr), checked above)
+                    // - size bytes available (new_top = aligned_addr + size, validated)
+                    // - Memory is ours to initialize
                     if let Some(pattern) = self.config.alloc_pattern {
                         unsafe {
                             ptr::write_bytes(aligned_addr as *mut u8, pattern, size);
                         }
                     }
 
+                    // SAFETY: Creating NonNull from address.
+                    // - aligned_addr is non-zero (start_addr > 0, aligned_addr >= start_addr)
+                    // - aligned_addr points to valid memory (CAS success guarantees)
+                    // - aligned_addr properly aligned (align_up ensures this)
                     return Some(unsafe { NonNull::new_unchecked(aligned_addr as *mut u8) });
                 }
                 Err(_) => {
@@ -332,6 +407,11 @@ impl StackAllocator {
     } // 8MB
 }
 
+// SAFETY: StackAllocator implements Allocator with stack discipline.
+// - allocate returns valid, aligned, non-overlapping pointers
+// - Atomic CAS ensures exclusive ownership of allocated ranges
+// - deallocate only works for most recent allocation (stack LIFO)
+// - All operations properly synchronized via atomic top pointer
 unsafe impl Allocator for StackAllocator {
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
         if layout.size() == 0 {
@@ -350,6 +430,10 @@ unsafe impl Allocator for StackAllocator {
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         // Try to pop if this is the most recent allocation
         // This is a "best effort" - if it's not the most recent, it's a no-op
+        // SAFETY: Forwarding to try_pop.
+        // - ptr was allocated by this allocator (caller contract)
+        // - layout matches original allocation (caller contract)
+        // - try_pop validates pointer matches most recent allocation
         unsafe { self.try_pop(ptr, layout) };
     }
 
@@ -385,16 +469,31 @@ unsafe impl Allocator for StackAllocator {
         }
 
         // Fall back to allocate + copy + deallocate
+        // SAFETY: Allocating new memory with new_layout.
+        // - new_layout is valid (validated by caller)
+        // - allocate returns valid pointer or error
         let new_ptr = unsafe { self.allocate(new_layout)? };
 
         let copy_size = core::cmp::min(old_layout.size(), new_layout.size());
         if copy_size > 0 {
+            // SAFETY: Copying data from old to new allocation.
+            // - ptr is valid for reads of old_layout.size() bytes (caller contract)
+            // - new_ptr is valid for writes of new_layout.size() bytes (just allocated)
+            // - copy_size <= min(old, new), so both accesses in bounds
+            // - Regions may overlap if old allocation still on stack, but we use
+            //   copy_nonoverlapping which requires non-overlap. However, if allocate
+            //   succeeded, new_ptr is beyond old ptr (stack grows up), so no overlap.
             unsafe {
                 ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr() as *mut u8, copy_size);
             }
         }
 
         // Try to deallocate old memory (will succeed if it's still the most recent)
+        // SAFETY: Deallocating old memory.
+        // - ptr was allocated by this allocator (caller contract)
+        // - old_layout matches original allocation (caller contract)
+        // - Data has been copied to new location
+        // - deallocate is best-effort for stack allocator (may be no-op)
         unsafe { self.deallocate(ptr, old_layout) };
 
         Ok(new_ptr)
@@ -417,6 +516,10 @@ impl MemoryUsage for StackAllocator {
 
 impl Resettable for StackAllocator {
     unsafe fn reset(&self) {
+        // SAFETY: Resetting stack to initial state.
+        // - Caller guarantees no outstanding pointers to allocated memory (contract)
+        // - Resetting top to start_addr invalidates all previous allocations
+        // - Release ordering ensures reset is visible to all threads
         self.top.store(self.start_addr, Ordering::Release);
 
         // Reset statistics
@@ -464,5 +567,16 @@ impl StatisticsProvider for StackAllocator {
 }
 
 // Thread safety
+// SAFETY: StackAllocator can be sent between threads.
+// - All fields are Send (Box, AtomicUsize, AtomicU32, primitive types)
+// - No thread-local state or thread-specific invariants
+// - Owned memory buffer (Box) is Send
 unsafe impl Send for StackAllocator {}
+
+// SAFETY: StackAllocator can be shared between threads.
+// - All allocations synchronized via atomic top pointer with CAS
+// - Memory buffer wrapped in SyncUnsafeCell (interior mutability)
+// - CAS operations provide exclusive access to allocated ranges
+// - Statistics tracked with atomic operations
+// - All operations use proper memory ordering (Acquire/Release/AcqRel)
 unsafe impl Sync for StackAllocator {}
