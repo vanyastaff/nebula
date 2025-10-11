@@ -4,9 +4,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nebula_value::{Object, Value};
-// Import extension traits for ergonomic conversions
 use crate::core::config::{ConfigError, ConfigResult, ResilienceConfig};
-use nebula_value::{JsonValueExt, ValueRefExt};
 
 /// Get current timestamp as ISO 8601 string
 fn current_timestamp() -> String {
@@ -110,32 +108,22 @@ impl DynamicConfig {
         }
 
         if path.len() == 1 {
-            // Convert nebula_value::Value to serde_json::Value for storage
-            let json_value = value.to_json();
-            Ok(obj.insert(path[0].to_string(), json_value))
+            // Object already stores nebula Values directly
+            Ok(obj.insert(path[0].to_string(), value))
         } else {
             let key = path[0];
             let remaining = &path[1..];
 
             // Get nested value or create empty object
-            let nested_json = obj
+            let nested = obj
                 .get(key)
                 .cloned()
-                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-
-            // Convert to nebula Value for processing using extension trait
-            let nested = nested_json.to_nebula_value_or_null();
+                .unwrap_or(Value::Object(Object::new()));
 
             match nested {
                 Value::Object(nested_obj) => {
                     let updated_nested = self.set_nested_value(&nested_obj, remaining, value)?;
-                    let updated_json = serde_json::Value::Object(
-                        updated_nested
-                            .entries()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect(),
-                    );
-                    Ok(obj.insert(key.to_string(), updated_json))
+                    Ok(obj.insert(key.to_string(), Value::Object(updated_nested)))
                 }
                 _ => Err(ConfigError::validation(format!(
                     "Path '{key}' exists but is not an object"
@@ -150,17 +138,16 @@ impl DynamicConfig {
         }
 
         let key = path[0];
-        let json_value = obj
+        let value = obj
             .get(key)
             .ok_or_else(|| ConfigError::not_found("config", key))?;
 
         if path.len() == 1 {
-            Ok(json_value.to_nebula_value_or_null())
+            Ok(value.clone())
         } else {
-            // Convert serde_json::Value to nebula Value for matching
-            let value = json_value.to_nebula_value_or_null();
+            // Navigate deeper into nested object
             match value {
-                Value::Object(nested_obj) => self.get_nested_value(&nested_obj, &path[1..]),
+                Value::Object(nested_obj) => self.get_nested_value(nested_obj, &path[1..]),
                 _ => Err(ConfigError::validation(format!(
                     "Path '{key}' is not an object"
                 ))),
@@ -169,21 +156,20 @@ impl DynamicConfig {
     }
 
     fn flatten_object(&self, obj: &Object, prefix: &str, map: &mut HashMap<String, String>) {
-        for (key, json_value) in obj.entries() {
+        for (key, value) in obj.entries() {
             let full_key = if prefix.is_empty() {
                 key.clone()
             } else {
                 format!("{prefix}.{key}")
             };
 
-            // Convert to nebula Value to check if it's an object
-            match json_value {
-                serde_json::Value::Object(nested_map) => {
-                    let nested_obj = Object::from_iter(nested_map.clone());
-                    self.flatten_object(&nested_obj, &full_key, map);
+            // Check if it's a nested object
+            match value {
+                Value::Object(nested_obj) => {
+                    self.flatten_object(nested_obj, &full_key, map);
                 }
                 _ => {
-                    map.insert(full_key, format!("{json_value}"));
+                    map.insert(full_key, format!("{value}"));
                 }
             }
         }
