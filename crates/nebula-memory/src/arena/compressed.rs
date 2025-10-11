@@ -1,4 +1,20 @@
 //! Compressed arena implementation for memory-efficient storage
+//!
+//! # Safety
+//!
+//! This module implements a bump allocator with automatic compression:
+//! - Block: Raw memory allocation using std::alloc (alloc/dealloc)
+//! - Single-threaded access via RefCell (no concurrent access)
+//! - Active block provides bump allocation until compressed
+//! - Compression happens when blocks reach threshold or are flushed
+//!
+//! ## Safety Contracts
+//!
+//! - Block::new: Uses std::alloc with proper Layout
+//! - Block::drop: Deallocates with matching Layout
+//! - Block::as_slice: Creates slice from valid memory range (0..used)
+//! - alloc_bytes: Pointer arithmetic within block bounds
+//! - alloc: Writes value to allocated memory and returns mutable reference
 
 use std::alloc::{Layout, alloc, dealloc};
 use std::cell::{Cell, RefCell};
@@ -50,6 +66,10 @@ impl Block {
         let layout = Layout::from_size_align(size, 1)
             .map_err(|_| MemoryError::invalid_layout("layout creation failed"))?;
 
+        // SAFETY: Allocating memory with valid layout.
+        // - layout is valid (just created from size/align)
+        // - Caller responsible for eventually calling dealloc with same layout
+        // - ptr checked for null below
         let ptr = unsafe { alloc(layout) };
         let ptr = NonNull::new(ptr).ok_or(MemoryError::allocation_failed(0, 1))?;
 
@@ -67,12 +87,22 @@ impl Block {
 
     #[inline]
     fn as_slice(&self) -> &[u8] {
+        // SAFETY: Creating slice from allocated memory.
+        // - ptr is valid (allocated in Block::new)
+        // - used <= capacity (maintained by allocation logic)
+        // - Memory is valid for 'self lifetime
+        // - Returns immutable reference (no mutable aliases)
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.used) }
     }
 }
 
 impl Drop for Block {
     fn drop(&mut self) {
+        // SAFETY: Deallocating memory with matching layout.
+        // - ptr was allocated via alloc() in Block::new
+        // - Layout matches original allocation (capacity with align=1)
+        // - from_size_align_unchecked is safe (capacity/1 valid, guaranteed by new())
+        // - Memory not accessed after dealloc (Drop consumes self)
         unsafe {
             dealloc(
                 self.ptr.as_ptr(),
@@ -134,6 +164,11 @@ impl CompressedArena {
             return self.alloc_bytes(size, align);
         }
 
+        // SAFETY: Computing pointer within allocated block.
+        // - block.ptr is valid (allocated in Block::new)
+        // - aligned_pos <= block.used + needed (computed above)
+        // - needed <= block.available() (checked above)
+        // - Final position (aligned_pos + size) <= capacity
         let ptr = unsafe { block.ptr.as_ptr().add(aligned_pos) };
         block.used = aligned_pos + size;
         self.stats.record_allocation(size, 0);
@@ -146,6 +181,11 @@ impl CompressedArena {
     pub fn alloc<T>(&self, value: T) -> Result<&mut T, MemoryError> {
         let ptr = self.alloc_bytes(std::mem::size_of::<T>(), std::mem::align_of::<T>())? as *mut T;
 
+        // SAFETY: Writing value to allocated memory and creating mutable reference.
+        // - ptr is valid and properly aligned (from alloc_bytes with T's alignment)
+        // - Memory is uninitialized (safe to write)
+        // - Returns exclusive reference tied to arena lifetime
+        // - Arena is single-threaded (RefCell), no concurrent access
         unsafe {
             ptr.write(value);
             Ok(&mut *ptr)
