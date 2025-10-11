@@ -1,4 +1,19 @@
 //! Time-to-live object pool
+//!
+//! # Safety
+//!
+//! This module implements TTL-based pooling with automatic expiration:
+//! - TtlPooledValue holds raw pointer to pool
+//! - ManuallyDrop for controlled object lifecycle
+//! - Drop returns object to pool with new timestamp
+//! - Expired objects removed during cleanup or get operations
+//!
+//! ## Safety Contracts
+//!
+//! - TtlPooledValue::detach: ManuallyDrop::take + mem::forget prevents drop
+//! - TtlPooledValue::drop: ManuallyDrop::take + pool deref + return_object
+//! - Send implementation: Safe if T: Send (pool pointer not shared)
+//! - Pool pointer remains valid (lifetime tied to get() borrow)
 
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
@@ -269,6 +284,10 @@ pub struct TtlPooledValue<T: Poolable> {
 impl<T: Poolable> TtlPooledValue<T> {
     /// Detach value from pool
     pub fn detach(mut self) -> T {
+        // SAFETY: Extracting value from ManuallyDrop.
+        // - value is initialized (created in TtlPool::get)
+        // - mem::forget prevents Drop::drop from running
+        // - No double-free (Drop won't return object to pool)
         let value = unsafe { ManuallyDrop::take(&mut self.value) };
         core::mem::forget(self);
         value
@@ -294,6 +313,11 @@ impl<T: Poolable> DerefMut for TtlPooledValue<T> {
 #[cfg(feature = "std")]
 impl<T: Poolable> Drop for TtlPooledValue<T> {
     fn drop(&mut self) {
+        // SAFETY: Returning object to TTL pool.
+        // - ManuallyDrop::take extracts value (initialized in TtlPool::get)
+        // - pool pointer is valid (created from &mut in get)
+        // - return_object wraps value with new timestamp
+        // - No double-drop (ManuallyDrop prevents automatic drop)
         unsafe {
             let obj = ManuallyDrop::take(&mut self.value);
             (*self.pool).return_object(obj);
@@ -301,7 +325,12 @@ impl<T: Poolable> Drop for TtlPooledValue<T> {
     }
 }
 
-// Safety: TtlPooledValue can be sent if T can
+// SAFETY: TtlPooledValue can be sent between threads if T: Send.
+// - value: ManuallyDrop<T> is Send if T: Send
+// - pool: Raw pointer not shared (exclusive ownership of value)
+// - T: Send ensures value can be safely sent
+// - Pool pointer used only for returning (no concurrent access)
+// - Drop on destination thread safely returns object to pool
 #[cfg(feature = "std")]
 unsafe impl<T: Poolable + Send> Send for TtlPooledValue<T> {}
 
