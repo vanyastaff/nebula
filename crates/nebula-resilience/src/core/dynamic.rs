@@ -199,91 +199,91 @@ pub struct ResiliencePresets;
 
 impl ResiliencePresets {
     /// Get database operation configuration
-    #[must_use] 
+    #[must_use]
     pub fn database() -> DynamicConfig {
         let mut config = DynamicConfig::new();
 
         // Circuit breaker for database
         config
             .set_value("circuit_breaker.failure_threshold", Value::integer(5))
-            .unwrap();
+            .expect("preset configuration should be valid");
         config
             .set_value("circuit_breaker.reset_timeout", Value::text("60s"))
-            .unwrap();
+            .expect("preset configuration should be valid");
         config
             .set_value(
                 "circuit_breaker.half_open_max_operations",
                 Value::integer(3),
             )
-            .unwrap();
+            .expect("preset configuration should be valid");
 
         // Retry for database
         config
             .set_value("retry.max_attempts", Value::integer(3))
-            .unwrap();
+            .expect("preset configuration should be valid");
         config
             .set_value("retry.base_delay", Value::text("100ms"))
-            .unwrap();
+            .expect("preset configuration should be valid");
         config
             .set_value("retry.max_delay", Value::text("5s"))
-            .unwrap();
+            .expect("preset configuration should be valid");
 
         // Timeout for database
         config
             .set_value("timeout.duration", Value::text("30s"))
-            .unwrap();
+            .expect("preset configuration should be valid");
 
         config
     }
 
     /// Get HTTP API configuration
-    #[must_use] 
+    #[must_use]
     pub fn http_api() -> DynamicConfig {
         let mut config = DynamicConfig::new();
 
         // Circuit breaker for HTTP
         config
             .set_value("circuit_breaker.failure_threshold", Value::integer(3))
-            .unwrap();
+            .expect("preset configuration should be valid");
         config
             .set_value("circuit_breaker.reset_timeout", Value::text("30s"))
-            .unwrap();
+            .expect("preset configuration should be valid");
         config
             .set_value(
                 "circuit_breaker.half_open_max_operations",
                 Value::integer(2),
             )
-            .unwrap();
+            .expect("preset configuration should be valid");
 
         // Retry for HTTP
         config
             .set_value("retry.max_attempts", Value::integer(3))
-            .unwrap();
+            .expect("preset configuration should be valid");
         config
             .set_value("retry.base_delay", Value::text("1s"))
-            .unwrap();
+            .expect("preset configuration should be valid");
         config
             .set_value("retry.max_delay", Value::text("10s"))
-            .unwrap();
+            .expect("preset configuration should be valid");
 
         // Timeout for HTTP
         config
             .set_value("timeout.duration", Value::text("10s"))
-            .unwrap();
+            .expect("preset configuration should be valid");
 
         // Rate limiting for HTTP
         config
             .set_value("rate_limit.requests_per_second", Value::integer(100))
-            .unwrap();
+            .expect("preset configuration should be valid");
         config
             .set_value("rate_limit.burst", Value::integer(20))
-            .unwrap();
+            .expect("preset configuration should be valid");
 
         config
     }
 
     /// Get file I/O configuration
-    #[must_use] 
+    #[must_use]
     pub fn file_io() -> DynamicConfig {
         let mut config = DynamicConfig::new();
 
@@ -292,18 +292,18 @@ impl ResiliencePresets {
         // Light retry for file I/O
         config
             .set_value("retry.max_attempts", Value::integer(2))
-            .unwrap();
+            .expect("preset configuration should be valid");
         config
             .set_value("retry.base_delay", Value::text("500ms"))
-            .unwrap();
+            .expect("preset configuration should be valid");
         config
             .set_value("retry.max_delay", Value::text("2s"))
-            .unwrap();
+            .expect("preset configuration should be valid");
 
         // Generous timeout for file I/O
         config
             .set_value("timeout.duration", Value::text("60s"))
-            .unwrap();
+            .expect("preset configuration should be valid");
 
         config
     }

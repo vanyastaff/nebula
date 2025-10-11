@@ -194,8 +194,10 @@ impl ErrorCollector {
         }
 
         match self.strategy {
-            ErrorStrategy::FirstError => Err(self.errors.into_iter().next().unwrap()),
-            ErrorStrategy::LastError => Err(self.errors.into_iter().last().unwrap()),
+            ErrorStrategy::FirstError => Err(self.errors.into_iter().next()
+                .expect("errors is non-empty (checked above)")),
+            ErrorStrategy::LastError => Err(self.errors.into_iter().last()
+                .expect("errors is non-empty (checked above)")),
             ErrorStrategy::MostSevere => {
                 let most_severe = self
                     .errors
@@ -207,7 +209,7 @@ impl ErrorCollector {
                         ErrorClass::Transient => 1,
                         ErrorClass::Unknown => 0,
                     })
-                    .unwrap();
+                    .expect("errors is non-empty (checked above)");
                 Err(most_severe)
             }
             ErrorStrategy::CombineAll => {
