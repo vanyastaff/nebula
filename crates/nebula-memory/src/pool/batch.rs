@@ -1,4 +1,18 @@
 //! Batch allocation optimization for object pools
+//!
+//! # Safety
+//!
+//! This module implements batch allocation for efficient bulk operations:
+//! - Batch holds raw pointer to BatchAllocator
+//! - Drop returns all objects to pool via allocator pointer
+//! - mem::take + mem::forget pattern prevents double-return
+//! - Allocator pointer remains valid (lifetime tied to get_batch borrow)
+//!
+//! ## Safety Contracts
+//!
+//! - Batch::drop: Dereferences allocator pointer and returns objects
+//! - Send implementation: Safe if T: Send (allocator pointer not shared)
+//! - Allocator pointer valid (created from &mut in get_batch)
 
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec::Vec};
@@ -302,6 +316,11 @@ impl<T: Poolable> Batch<T> {
 impl<T: Poolable> Drop for Batch<T> {
     fn drop(&mut self) {
         // Return all objects to pool
+        // SAFETY: Returning batch objects to allocator.
+        // - allocator pointer is valid (created from &mut in get_batch)
+        // - mem::take extracts objects (prevents double-return)
+        // - Each object returned to pool via return_object
+        // - pool.return_object handles object lifecycle
         unsafe {
             let objects = core::mem::take(&mut self.objects);
             for obj in objects {
@@ -323,7 +342,12 @@ impl<T: Poolable> IntoIterator for Batch<T> {
     }
 }
 
-// Safety: Batch can be sent if T can
+// SAFETY: Batch can be sent between threads if T: Send.
+// - objects: Vec<T> is Send if T: Send
+// - allocator: Raw pointer not shared (exclusive ownership of batch)
+// - T: Send ensures objects can be safely sent
+// - Allocator pointer used only for returning (no concurrent access)
+// - Drop on destination thread safely returns objects to pool
 unsafe impl<T: Poolable + Send> Send for Batch<T> {}
 
 #[cfg(test)]
