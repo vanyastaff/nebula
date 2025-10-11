@@ -1,4 +1,19 @@
 //! Type-safe arena allocator for single type allocations
+//!
+//! # Safety
+//!
+//! This module implements a type-safe arena optimized for single-type allocations:
+//! - TypedChunk stores T values in Box<[MaybeUninit<T>]>
+//! - NonNull pointers to chunks managed via RefCell
+//! - Single-threaded access (no Sync without explicit synchronization)
+//! - Pointer dereferencing protected by RefCell borrow checking
+//!
+//! ## Safety Contracts
+//!
+//! - Chunk pointers valid while arena exists (owned by RefCell)
+//! - MaybeUninit properly initialized before creating references
+//! - Slice construction from contiguous arena-allocated pointers
+//! - Send implementation safe if T: Send (arena is single-threaded)
 
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
@@ -133,6 +148,10 @@ impl<T> TypedArena<T> {
         let index = self.current_index.get();
 
         // Check if we need a new chunk
+        // SAFETY: Dereferencing chunk pointer to check capacity.
+        // - chunk is NonNull (from current_chunk RefCell)
+        // - Pointer valid (chunk owned by arena's RefCell)
+        // - Read-only access to capacity (no mutation)
         let needs_chunk = self.current_chunk.borrow().map_or(true, |chunk| unsafe {
             index >= (*chunk.as_ptr()).capacity()
         });
@@ -148,12 +167,21 @@ impl<T> TypedArena<T> {
             .expect("Should have chunk after allocation");
 
         // Get pointer to element
+        // SAFETY: Accessing chunk storage at current index.
+        // - chunk_ptr valid (from current_chunk RefCell)
+        // - index within bounds (needs_chunk check above ensures this)
+        // - MaybeUninit allows uninitialized access
+        // - as_mut_ptr returns raw pointer for writing
         let elem_ptr = unsafe {
             let chunk = &mut *chunk_ptr.as_ptr();
             chunk.storage[self.current_index.get()].as_mut_ptr()
         };
 
         // Write value
+        // SAFETY: Writing value to uninitialized memory.
+        // - elem_ptr valid (from storage array above)
+        // - Memory uninitialized (safe to write via ptr::write)
+        // - Takes ownership of value
         unsafe {
             elem_ptr.write(value);
         }
@@ -164,6 +192,11 @@ impl<T> TypedArena<T> {
         // Update stats
         self.stats.record_allocation(std::mem::size_of::<T>(), 0);
 
+        // SAFETY: Creating mutable reference to initialized value.
+        // - elem_ptr valid (from storage array)
+        // - Value just initialized via write above
+        // - Lifetime tied to arena ('a)
+        // - Exclusive access guaranteed by RefCell
         Ok(unsafe { &mut *elem_ptr })
     }
 
@@ -173,6 +206,10 @@ impl<T> TypedArena<T> {
         let index = self.current_index.get();
 
         // Check if we need a new chunk
+        // SAFETY: Dereferencing chunk pointer to check capacity.
+        // - chunk is NonNull (from current_chunk RefCell)
+        // - Pointer valid (chunk owned by arena's RefCell)
+        // - Read-only access to capacity (no mutation)
         let needs_chunk = self.current_chunk.borrow().map_or(true, |chunk| unsafe {
             index >= (*chunk.as_ptr()).capacity()
         });
@@ -188,6 +225,11 @@ impl<T> TypedArena<T> {
             .expect("Should have chunk after allocation");
 
         // Get pointer to element
+        // SAFETY: Accessing chunk storage at current index.
+        // - chunk_ptr valid (from current_chunk RefCell)
+        // - index within bounds (needs_chunk check above ensures this)
+        // - Returns mutable reference to MaybeUninit (allows uninitialized state)
+        // - Lifetime tied to arena
         let elem_ptr = unsafe {
             let chunk = &mut *chunk_ptr.as_ptr();
             &mut chunk.storage[self.current_index.get()]
@@ -225,6 +267,12 @@ impl<T> TypedArena<T> {
         let slice_ptr = result[0];
         let len = result.len();
 
+        // SAFETY: Creating slice from arena-allocated pointers.
+        // - All pointers in result valid (from alloc calls above)
+        // - Pointers allocated sequentially (contiguous in memory)
+        // - len matches number of allocated elements
+        // - All elements initialized via alloc
+        // - Lifetime tied to arena
         Ok(unsafe { std::slice::from_raw_parts_mut(slice_ptr, len) })
     }
 
@@ -282,6 +330,11 @@ impl<T> Default for TypedArena<T> {
     }
 }
 
+// SAFETY: TypedArena can be sent between threads if T: Send.
+// - RefCell/Cell are !Sync but Send (single-threaded arena design)
+// - T: Send requirement ensures values can be transferred
+// - Arena owns all allocated T values
+// - No shared mutable state across threads (RefCell enforces this)
 unsafe impl<T: Send> Send for TypedArena<T> {}
 
 /// A reference to a value in a typed arena
