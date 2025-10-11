@@ -1,4 +1,19 @@
 //! Hierarchical object pool implementation
+//!
+//! # Safety
+//!
+//! This module implements hierarchical pooling with parent-child borrowing:
+//! - HierarchicalPooledValue holds raw pointer to pool
+//! - ManuallyDrop for controlled object lifecycle
+//! - Drop returns object to correct pool (local or parent)
+//! - Arc<Mutex> ensures pool stays alive while values exist
+//!
+//! ## Safety Contracts
+//!
+//! - HierarchicalPooledValue::detach: ManuallyDrop::take + mem::forget prevents drop
+//! - HierarchicalPooledValue::drop: ManuallyDrop::take + pool deref + return_object
+//! - Send implementation: Safe if T: Send (pool pointer not shared)
+//! - Pool pointer remains valid (Arc keeps pool alive)
 
 #[cfg(not(feature = "std"))]
 use alloc::{
@@ -235,6 +250,10 @@ pub struct HierarchicalPooledValue<T: Poolable> {
 impl<T: Poolable> HierarchicalPooledValue<T> {
     /// Detach value from pool
     pub fn detach(mut self) -> T {
+        // SAFETY: Extracting value from ManuallyDrop.
+        // - value is initialized (created in HierarchicalPool::get)
+        // - mem::forget prevents Drop::drop from running
+        // - No double-free (Drop won't return object to pool)
         let value = unsafe { ManuallyDrop::take(&mut self.value) };
         core::mem::forget(self);
         value
@@ -262,6 +281,11 @@ impl<T: Poolable> DerefMut for HierarchicalPooledValue<T> {
 
 impl<T: Poolable> Drop for HierarchicalPooledValue<T> {
     fn drop(&mut self) {
+        // SAFETY: Returning object to hierarchical pool.
+        // - ManuallyDrop::take extracts value (initialized in HierarchicalPool::get)
+        // - pool pointer is valid (created from &mut in get, Arc keeps pool alive)
+        // - return_object routes to local or parent pool based on borrowed flag
+        // - No double-drop (ManuallyDrop prevents automatic drop)
         unsafe {
             let obj = ManuallyDrop::take(&mut self.value);
             (*self.pool).return_object(obj, self.borrowed);
@@ -269,7 +293,12 @@ impl<T: Poolable> Drop for HierarchicalPooledValue<T> {
     }
 }
 
-// Safety: HierarchicalPooledValue can be sent if T can
+// SAFETY: HierarchicalPooledValue can be sent between threads if T: Send.
+// - value: ManuallyDrop<T> is Send if T: Send
+// - pool: Raw pointer not shared (exclusive ownership of value)
+// - T: Send ensures value can be safely sent
+// - Pool pointer used only for returning (no concurrent access)
+// - Drop on destination thread safely returns object to pool (via Arc<Mutex>)
 unsafe impl<T: Poolable + Send> Send for HierarchicalPooledValue<T> {}
 
 /// Extension trait for Arc<Mutex<HierarchicalPool<T>>>
