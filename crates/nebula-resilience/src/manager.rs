@@ -10,8 +10,8 @@ use tokio::sync::RwLock;
 use crate::{
     ResilienceError, ResilienceResult,
     patterns::{
-        bulkhead::{Bulkhead, BulkheadConfig},
-        circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
+        bulkhead::{Bulkhead, BulkheadConfig, BulkheadStats},
+        circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerStats},
         retry::RetryStrategy,
         timeout::timeout,
     },
@@ -366,13 +366,95 @@ impl ResilienceManager {
     }
 
     /// Get resilience metrics for a service
+    ///
+    /// Collects metrics from all registered resilience patterns for the specified service.
+    /// Returns `None` if the service is not registered.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use nebula_resilience::ResilienceManager;
+    /// # tokio_test::block_on(async {
+    /// let manager = ResilienceManager::new();
+    /// manager.register_policy("api", Default::default()).await;
+    ///
+    /// if let Some(metrics) = manager.get_metrics("api").await {
+    ///     println!("Circuit breaker state: {:?}", metrics.circuit_breaker);
+    ///     println!("Bulkhead capacity: {:?}", metrics.bulkhead);
+    /// }
+    /// # });
+    /// ```
     pub async fn get_metrics(&self, service: &str) -> Option<ServiceMetrics> {
-        // TODO: Implement metrics collection once patterns support it
+        // Check if service exists
+        if !self.policies.read().await.contains_key(service) {
+            return None;
+        }
+
+        // Collect circuit breaker stats
+        let circuit_breaker = {
+            let breakers = self.circuit_breakers.read().await;
+            if let Some(cb) = breakers.get(service) {
+                Some(cb.stats().await)
+            } else {
+                None
+            }
+        };
+
+        // Collect bulkhead stats
+        let bulkhead = {
+            let bulkheads = self.bulkheads.read().await;
+            if let Some(bh) = bulkheads.get(service) {
+                Some(bh.stats().await)
+            } else {
+                None
+            }
+        };
+
         Some(ServiceMetrics {
             service_name: service.to_string(),
-            circuit_breaker: None,
-            bulkhead: None,
+            circuit_breaker,
+            bulkhead,
+            total_operations: 0,   // TODO: Track in future with metrics collector
+            failed_operations: 0,  // TODO: Track in future with metrics collector
+            avg_latency_ms: 0.0,   // TODO: Track in future with metrics collector
         })
+    }
+
+    /// Get aggregated metrics for all services
+    ///
+    /// Returns a map of service name to metrics for all registered services.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use nebula_resilience::ResilienceManager;
+    /// # tokio_test::block_on(async {
+    /// let manager = ResilienceManager::new();
+    /// manager.register_policy("api", Default::default()).await;
+    /// manager.register_policy("db", Default::default()).await;
+    ///
+    /// let all_metrics = manager.get_all_metrics().await;
+    /// println!("Monitoring {} services", all_metrics.len());
+    /// # });
+    /// ```
+    pub async fn get_all_metrics(&self) -> std::collections::HashMap<String, ServiceMetrics> {
+        let mut metrics = std::collections::HashMap::new();
+
+        let services: Vec<String> = self
+            .policies
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect();
+
+        for service in services {
+            if let Some(service_metrics) = self.get_metrics(&service).await {
+                metrics.insert(service.clone(), service_metrics);
+            }
+        }
+
+        metrics
     }
 
     /// Remove service and cleanup resources
@@ -403,9 +485,18 @@ impl Default for ResilienceManager {
 /// Service metrics aggregation
 #[derive(Debug, Clone)]
 pub struct ServiceMetrics {
+    /// Service name
     pub service_name: String,
-    pub circuit_breaker: Option<()>, // TODO: Replace with actual metrics type
-    pub bulkhead: Option<()>,        // TODO: Replace with actual metrics type
+    /// Circuit breaker statistics (if registered)
+    pub circuit_breaker: Option<CircuitBreakerStats>,
+    /// Bulkhead statistics (if registered)
+    pub bulkhead: Option<BulkheadStats>,
+    /// Total operations executed
+    pub total_operations: u64,
+    /// Failed operations count
+    pub failed_operations: u64,
+    /// Average latency in milliseconds
+    pub avg_latency_ms: f64,
 }
 
 /// Convenience macro for creating retryable operations

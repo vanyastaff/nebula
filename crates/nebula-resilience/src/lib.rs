@@ -52,7 +52,7 @@ pub use patterns::{
 
 // Re-export high-level abstractions
 pub use compose::{LayerBuilder, ResilienceChain, ResilienceLayer};
-pub use manager::{PolicyBuilder, ResilienceManager, RetryableOperation};
+pub use manager::{PolicyBuilder, ResilienceManager, RetryableOperation, ServiceMetrics};
 pub use policy::{PolicyMetadata, ResiliencePolicy};
 
 /// Prelude
