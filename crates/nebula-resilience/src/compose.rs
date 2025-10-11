@@ -318,28 +318,26 @@ impl<T: Send + 'static> LayerBuilder<T> {
 /// Convenience type for a complete resilience chain
 pub type ResilienceChain<T> = Arc<dyn LayerStack<T> + Send + Sync>;
 
-/// Create a chain from a builder
-#[allow(dead_code)]
-pub(crate) fn create_chain<T: Send + 'static>() -> LayerBuilder<T> {
-    LayerBuilder::new()
-}
-
-/// Helper function to execute operation with a resilience chain
-#[allow(dead_code)]
-pub(crate) async fn execute_with_chain<T, Op>(
-    chain: ResilienceChain<T>,
-    operation: Op,
-) -> ResilienceResult<T>
-where
-    Op: RetryableOperation<T> + Send + Sync + 'static,
-{
-    let boxed_op = BoxedOperation::new(operation);
-    chain.execute(boxed_op).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test helper: Create a chain from a builder
+    fn create_chain<T: Send + 'static>() -> LayerBuilder<T> {
+        LayerBuilder::new()
+    }
+
+    /// Test helper: Execute operation with a resilience chain
+    async fn execute_with_chain<T, Op>(
+        chain: ResilienceChain<T>,
+        operation: Op,
+    ) -> ResilienceResult<T>
+    where
+        Op: RetryableOperation<T> + Send + Sync + 'static,
+    {
+        let boxed_op = BoxedOperation::new(operation);
+        chain.execute(boxed_op).await
+    }
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 

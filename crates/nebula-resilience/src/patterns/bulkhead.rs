@@ -178,6 +178,9 @@ impl Default for Bulkhead {
 
 /// Permit for executing an operation within the bulkhead
 pub struct BulkheadPermit {
+    /// RAII guard - field must exist to hold the semaphore permit.
+    /// The permit is automatically released when this struct is dropped.
+    /// Never accessed directly, but critical for correct resource management.
     #[allow(dead_code)]
     permit: tokio::sync::OwnedSemaphorePermit,
     active_operations: Arc<tokio::sync::RwLock<usize>>,

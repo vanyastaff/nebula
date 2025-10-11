@@ -187,7 +187,8 @@ pub struct LeakyBucket {
     leak_rate: f64,
     /// Last leak timestamp
     last_leak: Arc<Mutex<Instant>>,
-    /// Semaphore for blocking
+    /// RAII guard - Semaphore for blocking/coordination.
+    /// Not directly accessed but maintains resource lifecycle.
     #[allow(dead_code)]
     semaphore: Arc<Semaphore>,
 }

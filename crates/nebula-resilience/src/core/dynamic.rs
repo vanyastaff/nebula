@@ -1,22 +1,29 @@
 //! Dynamic configuration support using nebula-value
 
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use nebula_value::{Object, Value};
 // Import extension traits for ergonomic conversions
 use crate::core::config::{ConfigError, ConfigResult, ResilienceConfig};
 use nebula_value::{JsonValueExt, ValueRefExt};
 
+/// Get current timestamp as ISO 8601 string
+fn current_timestamp() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards");
+    format!("{}.{:03}Z", now.as_secs(), now.subsec_millis())
+}
+
 /// Dynamic configuration container that can hold any resilience configuration
 #[derive(Debug, Clone)]
 pub struct DynamicConfig {
     /// Configuration values stored as nebula-value
     values: Object,
-    /// Configuration schema metadata
-    #[allow(dead_code)]
+    /// Configuration schema version for compatibility tracking
     schema_version: String,
-    /// Last update timestamp
-    #[allow(dead_code)]
+    /// Last update timestamp for change tracking
     last_updated: Option<String>,
 }
 
@@ -65,6 +72,27 @@ impl DynamicConfig {
     /// Merge with another dynamic configuration
     pub fn merge(&mut self, other: &DynamicConfig) -> ConfigResult<()> {
         self.values = self.values.merge(&other.values);
+        // Update timestamp when configuration changes
+        self.last_updated = Some(current_timestamp());
+        Ok(())
+    }
+
+    /// Get the schema version
+    #[must_use]
+    pub fn schema_version(&self) -> &str {
+        &self.schema_version
+    }
+
+    /// Get the last update timestamp
+    #[must_use]
+    pub fn last_updated(&self) -> Option<&str> {
+        self.last_updated.as_deref()
+    }
+
+    /// Set a new value and update timestamp
+    pub fn set_value_tracked(&mut self, path: &str, value: Value) -> ConfigResult<()> {
+        self.set_value(path, value)?;
+        self.last_updated = Some(current_timestamp());
         Ok(())
     }
 

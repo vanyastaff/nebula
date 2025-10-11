@@ -219,7 +219,6 @@ impl LatencyTracker {
 /// Bimodal hedge executor - uses different strategies for fast vs slow operations
 pub struct BimodalHedgeExecutor {
     fast_threshold: Duration,
-    #[allow(dead_code)]
     fast_config: HedgeConfig,
     slow_config: HedgeConfig,
 }
@@ -253,8 +252,9 @@ impl BimodalHedgeExecutor {
         // Wait for fast threshold
         tokio::select! {
             result = sample_future => {
-                // Operation completed within fast threshold
-                return result;
+                // Operation completed within fast threshold - use fast config for hedging
+                let executor = HedgeExecutor::new(self.fast_config.clone());
+                return executor.execute(operation).await;
             }
             () = sleep(self.fast_threshold) => {
                 // Operation is slow, use slow config
