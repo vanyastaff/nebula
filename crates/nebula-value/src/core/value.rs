@@ -556,4 +556,63 @@ mod tests {
         assert_eq!(Value::integer(42).to_string(), "42");
         assert_eq!(Value::text("hello").to_string(), "hello");
     }
+
+    #[test]
+    fn test_value_from_str() {
+        use std::str::FromStr;
+
+        // Parse primitives
+        assert_eq!(Value::from_str("null").unwrap(), Value::Null);
+        assert_eq!(Value::from_str("true").unwrap(), Value::boolean(true));
+        assert_eq!(Value::from_str("false").unwrap(), Value::boolean(false));
+        assert_eq!(Value::from_str("42").unwrap(), Value::integer(42));
+        assert_eq!(Value::from_str("3.14").unwrap(), Value::float(3.14));
+        assert_eq!(Value::from_str("\"hello\"").unwrap(), Value::text("hello"));
+
+        // Parse arrays
+        let arr: Value = "[1, 2, 3]".parse().unwrap();
+        assert!(matches!(arr, Value::Array(_)));
+
+        // Parse objects
+        let obj: Value = r#"{"key": "value"}"#.parse().unwrap();
+        assert!(matches!(obj, Value::Object(_)));
+
+        // Invalid JSON should error
+        assert!(Value::from_str("invalid").is_err());
+    }
+}
+
+// ==================== FromStr Implementation ====================
+
+impl std::str::FromStr for Value {
+    type Err = NebulaError;
+
+    /// Parse a Value from a JSON string
+    ///
+    /// This uses `serde_json` to parse the string and then converts it to a Value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_value::Value;
+    /// use std::str::FromStr;
+    ///
+    /// let value = Value::from_str("42").unwrap();
+    /// assert_eq!(value, Value::integer(42));
+    ///
+    /// let value: Value = r#"{"name": "Alice"}"#.parse().unwrap();
+    /// assert!(matches!(value, Value::Object(_)));
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the string is not valid JSON.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str::<serde_json::Value>(s)
+            .map(Value::from)
+            .map_err(|e| NebulaError::value_conversion_error(
+                "JSON string",
+                &format!("Value: {}", e)
+            ))
+    }
 }
