@@ -16,6 +16,35 @@
 //! Common traits are re-exported from `core::traits`:
 //! - `MemoryUsage`: Memory tracking capabilities (from core)
 //! - `Resettable`: Allocator reset functionality (from core)
+//!
+//! # Safety
+//!
+//! This module defines fundamental unsafe traits that form the foundation
+//! of the memory allocation system:
+//!
+//! ## Trait Safety Contracts
+//!
+//! All unsafe traits in this module impose strict contracts on implementors:
+//! - **Allocator**: Returned pointers must be valid, aligned, and exclusive
+//! - **BulkAllocator**: Contiguous allocation must prevent buffer overflows
+//! - **ThreadSafeAllocator**: Operations must be safe across threads
+//! - **TypedAllocator**: Type-safe wrapper (safe trait, unsafe methods)
+//!
+//! ## Default Implementation Safety
+//!
+//! Default trait methods contain unsafe operations with documented guarantees:
+//! - `copy_nonoverlapping`: Used in grow/shrink with size validation
+//! - `NonNull::new_unchecked`: Used after null checks or with dangling pointers
+//! - Pointer arithmetic: Used with bounds checking and overflow protection
+//! - Layout calculations: Validated before use to prevent UB
+//!
+//! ## Blanket Implementation Safety
+//!
+//! Blanket impls for `&T` are safe because:
+//! - They forward all calls to the underlying `T: Allocator`
+//! - Safety contracts are preserved through delegation
+//! - No additional unsafe operations introduced
+//! - Reference dereference (`**self`) is always safe for `&T`
 
 use core::alloc::Layout;
 use core::ptr::NonNull;
@@ -118,7 +147,17 @@ pub unsafe trait Allocator {
         }
 
         let result = match new_layout.size().cmp(&old_layout.size()) {
+            // SAFETY: Delegating to grow with valid parameters.
+            // - ptr is valid (caller contract)
+            // - old_layout matches original allocation (caller contract)
+            // - new_layout is validated above
+            // - new_layout.size() > old_layout.size() (match arm condition)
             core::cmp::Ordering::Greater => unsafe { self.grow(ptr, old_layout, new_layout) },
+            // SAFETY: Delegating to shrink with valid parameters.
+            // - ptr is valid (caller contract)
+            // - old_layout matches original allocation (caller contract)
+            // - new_layout is validated above
+            // - new_layout.size() < old_layout.size() (match arm condition)
             core::cmp::Ordering::Less => unsafe { self.shrink(ptr, old_layout, new_layout) },
             core::cmp::Ordering::Equal => {
                 // Sizes are equal, but alignment might differ
@@ -126,6 +165,10 @@ pub unsafe trait Allocator {
                     Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()))
                 } else {
                     // Need to reallocate for stricter alignment
+                    // SAFETY: Growing to same size but stricter alignment.
+                    // - ptr is valid (caller contract)
+                    // - Layouts have same size, only alignment differs
+                    // - grow handles alignment change correctly
                     unsafe { self.grow(ptr, old_layout, new_layout) }
                 }
             }
@@ -158,8 +201,17 @@ pub unsafe trait Allocator {
     ) -> AllocResult<NonNull<[u8]>> {
         debug_assert!(new_layout.size() >= old_layout.size());
 
+        // SAFETY: Allocating new memory with new_layout.
+        // - new_layout is valid (checked by reallocate caller)
+        // - allocate returns valid pointer or error
         let new_ptr = unsafe { self.allocate(new_layout)? };
 
+        // SAFETY: Copying data from old allocation to new allocation.
+        // - ptr (source) is valid for reads of old_layout.size() bytes (caller contract)
+        // - new_ptr (dest) is valid for writes (just allocated above)
+        // - Regions don't overlap (new allocation is distinct from old)
+        // - old_layout.size() <= new_layout.size() (debug_assert above)
+        // - Both pointers properly aligned for u8 access
         unsafe {
             core::ptr::copy_nonoverlapping(
                 ptr.as_ptr() as *const u8,
@@ -168,6 +220,10 @@ pub unsafe trait Allocator {
             );
         }
 
+        // SAFETY: Deallocating old memory.
+        // - ptr was allocated by this allocator (caller contract)
+        // - old_layout matches original allocation (caller contract)
+        // - Data has been copied to new location, safe to free
         unsafe { self.deallocate(ptr, old_layout) };
         Ok(new_ptr)
     }
@@ -202,6 +258,11 @@ pub unsafe trait Allocator {
             Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()))
         } else {
             // Need reallocation for stricter alignment
+            // SAFETY: Reallocating with stricter alignment requirement.
+            // - ptr is valid (caller contract)
+            // - old_layout matches original allocation (caller contract)
+            // - new_layout has stricter alignment (branch condition)
+            // - grow handles alignment change via allocate+copy+deallocate
             unsafe { self.grow(ptr, old_layout, new_layout) }
         }
     }
@@ -289,6 +350,10 @@ pub unsafe trait BulkAllocator: Allocator {
         let total_layout = Layout::from_size_align(total_size, layout.align())
             .map_err(|_| AllocError::invalid_layout("invalid layout"))?;
 
+        // SAFETY: Delegating to allocate with valid total_layout.
+        // - total_layout is valid (just constructed above with validation)
+        // - total_size checked for overflow and max size limits above
+        // - Alignment preserved from original layout
         unsafe { self.allocate(total_layout) }
     }
 
@@ -311,6 +376,10 @@ pub unsafe trait BulkAllocator: Allocator {
         // Reconstruct the total layout used for allocation
         let total_size = layout.size().saturating_mul(count);
         if let Ok(total_layout) = Layout::from_size_align(total_size, layout.align()) {
+            // SAFETY: Deallocating contiguous allocation.
+            // - ptr was allocated by allocate_contiguous (caller contract)
+            // - total_layout matches original allocation (reconstructed with same count)
+            // - Layout reconstruction successful (checked in if-let)
             unsafe { self.deallocate(ptr, total_layout) };
         }
         // If layout reconstruction fails, we can't safely deallocate
@@ -357,6 +426,12 @@ pub unsafe trait BulkAllocator: Allocator {
         let new_layout = Layout::from_size_align(new_total_size, layout.align())
             .map_err(|_| AllocError::invalid_layout("invalid layout"))?;
 
+        // SAFETY: Reallocating contiguous allocation to new count.
+        // - ptr was allocated by allocate_contiguous (caller contract)
+        // - old_layout and new_layout are valid (constructed above with checks)
+        // - old_count matches original allocation (caller contract)
+        // - Overflow checked for both old and new total sizes
+        // - reallocate handles data preservation correctly
         unsafe { self.reallocate(ptr, old_layout, new_layout) }
     }
 }
@@ -444,7 +519,15 @@ pub trait TypedAllocator: Allocator {
     #[inline]
     unsafe fn alloc_typed<T>(&self) -> AllocResult<NonNull<T>> {
         let layout = Layout::new::<T>();
+        // SAFETY: Allocating memory for type T.
+        // - layout is valid (derived from T at compile time)
+        // - allocate returns valid pointer or error
         let ptr = unsafe { self.allocate(layout)? };
+        // SAFETY: Converting [u8] pointer to T pointer.
+        // - ptr is non-null (allocate guarantees on success)
+        // - ptr is properly aligned for T (layout derived from T)
+        // - Casting *mut [u8] to *mut T is safe (pointer to allocated bytes)
+        // - Memory is valid for T (size and alignment guaranteed by layout)
         Ok(unsafe { NonNull::new_unchecked(ptr.as_ptr() as *mut T) })
     }
 
@@ -471,7 +554,14 @@ pub trait TypedAllocator: Allocator {
     /// ```
     #[inline]
     unsafe fn alloc_init<T>(&self, value: T) -> AllocResult<NonNull<T>> {
+        // SAFETY: Allocating uninitialized memory for T.
+        // - alloc_typed returns valid, aligned pointer or error
         let ptr = unsafe { self.alloc_typed::<T>()? };
+        // SAFETY: Initializing allocated memory.
+        // - ptr is valid for writes (just allocated above)
+        // - ptr is properly aligned for T (alloc_typed guarantees)
+        // - write moves value into allocated memory
+        // - After write, memory contains valid T
         unsafe {
             ptr.as_ptr().write(value);
         }
@@ -510,7 +600,16 @@ pub trait TypedAllocator: Allocator {
 
         let layout = Layout::array::<T>(count).map_err(|_| AllocError::size_overflow(0, 0))?;
 
+        // SAFETY: Allocating memory for array of T.
+        // - layout is valid (Layout::array checks for overflow)
+        // - count > 0 (checked above)
+        // - allocate returns valid pointer or error
         let ptr = unsafe { self.allocate(layout)? };
+        // SAFETY: Converting [u8] pointer to T pointer.
+        // - ptr is non-null (allocate guarantees on success)
+        // - ptr is properly aligned for T (layout derived from T)
+        // - Casting *mut [u8] to *mut T is safe (pointer to array elements)
+        // - Memory is valid for count T instances (size guaranteed by layout)
         Ok(unsafe { NonNull::new_unchecked(ptr.as_ptr() as *mut T) })
     }
 
@@ -537,9 +636,16 @@ pub trait TypedAllocator: Allocator {
     /// ```
     #[inline]
     unsafe fn alloc_array_with<T: Clone>(&self, count: usize, value: T) -> AllocResult<NonNull<T>> {
+        // SAFETY: Allocating uninitialized array.
+        // - alloc_array returns valid, aligned pointer or error
         let ptr = unsafe { self.alloc_array::<T>(count)? };
 
         if count > 0 {
+            // SAFETY: Initializing array elements.
+            // - ptr is valid for writes of count elements (just allocated above)
+            // - add(i) is in bounds (i < count, allocation size matches)
+            // - write initializes each element with cloned value
+            // - All elements initialized before function returns
             unsafe {
                 for i in 0..count {
                     ptr.as_ptr().add(i).write(value.clone());
@@ -559,6 +665,10 @@ pub trait TypedAllocator: Allocator {
     #[inline]
     unsafe fn dealloc_typed<T>(&self, ptr: NonNull<T>) {
         let layout = Layout::new::<T>();
+        // SAFETY: Deallocating typed memory.
+        // - ptr was allocated by alloc_typed or alloc_init (caller contract)
+        // - layout matches original allocation (derived from T)
+        // - cast() converts NonNull<T> to NonNull<u8> safely
         unsafe { self.deallocate(ptr.cast(), layout) }
     }
 
@@ -575,6 +685,11 @@ pub trait TypedAllocator: Allocator {
         }
 
         let layout = Layout::array::<T>(count).expect("layout must be valid for deallocation");
+        // SAFETY: Deallocating array memory.
+        // - ptr was allocated by alloc_array with same count (caller contract)
+        // - layout matches original allocation (derived from T and count)
+        // - count > 0 (checked above)
+        // - cast() converts NonNull<T> to NonNull<u8> safely
         unsafe { self.deallocate(ptr.cast(), layout) }
     }
 }
@@ -592,12 +707,25 @@ impl<A: Allocator + ?Sized> TypedAllocator for A {}
 ///
 /// This allows using `&T` where `T: Allocator` is expected, which is convenient
 /// for many use cases where you don't need to own the allocator.
+///
+/// # Safety
+///
+/// This impl is safe because it forwards all calls to the underlying `T: Allocator`:
+/// - No new unsafe operations introduced
+/// - All safety contracts preserved through delegation
+/// - `**self` dereference is always safe for `&T`
 unsafe impl<T: Allocator + ?Sized> Allocator for &T {
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+        // SAFETY: Forwarding to underlying allocator.
+        // - Same safety contract as T::allocate
+        // - **self safely dereferences &T to access T
         unsafe { (**self).allocate(layout) }
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        // SAFETY: Forwarding to underlying allocator.
+        // - Same safety contract as T::deallocate
+        // - **self safely dereferences &T to access T
         unsafe { (**self).deallocate(ptr, layout) }
     }
 
@@ -607,6 +735,9 @@ unsafe impl<T: Allocator + ?Sized> Allocator for &T {
         old_layout: Layout,
         new_layout: Layout,
     ) -> AllocResult<NonNull<[u8]>> {
+        // SAFETY: Forwarding to underlying allocator.
+        // - Same safety contract as T::reallocate
+        // - **self safely dereferences &T to access T
         unsafe { (**self).reallocate(ptr, old_layout, new_layout) }
     }
 
@@ -616,6 +747,9 @@ unsafe impl<T: Allocator + ?Sized> Allocator for &T {
         old_layout: Layout,
         new_layout: Layout,
     ) -> AllocResult<NonNull<[u8]>> {
+        // SAFETY: Forwarding to underlying allocator.
+        // - Same safety contract as T::grow
+        // - **self safely dereferences &T to access T
         unsafe { (**self).grow(ptr, old_layout, new_layout) }
     }
 
@@ -625,21 +759,36 @@ unsafe impl<T: Allocator + ?Sized> Allocator for &T {
         old_layout: Layout,
         new_layout: Layout,
     ) -> AllocResult<NonNull<[u8]>> {
+        // SAFETY: Forwarding to underlying allocator.
+        // - Same safety contract as T::shrink
+        // - **self safely dereferences &T to access T
         unsafe { (**self).shrink(ptr, old_layout, new_layout) }
     }
 }
 
 /// Blanket implementation of BulkAllocator for references
+///
+/// # Safety
+///
+/// This impl forwards all calls to the underlying `T: BulkAllocator`:
+/// - All safety contracts preserved through delegation
+/// - No new unsafe operations introduced
 unsafe impl<T: BulkAllocator + ?Sized> BulkAllocator for &T {
     unsafe fn allocate_contiguous(
         &self,
         layout: Layout,
         count: usize,
     ) -> AllocResult<NonNull<[u8]>> {
+        // SAFETY: Forwarding to underlying bulk allocator.
+        // - Same safety contract as T::allocate_contiguous
+        // - **self safely dereferences &T to access T
         unsafe { (**self).allocate_contiguous(layout, count) }
     }
 
     unsafe fn deallocate_contiguous(&self, ptr: NonNull<u8>, layout: Layout, count: usize) {
+        // SAFETY: Forwarding to underlying bulk allocator.
+        // - Same safety contract as T::deallocate_contiguous
+        // - **self safely dereferences &T to access T
         unsafe { (**self).deallocate_contiguous(ptr, layout, count) }
     }
 
@@ -650,6 +799,9 @@ unsafe impl<T: BulkAllocator + ?Sized> BulkAllocator for &T {
         old_count: usize,
         new_count: usize,
     ) -> AllocResult<NonNull<[u8]>> {
+        // SAFETY: Forwarding to underlying bulk allocator.
+        // - Same safety contract as T::reallocate_contiguous
+        // - **self safely dereferences &T to access T
         unsafe { (**self).reallocate_contiguous(ptr, layout, old_count, new_count) }
     }
 }
@@ -680,6 +832,9 @@ impl<T: MemoryUsage + ?Sized> MemoryUsage for &T {
 /// Blanket implementation of Resettable for references
 impl<T: Resettable + ?Sized> Resettable for &T {
     unsafe fn reset(&self) {
+        // SAFETY: Forwarding to underlying resettable.
+        // - Same safety contract as T::reset
+        // - **self safely dereferences &T to access T
         unsafe { (**self).reset() }
     }
 
@@ -688,6 +843,9 @@ impl<T: Resettable + ?Sized> Resettable for &T {
     }
 
     unsafe fn try_reset(&self) -> bool {
+        // SAFETY: Forwarding to underlying resettable.
+        // - Same safety contract as T::try_reset
+        // - **self safely dereferences &T to access T
         unsafe { (**self).try_reset() }
     }
 }
