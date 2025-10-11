@@ -39,12 +39,6 @@ impl<'a> Parser<'a> {
         self.parse_expression_with_depth(0)
     }
 
-    /// Parse a full expression
-    #[allow(dead_code)]
-    fn parse_expression(&mut self) -> ExpressionResult<Expr> {
-        self.parse_expression_with_depth(0)
-    }
-
     /// Parse expression with depth tracking
     fn parse_expression_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
         if depth > MAX_PARSER_DEPTH {
@@ -54,12 +48,6 @@ impl<'a> Parser<'a> {
             )));
         }
         self.parse_conditional_with_depth(depth)
-    }
-
-    /// Parse conditional expression (if-then-else)
-    #[allow(dead_code)]
-    fn parse_conditional(&mut self) -> ExpressionResult<Expr> {
-        self.parse_conditional_with_depth(0)
     }
 
     /// Parse conditional with depth tracking
@@ -79,12 +67,6 @@ impl<'a> Parser<'a> {
         } else {
             self.parse_pipeline_with_depth(depth + 1)
         }
-    }
-
-    /// Parse pipeline expression
-    #[allow(dead_code)]
-    fn parse_pipeline(&mut self) -> ExpressionResult<Expr> {
-        self.parse_pipeline_with_depth(0)
     }
 
     /// Parse pipeline expression with depth tracking
@@ -120,12 +102,6 @@ impl<'a> Parser<'a> {
         }
 
         Ok(expr)
-    }
-
-    /// Parse binary expression with precedence climbing
-    #[allow(dead_code)]
-    fn parse_binary_expression(&mut self, min_precedence: u8) -> ExpressionResult<Expr> {
-        self.parse_binary_op_with_depth(min_precedence, 0)
     }
 
     /// Parse binary expression with precedence climbing and depth tracking
@@ -189,12 +165,6 @@ impl<'a> Parser<'a> {
         Ok(left)
     }
 
-    /// Parse unary expression
-    #[allow(dead_code)]
-    fn parse_unary_expression(&mut self) -> ExpressionResult<Expr> {
-        self.parse_unary_with_depth(0)
-    }
-
     /// Parse unary expression with depth tracking
     fn parse_unary_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
         match &self.current_token().kind {
@@ -210,12 +180,6 @@ impl<'a> Parser<'a> {
             }
             _ => self.parse_postfix_with_depth(depth + 1),
         }
-    }
-
-    /// Parse postfix expression (property access, index access)
-    #[allow(dead_code)]
-    fn parse_postfix_expression(&mut self) -> ExpressionResult<Expr> {
-        self.parse_postfix_with_depth(0)
     }
 
     /// Parse postfix expression with depth tracking
@@ -256,12 +220,6 @@ impl<'a> Parser<'a> {
         }
 
         Ok(expr)
-    }
-
-    /// Parse primary expression (literals, variables, function calls, etc.)
-    #[allow(dead_code)]
-    fn parse_primary_expression(&mut self) -> ExpressionResult<Expr> {
-        self.parse_primary_with_depth(0)
     }
 
     /// Parse primary expression with depth tracking
@@ -387,12 +345,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse function arguments
-    #[allow(dead_code)]
-    fn parse_function_args(&mut self) -> ExpressionResult<Vec<Expr>> {
-        self.parse_function_args_with_depth(0)
-    }
-
     /// Parse function arguments with depth tracking
     fn parse_function_args_with_depth(&mut self, depth: usize) -> ExpressionResult<Vec<Expr>> {
         self.expect_token(TokenKind::LeftParen)?;
@@ -431,12 +383,6 @@ impl<'a> Parser<'a> {
 
         self.expect_token(TokenKind::RightParen)?;
         Ok(args)
-    }
-
-    /// Parse postfix operations starting from a given primary expression
-    #[allow(dead_code)]
-    fn parse_postfix_from_primary(&mut self, expr: Expr) -> ExpressionResult<Expr> {
-        self.parse_postfix_from_primary_with_depth(expr, 0)
     }
 
     /// Parse postfix operations starting from a given primary expression with depth tracking
