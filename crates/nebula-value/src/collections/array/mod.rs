@@ -301,25 +301,25 @@ mod tests {
 
     #[test]
     fn test_array_from_vec() {
-        let arr = Array::from_vec(vec![json!(1), json!(2), json!(3)]);
+        let arr = Array::from_vec(vec![Value::integer(1), Value::integer(2), Value::integer(3)]);
         assert_eq!(arr.len(), 3);
-        assert_eq!(arr.get(0), Some(&json!(1)));
+        assert_eq!(arr.get(0), Some(&Value::integer(1)));
     }
 
     #[test]
     fn test_array_push() {
         let arr = Array::new();
-        let arr = arr.push(json!(1));
-        let arr = arr.push(json!(2));
+        let arr = arr.push(Value::integer(1));
+        let arr = arr.push(Value::integer(2));
 
         assert_eq!(arr.len(), 2);
-        assert_eq!(arr.get(0), Some(&json!(1)));
+        assert_eq!(arr.get(0), Some(&Value::integer(1)));
     }
 
     #[test]
     fn test_array_structural_sharing() {
-        let arr1 = Array::from_vec(vec![json!(1), json!(2)]);
-        let arr2 = arr1.push(json!(3));
+        let arr1 = Array::from_vec(vec![Value::integer(1), Value::integer(2)]);
+        let arr2 = arr1.push(Value::integer(3));
 
         assert_eq!(arr1.len(), 2);
         assert_eq!(arr2.len(), 3);

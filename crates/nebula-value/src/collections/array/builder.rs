@@ -237,9 +237,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(array.len(), 3);
-        assert_eq!(array.get(0), Some(&serde_json::json!(1)));
-        assert_eq!(array.get(1), Some(&serde_json::json!(2)));
-        assert_eq!(array.get(2), Some(&serde_json::json!(3)));
+        assert_eq!(array.get(0), Some(&Value::integer(1)));
+        assert_eq!(array.get(1), Some(&Value::integer(2)));
+        assert_eq!(array.get(2), Some(&Value::integer(3)));
     }
 
     #[test]
@@ -252,9 +252,9 @@ mod tests {
     fn test_builder_extend() {
         let array = ArrayBuilder::new()
             .extend(vec![
-                serde_json::json!(1),
-                serde_json::json!(2),
-                serde_json::json!(3),
+                Value::integer(1),
+                Value::integer(2),
+                Value::integer(3),
             ])
             .build()
             .unwrap();
@@ -308,9 +308,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(array.len(), 3);
-        assert_eq!(array.get(0), Some(&serde_json::json!(1)));
-        assert_eq!(array.get(1), Some(&serde_json::json!(2)));
-        assert_eq!(array.get(2), Some(&serde_json::json!(3)));
+        assert_eq!(array.get(0), Some(&Value::integer(1)));
+        assert_eq!(array.get(1), Some(&Value::integer(2)));
+        assert_eq!(array.get(2), Some(&Value::integer(3)));
     }
 
     #[test]
@@ -325,8 +325,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(array.len(), 2);
-        assert_eq!(array.get(0), Some(&serde_json::json!(1)));
-        assert_eq!(array.get(1), Some(&serde_json::json!(3)));
+        assert_eq!(array.get(0), Some(&Value::integer(1)));
+        assert_eq!(array.get(1), Some(&Value::integer(3)));
     }
 
     #[test]

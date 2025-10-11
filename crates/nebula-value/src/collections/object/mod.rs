@@ -161,13 +161,13 @@ impl Object {
     /// use serde_json::json;
     ///
     /// let obj1 = Object::from_iter(vec![
-    ///     ("a".to_string(), json!(1)),
+    ///     ("a".to_string(), Value::integer(1)),
     ///     ("b".to_string(), json!({"x": 10})),
     /// ]);
     ///
     /// let obj2 = Object::from_iter(vec![
     ///     ("b".to_string(), json!({"y": 20})),
-    ///     ("c".to_string(), json!(3)),
+    ///     ("c".to_string(), Value::integer(3)),
     /// ]);
     ///
     /// let merged = obj1.merge_shallow(&obj2);
@@ -270,35 +270,35 @@ mod tests {
     #[test]
     fn test_object_from_iter() {
         let obj = Object::from_iter(vec![
-            ("name".to_string(), json!("Alice")),
-            ("age".to_string(), json!(30)),
+            ("name".to_string(), Value::text("Alice")),
+            ("age".to_string(), Value::integer(30)),
         ]);
 
         assert_eq!(obj.len(), 2);
-        assert_eq!(obj.get("name"), Some(&json!("Alice")));
-        assert_eq!(obj.get("age"), Some(&json!(30)));
+        assert_eq!(obj.get("name"), Some(&Value::text("Alice")));
+        assert_eq!(obj.get("age"), Some(&Value::integer(30)));
     }
 
     #[test]
     fn test_object_insert() {
         let obj = Object::new();
-        let obj = obj.insert("key1".to_string(), json!(1));
-        let obj = obj.insert("key2".to_string(), json!(2));
+        let obj = obj.insert("key1".to_string(), Value::integer(1));
+        let obj = obj.insert("key2".to_string(), Value::integer(2));
 
         assert_eq!(obj.len(), 2);
-        assert_eq!(obj.get("key1"), Some(&json!(1)));
-        assert_eq!(obj.get("key2"), Some(&json!(2)));
+        assert_eq!(obj.get("key1"), Some(&Value::integer(1)));
+        assert_eq!(obj.get("key2"), Some(&Value::integer(2)));
     }
 
     #[test]
     fn test_object_remove() {
         let obj = Object::from_iter(vec![
-            ("key1".to_string(), json!(1)),
-            ("key2".to_string(), json!(2)),
+            ("key1".to_string(), Value::integer(1)),
+            ("key2".to_string(), Value::integer(2)),
         ]);
 
         let (obj, removed) = obj.remove("key1").unwrap();
-        assert_eq!(removed, json!(1));
+        assert_eq!(removed, Value::integer(1));
         assert_eq!(obj.len(), 1);
         assert!(!obj.contains_key("key1"));
         assert!(obj.contains_key("key2"));
@@ -306,8 +306,8 @@ mod tests {
 
     #[test]
     fn test_object_structural_sharing() {
-        let obj1 = Object::from_iter(vec![("key1".to_string(), json!(1))]);
-        let obj2 = obj1.insert("key2".to_string(), json!(2));
+        let obj1 = Object::from_iter(vec![("key1".to_string(), Value::integer(1))]);
+        let obj2 = obj1.insert("key2".to_string(), Value::integer(2));
 
         assert_eq!(obj1.len(), 1);
         assert_eq!(obj2.len(), 2);
@@ -316,38 +316,38 @@ mod tests {
     #[test]
     fn test_object_merge() {
         let obj1 = Object::from_iter(vec![
-            ("a".to_string(), json!(1)),
-            ("b".to_string(), json!(2)),
+            ("a".to_string(), Value::integer(1)),
+            ("b".to_string(), Value::integer(2)),
         ]);
         let obj2 = Object::from_iter(vec![
-            ("b".to_string(), json!(99)),
-            ("c".to_string(), json!(3)),
+            ("b".to_string(), Value::integer(99)),
+            ("c".to_string(), Value::integer(3)),
         ]);
 
         let merged = obj1.merge(&obj2);
         assert_eq!(merged.len(), 3);
-        assert_eq!(merged.get("a"), Some(&json!(1)));
-        assert_eq!(merged.get("b"), Some(&json!(99))); // obj2 wins
-        assert_eq!(merged.get("c"), Some(&json!(3)));
+        assert_eq!(merged.get("a"), Some(&Value::integer(1)));
+        assert_eq!(merged.get("b"), Some(&Value::integer(99))); // obj2 wins
+        assert_eq!(merged.get("c"), Some(&Value::integer(3)));
     }
 
     #[test]
     fn test_object_merge_shallow() {
         let obj1 = Object::from_iter(vec![
-            ("a".to_string(), json!(1)),
-            ("b".to_string(), json!({"x": 10, "y": 20})),
+            ("a".to_string(), Value::integer(1)),
+            ("b".to_string(), Value::from(json!({"x": 10, "y": 20}))),
         ]);
         let obj2 = Object::from_iter(vec![
-            ("b".to_string(), json!({"z": 30})),
-            ("c".to_string(), json!(3)),
+            ("b".to_string(), Value::from(json!({"z": 30}))),
+            ("c".to_string(), Value::integer(3)),
         ]);
 
         let merged = obj1.merge_shallow(&obj2);
         assert_eq!(merged.len(), 3);
-        assert_eq!(merged.get("a"), Some(&json!(1)));
+        assert_eq!(merged.get("a"), Some(&Value::integer(1)));
         // Shallow merge: obj2's "b" completely replaces obj1's "b"
-        assert_eq!(merged.get("b"), Some(&json!({"z": 30})));
-        assert_eq!(merged.get("c"), Some(&json!(3)));
+        assert_eq!(merged.get("b"), Some(&Value::from(json!({"z": 30}))));
+        assert_eq!(merged.get("c"), Some(&Value::integer(3)));
 
         // Verify original objects are unchanged (immutability)
         assert_eq!(obj1.len(), 2);
@@ -357,8 +357,8 @@ mod tests {
     #[test]
     fn test_object_keys_values() {
         let obj = Object::from_iter(vec![
-            ("name".to_string(), json!("Alice")),
-            ("age".to_string(), json!(30)),
+            ("name".to_string(), Value::text("Alice")),
+            ("age".to_string(), Value::integer(30)),
         ]);
 
         let keys: Vec<_> = obj.keys().cloned().collect();
@@ -373,12 +373,12 @@ mod tests {
     #[test]
     fn test_object_filter() {
         let obj = Object::from_iter(vec![
-            ("a".to_string(), json!(1)),
-            ("b".to_string(), json!(2)),
-            ("c".to_string(), json!(3)),
+            ("a".to_string(), Value::integer(1)),
+            ("b".to_string(), Value::integer(2)),
+            ("c".to_string(), Value::integer(3)),
         ]);
 
-        let filtered = obj.filter(|_k, v| v.as_i64().unwrap() > 1);
+        let filtered = obj.filter(|_k, v| v.as_integer().unwrap() > 1);
         assert_eq!(filtered.len(), 2);
         assert!(!filtered.contains_key("a"));
         assert!(filtered.contains_key("b"));
@@ -386,9 +386,9 @@ mod tests {
 
     #[test]
     fn test_object_equality() {
-        let obj1 = Object::from_iter(vec![("a".to_string(), json!(1))]);
-        let obj2 = Object::from_iter(vec![("a".to_string(), json!(1))]);
-        let obj3 = Object::from_iter(vec![("a".to_string(), json!(2))]);
+        let obj1 = Object::from_iter(vec![("a".to_string(), Value::integer(1))]);
+        let obj2 = Object::from_iter(vec![("a".to_string(), Value::integer(1))]);
+        let obj3 = Object::from_iter(vec![("a".to_string(), Value::integer(2))]);
 
         assert_eq!(obj1, obj2);
         assert_ne!(obj1, obj3);

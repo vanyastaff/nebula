@@ -575,9 +575,9 @@ mod tests {
         assert!(merged.is_object());
         if let Value::Object(obj) = merged {
             assert_eq!(obj.len(), 3);
-            assert_eq!(obj.get("x"), Some(&serde_json::json!(100)));
-            assert_eq!(obj.get("y"), Some(&serde_json::json!(2)));
-            assert_eq!(obj.get("z"), Some(&serde_json::json!(3)));
+            assert_eq!(obj.get("x"), Some(&Value::integer(100)));
+            assert_eq!(obj.get("y"), Some(&Value::integer(2)));
+            assert_eq!(obj.get("z"), Some(&Value::integer(3)));
         }
     }
 
@@ -601,10 +601,10 @@ mod tests {
         assert!(merged.is_array());
         if let Value::Array(arr) = merged {
             assert_eq!(arr.len(), 4);
-            assert_eq!(arr.get(0), Some(&serde_json::json!(1)));
-            assert_eq!(arr.get(1), Some(&serde_json::json!(2)));
-            assert_eq!(arr.get(2), Some(&serde_json::json!(3)));
-            assert_eq!(arr.get(3), Some(&serde_json::json!(4)));
+            assert_eq!(arr.get(0), Some(&Value::integer(1)));
+            assert_eq!(arr.get(1), Some(&Value::integer(2)));
+            assert_eq!(arr.get(2), Some(&Value::integer(3)));
+            assert_eq!(arr.get(3), Some(&Value::integer(4)));
         }
     }
 

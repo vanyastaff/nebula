@@ -235,9 +235,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(object.len(), 3);
-        assert_eq!(object.get("name"), Some(&serde_json::json!("Alice")));
-        assert_eq!(object.get("age"), Some(&serde_json::json!(30)));
-        assert_eq!(object.get("active"), Some(&serde_json::json!(true)));
+        assert_eq!(object.get("name"), Some(&Value::text("Alice")));
+        assert_eq!(object.get("age"), Some(&Value::integer(30)));
+        assert_eq!(object.get("active"), Some(&Value::boolean(true)));
     }
 
     #[test]
@@ -250,8 +250,8 @@ mod tests {
     fn test_builder_extend() {
         let object = ObjectBuilder::new()
             .extend(vec![
-                ("x".to_string(), serde_json::json!(1)),
-                ("y".to_string(), serde_json::json!(2)),
+                ("x".to_string(), Value::integer(1)),
+                ("y".to_string(), Value::integer(2)),
             ])
             .build()
             .unwrap();
