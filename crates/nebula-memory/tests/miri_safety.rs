@@ -565,3 +565,340 @@ fn miri_streaming_checkpoint() {
     let v4 = arena.alloc(40).unwrap();
     assert_eq!(*v4, 40);
 }
+
+// ============================================================================
+// LOCK-FREE POOL TESTS
+// ============================================================================
+
+/// Test lock-free pool under Miri
+#[test]
+fn miri_lockfree_pool_basic() {
+    use nebula_memory::pool::LockFreePool;
+    use std::sync::Arc;
+
+    let pool = Arc::new(LockFreePool::new(256, 8));
+
+    // Allocate node
+    let node1 = pool.alloc_node().unwrap();
+    assert_eq!(node1.size, 256);
+
+    // Return node
+    pool.return_node(node1);
+
+    // Allocate again - should reuse
+    let node2 = pool.alloc_node().unwrap();
+    assert_eq!(node2.size, 256);
+
+    pool.return_node(node2);
+}
+
+/// Test lock-free pool concurrent-like access under Miri
+#[test]
+fn miri_lockfree_pool_sequential() {
+    use nebula_memory::pool::LockFreePool;
+    use std::sync::Arc;
+
+    let pool = Arc::new(LockFreePool::new(128, 8));
+
+    // Simulate sequential access (Miri single-threaded)
+    let mut nodes = Vec::new();
+
+    // Allocate multiple nodes
+    for _ in 0..10 {
+        let node = pool.alloc_node().unwrap();
+        nodes.push(node);
+    }
+
+    // Return all nodes
+    for node in nodes {
+        pool.return_node(node);
+    }
+
+    // Allocate again - all should be reused
+    for _ in 0..10 {
+        let node = pool.alloc_node().unwrap();
+        pool.return_node(node);
+    }
+}
+
+// ============================================================================
+// TTL POOL TESTS
+// ============================================================================
+
+#[cfg(feature = "std")]
+#[test]
+fn miri_ttl_pool_basic() {
+    use nebula_memory::pool::{TtlPool, Poolable};
+    use std::time::Duration;
+
+    #[derive(Debug)]
+    struct Item {
+        value: u64,
+    }
+
+    impl Poolable for Item {
+        fn reset(&mut self) {
+            self.value = 0;
+        }
+    }
+
+    let mut pool = TtlPool::new(10, Duration::from_secs(60), || Item { value: 42 });
+
+    // Get item
+    let item = pool.get().unwrap();
+    assert_eq!(item.value, 0); // Should be reset
+
+    // Detach
+    let _owned = item.detach();
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn miri_ttl_pool_reuse() {
+    use nebula_memory::pool::{TtlPool, Poolable};
+    use std::time::Duration;
+
+    struct Counter {
+        count: u32,
+    }
+
+    impl Poolable for Counter {
+        fn reset(&mut self) {
+            self.count = 0;
+        }
+    }
+
+    let mut pool = TtlPool::new(5, Duration::from_secs(300), || Counter { count: 0 });
+
+    // Multiple allocate/return cycles
+    for i in 0..5 {
+        let mut item = pool.get().unwrap();
+        assert_eq!(item.count, 0); // Reset
+        item.count = i;
+        assert_eq!(item.count, i);
+        // Item dropped, returned to pool
+    }
+}
+
+// ============================================================================
+// HIERARCHICAL POOL TESTS
+// ============================================================================
+
+#[test]
+fn miri_hierarchical_pool_basic() {
+    use nebula_memory::pool::{HierarchicalPool, HierarchicalPoolExt, Poolable};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Debug, Clone)]
+    struct Item {
+        id: u32,
+    }
+
+    impl Poolable for Item {
+        fn reset(&mut self) {
+            self.id = 0;
+        }
+    }
+
+    impl Default for Item {
+        fn default() -> Self {
+            Item { id: 42 }
+        }
+    }
+
+    // Create parent pool
+    let parent = HierarchicalPool::new(10, Item::default);
+
+    // Get from parent
+    {
+        let mut parent_guard = parent.lock().unwrap();
+        let obj = parent_guard.get().unwrap();
+        assert_eq!(obj.id, 0); // Reset
+        assert!(!obj.is_borrowed());
+    }
+}
+
+// ============================================================================
+// BATCH ALLOCATOR TESTS
+// ============================================================================
+
+#[test]
+fn miri_batch_allocator() {
+    use nebula_memory::pool::{BatchAllocator, Poolable};
+
+    #[derive(Debug, Clone)]
+    struct Item {
+        value: i32,
+    }
+
+    impl Poolable for Item {
+        fn reset(&mut self) {
+            self.value = 0;
+        }
+    }
+
+    let mut allocator = BatchAllocator::new(100, || Item { value: 42 });
+
+    // Get batch of items
+    let batch = allocator.get_batch(5).unwrap();
+    assert_eq!(batch.len(), 5);
+
+    // Verify items are reset
+    for item in batch.iter() {
+        assert_eq!(item.value, 0);
+    }
+
+    // Return batch
+    allocator.return_batch(batch);
+}
+
+#[test]
+fn miri_batch_allocator_split() {
+    use nebula_memory::pool::{BatchAllocator, Poolable};
+
+    struct Counter {
+        count: u32,
+    }
+
+    impl Poolable for Counter {
+        fn reset(&mut self) {
+            self.count = 0;
+        }
+    }
+
+    let mut allocator = BatchAllocator::new(50, || Counter { count: 0 });
+
+    // Get batch
+    let batch = allocator.get_batch(10).unwrap();
+    assert_eq!(batch.len(), 10);
+
+    // Split batch
+    let (first, second) = batch.split_at(5);
+    assert_eq!(first.len(), 5);
+    assert_eq!(second.len(), 5);
+
+    // Return both
+    allocator.return_batch(first);
+    allocator.return_batch(second);
+}
+
+// ============================================================================
+// CROSS-THREAD ARENA TESTS
+// ============================================================================
+
+#[test]
+fn miri_cross_thread_arena() {
+    use nebula_memory::arena::{CrossThreadArena, CrossThreadArenaConfig};
+
+    let config = CrossThreadArenaConfig::default();
+    let arena = CrossThreadArena::new(config);
+
+    // Allocate values
+    let val = arena.alloc(42u64).unwrap();
+    assert_eq!(*val, 42);
+
+    // Allocate string
+    let s = arena.alloc_str("cross-thread").unwrap();
+    assert_eq!(s, "cross-thread");
+}
+
+#[test]
+fn miri_cross_thread_arena_ref() {
+    use nebula_memory::arena::{CrossThreadArena, CrossThreadArenaConfig};
+
+    let arena = CrossThreadArena::new(CrossThreadArenaConfig::default());
+
+    // Create arena ref
+    let val_ref = arena.create_ref(100u32).unwrap();
+
+    // Access via with/with_mut
+    val_ref.with(|val| {
+        assert_eq!(*val, 100);
+    });
+
+    val_ref.with_mut(|val| {
+        *val = 200;
+    });
+
+    val_ref.with(|val| {
+        assert_eq!(*val, 200);
+    });
+}
+
+// ============================================================================
+// MONITORED ALLOCATOR TESTS
+// ============================================================================
+
+#[test]
+fn miri_monitored_allocator() {
+    use nebula_memory::allocator::{Allocator, MonitoredAllocator, SystemAllocator};
+
+    let system = SystemAllocator::new();
+    let monitored = MonitoredAllocator::new(system);
+
+    unsafe {
+        let layout = Layout::from_size_align(128, 8).unwrap();
+
+        // Allocate with monitoring
+        let ptr = monitored.allocate(layout).unwrap();
+        std::ptr::write_bytes(ptr.cast::<u8>().as_ptr(), 0x33, 128);
+
+        assert_eq!(*ptr.cast::<u8>().as_ptr(), 0x33);
+
+        monitored.deallocate(ptr.cast(), layout);
+    }
+}
+
+// ============================================================================
+// TRACKED ALLOCATOR TESTS
+// ============================================================================
+
+#[test]
+fn miri_tracked_allocator() {
+    use nebula_memory::allocator::{Allocator, TrackedAllocator, SystemAllocator};
+
+    let system = SystemAllocator::new();
+    let tracked = TrackedAllocator::new(system);
+
+    unsafe {
+        let layout = Layout::from_size_align(64, 8).unwrap();
+
+        // Allocate and track
+        let ptr = tracked.allocate(layout).unwrap();
+        assert_eq!(tracked.allocated_bytes(), 64);
+
+        std::ptr::write_bytes(ptr.cast::<u8>().as_ptr(), 0x77, 64);
+
+        tracked.deallocate(ptr.cast(), layout);
+        assert_eq!(tracked.allocated_bytes(), 0);
+    }
+}
+
+#[test]
+fn miri_tracked_allocator_multiple() {
+    use nebula_memory::allocator::{Allocator, TrackedAllocator, SystemAllocator};
+
+    let system = SystemAllocator::new();
+    let tracked = TrackedAllocator::new(system);
+
+    unsafe {
+        let layout = Layout::from_size_align(32, 8).unwrap();
+
+        let mut ptrs = Vec::new();
+
+        // Allocate multiple
+        for _ in 0..5 {
+            let ptr = tracked.allocate(layout).unwrap();
+            ptrs.push(ptr);
+        }
+
+        assert_eq!(tracked.allocated_bytes(), 32 * 5);
+
+        // Deallocate all
+        for ptr in ptrs {
+            tracked.deallocate(ptr.cast(), layout);
+        }
+
+        assert_eq!(tracked.allocated_bytes(), 0);
+    }
+}
