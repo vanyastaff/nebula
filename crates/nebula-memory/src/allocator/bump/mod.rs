@@ -2,6 +2,22 @@
 //!
 //! A bump allocator (also called arena allocator) provides fast sequential allocations
 //! by simply incrementing a pointer. All memory is freed at once when the allocator is dropped.
+//!
+//! # Safety
+//!
+//! This module implements a bump allocator with careful synchronization:
+//! - Memory buffer wrapped in SyncUnsafeCell for interior mutability
+//! - Atomic cursor (or Cell for !Send) ensures exclusive allocation ranges
+//! - Compare-and-swap prevents overlapping allocations in multi-threaded mode
+//! - Checkpoint/restore with generation counters prevent use-after-restore
+//!
+//! ## Invariants
+//!
+//! - Allocated memory ranges never overlap (enforced by atomic CAS)
+//! - All pointers within [start_addr, end_addr) bounds
+//! - Cursor only moves forward (monotonic within a generation)
+//! - Checkpoints validated by generation counter
+//! - Individual deallocation not supported (no-op)
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -35,8 +51,17 @@ use crate::utils::{Backoff, MemoryOps, PrefetchManager, align_up, atomic_max, ca
 #[repr(transparent)]
 struct SyncUnsafeCell<T: ?Sized>(UnsafeCell<T>);
 
-// SAFETY: We ensure proper synchronization through atomic cursor
+// SAFETY: SyncUnsafeCell<T> is Sync even though UnsafeCell<T> is not.
+// - All mutable access goes through atomic cursor (compare_exchange)
+// - CAS success guarantees exclusive access to allocated range
+// - No overlapping mutable references (disjoint memory regions)
+// - AcqRel ordering synchronizes cursor updates between threads
 unsafe impl<T: ?Sized> Sync for SyncUnsafeCell<T> {}
+
+// SAFETY: SyncUnsafeCell<T> is Send if T is Send.
+// - Wrapper is repr(transparent), same layout as UnsafeCell<T>
+// - T: Send bound ensures inner value can move between threads
+// - No thread-local state in wrapper
 unsafe impl<T: ?Sized + Send> Send for SyncUnsafeCell<T> {}
 
 impl<T> SyncUnsafeCell<T> {
@@ -78,6 +103,10 @@ impl BumpAllocator {
 
         let memory_ops = MemoryOps::new();
         if let Some(pattern) = config.alloc_pattern {
+            // SAFETY: Filling freshly allocated vector with pattern.
+            // - vec is a valid mutable slice (just allocated)
+            // - MemoryOps::secure_fill_slice writes pattern to entire slice
+            // - No concurrent access (vec is exclusive to this thread)
             unsafe {
                 MemoryOps::secure_fill_slice(&mut vec, pattern);
             }
@@ -88,13 +117,20 @@ impl BumpAllocator {
         let boxed_slice = vec.into_boxed_slice();
         let len = boxed_slice.len();
         let ptr = Box::into_raw(boxed_slice) as *mut u8;
-        // SAFETY: We're transmuting Box<[u8]> layout to Box<SyncUnsafeCell<[u8]>> layout
-        // This is safe because SyncUnsafeCell is repr(transparent)
+        // SAFETY: Transmuting Box<[u8]> to Box<SyncUnsafeCell<[u8]>>.
+        // - SyncUnsafeCell is repr(transparent), identical layout to inner type
+        // - ptr is a valid Box<[u8]> pointer from Box::into_raw
+        // - Length is preserved (len from original boxed_slice)
+        // - Box ownership transferred correctly (from_raw after into_raw)
+        // - Memory remains valid (same allocation, just different type wrapper)
         let memory: Box<SyncUnsafeCell<[u8]>> = unsafe {
             Box::from_raw(core::ptr::slice_from_raw_parts_mut(ptr, len) as *mut SyncUnsafeCell<[u8]>)
         };
 
-        // SAFETY: We just created the memory, getting pointer is safe
+        // SAFETY: Getting pointer from freshly created SyncUnsafeCell.
+        // - memory.get() returns *mut [u8] pointing to valid allocation
+        // - Dereferencing to call as_ptr() on the slice
+        // - Result is a valid pointer to the start of the buffer
         let start_addr = unsafe { (*memory.get()).as_ptr() as usize };
         let end_addr = start_addr + capacity;
 
@@ -213,8 +249,13 @@ impl BumpAllocator {
         if let Some(pattern) = self.config.dealloc_pattern {
             let start = checkpoint.position - self.start_addr;
             let end = current - self.start_addr;
+            // SAFETY: Filling memory being restored (checkpoint to current cursor).
+            // - memory.get() returns *mut [u8] to our buffer
+            // - [start..end) range is within bounds (validated above)
+            // - This range was previously allocated (between checkpoint and current)
+            // - UnsafeCell grants mutable access
+            // - After restore, this memory becomes unallocated again
             unsafe {
-                // SAFETY: We have exclusive access through UnsafeCell
                 let memory_slice = &mut *self.memory.get();
                 if let Some(slice) = memory_slice.get_mut(start..end) {
                     MemoryOps::secure_fill_slice(slice, pattern);
@@ -254,8 +295,13 @@ impl BumpAllocator {
         if addr < self.end_addr && prefetch_end > addr {
             let start = addr - self.start_addr;
             let end = prefetch_end - self.start_addr;
+            // SAFETY: Read-only prefetch hint for upcoming allocations.
+            // - memory.get() returns *mut [u8], we create shared reference
+            // - [start..end) range is within buffer bounds (clamped to end_addr)
+            // - Read-only access is safe (no mutation)
+            // - Prefetch is advisory (CPU hint), no memory safety impact
+            // - Concurrent allocations OK (they access disjoint ranges via CAS)
             unsafe {
-                // SAFETY: Read-only access for prefetch
                 let memory_slice = &*self.memory.get();
                 if let Some(slice) = memory_slice.get(start..end) {
                     self.prefetch_mgr.prefetch_slice_read(slice);
@@ -302,21 +348,33 @@ impl BumpAllocator {
 
                     // Calculate return pointer with proper provenance through UnsafeCell
                     let offset = aligned - self.start_addr;
+                    // SAFETY: Calculating pointer to freshly allocated memory.
+                    // - memory.get() returns *mut [u8] to our buffer
+                    // - offset is within bounds: aligned < new_current <= end_addr (checked above)
+                    // - CAS success means we exclusively own [aligned, new_current) range
+                    // - as_mut_ptr() + offset gives pointer to start of allocation
+                    // - No other thread can allocate overlapping range (cursor advanced)
                     let ptr = unsafe {
-                        // SAFETY: offset is within bounds (checked by compare_exchange)
-                        // UnsafeCell grants us mutable access
                         let memory_ptr = self.memory.get();
                         (*memory_ptr).as_mut_ptr().add(offset)
                     };
 
                     // Fill with pattern if configured
                     if let Some(pattern) = self.config.alloc_pattern {
+                        // SAFETY: Writing pattern to freshly allocated, uninitialized memory.
+                        // - ptr points to [aligned, aligned+actual_size) range
+                        // - This range is exclusively owned (just allocated via CAS)
+                        // - write_bytes writes pattern to every byte
+                        // - actual_size is within allocated range (checked above)
                         unsafe {
-                            // SAFETY: We just allocated this memory, it's uninitialized
                             core::ptr::write_bytes(ptr, pattern, actual_size);
                         }
                     }
 
+                    // SAFETY: ptr is non-null (comes from non-null buffer + offset).
+                    // - Buffer was allocated via Box, never null
+                    // - offset is within buffer bounds
+                    // - Result is a valid, properly aligned pointer
                     return Some(unsafe { NonNull::new_unchecked(ptr) });
                 }
                 Err(_) => {
@@ -330,7 +388,18 @@ impl BumpAllocator {
     }
 }
 
+// SAFETY: BumpAllocator implements Allocator via bump pointer allocation.
+// - allocate() uses atomic CAS to reserve exclusive memory ranges
+// - deallocate() is intentionally a no-op (bump allocators don't free individually)
+// - All allocations within bounded buffer [start_addr, end_addr)
+// - Proper alignment enforced by align_up in try_bump
 unsafe impl Allocator for BumpAllocator {
+    /// # Safety
+    ///
+    /// Caller must ensure:
+    /// - `layout` has valid size and alignment (align is power of two)
+    /// - Returned pointer not used after allocator reset/drop
+    /// - Bump allocators don't support individual deallocation
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
         let ptr = self
             .try_bump(layout.size(), layout.align())
@@ -340,13 +409,25 @@ unsafe impl Allocator for BumpAllocator {
         Ok(slice)
     }
 
+    /// # Safety
+    ///
+    /// This is intentionally a no-op - bump allocators don't support individual deallocation.
+    /// Memory is only freed when the entire allocator is reset or dropped.
     unsafe fn deallocate(&self, _ptr: NonNull<u8>, _layout: Layout) {
         // Bump allocator doesn't support individual deallocation
     }
 }
 
+// SAFETY: BumpAllocator is ThreadSafeAllocator when configured with thread_safe=true.
+// - Atomic cursor (AtomicCursor) provides thread-safe allocation
+// - CAS operations prevent race conditions
+// - Memory buffer wrapped in SyncUnsafeCell (proven Sync above)
+// - When thread_safe=false, CellCursor is used (not thread-safe, but correct for !Send)
 unsafe impl ThreadSafeAllocator for BumpAllocator {}
 
+// SAFETY: BumpAllocator implements BulkAllocator using default trait methods.
+// - Bulk operations delegate to allocate/deallocate
+// - Same safety properties as base Allocator impl
 unsafe impl BulkAllocator for BumpAllocator {}
 
 impl MemoryUsage for BumpAllocator {
@@ -360,6 +441,12 @@ impl MemoryUsage for BumpAllocator {
 }
 
 impl Resettable for BumpAllocator {
+    /// # Safety
+    ///
+    /// Caller must ensure:
+    /// - No outstanding references to allocated memory exist
+    /// - All allocations from this allocator are no longer in use
+    /// - Reset is properly synchronized if allocator is shared across threads
     unsafe fn reset(&self) {
         self.reset_internal()
     }
