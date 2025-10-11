@@ -157,11 +157,10 @@ impl<T: Poolable> ObjectPool<T> {
 
         Ok(PooledValue {
             value: ManuallyDrop::new(obj),
-            // SAFETY: Creating NonNull pointer to pool.
-            // - self is &mut, guaranteed non-null
-            // - PooledValue lifetime tied to borrow (can't outlive pool)
-            // - Pool pointer used only for returning object on drop
-            pool: unsafe { NonNull::new_unchecked(self as *mut _) },
+            // Create NonNull from reference (references are always non-null)
+            // PooledValue lifetime tied to borrow (can't outlive pool)
+            // Pool pointer used only for returning object on drop
+            pool: NonNull::from(self),
         })
     }
 
@@ -179,11 +178,10 @@ impl<T: Poolable> ObjectPool<T> {
 
             PooledValue {
                 value: ManuallyDrop::new(obj),
-                // SAFETY: Creating NonNull pointer to pool.
-                // - self is &mut, guaranteed non-null
-                // - PooledValue lifetime tied to borrow (can't outlive pool)
-                // - Pool pointer used only for returning object on drop
-                pool: unsafe { NonNull::new_unchecked(self as *mut _) },
+                // Create NonNull from reference (references are always non-null)
+                // PooledValue lifetime tied to borrow (can't outlive pool)
+                // Pool pointer used only for returning object on drop
+                pool: NonNull::from(self),
             }
         })
     }

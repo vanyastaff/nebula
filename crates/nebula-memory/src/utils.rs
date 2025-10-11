@@ -310,10 +310,16 @@ pub unsafe fn fill_simd(dst: *mut u8, pattern: u8, len: usize) {
 
     for i in 0..chunks {
         let offset = i * 32;
+        // SAFETY: Storing pattern vector to destination.
+        // - dst.add(offset) within bounds (offset < len)
+        // - Caller guarantees dst valid for len bytes
         _mm256_storeu_si256(dst.add(offset) as *mut __m256i, pattern_vec);
     }
 
     // Handle remainder
+    // SAFETY: Filling remainder with pattern.
+    // - chunks * 32 + remainder == len
+    // - Caller guarantees dst valid for len bytes
     if remainder > 0 {
         ptr::write_bytes(dst.add(chunks * 32), pattern, remainder);
     }
@@ -604,12 +610,20 @@ impl MemoryOps {
         // Prefetch source data
         prefetch_read(src);
         if len > cache_line_size() {
+            // SAFETY: Prefetching next cache line.
+            // - src.add(cache_line_size()) computes next cache line address
+            // - Prefetch is just a hint, no UB if out of bounds
+            // - Caller guarantees src valid for len bytes
             unsafe {
                 prefetch_read(src.add(cache_line_size()));
             }
         }
 
         // Use platform-optimized copy
+        // SAFETY: Copying memory.
+        // - Caller guarantees src valid for reads of len bytes
+        // - Caller guarantees dst valid for writes of len bytes
+        // - Caller guarantees non-overlapping regions
         unsafe {
             ptr::copy_nonoverlapping(src, dst, len);
         }
@@ -621,6 +635,9 @@ impl MemoryOps {
         if len == 0 {
             return;
         }
+        // SAFETY: Zeroing memory.
+        // - Caller guarantees ptr valid for writes of len bytes
+        // - compiler_fence prevents optimization
         unsafe {
             ptr::write_bytes(ptr, 0, len);
         }
@@ -630,6 +647,10 @@ impl MemoryOps {
     /// Secure fill slice with pattern
     #[inline]
     pub unsafe fn secure_fill_slice(slice: &mut [u8], pattern: u8) {
+        // SAFETY: Filling slice with pattern.
+        // - slice is valid &mut [u8], guarantees valid pointer and length
+        // - write_bytes fills all bytes with pattern
+        // - compiler_fence prevents optimization
         unsafe {
             ptr::write_bytes(slice.as_mut_ptr(), pattern, slice.len());
         }
@@ -735,6 +756,10 @@ impl PrefetchManager {
     #[inline]
     pub fn prefetch_read_ahead<T>(&self, current: *const T) {
         if self.enabled {
+            // SAFETY: Computing prefetch address.
+            // - cast() converts *const T to *const u8
+            // - add(distance) computes ahead pointer
+            // - prefetch_read is just a hint, no UB if invalid
             prefetch_read(unsafe { current.cast::<u8>().add(self.distance) });
         }
     }
@@ -743,6 +768,10 @@ impl PrefetchManager {
     #[inline]
     pub fn prefetch_write_ahead<T>(&self, current: *mut T) {
         if self.enabled {
+            // SAFETY: Computing prefetch address.
+            // - cast() converts *mut T to *mut u8
+            // - add(distance) computes ahead pointer
+            // - prefetch_write is just a hint, no UB if invalid
             prefetch_write(unsafe { current.cast::<u8>().add(self.distance) });
         }
     }

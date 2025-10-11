@@ -14,7 +14,7 @@
 //! - Generation counter increments on reset, invalidating all previous references
 //! - LocalRef/LocalRefMut carry generation tag from allocation time
 //! - Deref panics if generation mismatch (reference used after reset)
-//! - local_arena() transmute extends lifetime to 'static (valid per thread_local guarantees)
+//! - with_arena() provides safe access via callback pattern (no lifetime extension)
 //!
 //! ## Safety guarantees
 //!
@@ -63,13 +63,11 @@ impl LocalArena {
     /// Allocates raw memory in arena
     #[must_use = "allocated memory must be used"]
     pub fn alloc_bytes(&self, size: usize, align: usize) -> Result<NonNull<u8>, MemoryError> {
-        self.arena
-            .alloc_bytes_aligned(size, align)
-            // SAFETY: alloc_bytes_aligned returns null on failure (Err case).
-            // - On Ok case, pointer is guaranteed non-null and valid
-            // - Arena ensures pointer points to allocated memory with proper alignment
-            // - Pointer remains valid until arena reset
-            .map(|ptr| unsafe { NonNull::new_unchecked(ptr) })
+        let ptr = self.arena.alloc_bytes_aligned(size, align)?;
+        // Convert raw pointer to NonNull with explicit null check
+        // This is safer than new_unchecked as it validates the pointer
+        NonNull::new(ptr)
+            .ok_or_else(|| MemoryError::allocation_failed(size, align))
     }
 
     /// Allocates and initializes a value
@@ -289,26 +287,28 @@ pub fn reset_local_arena() {
     with_local_arena_mut(|arena| arena.reset());
 }
 
-/// Gets reference to the thread-local arena
+/// Executes a function with access to the thread-local arena
 ///
-/// # Safety
+/// This is the safe way to access the thread-local arena without
+/// requiring unsafe lifetime extension. The arena reference is
+/// guaranteed valid for the duration of the closure.
 ///
-/// Returns a reference with 'static lifetime to the thread-local arena.
-/// The reference is valid for the lifetime of the current thread.
-pub fn local_arena() -> &'static LocalArena {
-    LOCAL_ARENA.with(|arena| unsafe {
-        // SAFETY: Transmuting thread-local reference to 'static lifetime.
-        // - thread_local! guarantees value lives until thread exit
-        // - Each thread has its own independent LocalArena instance
-        // - RefCell::borrow() returns valid reference to LocalArena
-        // - Extending lifetime to 'static is safe within this thread's context
-        // - Caller cannot send this reference to other threads (LocalArena is !Send)
-        //
-        // This is a common pattern for thread-local storage:
-        // The 'static lifetime means "valid for the entire program" in the context
-        // of this specific thread, not globally across all threads.
-        std::mem::transmute::<&LocalArena, &'static LocalArena>(&arena.borrow())
-    })
+/// # Examples
+/// ```
+/// use nebula_memory::arena::local::with_arena;
+///
+/// with_arena(|arena| {
+///     let x = arena.alloc(42)?;
+///     assert_eq!(*x, 42);
+///     Ok::<_, nebula_memory::MemoryError>(())
+/// }).unwrap();
+/// # Ok::<(), nebula_memory::MemoryError>(())
+/// ```
+pub fn with_arena<F, R>(f: F) -> R
+where
+    F: FnOnce(&LocalArena) -> R,
+{
+    with_local_arena(f)
 }
 
 #[cfg(test)]

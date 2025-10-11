@@ -378,11 +378,9 @@ impl StackAllocator {
                         }
                     }
 
-                    // SAFETY: Creating NonNull from address.
-                    // - aligned_addr is non-zero (start_addr > 0, aligned_addr >= start_addr)
-                    // - aligned_addr points to valid memory (CAS success guarantees)
-                    // - aligned_addr properly aligned (align_up ensures this)
-                    return Some(unsafe { NonNull::new_unchecked(aligned_addr as *mut u8) });
+                    // Convert address to NonNull with explicit check
+                    // aligned_addr is non-zero (start_addr > 0), but use explicit check for safety
+                    return NonNull::new(aligned_addr as *mut u8);
                 }
                 Err(_) => {
                     // Increment attempts and use backoff

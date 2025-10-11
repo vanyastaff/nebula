@@ -26,9 +26,16 @@ impl<T> PoolBox<T> {
             let typed_ptr = ptr.as_ptr() as *mut T;
             typed_ptr.write(value);
 
+            // typed_ptr is non-null (from successful allocation), but use explicit check
+            let ptr_non_null = NonNull::new(typed_ptr)
+                .ok_or_else(|| AllocError::allocation_failed(layout.size(), layout.align()))?;
+
+            // Convert reference to NonNull (references are always non-null)
+            let allocator_non_null = NonNull::from(allocator);
+
             Ok(Self {
-                ptr: NonNull::new_unchecked(typed_ptr),
-                allocator: NonNull::new_unchecked(allocator as *const _ as *mut _),
+                ptr: ptr_non_null,
+                allocator: allocator_non_null.cast(),
             })
         }
     }

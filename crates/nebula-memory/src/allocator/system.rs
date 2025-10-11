@@ -107,14 +107,10 @@ unsafe impl Allocator for SystemAllocator {
         // - Returned pointer is properly aligned for layout
         let ptr = unsafe { System.alloc(layout) };
 
-        if ptr.is_null() {
-            Err(AllocError::allocation_failed(layout.size(), layout.align()))
-        } else {
-            // SAFETY: We just checked that ptr is not null.
-            // System.alloc guarantees valid pointer or null.
-            let non_null = unsafe { NonNull::new_unchecked(ptr) };
-            Ok(NonNull::slice_from_raw_parts(non_null, layout.size()))
-        }
+        // Use explicit null check instead of new_unchecked
+        NonNull::new(ptr)
+            .map(|non_null| NonNull::slice_from_raw_parts(non_null, layout.size()))
+            .ok_or_else(|| AllocError::allocation_failed(layout.size(), layout.align()))
     }
 
     /// # Safety
@@ -164,9 +160,8 @@ unsafe impl Allocator for SystemAllocator {
                 // - Returns null on failure (checked below)
                 let new_ptr =
                     unsafe { System.realloc(ptr.as_ptr(), old_layout, new_layout.size()) };
-                if !new_ptr.is_null() {
-                    // SAFETY: We just checked new_ptr is not null.
-                    let non_null = unsafe { NonNull::new_unchecked(new_ptr) };
+                // Use explicit null check instead of new_unchecked
+                if let Some(non_null) = NonNull::new(new_ptr) {
                     return Ok(NonNull::slice_from_raw_parts(non_null, new_layout.size()));
                 }
             }

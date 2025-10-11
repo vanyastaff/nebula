@@ -423,11 +423,9 @@ impl PoolAllocator {
                         atomic_max(&self.peak_usage, current_used);
                     }
 
-                    // SAFETY: head is non-null (checked at loop start).
-                    // - CAS success means we exclusively own this block
-                    // - head points to a valid block address within our buffer
-                    // - Converting *mut FreeBlock to *mut u8 is safe (same address)
-                    return Some(unsafe { NonNull::new_unchecked(head as *mut u8) });
+                    // Convert pointer to NonNull with explicit check
+                    // head is non-null (checked at loop start), but use explicit check for safety
+                    return NonNull::new(head as *mut u8);
                 }
                 Err(_) => {
                     // Another thread modified the list, backoff and retry

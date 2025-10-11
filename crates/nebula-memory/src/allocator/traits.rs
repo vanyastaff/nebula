@@ -34,7 +34,7 @@
 //!
 //! Default trait methods contain unsafe operations with documented guarantees:
 //! - `copy_nonoverlapping`: Used in grow/shrink with size validation
-//! - `NonNull::new_unchecked`: Used after null checks or with dangling pointers
+//! - `NonNull::new()`: Explicit null checks for pointer validation
 //! - Pointer arithmetic: Used with bounds checking and overflow protection
 //! - Layout calculations: Validated before use to prevent UB
 //!
@@ -523,12 +523,11 @@ pub trait TypedAllocator: Allocator {
         // - layout is valid (derived from T at compile time)
         // - allocate returns valid pointer or error
         let ptr = unsafe { self.allocate(layout)? };
-        // SAFETY: Converting [u8] pointer to T pointer.
-        // - ptr is non-null (allocate guarantees on success)
-        // - ptr is properly aligned for T (layout derived from T)
-        // - Casting *mut [u8] to *mut T is safe (pointer to allocated bytes)
-        // - Memory is valid for T (size and alignment guaranteed by layout)
-        Ok(unsafe { NonNull::new_unchecked(ptr.as_ptr() as *mut T) })
+        // Cast [u8] pointer to T pointer
+        // ptr is guaranteed non-null from allocate, but explicit check for safety
+        let typed_ptr = ptr.as_ptr() as *mut T;
+        NonNull::new(typed_ptr)
+            .ok_or_else(|| AllocError::allocation_failed(layout.size(), layout.align()))
     }
 
     /// Allocates and initializes memory for a single instance of type `T`
@@ -605,12 +604,11 @@ pub trait TypedAllocator: Allocator {
         // - count > 0 (checked above)
         // - allocate returns valid pointer or error
         let ptr = unsafe { self.allocate(layout)? };
-        // SAFETY: Converting [u8] pointer to T pointer.
-        // - ptr is non-null (allocate guarantees on success)
-        // - ptr is properly aligned for T (layout derived from T)
-        // - Casting *mut [u8] to *mut T is safe (pointer to array elements)
-        // - Memory is valid for count T instances (size guaranteed by layout)
-        Ok(unsafe { NonNull::new_unchecked(ptr.as_ptr() as *mut T) })
+        // Cast [u8] pointer to T pointer
+        // ptr is guaranteed non-null from allocate, but explicit check for safety
+        let typed_ptr = ptr.as_ptr() as *mut T;
+        NonNull::new(typed_ptr)
+            .ok_or_else(|| AllocError::allocation_failed(layout.size(), layout.align()))
     }
 
     /// Allocates and initializes an array by cloning a value

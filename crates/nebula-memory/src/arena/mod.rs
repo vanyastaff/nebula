@@ -80,7 +80,7 @@ pub use self::cross_thread::{
     CrossThreadArena, CrossThreadArenaBuilder, CrossThreadArenaGuard, CrossThreadArenaRef,
 };
 pub use self::local::{
-    LocalArena, LocalRef, LocalRefMut, alloc_local, local_arena, reset_local_arena,
+    LocalArena, LocalRef, LocalRefMut, alloc_local, with_arena, reset_local_arena,
     with_local_arena, with_local_arena_mut,
 };
 pub use self::scope::{ArenaGuard, ArenaScope};

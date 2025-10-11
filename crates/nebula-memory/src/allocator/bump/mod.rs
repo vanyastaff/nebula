@@ -371,11 +371,10 @@ impl BumpAllocator {
                         }
                     }
 
-                    // SAFETY: ptr is non-null (comes from non-null buffer + offset).
-                    // - Buffer was allocated via Box, never null
-                    // - offset is within buffer bounds
-                    // - Result is a valid, properly aligned pointer
-                    return Some(unsafe { NonNull::new_unchecked(ptr) });
+                    // Convert raw pointer to NonNull with explicit check
+                    // ptr is guaranteed non-null (buffer from Box + valid offset)
+                    // but we use explicit check for additional safety
+                    return NonNull::new(ptr);
                 }
                 Err(_) => {
                     attempts += 1;
