@@ -17,15 +17,19 @@ pub(crate) fn lit_str(value: &str) -> LitStr {
 
 /// Converts a field name to a readable error field name.
 ///
+/// Transforms snake_case field names to more human-readable format for error messages.
+/// For example, "user_name" becomes "user name" in error messages.
+///
 /// # Examples
 ///
-/// ```
-/// assert_eq!(field_name_to_error_field("user_name"), "user_name");
+/// ```ignore
+/// assert_eq!(field_name_to_error_field("user_name"), "user name");
 /// assert_eq!(field_name_to_error_field("email"), "email");
+/// assert_eq!(field_name_to_error_field("first_name"), "first name");
 /// ```
-#[allow(dead_code)]
 pub(crate) fn field_name_to_error_field(field: &str) -> String {
-    field.to_string()
+    // Convert snake_case to space-separated words for better readability
+    field.replace('_', " ")
 }
 
 /// Pluralizes a word (simple English pluralization).

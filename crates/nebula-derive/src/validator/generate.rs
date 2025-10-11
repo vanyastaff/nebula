@@ -108,7 +108,11 @@ fn generate_field_addition(
     field_type: &Type,
     attrs: &ValidationAttrs,
 ) -> syn::Result<TokenStream> {
-    let field_name_str = field_name.to_string();
+    use crate::utils::field_name_to_error_field;
+
+    // Convert field name to human-readable format for better error messages
+    // e.g., "user_name" becomes "user name" in validation errors
+    let field_name_str = field_name_to_error_field(&field_name.to_string());
 
     // Generate the validator chain using attributes
     let validator = generate_field_validator(field_type, attrs)?;
