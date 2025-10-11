@@ -2,7 +2,6 @@
 
 use nebula_value::{Array, Value};
 use proptest::prelude::*;
-use serde_json::json;
 use std::convert::TryFrom;
 
 // Strategy for generating Values
@@ -216,11 +215,11 @@ proptest! {
 
     #[test]
     fn value_array_merge_concat(a in prop::collection::vec(any::<i32>(), 0..10), b in prop::collection::vec(any::<i32>(), 0..10)) {
-        let json_a: Vec<_> = a.iter().map(|&i| json!(i)).collect();
-        let json_b: Vec<_> = b.iter().map(|&i| json!(i)).collect();
+        let values_a: Vec<_> = a.iter().map(|&i| Value::integer(i as i64)).collect();
+        let values_b: Vec<_> = b.iter().map(|&i| Value::integer(i as i64)).collect();
 
-        let va = Value::Array(Array::from_vec(json_a));
-        let vb = Value::Array(Array::from_vec(json_b));
+        let va = Value::Array(Array::from_vec(values_a));
+        let vb = Value::Array(Array::from_vec(values_b));
 
         let result = va.merge(&vb).unwrap();
 
