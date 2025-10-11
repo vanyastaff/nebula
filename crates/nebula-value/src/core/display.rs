@@ -143,6 +143,15 @@ impl Value {
         self.format_with(&PrettyConfig::pretty())
     }
 
+    /// Helper to write indentation at the specified depth
+    fn write_indent(output: &mut String, indent: &str, depth: usize) -> fmt::Result {
+        use std::fmt::Write;
+        for _ in 0..=depth {
+            write!(output, "{}", indent)?;
+        }
+        Ok(())
+    }
+
     fn format_recursive(
         &self,
         output: &mut String,
@@ -199,9 +208,7 @@ impl Value {
 
                 for (idx, item) in arr.iter().enumerate().take(limit) {
                     if !config.indent.is_empty() {
-                        for _ in 0..=depth {
-                            write!(output, "{}", config.indent)?;
-                        }
+                        Self::write_indent(output, &config.indent, depth)?;
                     }
 
                     // Array/Object use serde_json::Value internally
@@ -218,9 +225,7 @@ impl Value {
 
                 if len > limit {
                     if !config.indent.is_empty() {
-                        for _ in 0..=depth {
-                            write!(output, "{}", config.indent)?;
-                        }
+                        Self::write_indent(output, &config.indent, depth)?;
                     }
                     write!(output, "... ({} more)", len - limit)?;
                     if !config.indent.is_empty() {
@@ -248,9 +253,7 @@ impl Value {
 
                 for (idx, (key, value)) in obj.entries().enumerate().take(limit) {
                     if !config.indent.is_empty() {
-                        for _ in 0..=depth {
-                            write!(output, "{}", config.indent)?;
-                        }
+                        Self::write_indent(output, &config.indent, depth)?;
                     }
 
                     // Array/Object use serde_json::Value internally
@@ -267,9 +270,7 @@ impl Value {
 
                 if len > limit {
                     if !config.indent.is_empty() {
-                        for _ in 0..=depth {
-                            write!(output, "{}", config.indent)?;
-                        }
+                        Self::write_indent(output, &config.indent, depth)?;
                     }
                     write!(output, "... ({} more)", len - limit)?;
                     if !config.indent.is_empty() {

@@ -34,6 +34,7 @@ pub struct ArrayBuilder {
 
 impl ArrayBuilder {
     /// Create a new empty builder
+    #[must_use]
     pub fn new() -> Self {
         Self {
             items: Vec::new(),
@@ -42,6 +43,7 @@ impl ArrayBuilder {
     }
 
     /// Create a builder with initial capacity
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             items: Vec::with_capacity(capacity),
@@ -50,12 +52,14 @@ impl ArrayBuilder {
     }
 
     /// Set value limits for validation
+    #[must_use = "builder methods return a new instance"]
     pub fn with_limits(mut self, limits: ValueLimits) -> Self {
         self.limits = Some(limits);
         self
     }
 
     /// Add an item to the array
+    #[must_use = "builder methods return a new instance"]
     pub fn push(mut self, item: ValueItem) -> Self {
         self.items.push(item);
         self
@@ -71,6 +75,7 @@ impl ArrayBuilder {
     }
 
     /// Add multiple items
+    #[must_use = "builder methods return a new instance"]
     pub fn extend<I>(mut self, items: I) -> Self
     where
         I: IntoIterator<Item = ValueItem>,
@@ -125,17 +130,20 @@ impl ArrayBuilder {
     }
 
     /// Clear all items
+    #[must_use = "builder methods return a new instance"]
     pub fn clear(mut self) -> Self {
         self.items.clear();
         self
     }
 
     /// Get the current number of items
+    #[must_use]
     pub fn len(&self) -> usize {
         self.items.len()
     }
 
     /// Check if the builder is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -150,6 +158,7 @@ impl ArrayBuilder {
     }
 
     /// Build without validation (unsafe)
+    #[must_use]
     pub fn build_unchecked(self) -> Array {
         Array::from_iter(self.items)
     }
