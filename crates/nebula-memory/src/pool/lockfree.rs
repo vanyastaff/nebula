@@ -75,6 +75,47 @@ struct Node<T> {
 }
 
 impl<T: Poolable> LockFreePool<T> {
+    /// Helper: Set next pointer in node
+    ///
+    /// # Safety
+    /// - node must be valid pointer from Box::into_raw
+    /// - node must be exclusively owned by caller
+    /// - next can be null or valid node pointer
+    #[inline]
+    unsafe fn set_node_next(node: *mut Node<T>, next: *mut Node<T>) {
+        // SAFETY: node is valid pointer from Box::into_raw (caller contract)
+        // - Node is freshly allocated and owned exclusively
+        // - next is valid pointer or null (both safe to store)
+        (*node).next = next;
+    }
+
+    /// Helper: Get next pointer from node
+    ///
+    /// # Safety
+    /// - node must be non-null valid pointer to Node<T>
+    /// - Caller must have synchronized access (e.g., via Acquire ordering)
+    #[inline]
+    unsafe fn get_node_next(node: *mut Node<T>) -> *mut Node<T> {
+        // SAFETY: node is non-null and valid (caller contract)
+        // - Acquire ordering ensures we see all writes to node
+        // - next field access is safe
+        (*node).next
+    }
+
+    /// Helper: Convert node pointer back to owned Box
+    ///
+    /// # Safety
+    /// - node must have been created by Box::into_raw
+    /// - Caller must have exclusive ownership (e.g., after successful CAS)
+    /// - node must be valid, properly aligned, initialized
+    #[inline]
+    unsafe fn node_from_raw(node: *mut Node<T>) -> Box<Node<T>> {
+        // SAFETY: node was created by Box::into_raw (caller contract)
+        // - Exclusive ownership via CAS (caller contract)
+        // - Valid, aligned, initialized pointer (caller contract)
+        Box::from_raw(node)
+    }
+
     /// Create new lock-free pool
     pub fn new<F>(capacity: usize, factory: F) -> Self
     where
@@ -130,14 +171,10 @@ impl<T: Poolable> LockFreePool<T> {
 
         loop {
             let head = self.head.load(Ordering::Acquire);
-            // SAFETY: `node` is a valid pointer from Box::into_raw above, properly aligned and
-            // pointing to an initialized Node<T>. This write is safe because:
-            // - Node is freshly allocated and owned exclusively by this thread
-            // - No other thread can access this node until CAS succeeds
-            // - `head` is a valid pointer or null (both safe to store)
-            unsafe {
-                (*node).next = head;
-            }
+
+            // Set next pointer using helper
+            // SAFETY: node valid from Box::into_raw, exclusively owned, head valid or null
+            unsafe { Self::set_node_next(node, head) };
 
             match self
                 .head
@@ -160,11 +197,9 @@ impl<T: Poolable> LockFreePool<T> {
                 return None;
             }
 
-            // SAFETY: `head` is non-null and was stored in the atomic pointer by push_node,
-            // which ensures it's a valid pointer to an initialized Node<T>. The Acquire
-            // ordering above synchronizes with the Release in push_node, ensuring we see
-            // all writes to the node including the `next` field.
-            let next = unsafe { (*head).next };
+            // Get next pointer using helper
+            // SAFETY: head non-null, valid from push_node, Acquire ordering synchronized
+            let next = unsafe { Self::get_node_next(head) };
 
             match self
                 .head
@@ -172,12 +207,10 @@ impl<T: Poolable> LockFreePool<T> {
             {
                 Ok(_) => {
                     self.size.fetch_sub(1, Ordering::Relaxed);
-                    // SAFETY: We successfully swapped `head` out of the atomic pointer via CAS,
-                    // so we now have exclusive ownership. Box::from_raw is safe because:
-                    // - `head` was originally created by Box::into_raw in push_node
-                    // - No other thread can access this pointer (CAS ensures exclusivity)
-                    // - The pointer is valid, properly aligned, and points to initialized memory
-                    let node = unsafe { Box::from_raw(head) };
+
+                    // Convert to Box using helper (we have exclusive ownership via CAS)
+                    // SAFETY: head from Box::into_raw, exclusive ownership via CAS, valid pointer
+                    let node = unsafe { Self::node_from_raw(head) };
                     return Some(ManuallyDrop::into_inner(node.value));
                 }
                 Err(_) => continue,

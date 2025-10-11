@@ -690,6 +690,171 @@ pub trait TypedAllocator: Allocator {
         // - cast() converts NonNull<T> to NonNull<u8> safely
         unsafe { self.deallocate(ptr.cast(), layout) }
     }
+
+    // ========================================================================
+    // Safe wrapper methods for common use cases
+    // ========================================================================
+
+    /// Safely allocate and initialize a value (safe wrapper)
+    ///
+    /// This is a safe wrapper around `alloc_init` that handles cleanup on error.
+    /// Returns an owned value that will be automatically deallocated on drop.
+    ///
+    /// # Example
+    /// ```rust
+    /// use nebula_memory::prelude::*;
+    /// use nebula_memory::allocator::TypedAllocator;
+    ///
+    /// let allocator = BumpAllocator::new(1024)?;
+    /// let value = allocator.try_alloc_value(String::from("hello"))?;
+    /// assert_eq!(&*value, "hello");
+    /// # Ok::<(), nebula_memory::AllocError>(())
+    /// ```
+    #[inline]
+    fn try_alloc_value<T>(&self, value: T) -> AllocResult<AllocatedValue<T, Self>>
+    where
+        Self: Sized,
+    {
+        // SAFETY: alloc_init handles memory allocation and initialization
+        // AllocatedValue wrapper handles deallocation on drop
+        let ptr = unsafe { self.alloc_init(value)? };
+        Ok(AllocatedValue {
+            ptr,
+            allocator: self,
+            _phantom: core::marker::PhantomData,
+        })
+    }
+
+    /// Safely allocate an array with initial value (safe wrapper)
+    ///
+    /// Creates an array where each element is initialized by cloning `value`.
+    /// Returns an owned value that will be automatically deallocated on drop.
+    ///
+    /// # Example
+    /// ```rust
+    /// use nebula_memory::prelude::*;
+    /// use nebula_memory::allocator::TypedAllocator;
+    ///
+    /// let allocator = BumpAllocator::new(1024)?;
+    /// let array = allocator.try_alloc_array_with(10, 42u32)?;
+    /// assert_eq!(array.len(), 10);
+    /// # Ok::<(), nebula_memory::AllocError>(())
+    /// ```
+    #[inline]
+    fn try_alloc_array_with<T: Clone>(
+        &self,
+        count: usize,
+        value: T,
+    ) -> AllocResult<AllocatedArray<T, Self>>
+    where
+        Self: Sized,
+    {
+        // SAFETY: alloc_array_with handles memory allocation and initialization
+        // AllocatedArray wrapper handles deallocation on drop
+        let ptr = unsafe { self.alloc_array_with(count, value)? };
+        Ok(AllocatedArray {
+            ptr,
+            count,
+            allocator: self,
+            _phantom: core::marker::PhantomData,
+        })
+    }
+}
+
+/// RAII wrapper for allocated value
+///
+/// Automatically deallocates memory when dropped.
+pub struct AllocatedValue<'a, T, A: Allocator + ?Sized> {
+    ptr: NonNull<T>,
+    allocator: &'a A,
+    _phantom: core::marker::PhantomData<T>,
+}
+
+impl<'a, T, A: Allocator + ?Sized> core::ops::Deref for AllocatedValue<'a, T, A> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        // SAFETY: ptr is valid and initialized (from alloc_init)
+        unsafe { self.ptr.as_ref() }
+    }
+}
+
+impl<'a, T, A: Allocator + ?Sized> core::ops::DerefMut for AllocatedValue<'a, T, A> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: ptr is valid and initialized (from alloc_init)
+        unsafe { self.ptr.as_mut() }
+    }
+}
+
+impl<'a, T, A: Allocator + ?Sized> Drop for AllocatedValue<'a, T, A> {
+    fn drop(&mut self) {
+        // SAFETY: ptr was allocated by self.allocator via alloc_init
+        unsafe {
+            core::ptr::drop_in_place(self.ptr.as_ptr());
+            self.allocator.dealloc_typed(self.ptr);
+        }
+    }
+}
+
+/// RAII wrapper for allocated array
+///
+/// Automatically deallocates memory when dropped.
+pub struct AllocatedArray<'a, T, A: Allocator + ?Sized> {
+    ptr: NonNull<T>,
+    count: usize,
+    allocator: &'a A,
+    _phantom: core::marker::PhantomData<T>,
+}
+
+impl<'a, T, A: Allocator + ?Sized> AllocatedArray<'a, T, A> {
+    /// Get length of array
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Check if array is empty
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Get slice view of array
+    pub fn as_slice(&self) -> &[T] {
+        // SAFETY: ptr points to count initialized elements
+        unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.count) }
+    }
+
+    /// Get mutable slice view of array
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        // SAFETY: ptr points to count initialized elements
+        unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.count) }
+    }
+}
+
+impl<'a, T, A: Allocator + ?Sized> core::ops::Deref for AllocatedArray<'a, T, A> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        self.as_slice()
+    }
+}
+
+impl<'a, T, A: Allocator + ?Sized> core::ops::DerefMut for AllocatedArray<'a, T, A> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        self.as_mut_slice()
+    }
+}
+
+impl<'a, T, A: Allocator + ?Sized> Drop for AllocatedArray<'a, T, A> {
+    fn drop(&mut self) {
+        // SAFETY: ptr was allocated by self.allocator via alloc_array_cloned
+        // Must drop all elements before deallocating
+        unsafe {
+            for i in 0..self.count {
+                core::ptr::drop_in_place(self.ptr.as_ptr().add(i));
+            }
+            self.allocator.dealloc_array(self.ptr, self.count);
+        }
+    }
 }
 
 /// Blanket implementation: all Allocators automatically implement TypedAllocator

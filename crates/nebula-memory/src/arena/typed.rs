@@ -74,6 +74,52 @@ impl<T> TypedArena<T> {
         }
     }
 
+    /// Helper: Check if current chunk has capacity for allocation
+    ///
+    /// # Safety
+    /// - chunk_ptr must be valid NonNull pointing to TypedChunk<T>
+    /// - chunk must be owned by arena's RefCell
+    #[inline]
+    unsafe fn chunk_has_capacity(chunk_ptr: NonNull<TypedChunk<T>>, index: usize) -> bool {
+        // SAFETY: Dereferencing chunk pointer to check capacity.
+        // - chunk_ptr is NonNull (caller contract)
+        // - Pointer valid (owned by arena's RefCell)
+        // - Read-only access to capacity (no mutation)
+        index < (*chunk_ptr.as_ptr()).capacity()
+    }
+
+    /// Helper: Get pointer to element in chunk storage
+    ///
+    /// # Safety
+    /// - chunk_ptr must be valid NonNull pointing to TypedChunk<T>
+    /// - index must be within chunk capacity bounds
+    /// - Caller must ensure chunk is owned by arena's RefCell
+    #[inline]
+    unsafe fn get_elem_ptr(chunk_ptr: NonNull<TypedChunk<T>>, index: usize) -> *mut T {
+        // SAFETY: Accessing chunk storage at index.
+        // - chunk_ptr valid (caller contract)
+        // - index within bounds (caller contract)
+        // - MaybeUninit allows uninitialized access
+        // - as_mut_ptr returns raw pointer for writing
+        let chunk = &mut *chunk_ptr.as_ptr();
+        chunk.storage[index].as_mut_ptr()
+    }
+
+    /// Helper: Write value to element pointer
+    ///
+    /// # Safety
+    /// - elem_ptr must point to valid, uninitialized memory
+    /// - Memory must be properly aligned for T
+    /// - Caller takes ownership of the value
+    #[inline]
+    unsafe fn write_value(elem_ptr: *mut T, value: T) {
+        // SAFETY: Writing value to uninitialized memory.
+        // - elem_ptr valid (caller contract)
+        // - Memory uninitialized (safe to write via ptr::write)
+        // - Takes ownership of value
+        elem_ptr.write(value);
+    }
+
     /// Create a new typed arena with initial capacity
     pub fn with_capacity(capacity: usize) -> Self {
         let arena = Self::new();
@@ -147,13 +193,9 @@ impl<T> TypedArena<T> {
     pub fn alloc(&self, value: T) -> Result<&mut T, MemoryError> {
         let index = self.current_index.get();
 
-        // Check if we need a new chunk
-        // SAFETY: Dereferencing chunk pointer to check capacity.
-        // - chunk is NonNull (from current_chunk RefCell)
-        // - Pointer valid (chunk owned by arena's RefCell)
-        // - Read-only access to capacity (no mutation)
+        // Check if we need a new chunk using helper
         let needs_chunk = self.current_chunk.borrow().map_or(true, |chunk| unsafe {
-            index >= (*chunk.as_ptr()).capacity()
+            !Self::chunk_has_capacity(chunk, index)
         });
 
         if needs_chunk {
@@ -166,36 +208,22 @@ impl<T> TypedArena<T> {
             .borrow()
             .expect("Should have chunk after allocation");
 
-        // Get pointer to element
-        // SAFETY: Accessing chunk storage at current index.
-        // - chunk_ptr valid (from current_chunk RefCell)
-        // - index within bounds (needs_chunk check above ensures this)
-        // - MaybeUninit allows uninitialized access
-        // - as_mut_ptr returns raw pointer for writing
-        let elem_ptr = unsafe {
-            let chunk = &mut *chunk_ptr.as_ptr();
-            chunk.storage[self.current_index.get()].as_mut_ptr()
-        };
+        // Get pointer to element using helper
+        // SAFETY: chunk_ptr valid, index within bounds (chunk allocated with sufficient capacity)
+        let elem_ptr = unsafe { Self::get_elem_ptr(chunk_ptr, index) };
 
-        // Write value
-        // SAFETY: Writing value to uninitialized memory.
-        // - elem_ptr valid (from storage array above)
-        // - Memory uninitialized (safe to write via ptr::write)
-        // - Takes ownership of value
-        unsafe {
-            elem_ptr.write(value);
-        }
+        // Write value using helper
+        // SAFETY: elem_ptr points to valid uninitialized memory
+        unsafe { Self::write_value(elem_ptr, value) };
 
-        // Update index
+        // Update index and stats
         self.current_index.set(index + 1);
-
-        // Update stats
         self.stats.record_allocation(std::mem::size_of::<T>(), 0);
 
         // SAFETY: Creating mutable reference to initialized value.
-        // - elem_ptr valid (from storage array)
-        // - Value just initialized via write above
-        // - Lifetime tied to arena ('a)
+        // - elem_ptr valid (from get_elem_ptr helper)
+        // - Value just initialized via write_value
+        // - Lifetime tied to arena
         // - Exclusive access guaranteed by RefCell
         Ok(unsafe { &mut *elem_ptr })
     }
@@ -205,13 +233,9 @@ impl<T> TypedArena<T> {
     pub fn alloc_uninit(&self) -> Result<&mut MaybeUninit<T>, MemoryError> {
         let index = self.current_index.get();
 
-        // Check if we need a new chunk
-        // SAFETY: Dereferencing chunk pointer to check capacity.
-        // - chunk is NonNull (from current_chunk RefCell)
-        // - Pointer valid (chunk owned by arena's RefCell)
-        // - Read-only access to capacity (no mutation)
+        // Check if we need a new chunk using helper
         let needs_chunk = self.current_chunk.borrow().map_or(true, |chunk| unsafe {
-            index >= (*chunk.as_ptr()).capacity()
+            !Self::chunk_has_capacity(chunk, index)
         });
 
         if needs_chunk {
@@ -224,24 +248,22 @@ impl<T> TypedArena<T> {
             .borrow()
             .expect("Should have chunk after allocation");
 
-        // Get pointer to element
+        // Get mutable reference to MaybeUninit element
         // SAFETY: Accessing chunk storage at current index.
         // - chunk_ptr valid (from current_chunk RefCell)
-        // - index within bounds (needs_chunk check above ensures this)
+        // - index within bounds (chunk allocated with sufficient capacity)
         // - Returns mutable reference to MaybeUninit (allows uninitialized state)
         // - Lifetime tied to arena
-        let elem_ptr = unsafe {
+        let elem = unsafe {
             let chunk = &mut *chunk_ptr.as_ptr();
-            &mut chunk.storage[self.current_index.get()]
+            &mut chunk.storage[index]
         };
 
-        // Update index
+        // Update index and stats
         self.current_index.set(index + 1);
-
-        // Update stats
         self.stats.record_allocation(std::mem::size_of::<T>(), 0);
 
-        Ok(elem_ptr)
+        Ok(elem)
     }
 
     /// Allocate multiple values at once
