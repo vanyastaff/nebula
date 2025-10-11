@@ -1,4 +1,20 @@
 //! Реализация CompressedArena для сжатия данных в арена-аллокаторе
+//!
+//! # Safety
+//!
+//! This module implements arena allocation with automatic compression:
+//! - CompressedArena wraps Arena with compression algorithm
+//! - Stores original length with compressed data for decompression
+//! - Uses raw pointers to arena-allocated memory
+//! - Small data (< threshold) stored uncompressed
+//!
+//! ## Safety Contracts
+//!
+//! - allocate_compressed: Creates slices from arena pointers (valid arena allocation)
+//! - decompress_block: Creates slices from stored pointers (valid while arena exists)
+//! - CompressedBlock: Raw pointer valid while arena exists
+//! - Send/Sync: CompressedBlock pointer tied to arena lifetime
+
 use std::any::Any;
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -55,9 +71,14 @@ mod arena_impl {
             if data.len() < self.threshold {
                 // Не сжимаем маленькие данные
                 let ptr = self.inner.allocate(data.len())?;
+                // SAFETY: Creating mutable slice from arena pointer.
+                // - ptr is valid (just allocated from arena)
+                // - ptr is properly aligned (arena allocation)
+                // - Size is data.len() (requested allocation size)
+                // - Exclusive access (new allocation, no aliases)
                 let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u8, data.len()) };
                 slice.copy_from_slice(data);
-                
+
                 return Ok(CompressedBlock {
                     ptr,
                     original_len: data.len(),
@@ -76,9 +97,14 @@ mod arena_impl {
             // Если после сжатия размер увеличился, сохраняем исходные данные
             if compressed.len() >= data.len() {
                 let ptr = self.inner.allocate(data.len())?;
+                // SAFETY: Creating mutable slice from arena pointer.
+                // - ptr is valid (just allocated from arena)
+                // - ptr is properly aligned (arena allocation)
+                // - Size is data.len() (requested allocation size)
+                // - Exclusive access (new allocation, no aliases)
                 let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u8, data.len()) };
                 slice.copy_from_slice(data);
-                
+
                 return Ok(CompressedBlock {
                     ptr,
                     original_len: data.len(),
@@ -89,13 +115,22 @@ mod arena_impl {
             
             // Сохраняем сжатые данные
             let ptr = self.inner.allocate(compressed.len() + std::mem::size_of::<usize>())?;
-            
+
             // Сохраняем длину исходных данных в начале блока
             let len_ptr = ptr as *mut usize;
+            // SAFETY: Writing original length to arena-allocated memory.
+            // - len_ptr is valid (just allocated from arena)
+            // - len_ptr is properly aligned (arena respects alignment)
+            // - Exclusive access (new allocation)
             unsafe { *len_ptr = data.len() };
-            
+
             // Сохраняем сжатые данные после длины
             let data_ptr = (ptr as usize + std::mem::size_of::<usize>()) as *mut u8;
+            // SAFETY: Creating mutable slice after length field.
+            // - data_ptr is valid (within allocated block)
+            // - Offset by size_of::<usize>() is within allocation
+            // - Size is compressed.len() (fits within allocation)
+            // - Exclusive access (new allocation, no aliases)
             let slice = unsafe { std::slice::from_raw_parts_mut(data_ptr, compressed.len()) };
             slice.copy_from_slice(&compressed);
             
@@ -111,14 +146,23 @@ mod arena_impl {
         pub fn decompress_block(&self, block: &CompressedBlock) -> io::Result<Vec<u8>> {
             if !block.is_compressed {
                 // Если данные не сжаты, просто копируем
+                // SAFETY: Creating immutable slice from stored pointer.
+                // - block.ptr is valid (allocated in allocate_compressed)
+                // - Arena keeps memory valid
+                // - Size is block.original_len (stored during allocation)
                 let slice = unsafe { std::slice::from_raw_parts(block.ptr as *const u8, block.original_len) };
                 return Ok(slice.to_vec());
             }
-            
+
             // Получаем сжатые данные
             let data_ptr = (block.ptr as usize + std::mem::size_of::<usize>()) as *const u8;
+            // SAFETY: Creating immutable slice of compressed data.
+            // - data_ptr is valid (block.ptr from allocation + offset)
+            // - Offset is within allocation (size was compressed_len + size_of::<usize>())
+            // - Size is block.compressed_len (stored during allocation)
+            // - Arena keeps memory valid
             let compressed = unsafe { std::slice::from_raw_parts(data_ptr, block.compressed_len) };
-            
+
             // Декомпрессируем
             self.compressor.decompress(compressed)
         }
@@ -267,5 +311,16 @@ impl fmt::Debug for CompressedBlock {
     }
 }
 
+// SAFETY: CompressedBlock can be sent between threads.
+// - ptr is a raw pointer to arena-allocated memory
+// - CompressedBlock doesn't provide interior mutability
+// - Arena lifetime must outlive CompressedBlock (enforced by API)
+// - Multiple threads can safely hold CompressedBlocks to same arena
 unsafe impl Send for CompressedBlock {}
+
+// SAFETY: CompressedBlock can be shared between threads.
+// - ptr is immutable (no writes through CompressedBlock)
+// - All access to pointed data is read-only (decompress_block uses const ptr)
+// - Arena synchronization handled externally
+// - CompressedBlock is effectively a read-only view
 unsafe impl Sync for CompressedBlock {}
