@@ -1150,22 +1150,22 @@ mod tests {
         assert_eq!(plus_2h.hour(), 12);
 
         // Add with wraparound
-        let plus_15h = time.add_hours(15);
-        assert_eq!(plus_15h.hour(), 1);
+        let fifteen_hours_later = time.add_hours(15);
+        assert_eq!(fifteen_hours_later.hour(), 1);
 
         // Add minutes
-        let plus_45m = time.add_minutes(45);
-        assert_eq!(plus_45m.hour(), 11);
-        assert_eq!(plus_45m.minute(), 15);
+        let forty_five_minutes_later = time.add_minutes(45);
+        assert_eq!(forty_five_minutes_later.hour(), 11);
+        assert_eq!(forty_five_minutes_later.minute(), 15);
 
         // Add seconds
-        let plus_30s = time.add_seconds(30);
-        assert_eq!(plus_30s.second(), 15);
+        let thirty_seconds_later = time.add_seconds(30);
+        assert_eq!(thirty_seconds_later.second(), 15);
 
         // Add with wraparound
-        let plus_90m = time.add_minutes(90);
-        assert_eq!(plus_90m.hour(), 12);
-        assert_eq!(plus_90m.minute(), 0);
+        let ninety_minutes_later = time.add_minutes(90);
+        assert_eq!(ninety_minutes_later.hour(), 12);
+        assert_eq!(ninety_minutes_later.minute(), 0);
     }
 
     #[test]

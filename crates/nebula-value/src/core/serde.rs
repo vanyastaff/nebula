@@ -3,8 +3,6 @@
 //! This module provides efficient JSON serialization/deserialization
 //! that preserves all Value types.
 
-#![cfg(feature = "serde")]
-
 use crate::collections::{Array, Object};
 use crate::core::NebulaError;
 use crate::core::error::{ValueErrorExt, ValueResult};

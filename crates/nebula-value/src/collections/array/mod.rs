@@ -1,10 +1,10 @@
+//! Array type for nebula-value
 //!
-//! - Length limits for DoS protection
+//! This module provides an Array type that:
+//! - Length limits for `DoS` protection
 //! - O(log n) operations for most operations
 //! - Thread-safe via Arc
-//! - Uses persistent data structures (im::Vector) for efficient cloning
-//! Array type for nebula-value
-//! This module provides an Array type that:
+//! - Uses persistent data structures (`im::Vector`) for efficient cloning
 pub mod builder;
 
 pub use builder::ArrayBuilder;
@@ -25,7 +25,7 @@ type ValueItem = serde_json::Value;
 
 /// Persistent array with efficient structural sharing
 ///
-/// Uses im::Vector internally which provides:
+/// Uses `im::Vector` internally which provides:
 /// - O(log n) push/pop/get/set
 /// - Efficient cloning via structural sharing
 /// - Thread-safe immutable operations
@@ -51,7 +51,7 @@ impl Array {
         }
     }
 
-    /// Create from an iterator of nebula_value::Value items
+    /// Create from an iterator of `nebula_value::Value` items
     #[cfg(feature = "serde")]
     pub fn from_nebula_values<I>(iter: I) -> Self
     where

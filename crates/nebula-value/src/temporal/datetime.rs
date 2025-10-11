@@ -857,15 +857,15 @@ mod tests {
 
         let dt = DateTime::new(2024, 12, 25, 14, 30, 45).unwrap();
 
-        let plus_1h = dt.add_hours(1).unwrap();
-        assert_eq!(plus_1h.hour(), 15);
+        let one_hour_later = dt.add_hours(1).unwrap();
+        assert_eq!(one_hour_later.hour(), 15);
 
-        let plus_1d = dt.add_days(1).unwrap();
-        assert_eq!(plus_1d.day(), 26);
+        let one_day_later = dt.add_days(1).unwrap();
+        assert_eq!(one_day_later.day(), 26);
 
-        let plus_1m = dt.add_months(1).unwrap();
-        assert_eq!(plus_1m.month(), 1);
-        assert_eq!(plus_1m.year(), 2025);
+        let one_month_later = dt.add_months(1).unwrap();
+        assert_eq!(one_month_later.month(), 1);
+        assert_eq!(one_month_later.year(), 2025);
 
         let plus_duration = dt.add_duration(Duration::from_secs(3600)).unwrap();
         assert_eq!(plus_duration.hour(), 15);

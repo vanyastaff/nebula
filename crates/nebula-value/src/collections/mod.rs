@@ -1,8 +1,8 @@
 //! Collection types for nebula-value
 //!
 //! This module provides collection types with persistent data structures:
-//! - Array: Ordered sequence (im::Vector)
-//! - Object: Key-value map (im::HashMap)
+//! - Array: Ordered sequence (`im::Vector`)
+//! - Object: Key-value map (`im::HashMap`)
 
 pub mod array;
 pub mod object;
