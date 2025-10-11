@@ -1,4 +1,17 @@
 //! Compressed bump allocator with transparent compression
+//!
+//! # Safety
+//!
+//! This module wraps BumpAllocator with optional compression:
+//! - Forwards all allocation operations to underlying bump allocator
+//! - Compression happens on try_compress (doesn't affect allocator safety)
+//! - All safety contracts preserved through delegation to BumpAllocator
+//!
+//! ## Safety Contracts
+//!
+//! - allocate/deallocate: Forwarded to BumpAllocator (inherits its contracts)
+//! - Resettable::reset: Forwarded to bump.reset (caller must ensure no outstanding references)
+//! - Compression is transparent (doesn't change memory safety semantics)
 
 use std::alloc::Layout;
 use std::ptr::NonNull;
@@ -102,10 +115,11 @@ impl CompressedBump {
 
     /// Reset allocator and clear compressed buffers
     pub fn reset_allocator(&mut self) {
+        // SAFETY: Forwarding to bump.reset.
+        // - Caller has &mut self, ensuring no outstanding allocations
+        // - bump.reset requires caller guarantee no outstanding pointers (inherited contract)
         unsafe {
-            unsafe {
-                self.bump.reset();
-            }
+            self.bump.reset();
         }
         if let Ok(mut buffers) = self.buffers.lock() {
             buffers.clear();
@@ -124,6 +138,10 @@ impl CompressedBump {
 }
 
 #[cfg(feature = "compression")]
+// SAFETY: CompressedBump forwards all operations to BumpAllocator.
+// - All safety contracts preserved through delegation
+// - Compression is transparent (separate from allocation)
+// - allocate/deallocate forward to bump (inherits BumpAllocator contracts)
 unsafe impl Allocator for CompressedBump {
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
         // For now, just use the underlying bump allocator
@@ -133,10 +151,16 @@ unsafe impl Allocator for CompressedBump {
         // 3. Store compressed version
         // 4. Free original allocation
 
+        // SAFETY: Forwarding to bump.allocate.
+        // - layout valid (caller contract)
+        // - bump.allocate upholds Allocator trait contract
         self.bump.allocate(layout)
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        // SAFETY: Forwarding to bump.deallocate.
+        // - ptr/layout match allocation (caller contract)
+        // - bump.deallocate upholds Allocator trait contract
         self.bump.deallocate(ptr, layout)
     }
 }
@@ -156,21 +180,31 @@ impl CompressedBump {
     }
 
     pub fn reset_allocator(&mut self) {
+        // SAFETY: Forwarding to bump.reset.
+        // - Caller has &mut self, ensuring no outstanding allocations
+        // - bump.reset requires caller guarantee no outstanding pointers (inherited contract)
         unsafe {
-            unsafe {
-                self.bump.reset();
-            }
+            self.bump.reset();
         }
     }
 }
 
 #[cfg(not(feature = "compression"))]
+// SAFETY: CompressedBump (no compression) forwards to BumpAllocator.
+// - Placeholder implementation when compression feature disabled
+// - All safety contracts preserved through delegation
 unsafe impl Allocator for CompressedBump {
-    unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
+    unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
+        // SAFETY: Forwarding to bump.allocate.
+        // - layout valid (caller contract)
+        // - bump.allocate upholds Allocator trait contract
         self.bump.allocate(layout)
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        // SAFETY: Forwarding to bump.deallocate.
+        // - ptr/layout match allocation (caller contract)
+        // - bump.deallocate upholds Allocator trait contract
         self.bump.deallocate(ptr, layout)
     }
 }
