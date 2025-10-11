@@ -65,10 +65,11 @@ where
     tokio_timeout(duration, future)
 }
 
-/// Execute a future with a timeout, returning the original error type
+/// Execute a future with a timeout, converting errors to ResilienceError
 ///
-/// This variant preserves the original error type instead of converting to `ResilienceError`.
-/// Useful when you want to handle the original error but still enforce timeouts.
+/// This variant converts both timeout and operation errors into `ResilienceError`.
+/// When the operation completes with an error, it's wrapped as a `Custom` error.
+/// When the timeout fires, it returns a `Timeout` error.
 ///
 /// # Arguments
 ///
@@ -78,7 +79,7 @@ where
 /// # Returns
 ///
 /// * `Ok(T)` - Operation completed successfully within timeout
-/// * `Err(E)` - Original error from the operation
+/// * `Err(ResilienceError::Custom)` - Original error from the operation (if operation completed)
 /// * `Err(ResilienceError::Timeout)` - Operation exceeded the timeout
 pub async fn timeout_with_original_error<T, E, F>(
     duration: Duration,
@@ -86,10 +87,15 @@ pub async fn timeout_with_original_error<T, E, F>(
 ) -> Result<T, ResilienceError>
 where
     F: Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
 {
     match tokio_timeout(duration, future).await {
         Ok(Ok(result)) => Ok(result),
-        Ok(Err(_)) => Err(ResilienceError::timeout(duration)),
+        Ok(Err(e)) => Err(ResilienceError::Custom {
+            message: format!("Operation failed: {}", e),
+            retryable: false,
+            source: None,
+        }),
         Err(_) => Err(ResilienceError::timeout(duration)),
     }
 }
@@ -136,7 +142,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_timeout_with_original_error_failure() {
+    async fn test_timeout_with_original_error_operation_failure() {
         let result = timeout_with_original_error(Duration::from_millis(100), async {
             Err::<&str, &str>("operation failed")
         })
@@ -144,11 +150,28 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            ResilienceError::Timeout { .. } => {
-                // This should timeout because the future completes immediately with an error
-                // but the timeout wrapper doesn't distinguish between success and failure
+            ResilienceError::Custom { message, .. } => {
+                // Original error should be preserved as a Custom error
+                assert!(message.contains("operation failed"));
             }
-            _ => panic!("Expected timeout error"),
+            other => panic!("Expected Custom error, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_timeout_with_original_error_timeout_exceeded() {
+        let result = timeout_with_original_error(Duration::from_millis(10), async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Err::<&str, &str>("should not reach here")
+        })
+        .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ResilienceError::Timeout { duration, .. } => {
+                assert_eq!(duration, Duration::from_millis(10));
+            }
+            other => panic!("Expected Timeout error, got: {:?}", other),
         }
     }
 }
