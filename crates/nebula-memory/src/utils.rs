@@ -6,6 +6,26 @@
 //! - Platform-specific helpers
 //! - Performance measurement tools
 //! - Checked arithmetic operations
+//!
+//! # Safety
+//!
+//! This module contains several unsafe utility functions:
+//!
+//! ## Memory Operations
+//!
+//! - `secure_zero`: write_bytes with compiler fence to prevent optimization
+//! - `prefetch_read/write`: Platform intrinsics for cache prefetching
+//! - `copy_aligned_simd`: AVX2/SSE SIMD operations for bulk copy
+//! - `fill_simd`: AVX2 pattern filling with broadcast
+//! - `compare_simd`: AVX2 comparison with movemask
+//!
+//! ## Safety Contracts
+//!
+//! - SIMD functions require valid pointers for full length
+//! - Prefetch accepts any pointer (hint only, no UB if invalid)
+//! - copy_nonoverlapping requires non-overlapping regions
+//! - Pointer arithmetic validated by caller
+//! - compiler_fence prevents optimizer reordering
 
 use core::ptr;
 use core::sync::atomic::{Ordering, compiler_fence, fence};
@@ -160,6 +180,11 @@ pub fn secure_zero(ptr: *mut u8, len: usize) {
         return;
     }
 
+    // SAFETY: Zeroing memory.
+    // - Caller guarantees ptr is valid for writes of len bytes
+    // - write_bytes fills memory with zeros
+    // - compiler_fence prevents optimizer from eliminating this write
+    //   (important for security-sensitive zeroing)
     unsafe {
         ptr::write_bytes(ptr, 0, len);
     }
@@ -171,6 +196,11 @@ pub fn secure_zero(ptr: *mut u8, len: usize) {
 #[cfg(target_arch = "x86_64")]
 pub fn prefetch_read<T>(ptr: *const T) {
     use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+    // SAFETY: Prefetching cache line.
+    // - _mm_prefetch is a hint, not UB even with invalid pointer
+    // - T0 hint loads to all cache levels
+    // - cast() converts *const T to *const i8 for intrinsic
+    // - Prefetch doesn't dereference, just hints to cache controller
     unsafe {
         _mm_prefetch::<_MM_HINT_T0>(ptr.cast());
     }
@@ -185,6 +215,11 @@ pub fn prefetch_read<T>(_ptr: *const T) {}
 #[cfg(target_arch = "x86_64")]
 pub fn prefetch_write<T>(ptr: *mut T) {
     use core::arch::x86_64::{_MM_HINT_T1, _mm_prefetch};
+    // SAFETY: Prefetching cache line for write.
+    // - _mm_prefetch is a hint, not UB even with invalid pointer
+    // - T1 hint loads to L2 and L3 cache (write-optimized)
+    // - cast() converts *mut T to *const i8 for intrinsic
+    // - Prefetch doesn't dereference, just hints to cache controller
     unsafe {
         _mm_prefetch::<_MM_HINT_T1>(ptr.cast());
     }
@@ -215,13 +250,24 @@ pub unsafe fn copy_aligned_simd(dst: *mut u8, src: *const u8, len: usize) {
 
     for i in 0..chunks {
         let offset = i * 32;
-        // Load 32 bytes from source
+        // SAFETY: Loading 32-byte chunk from source.
+        // - src.add(offset) is within bounds (offset < len, validated by chunks calculation)
+        // - _mm256_loadu_si256 handles unaligned loads
+        // - Caller guarantees src is valid for len bytes
         let data = _mm256_loadu_si256(src.add(offset) as *const __m256i);
-        // Store 32 bytes to destination
+        // SAFETY: Storing 32-byte chunk to destination.
+        // - dst.add(offset) is within bounds (offset < len)
+        // - _mm256_storeu_si256 handles unaligned stores
+        // - Caller guarantees dst is valid for len bytes
+        // - Caller guarantees non-overlapping regions
         _mm256_storeu_si256(dst.add(offset) as *mut __m256i, data);
     }
 
     // Handle remainder with scalar copy
+    // SAFETY: Copying remainder bytes.
+    // - chunks * 32 + remainder == len (validated above)
+    // - Caller guarantees src and dst valid for len bytes
+    // - Caller guarantees non-overlapping regions
     if remainder > 0 {
         ptr::copy_nonoverlapping(src.add(chunks * 32), dst.add(chunks * 32), remainder);
     }
