@@ -1,4 +1,19 @@
 //! Cross-thread arena implementation that can be safely moved between threads
+//!
+//! # Safety
+//!
+//! This module provides thread-safe arena access through explicit locking:
+//! - CrossThreadArena uses Arc<Mutex<Arena>> for exclusive access across threads
+//! - CrossThreadArenaRef provides synchronized access to arena-allocated values
+//! - UnsafeCell<*mut T> requires external synchronization via Mutex guard
+//! - Send/Sync implementations require T: Send for safe cross-thread transfer
+//!
+//! ## Safety Contracts
+//!
+//! - Mutex ensures exclusive access (only one thread accesses arena at a time)
+//! - CrossThreadArenaRef::with/with_mut lock arena before pointer dereferencing
+//! - Arena lifetime tied to Arc (values valid while any reference exists)
+//! - Send/Sync only implemented when T: Send (ensures safe value transfer)
 
 use parking_lot::Mutex;
 use std::cell::UnsafeCell;
@@ -75,7 +90,16 @@ impl Clone for CrossThreadArena {
     }
 }
 
+// SAFETY: CrossThreadArena can be safely sent between threads.
+// - Arc<Mutex<Arena>> is both Send and Sync
+// - Mutex ensures exclusive access (no data races)
+// - Arena is accessed only while holding lock
 unsafe impl Send for CrossThreadArena {}
+
+// SAFETY: CrossThreadArena can be safely shared between threads.
+// - Arc allows shared ownership across threads
+// - Mutex synchronizes all arena access
+// - All operations lock the mutex before accessing Arena
 unsafe impl Sync for CrossThreadArena {}
 
 /// Guard for exclusive access to the arena
@@ -131,6 +155,11 @@ impl<T> CrossThreadArenaRef<T> {
         F: FnOnce(&T) -> R,
     {
         let _guard = self.arena.lock();
+        // SAFETY: Dereferencing arena-allocated pointer.
+        // - ptr was obtained from arena.alloc (valid allocation)
+        // - _guard holds mutex lock (exclusive access, no concurrent modification)
+        // - Arena remains alive (Arc keeps it valid)
+        // - ptr is NonNull (allocated successfully in create_ref)
         unsafe {
             let ptr = *self.ptr.get();
             f(&*ptr)
@@ -145,6 +174,11 @@ impl<T> CrossThreadArenaRef<T> {
         F: FnOnce(&mut T) -> R,
     {
         let _guard = self.arena.lock();
+        // SAFETY: Creating mutable reference to arena-allocated value.
+        // - ptr was obtained from arena.alloc (valid allocation)
+        // - _guard holds mutex lock (exclusive access, no other references exist)
+        // - Arena remains alive (Arc keeps it valid)
+        // - ptr is NonNull (allocated successfully in create_ref)
         unsafe {
             let ptr = *self.ptr.get();
             f(&mut *ptr)
@@ -152,7 +186,18 @@ impl<T> CrossThreadArenaRef<T> {
     }
 }
 
+// SAFETY: CrossThreadArenaRef can be sent between threads if T: Send.
+// - ptr is protected by UnsafeCell (no direct access without lock)
+// - Arena is protected by Mutex (exclusive access)
+// - T: Send requirement ensures value can be safely sent
+// - Arc<Mutex<Arena>> is both Send and Sync
 unsafe impl<T: Send> Send for CrossThreadArenaRef<T> {}
+
+// SAFETY: CrossThreadArenaRef can be shared between threads if T: Send.
+// - All access requires locking arena mutex (synchronized)
+// - UnsafeCell prevents data races (requires lock for access)
+// - T: Send requirement ensures value can be safely accessed from any thread
+// - Multiple threads can hold CrossThreadArenaRef, but only one can access at a time
 unsafe impl<T: Send> Sync for CrossThreadArenaRef<T> {}
 
 impl<T: Clone> Clone for CrossThreadArenaRef<T> {
@@ -300,6 +345,10 @@ mod tests {
         let data = guard.alloc_bytes(100, 8).unwrap();
 
         // Check that memory is zeroed
+        // SAFETY: Reading from allocated memory.
+        // - data is valid pointer from alloc_bytes
+        // - Loop indices are within allocated size (0..100)
+        // - Memory should be zeroed per config
         unsafe {
             for i in 0..100 {
                 assert_eq!(*data.add(i), 0);
