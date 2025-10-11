@@ -1,7 +1,8 @@
 //! OpenTelemetry integration
 
 #[cfg(feature = "telemetry")]
-use crate::{Result, config::TelemetryConfig};
+use crate::config::TelemetryConfig;
+use crate::core::LogResult;
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_sdk::{
@@ -12,9 +13,10 @@ use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::Layer;
 
 /// Build OpenTelemetry layer
+#[allow(dead_code)]
 pub fn build_layer(
     config: &TelemetryConfig,
-) -> Result<Option<impl Layer<tracing_subscriber::Registry>>> {
+) -> LogResult<Option<impl Layer<tracing_subscriber::Registry>>> {
     // Check if endpoint is configured
     let endpoint_str = match &config.otlp_endpoint {
         Some(endpoint) if !endpoint.is_empty() => endpoint.clone(),
@@ -59,6 +61,7 @@ pub fn build_layer(
 }
 
 /// Shutdown OpenTelemetry provider
+#[allow(dead_code)]
 pub fn shutdown() {
     // In OpenTelemetry 0.30.0, there's no direct shutdown function
     // The provider will be cleaned up when dropped

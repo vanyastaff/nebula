@@ -1,5 +1,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
+#![allow(unsafe_code)] // System-level memory management requires unsafe
 //! # Nebula System
 //!
 //! Cross-platform system information and utilities for Nebula ecosystem.

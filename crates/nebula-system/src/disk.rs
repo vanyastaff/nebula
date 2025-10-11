@@ -1,7 +1,5 @@
 //! Disk and filesystem information
 
-use crate::core::{NebulaError, SystemError, SystemResult};
-
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -89,7 +87,7 @@ pub struct FileSystemInfo {
 pub fn list() -> Vec<DiskInfo> {
     #[cfg(feature = "disk")]
     {
-        use sysinfo::{DiskKind, Disks};
+        use sysinfo::Disks;
 
         // In sysinfo 0.37, disks API is exposed via Disks helper
         let disks = Disks::new_with_refreshed_list();
@@ -286,7 +284,7 @@ pub fn optimal_block_size(mount_point: Option<&str>) -> usize {
             match disk.disk_type {
                 DiskType::SSD => 4096,       // 4KB for SSDs
                 DiskType::HDD => 65536,      // 64KB for HDDs
-                DiskType::Network => 131072, // 128KB for network
+                DiskType::Network => 131_072, // 128KB for network
                 _ => 8192,                   // 8KB default
             }
         } else {

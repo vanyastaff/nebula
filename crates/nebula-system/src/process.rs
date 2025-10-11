@@ -1,6 +1,6 @@
 //! Process information and management
 
-use crate::core::{NebulaError, SystemError, SystemResult};
+use crate::core::{SystemError, SystemResult};
 use std::collections::HashMap;
 
 #[cfg(feature = "serde")]
@@ -78,7 +78,7 @@ pub struct ProcessStats {
 
 /// Get information about current process
 #[must_use = "process info must be handled"]
-pub fn current() -> Result<ProcessInfo> {
+pub fn current() -> SystemResult<ProcessInfo> {
     #[cfg(feature = "process")]
     {
         let pid = std::process::id();
@@ -95,7 +95,7 @@ pub fn current() -> Result<ProcessInfo> {
 
 /// Get information about a specific process
 #[must_use = "process info must be handled"]
-pub fn get_process(pid: u32) -> Result<ProcessInfo> {
+pub fn get_process(pid: u32) -> SystemResult<ProcessInfo> {
     #[cfg(feature = "process")]
     {
         use crate::info::SYSINFO_SYSTEM;
@@ -250,7 +250,7 @@ pub fn find_by_name(name: &str) -> Vec<ProcessInfo> {
 
 /// Kill a process
 #[must_use = "operation result must be checked"]
-pub fn kill(pid: u32) -> Result<()> {
+pub fn kill(pid: u32) -> SystemResult<()> {
     #[cfg(feature = "process")]
     {
         use crate::info::SYSINFO_SYSTEM;
@@ -304,7 +304,7 @@ pub enum Priority {
 
 /// Set process priority
 #[must_use = "operation result must be checked"]
-pub fn set_priority(pid: u32, priority: Priority) -> Result<()> {
+pub fn set_priority(pid: u32, priority: Priority) -> SystemResult<()> {
     #[cfg(all(feature = "process", unix))]
     {
         use libc::{PRIO_PROCESS, setpriority};

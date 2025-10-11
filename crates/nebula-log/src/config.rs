@@ -84,9 +84,12 @@ pub enum WriterConfig {
     /// Write to file
     #[cfg(feature = "file")]
     File {
+        /// Path to the log file
         path: std::path::PathBuf,
+        /// Rolling policy for log rotation
         #[serde(default)]
         rolling: Option<Rolling>,
+        /// Whether to use non-blocking writer
         #[serde(default = "default_non_blocking")]
         non_blocking: bool,
     },
