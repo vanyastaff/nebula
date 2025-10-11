@@ -66,6 +66,10 @@ impl ArrayBuilder {
     }
 
     /// Add an item with validation
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError::LimitExceeded` if array length would exceed `max_array_length`
     pub fn try_push(mut self, item: ValueItem) -> ValueResult<Self> {
         if let Some(ref limits) = self.limits {
             limits.check_array_length(self.items.len() + 1)?;
@@ -85,6 +89,10 @@ impl ArrayBuilder {
     }
 
     /// Add multiple items with validation
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError::LimitExceeded` if array length would exceed `max_array_length`
     pub fn try_extend<I>(mut self, items: I) -> ValueResult<Self>
     where
         I: IntoIterator<Item = ValueItem>,
@@ -100,6 +108,12 @@ impl ArrayBuilder {
     }
 
     /// Insert an item at a specific index
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError::IndexOutOfBounds` if `index > len()`
+    ///
+    /// Returns `ValueError::LimitExceeded` if array length would exceed `max_array_length`
     pub fn insert(mut self, index: usize, item: ValueItem) -> ValueResult<Self> {
         if index > self.items.len() {
             return Err(NebulaError::value_index_out_of_bounds(
@@ -117,6 +131,10 @@ impl ArrayBuilder {
     }
 
     /// Remove an item at a specific index
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError::IndexOutOfBounds` if `index >= len()`
     pub fn remove(mut self, index: usize) -> ValueResult<Self> {
         if index >= self.items.len() {
             return Err(NebulaError::value_index_out_of_bounds(
@@ -149,6 +167,10 @@ impl ArrayBuilder {
     }
 
     /// Build the final Array
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError::LimitExceeded` if array length exceeds `max_array_length`
     pub fn build(self) -> ValueResult<Array> {
         if let Some(ref limits) = self.limits {
             limits.check_array_length(self.items.len())?;

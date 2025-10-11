@@ -65,6 +65,10 @@ impl Array {
     }
 
     /// Create with length validation
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError::LimitExceeded` if array length exceeds `max_array_length`
     pub fn with_limits(vec: Vec<ValueItem>, limits: &ValueLimits) -> ValueResult<Self> {
         limits.check_array_length(vec.len())?;
         Ok(Self::from_vec(vec))
@@ -91,6 +95,10 @@ impl Array {
     }
 
     /// Get element at index or error
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError::IndexOutOfBounds` if `index >= len()`
     pub fn try_get(&self, index: usize) -> ValueResult<&ValueItem> {
         self.get(index)
             .ok_or_else(|| NebulaError::value_index_out_of_bounds(index, self.len()))
@@ -105,6 +113,10 @@ impl Array {
     }
 
     /// Push with limit check
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError::LimitExceeded` if array length would exceed `max_array_length`
     pub fn push_with_limit(&self, value: ValueItem, limits: &ValueLimits) -> ValueResult<Self> {
         limits.check_array_length(self.len() + 1)?;
         Ok(self.push(value))
@@ -118,6 +130,10 @@ impl Array {
     }
 
     /// Set element at index (returns new Array)
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError::IndexOutOfBounds` if `index >= len()`
     pub fn set(&self, index: usize, value: ValueItem) -> ValueResult<Self> {
         if index >= self.len() {
             return Err(NebulaError::value_index_out_of_bounds(index, self.len()));
@@ -129,6 +145,10 @@ impl Array {
     }
 
     /// Insert element at index (returns new Array)
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError::IndexOutOfBounds` if `index > len()`
     pub fn insert(&self, index: usize, value: ValueItem) -> ValueResult<Self> {
         if index > self.len() {
             return Err(NebulaError::value_index_out_of_bounds(index, self.len()));
@@ -140,6 +160,10 @@ impl Array {
     }
 
     /// Remove element at index (returns new Array and removed value)
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError::IndexOutOfBounds` if `index >= len()`
     pub fn remove(&self, index: usize) -> ValueResult<(Self, ValueItem)> {
         if index >= self.len() {
             return Err(NebulaError::value_index_out_of_bounds(index, self.len()));

@@ -65,6 +65,12 @@ impl ObjectBuilder {
     }
 
     /// Insert a key-value pair with validation
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError::LimitExceeded` if:
+    /// - Key length exceeds `max_string_bytes`
+    /// - Object key count would exceed `max_object_keys`
     pub fn try_insert(mut self, key: impl Into<String>, value: ValueItem) -> ValueResult<Self> {
         let key = key.into();
 
@@ -88,6 +94,12 @@ impl ObjectBuilder {
     }
 
     /// Insert multiple key-value pairs with validation
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError::LimitExceeded` if:
+    /// - Any key length exceeds `max_string_bytes`
+    /// - Object key count would exceed `max_object_keys`
     pub fn try_extend<I>(mut self, entries: I) -> ValueResult<Self>
     where
         I: IntoIterator<Item = (String, ValueItem)>,
@@ -146,6 +158,12 @@ impl ObjectBuilder {
     }
 
     /// Build the final Object
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError::LimitExceeded` if:
+    /// - Any key length exceeds `max_string_bytes`
+    /// - Object key count exceeds `max_object_keys`
     pub fn build(self) -> ValueResult<Object> {
         if let Some(ref limits) = self.limits {
             limits.check_object_keys(self.entries.len())?;
