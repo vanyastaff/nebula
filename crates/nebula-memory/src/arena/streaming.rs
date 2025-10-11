@@ -1,4 +1,20 @@
 //! Streaming arena implementation for sequential data processing
+//!
+//! # Safety
+//!
+//! This module implements buffer-based streaming allocation:
+//! - StreamBuffer uses std::alloc/dealloc with proper Layout matching
+//! - Pointer arithmetic within buffer bounds
+//! - Value initialization via ptr::write before creating references
+//! - RefCell protects buffer access (single-threaded design)
+//!
+//! ## Safety Contracts
+//!
+//! - StreamBuffer::new: alloc with valid Layout
+//! - StreamBuffer::drop: dealloc with matching Layout
+//! - StreamBuffer::try_alloc: Pointer arithmetic within capacity
+//! - alloc: ptr::write before reference creation
+//! - alloc_slice: copy_nonoverlapping + slice_from_raw_parts_mut
 
 use std::alloc::{Layout, alloc, dealloc};
 use std::cell::{Cell, RefCell};
@@ -53,6 +69,10 @@ impl StreamBuffer {
         let layout = Layout::from_size_align(size, 1)
             .map_err(|_| MemoryError::invalid_layout("layout creation failed"))?;
 
+        // SAFETY: Allocating memory with valid layout.
+        // - layout is valid (just created from size/align)
+        // - ptr checked for null below
+        // - Must deallocate with same layout in Drop
         let ptr = unsafe { alloc(layout) };
 
         match NonNull::new(ptr) {
@@ -80,6 +100,11 @@ impl StreamBuffer {
 
         if needed <= self.available() {
             self.used.set(aligned + size);
+            // SAFETY: Pointer arithmetic within buffer bounds.
+            // - aligned is within capacity (available check above)
+            // - aligned + size <= capacity (needed <= available)
+            // - ptr is NonNull (allocated in new)
+            // - Returns raw pointer for caller to initialize
             Some(unsafe { self.ptr.as_ptr().add(aligned) })
         } else {
             None
@@ -89,6 +114,11 @@ impl StreamBuffer {
 
 impl Drop for StreamBuffer {
     fn drop(&mut self) {
+        // SAFETY: Deallocating buffer with matching layout.
+        // - ptr was allocated via alloc in new()
+        // - Layout matches original allocation (capacity with align=1)
+        // - from_size_align_unchecked safe (capacity/1 valid, guaranteed by new)
+        // - Memory not accessed after dealloc (Drop consumes self)
         unsafe {
             let layout = Layout::from_size_align_unchecked(self.capacity, 1);
             dealloc(self.ptr.as_ptr(), layout);
@@ -227,6 +257,11 @@ impl<T> StreamingArena<T> {
 
         let ptr = self.alloc_bytes(size, align)? as *mut T;
 
+        // SAFETY: Writing value to allocated memory.
+        // - ptr is valid (from alloc_bytes above)
+        // - ptr properly aligned for T (align parameter matches)
+        // - Memory uninitialized (safe to write via ptr::write)
+        // - Takes ownership of value
         unsafe {
             ptr.write(value);
         }
@@ -255,6 +290,13 @@ impl<T> StreamingArena<T> {
 
         let ptr = self.alloc_bytes(size, align)? as *mut U;
 
+        // SAFETY: Copying slice to allocated memory and creating slice reference.
+        // - ptr is valid (from alloc_bytes above)
+        // - ptr properly aligned for U (align parameter matches)
+        // - copy_nonoverlapping copies slice.len() elements
+        // - Source (slice) and dest (ptr) don't overlap (new allocation)
+        // - slice_from_raw_parts_mut creates slice with valid ptr and len
+        // - Lifetime tied to arena
         unsafe {
             std::ptr::copy_nonoverlapping(slice.as_ptr(), ptr, slice.len());
             let slice_ptr = std::slice::from_raw_parts_mut(ptr, slice.len());
@@ -350,11 +392,21 @@ pub struct StreamingArenaRef<T: ?Sized> {
 impl<T: ?Sized> StreamingArenaRef<T> {
     /// Get a reference to the value
     pub fn get(&self) -> &T {
+        // SAFETY: Dereferencing arena-allocated pointer.
+        // - ptr is valid (allocated via alloc/alloc_slice)
+        // - Value initialized before StreamingArenaRef creation
+        // - Arena keeps memory valid
+        // - Returns immutable reference
         unsafe { &*self.ptr }
     }
 
     /// Get a mutable reference to the value
     pub fn get_mut(&mut self) -> &mut T {
+        // SAFETY: Creating mutable reference to arena-allocated value.
+        // - ptr is valid (allocated via alloc/alloc_slice)
+        // - Value initialized before StreamingArenaRef creation
+        // - Arena keeps memory valid
+        // - &mut self ensures exclusive access
         unsafe { &mut *self.ptr }
     }
 }
