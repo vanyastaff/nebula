@@ -15,17 +15,17 @@ documentation.workspace = true
 # Async and concurrency
 async-trait = "0.1"
 futures = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
 
 # Errors and serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 # Utilities
-parking_lot = "0.12.4"
+parking_lot = { version = "0.12.5", features = ["arc_lock", "serde"] }
 humantime-serde = "1.1.1"
-rand = "0.8"
-governor = "0.7"
+rand = "0.9"
+governor = "0.10"
 
 # Internal crates
 nebula-config = { path = "../nebula-config" }

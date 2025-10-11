@@ -206,23 +206,23 @@ impl RetryStrategy {
     /// Apply jitter to delay
     fn apply_jitter(delay: Duration, jitter: &JitterPolicy, base_delay: Duration) -> Duration {
         use rand::Rng;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng(); // rand 0.9: thread_rng() renamed to rng()
 
         match jitter {
             JitterPolicy::None => delay,
             JitterPolicy::Full => {
-                let jitter_ms = rng.gen_range(0..=delay.as_millis() as u64);
+                let jitter_ms = rng.random_range(0..=delay.as_millis() as u64); // rand 0.9: gen_range() renamed
                 Duration::from_millis(jitter_ms)
             }
             JitterPolicy::Equal => {
                 let half = delay.as_millis() as u64 / 2;
-                let jitter_ms = half + rng.gen_range(0..=half);
+                let jitter_ms = half + rng.random_range(0..=half);
                 Duration::from_millis(jitter_ms)
             }
             JitterPolicy::Decorrelated => {
                 let min = base_delay.as_millis() as u64;
                 let max = delay.as_millis() as u64 * 3;
-                let jitter_ms = rng.gen_range(min..=max);
+                let jitter_ms = rng.random_range(min..=max);
                 Duration::from_millis(jitter_ms)
             }
         }

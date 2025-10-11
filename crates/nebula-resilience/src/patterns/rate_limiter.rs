@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Semaphore};
 use governor::{Quota, RateLimiter as GovernorLimiter, DefaultDirectRateLimiter};
-use governor::state::{InMemoryState, NotKeyed};
 use governor::clock::{Clock, DefaultClock};
 
 use crate::{ResilienceError, ResilienceResult};

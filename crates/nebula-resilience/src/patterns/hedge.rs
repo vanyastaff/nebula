@@ -251,7 +251,7 @@ impl BimodalHedgeExecutor {
 
         // Wait for fast threshold
         tokio::select! {
-            result = sample_future => {
+            _result = sample_future => {
                 // Operation completed within fast threshold - use fast config for hedging
                 let executor = HedgeExecutor::new(self.fast_config.clone());
                 return executor.execute(operation).await;
