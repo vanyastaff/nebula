@@ -2,6 +2,19 @@
 //!
 //! This allocator integrates with nebula-system monitoring to automatically
 //! adjust allocation behavior based on system memory pressure.
+//!
+//! # Safety
+//!
+//! This module wraps another allocator with monitoring:
+//! - Allocator trait impl: Forwards to inner allocator with pressure checks
+//! - GlobalAlloc impl: Compatibility layer for global allocator usage
+//!
+//! ## Safety Contracts
+//!
+//! - allocate/deallocate/grow/shrink: Forwarded to inner allocator (preserves contracts)
+//! - Pressure checks may deny allocations but don't affect memory safety
+//! - Statistics tracking is atomic and thread-safe
+//! - GlobalAlloc impl converts between Allocator and GlobalAlloc interfaces
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::NonNull;
@@ -206,6 +219,11 @@ where
     }
 }
 
+// SAFETY: MonitoredAllocator forwards all operations to inner Allocator A.
+// - All safety contracts preserved through delegation
+// - Pressure checking happens before allocation (doesn't affect safety)
+// - Statistics tracking is thread-safe (atomic operations)
+// - Monitoring errors are caught and logged, allocation proceeds
 unsafe impl<A> Allocator for MonitoredAllocator<A>
 where
     A: Allocator,
@@ -215,6 +233,9 @@ where
         match self.should_allow_allocation(layout) {
             Ok(true) => {
                 // Proceed with allocation
+                // SAFETY: Forwarding to inner allocator.
+                // - layout is valid (caller contract)
+                // - inner.allocate upholds same safety contract as self.allocate
                 match self.inner.allocate(layout) {
                     Ok(ptr) => {
                         self.stats.record_allocation(layout.size());
@@ -259,6 +280,9 @@ where
                     warn!("Monitor error, allowing allocation: {}", monitor_error);
                 }
 
+                // SAFETY: Forwarding to inner allocator (monitor error fallback).
+                // - layout is valid (caller contract)
+                // - inner.allocate upholds safety contract
                 match self.inner.allocate(layout) {
                     Ok(ptr) => {
                         self.stats.record_allocation(layout.size());
@@ -274,6 +298,9 @@ where
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        // SAFETY: Forwarding to inner allocator.
+        // - ptr/layout match allocation (caller contract)
+        // - inner.deallocate upholds safety contract
         self.inner.deallocate(ptr, layout);
         self.stats.record_deallocation(layout.size());
 
@@ -295,7 +322,11 @@ where
     ) -> AllocResult<NonNull<[u8]>> {
         // Check if the new size should be allowed
         match self.should_allow_allocation(new_layout) {
-            Ok(true) => match self.inner.grow(ptr, old_layout, new_layout) {
+            Ok(true) => {
+                // SAFETY: Forwarding to inner allocator.
+                // - ptr/old_layout/new_layout valid (caller contract)
+                // - inner.grow upholds safety contract
+                match self.inner.grow(ptr, old_layout, new_layout) {
                 Ok(new_ptr) => {
                     self.stats
                         .record_reallocation(old_layout.size(), new_layout.size());
@@ -312,6 +343,9 @@ where
             }
             Err(_) => {
                 // Monitor error - allow growth
+                // SAFETY: Forwarding to inner allocator (monitor error fallback).
+                // - ptr/old_layout/new_layout valid (caller contract)
+                // - inner.grow upholds safety contract
                 match self.inner.grow(ptr, old_layout, new_layout) {
                     Ok(new_ptr) => {
                         self.stats
@@ -333,6 +367,10 @@ where
         old_layout: Layout,
         new_layout: Layout,
     ) -> AllocResult<NonNull<[u8]>> {
+        // SAFETY: Forwarding to inner allocator.
+        // - ptr/old_layout/new_layout valid (caller contract)
+        // - Shrinking always allowed (reduces memory usage)
+        // - inner.shrink upholds safety contract
         match self.inner.shrink(ptr, old_layout, new_layout) {
             Ok(new_ptr) => {
                 self.stats
@@ -366,11 +404,18 @@ where
 }
 
 // Implement GlobalAlloc for convenience when using as a global allocator
+// SAFETY: GlobalAlloc impl wraps Allocator trait.
+// - alloc/dealloc/realloc converted from Allocator methods
+// - Null returned on allocation failure (GlobalAlloc contract)
+// - All safety contracts forwarded from Allocator
 unsafe impl<A> GlobalAlloc for MonitoredAllocator<A>
 where
     A: Allocator + Sync,
 {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: Calling self.allocate (Allocator trait method).
+        // - layout valid (caller contract)
+        // - Converting NonNull<[u8]> to *mut u8
         match self.allocate(layout) {
             Ok(ptr) => ptr.as_ptr() as *mut u8,
             Err(_) => core::ptr::null_mut(),
@@ -378,20 +423,29 @@ where
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: Calling self.deallocate if ptr is non-null.
+        // - ptr/layout valid (caller contract)
+        // - NonNull::new safely handles null check
         if let Some(ptr) = NonNull::new(ptr) {
             self.deallocate(ptr, layout);
         }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: Reallocating via grow/shrink.
+        // - ptr/layout valid (caller contract)
+        // - NonNull::new safely handles null check
+        // - new_layout validated before use
         if let Some(ptr) = NonNull::new(ptr) {
             if let Ok(new_layout) = Layout::from_size_align(new_size, layout.align()) {
                 if new_size > layout.size() {
+                    // Growing
                     match self.grow(ptr, layout, new_layout) {
                         Ok(new_ptr) => new_ptr.as_ptr() as *mut u8,
                         Err(_) => core::ptr::null_mut(),
                     }
                 } else {
+                    // Shrinking
                     match self.shrink(ptr, layout, new_layout) {
                         Ok(new_ptr) => new_ptr.as_ptr() as *mut u8,
                         Err(_) => core::ptr::null_mut(),
