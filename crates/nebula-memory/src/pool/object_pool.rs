@@ -1,4 +1,20 @@
 //! Core object pool implementation
+//!
+//! # Safety
+//!
+//! This module implements single-threaded object pooling with RAII:
+//! - ObjectPool owns all pooled objects in Vec<T>
+//! - PooledValue uses NonNull<ObjectPool<T>> pointer to pool
+//! - ManuallyDrop prevents automatic drop of value (manual control)
+//! - Drop implementation returns object to pool
+//!
+//! ## Safety Contracts
+//!
+//! - PooledValue::pool: NonNull pointer created from &mut self (valid while pool exists)
+//! - PooledValue::detach: ManuallyDrop::take extracts value, mem::forget prevents drop
+//! - PooledValue::drop: ManuallyDrop::take + pool.as_mut() returns object
+//! - PooledValue::pool(): Dereferences NonNull (safe while pool exists)
+//! - Send implementation: Safe if T: Send (pool pointer not shared)
 
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
@@ -141,6 +157,10 @@ impl<T: Poolable> ObjectPool<T> {
 
         Ok(PooledValue {
             value: ManuallyDrop::new(obj),
+            // SAFETY: Creating NonNull pointer to pool.
+            // - self is &mut, guaranteed non-null
+            // - PooledValue lifetime tied to borrow (can't outlive pool)
+            // - Pool pointer used only for returning object on drop
             pool: unsafe { NonNull::new_unchecked(self as *mut _) },
         })
     }
@@ -159,6 +179,10 @@ impl<T: Poolable> ObjectPool<T> {
 
             PooledValue {
                 value: ManuallyDrop::new(obj),
+                // SAFETY: Creating NonNull pointer to pool.
+                // - self is &mut, guaranteed non-null
+                // - PooledValue lifetime tied to borrow (can't outlive pool)
+                // - Pool pointer used only for returning object on drop
                 pool: unsafe { NonNull::new_unchecked(self as *mut _) },
             }
         })
@@ -369,6 +393,10 @@ pub struct PooledValue<T: Poolable> {
 impl<T: Poolable> PooledValue<T> {
     /// Detach value from pool (won't be returned)
     pub fn detach(mut self) -> T {
+        // SAFETY: Extracting value from ManuallyDrop.
+        // - value is initialized (created in ObjectPool::get)
+        // - mem::forget prevents Drop::drop from running
+        // - No double-free (Drop won't return object to pool)
         let value = unsafe { ManuallyDrop::take(&mut self.value) };
         core::mem::forget(self);
         value
@@ -376,6 +404,10 @@ impl<T: Poolable> PooledValue<T> {
 
     /// Get reference to the pool
     pub fn pool(&self) -> &ObjectPool<T> {
+        // SAFETY: Dereferencing pool pointer.
+        // - pool is NonNull (created from &mut in ObjectPool::get)
+        // - Pool remains valid (PooledValue lifetime tied to pool borrow)
+        // - Returns immutable reference (no mutable aliases)
         unsafe { self.pool.as_ref() }
     }
 }
@@ -396,6 +428,11 @@ impl<T: Poolable> DerefMut for PooledValue<T> {
 
 impl<T: Poolable> Drop for PooledValue<T> {
     fn drop(&mut self) {
+        // SAFETY: Returning object to pool.
+        // - ManuallyDrop::take extracts value (initialized in ObjectPool::get)
+        // - pool.as_mut() dereferences pool pointer (valid, from &mut in get)
+        // - return_object takes ownership and adds to pool's Vec
+        // - No double-drop (ManuallyDrop prevents automatic drop)
         unsafe {
             let obj = ManuallyDrop::take(&mut self.value);
             self.pool.as_mut().return_object(obj);
@@ -415,7 +452,12 @@ impl<T: Poolable> AsMut<T> for PooledValue<T> {
     }
 }
 
-// Safety: PooledValue can be sent between threads if T can
+// SAFETY: PooledValue can be sent between threads if T: Send.
+// - value: ManuallyDrop<T> is Send if T: Send
+// - pool: NonNull pointer not shared (exclusive ownership of value)
+// - T: Send ensures value can be safely sent
+// - Pool pointer used only for returning (no concurrent access)
+// - Drop on destination thread safely returns object to pool
 unsafe impl<T: Poolable + Send> Send for PooledValue<T> {}
 
 #[cfg(test)]
