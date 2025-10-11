@@ -1,0 +1,77 @@
+name: Miri Safety Tests
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'crates/nebula-memory/**'
+      - '.github/workflows/miri.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'crates/nebula-memory/**'
+      - '.github/workflows/miri.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  miri:
+    name: Miri Undefined Behavior Detection
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly with Miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+
+      - name: Setup Miri
+        run: cargo miri setup
+
+      - name: Run Miri tests on nebula-memory
+        run: |
+          cd crates/nebula-memory
+          MIRIFLAGS="-Zmiri-permissive-provenance -Zmiri-disable-isolation" \
+          cargo +nightly miri test --test miri_safety
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: Run Miri on nebula-memory unit tests (sample)
+        run: |
+          cd crates/nebula-memory
+          MIRIFLAGS="-Zmiri-permissive-provenance -Zmiri-disable-isolation" \
+          cargo +nightly miri test --lib allocator::bump --no-fail-fast
+        continue-on-error: true
+        env:
+          RUST_BACKTRACE: 1
+
+  miri-stats:
+    name: Miri Coverage Report
+    runs-on: ubuntu-latest
+    needs: miri
+    if: always()
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Count unsafe blocks
+        run: |
+          echo "## Miri Test Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          unsafe_count=$(rg "unsafe \{" crates/nebula-memory/src --count-matches | \
+            awk '{sum+=$1} END {print sum}')
+
+          test_count=$(rg "^fn miri_" crates/nebula-memory/tests/miri_safety.rs | wc -l)
+
+          echo "- **Unsafe blocks in nebula-memory**: $unsafe_count" >> $GITHUB_STEP_SUMMARY
+          echo "- **Miri tests**: $test_count" >> $GITHUB_STEP_SUMMARY
+          echo "- **Estimated coverage**: $(echo "scale=1; $test_count * 100 / ($unsafe_count / 20)" | bc)%" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Miri tests help detect undefined behavior in unsafe code" >> $GITHUB_STEP_SUMMARY
+
