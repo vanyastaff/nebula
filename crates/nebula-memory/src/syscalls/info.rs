@@ -2,6 +2,13 @@
 //!
 //! This module provides memory information relevant to custom allocators.
 //! For general system memory info, use `nebula-system::memory` directly.
+//!
+//! # Safety
+//!
+//! This module uses platform-specific syscalls to query memory information:
+//! - Unix: libc::sysconf for page size
+//! - Windows: GetSystemInfo with SYSTEM_INFO structure
+//! - All FFI calls validated by OS
 
 use std::fmt;
 
@@ -138,6 +145,11 @@ pub trait MemoryMonitor: Send + Sync {
 pub fn get_page_size() -> usize {
     #[cfg(unix)]
     {
+        // SAFETY: FFI call to libc::sysconf.
+        // - _SC_PAGESIZE is a valid sysconf parameter
+        // - sysconf returns page size or -1 on error
+        // - Cast to usize is safe (page size is always positive)
+        // - OS validates the query
         unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
     }
 
@@ -145,6 +157,11 @@ pub fn get_page_size() -> usize {
     {
         use winapi::um::sysinfoapi::{GetSystemInfo, SYSTEM_INFO};
 
+        // SAFETY: FFI call to Windows GetSystemInfo.
+        // - SYSTEM_INFO initialized with zeroed() (all zero bytes are valid)
+        // - GetSystemInfo fills the structure with valid system information
+        // - dwPageSize field contains the page size
+        // - OS validates all structure fields
         unsafe {
             let mut info: SYSTEM_INFO = std::mem::zeroed();
             GetSystemInfo(&mut info);
