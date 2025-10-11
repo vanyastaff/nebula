@@ -23,5 +23,6 @@ pub use timeout::{timeout, timeout_with_original_error};
 
 // Rate limiter exports
 pub use rate_limiter::{
-    AdaptiveRateLimiter, AnyRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket,
+    AdaptiveRateLimiter, AnyRateLimiter, GovernorRateLimiter, LeakyBucket, RateLimiter,
+    SlidingWindow, TokenBucket,
 };
