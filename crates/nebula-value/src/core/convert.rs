@@ -35,10 +35,12 @@ impl ValueRefExt for Value {
                 let encoded = base64::engine::general_purpose::STANDARD.encode(b.as_slice());
                 serde_json::Value::String(encoded)
             }
-            // Array and Object already store serde_json::Value, so we collect their iterators
-            Value::Array(arr) => serde_json::Value::Array(arr.iter().cloned().collect()),
+            // Array and Object need to convert nested Values to serde_json::Value
+            Value::Array(arr) => serde_json::Value::Array(
+                arr.iter().map(|v| v.to_json()).collect()
+            ),
             Value::Object(obj) => serde_json::Value::Object(
-                obj.entries().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                obj.entries().map(|(k, v)| (k.clone(), v.to_json())).collect()
             ),
             #[cfg(feature = "temporal")]
             Value::Date(d) => serde_json::Value::String(d.to_iso_string().to_string()),
@@ -68,12 +70,12 @@ pub trait JsonValueExt {
 impl JsonValueExt for serde_json::Value {
     #[inline]
     fn to_nebula_value(&self) -> Option<Value> {
-        Value::try_from(self.clone()).ok()
+        Some(Value::from(self.clone()))
     }
 
     #[inline]
     fn to_nebula_value_or_null(&self) -> Value {
-        Value::try_from(self.clone()).unwrap_or(Value::Null)
+        Value::from(self.clone())
     }
 }
 

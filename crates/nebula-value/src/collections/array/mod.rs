@@ -59,8 +59,7 @@ impl Array {
     where
         I: IntoIterator<Item = crate::Value>,
     {
-        use crate::core::convert::ValueRefExt;
-        let items: Vec<ValueItem> = iter.into_iter().map(|v| v.to_json()).collect();
+        let items: Vec<ValueItem> = iter.into_iter().collect();
         Self::from_vec(items)
     }
 
@@ -290,7 +289,6 @@ impl FromIterator<ValueItem> for Array {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn test_array_creation() {

@@ -467,6 +467,7 @@ impl Date {
         let mut out = String::with_capacity(fmt.len() + 8);
         while i < chars.len() {
             // Helper to check a token at current position
+            #[allow(clippy::excessive_nesting)]
             let starts_with = |tok: &str| -> bool {
                 let tchars: Vec<char> = tok.chars().collect();
                 if i + tchars.len() > chars.len() {

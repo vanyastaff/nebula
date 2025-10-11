@@ -312,29 +312,22 @@ impl Value {
     where
         F: Fn(&Value, &Value, &str) -> ValueResult<Value> + Copy,
     {
-        use crate::core::convert::{JsonValueExt, ValueRefExt};
-
         match (self, other) {
             (Value::Object(left), Value::Object(right)) => {
                 // Start with left object
                 let mut result = left.clone();
 
                 // Merge each key from right
-                for (key, right_val_json) in right.entries() {
-                    if let Some(left_val_json) = left.get(key) {
+                for (key, right_val) in right.entries() {
+                    if let Some(left_val) = left.get(key) {
                         // Key exists in both - apply merge function
-                        // Convert both values from serde_json to nebula_value
-                        let left_val = left_val_json.to_nebula_value_or_null();
-                        let right_val = right_val_json.to_nebula_value_or_null();
+                        let merged_val = merge_fn(left_val, right_val, key)?;
 
-                        // Apply custom merge function
-                        let merged_val = merge_fn(&left_val, &right_val, key)?;
-
-                        // Convert back to serde_json::Value for storage
-                        result = result.insert(key.to_string(), merged_val.to_json());
+                        // Store merged value
+                        result = result.insert(key.to_string(), merged_val);
                     } else {
                         // Key only in right - add it directly
-                        result = result.insert(key.to_string(), right_val_json.clone());
+                        result = result.insert(key.to_string(), right_val.clone());
                     }
                 }
 

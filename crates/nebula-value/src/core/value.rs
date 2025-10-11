@@ -652,7 +652,7 @@ impl std::str::FromStr for Value {
             .map(Value::from)
             .map_err(|e| NebulaError::value_conversion_error(
                 "JSON string",
-                &format!("Value: {}", e)
+                format!("Value: {}", e)
             ))
     }
 }

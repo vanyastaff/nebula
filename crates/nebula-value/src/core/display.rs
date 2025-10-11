@@ -208,7 +208,7 @@ impl Value {
 
                 for (idx, item) in arr.iter().enumerate().take(limit) {
                     if !config.indent.is_empty() {
-                        Self::write_indent(output, &config.indent, depth)?;
+                        Self::write_indent(output, config.indent, depth)?;
                     }
 
                     // Array/Object use serde_json::Value internally
@@ -225,7 +225,7 @@ impl Value {
 
                 if len > limit {
                     if !config.indent.is_empty() {
-                        Self::write_indent(output, &config.indent, depth)?;
+                        Self::write_indent(output, config.indent, depth)?;
                     }
                     write!(output, "... ({} more)", len - limit)?;
                     if !config.indent.is_empty() {
@@ -253,7 +253,7 @@ impl Value {
 
                 for (idx, (key, value)) in obj.entries().enumerate().take(limit) {
                     if !config.indent.is_empty() {
-                        Self::write_indent(output, &config.indent, depth)?;
+                        Self::write_indent(output, config.indent, depth)?;
                     }
 
                     // Array/Object use serde_json::Value internally
@@ -270,7 +270,7 @@ impl Value {
 
                 if len > limit {
                     if !config.indent.is_empty() {
-                        Self::write_indent(output, &config.indent, depth)?;
+                        Self::write_indent(output, config.indent, depth)?;
                     }
                     write!(output, "... ({} more)", len - limit)?;
                     if !config.indent.is_empty() {

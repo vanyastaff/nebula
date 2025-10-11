@@ -35,6 +35,7 @@ impl Text {
     }
 
     /// Create a new Text from &str (allocates)
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         Self {
             inner: Arc::from(s),

@@ -24,6 +24,7 @@ pub struct LoggerBuilder {
 pub struct LoggerGuard {
     /// RAII guard - field must exist even if never accessed directly
     /// to keep file guards and other resources alive
+    #[allow(dead_code)]
     inner: Option<Box<Inner>>,
 }
 
@@ -42,8 +43,10 @@ struct Inner {
 #[derive(Clone)]
 pub struct ReloadHandle {
     /// Filter reload handle - used by public reload() method
+    #[allow(dead_code)]
     filter: tracing_subscriber::reload::Handle<EnvFilter, Registry>,
     /// Current filter string - used by public current_filter() method
+    #[allow(dead_code)]
     current_filter: Arc<Mutex<String>>,
 }
 
@@ -503,11 +506,11 @@ impl LoggerBuilder {
 }
 
 impl ReloadHandle {
-    /// Reload the log filter
     /// Reload the log filter at runtime
     ///
     /// # Errors
     /// Returns error if filter parsing fails or reload fails
+    #[allow(dead_code)]
     pub fn reload(&self, filter: &str) -> LogResult<()> {
         use crate::core::LogError;
         let new_filter = EnvFilter::try_new(filter)
@@ -519,8 +522,8 @@ impl ReloadHandle {
         Ok(())
     }
 
-    /// Get current filter string
     /// Get the current filter string
+    #[allow(dead_code)]
     pub fn current_filter(&self) -> String {
         self.current_filter.lock().clone()
     }
