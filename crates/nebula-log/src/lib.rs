@@ -36,6 +36,9 @@ mod telemetry;
 #[cfg(feature = "observability")]
 pub mod metrics;
 
+// Observability module
+pub mod observability;
+
 // Public API
 pub use builder::{LoggerBuilder, LoggerGuard};
 pub use config::{Config, Format, Level, Rolling, WriterConfig};
@@ -57,6 +60,15 @@ pub mod prelude {
     // Metrics (when observability feature is enabled)
     #[cfg(feature = "observability")]
     pub use crate::metrics::{counter, gauge, histogram, timed_block, timed_block_async};
+
+    // Observability hooks and events
+    pub use crate::observability::{
+        emit_event, register_hook, LoggingHook, ObservabilityEvent, ObservabilityHook,
+        OperationCompleted, OperationFailed, OperationStarted, OperationTracker,
+    };
+
+    #[cfg(feature = "observability")]
+    pub use crate::observability::MetricsHook;
 }
 
 // Re-export tracing macros
