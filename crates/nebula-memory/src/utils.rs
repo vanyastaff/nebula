@@ -284,7 +284,10 @@ pub unsafe fn copy_aligned_simd(dst: *mut u8, src: *const u8, len: usize) {
 #[inline]
 #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
 pub unsafe fn copy_aligned_simd(dst: *mut u8, src: *const u8, len: usize) {
-    ptr::copy_nonoverlapping(src, dst, len);
+    // SAFETY: Caller ensures dst and src are valid for len bytes
+    unsafe {
+        ptr::copy_nonoverlapping(src, dst, len);
+    }
 }
 
 /// SIMD-optimized memory fill with pattern (AVX2)
@@ -321,7 +324,9 @@ pub unsafe fn fill_simd(dst: *mut u8, pattern: u8, len: usize) {
     // - chunks * 32 + remainder == len
     // - Caller guarantees dst valid for len bytes
     if remainder > 0 {
-        ptr::write_bytes(dst.add(chunks * 32), pattern, remainder);
+        unsafe {
+            ptr::write_bytes(dst.add(chunks * 32), pattern, remainder);
+        }
     }
 }
 
@@ -329,7 +334,10 @@ pub unsafe fn fill_simd(dst: *mut u8, pattern: u8, len: usize) {
 #[inline]
 #[cfg(not(all(feature = "simd", target_arch = "x86_64", target_feature = "avx2")))]
 pub unsafe fn fill_simd(dst: *mut u8, pattern: u8, len: usize) {
-    ptr::write_bytes(dst, pattern, len);
+    // SAFETY: Caller ensures dst is valid for len bytes
+    unsafe {
+        ptr::write_bytes(dst, pattern, len);
+    }
 }
 
 /// SIMD-optimized memory compare (AVX2)
@@ -369,9 +377,14 @@ pub unsafe fn compare_simd(a: *const u8, b: *const u8, len: usize) -> bool {
     // Compare remainder
     if remainder > 0 {
         let offset = chunks * 32;
-        for i in 0..remainder {
-            if *a.add(offset + i) != *b.add(offset + i) {
-                return false;
+        // SAFETY: Comparing remainder bytes
+        // - offset + remainder == len
+        // - Caller guarantees both pointers valid for len bytes
+        unsafe {
+            for i in 0..remainder {
+                if *a.add(offset + i) != *b.add(offset + i) {
+                    return false;
+                }
             }
         }
     }
@@ -387,9 +400,12 @@ pub unsafe fn compare_simd(a: *const u8, b: *const u8, len: usize) -> bool {
         return true;
     }
 
-    for i in 0..len {
-        if *a.add(i) != *b.add(i) {
-            return false;
+    // SAFETY: Caller ensures a and b are valid for len bytes
+    unsafe {
+        for i in 0..len {
+            if *a.add(i) != *b.add(i) {
+                return false;
+            }
         }
     }
     true

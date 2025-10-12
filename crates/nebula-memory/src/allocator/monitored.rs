@@ -327,16 +327,17 @@ where
                 // - ptr/old_layout/new_layout valid (caller contract)
                 // - inner.grow upholds safety contract
                 match self.inner.grow(ptr, old_layout, new_layout) {
-                Ok(new_ptr) => {
-                    self.stats
-                        .record_reallocation(old_layout.size(), new_layout.size());
-                    Ok(new_ptr)
+                    Ok(new_ptr) => {
+                        self.stats
+                            .record_reallocation(old_layout.size(), new_layout.size());
+                        Ok(new_ptr)
+                    }
+                    Err(err) => {
+                        self.stats.record_allocation_failure();
+                        Err(err)
+                    }
                 }
-                Err(err) => {
-                    self.stats.record_allocation_failure();
-                    Err(err)
-                }
-            },
+            }
             Ok(false) => {
                 self.stats.record_allocation_failure();
                 Err(AllocError::with_layout(0, new_layout))

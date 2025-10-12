@@ -267,6 +267,11 @@ impl MemoryError {
         Self::invalid_layout(reason)
     }
 
+    /// Creates an invalid argument error (alias for invalid_input)
+    pub fn invalid_argument(reason: impl Into<String>) -> Self {
+        Self::invalid_input(reason)
+    }
+
     /// Creates an out of memory error
     pub fn out_of_memory(size: usize, align: usize) -> Self {
         Self::allocation_failed(size, align)

@@ -523,7 +523,7 @@ fn miri_typed_arena_complex() {
 
 #[test]
 fn miri_streaming_arena() {
-    use nebula_memory::arena::{StreamingArena, StreamOptions};
+    use nebula_memory::arena::{StreamOptions, StreamingArena};
 
     let options = StreamOptions {
         buffer_size: 1024,
@@ -548,7 +548,7 @@ fn miri_streaming_arena() {
 /// Test streaming arena checkpoint/reset under Miri
 #[test]
 fn miri_streaming_checkpoint() {
-    use nebula_memory::arena::{StreamingArena, StreamOptions};
+    use nebula_memory::arena::{StreamOptions, StreamingArena};
 
     let arena: StreamingArena<i32> = StreamingArena::new(StreamOptions::default());
 
@@ -628,7 +628,7 @@ fn miri_lockfree_pool_sequential() {
 #[cfg(feature = "std")]
 #[test]
 fn miri_ttl_pool_basic() {
-    use nebula_memory::pool::{TtlPool, Poolable};
+    use nebula_memory::pool::{Poolable, TtlPool};
     use std::time::Duration;
 
     #[derive(Debug)]
@@ -655,7 +655,7 @@ fn miri_ttl_pool_basic() {
 #[cfg(feature = "std")]
 #[test]
 fn miri_ttl_pool_reuse() {
-    use nebula_memory::pool::{TtlPool, Poolable};
+    use nebula_memory::pool::{Poolable, TtlPool};
     use std::time::Duration;
 
     struct Counter {
@@ -855,7 +855,7 @@ fn miri_monitored_allocator() {
 
 #[test]
 fn miri_tracked_allocator() {
-    use nebula_memory::allocator::{Allocator, TrackedAllocator, SystemAllocator};
+    use nebula_memory::allocator::{Allocator, SystemAllocator, TrackedAllocator};
 
     let system = SystemAllocator::new();
     let tracked = TrackedAllocator::new(system);
@@ -876,7 +876,7 @@ fn miri_tracked_allocator() {
 
 #[test]
 fn miri_tracked_allocator_multiple() {
-    use nebula_memory::allocator::{Allocator, TrackedAllocator, SystemAllocator};
+    use nebula_memory::allocator::{Allocator, SystemAllocator, TrackedAllocator};
 
     let system = SystemAllocator::new();
     let tracked = TrackedAllocator::new(system);

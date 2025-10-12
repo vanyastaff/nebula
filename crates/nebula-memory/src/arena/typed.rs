@@ -85,7 +85,9 @@ impl<T> TypedArena<T> {
         // - chunk_ptr is NonNull (caller contract)
         // - Pointer valid (owned by arena's RefCell)
         // - Read-only access to capacity (no mutation)
-        index < (*chunk_ptr.as_ptr()).capacity()
+        unsafe {
+            index < (*chunk_ptr.as_ptr()).capacity()
+        }
     }
 
     /// Helper: Get pointer to element in chunk storage
@@ -101,9 +103,11 @@ impl<T> TypedArena<T> {
         // - index within bounds (caller contract)
         // - MaybeUninit allows uninitialized access
         // - as_mut_ptr returns raw pointer for writing
-        let chunk = &mut *chunk_ptr.as_ptr();
-        debug_assert!(index < chunk.capacity(), "index must be within chunk capacity");
-        chunk.storage[index].as_mut_ptr()
+        unsafe {
+            let chunk = &mut *chunk_ptr.as_ptr();
+            debug_assert!(index < chunk.capacity(), "index must be within chunk capacity");
+            chunk.storage[index].as_mut_ptr()
+        }
     }
 
     /// Helper: Write value to element pointer
@@ -124,7 +128,9 @@ impl<T> TypedArena<T> {
             0,
             "elem_ptr must be properly aligned for T"
         );
-        elem_ptr.write(value);
+        unsafe {
+            elem_ptr.write(value);
+        }
     }
 
     /// Create a new typed arena with initial capacity

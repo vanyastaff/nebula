@@ -104,7 +104,7 @@ unsafe impl Sync for CrossThreadArena {}
 
 /// Guard for exclusive access to the arena
 pub struct CrossThreadArenaGuard<'a> {
-    guard: std::sync::MutexGuard<'a, Arena>,
+    guard: parking_lot::MutexGuard<'a, Arena>,
 }
 
 impl<'a> CrossThreadArenaGuard<'a> {

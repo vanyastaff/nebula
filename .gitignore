@@ -305,4 +305,5 @@ docker-compose.override.yml
 # **/playground/
 
 # Upgrade/migration planning files
-crates/nebula-validator/upgrade/
+crates/nebula-validator/upgrade/.temp/
+/.temp/

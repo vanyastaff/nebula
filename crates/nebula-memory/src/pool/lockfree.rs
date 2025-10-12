@@ -87,7 +87,9 @@ impl<T: Poolable> LockFreePool<T> {
         // - Node is freshly allocated and owned exclusively
         // - next is valid pointer or null (both safe to store)
         debug_assert!(!node.is_null(), "node must not be null");
-        (*node).next = next;
+        unsafe {
+            (*node).next = next;
+        }
     }
 
     /// Helper: Get next pointer from node
@@ -101,7 +103,9 @@ impl<T: Poolable> LockFreePool<T> {
         // - Acquire ordering ensures we see all writes to node
         // - next field access is safe
         debug_assert!(!node.is_null(), "node must be non-null");
-        (*node).next
+        unsafe {
+            (*node).next
+        }
     }
 
     /// Helper: Convert node pointer back to owned Box
@@ -121,7 +125,9 @@ impl<T: Poolable> LockFreePool<T> {
             0,
             "node must be properly aligned"
         );
-        Box::from_raw(node)
+        unsafe {
+            Box::from_raw(node)
+        }
     }
 
     /// Create new lock-free pool
