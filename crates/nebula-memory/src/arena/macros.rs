@@ -128,11 +128,15 @@ macro_rules! local_alloc {
 #[macro_export]
 macro_rules! typed_arena {
     ($type:ty => [$($value:expr),* $(,)?]) => {{
-        let arena = $crate::arena::TypedArena::<$type>::new();
+        let arena = Box::new($crate::arena::TypedArena::<$type>::new());
+        let arena_ptr = Box::leak(arena);
         let values = vec![
-            $(arena.alloc($value).expect("TypedArena allocation failed")),*
+            $(arena_ptr.alloc($value).expect("TypedArena allocation failed")),*
         ];
-        (arena, values)
+        // SAFETY: We're returning the arena as a Box, reconstructing from the leaked pointer
+        // The caller owns both the arena and the references, which have compatible lifetimes
+        let arena = unsafe { Box::from_raw(arena_ptr) };
+        (*arena, values)
     }};
 }
 

@@ -269,13 +269,13 @@ impl<T: Poolable> Deref for HierarchicalPooledValue<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &self.value
+        &*self.value
     }
 }
 
 impl<T: Poolable> DerefMut for HierarchicalPooledValue<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.value
+        &mut *self.value
     }
 }
 
@@ -359,7 +359,7 @@ mod tests {
 
         // Stats should show activity
         let guard = parent.lock();
-        let stats = (*guard).hierarchy_stats();
+        let stats = (&*guard).hierarchy_stats();
         assert_eq!(stats.total_borrowed, 0);
     }
 }
