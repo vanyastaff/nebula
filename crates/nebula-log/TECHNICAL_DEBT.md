@@ -19,48 +19,123 @@ After implementing observability features (Sprint 1-2), the codebase has accumul
 
 ## 1. Critical Issues
 
-### 1.1 Module Organization & Visibility
+### ~~1.1 Module Organization & Visibility~~ ✅ RESOLVED - Not an Issue
 
-**Problem**: Inconsistent module visibility and organization
+**Status**: ❌ **INCORRECT ANALYSIS** - This was based on misunderstanding of Nebula as workflow engine
 
-**Issues**:
-- ❌ `observability` module is always public (line 40, lib.rs) but should be feature-gated
-- ❌ `metrics` module is feature-gated but `observability` depends on it conceptually
-- ❌ Prelude exports observability types unconditionally (lines 65-71, lib.rs)
-- ❌ No clear separation between core logging and observability features
+**Why This Is Actually CORRECT Design**:
+
+For a workflow engine like Nebula (n8n-style), observability is **core infrastructure**, not an optional feature!
+
+**Current Code is CORRECT** ✅:
+```rust
+// lib.rs line 35-40
+#[cfg(feature = "metrics-integration")]
+pub mod metrics;  // Optional backend
+
+pub mod observability;  // ✅ Core infrastructure - ALWAYS available!
+```
+
+**Rationale**:
+1. **Workflow engines NEED observability** - execution tracking, node metrics, debugging
+2. **Traits are zero-cost** - `ObservabilityEvent` и `ObservabilityHook` не имеют runtime overhead
+3. **Follows industry patterns** - Temporal, Prefect, n8n все имеют built-in observability
+4. **Enables extensibility** - domain crates (nebula-workflow, nebula-action) реализуют traits
+5. **Backend-agnostic** - метрики опциональны, но events/hooks - core
+
+**Correct Architecture**:
+```rust
+pub mod observability {  // ALWAYS public - core abstractions
+    pub mod hooks;       // ObservabilityEvent, ObservabilityHook traits
+    pub mod events;      // Common events
+    pub mod registry;    // emit_event(), register_hook()
+
+    #[cfg(feature = "metrics-integration")]
+    pub use hooks::MetricsHook;  // Optional backend integration
+}
+```
+
+**See**: `docs/OBSERVABILITY_REVISED_ARCHITECTURE.md` for full analysis
+
+**Priority**: ~~🔴 High~~ → ⚪ **Not an Issue**
+**Effort**: 0 hours (no action needed)
+
+---
+
+### 1.1 Hook Panic Safety (NEW - CRITICAL) 🔴
+
+**Problem**: Hooks can panic and crash the system
 
 **Current Code**:
 ```rust
-// lib.rs line 35-40
-#[cfg(feature = "observability")]
-pub mod metrics;
-
-// Observability module
-pub mod observability;  // ❌ Always visible!
+// observability/registry.rs
+pub fn emit(&self, event: &dyn ObservabilityEvent) {
+    for hook in &self.hooks {
+        hook.on_event(event);  // ❌ If hook panics, registry crashes!
+    }
+}
 ```
 
 **Impact**:
-- Users without `observability` feature get unused APIs
-- Confusion about which features require which flags
-- Larger API surface than necessary
+- **CRITICAL for workflow engine**: один buggy hook может упасть весь execution
+- Пользовательские hooks могут содержать ошибки
+- Нет error recovery mechanism
+- Debugging сложен (нет логирования hook failures)
+
+**Example Failure Scenario**:
+```rust
+struct BuggyHook;
+
+impl ObservabilityHook for BuggyHook {
+    fn on_event(&self, event: &dyn ObservabilityEvent) {
+        panic!("oops!");  // ← Crashes entire workflow execution!
+    }
+}
+```
 
 **Recommended Fix**:
 ```rust
-// Option A: Make observability conditional
-#[cfg(feature = "observability")]
-pub mod metrics;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
-#[cfg(feature = "observability")]
-pub mod observability;
+pub fn emit(&self, event: &dyn ObservabilityEvent) {
+    for hook in &self.hooks {
+        // Catch panics to prevent hook from crashing system
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            hook.on_event(event);
+        }));
 
-// Option B: Keep base observability, gate metrics integration
-pub mod observability;  // Basic events/hooks
-#[cfg(feature = "observability")]
-mod observability_metrics;  // Metrics integration
+        if let Err(panic_info) = result {
+            // Log hook failure but continue
+            tracing::error!(
+                hook = std::any::type_name_of_val(&hook),
+                event = event.name(),
+                "Hook panicked during event processing: {:?}",
+                panic_info
+            );
+
+            // Optional: emit metric for hook failures
+            #[cfg(feature = "metrics-integration")]
+            {
+                crate::metrics::counter!("nebula.observability.hook_panics", 1,
+                    "hook" => std::any::type_name_of_val(&hook),
+                    "event" => event.name()
+                );
+            }
+        }
+    }
+}
 ```
 
-**Priority**: 🔴 High
-**Effort**: 2-3 hours
+**Additional Tasks**:
+- [ ] Add `catch_unwind` to `emit()` method
+- [ ] Add error logging for hook failures
+- [ ] Add optional error hook for debugging
+- [ ] Add integration test for panicking hooks
+- [ ] Document panic safety guarantees
+- [ ] Add metrics for hook failures
+
+**Priority**: 🔴 **CRITICAL** - blocks production use
+**Effort**: 4-6 hours
 
 ---
 
@@ -374,8 +449,8 @@ pub fn emit_event(event: &dyn ObservabilityEvent) {
 
 ### By Priority
 
-**🔴 High Priority** (Do First):
-1. Module Organization & Visibility (2-3h)
+**🔴 CRITICAL Priority** (Do Immediately):
+1. Hook Panic Safety (4-6h) - blocks production use
 
 **🟡 Medium Priority** (Do Next):
 1. Builder Complexity (4-6h)
