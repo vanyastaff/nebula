@@ -81,16 +81,14 @@ impl ObjectValue {
 
     /// Get a field value
     pub fn get_field(&self, key: &str) -> Option<nebula_value::Value> {
-        use crate::JsonValueExt;
-        self.values.get(key).and_then(|v| v.to_nebula_value())
+        self.values.get(key).cloned()
     }
 
     /// Remove a field
     pub fn remove_field(&mut self, key: &str) -> Option<nebula_value::Value> {
-        use crate::JsonValueExt;
         if let Some((new_obj, v)) = self.values.remove(key) {
             self.values = new_obj;
-            v.to_nebula_value()
+            Some(v)
         } else {
             None
         }

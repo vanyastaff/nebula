@@ -110,8 +110,7 @@ impl GroupValue {
 
     /// Get a field value
     pub fn get_field(&self, key: &str) -> Option<nebula_value::Value> {
-        use crate::JsonValueExt;
-        self.values.get(key).and_then(|v| v.to_nebula_value())
+        self.values.get(key).cloned()
     }
 
     /// Check if the group has any values
@@ -190,11 +189,8 @@ impl Expressible for GroupParameter {
                 let mut group_value = GroupValue::new();
 
                 for (key, val) in obj.entries() {
-                    // Convert serde_json::Value to nebula_value::Value
-                    use crate::JsonValueExt;
-                    if let Some(nebula_val) = val.to_nebula_value() {
-                        group_value.set_field(key.to_string(), nebula_val);
-                    }
+                    // val is already nebula_value::Value
+                    group_value.set_field(key.to_string(), val.clone());
                 }
 
                 if self.is_valid_group_value(&group_value)? {

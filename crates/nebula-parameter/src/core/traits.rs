@@ -1,7 +1,6 @@
 //! Core parameter traits
 
-use crate::core::condition::ParameterCondition;
-use crate::core::display::{DisplayContext, ParameterDisplay, ParameterDisplayError};
+use crate::core::display_stub::{DisplayContext, ParameterCondition, ParameterDisplay, ParameterDisplayError};
 use crate::core::validation::ParameterValidation;
 use crate::core::{ParameterError, ParameterKind, ParameterMetadata};
 pub use async_trait::async_trait;

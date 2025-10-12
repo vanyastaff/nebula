@@ -115,22 +115,19 @@ impl Expressible for MultiSelectParameter {
             MaybeExpression::Value(nebula_value::Value::Array(arr)) => {
                 let mut string_values = Vec::new();
 
-                // arr.iter() returns &serde_json::Value, convert to nebula_value::Value
-                use crate::JsonValueExt;
+                // arr.iter() returns &nebula_value::Value
                 for item in arr.iter() {
-                    if let Some(nebula_val) = item.to_nebula_value() {
-                        match nebula_val {
-                            nebula_value::Value::Text(s) => {
-                                string_values.push(s.to_string());
-                            }
-                            _ => {
-                                return Err(ParameterError::InvalidValue {
-                                    key: self.metadata.key.clone(),
-                                    reason:
-                                        "All array items must be strings for multi-select parameter"
-                                            .to_string(),
-                                });
-                            }
+                    match item {
+                        nebula_value::Value::Text(s) => {
+                            string_values.push(s.to_string());
+                        }
+                        _ => {
+                            return Err(ParameterError::InvalidValue {
+                                key: self.metadata.key.clone(),
+                                reason:
+                                    "All array items must be strings for multi-select parameter"
+                                        .to_string(),
+                            });
                         }
                     }
                 }

@@ -65,3 +65,18 @@ impl ParameterCondition {
         Self {}
     }
 }
+
+/// Temporary stub for ParameterDisplayError
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Display error: {message}")]
+pub struct ParameterDisplayError {
+    pub message: String,
+}
+
+impl ParameterDisplayError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
