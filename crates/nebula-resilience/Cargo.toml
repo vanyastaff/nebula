@@ -23,6 +23,7 @@ serde_json = { workspace = true }
 
 # Utilities
 parking_lot = { version = "0.12.5", features = ["arc_lock", "serde"] }
+dashmap = "6.1"
 humantime-serde = "1.1.1"
 rand = "0.9"
 governor = "0.10"
