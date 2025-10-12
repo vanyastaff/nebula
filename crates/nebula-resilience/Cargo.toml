@@ -36,6 +36,23 @@ nebula-log = { path = "../nebula-log" }
 nebula-value = { path = "../nebula-value", features = ["serde"] }
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+
+[[bench]]
+name = "circuit_breaker"
+harness = false
+
+[[bench]]
+name = "rate_limiter"
+harness = false
+
+[[bench]]
+name = "manager"
+harness = false
+
+[[bench]]
+name = "retry"
+harness = false
 
 [lints]
 workspace = true

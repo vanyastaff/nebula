@@ -240,8 +240,18 @@ pub enum ErrorClass {
 }
 
 impl ResilienceError {
+    /// Create a custom error (for testing/benchmarking)
+    #[must_use]
+    pub fn custom(message: impl Into<String>) -> Self {
+        Self::Custom {
+            message: message.into(),
+            retryable: true,
+            source: None,
+        }
+    }
+
     /// Create a timeout error
-    #[must_use] 
+    #[must_use]
     pub fn timeout(duration: Duration) -> Self {
         Self::Timeout {
             duration,
