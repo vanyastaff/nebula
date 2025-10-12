@@ -118,6 +118,9 @@ pub mod helpers;
 // Patterns module
 pub mod patterns;
 
+// Observability
+pub mod observability;
+
 // High-level abstractions
 mod compose;
 mod manager;
