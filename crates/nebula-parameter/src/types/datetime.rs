@@ -132,8 +132,8 @@ impl Expressible for DateTimeParameter {
                 }
             }
             MaybeExpression::Expression(expr) => {
-                // Allow expressions for dynamic datetimes
-                self.value = Some(nebula_value::Text::from(expr));
+                // Allow expressions for dynamic datetimes - store the expression source
+                self.value = Some(nebula_value::Text::from(expr.source.as_str()));
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {

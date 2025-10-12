@@ -158,8 +158,8 @@ impl Expressible for CodeParameter {
                 Ok(())
             }
             MaybeExpression::Expression(expr) => {
-                // Allow expressions for dynamic code
-                self.value = Some(nebula_value::Text::from(expr));
+                // Allow expressions for dynamic code - store the expression source
+                self.value = Some(nebula_value::Text::from(expr.source.as_str()));
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {

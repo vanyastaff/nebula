@@ -171,10 +171,9 @@ impl RoutingValue {
 
     /// Get connection metadata
     pub fn get_metadata(&self, key: &str) -> Option<nebula_value::Value> {
-        use crate::JsonValueExt;
         self.connection_metadata
             .get(key)
-            .and_then(|v| v.to_nebula_value())
+            .cloned()
     }
 }
 

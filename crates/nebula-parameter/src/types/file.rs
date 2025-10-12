@@ -222,8 +222,8 @@ impl Expressible for FileParameter {
                 }
             }
             MaybeExpression::Expression(expr) => {
-                // Create a file reference with the expression as path
-                let file_ref = FileReference::new(&expr, expr.clone());
+                // Create a file reference with the expression source as path
+                let file_ref = FileReference::new(&expr.source, expr.source.clone());
                 self.value = Some(file_ref);
                 Ok(())
             }

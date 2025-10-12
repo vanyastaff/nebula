@@ -210,10 +210,10 @@ impl Expressible for ModeParameter {
                 Ok(())
             }
             MaybeExpression::Expression(expr) => {
-                // Convert expression to text value
+                // Convert expression source to text value
                 let mode_value = ModeValue {
                     key: self.metadata.key.clone().to_string(),
-                    value: nebula_value::Value::Text(nebula_value::Text::from(expr)),
+                    value: nebula_value::Value::Text(nebula_value::Text::from(expr.source.as_str())),
                 };
                 self.value = Some(mode_value);
                 Ok(())

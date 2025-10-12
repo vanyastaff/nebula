@@ -113,7 +113,7 @@ impl Expressible for SecretParameter {
             }
             MaybeExpression::Expression(expr) => {
                 // Expressions are allowed for secrets (e.g., from environment variables)
-                self.value = Some(nebula_value::Text::from(expr));
+                self.value = Some(nebula_value::Text::from(expr.source.as_str()));
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {

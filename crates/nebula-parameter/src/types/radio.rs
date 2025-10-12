@@ -121,7 +121,7 @@ impl Expressible for RadioParameter {
             }
             MaybeExpression::Expression(expr) => {
                 // Allow expressions for dynamic selection
-                self.value = Some(nebula_value::Text::from(expr));
+                self.value = Some(nebula_value::Text::from(expr.source.as_str()));
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {

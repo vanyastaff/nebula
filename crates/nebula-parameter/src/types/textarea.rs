@@ -137,7 +137,7 @@ impl Expressible for TextareaParameter {
             }
             MaybeExpression::Expression(expr) => {
                 // Allow expressions for dynamic text
-                self.value = Some(nebula_value::Text::from(expr));
+                self.value = Some(nebula_value::Text::from(expr.source.as_str()));
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {

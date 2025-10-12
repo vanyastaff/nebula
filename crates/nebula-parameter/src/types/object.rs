@@ -221,11 +221,11 @@ impl Expressible for ObjectParameter {
                 }
             }
             MaybeExpression::Expression(expr) => {
-                // For expressions, create an object with a single expression field
+                // For expressions, create an object with the expression source
                 let mut object_value = ObjectValue::new();
                 object_value.set_field(
                     "_expression",
-                    nebula_value::Value::Text(nebula_value::Text::from(expr)),
+                    nebula_value::Value::Text(nebula_value::Text::from(expr.source.as_str())),
                 );
                 self.value = Some(object_value);
                 Ok(())

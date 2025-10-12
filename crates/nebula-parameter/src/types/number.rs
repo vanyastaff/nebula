@@ -141,7 +141,7 @@ impl Expressible for NumberParameter {
                 Ok(())
             }
             MaybeExpression::Expression(expr) => {
-                if let Ok(num) = expr.parse::<f64>() {
+                if let Ok(num) = expr.source.parse::<f64>() {
                     self.validate_number(num)?;
                     self.value = Some(num);
                 }

@@ -130,7 +130,7 @@ impl Expressible for TextParameter {
             }
             MaybeExpression::Expression(expr) => {
                 // Treat expressions as literal strings for now
-                self.value = Some(nebula_value::Text::from(expr));
+                self.value = Some(nebula_value::Text::from(expr.source.as_str()));
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {

@@ -52,6 +52,14 @@ impl ParameterDisplay {
     pub fn is_empty(&self) -> bool {
         true
     }
+
+    pub fn validate_display(&self, _context: &DisplayContext) -> Result<(), ParameterDisplayError> {
+        Ok(())
+    }
+
+    pub fn add_show_condition(&mut self, _key: ParameterKey, _condition: ParameterCondition) {
+        // Stub - do nothing
+    }
 }
 
 /// Temporary stub for ParameterCondition

@@ -138,8 +138,8 @@ impl Expressible for ColorParameter {
                 }
             }
             MaybeExpression::Expression(expr) => {
-                // Allow expressions for dynamic colors
-                self.value = Some(nebula_value::Text::from(expr));
+                // Allow expressions for dynamic colors - store the expression source
+                self.value = Some(nebula_value::Text::from(expr.source.as_str()));
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {
