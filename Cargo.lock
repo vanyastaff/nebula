@@ -2862,6 +2862,7 @@ dependencies = [
 name = "nebula-log"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "criterion 0.7.0",
  "flate2",
  "metrics 0.23.1",

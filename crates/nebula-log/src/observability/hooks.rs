@@ -206,6 +206,89 @@ impl ObservabilityHook for MetricsHook {
     }
 }
 
+/// Resource-aware hook that can access node-scoped resources
+///
+/// This trait extends [`ObservabilityHook`] to provide access to the current
+/// [`NodeContext`] and its resources. This allows hooks to access per-node
+/// configuration like [`LoggerResource`].
+///
+/// # Security
+///
+/// Resources are scoped per-node and isolated. Hooks cannot access resources
+/// from other nodes, ensuring multi-tenancy security.
+///
+/// # Example
+///
+/// ```rust
+/// use nebula_log::observability::{
+///     ObservabilityEvent, ResourceAwareHook, NodeContext, LoggerResource
+/// };
+/// use std::sync::Arc;
+///
+/// struct NotificationHook;
+///
+/// impl ResourceAwareHook for NotificationHook {
+///     fn on_event_with_context(&self, event: &dyn ObservabilityEvent, ctx: Option<Arc<NodeContext>>) {
+///         if let Some(ctx) = ctx {
+///             // Access LoggerResource from node context (if attached)
+///             if let Some(logger) = ctx.get_resource::<LoggerResource>("LoggerResource") {
+///                 if let Some(webhook) = logger.webhook_url() {
+///                     // Send notification to webhook
+///                     println!("Sending to webhook: {}", webhook);
+///                 }
+///             }
+///         }
+///     }
+/// }
+/// ```
+pub trait ResourceAwareHook: Send + Sync {
+    /// Called when an event occurs, with access to node context
+    ///
+    /// The `ctx` parameter contains the current [`NodeContext`] if available.
+    /// Use [`NodeContext::get_resource`] to access node-scoped resources.
+    fn on_event_with_context(
+        &self,
+        event: &dyn ObservabilityEvent,
+        ctx: Option<std::sync::Arc<super::context::NodeContext>>,
+    );
+
+    /// Optional: initialize hook
+    fn initialize(&self) {}
+
+    /// Optional: shutdown hook
+    fn shutdown(&self) {}
+}
+
+/// Adapter to use a [`ResourceAwareHook`] as an [`ObservabilityHook`]
+///
+/// This wrapper automatically fetches the current [`NodeContext`] and
+/// passes it to the resource-aware hook.
+pub struct ResourceAwareAdapter<H: ResourceAwareHook> {
+    inner: H,
+}
+
+impl<H: ResourceAwareHook> ResourceAwareAdapter<H> {
+    /// Create a new adapter for a resource-aware hook
+    pub fn new(hook: H) -> Self {
+        Self { inner: hook }
+    }
+}
+
+impl<H: ResourceAwareHook> ObservabilityHook for ResourceAwareAdapter<H> {
+    fn on_event(&self, event: &dyn ObservabilityEvent) {
+        let ctx = super::context::NodeContext::current();
+        self.inner.on_event_with_context(event, ctx);
+    }
+
+    fn initialize(&self) {
+        self.inner.initialize();
+    }
+
+    fn shutdown(&self) {
+        self.inner.shutdown();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

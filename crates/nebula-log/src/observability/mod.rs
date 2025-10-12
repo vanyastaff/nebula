@@ -40,14 +40,32 @@
 //! emit_event(&MyEvent { name: "test".to_string() });
 //! ```
 
+pub mod context;
 pub mod events;
+pub mod filter;
 pub mod hooks;
 pub mod registry;
+pub mod resources;
+pub mod span;
+
 
 // Re-export main types
+pub use context::{
+    current_contexts, ContextSnapshot, ExecutionContext, ExecutionGuard, GlobalContext,
+    NodeContext, NodeGuard, ResourceMap,
+};
 pub use events::{OperationCompleted, OperationFailed, OperationStarted, OperationTracker};
-pub use hooks::{LoggingHook, ObservabilityEvent, ObservabilityHook};
+pub use filter::{EventFilter, FilteredHook};
+pub use hooks::{LoggingHook, ObservabilityEvent, ObservabilityHook, ResourceAwareAdapter, ResourceAwareHook};
 pub use registry::{emit_event, register_hook, shutdown_hooks};
+pub use resources::{LogLevel, LoggerResource, NotificationPrefs, NotificationSeverity};
+pub use span::get_current_logger_resource;
 
 #[cfg(feature = "observability")]
 pub use hooks::MetricsHook;
+
+
+
+
+
+
