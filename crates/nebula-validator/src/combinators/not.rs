@@ -288,7 +288,8 @@ mod laws {
         use crate::combinators::And;
 
         let and_validator = And::new(AlwaysValid, AlwaysValid);
-        let not_and = Not::new(and_validator);
+        let and_validator_2 = And::new(AlwaysValid, AlwaysValid);
+        let not_and = Not::new(and_validator_2);
 
         assert!(and_validator.validate("test").is_ok());
         assert!(not_and.validate("test").is_err());

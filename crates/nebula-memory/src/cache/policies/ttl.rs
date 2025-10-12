@@ -259,8 +259,10 @@ mod tests {
         thread::sleep(Duration::from_millis(150));
 
         // Without clear(), keys are expired
+        let key1 = "key1".to_string();
+        let key2 = "key2".to_string();
         let entries: Vec<(&String, &CacheEntry<i32>)> =
-            vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)];
+            vec![(&key1, &entry), (&key2, &entry)];
         let victim = policy.as_victim_selector().select_victim(&entries);
 
         // key1 should be expired

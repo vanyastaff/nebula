@@ -314,6 +314,18 @@ impl MemoryError {
     pub fn allocation_too_large(size: usize, max_size: usize) -> Self {
         Self::new(MemoryErrorKind::ExceedsMaxSize { size, max_size })
     }
+
+    // ============================================================================
+    // Error Type Checks
+    // ============================================================================
+
+    /// Checks if this is an invalid alignment error
+    pub fn is_invalid_alignment(&self) -> bool {
+        matches!(
+            *self.inner.kind,
+            nebula_error::ErrorKind::Memory(MemoryErrorKind::InvalidAlignment { .. })
+        )
+    }
 }
 
 impl From<MemoryErrorKind> for MemoryError {

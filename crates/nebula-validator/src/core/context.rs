@@ -369,6 +369,7 @@ impl Default for ValidationContextBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::ValidationError;
 
     #[test]
     fn test_context_insert_get() {

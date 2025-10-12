@@ -225,10 +225,13 @@ mod tests {
         let entry = CacheEntry::new(42);
 
         // Build entries in insertion order
+        let key1 = "key1".to_string();
+        let key2 = "key2".to_string();
+        let key3 = "key3".to_string();
         let entries: Vec<EvictionEntry<String, i32>> = vec![
-            (&"key1".to_string(), &entry),
-            (&"key2".to_string(), &entry),
-            (&"key3".to_string(), &entry),
+            (&key1, &entry),
+            (&key2, &entry),
+            (&key3, &entry),
         ];
 
         // Manually track insertion order

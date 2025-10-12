@@ -397,6 +397,7 @@ where
 #[cfg(test)]
 mod laws {
     use super::*;
+    use crate::core::ValidationError;
 
     // Test validators
     struct AlwaysValid;
@@ -505,7 +506,7 @@ mod laws {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{TypedValidator, ValidatorExt};
+    use crate::core::{TypedValidator, ValidationError, ValidatorExt};
 
     struct ExactLength {
         length: usize,

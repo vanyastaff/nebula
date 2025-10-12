@@ -74,6 +74,6 @@ mod tests {
     fn test_not_null() {
         let validator = not_null();
         assert!(validator.validate(&Some("hello")).is_ok());
-        assert!(validator.validate(&None::<String>).is_err());
+        assert!(validator.validate(&None::<&str>).is_err());
     }
 }

@@ -136,7 +136,7 @@ impl ModeValue {
     ) -> Self {
         let nebula_val = match param_value {
             MaybeExpression::Value(v) => v.clone(),
-            MaybeExpression::Expression(expr) => nebula_value::Value::text(expr),
+            MaybeExpression::Expression(expr) => nebula_value::Value::text(&expr.source),
         };
         Self {
             key: key.into(),

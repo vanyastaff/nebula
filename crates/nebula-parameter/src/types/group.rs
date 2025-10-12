@@ -206,7 +206,7 @@ impl Expressible for GroupParameter {
             MaybeExpression::Expression(expr) => {
                 // For expressions, create a group with a single expression field
                 let mut group_value = GroupValue::new();
-                group_value.set_field("_expression", nebula_value::Value::text(expr));
+                group_value.set_field("_expression", nebula_value::Value::text(&expr.source));
                 self.value = Some(group_value);
                 Ok(())
             }

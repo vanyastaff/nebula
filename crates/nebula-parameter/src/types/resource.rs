@@ -279,7 +279,7 @@ impl Expressible for ResourceParameter {
                 Ok(())
             }
             MaybeExpression::Expression(expr) => {
-                self.value = Some(expr);
+                self.value = Some(expr.source);
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {

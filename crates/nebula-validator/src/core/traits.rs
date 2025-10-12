@@ -369,6 +369,7 @@ pub use crate::combinators::when::When;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::ValidationError;
 
     // Simple test validator
     struct AlwaysValid;

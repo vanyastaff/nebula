@@ -144,8 +144,8 @@ impl Expressible for MultiSelectParameter {
                 }
             }
             MaybeExpression::Expression(expr) => {
-                // For expressions, store as single-item array with the expression
-                self.value = Some(vec![expr]);
+                // For expressions, store expression source as single-item array
+                self.value = Some(vec![expr.source]);
                 Ok(())
             }
             _ => Err(ParameterError::InvalidValue {

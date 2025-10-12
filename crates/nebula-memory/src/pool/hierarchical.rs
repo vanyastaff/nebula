@@ -358,7 +358,8 @@ mod tests {
         }
 
         // Stats should show activity
-        let stats = parent.lock().hierarchy_stats();
+        let guard = parent.lock();
+        let stats = (*guard).hierarchy_stats();
         assert_eq!(stats.total_borrowed, 0);
     }
 }

@@ -331,8 +331,8 @@ impl From<toml::de::Error> for ConfigError {
     }
 }
 
-impl From<yaml_rust::ScanError> for ConfigError {
-    fn from(err: yaml_rust::ScanError) -> Self {
+impl From<yaml_rust2::ScanError> for ConfigError {
+    fn from(err: yaml_rust2::ScanError) -> Self {
         ConfigError::parse_error(PathBuf::from("yaml"), format!("YAML error: {err:?}"))
     }
 }

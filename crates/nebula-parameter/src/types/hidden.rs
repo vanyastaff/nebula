@@ -86,8 +86,8 @@ impl Expressible for HiddenParameter {
                 Ok(())
             }
             MaybeExpression::Expression(expr) => {
-                // Hidden parameters commonly use expressions for computed values
-                self.value = Some(expr);
+                // Hidden parameters commonly use expressions - store the expression source
+                self.value = Some(expr.source);
                 Ok(())
             }
             _ => {

@@ -105,7 +105,7 @@ impl ObjectValue {
     }
 
     /// Get all field values
-    pub fn values(&self) -> impl Iterator<Item = &serde_json::Value> {
+    pub fn values(&self) -> impl Iterator<Item = &nebula_value::Value> {
         self.values.values()
     }
 
@@ -120,7 +120,7 @@ impl ObjectValue {
     }
 
     /// Get all entries as (key, value) pairs
-    pub fn entries(&self) -> impl Iterator<Item = (&String, &serde_json::Value)> {
+    pub fn entries(&self) -> impl Iterator<Item = (&String, &nebula_value::Value)> {
         self.values.entries()
     }
 }

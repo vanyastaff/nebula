@@ -361,6 +361,7 @@ impl<T, V> Refined<T, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::ValidationError;
 
     // Test validator
     struct MinLength {

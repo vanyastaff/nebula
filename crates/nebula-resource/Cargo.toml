@@ -35,8 +35,8 @@ credentials = ["nebula-credential"]
 pooling = []
 
 # Database support
-postgres = ["dep:sqlx"]
-mysql = ["dep:sqlx"]
+postgres = ["dep:sqlx", "sqlx?/postgres"]
+mysql = ["dep:sqlx", "sqlx?/mysql"]
 mongodb = ["dep:mongodb"]
 redis = ["dep:redis"]
 
@@ -85,8 +85,8 @@ crossbeam = "0.8"
 
 # Observability
 tracing = { version = "0.1", optional = true }
-tracing-opentelemetry = { version = "0.21", optional = true }
-opentelemetry = { version = "0.20", optional = true }
+tracing-opentelemetry = { version = "0.31", optional = true }
+opentelemetry = { version = "0.30", optional = true }
 metrics = { version = "0.21", optional = true }
 metrics-exporter-prometheus = { version = "0.12", optional = true }
 
@@ -94,7 +94,7 @@ metrics-exporter-prometheus = { version = "0.12", optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 
 # Database drivers
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "mysql", "uuid", "chrono"], optional = true }
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "uuid", "chrono"], optional = true }
 mongodb = { version = "3.1", optional = true }
 redis = { version = "0.24", features = ["tokio-comp", "connection-manager"], optional = true }
 
@@ -108,7 +108,6 @@ rdkafka = { version = "0.38", features = ["tokio"], optional = true }
 # Note: deadpool and bb8 removed - we use custom pool implementation
 
 # Configuration and validation
-config = "0.13"
 validator = { version = "0.19", features = ["derive"] }
 base64 = "0.22.1"
 

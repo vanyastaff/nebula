@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use nebula_core::ParameterKey;
 use nebula_value::Value;
 
-use crate::core::{ParameterError, ParameterValue};
+use crate::core::{Displayable, ParameterError, ParameterValue};
 
 /// A type-safe collection of parameters with dependency tracking
 #[derive(Default)]
@@ -27,7 +27,7 @@ impl ParameterCollection {
     /// Add a parameter to the collection
     pub fn add<P>(&mut self, param: P) -> &mut Self
     where
-        P: ParameterValue + 'static,
+        P: ParameterValue + Displayable + 'static,
     {
         let key = param.metadata().key.clone();
 
@@ -47,7 +47,7 @@ impl ParameterCollection {
     #[must_use = "builder methods must be chained or built"]
     pub fn with<P>(mut self, param: P) -> Self
     where
-        P: ParameterValue + 'static,
+        P: ParameterValue + Displayable + 'static,
     {
         self.add(param);
         self
@@ -92,7 +92,7 @@ impl ParameterCollection {
             .value(key_obj.clone())
             .ok_or_else(|| ParameterError::not_found(key_obj.clone()))?;
 
-        value.try_into().map_err(|e| {
+        value.try_into().map_err(|e: <T as TryFrom<Value>>::Error| {
             ParameterError::type_error(key_obj, std::any::type_name::<T>(), e.to_string())
         })
     }

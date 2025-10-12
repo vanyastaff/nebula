@@ -242,8 +242,8 @@ pub mod utils {
                     )
                 }),
             crate::ConfigFormat::Yaml => {
-                // Parse YAML using yaml_rust and convert to JSON
-                use yaml_rust::YamlLoader;
+                // Parse YAML using yaml_rust2 and convert to JSON
+                use yaml_rust2::YamlLoader;
                 let docs = YamlLoader::load_from_str(content).map_err(|e| {
                     ConfigError::parse_error(
                         std::path::PathBuf::from("string"),
@@ -253,8 +253,8 @@ pub mod utils {
                 if docs.is_empty() {
                     return Ok(serde_json::Value::Null);
                 }
-                fn yaml_to_json(yaml: &yaml_rust::Yaml) -> ConfigResult<serde_json::Value> {
-                    use yaml_rust::Yaml;
+                fn yaml_to_json(yaml: &yaml_rust2::Yaml) -> ConfigResult<serde_json::Value> {
+                    use yaml_rust2::Yaml;
                     Ok(match yaml {
                         Yaml::Real(s) | Yaml::String(s) => {
                             if let Ok(num) = s.parse::<f64>() {

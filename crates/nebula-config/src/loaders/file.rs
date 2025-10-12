@@ -86,7 +86,7 @@ impl FileLoader {
 
     /// Parse YAML content
     fn parse_yaml(&self, content: &str, path: &Path) -> ConfigResult<serde_json::Value> {
-        use yaml_rust::YamlLoader;
+        use yaml_rust2::YamlLoader;
 
         let docs = YamlLoader::load_from_str(content)
             .map_err(|e| ConfigError::parse_error(path, format!("YAML parse error: {:?}", e)))?;
@@ -99,8 +99,8 @@ impl FileLoader {
     }
 
     /// Convert YAML value to JSON value
-    fn yaml_to_json(&self, yaml: &yaml_rust::Yaml, path: &Path) -> ConfigResult<serde_json::Value> {
-        use yaml_rust::Yaml;
+    fn yaml_to_json(&self, yaml: &yaml_rust2::Yaml, path: &Path) -> ConfigResult<serde_json::Value> {
+        use yaml_rust2::Yaml;
 
         match yaml {
             Yaml::Real(s) | Yaml::String(s) => {

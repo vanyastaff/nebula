@@ -793,7 +793,14 @@ pub trait Expressible: HasValue {
     ///
     /// This is a convenience method that wraps the expression in `MaybeExpression::Expression`.
     fn set_expression(&mut self, expr: impl Into<String>) -> Result<(), ParameterError> {
-        self.from_expression(MaybeExpression::Expression(expr.into()))
+        use nebula_expression::CachedExpression;
+        use once_cell::sync::OnceCell;
+
+        let cached_expr = CachedExpression {
+            source: expr.into(),
+            ast: OnceCell::new(),
+        };
+        self.from_expression(MaybeExpression::Expression(cached_expr))
     }
 
     /// Evaluate the expression and return the result as `Value`
@@ -814,7 +821,7 @@ pub trait Expressible: HasValue {
         match self.to_expression() {
             Some(MaybeExpression::Expression(expr)) => {
                 engine
-                    .evaluate(&expr, context)
+                    .evaluate(&expr.source, context)
                     .map_err(|e| ParameterError::InvalidValue {
                         key: self.metadata().key.clone(),
                         reason: format!("Expression evaluation failed: {}", e),
@@ -975,7 +982,7 @@ pub trait Displayable: Parameter {
     /// trying to access a hidden parameter.
     fn validate_display(&self, context: &DisplayContext) -> Result<(), ParameterDisplayError> {
         match self.display() {
-            Some(display_config) => display_config.validate_display(&context.values),
+            Some(display_config) => display_config.validate_display(context),
             None => Ok(()),
         }
     }

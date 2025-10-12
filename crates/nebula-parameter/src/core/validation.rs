@@ -311,7 +311,7 @@ impl StringValidationBuilder {
 
         if let Some(pattern) = self.pattern {
             // matches_regex returns Result, need to unwrap or handle
-            if let Ok(validator) = matches_regex(pattern) {
+            if let Ok(validator) = matches_regex(&pattern) {
                 validators.push(Box::new(validator));
             }
         }
@@ -541,12 +541,12 @@ impl AsyncValidator for NumberCompositeValidator {
         let num = match value {
             Value::Integer(i) => {
                 // Convert Integer to i64 then to f64
-                let i64_val: i64 = i.clone().into();
+                let i64_val: i64 = i.value();
                 i64_val as f64
             }
             Value::Float(f) => {
                 // Convert Float to f64
-                let f64_val: f64 = f.clone().into();
+                let f64_val: f64 = f.value();
                 f64_val
             }
             _ => return Err(ValidationError::new("type_error", "Expected numeric value")),

@@ -142,7 +142,7 @@ mod tests {
         let error = system_result.unwrap_err();
         assert!(error.context().is_some());
         assert_eq!(
-            error.context().unwrap().component,
+            error.context().unwrap().component(),
             Some("cpu-info".to_string())
         );
     }

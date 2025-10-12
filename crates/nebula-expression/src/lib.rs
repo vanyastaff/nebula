@@ -149,7 +149,7 @@ pub mod parser;
 pub use context::{EvaluationContext, EvaluationContextBuilder};
 pub use core::error::{ExpressionErrorExt, ExpressionResult};
 pub use engine::ExpressionEngine;
-pub use maybe::MaybeExpression;
+pub use maybe::{CachedExpression, MaybeExpression};
 pub use template::{MaybeTemplate, Template};
 
 // Internal types - only exported for advanced use cases

@@ -297,11 +297,10 @@ impl ListParameter {
     /// Add an item to the list value
     #[must_use = "operation result must be checked"]
     pub fn add_item(&mut self, item: nebula_value::Value) -> Result<(), ParameterError> {
-        use crate::ValueRefExt;
         if let Some(items) = &self.value {
-            self.value = Some(items.push(item.to_json()));
+            self.value = Some(items.push(item));
         } else {
-            self.value = Some(nebula_value::Array::from_vec(vec![item.to_json()]));
+            self.value = Some(nebula_value::Array::from_vec(vec![item]));
         }
         Ok(())
     }
