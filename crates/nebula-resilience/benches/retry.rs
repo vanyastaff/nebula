@@ -8,6 +8,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
 use nebula_resilience::{retry, RetryStrategy, ResilienceError};
+use std::sync::Arc;
 use std::time::Duration;
 
 fn retry_strategy_creation(c: &mut Criterion) {
@@ -16,8 +17,8 @@ fn retry_strategy_creation(c: &mut Criterion) {
     group.bench_function("fixed_delay", |b| {
         b.iter(|| {
             black_box(RetryStrategy::fixed_delay(
-                Duration::from_millis(100),
                 3,
+                Duration::from_millis(100),
             ))
         });
     });
@@ -25,18 +26,17 @@ fn retry_strategy_creation(c: &mut Criterion) {
     group.bench_function("exponential_backoff", |b| {
         b.iter(|| {
             black_box(RetryStrategy::exponential_backoff(
-                Duration::from_millis(100),
-                2.0,
                 5,
+                Duration::from_millis(100),
             ))
         });
     });
 
-    group.bench_function("fibonacci_backoff", |b| {
+    group.bench_function("linear_backoff", |b| {
         b.iter(|| {
-            black_box(RetryStrategy::fibonacci_backoff(
-                Duration::from_millis(100),
+            black_box(RetryStrategy::linear_backoff(
                 5,
+                Duration::from_millis(100),
             ))
         });
     });
@@ -44,32 +44,24 @@ fn retry_strategy_creation(c: &mut Criterion) {
     group.finish();
 }
 
-fn retry_jitter_calculation(c: &mut Criterion) {
-    let mut group = c.benchmark_group("retry/jitter");
+fn retry_delay_calculation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("retry/delay_calculation");
 
-    for jitter_type in &["none", "full", "equal", "decorrelated"] {
-        group.bench_function(*jitter_type, |b| {
-            let strategy = match *jitter_type {
-                "none" => RetryStrategy::exponential_backoff(
-                    Duration::from_millis(100),
-                    2.0,
+    for strategy_type in &["fixed", "linear", "exponential"] {
+        group.bench_function(*strategy_type, |b| {
+            let strategy = match *strategy_type {
+                "fixed" => RetryStrategy::fixed_delay(
                     3,
+                    Duration::from_millis(100),
                 ),
-                "full" => RetryStrategy::exponential_backoff(
-                    Duration::from_millis(100),
-                    2.0,
+                "linear" => RetryStrategy::linear_backoff(
                     3,
-                ).with_jitter(0.5),
-                "equal" => RetryStrategy::exponential_backoff(
                     Duration::from_millis(100),
-                    2.0,
+                ),
+                "exponential" => RetryStrategy::exponential_backoff(
                     3,
-                ).with_equal_jitter(),
-                "decorrelated" => RetryStrategy::exponential_backoff(
                     Duration::from_millis(100),
-                    2.0,
-                    3,
-                ).with_decorrelated_jitter(),
+                ),
                 _ => unreachable!(),
             };
 
@@ -95,8 +87,8 @@ fn retry_successful_operation(c: &mut Criterion) {
             |b, &max_attempts| {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 let strategy = RetryStrategy::fixed_delay(
-                    Duration::from_millis(10),
                     max_attempts,
+                    Duration::from_millis(10),
                 );
 
                 b.to_async(&rt).iter(|| async {
@@ -123,15 +115,16 @@ fn retry_with_failures(c: &mut Criterion) {
             &max_attempts,
             |b, &max_attempts| {
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                let strategy = RetryStrategy::fixed_delay(
-                    Duration::from_millis(1), // Minimal delay for benchmarking
+                let strategy = Arc::new(RetryStrategy::fixed_delay(
                     max_attempts,
-                );
+                    Duration::from_millis(1), // Minimal delay for benchmarking
+                ));
 
                 b.to_async(&rt).iter(|| {
+                    let strategy = Arc::clone(&strategy);
                     let mut attempt_count = 0;
                     async move {
-                        let result = retry(strategy.clone(), || {
+                        let result = retry((*strategy).clone(), || {
                             attempt_count += 1;
                             async move {
                                 if attempt_count < max_attempts {
@@ -151,7 +144,7 @@ fn retry_with_failures(c: &mut Criterion) {
     group.finish();
 }
 
-fn retry_exponential_vs_fibonacci(c: &mut Criterion) {
+fn retry_exponential_vs_linear(c: &mut Criterion) {
     let mut group = c.benchmark_group("retry/backoff_comparison");
     group.sample_size(30);
 
@@ -160,16 +153,16 @@ fn retry_exponential_vs_fibonacci(c: &mut Criterion) {
 
     group.bench_function("exponential_backoff", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let strategy = RetryStrategy::exponential_backoff(
-            Duration::from_millis(1),
-            2.0,
+        let strategy = Arc::new(RetryStrategy::exponential_backoff(
             max_attempts,
-        );
+            Duration::from_millis(1),
+        ));
 
         b.to_async(&rt).iter(|| {
+            let strategy = Arc::clone(&strategy);
             let mut attempt_count = 0;
             async move {
-                let result = retry(strategy.clone(), || {
+                let result = retry((*strategy).clone(), || {
                     attempt_count += 1;
                     async move {
                         if attempt_count < max_attempts {
@@ -184,17 +177,18 @@ fn retry_exponential_vs_fibonacci(c: &mut Criterion) {
         });
     });
 
-    group.bench_function("fibonacci_backoff", |b| {
+    group.bench_function("linear_backoff", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let strategy = RetryStrategy::fibonacci_backoff(
-            Duration::from_millis(1),
+        let strategy = Arc::new(RetryStrategy::linear_backoff(
             max_attempts,
-        );
+            Duration::from_millis(1),
+        ));
 
         b.to_async(&rt).iter(|| {
+            let strategy = Arc::clone(&strategy);
             let mut attempt_count = 0;
             async move {
-                let result = retry(strategy.clone(), || {
+                let result = retry((*strategy).clone(), || {
                     attempt_count += 1;
                     async move {
                         if attempt_count < max_attempts {
@@ -216,9 +210,8 @@ fn retry_should_retry_check(c: &mut Criterion) {
     let mut group = c.benchmark_group("retry/should_retry");
 
     let strategy = RetryStrategy::exponential_backoff(
-        Duration::from_millis(100),
-        2.0,
         5,
+        Duration::from_millis(100),
     );
 
     // Benchmark: Check if error should be retried
@@ -242,10 +235,10 @@ fn retry_should_retry_check(c: &mut Criterion) {
 criterion_group!(
     benches,
     retry_strategy_creation,
-    retry_jitter_calculation,
+    retry_delay_calculation,
     retry_successful_operation,
     retry_with_failures,
-    retry_exponential_vs_fibonacci,
+    retry_exponential_vs_linear,
     retry_should_retry_check,
 );
 

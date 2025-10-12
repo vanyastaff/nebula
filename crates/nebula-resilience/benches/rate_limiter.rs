@@ -44,7 +44,7 @@ fn rate_limiter_acquire(c: &mut Criterion) {
             &rate,
             |b, &rate| {
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                let limiter = Arc::new(LeakyBucket::new(rate));
+                let limiter = Arc::new(LeakyBucket::new(rate, rate as f64));
 
                 b.to_async(&rt).iter(|| {
                     let limiter = Arc::clone(&limiter);
@@ -63,7 +63,7 @@ fn rate_limiter_acquire(c: &mut Criterion) {
             &rate,
             |b, &rate| {
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                let limiter = Arc::new(SlidingWindow::new(rate, std::time::Duration::from_secs(1)));
+                let limiter = Arc::new(SlidingWindow::new(std::time::Duration::from_secs(1), rate));
 
                 b.to_async(&rt).iter(|| {
                     let limiter = Arc::clone(&limiter);
@@ -100,12 +100,10 @@ fn rate_limiter_execute(c: &mut Criterion) {
     // AdaptiveRateLimiter execute
     group.bench_function("adaptive_1000rps", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let base_limiter = Arc::new(TokenBucket::new(1000, 1000.0));
         let limiter = Arc::new(AdaptiveRateLimiter::new(
-            base_limiter,
-            0.1,  // error threshold
-            0.8,  // decrease factor
-            1.2,  // increase factor
+            1000.0,  // initial_rate
+            100.0,   // min_rate
+            10000.0, // max_rate
         ));
 
         b.to_async(&rt).iter(|| {
@@ -136,7 +134,7 @@ fn rate_limiter_current_rate(c: &mut Criterion) {
 
     group.bench_function("sliding_window", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let limiter = SlidingWindow::new(1000, std::time::Duration::from_secs(1));
+        let limiter = SlidingWindow::new(std::time::Duration::from_secs(1), 1000);
 
         b.to_async(&rt).iter(|| async {
             black_box(limiter.current_rate().await)

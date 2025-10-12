@@ -54,13 +54,15 @@ fn manager_service_registration(c: &mut Criterion) {
     // Benchmark: Register service (DashMap write)
     group.bench_function("register_service", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let manager = ResilienceManager::with_defaults();
-        let mut counter = 0;
+        let manager = Arc::new(ResilienceManager::with_defaults());
+        let counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
 
         b.to_async(&rt).iter(|| {
-            counter += 1;
-            let service_name = format!("service-{}", counter);
+            let manager = Arc::clone(&manager);
+            let counter = Arc::clone(&counter);
             async move {
+                let count = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let service_name = format!("service-{}", count);
                 manager.register_service(
                     service_name,
                     ResiliencePolicy::default(),
@@ -139,9 +141,13 @@ fn manager_execute_overhead(c: &mut Criterion) {
         let manager = ResilienceManager::with_defaults();
 
         rt.block_on(async {
+            let retry_strategy = nebula_resilience::RetryStrategy::fixed_delay(
+                3,
+                Duration::from_millis(100),
+            );
             let policy = ResiliencePolicy::default()
                 .with_timeout(Duration::from_secs(5))
-                .with_retry(3);
+                .with_retry(retry_strategy);
             manager.register_service("api", policy).await;
         });
 
