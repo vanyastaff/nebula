@@ -25,11 +25,9 @@ pub trait ResilienceConfig: Send + Sync + Serialize + for<'de> Deserialize<'de> 
 
     /// Convert to nebula-value for dynamic configuration
     fn to_value(&self) -> nebula_value::Value {
-        // Serialize to JSON then convert using TryFrom trait (idiomatic Rust)
+        // Serialize to JSON then convert using From trait (infallible conversion)
         match serde_json::to_value(self) {
-            Ok(json_val) => {
-                nebula_value::Value::try_from(json_val).unwrap_or(nebula_value::Value::Null)
-            }
+            Ok(json_val) => nebula_value::Value::from(json_val),
             Err(_) => nebula_value::Value::Null,
         }
     }

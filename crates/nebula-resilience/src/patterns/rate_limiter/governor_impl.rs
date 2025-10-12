@@ -31,7 +31,8 @@ pub struct GovernorRateLimiter {
     limiter: DefaultDirectRateLimiter,
     /// Request rate for metrics
     rate_per_second: f64,
-    /// Burst capacity
+    /// Burst capacity (stored for future metrics/introspection)
+    #[allow(dead_code)]
     burst_capacity: u32,
 }
 

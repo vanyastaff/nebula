@@ -75,19 +75,19 @@ impl HedgeExecutor {
                 }
                 Either::Right(((), _)) => {
                     // Delay expired, send hedge request
-                    if hedges_sent < self.config.max_hedges {
-                        hedge_futures.push(Box::pin(operation()));
-                        hedges_sent += 1;
-
-                        // Calculate next hedge delay
-                        if self.config.exponential_backoff {
-                            hedge_delay = Duration::from_secs_f64(
-                                hedge_delay.as_secs_f64() * self.config.backoff_multiplier,
-                            );
-                        }
-                    } else {
+                    if hedges_sent >= self.config.max_hedges {
                         // Max hedges reached, wait for any to complete
                         break;
+                    }
+
+                    hedge_futures.push(Box::pin(operation()));
+                    hedges_sent += 1;
+
+                    // Calculate next hedge delay with exponential backoff
+                    if self.config.exponential_backoff {
+                        hedge_delay = Duration::from_secs_f64(
+                            hedge_delay.as_secs_f64() * self.config.backoff_multiplier,
+                        );
                     }
                 }
             }

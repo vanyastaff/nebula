@@ -186,6 +186,7 @@ pub struct MetricTimer {
     name: String,
     start: Option<Instant>,
     /// Whether metrics collection is enabled
+    #[allow(dead_code)]
     enabled: bool,
 }
 
@@ -210,12 +211,14 @@ impl MetricTimer {
 ///
 /// This is currently unused but reserved for future integration with
 /// observability systems like Prometheus/OpenTelemetry.
+#[allow(dead_code)]
 static GLOBAL_METRICS: std::sync::LazyLock<MetricsCollector> =
     std::sync::LazyLock::new(|| MetricsCollector::new(true));
 
 /// Get global metrics collector
 ///
 /// Reserved for future metrics integration. Currently unused.
+#[allow(dead_code)]
 pub(super) fn global_metrics() -> &'static MetricsCollector {
     &GLOBAL_METRICS
 }

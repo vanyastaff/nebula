@@ -106,10 +106,12 @@ pub(crate) struct ExecutionContext {
     /// Name of the service being executed
     pub service_name: String,
     /// Name of the operation being performed (for metrics/logging)
+    #[allow(dead_code)]
     pub operation_name: String,
     /// Current attempt number (starts at 1)
     pub attempt: usize,
     /// Timestamp when execution started (for latency metrics)
+    #[allow(dead_code)]
     pub start_time: std::time::Instant,
 }
 
@@ -125,11 +127,13 @@ impl ExecutionContext {
     }
 
     /// Increment attempt counter (for retry tracking)
+    #[allow(dead_code)]
     pub(crate) fn next_attempt(&mut self) {
         self.attempt += 1;
     }
 
     /// Get elapsed time since start (for latency metrics)
+    #[allow(dead_code)]
     pub(crate) fn elapsed(&self) -> Duration {
         self.start_time.elapsed()
     }
