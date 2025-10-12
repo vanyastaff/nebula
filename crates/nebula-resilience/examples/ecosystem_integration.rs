@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 use nebula_resilience::prelude::*;
-use nebula_resilience::{log_result, print_result};
+use nebula_resilience::{log_result, retry};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Example 1: Database operations with preset configuration
     info!("=== Database Operations Example ===");
 
-    let circuit_breaker = CircuitBreaker::new(CircuitBreakerConfig {
+    let circuit_breaker = CircuitBreaker::with_config(CircuitBreakerConfig {
         failure_threshold: 5,
         reset_timeout: Duration::from_secs(60),
         half_open_max_operations: 3,
@@ -71,8 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("=== HTTP API Example ===");
 
     let retry_strategy = RetryStrategy::exponential_backoff(3, Duration::from_millis(500));
-    let api_result = retry_strategy
-        .execute(|| async {
+    let api_result = retry(retry_strategy, || async {
             info!(
                 operation = "api_call",
                 endpoint = "/users",
@@ -121,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Simulate file processing
             sleep(Duration::from_millis(50 * i)).await;
 
-            Ok(format!("Processed file_{}.txt", i))
+            Ok::<_, ResilienceError>(format!("Processed file_{}.txt", i))
         })
         .await;
 
@@ -135,8 +134,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Example 4: Using bulkhead for concurrency control
     info!("=== Bulkhead Example ===");
 
-    let bulkhead = Bulkhead::new(BulkheadConfig {
-        max_concurrent: 5,
+    let bulkhead = Bulkhead::with_config(BulkheadConfig {
+        max_concurrency: 5,
         queue_size: 10,
         timeout: Some(Duration::from_secs(2)),
     });
