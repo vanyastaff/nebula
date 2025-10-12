@@ -37,7 +37,7 @@ impl Default for DynamicConfig {
 
 impl DynamicConfig {
     /// Create a new dynamic configuration
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -95,7 +95,7 @@ impl DynamicConfig {
     }
 
     /// Convert to a flat key-value map for debugging
-    #[must_use] 
+    #[must_use]
     pub fn to_flat_map(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
         self.flatten_object(&self.values, "", &mut map);

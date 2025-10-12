@@ -128,6 +128,7 @@ pub use core::{
     ConfigError,
     ConfigResult,
     DynamicConfig,
+    DynamicConfigBuilder,
     DynamicConfigurable,
     ErrorClass,
     Executable,
@@ -138,6 +139,10 @@ pub use core::{
     ResiliencePattern,
     ResiliencePresets,
     ResilienceResult,
+    // Builder types
+    RetryConfigBuilder,
+    CircuitBreakerConfigBuilder,
+    BulkheadConfigBuilder,
 };
 
 // Re-exports from patterns
@@ -179,8 +184,8 @@ pub mod prelude {
 
     // Configuration
     pub use crate::{
-        ConfigError, ConfigResult, DynamicConfig, ResilienceConfig, ResilienceConfigManager,
-        ResiliencePresets,
+        ConfigError, ConfigResult, DynamicConfig, DynamicConfigBuilder, ResilienceConfig,
+        ResilienceConfigManager, ResiliencePresets,
     };
 
     // Re-export nebula ecosystem for convenience

@@ -4,7 +4,7 @@
 //! the library, including error types, traits, metrics, and configuration.
 
 pub mod config;
-mod dynamic;
+pub mod dynamic;
 mod error;
 mod metrics;
 mod result;
@@ -23,7 +23,15 @@ pub use config::{
     ResilienceConfig,
     ResilienceConfigManager,
 };
-pub use dynamic::{DynamicConfig, DynamicConfigurable, ResiliencePresets};
+pub use dynamic::{
+    BulkheadConfigBuilder,
+    CircuitBreakerConfigBuilder,
+    DynamicConfig,
+    DynamicConfigBuilder,
+    DynamicConfigurable,
+    ResiliencePresets,
+    RetryConfigBuilder,
+};
 pub use error::{ErrorClass, ErrorContext, ResilienceError};
 pub use metrics::{MetricKind, MetricSnapshot, Metrics, MetricsCollector};
 pub use result::{AsyncResultExt, ErrorCollector, ResilienceResult, ResultExt};
@@ -47,3 +55,4 @@ pub mod constants {
     /// Default rate limit
     pub const DEFAULT_RATE_LIMIT: f64 = 100.0;
 }
+
