@@ -164,7 +164,7 @@ mod tests {
         assert!(error.context().is_some());
         assert_eq!(
             error.context().unwrap().component(),
-            &Some("file-appender".to_string())
+            Some("file-appender".to_string()).as_deref()
         );
     }
 }

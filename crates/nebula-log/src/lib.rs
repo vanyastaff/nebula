@@ -32,6 +32,10 @@ mod writer;
 #[cfg(any(feature = "telemetry", feature = "sentry"))]
 mod telemetry;
 
+// Metrics module (optional)
+#[cfg(feature = "observability")]
+pub mod metrics;
+
 // Public API
 pub use builder::{LoggerBuilder, LoggerGuard};
 pub use config::{Config, Format, Level, Rolling, WriterConfig};
@@ -49,6 +53,10 @@ pub mod prelude {
     };
 
     pub use tracing::{Span, field};
+
+    // Metrics (when observability feature is enabled)
+    #[cfg(feature = "observability")]
+    pub use crate::metrics::{counter, gauge, histogram, timed_block, timed_block_async};
 }
 
 // Re-export tracing macros

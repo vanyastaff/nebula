@@ -2505,6 +2505,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "metrics"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3045b4193fbdc5b5681f32f11070da9be3609f189a79f3390706d42587f46bb5"
+dependencies = [
+ "ahash 0.8.12",
+ "portable-atomic",
+]
+
+[[package]]
 name = "metrics-exporter-prometheus"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2514,7 +2524,7 @@ dependencies = [
  "hyper 0.14.32",
  "indexmap 1.9.3",
  "ipnet",
- "metrics",
+ "metrics 0.21.1",
  "metrics-util",
  "quanta 0.11.1",
  "thiserror 1.0.69",
@@ -2542,7 +2552,7 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "hashbrown 0.13.1",
- "metrics",
+ "metrics 0.21.1",
  "num_cpus",
  "quanta 0.11.1",
  "sketches-ddsketch",
@@ -2854,6 +2864,7 @@ version = "0.1.0"
 dependencies = [
  "criterion 0.7.0",
  "flate2",
+ "metrics 0.23.1",
  "nebula-error",
  "once_cell",
  "opentelemetry 0.30.0",
@@ -2964,7 +2975,7 @@ dependencies = [
  "crossbeam",
  "dashmap",
  "futures",
- "metrics",
+ "metrics 0.21.1",
  "metrics-exporter-prometheus",
  "mockall",
  "mongodb",

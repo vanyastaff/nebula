@@ -52,15 +52,19 @@ parking_lot = "0.12"
 pin-project = "1.1"
 thiserror = "2.0"
 
+# Metrics (optional)
+metrics = { version = "0.23", optional = true }
+
 [features]
 default = ["ansi", "async"]
 ansi = []
 async = ["tokio"]
 file = ["tracing-appender", "flate2"]
 log-compat = ["tracing-log"]
-telemetry = ["opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp", "tracing-opentelemetry"]
+observability = ["metrics"]
+telemetry = ["opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp", "tracing-opentelemetry", "observability"]
 sentry = ["dep:sentry", "sentry-tracing"]
-full = ["ansi", "async", "file", "log-compat", "telemetry", "sentry"]
+full = ["ansi", "async", "file", "log-compat", "telemetry", "sentry", "observability"]
 
 [dev-dependencies]
 criterion = "0.7"
@@ -69,6 +73,8 @@ tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }
 serde_yaml = "0.9"
 uuid = { version = "1", features = ["v4"] }
+# Temporarily disabled due to aws-lc-sys requiring cmake/NASM on Windows
+# metrics-exporter-prometheus = "0.15"
 
 [[example]]
 name = "sentry_test"
