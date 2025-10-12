@@ -377,7 +377,7 @@ mod tests {
     fn test_nullable_alias() {
         let validator: Nullable<MinLength> = nullable(MinLength { min: 5 });
         assert!(validator.validate(&None).is_ok());
-        assert!(validator.validate(&Some("hello")).is_ok());
+        assert!(validator.validate(&Some("hello".to_string())).is_ok());
     }
 
     #[test]

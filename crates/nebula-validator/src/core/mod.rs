@@ -218,7 +218,7 @@ pub fn validate_with_all<V>(
     validators: Vec<&V>,
 ) -> Result<V::Output, ValidationErrors>
 where
-    V: TypedValidator,
+    V: TypedValidator + ?Sized,
 {
     let mut errors = ValidationErrors::new();
 
@@ -255,7 +255,7 @@ pub fn validate_with_any<V>(
     validators: Vec<&V>,
 ) -> Result<V::Output, ValidationErrors>
 where
-    V: TypedValidator,
+    V: TypedValidator + ?Sized,
 {
     let mut errors = ValidationErrors::new();
 
@@ -342,13 +342,21 @@ mod core_tests {
 
     #[test]
     fn test_validate_with_all_failure() {
-        let result = validate_with_all("test", vec![&AlwaysValid, &AlwaysFails]);
+        let valid = AlwaysValid;
+        let fails = AlwaysFails;
+        let validators: Vec<&dyn TypedValidator<Input = str, Output = (), Error = ValidationError>> =
+            vec![&valid, &fails];
+        let result = validate_with_all("test", validators);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_validate_with_any_success() {
-        let result = validate_with_any("test", vec![&AlwaysFails, &AlwaysValid]);
+        let valid = AlwaysValid;
+        let fails = AlwaysFails;
+        let validators: Vec<&dyn TypedValidator<Input = str, Output = (), Error = ValidationError>> =
+            vec![&fails, &valid];
+        let result = validate_with_any("test", validators);
         assert!(result.is_ok());
     }
 

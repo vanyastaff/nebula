@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_when_condition_true() {
-        let validator = When::new(MinLength { min: 10 }, |s: &&str| s.starts_with("long_"));
+        let validator = When::new(MinLength { min: 10 }, |s: &str| s.starts_with("long_"));
 
         // Condition true, validates
         assert!(validator.validate("long_enough_string").is_ok());
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_when_condition_false() {
-        let validator = When::new(MinLength { min: 10 }, |s: &&str| s.starts_with("long_"));
+        let validator = When::new(MinLength { min: 10 }, |s: &str| s.starts_with("long_"));
 
         // Condition false, skips validation
         assert!(validator.validate("short").is_ok());
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_when_metadata() {
-        let validator = When::new(MinLength { min: 5 }, |s: &&str| s.starts_with("test"));
+        let validator = When::new(MinLength { min: 5 }, |s: &str| s.starts_with("test"));
         let meta = validator.metadata();
 
         assert!(meta.name.contains("When"));

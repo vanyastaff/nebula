@@ -12,10 +12,32 @@ use crate::core::{
 use sqlx::{MySqlPool, Row, mysql::MySqlPoolOptions};
 
 /// MySQL/MariaDB configuration
+///
+/// # Security Note
+///
+/// **⚠️ TLS/SSL Encryption Strongly Recommended**
+///
+/// MySQL connections use RSA authentication during handshake, which has a known
+/// timing attack vulnerability (RUSTSEC-2023-0071). To mitigate this:
+///
+/// 1. **Always use TLS/SSL** for production MySQL connections:
+///    ```
+///    mysql://user:pass@host/db?ssl-mode=required
+///    ```
+///
+/// 2. **Use strong authentication methods**:
+///    - `caching_sha2_password` (MySQL 8.0+)
+///    - `mysql_native_password` with TLS
+///
+/// 3. **Avoid plaintext connections** in production environments
+///
+/// See: https://rustsec.org/advisories/RUSTSEC-2023-0071
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MySqlConfig {
-    /// MySQL connection URL (e.g., "mysql://user:pass@localhost/db")
+    /// MySQL connection URL (e.g., "mysql://user:pass@localhost/db?ssl-mode=required")
+    ///
+    /// **Security**: Always use `?ssl-mode=required` for production connections
     pub url: String,
     /// Maximum number of connections in the pool
     pub max_connections: u32,

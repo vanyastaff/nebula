@@ -56,9 +56,11 @@ default = ["full"]
 async = ["tokio/full"]
 # Optional subsystems
 caching = []
+cache = ["caching"]  # Alias for backwards compatibility
 lru = []  # LRU cache support (deprecated, use caching instead)
 performance = []
 registry = []
+serde = []  # Serde is always available, this is for cfg compatibility
 # Convenience umbrella
 full = ["async", "caching", "registry", "performance"]
 

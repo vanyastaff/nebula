@@ -498,6 +498,7 @@ mod tests {
         age: u32,
     }
 
+    #[derive(Clone, Debug)]
     struct MinValue {
         min: u32,
     }
@@ -519,6 +520,7 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug)]
     struct MinLength {
         min: usize,
     }
@@ -681,7 +683,8 @@ mod tests {
     fn test_field_with_dynamic_name() {
         // Test that String (not &'static str) works
         let field_name = format!("field_{}", 42);
-        let validator = named_field(field_name.clone(), MinValue { min: 18 }, get_age);
+        let validator: Field<TestUser, u32, MinValue, _> =
+            named_field(field_name.clone(), MinValue { min: 18 }, get_age);
         assert_eq!(validator.field_name(), Some(field_name.as_str()));
     }
 
@@ -701,7 +704,8 @@ mod tests {
 
     #[test]
     fn test_field_debug() {
-        let validator = named_field("age", MinValue { min: 18 }, get_age);
+        let validator: Field<TestUser, u32, MinValue, _> =
+            named_field("age", MinValue { min: 18 }, get_age);
         let debug_str = format!("{:?}", validator);
         assert!(debug_str.contains("Field"));
         assert!(debug_str.contains("age"));

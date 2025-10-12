@@ -1,0 +1,98 @@
+name: Security Audit
+
+on:
+  schedule:
+    # Run daily at 00:00 UTC
+    - cron: '0 0 * * *'
+  push:
+    branches: [main, master]
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/security-audit.yml'
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: read
+  issues: write # For creating security advisory issues
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        id: audit
+        continue-on-error: true
+        run: |
+          cargo audit --json > audit-report.json
+          cargo audit
+
+      - name: Parse audit results
+        if: always()
+        run: |
+          if [ -f audit-report.json ]; then
+            echo "### 🔍 Security Audit Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Check if vulnerabilities found
+            VULN_COUNT=$(jq -r '.vulnerabilities.count' audit-report.json 2>/dev/null || echo "0")
+
+            if [ "$VULN_COUNT" = "0" ]; then
+              echo "✅ **No vulnerabilities found!**" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "⚠️ **Found $VULN_COUNT vulnerability(ies)**" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "See job logs for details." >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-audit-report
+          path: audit-report.json
+          retention-days: 90
+
+      - name: Fail if vulnerabilities found
+        if: steps.audit.outcome == 'failure'
+        run: |
+          echo "::error::Security vulnerabilities detected. Please review audit report."
+          exit 1
+
+  # Optional: Create GitHub issue for new vulnerabilities
+  notify:
+    runs-on: ubuntu-latest
+    needs: audit
+    if: failure() && github.event_name == 'schedule'
+    steps:
+      - name: Create issue for vulnerabilities
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🚨 Security Audit Failed - Vulnerabilities Detected',
+              body: `The automated security audit has detected vulnerabilities in dependencies.
+
+              **Action Required:**
+              1. Review the [audit report](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+              2. Update affected dependencies
+              3. Review security advisories
+
+              **Workflow:** \`security-audit.yml\`
+              **Run:** ${context.runId}
+              **Date:** ${new Date().toISOString()}`,
+              labels: ['security', 'dependencies', 'automated']
+            })

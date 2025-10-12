@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn test_into_parts() {
         let min_length = MinLength { min: 5 };
-        let mapper = |_| 42;
+        let mapper = |_: &()| 42;
         let validator = Map::new(min_length, mapper);
 
         let (extracted_validator, _extracted_mapper) = validator.into_parts();

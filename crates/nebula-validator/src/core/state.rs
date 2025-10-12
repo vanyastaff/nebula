@@ -482,7 +482,7 @@ mod tests {
     }
 
     impl TypedValidator for MinLength {
-        type Input = str;
+        type Input = String;
         type Output = ();
         type Error = ValidationError;
 
@@ -568,7 +568,7 @@ mod tests {
         }
 
         impl TypedValidator for MaxLength {
-            type Input = str;
+            type Input = String;
             type Output = ();
             type Error = ValidationError;
 
