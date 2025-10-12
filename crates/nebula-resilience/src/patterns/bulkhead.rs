@@ -78,6 +78,29 @@ impl Bulkhead {
     }
 
     /// Try to acquire a permit without waiting
+    ///
+    /// Returns `Some(BulkheadPermit)` if a permit is immediately available,
+    /// or `None` if the bulkhead is at capacity.
+    ///
+    /// # RAII Pattern
+    ///
+    /// The returned `BulkheadPermit` uses RAII to automatically release
+    /// the permit when dropped, ensuring correct resource management.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_resilience::Bulkhead;
+    ///
+    /// let bulkhead = Bulkhead::new(2);
+    ///
+    /// if let Some(_permit) = bulkhead.try_acquire() {
+    ///     // Permit acquired, can proceed with operation
+    ///     // Permit automatically released when _permit is dropped
+    /// } else {
+    ///     // Bulkhead at capacity
+    /// }
+    /// ```
     #[must_use]
     pub fn try_acquire(&self) -> Option<BulkheadPermit> {
         let permit = Arc::clone(&self.semaphore).try_acquire_owned().ok()?;
@@ -88,6 +111,34 @@ impl Bulkhead {
     }
 
     /// Acquire a permit, waiting if necessary
+    ///
+    /// Blocks until a permit becomes available or the configured timeout is reached.
+    ///
+    /// # RAII Pattern
+    ///
+    /// The returned `BulkheadPermit` uses RAII to automatically release
+    /// the permit when dropped. This ensures that the bulkhead capacity is
+    /// properly restored even if the operation panics or returns early.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use nebula_resilience::Bulkhead;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let bulkhead = Bulkhead::new(5);
+    ///
+    /// let permit = bulkhead.acquire().await?;
+    /// // Do work with permit
+    /// // Permit automatically released when it goes out of scope
+    /// drop(permit); // Explicit drop (optional)
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResilienceError::BulkheadFull` if the semaphore is closed.
     pub async fn acquire(&self) -> Result<BulkheadPermit, ResilienceError> {
         let permit = Arc::clone(&self.semaphore)
             .acquire_owned()
@@ -177,12 +228,28 @@ impl Default for Bulkhead {
 }
 
 /// Permit for executing an operation within the bulkhead
+///
+/// This struct acts as an RAII guard that automatically releases bulkhead resources
+/// when dropped, ensuring proper resource cleanup even in the presence of panics
+/// or early returns.
+///
+/// # RAII Pattern
+///
+/// The `permit` field is never accessed directly but serves as an RAII guard.
+/// When the `BulkheadPermit` is dropped:
+/// 1. The `OwnedSemaphorePermit` is automatically released
+/// 2. The bulkhead's available capacity is incremented
+/// 3. Waiting operations can proceed
+///
+/// This ensures correct resource management without manual cleanup code.
 pub struct BulkheadPermit {
     /// RAII guard - field must exist to hold the semaphore permit.
     /// The permit is automatically released when this struct is dropped.
     /// Never accessed directly, but critical for correct resource management.
-    #[allow(dead_code)]
-    permit: tokio::sync::OwnedSemaphorePermit,
+    ///
+    /// Hidden from documentation as it's an implementation detail of the RAII pattern.
+    #[doc(hidden)]
+    pub permit: tokio::sync::OwnedSemaphorePermit,
     active_operations: Arc<tokio::sync::RwLock<usize>>,
 }
 
