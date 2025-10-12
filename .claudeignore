@@ -1,0 +1,129 @@
+# Build artifacts
+target/
+Cargo.lock
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+*.profraw
+*.profdata
+
+# Temporary files
+tmp/
+temp/
+.temp/
+*.tmp
+
+# Log files
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Documentation build
+target/doc/
+book/
+
+# Benchmark results
+target/criterion/
+
+# Code coverage
+target/debug/coverage/
+*.gcda
+*.gcno
+
+# Large binary files
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Package manager
+node_modules/
+package-lock.json
+yarn.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+env/
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Generated files
+*.generated.*
+*_generated.*
+
+# Documentation that's auto-generated
+docs/target/
+docs/book/
+
+# Cache directories
+.cache/
+.cargo-cache/
+
+# Don't index large data files
+*.csv
+*.json.gz
+*.parquet
+data/
+datasets/
+
+# Git files (already tracked by git)
+.git/
+.gitignore
+.gitattributes
+
+# GitHub specific
+.github/workflows/
+.github/ISSUE_TEMPLATE/
+
+# Rust-specific large artifacts
+target/release/
+target/debug/deps/
+target/debug/incremental/
+
+# Documentation examples output
+examples/output/
+examples/temp/
+
+# Fuzzing artifacts
+fuzz/artifacts/
+fuzz/corpus/
+
+# Security sensitive (just in case)
+secrets/
+credentials/
+*.key
+*.pem
+*.crt
+
+# Large test fixtures
+tests/fixtures/large/
+tests/data/
+
+# Previous session summaries (to avoid recursion)
+.claude/summaries/
