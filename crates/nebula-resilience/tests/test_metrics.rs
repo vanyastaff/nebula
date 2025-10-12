@@ -1,14 +1,14 @@
 //! Integration tests for metrics collection
 
-use nebula_resilience::{ResilienceManager, ResiliencePolicy};
+use nebula_resilience::{CircuitBreakerConfig, ResilienceManager, ResiliencePolicy};
 use std::time::Duration;
 
 #[tokio::test]
 async fn test_get_metrics_for_registered_service() {
-    let manager = ResilienceManager::new();
+    let manager = ResilienceManager::with_defaults();
 
     // Register a service with default policy
-    manager.register_policy("test-api", ResiliencePolicy::default()).await;
+    manager.register_service("test-api", ResiliencePolicy::default()).await;
 
     // Get metrics
     let metrics = manager.get_metrics("test-api").await;
@@ -20,7 +20,7 @@ async fn test_get_metrics_for_registered_service() {
 
 #[tokio::test]
 async fn test_get_metrics_for_unregistered_service() {
-    let manager = ResilienceManager::new();
+    let manager = ResilienceManager::with_defaults();
 
     // Try to get metrics for non-existent service
     let metrics = manager.get_metrics("nonexistent").await;
@@ -30,11 +30,12 @@ async fn test_get_metrics_for_unregistered_service() {
 
 #[tokio::test]
 async fn test_circuit_breaker_metrics() {
-    let manager = ResilienceManager::new();
+    let manager = ResilienceManager::with_defaults();
 
     // Register service with circuit breaker
-    let policy = ResiliencePolicy::basic(Duration::from_secs(5), 3);
-    manager.register_policy("api-with-cb", policy).await;
+    let policy = ResiliencePolicy::basic(Duration::from_secs(5), 3)
+        .with_circuit_breaker(CircuitBreakerConfig::default());
+    manager.register_service("api-with-cb", policy).await;
 
     // Get metrics
     let metrics = manager.get_metrics("api-with-cb").await;
@@ -53,12 +54,12 @@ async fn test_circuit_breaker_metrics() {
 
 #[tokio::test]
 async fn test_get_all_metrics() {
-    let manager = ResilienceManager::new();
+    let manager = ResilienceManager::with_defaults();
 
     // Register multiple services
-    manager.register_policy("api1", ResiliencePolicy::default()).await;
-    manager.register_policy("api2", ResiliencePolicy::default()).await;
-    manager.register_policy("api3", ResiliencePolicy::default()).await;
+    manager.register_service("api1", ResiliencePolicy::default()).await;
+    manager.register_service("api2", ResiliencePolicy::default()).await;
+    manager.register_service("api3", ResiliencePolicy::default()).await;
 
     // Get all metrics
     let all_metrics = manager.get_all_metrics().await;
@@ -71,9 +72,9 @@ async fn test_get_all_metrics() {
 
 #[tokio::test]
 async fn test_metrics_after_service_unregister() {
-    let manager = ResilienceManager::new();
+    let manager = ResilienceManager::with_defaults();
 
-    manager.register_policy("temp-api", ResiliencePolicy::default()).await;
+    manager.register_service("temp-api", ResiliencePolicy::default()).await;
 
     // Verify service exists
     assert!(manager.get_metrics("temp-api").await.is_some());
