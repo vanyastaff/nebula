@@ -588,7 +588,7 @@ mod tests {
 
         let stats = validator.cache_stats();
         assert_eq!(stats.entries, 2);
-        assert!(stats.memory_estimate > 0);
+        assert!(stats.weighted_size > 0);
     }
 
     #[test]

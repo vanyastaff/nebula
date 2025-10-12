@@ -1,7 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 pub mod fifo;
-// TODO: Fix lfu module after migration
-// pub mod lfu;
+pub mod lfu;
 pub mod lru;
 pub mod random;
 pub mod ttl;
@@ -21,7 +20,7 @@ use super::CacheEntry;
 
 // Re-export policy modules
 pub use fifo::FifoPolicy;
-// pub use lfu::LfuPolicy;
+pub use lfu::LfuPolicy;
 pub use lru::LruPolicy;
 pub use random::RandomPolicy;
 pub use ttl::TtlPolicy;

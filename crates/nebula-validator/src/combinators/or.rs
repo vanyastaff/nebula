@@ -513,11 +513,11 @@ mod tests {
     }
 
     impl TypedValidator for ExactLength {
-        type Input = str;
+        type Input = String;
         type Output = ();
         type Error = ValidationError;
 
-        fn validate(&self, input: &str) -> Result<(), ValidationError> {
+        fn validate(&self, input: &String) -> Result<(), ValidationError> {
             if input.len() == self.length {
                 Ok(())
             } else {
@@ -532,25 +532,25 @@ mod tests {
     #[test]
     fn test_or_left_passes() {
         let validator = Or::new(ExactLength { length: 5 }, ExactLength { length: 10 });
-        assert!(validator.validate("hello").is_ok());
+        assert!(validator.validate(&"hello".to_string()).is_ok());
     }
 
     #[test]
     fn test_or_right_passes() {
         let validator = Or::new(ExactLength { length: 5 }, ExactLength { length: 10 });
-        assert!(validator.validate("helloworld").is_ok());
+        assert!(validator.validate(&"helloworld".to_string()).is_ok());
     }
 
     #[test]
     fn test_or_both_pass() {
         let validator = Or::new(ExactLength { length: 5 }, ExactLength { length: 5 });
-        assert!(validator.validate("hello").is_ok());
+        assert!(validator.validate(&"hello".to_string()).is_ok());
     }
 
     #[test]
     fn test_or_both_fail() {
         let validator = Or::new(ExactLength { length: 5 }, ExactLength { length: 10 });
-        let result = validator.validate("hi");
+        let result = validator.validate(&"hi".to_string());
         assert!(result.is_err());
 
         let error = result.unwrap_err();
@@ -563,10 +563,10 @@ mod tests {
             .or(ExactLength { length: 10 })
             .or(ExactLength { length: 15 });
 
-        assert!(validator.validate("hello").is_ok());
-        assert!(validator.validate("helloworld").is_ok());
-        assert!(validator.validate("helloworldhello").is_ok());
-        assert!(validator.validate("hi").is_err());
+        assert!(validator.validate(&"hello".to_string()).is_ok());
+        assert!(validator.validate(&"helloworld".to_string()).is_ok());
+        assert!(validator.validate(&"helloworldhello".to_string()).is_ok());
+        assert!(validator.validate(&"hi".to_string()).is_err());
     }
 
     #[test]

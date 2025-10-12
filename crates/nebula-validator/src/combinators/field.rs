@@ -595,7 +595,7 @@ mod tests {
 
     #[test]
     fn test_field_name_accessor() {
-        let validator = named_field("age", MinValue { min: 18 }, get_age);
+        let validator: Field<TestUser, u32, _, _> = named_field("age", MinValue { min: 18 }, get_age);
         assert_eq!(validator.field_name(), Some("age"));
     }
 
@@ -662,7 +662,7 @@ mod tests {
 
     #[test]
     fn test_field_into_parts() {
-        let validator = named_field("age", MinValue { min: 18 }, get_age);
+        let validator: Field<TestUser, u32, _, _> = named_field("age", MinValue { min: 18 }, get_age);
         let (name, min_value, _accessor) = validator.into_parts();
         assert_eq!(name, Some("age".to_string()));
         assert_eq!(min_value.min, 18);

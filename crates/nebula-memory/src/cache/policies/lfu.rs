@@ -99,6 +99,30 @@ pub enum TieBreakingStrategy {
     Random,
 }
 
+/// Access pattern statistics
+#[derive(Debug, Clone, Default)]
+struct AccessPattern {
+    /// Ratio of hot spot keys (high frequency keys)
+    hot_spot_ratio: f64,
+    /// Temporal locality measure (0.0 = random, 1.0 = highly localized)
+    temporal_locality: f64,
+}
+
+/// Frequency distribution statistics
+#[derive(Debug, Clone, Default)]
+struct FrequencyDistribution {
+    /// Minimum frequency
+    min: u64,
+    /// Maximum frequency
+    max: u64,
+    /// Average frequency
+    avg: f64,
+    /// Median frequency
+    median: f64,
+    /// Total number of samples
+    total_samples: u64,
+}
+
 /// Access record for time-based tracking
 #[derive(Debug, Clone)]
 struct AccessRecord {
@@ -155,6 +179,10 @@ where
     last_aging: Instant,
     /// Total access count for adaptive algorithms
     total_accesses: u64,
+    /// Access pattern statistics
+    access_pattern: AccessPattern,
+    /// Frequency distribution statistics
+    frequency_distribution: FrequencyDistribution,
 }
 
 impl<K, V> LfuPolicy<K, V>
@@ -183,6 +211,8 @@ where
             #[cfg(feature = "std")]
             last_aging: Instant::now(),
             total_accesses: 0,
+            access_pattern: AccessPattern::default(),
+            frequency_distribution: FrequencyDistribution::default(),
         }
     }
 
@@ -690,7 +720,10 @@ where
     }
 
     /// Get cache efficiency metrics
-    pub fn get_efficiency_metrics(&self) -> LfuEfficiencyMetrics {
+    pub fn get_efficiency_metrics(&mut self) -> LfuEfficiencyMetrics {
+        // Update frequency distribution to get fresh statistics
+        self.update_frequency_distribution();
+
         LfuEfficiencyMetrics {
             total_keys: self.frequencies.len(),
             min_frequency: self.min_frequency,
@@ -728,6 +761,44 @@ where
     }
 }
 
+/// EvictionPolicy implementation for LFU
+impl<K, V> super::EvictionPolicy<K, V> for LfuPolicy<K, V>
+where
+    K: CacheKey + Send + Sync,
+    V: Send + Sync,
+{
+    fn record_access(&mut self, key: &K) {
+        self.record_access(key, None);
+    }
+
+    fn record_insertion(&mut self, key: &K, entry: &super::super::CacheEntry<V>) {
+        self.record_insertion(key, entry, None);
+    }
+
+    fn record_removal(&mut self, key: &K) {
+        self.record_removal(key);
+    }
+
+    fn as_victim_selector(&self) -> &dyn super::VictimSelector<K, V> {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "LFU"
+    }
+}
+
+/// VictimSelector implementation for LFU
+impl<K, V> super::VictimSelector<K, V> for LfuPolicy<K, V>
+where
+    K: CacheKey + Send + Sync,
+    V: Send + Sync,
+{
+    fn select_victim<'a>(&self, _entries: &[super::EvictionEntry<'a, K, V>]) -> Option<K> {
+        self.select_victim()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -735,7 +806,12 @@ mod tests {
 
     #[test]
     fn test_basic_lfu_functionality() {
-        let mut policy = LfuPolicy::<String, i32>::new();
+        // Use SimpleCounter mode for predictable frequency tracking
+        let config = LfuConfig {
+            frequency_mode: FrequencyMode::SimpleCounter,
+            ..Default::default()
+        };
+        let mut policy = LfuPolicy::<String, i32>::with_config(config);
         let entry = CacheEntry::new(42);
 
         // Insert keys
@@ -815,6 +891,7 @@ mod tests {
     #[test]
     fn test_frequency_histogram() {
         let config = LfuConfig {
+            frequency_mode: FrequencyMode::SimpleCounter,
             enable_histogram: true,
             ..Default::default()
         };
@@ -826,12 +903,18 @@ mod tests {
         policy.record_access(&"key1".to_string(), None);
 
         let histogram = policy.get_frequency_histogram();
+        // With SimpleCounter: 1 (insert) + 1 (access) + 1 (access) = 3
         assert!(histogram.contains_key(&3)); // key1 has frequency 3
     }
 
     #[test]
     fn test_efficiency_metrics() {
-        let mut policy = LfuPolicy::<String, i32>::new();
+        // Use SimpleCounter mode for predictable metrics
+        let config = LfuConfig {
+            frequency_mode: FrequencyMode::SimpleCounter,
+            ..Default::default()
+        };
+        let mut policy = LfuPolicy::<String, i32>::with_config(config);
         let entry = CacheEntry::new(42);
 
         // Add some keys with different access patterns

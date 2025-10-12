@@ -721,4 +721,70 @@ Fixes #789
 
 **Remember:** Refactoring is about making the codebase **measurably better** while maintaining **correctness**. Every change must be justified with data (metrics, benchmarks, test results).
 
+---
+
+## 📚 Additional Resources
+
+### Claude Code Configuration
+
+This project uses **Claude Code** with custom configuration in `.claude/` directory:
+
+#### 📖 Core Documentation
+- **[Coding Standards](.claude/docs/coding-standards.md)** - Rust 2024, architectural patterns, style guide
+- **[Commit Guidelines](.claude/docs/commit-guidelines.md)** - Conventional Commits format
+- **[Issue Workflow](.claude/docs/issue-workflow.md)** - Systematic issue closing process
+- **[Refactoring Patterns](.claude/docs/refactoring-patterns.md)** - 6 proven architectural patterns
+
+#### 🚀 Performance & Optimization
+- **[Rust Parallel Execution](.claude/docs/rust-parallel-execution.md)** - ⚡ CRITICAL: Batch ALL operations
+  - Golden rule: "1 MESSAGE = ALL MEMORY-SAFE OPERATIONS"
+  - Cargo operations batching
+  - Concurrent testing strategies
+  - Nebula-specific examples
+
+- **[Cargo Optimization](.claude/docs/cargo-optimization.md)** - 📦 Build & runtime optimization
+  - Release profile configuration
+  - Compilation speed optimization (sccache, mold/lld)
+  - Binary size minimization
+  - Profile-Guided Optimization
+  - Benchmarking best practices
+
+#### 🎯 Custom Commands
+- `/fix-issue <number>` - Systematically fix GitHub issue
+- `/review-code <path>` - Comprehensive code review
+- `/test-crate <name>` - Full crate testing
+
+#### ⚙️ Configuration Files
+- `.claude/settings.local.json` - Permissions for automated operations
+- `.claudeignore` - Files excluded from indexing
+
+### Key Principles from Claude Configuration
+
+> **"продолжаем делать реальный рефакторинг правильный а не просто чтобы ошибка исчезла"**
+>
+> (Continue doing proper real refactoring, not just to make errors disappear)
+
+**Apply architectural patterns, not patches:**
+- Extension Trait Pattern - for Arc<Mutex<T>> ergonomics
+- Type Erasure Wrapper - for non-object-safe traits
+- Scoped Callback (RAII) - for automatic resource cleanup
+- Type-State Builder - for compile-time correctness
+- Newtype Pattern - for type safety
+- Visitor Pattern - for AST traversal
+
+**Parallel Execution:**
+```bash
+# ✅ CORRECT: All operations in ONE message
+cargo check -p nebula-memory &
+cargo check -p nebula-validator &
+cargo check -p nebula-expression &
+cargo test --workspace
+
+# ❌ WRONG: Sequential operations across multiple messages
+```
+
+See `.claude/README.md` for complete documentation.
+
+---
+
 Good luck! 🚀

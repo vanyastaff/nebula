@@ -299,11 +299,11 @@ mod tests {
     }
 
     impl TypedValidator for MinLength {
-        type Input = str;
+        type Input = String;
         type Output = ();
         type Error = ValidationError;
 
-        fn validate(&self, input: &str) -> Result<(), ValidationError> {
+        fn validate(&self, input: &String) -> Result<(), ValidationError> {
             if input.len() >= self.min {
                 Ok(())
             } else {
@@ -315,30 +315,30 @@ mod tests {
     #[test]
     fn test_optional_none() {
         let validator = Optional::new(MinLength { min: 5 });
-        let value: Option<&str> = None;
+        let value: Option<String> = None;
         assert!(validator.validate(&value).is_ok());
     }
 
     #[test]
     fn test_optional_some_valid() {
         let validator = Optional::new(MinLength { min: 5 });
-        let value: Option<&str> = Some("hello");
+        let value: Option<String> = Some("hello".to_string());
         assert!(validator.validate(&value).is_ok());
     }
 
     #[test]
     fn test_optional_some_invalid() {
         let validator = Optional::new(MinLength { min: 5 });
-        let value: Option<&str> = Some("hi");
+        let value: Option<String> = Some("hi".to_string());
         assert!(validator.validate(&value).is_err());
     }
 
     #[test]
     fn test_optional_helper() {
         let validator = optional(MinLength { min: 5 });
-        let none: Option<&str> = None;
-        let valid: Option<&str> = Some("hello");
-        let invalid: Option<&str> = Some("hi");
+        let none: Option<String> = None;
+        let valid: Option<String> = Some("hello".to_string());
+        let invalid: Option<String> = Some("hi".to_string());
 
         assert!(validator.validate(&none).is_ok());
         assert!(validator.validate(&valid).is_ok());
@@ -348,7 +348,8 @@ mod tests {
     #[test]
     fn test_required_some_none() {
         let validator = required_some(MinLength { min: 5 });
-        let result = validator.validate(&None);
+        let value: Option<String> = None;
+        let result = validator.validate(&value);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), RequiredError::NoneValue));
     }
@@ -356,13 +357,15 @@ mod tests {
     #[test]
     fn test_required_some_valid() {
         let validator = required_some(MinLength { min: 5 });
-        assert!(validator.validate(&Some("hello")).is_ok());
+        let value = Some("hello".to_string());
+        assert!(validator.validate(&value).is_ok());
     }
 
     #[test]
     fn test_required_some_invalid() {
         let validator = required_some(MinLength { min: 5 });
-        let result = validator.validate(&Some("hi"));
+        let value = Some("hi".to_string());
+        let result = validator.validate(&value);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
