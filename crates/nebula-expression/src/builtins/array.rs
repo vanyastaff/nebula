@@ -6,7 +6,6 @@ use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
 use nebula_error::NebulaError;
 use nebula_value::Value;
-use nebula_value::{JsonValueExt, ValueRefExt};
 
 /// Get the length of an array
 pub fn length(

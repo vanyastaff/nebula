@@ -90,6 +90,8 @@ impl ResourceInstance for StorageInstance {
     }
 }
 
+/// Storage resource type (unit struct)
+#[derive(Debug, Clone, Copy)]
 pub struct StorageResource;
 
 #[async_trait::async_trait]

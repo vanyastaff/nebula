@@ -8,7 +8,7 @@ use crate::core::ast::{BinaryOp, Expr};
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use nebula_error::NebulaError;
 use nebula_value::Value;
-use nebula_value::{JsonValueExt, ValueRefExt};
+use nebula_value::ValueRefExt;
 use parking_lot::Mutex;
 #[cfg(feature = "regex")]
 use regex::Regex;

@@ -233,7 +233,7 @@ impl<T: Poolable> LockFreePool<T> {
     }
 
     /// Get object from pool
-    pub fn get(&self) -> MemoryResult<LockFreePooledValue<T>> {
+    pub fn get(&self) -> MemoryResult<LockFreePooledValue<'_, T>> {
         #[cfg(feature = "stats")]
         self.stats.record_get();
 
@@ -280,7 +280,7 @@ impl<T: Poolable> LockFreePool<T> {
     }
 
     /// Try to get object without creating new one
-    pub fn try_get(&self) -> Option<LockFreePooledValue<T>> {
+    pub fn try_get(&self) -> Option<LockFreePooledValue<'_, T>> {
         #[cfg(feature = "stats")]
         self.stats.record_get();
 

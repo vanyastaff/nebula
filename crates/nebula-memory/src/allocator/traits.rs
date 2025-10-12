@@ -711,7 +711,7 @@ pub trait TypedAllocator: Allocator {
     /// # Ok::<(), nebula_memory::AllocError>(())
     /// ```
     #[inline]
-    fn try_alloc_value<T>(&self, value: T) -> AllocResult<AllocatedValue<T, Self>>
+    fn try_alloc_value<T>(&self, value: T) -> AllocResult<AllocatedValue<'_, T, Self>>
     where
         Self: Sized,
     {
@@ -745,7 +745,7 @@ pub trait TypedAllocator: Allocator {
         &self,
         count: usize,
         value: T,
-    ) -> AllocResult<AllocatedArray<T, Self>>
+    ) -> AllocResult<AllocatedArray<'_, T, Self>>
     where
         Self: Sized,
     {

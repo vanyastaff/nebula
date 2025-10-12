@@ -116,12 +116,12 @@ impl<T: Poolable> ThreadSafePool<T> {
     }
 
     /// Get object from pool
-    pub fn get(&self) -> MemoryResult<ThreadSafePooledValue<T>> {
+    pub fn get(&self) -> MemoryResult<ThreadSafePooledValue<'_, T>> {
         self.get_timeout(None)
     }
 
     /// Try to get object without blocking
-    pub fn try_get(&self) -> Option<ThreadSafePooledValue<T>> {
+    pub fn try_get(&self) -> Option<ThreadSafePooledValue<'_, T>> {
         #[cfg(feature = "stats")]
         self.stats.record_get();
 
@@ -152,7 +152,7 @@ impl<T: Poolable> ThreadSafePool<T> {
 
     /// Get object with timeout
     #[cfg(feature = "std")]
-    pub fn get_timeout(&self, timeout: Option<Duration>) -> MemoryResult<ThreadSafePooledValue<T>> {
+    pub fn get_timeout(&self, timeout: Option<Duration>) -> MemoryResult<ThreadSafePooledValue<'_, T>> {
         #[cfg(feature = "stats")]
         self.stats.record_get();
 

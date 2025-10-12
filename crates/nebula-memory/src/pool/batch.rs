@@ -260,12 +260,12 @@ impl<T: Poolable> Batch<T> {
     }
 
     /// Iterate over objects
-    pub fn iter(&self) -> core::slice::Iter<T> {
+    pub fn iter(&self) -> core::slice::Iter<'_, T> {
         self.objects.iter()
     }
 
     /// Iterate mutably over objects
-    pub fn iter_mut(&mut self) -> core::slice::IterMut<T> {
+    pub fn iter_mut(&mut self) -> core::slice::IterMut<'_, T> {
         self.objects.iter_mut()
     }
 

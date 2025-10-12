@@ -219,7 +219,7 @@ pub struct HealthCheckStats {
 pub struct MaintenanceStats {
     /// Number of resources removed (expired or unhealthy)
     pub resources_removed: usize,
-    /// Number of resources created to maintain min_size
+    /// Number of resources created to maintain `min_size`
     pub resources_created: usize,
     /// Number of resources validated
     pub resources_validated: usize,
@@ -782,14 +782,13 @@ where
             let mut available = self.available.lock();
             for entry in available.iter_mut() {
                 resources_validated += 1;
-                if let Some((_, health)) = &entry.last_health_check {
-                    if matches!(
+                if let Some((_, health)) = &entry.last_health_check
+                    && matches!(
                         health.state,
                         crate::core::traits::HealthState::Unhealthy { .. }
                     ) {
                         failed_validations += 1;
                     }
-                }
             }
 
             // Remove unhealthy resources
@@ -1165,7 +1164,7 @@ impl<T> Drop for PooledResource<T> {
 
 /// Manager for multiple resource pools
 pub struct PoolManager {
-    /// Registered pools by resource ID (stored as PoolTrait for type-erased operations)
+    /// Registered pools by resource ID (stored as `PoolTrait` for type-erased operations)
     pools: Arc<RwLock<std::collections::HashMap<String, Arc<dyn PoolTrait>>>>,
 }
 
@@ -1217,7 +1216,7 @@ impl PoolManager {
                 }
                 Err(e) => {
                     // Log error but continue with other pools
-                    eprintln!("Failed to maintain pool {}: {:?}", pool_id, e);
+                    eprintln!("Failed to maintain pool {pool_id}: {e:?}");
                 }
             }
         }
@@ -1241,7 +1240,7 @@ impl PoolManager {
                 }
                 Err(e) => {
                     // Log error but continue with other pools
-                    eprintln!("Failed to shutdown pool {}: {:?}", pool_id, e);
+                    eprintln!("Failed to shutdown pool {pool_id}: {e:?}");
                 }
             }
         }
