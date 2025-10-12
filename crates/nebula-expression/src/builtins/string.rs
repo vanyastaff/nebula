@@ -63,10 +63,9 @@ pub fn split(
     let s = get_string_arg("split", args, 0, "text")?;
     let delimiter = get_string_arg("split", args, 1, "delimiter")?;
 
-    use nebula_value::ValueRefExt;
     let parts: Vec<_> = s
         .split(delimiter)
-        .map(|part| Value::text(part).to_json())
+        .map(|part| Value::text(part))
         .collect();
     Ok(Value::Array(nebula_value::Array::from_vec(parts)))
 }

@@ -19,7 +19,7 @@ pub fn keys(
     // Pre-allocate with known size to avoid reallocations
     let keys: Vec<_> = obj
         .keys()
-        .map(|k| serde_json::Value::String(k.to_string()))
+        .map(|k| Value::text(k.to_string()))
         .collect();
 
     Ok(Value::Array(nebula_value::Array::from_vec(keys)))

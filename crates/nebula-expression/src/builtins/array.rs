@@ -30,7 +30,7 @@ pub fn first(
     let json_val = arr
         .get(0)
         .ok_or_else(|| NebulaError::expression_eval_error("Array is empty"))?;
-    Ok(json_val.to_nebula_value_or_null())
+    Ok(json_val.clone())
 }
 
 /// Get the last element of an array
@@ -48,7 +48,7 @@ pub fn last(
     let json_val = arr
         .get(len - 1)
         .ok_or_else(|| NebulaError::expression_eval_error("Array is empty"))?;
-    Ok(json_val.to_nebula_value_or_null())
+    Ok(json_val.clone())
 }
 
 /// Filter array elements (stub - lambdas need special handling)
@@ -94,17 +94,15 @@ pub fn sort(
     check_arg_count("sort", args, 1)?;
     let arr = get_array_arg("sort", args, 0, "array")?;
 
-    let mut elements: Vec<serde_json::Value> = arr.iter().cloned().collect();
+    let mut elements: Vec<Value> = arr.iter().cloned().collect();
 
-    // Sort the JSON values directly
+    // Sort the values
     elements.sort_by(|a, b| match (a, b) {
-        (serde_json::Value::Number(x), serde_json::Value::Number(y)) => {
-            // Compare numbers
-            x.as_f64()
-                .partial_cmp(&y.as_f64())
-                .unwrap_or(std::cmp::Ordering::Equal)
+        (Value::Integer(x), Value::Integer(y)) => x.cmp(y),
+        (Value::Float(x), Value::Float(y)) => {
+            x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
         }
-        (serde_json::Value::String(x), serde_json::Value::String(y)) => x.cmp(y),
+        (Value::Text(x), Value::Text(y)) => x.cmp(y),
         _ => std::cmp::Ordering::Equal,
     });
 
@@ -120,7 +118,7 @@ pub fn reverse(
     check_arg_count("reverse", args, 1)?;
     let arr = get_array_arg("reverse", args, 0, "array")?;
 
-    let mut elements: Vec<serde_json::Value> = arr.iter().cloned().collect();
+    let mut elements: Vec<Value> = arr.iter().cloned().collect();
     elements.reverse();
 
     Ok(Value::Array(nebula_value::Array::from_vec(elements)))

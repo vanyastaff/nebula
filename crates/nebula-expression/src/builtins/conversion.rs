@@ -5,7 +5,7 @@ use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
 use nebula_error::NebulaError;
-use nebula_value::Value;
+use nebula_value::{Value, JsonValueExt};
 
 /// Convert value to string
 pub fn to_string(
@@ -76,7 +76,6 @@ pub fn parse_json(
         .as_str()
         .ok_or_else(|| NebulaError::expression_type_error("string", args[0].kind().name()))?;
 
-    use nebula_value::JsonValueExt;
     let json: serde_json::Value = serde_json::from_str(json_str)
         .map_err(|e| NebulaError::expression_eval_error(format!("Failed to parse JSON: {}", e)))?;
 

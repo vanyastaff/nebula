@@ -152,9 +152,8 @@ impl Evaluator {
                     .map(|e| self.eval_with_depth(e, context, depth + 1))
                     .collect();
                 let values = values?;
-                // Optimize: collect directly into Vec and convert once
-                let json_values: Vec<_> = values.into_iter().map(|v| v.to_json()).collect();
-                Ok(Value::Array(nebula_value::Array::from_vec(json_values)))
+                // Collect directly into Vec
+                Ok(Value::Array(nebula_value::Array::from_vec(values)))
             }
 
             Expr::Object(pairs) => {
@@ -459,7 +458,7 @@ impl Evaluator {
                 let json_val = o.get(property).ok_or_else(|| {
                     NebulaError::expression_eval_error(format!("Property '{}' not found", property))
                 })?;
-                Ok(json_val.to_nebula_value_or_null())
+                Ok(json_val.clone())
             }
             _ => Err(NebulaError::expression_type_error(
                 "object",
@@ -486,7 +485,7 @@ impl Evaluator {
                 let json_val = arr.get(actual_idx as usize).ok_or_else(|| {
                     NebulaError::expression_index_out_of_bounds(actual_idx as usize, len as usize)
                 })?;
-                Ok(json_val.to_nebula_value_or_null())
+                Ok(json_val.clone())
             }
             Value::Object(o) => {
                 let key = index.as_str().ok_or_else(|| {
@@ -495,7 +494,7 @@ impl Evaluator {
                 let json_val = o.get(key).ok_or_else(|| {
                     NebulaError::expression_eval_error(format!("Key '{}' not found", key))
                 })?;
-                Ok(json_val.to_nebula_value_or_null())
+                Ok(json_val.clone())
             }
             _ => Err(NebulaError::expression_type_error(
                 "array or object",

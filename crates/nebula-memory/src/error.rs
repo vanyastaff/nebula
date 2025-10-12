@@ -272,6 +272,34 @@ impl MemoryError {
         Self::invalid_input(reason)
     }
 
+    /// Creates an invalid index error
+    pub fn invalid_index(index: usize, max: usize) -> Self {
+        Self::new(MemoryErrorKind::InvalidState {
+            reason: format!("invalid index {} (max: {})", index, max),
+        })
+    }
+
+    /// Creates a decompression failed error
+    pub fn decompression_failed(reason: impl Into<String>) -> Self {
+        Self::new(MemoryErrorKind::InvalidState {
+            reason: format!("decompression failed: {}", reason.into()),
+        })
+    }
+
+    /// Creates a monitor error
+    pub fn monitor_error(reason: impl Into<String>) -> Self {
+        Self::new(MemoryErrorKind::InvalidState {
+            reason: format!("monitor error: {}", reason.into()),
+        })
+    }
+
+    /// Creates a not supported error
+    pub fn not_supported(operation: impl Into<String>) -> Self {
+        Self::new(MemoryErrorKind::InvalidState {
+            reason: format!("operation not supported: {}", operation.into()),
+        })
+    }
+
     /// Creates an out of memory error
     pub fn out_of_memory(size: usize, align: usize) -> Self {
         Self::allocation_failed(size, align)

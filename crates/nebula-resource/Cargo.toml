@@ -102,7 +102,7 @@ redis = { version = "0.24", features = ["tokio-comp", "connection-manager"], opt
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream", "cookies"], default-features = false, optional = true }
 
 # Message queue
-rdkafka = { version = "0.36", features = ["tokio"], optional = true }
+rdkafka = { version = "0.38", features = ["tokio"], optional = true }
 
 # Resource pooling (custom implementation)
 # Note: deadpool and bb8 removed - we use custom pool implementation
