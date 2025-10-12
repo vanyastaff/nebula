@@ -148,19 +148,19 @@ pub struct ResilienceManager {
     circuit_breakers: Arc<RwLock<HashMap<String, Arc<CircuitBreaker>>>>,
     /// Bulkheads per service
     bulkheads: Arc<RwLock<HashMap<String, Arc<Bulkhead>>>>,
-    /// Default policy for unregistered services
-    default_policy: ResiliencePolicy,
+    /// Default policy for unregistered services (Arc for cheap cloning)
+    default_policy: Arc<ResiliencePolicy>,
 }
 
 impl ResilienceManager {
     /// Create new resilience manager with default policy
-    #[must_use] 
+    #[must_use]
     pub fn new(default_policy: ResiliencePolicy) -> Self {
         Self {
             policies: Arc::new(RwLock::new(HashMap::new())),
             circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
             bulkheads: Arc::new(RwLock::new(HashMap::new())),
-            default_policy,
+            default_policy: Arc::new(default_policy),
         }
     }
 
@@ -240,10 +240,13 @@ impl ResilienceManager {
     }
 
     /// Get policy for service (or default)
-    async fn get_policy(&self, service: &str) -> ResiliencePolicy {
+    ///
+    /// Returns Arc for cheap cloning - no deep copy of policy data
+    async fn get_policy(&self, service: &str) -> Arc<ResiliencePolicy> {
         let policies = self.policies.read().await;
         policies
-            .get(service).map_or_else(|| self.default_policy.clone(), |p| (**p).clone())
+            .get(service)
+            .map_or_else(|| Arc::clone(&self.default_policy), Arc::clone)
     }
 
     /// Core execution logic with proper composition and optimized locking
