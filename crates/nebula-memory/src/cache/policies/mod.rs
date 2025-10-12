@@ -83,8 +83,8 @@ mod tests {
 
         #[cfg(feature = "std")]
         {
-            let ttl = TtlPolicy::<String>::new(std::time::Duration::from_secs(60));
-            assert_eq!(ttl.name(), "TTL");
+            let ttl: TtlPolicy<String> = TtlPolicy::new(std::time::Duration::from_secs(60));
+            assert_eq!(<TtlPolicy<String> as EvictionPolicy<String, ()>>::name(&ttl), "TTL");
         }
     }
 }

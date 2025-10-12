@@ -353,13 +353,15 @@ mod tests {
         {
             let mut parent_guard = parent.lock();
             let obj = parent_guard.get().unwrap();
-            assert_eq!(obj.value, 0); // Reset
+            assert_eq!((*obj).value, 0); // Reset
             assert!(!obj.is_borrowed());
         }
 
         // Stats should show activity
-        let guard = parent.lock();
-        let stats = (&*guard).hierarchy_stats();
-        assert_eq!(stats.total_borrowed, 0);
+        {
+            let guard = parent.lock();
+            let stats = guard.hierarchy_stats();
+            assert_eq!(stats.total_borrowed, 0);
+        }
     }
 }

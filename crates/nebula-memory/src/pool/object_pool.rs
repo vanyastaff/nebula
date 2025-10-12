@@ -484,8 +484,8 @@ mod tests {
 
         // Get object
         let mut obj = pool.get().unwrap();
-        assert_eq!(obj.value, 0); // Should be reset
-        obj.value = 100;
+        assert_eq!((*obj).value, 0); // Should be reset
+        (*obj).value = 100;
 
         // Return happens on drop
         drop(obj);

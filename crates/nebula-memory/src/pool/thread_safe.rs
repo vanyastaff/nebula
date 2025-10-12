@@ -550,7 +550,7 @@ mod tests {
 
         let handle = thread::spawn(move || {
             let mut obj = pool2.get().unwrap();
-            obj.value = 100;
+            (*obj).value = 100;
         });
 
         handle.join().unwrap();

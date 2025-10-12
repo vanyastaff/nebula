@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn test_ttl_policy() {
-        let mut policy = TtlPolicy::<String>::new(Duration::from_millis(100));
+        let mut policy: TtlPolicy<String> = TtlPolicy::new(Duration::from_millis(100));
 
         // Insert some keys
         let entry = CacheEntry::new(42);
@@ -193,8 +193,10 @@ mod tests {
         thread::sleep(Duration::from_millis(150));
 
         // The expired key should be key1
+        let key1_str = "key1".to_string();
+        let key2_str = "key2".to_string();
         let entries: Vec<(&String, &CacheEntry<i32>)> =
-            vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)];
+            vec![(&key1_str, &entry), (&key2_str, &entry)];
         let victim = policy.as_victim_selector().select_victim(&entries);
 
         assert_eq!(victim, Some("key1".to_string()));
@@ -203,17 +205,21 @@ mod tests {
         thread::sleep(Duration::from_millis(100));
 
         // Now both keys are expired, but key1 is older
+        let key1_str2 = "key1".to_string();
+        let key2_str2 = "key2".to_string();
         let entries: Vec<(&String, &CacheEntry<i32>)> =
-            vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)];
+            vec![(&key1_str2, &entry), (&key2_str2, &entry)];
         let victim = policy.as_victim_selector().select_victim(&entries);
 
         assert_eq!(victim, Some("key1".to_string()));
 
         // Remove key1
-        policy.record_removal(&"key1".to_string());
+        let key1 = "key1".to_string();
+        <TtlPolicy<String> as EvictionPolicy<String, i32>>::record_removal(&mut policy, &key1);
 
         // Now only key2 is left and it's expired
-        let entries: Vec<(&String, &CacheEntry<i32>)> = vec![(&"key2".to_string(), &entry)];
+        let key2_only = "key2".to_string();
+        let entries: Vec<(&String, &CacheEntry<i32>)> = vec![(&key2_only, &entry)];
         let victim = policy.as_victim_selector().select_victim(&entries);
 
         assert_eq!(victim, Some("key2".to_string()));
@@ -221,7 +227,7 @@ mod tests {
 
     #[test]
     fn test_ttl_fallback() {
-        let mut policy = TtlPolicy::<String>::new(Duration::from_secs(1));
+        let mut policy: TtlPolicy<String> = TtlPolicy::new(Duration::from_secs(1));
 
         // Insert some keys
         let entry = CacheEntry::new(42);
@@ -229,11 +235,14 @@ mod tests {
         policy.record_insertion(&"key2".to_string(), &entry);
 
         // Access key1 to make it more recently used
-        policy.record_access(&"key1".to_string());
+        let key1 = "key1".to_string();
+        <TtlPolicy<String> as EvictionPolicy<String, i32>>::record_access(&mut policy, &key1);
 
         // No keys have expired, fallback returns None (fallback_policy was removed)
+        let key1_fb = "key1".to_string();
+        let key2_fb = "key2".to_string();
         let entries: Vec<(&String, &CacheEntry<i32>)> =
-            vec![(&"key1".to_string(), &entry), (&"key2".to_string(), &entry)];
+            vec![(&key1_fb, &entry), (&key2_fb, &entry)];
         let victim = policy.as_victim_selector().select_victim(&entries);
 
         // TODO: Re-enable fallback policy support
