@@ -110,33 +110,32 @@ macro_rules! local_alloc {
     ($value:expr) => {{ $crate::arena::alloc_local($value).expect("Local arena allocation failed") }};
 }
 
-/// Create a typed arena and allocate values
+/// Create a typed arena with pre-allocated values (scoped API)
 ///
 /// # Examples
 /// ```
 /// use nebula_memory::typed_arena;
 ///
-/// let (arena, values) = typed_arena! {
-///     u32 => [1, 2, 3, 4, 5]
+/// typed_arena! {
+///     u32 => [1, 2, 3, 4, 5] => |arena, values| {
+///         assert_eq!(values.len(), 5);
+///         for (i, &val) in values.iter().enumerate() {
+///             assert_eq!(**val, i as u32 + 1);
+///         }
+///     }
 /// };
-///
-/// assert_eq!(values.len(), 5);
-/// for (i, &val) in values.iter().enumerate() {
-///     assert_eq!(**val, i as u32 + 1);
-/// }
 /// ```
+///
+/// The closure receives the arena and pre-allocated values.
+/// References are valid only within the closure scope.
 #[macro_export]
 macro_rules! typed_arena {
-    ($type:ty => [$($value:expr),* $(,)?]) => {{
-        let arena = Box::new($crate::arena::TypedArena::<$type>::new());
-        let arena_ptr = Box::leak(arena);
-        let values = vec![
-            $(arena_ptr.alloc($value).expect("TypedArena allocation failed")),*
+    ($type:ty => [$($value:expr),* $(,)?] => |$arena:ident, $values:ident| $body:block) => {{
+        let $arena = $crate::arena::TypedArena::<$type>::new();
+        let $values = vec![
+            $($arena.alloc($value).expect("TypedArena allocation failed")),*
         ];
-        // SAFETY: We're returning the arena as a Box, reconstructing from the leaked pointer
-        // The caller owns both the arena and the references, which have compatible lifetimes
-        let arena = unsafe { Box::from_raw(arena_ptr) };
-        (*arena, values)
+        $body
     }};
 }
 
@@ -483,14 +482,18 @@ mod tests {
 
     #[test]
     fn test_typed_arena_macro() {
-        let (arena, values) = typed_arena! {
-            String => ["one".to_string(), "two".to_string(), "three".to_string()]
-        };
+        typed_arena! {
+            String => ["one".to_string(), "two".to_string(), "three".to_string()] => |arena, values| {
+                assert_eq!(values.len(), 3);
+                assert_eq!(&**values[0], "one");
+                assert_eq!(&**values[1], "two");
+                assert_eq!(&**values[2], "three");
 
-        assert_eq!(values.len(), 3);
-        assert_eq!(&**values[0], "one");
-        assert_eq!(&**values[1], "two");
-        assert_eq!(&**values[2], "three");
+                // Arena is still accessible within the scope
+                let extra = arena.alloc("extra".to_string()).unwrap();
+                assert_eq!(&**extra, "extra");
+            }
+        }
     }
 
     #[test]

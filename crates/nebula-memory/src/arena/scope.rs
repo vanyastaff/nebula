@@ -294,8 +294,8 @@ mod tests {
     #[test]
     fn test_arena_guard_with_early_return() {
         fn allocate_temp(arena: &mut Arena, should_fail: bool) -> Result<i32, &'static str> {
-            let _guard = ArenaGuard::new(arena);
-            let temp = arena.alloc(42).unwrap();
+            let mut guard = ArenaGuard::new(arena);
+            let temp = guard.arena_mut().alloc(42).unwrap();
 
             if should_fail {
                 return Err("failed");

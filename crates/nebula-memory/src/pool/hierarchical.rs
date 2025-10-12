@@ -302,12 +302,19 @@ impl<T: Poolable> Drop for HierarchicalPooledValue<T> {
 unsafe impl<T: Poolable + Send> Send for HierarchicalPooledValue<T> {}
 
 /// Extension trait for Arc<Mutex<HierarchicalPool<T>>>
+///
+/// This trait provides ergonomic methods that hide the Arc<Mutex<>> complexity
+/// from users, making the API cleaner and preventing common lifetime issues.
 pub trait HierarchicalPoolExt<T: Poolable> {
     /// Create a child pool
     fn create_child(&self, capacity: usize) -> Arc<Mutex<HierarchicalPool<T>>>;
 
     /// Get object from pool
     fn get(&self) -> MemoryResult<HierarchicalPooledValue<T>>;
+
+    /// Get statistics for entire hierarchy
+    #[cfg(feature = "stats")]
+    fn hierarchy_stats(&self) -> HierarchyStats;
 }
 
 impl<T: Poolable + 'static> HierarchicalPoolExt<T> for Arc<Mutex<HierarchicalPool<T>>> {
@@ -317,6 +324,11 @@ impl<T: Poolable + 'static> HierarchicalPoolExt<T> for Arc<Mutex<HierarchicalPoo
 
     fn get(&self) -> MemoryResult<HierarchicalPooledValue<T>> {
         self.lock().get()
+    }
+
+    #[cfg(feature = "stats")]
+    fn hierarchy_stats(&self) -> HierarchyStats {
+        self.lock().hierarchy_stats()
     }
 }
 
@@ -358,9 +370,10 @@ mod tests {
         }
 
         // Stats should show activity
+        #[cfg(feature = "stats")]
         {
-            let guard = parent.lock();
-            let stats = guard.hierarchy_stats();
+            use super::HierarchicalPoolExt;
+            let stats = parent.hierarchy_stats();
             assert_eq!(stats.total_borrowed, 0);
         }
     }
