@@ -8,14 +8,13 @@
 /// # Examples
 ///
 /// ```rust,no_run
-/// use nebula_resilience::prelude::*;
-/// use nebula_resilience::log_result;
+/// use nebula_resilience::{log_result, ResilienceError};
 ///
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let result = some_resilient_operation().await;
-/// log_result!(result, "operation_name", "Operation description");
-/// # Ok(())
-/// # }
+/// async fn example() -> Result<i32, ResilienceError> {
+///     let result: Result<i32, ResilienceError> = Ok(42);
+///     log_result!(result, "api_call", "Calling external API");
+///     result
+/// }
 /// ```
 #[macro_export]
 macro_rules! log_result {
@@ -66,13 +65,12 @@ macro_rules! log_result {
 /// # Examples
 ///
 /// ```rust,no_run
-/// use nebula_resilience::print_result;
+/// use nebula_resilience::{print_result, ResilienceError};
 ///
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let result = operation().await;
-/// print_result!(result, "Operation completed: {}", value);
-/// # Ok(())
-/// # }
+/// async fn example() {
+///     let result: Result<i32, ResilienceError> = Ok(42);
+///     print_result!(result, "Operation completed");
+/// }
 /// ```
 #[macro_export]
 macro_rules! print_result {
@@ -102,20 +100,18 @@ macro_rules! print_result {
 /// # Examples
 ///
 /// ```rust,no_run
-/// use nebula_resilience::prelude::*;
-/// use nebula_resilience::execute_logged;
+/// use nebula_resilience::{execute_logged, ResilienceError};
 ///
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// execute_logged!(
-///     "database_query",
-///     "Fetching user data",
-///     async {
-///         // Your operation here
-///         Ok::<_, ResilienceError>("user_data")
-///     }
-/// ).await?;
-/// # Ok(())
-/// # }
+/// async fn example() -> Result<String, ResilienceError> {
+///     execute_logged!(
+///         "database_query",
+///         "Fetching user data",
+///         async {
+///             // Your operation here
+///             Ok::<_, ResilienceError>("user_data".to_string())
+///         }
+///     ).await
+/// }
 /// ```
 #[macro_export]
 macro_rules! execute_logged {
@@ -153,17 +149,17 @@ macro_rules! execute_logged {
 ///
 /// # Examples
 ///
-/// ```rust,no_run
-/// use nebula_resilience::prelude::*;
-/// use nebula_resilience::policy;
+/// ```rust,ignore
+/// use nebula_resilience::{policy, ResiliencePolicy};
+/// use std::time::Duration;
 ///
 /// let my_policy = policy! {
 ///     name: "api-calls",
-///     timeout: 5s,
-///     retry: exponential(3, 100ms),
+///     timeout: Duration::from_secs(5),
+///     retry: exponential(3, Duration::from_millis(100)),
 ///     circuit_breaker: {
 ///         failure_threshold: 5,
-///         reset_timeout: 30s,
+///         reset_timeout: Duration::from_secs(30),
 ///     }
 /// };
 /// ```

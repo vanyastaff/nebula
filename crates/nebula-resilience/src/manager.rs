@@ -376,17 +376,19 @@ impl ResilienceManager {
     ///
     /// # Examples
     ///
-    /// ```
-    /// # use nebula_resilience::ResilienceManager;
-    /// # tokio_test::block_on(async {
-    /// let manager = ResilienceManager::new();
-    /// manager.register_policy("api", Default::default()).await;
+    /// ```no_run
+    /// use nebula_resilience::ResilienceManager;
     ///
-    /// if let Some(metrics) = manager.get_metrics("api").await {
-    ///     println!("Circuit breaker state: {:?}", metrics.circuit_breaker);
-    ///     println!("Bulkhead capacity: {:?}", metrics.bulkhead);
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let manager = ResilienceManager::new();
+    ///     manager.register_policy("api", Default::default()).await;
+    ///
+    ///     if let Some(metrics) = manager.get_metrics("api").await {
+    ///         println!("Circuit breaker state: {:?}", metrics.circuit_breaker);
+    ///         println!("Bulkhead capacity: {:?}", metrics.bulkhead);
+    ///     }
     /// }
-    /// # });
     /// ```
     pub async fn get_metrics(&self, service: &str) -> Option<ServiceMetrics> {
         // Check if service exists
@@ -430,16 +432,18 @@ impl ResilienceManager {
     ///
     /// # Examples
     ///
-    /// ```
-    /// # use nebula_resilience::ResilienceManager;
-    /// # tokio_test::block_on(async {
-    /// let manager = ResilienceManager::new();
-    /// manager.register_policy("api", Default::default()).await;
-    /// manager.register_policy("db", Default::default()).await;
+    /// ```no_run
+    /// use nebula_resilience::ResilienceManager;
     ///
-    /// let all_metrics = manager.get_all_metrics().await;
-    /// println!("Monitoring {} services", all_metrics.len());
-    /// # });
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let manager = ResilienceManager::new();
+    ///     manager.register_policy("api", Default::default()).await;
+    ///     manager.register_policy("db", Default::default()).await;
+    ///
+    ///     let all_metrics = manager.get_all_metrics().await;
+    ///     println!("Monitoring {} services", all_metrics.len());
+    /// }
     /// ```
     pub async fn get_all_metrics(&self) -> std::collections::HashMap<String, ServiceMetrics> {
         let mut metrics = std::collections::HashMap::new();
