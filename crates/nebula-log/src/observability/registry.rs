@@ -221,8 +221,8 @@ pub fn hook_count() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Serialize all tests to prevent interference via global state
     static TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -337,7 +337,10 @@ mod tests {
         }
 
         // At least 10 events should have been processed (could be more if other hooks active)
-        assert!(count.load(Ordering::SeqCst) >= 10, "Expected at least 10 events");
+        assert!(
+            count.load(Ordering::SeqCst) >= 10,
+            "Expected at least 10 events"
+        );
 
         // Clean up
         shutdown_hooks();

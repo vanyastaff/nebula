@@ -8,6 +8,10 @@
 pub mod core;
 pub mod kinds;
 pub mod macros;
+pub mod optimized;
+pub mod size_analysis;
+
+
 
 
 
@@ -41,6 +45,8 @@ pub mod prelude {
 
 // Public re-export of thiserror::Error at the crate root for convenience
 pub use thiserror::Error;
+
+
 
 
 

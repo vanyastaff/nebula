@@ -10,6 +10,7 @@ A simple, fast, and beautiful logging library for Rust built on top of the `trac
 - 🔧 **Easy configuration** - fluent API for quick setup
 - 📊 **Multiple formats** - Pretty, Compact, and JSON output
 - 🎯 **Structured logging** - full tracing support with spans and fields
+- 📈 **Unified Observability** - Events, hooks, and metrics integration (NEW!)
 
 ## Quick Start
 

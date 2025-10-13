@@ -63,8 +63,8 @@ pub mod prelude {
 
     // Observability hooks and events
     pub use crate::observability::{
-        emit_event, register_hook, LoggingHook, ObservabilityEvent, ObservabilityHook,
-        OperationCompleted, OperationFailed, OperationStarted, OperationTracker,
+        LoggingHook, ObservabilityEvent, ObservabilityHook, OperationCompleted, OperationFailed,
+        OperationStarted, OperationTracker, emit_event, register_hook,
     };
 
     #[cfg(feature = "observability")]

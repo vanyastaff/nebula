@@ -19,6 +19,12 @@ async-trait = { workspace = true }
 anyhow = { version = "1.0.99", features = ["backtrace"] }
 thiserror = { version = "2.0.16" }
 
+# Memory optimizations
+smol_str = { version = "0.2", features = ["serde"] }
+smallvec = { version = "1.11", features = ["serde"] }
+bitflags = { version = "2.4", features = ["serde"] }
+static_assertions = "1.1"
+
 # Random number generation
 rand = "0.8"
 
@@ -42,6 +48,7 @@ tokio-test = "0.4"
 
 # Benchmarking
 criterion = { version = "0.7", features = ["html_reports"] }
+ctor = "0.2"
 
 # Use workspace lints configuration
 [lints]
@@ -49,4 +56,8 @@ workspace = true
 
 [[bench]]
 name = "error_creation"
+harness = false
+
+[[bench]]
+name = "optimized_comparison"
 harness = false

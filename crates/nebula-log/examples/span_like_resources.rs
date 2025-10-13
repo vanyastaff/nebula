@@ -8,9 +8,7 @@ use tracing::Level;
 
 fn main() {
     // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     println!("=== Span-Like Nested Resources Example ===\n");
 
@@ -38,23 +36,20 @@ fn main() {
         }
     }
 
-    register_hook(std::sync::Arc::new(ResourceAwareAdapter::new(
-        WebhookHook,
-    )));
+    register_hook(std::sync::Arc::new(ResourceAwareAdapter::new(WebhookHook)));
 
     println!("1. No context - no resources:");
     emit_event(&TestEvent("top_level".to_string()));
 
     println!("\n2. Execution context (like opening a tracing span):");
     {
-        let exec = ExecutionContext::new("exec-001", "workflow-order", "tenant-123")
-            .with_resource(
-                "LoggerResource",
-                LoggerResource::new()
-                    .with_sentry_dsn("https://execution@sentry.io/project")
-                    .with_tag("execution_id", "exec-001")
-                    .with_tag("workflow_id", "workflow-order"),
-            );
+        let exec = ExecutionContext::new("exec-001", "workflow-order", "tenant-123").with_resource(
+            "LoggerResource",
+            LoggerResource::new()
+                .with_sentry_dsn("https://execution@sentry.io/project")
+                .with_tag("execution_id", "exec-001")
+                .with_tag("workflow_id", "workflow-order"),
+        );
 
         let _exec_guard = exec.enter(); // ← Opens execution "span"
 
@@ -120,7 +115,8 @@ fn main() {
     println!("✅ Multiple actions in same node? Just open/close node spans!");
 
     println!("\n\n=== Your Use Case: Node with Multiple Actions ===");
-    println!("
+    println!(
+        "
 // Open node span ONCE
 let node = NodeContext::new(\"payment-node\", \"\")
     .with_resource(\"LoggerResource\", node_level_logger); // ← For ALL actions
@@ -152,7 +148,8 @@ let _node_guard = node.enter();
 
 // Back to node level
 emit_event(&NodeComplete);
-");
+"
+    );
 
     shutdown_hooks();
 }

@@ -58,38 +58,33 @@ pub fn get_current_logger_resource() -> Option<LoggerResource> {
     let mut found_any = false;
 
     // 1. Merge from Global context (lowest priority)
-    if let Some(global) = GlobalContext::current() {
-        if let Some(resource) = get_resource_from_any(&global.as_ref()) {
-            base = merge_logger_resources(base, resource);
-            found_any = true;
-        }
+    if let Some(global) = GlobalContext::current()
+        && let Some(resource) = get_resource_from_any(&global.as_ref())
+    {
+        base = merge_logger_resources(base, resource);
+        found_any = true;
     }
 
     // 2. Merge from Execution context (medium priority)
-    if let Some(exec) = ExecutionContext::current() {
-        if let Some(logger) = exec
+    if let Some(exec) = ExecutionContext::current()
+        && let Some(logger) = exec
             .resources
             .get("LoggerResource")
             .and_then(|r| r.clone().downcast::<LoggerResource>().ok())
-        {
-            base = merge_logger_resources(base, (*logger).clone());
-            found_any = true;
-        }
+    {
+        base = merge_logger_resources(base, (*logger).clone());
+        found_any = true;
     }
 
     // 3. Merge from Node context (highest priority)
-    if let Some(node) = NodeContext::current() {
-        if let Some(logger) = node.get_resource::<LoggerResource>("LoggerResource") {
-            base = merge_logger_resources(base, (*logger).clone());
-            found_any = true;
-        }
+    if let Some(node) = NodeContext::current()
+        && let Some(logger) = node.get_resource::<LoggerResource>("LoggerResource")
+    {
+        base = merge_logger_resources(base, (*logger).clone());
+        found_any = true;
     }
 
-    if found_any {
-        Some(base)
-    } else {
-        None
-    }
+    if found_any { Some(base) } else { None }
 }
 
 /// Helper to get LoggerResource from GlobalContext (which doesn't have resources field yet)
@@ -123,10 +118,7 @@ fn merge_logger_resources(base: LoggerResource, override_with: LoggerResource) -
     }
 
     // Merge log level (override if not default)
-    if !matches!(
-        override_with.log_level,
-        super::resources::LogLevel::Info
-    ) {
+    if !matches!(override_with.log_level, super::resources::LogLevel::Info) {
         result.log_level = override_with.log_level;
     }
 
@@ -136,11 +128,7 @@ fn merge_logger_resources(base: LoggerResource, override_with: LoggerResource) -
     // Merge notification preferences
     if override_with.notification_prefs.email_enabled {
         result.notification_prefs.email_enabled = true;
-        if !override_with
-            .notification_prefs
-            .email_addresses
-            .is_empty()
-        {
+        if !override_with.notification_prefs.email_addresses.is_empty() {
             result.notification_prefs.email_addresses =
                 override_with.notification_prefs.email_addresses;
         }
@@ -197,16 +185,10 @@ mod tests {
         let merged = get_current_logger_resource().unwrap();
 
         // Should have Sentry from Execution
-        assert_eq!(
-            merged.sentry_dsn(),
-            Some("https://exec@sentry.io/project")
-        );
+        assert_eq!(merged.sentry_dsn(), Some("https://exec@sentry.io/project"));
 
         // Should have webhook from Node
-        assert_eq!(
-            merged.webhook_url(),
-            Some("https://hooks.slack.com/...")
-        );
+        assert_eq!(merged.webhook_url(), Some("https://hooks.slack.com/..."));
 
         // Should have both tags (accumulated)
         assert_eq!(merged.tags.len(), 2);

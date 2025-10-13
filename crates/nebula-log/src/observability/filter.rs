@@ -64,8 +64,16 @@ impl EventFilter {
         Self::Or(filters)
     }
 
-    /// Invert this filter
-    pub fn not(self) -> Self {
+    /// Invert this filter (NOT logic)
+    ///
+    /// # Example
+    /// ```
+    /// use nebula_log::observability::EventFilter;
+    ///
+    /// let filter = EventFilter::prefix("workflow.").negate();
+    /// // Now matches everything EXCEPT workflow.* events
+    /// ```
+    pub fn negate(self) -> Self {
         Self::Not(Box::new(self))
     }
 
@@ -232,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_filter_not() {
-        let filter = EventFilter::prefix("workflow.").not();
+        let filter = EventFilter::prefix("workflow.").negate();
 
         let matching = TestEvent {
             name: "node.started".to_string(),

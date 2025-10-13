@@ -7,11 +7,11 @@
 //! 4. Track operation lifecycle
 
 use nebula_log::observability::{
-    emit_event, register_hook, LoggingHook, ObservabilityEvent, ObservabilityHook,
-    OperationCompleted, OperationFailed, OperationStarted, OperationTracker,
+    LoggingHook, ObservabilityEvent, ObservabilityHook, OperationCompleted, OperationFailed,
+    OperationStarted, OperationTracker, emit_event, register_hook,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 // =============================================================================
@@ -70,7 +70,11 @@ struct CountingHook {
 impl ObservabilityHook for CountingHook {
     fn on_event(&self, event: &dyn ObservabilityEvent) {
         self.count.fetch_add(1, Ordering::Relaxed);
-        println!("  [CountingHook] Event #{}: {}", self.count.load(Ordering::Relaxed), event.name());
+        println!(
+            "  [CountingHook] Event #{}: {}",
+            self.count.load(Ordering::Relaxed),
+            event.name()
+        );
     }
 
     fn initialize(&self) {
@@ -78,7 +82,10 @@ impl ObservabilityHook for CountingHook {
     }
 
     fn shutdown(&self) {
-        println!("  [CountingHook] Shutdown (total events: {})", self.count.load(Ordering::Relaxed));
+        println!(
+            "  [CountingHook] Shutdown (total events: {})",
+            self.count.load(Ordering::Relaxed)
+        );
     }
 }
 
@@ -213,8 +220,7 @@ fn demo_metrics_integration() {
 
 fn main() {
     // Initialize logging
-    nebula_log::init_with(nebula_log::Config::development())
-        .expect("failed to initialize logging");
+    nebula_log::init_with(nebula_log::Config::development()).expect("failed to initialize logging");
 
     println!("=== Nebula Observability Hooks Demo ===\n");
 

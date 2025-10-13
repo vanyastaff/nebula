@@ -226,7 +226,10 @@ mod tests {
             .with_sampling(0.5);
 
         assert_eq!(resource.sentry_dsn(), Some("https://key@sentry.io/project"));
-        assert_eq!(resource.webhook_url(), Some("https://hooks.slack.com/services/test"));
+        assert_eq!(
+            resource.webhook_url(),
+            Some("https://hooks.slack.com/services/test")
+        );
         assert!(matches!(resource.log_level, LogLevel::Debug));
         assert_eq!(resource.tags.len(), 1);
         assert!(resource.sampling_enabled);

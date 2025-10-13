@@ -922,6 +922,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctor"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32a2785755761f3ddc1492979ce1e48d2c00d09311c39e4466429188f3dd6501"
+dependencies = [
+ "quote",
+ "syn 2.0.106",
+]
+
+[[package]]
 name = "darling"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2802,12 +2812,17 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bincode",
+ "bitflags 2.9.4",
  "chrono",
  "criterion 0.7.0",
+ "ctor",
  "pretty_assertions",
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "smallvec",
+ "smol_str",
+ "static_assertions",
  "thiserror 2.0.17",
  "tokio",
  "tokio-test",
@@ -4804,6 +4819,15 @@ dependencies = [
  "serde",
  "static_assertions",
  "version_check",
+]
+
+[[package]]
+name = "smol_str"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

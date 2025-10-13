@@ -13,9 +13,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 thread_local! {
-    static GLOBAL_CONTEXT: RefCell<Option<Arc<GlobalContext>>> = RefCell::new(None);
-    static EXECUTION_CONTEXT: RefCell<Option<Arc<ExecutionContext>>> = RefCell::new(None);
-    static NODE_CONTEXT: RefCell<Option<Arc<NodeContext>>> = RefCell::new(None);
+    static GLOBAL_CONTEXT: RefCell<Option<Arc<GlobalContext>>> = const { RefCell::new(None) };
+    static EXECUTION_CONTEXT: RefCell<Option<Arc<ExecutionContext>>> = const { RefCell::new(None) };
+    static NODE_CONTEXT: RefCell<Option<Arc<NodeContext>>> = const { RefCell::new(None) };
 }
 
 /// Global application context
@@ -36,7 +36,11 @@ pub struct GlobalContext {
 
 impl GlobalContext {
     /// Create a new global context
-    pub fn new(service_name: impl Into<String>, version: impl Into<String>, environment: impl Into<String>) -> Self {
+    pub fn new(
+        service_name: impl Into<String>,
+        version: impl Into<String>,
+        environment: impl Into<String>,
+    ) -> Self {
         Self {
             service_name: service_name.into(),
             version: version.into(),
@@ -136,9 +140,7 @@ impl ExecutionContext {
     ///
     /// When the guard is dropped, the previous context is restored.
     pub fn enter(self) -> ExecutionGuard {
-        let previous = EXECUTION_CONTEXT.with(|ctx| {
-            ctx.borrow_mut().replace(Arc::new(self))
-        });
+        let previous = EXECUTION_CONTEXT.with(|ctx| ctx.borrow_mut().replace(Arc::new(self)));
         ExecutionGuard { previous }
     }
 }
@@ -204,7 +206,11 @@ impl NodeContext {
     }
 
     /// Add a resource to this context
-    pub fn with_resource<T: Any + Send + Sync>(mut self, key: impl Into<String>, resource: T) -> Self {
+    pub fn with_resource<T: Any + Send + Sync>(
+        mut self,
+        key: impl Into<String>,
+        resource: T,
+    ) -> Self {
         let resources = Arc::make_mut(&mut self.resources);
         resources.insert(key.into(), Arc::new(resource));
         self
@@ -212,11 +218,7 @@ impl NodeContext {
 
     /// Get a resource from this context
     pub fn get_resource<T: Any + Send + Sync>(&self, key: &str) -> Option<Arc<T>> {
-        self.resources
-            .get(key)?
-            .clone()
-            .downcast::<T>()
-            .ok()
+        self.resources.get(key)?.clone().downcast::<T>().ok()
     }
 
     /// Get the current node context
@@ -228,9 +230,7 @@ impl NodeContext {
     ///
     /// When the guard is dropped, the previous context is restored.
     pub fn enter(self) -> NodeGuard {
-        let previous = NODE_CONTEXT.with(|ctx| {
-            ctx.borrow_mut().replace(Arc::new(self))
-        });
+        let previous = NODE_CONTEXT.with(|ctx| ctx.borrow_mut().replace(Arc::new(self)));
         NodeGuard { previous }
     }
 }
@@ -287,8 +287,8 @@ mod tests {
 
     #[test]
     fn test_global_context() {
-        let ctx = GlobalContext::new("test-service", "1.0.0", "test")
-            .with_instance_id("instance-1");
+        let ctx =
+            GlobalContext::new("test-service", "1.0.0", "test").with_instance_id("instance-1");
 
         ctx.clone().set_current();
 
@@ -394,15 +394,19 @@ mod tests {
             secret: String,
         }
 
-        let ctx1 = NodeContext::new("node-1", "action-1")
-            .with_resource("SensitiveData", SensitiveData {
+        let ctx1 = NodeContext::new("node-1", "action-1").with_resource(
+            "SensitiveData",
+            SensitiveData {
                 secret: "secret-1".to_string(),
-            });
+            },
+        );
 
-        let ctx2 = NodeContext::new("node-2", "action-2")
-            .with_resource("SensitiveData", SensitiveData {
+        let ctx2 = NodeContext::new("node-2", "action-2").with_resource(
+            "SensitiveData",
+            SensitiveData {
                 secret: "secret-2".to_string(),
-            });
+            },
+        );
 
         // Resources should be isolated
         let res1 = ctx1.get_resource::<SensitiveData>("SensitiveData").unwrap();
@@ -412,6 +416,9 @@ mod tests {
         assert_eq!(res2.secret, "secret-2");
 
         // ctx1 should not have access to ctx2's resources
-        assert!(ctx1.get_resource::<SensitiveData>("DifferentResource").is_none());
+        assert!(
+            ctx1.get_resource::<SensitiveData>("DifferentResource")
+                .is_none()
+        );
     }
 }

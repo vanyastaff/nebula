@@ -35,11 +35,7 @@ impl ObservabilityEvent for WorkflowEvent {
 struct WebhookNotificationHook;
 
 impl ResourceAwareHook for WebhookNotificationHook {
-    fn on_event_with_context(
-        &self,
-        event: &dyn ObservabilityEvent,
-        ctx: Option<Arc<NodeContext>>,
-    ) {
+    fn on_event_with_context(&self, event: &dyn ObservabilityEvent, ctx: Option<Arc<NodeContext>>) {
         if let Some(ctx) = ctx {
             // Access LoggerResource from node context (if attached)
             if let Some(logger) = ctx.get_resource::<LoggerResource>("LoggerResource") {
@@ -80,18 +76,19 @@ impl ObservabilityHook for FilteredWorkflowHook {
 
 fn main() {
     // Initialize tracing for the logging hook
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     println!("=== Resource-Based Observability Example ===\n");
 
     // Step 1: Set up global context (application-wide)
     println!("1. Setting up global context...");
-    let global_ctx = GlobalContext::new("nebula-workflow", "0.1.0", "production")
-        .with_instance_id("worker-1");
+    let global_ctx =
+        GlobalContext::new("nebula-workflow", "0.1.0", "production").with_instance_id("worker-1");
     global_ctx.set_current();
-    println!("   ✓ Global context set: {} v{}\n", "nebula-workflow", "0.1.0");
+    println!(
+        "   ✓ Global context set: {} v{}\n",
+        "nebula-workflow", "0.1.0"
+    );
 
     // Step 2: Register observability hooks
     println!("2. Registering hooks...");
@@ -151,8 +148,8 @@ fn main() {
             .with_tag("tenant_id", "tenant-123");
 
         // Attach LoggerResource to node context (SECURE: scoped to this node only)
-        let node_ctx =
-            NodeContext::new("node-payment", "payment.process").with_resource("LoggerResource", logger);
+        let node_ctx = NodeContext::new("node-payment", "payment.process")
+            .with_resource("LoggerResource", logger);
 
         let _node_guard = node_ctx.enter();
 
@@ -170,8 +167,8 @@ fn main() {
             .with_webhook("https://different-webhook.com/tenant456")
             .with_tag("tenant_id", "tenant-456");
 
-        let node_ctx =
-            NodeContext::new("node-inventory", "inventory.check").with_resource("LoggerResource", logger);
+        let node_ctx = NodeContext::new("node-inventory", "inventory.check")
+            .with_resource("LoggerResource", logger);
 
         let _node_guard = node_ctx.enter();
 
