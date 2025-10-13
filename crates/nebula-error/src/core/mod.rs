@@ -8,13 +8,13 @@
 //! - [`conversion`](crate::core::conversion) - Error conversion utilities
 //! - [`retry`](crate::core::retry) - Retry strategies and policies
 
-pub mod constructors;
 pub mod context;
 pub mod conversion;
 pub mod error;
 pub mod result;
 pub mod retry;
 pub mod traits;
+
 
 // Re-export core types
 pub use context::{ErrorContext, ErrorContextBuilder};
@@ -23,3 +23,5 @@ pub use error::NebulaError;
 pub use result::{NebulaResultExt, Result, ResultExt};
 pub use retry::{RetryStrategy, Retryable, retry, retry_with_timeout};
 pub use traits::*;
+
+

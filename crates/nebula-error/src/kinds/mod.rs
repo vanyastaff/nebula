@@ -77,8 +77,9 @@ use crate::core::traits::{ErrorClassification, ErrorCode, RetryableError};
 
 /// Main error kind enum that categorizes all possible errors
 ///
-/// TODO(refactor): Consider splitting into more granular error hierarchies for better type safety
-/// TODO(feature): Add HTTP status code mapping for web API integration
+/// # Future Improvements
+/// - Consider V2 architecture with 4 consolidated categories
+/// - Add HTTP status code mapping for web API integration
 #[non_exhaustive]
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum ErrorKind {

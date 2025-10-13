@@ -27,14 +27,13 @@ use crate::kinds::ErrorKind;
 ///
 /// # Memory Layout
 /// The struct is designed to be ≤64 bytes for efficient stack handling:
-/// - ErrorKind (8 bytes pointer)
-/// - ErrorContext (8 bytes Option<Box>)  
+/// - `ErrorKind` (8 bytes pointer)
+/// - `ErrorContext` (8 bytes Option<Box>)  
 /// - Cow message (24 bytes on 64-bit)
 /// - Duration (16 bytes)
-/// - Static str (16 bytes)
 /// - Bool (1 byte) + padding
 ///
-/// Total: ~73 bytes (within L1 cache line)
+/// Total: ~57 bytes (within L1 cache line)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NebulaError {
     /// The specific kind/variant of error (boxed for smaller stack footprint)
@@ -104,7 +103,7 @@ impl NebulaError {
     }
 
     /// Add a static detail string to the error message
-    /// 
+    ///
     /// More efficient than `with_details` for static strings
     #[must_use]
     pub fn with_static_details(mut self, details: &'static str) -> Self {
@@ -781,4 +780,3 @@ mod tests {
         assert!(display.contains("[Retryable"));
     }
 }
-

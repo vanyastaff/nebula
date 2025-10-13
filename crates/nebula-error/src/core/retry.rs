@@ -9,9 +9,8 @@ use crate::core::NebulaError;
 
 /// Retry strategy configuration
 ///
-/// TODO(feature): Add support for custom backoff strategies (jittered, decorrelated)
-/// TODO(feature): Add circuit breaker pattern integration
-/// TODO(optimization): Consider making this a trait for extensibility
+/// Supports exponential backoff with jitter out of the box.
+/// For circuit breakers, see `nebula-resilience` crate.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct RetryStrategy {
     /// Maximum number of retry attempts
@@ -200,13 +199,13 @@ pub trait Retryable {
             match self.execute().await {
                 Ok(result) => return Ok(result),
                 Err(error) => {
-        // Check if we should retry
-        if !self.is_retryable_error(&error) {
-            last_error = Some(error);
-            break;
-        }
+                    // Check if we should retry
+                    if !self.is_retryable_error(&error) {
+                        last_error = Some(error);
+                        break;
+                    }
 
-        last_error = Some(error);
+                    last_error = Some(error);
 
                     // If this is the last attempt, don't sleep
                     if attempt + 1 >= strategy.max_attempts {

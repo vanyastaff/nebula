@@ -2,7 +2,7 @@
 // Run with: cargo bench
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use nebula_error::{ErrorContext, NebulaError, ErrorKind, kinds::ClientError};
+use nebula_error::{ErrorContext, ErrorKind, NebulaError, kinds::ClientError};
 use std::time::Duration;
 
 /// Benchmark creating basic error without context
@@ -144,7 +144,7 @@ fn bench_error_creation_static_vs_dynamic(c: &mut Criterion) {
                 ErrorKind::Client(ClientError::Validation {
                     message: "Invalid input".to_string(),
                 }),
-                "Invalid input"
+                "Invalid input",
             );
             black_box(error);
         });
@@ -171,7 +171,7 @@ fn bench_error_code_access(c: &mut Criterion) {
 
 /// Benchmark macro-based error creation
 fn bench_macro_error_creation(c: &mut Criterion) {
-    use nebula_error::{validation_error, internal_error, not_found_error};
+    use nebula_error::{internal_error, not_found_error, validation_error};
 
     c.bench_function("macro_validation_error", |b| {
         b.iter(|| {
@@ -197,12 +197,11 @@ fn bench_macro_error_creation(c: &mut Criterion) {
 
 /// Benchmark error serialization (for network transfer)
 fn bench_error_serialization(c: &mut Criterion) {
-    let error = NebulaError::validation("Invalid input")
-        .with_context(
-            ErrorContext::new("Processing request")
-                .with_user_id("user123")
-                .with_request_id("req456")
-        );
+    let error = NebulaError::validation("Invalid input").with_context(
+        ErrorContext::new("Processing request")
+            .with_user_id("user123")
+            .with_request_id("req456"),
+    );
 
     c.bench_function("error_serialization", |b| {
         b.iter(|| {
@@ -241,33 +240,37 @@ fn bench_error_memory_footprint(c: &mut Criterion) {
 /// Benchmark retry logic performance
 fn bench_retry_operations(c: &mut Criterion) {
     use nebula_error::{RetryStrategy, retry};
-    
+
     let strategy = RetryStrategy::default()
         .with_max_attempts(3)
         .with_base_delay(Duration::from_millis(1)); // Very short for benchmarking
 
     c.bench_function("retry_immediate_success", |b| {
-        b.to_async(tokio::runtime::Runtime::new().unwrap()).iter(|| async {
-            let result = retry(|| async {
-                Ok::<_, NebulaError>("success")
-            }, &strategy).await;
-            black_box(result);
-        });
+        b.to_async(tokio::runtime::Runtime::new().unwrap())
+            .iter(|| async {
+                let result = retry(|| async { Ok::<_, NebulaError>("success") }, &strategy).await;
+                black_box(result);
+            });
     });
 
     c.bench_function("retry_with_failures", |b| {
-        b.to_async(tokio::runtime::Runtime::new().unwrap()).iter(|| async {
-            let mut attempt = 0;
-            let result = retry(|| async {
-                attempt += 1;
-                if attempt < 3 {
-                    Err(NebulaError::internal("temporary error"))
-                } else {
-                    Ok("success")
-                }
-            }, &strategy).await;
-            black_box(result);
-        });
+        b.to_async(tokio::runtime::Runtime::new().unwrap())
+            .iter(|| async {
+                let mut attempt = 0;
+                let result = retry(
+                    || async {
+                        attempt += 1;
+                        if attempt < 3 {
+                            Err(NebulaError::internal("temporary error"))
+                        } else {
+                            Ok("success")
+                        }
+                    },
+                    &strategy,
+                )
+                .await;
+                black_box(result);
+            });
     });
 }
 

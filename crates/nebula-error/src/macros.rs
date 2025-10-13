@@ -265,8 +265,8 @@ macro_rules! ensure {
 /// use std::time::Duration;
 ///
 /// let error = retryable_error!(
-///     internal_error!("Temporary failure"), 
-///     true, 
+///     internal_error!("Temporary failure"),
+///     true,
 ///     Duration::from_millis(500)
 /// );
 /// ```
@@ -322,7 +322,12 @@ macro_rules! resource_error {
         $crate::NebulaError::resource_unavailable($resource_id, $reason, $retryable)
     };
     ("pool_exhausted", $resource_id:expr, $current_size:expr, $max_size:expr, $waiters:expr) => {
-        $crate::NebulaError::resource_pool_exhausted($resource_id, $current_size, $max_size, $waiters)
+        $crate::NebulaError::resource_pool_exhausted(
+            $resource_id,
+            $current_size,
+            $max_size,
+            $waiters,
+        )
     };
     ("health_check_failed", $resource_id:expr, $attempt:expr, $reason:expr) => {
         $crate::NebulaError::resource_health_check_failed($resource_id, $attempt, $reason)

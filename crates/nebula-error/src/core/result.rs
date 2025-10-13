@@ -122,7 +122,11 @@ mod tests {
 
         assert!(result_with_details.is_err());
         let error = result_with_details.unwrap_err();
-        assert!(error.user_message().contains("Additional debugging information"));
+        assert!(
+            error
+                .user_message()
+                .contains("Additional debugging information")
+        );
         assert!(error.is_retryable());
         assert_eq!(error.retry_after(), Some(std::time::Duration::from_secs(5)));
     }

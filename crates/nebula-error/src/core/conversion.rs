@@ -284,20 +284,28 @@ pub fn from_std_error_with_context<E: std::error::Error>(
 /// Smart error conversion that attempts to classify errors automatically
 ///
 /// This function examines the error message and type to choose the most appropriate
-/// NebulaError classification, providing better automatic error handling.
+/// `NebulaError` classification, providing better automatic error handling.
 pub fn smart_convert<E: std::error::Error>(error: E) -> NebulaError {
     let error_str = error.to_string().to_lowercase();
-    
+
     // Classification based on common error message patterns
     if error_str.contains("not found") || error_str.contains("missing") {
         NebulaError::not_found("resource", "unknown")
-    } else if error_str.contains("permission") || error_str.contains("access denied") || error_str.contains("forbidden") {
+    } else if error_str.contains("permission")
+        || error_str.contains("access denied")
+        || error_str.contains("forbidden")
+    {
         NebulaError::permission_denied("access", "resource")
     } else if error_str.contains("timeout") || error_str.contains("timed out") {
         NebulaError::timeout("operation", Duration::from_secs(30))
-    } else if error_str.contains("connection") && (error_str.contains("refused") || error_str.contains("failed")) {
+    } else if error_str.contains("connection")
+        && (error_str.contains("refused") || error_str.contains("failed"))
+    {
         NebulaError::network("connection error")
-    } else if error_str.contains("invalid") || error_str.contains("parse") || error_str.contains("format") {
+    } else if error_str.contains("invalid")
+        || error_str.contains("parse")
+        || error_str.contains("format")
+    {
         NebulaError::validation(error.to_string())
     } else if error_str.contains("rate limit") || error_str.contains("too many") {
         NebulaError::rate_limit_exceeded(100, Duration::from_secs(60))
@@ -324,10 +332,10 @@ macro_rules! convert_error {
 pub trait ErrorChain {
     /// Chain this error with additional context
     fn chain_with(self, msg: &str) -> NebulaError;
-    
+
     /// Chain this error and mark as retryable
     fn chain_retryable(self) -> NebulaError;
-    
+
     /// Chain this error and mark as non-retryable
     fn chain_terminal(self) -> NebulaError;
 }
@@ -336,11 +344,11 @@ impl<E: std::error::Error> ErrorChain for E {
     fn chain_with(self, msg: &str) -> NebulaError {
         smart_convert(self).with_details(msg)
     }
-    
+
     fn chain_retryable(self) -> NebulaError {
         smart_convert(self).with_retry_info(true, Some(Duration::from_secs(1)))
     }
-    
+
     fn chain_terminal(self) -> NebulaError {
         smart_convert(self).with_retry_info(false, None)
     }
@@ -370,7 +378,7 @@ impl OptimizedConvert for &'static str {
     fn to_nebula_error(self) -> NebulaError {
         NebulaError::new_static(
             ErrorKind::Server(ServerError::internal(self.to_string())),
-            self
+            self,
         )
     }
 }
