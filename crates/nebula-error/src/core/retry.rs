@@ -200,17 +200,13 @@ pub trait Retryable {
             match self.execute().await {
                 Ok(result) => return Ok(result),
                 Err(error) => {
-                    // БЫЛО: last_error = Some(error); ... last_error.as_ref().unwrap()
-                    // СТАЛО: Используем ссылку напрямую, избегая unwrap()
-                    // ПОЧЕМУ: Безопаснее и читаемее - no panic возможность
+        // Check if we should retry
+        if !self.is_retryable_error(&error) {
+            last_error = Some(error);
+            break;
+        }
 
-                    // Check if we should retry
-                    if !self.is_retryable_error(&error) {
-                        last_error = Some(error);
-                        break;
-                    }
-
-                    last_error = Some(error);
+        last_error = Some(error);
 
                     // If this is the last attempt, don't sleep
                     if attempt + 1 >= strategy.max_attempts {
@@ -224,13 +220,14 @@ pub trait Retryable {
             }
         }
 
-        // БЫЛО: Err(last_error.unwrap().into())
-        // СТАЛО: Используем unwrap_or_else для обработки невозможного случая
-        // ПОЧЕМУ: last_error гарантированно Some после цикла (max_attempts >= 1)
-        #[allow(clippy::expect_used)]
-        Err(last_error
-            .expect("last_error must be Some after attempting at least once")
-            .into())
+        // Return the last error if any, or create a generic timeout error
+        // This handles the edge case where max_attempts = 0 (should not happen in practice)
+        match last_error {
+            Some(error) => Err(error.into()),
+            None => Err(NebulaError::internal(
+                "No attempts made (max_attempts may be 0)",
+            )),
+        }
     }
 }
 
@@ -275,13 +272,14 @@ where
         }
     }
 
-    // БЫЛО: Err(last_error.unwrap().into())
-    // СТАЛО: Используем expect с информативным сообщением
-    // ПОЧЕМУ: Защита от panic, хотя last_error гарантированно Some
-    #[allow(clippy::expect_used)]
-    Err(last_error
-        .expect("last_error must be Some after attempting at least once")
-        .into())
+    // Return the last error if any, or create a generic error
+    // This handles the edge case where max_attempts = 0 (should not happen in practice)
+    match last_error {
+        Some(error) => Err(error.into()),
+        None => Err(NebulaError::internal(
+            "No attempts made in retry function (max_attempts may be 0)",
+        )),
+    }
 }
 
 /// Retry a function with timeout
@@ -486,8 +484,7 @@ mod tests {
                 move || {
                     let attempts = attempts.clone();
                     async move {
-                        // SAFETY: Mutex is only locked briefly in tests and never panics during lock
-                        let mut count = attempts.lock().expect("Mutex lock should not be poisoned");
+                        let mut count = attempts.lock().unwrap();
                         *count += 1;
                         if *count < 3 {
                             Err(NebulaError::internal("temporary error"))
@@ -503,9 +500,6 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "success");
-        assert_eq!(
-            *attempts.lock().expect("Mutex lock should not be poisoned"),
-            3
-        );
+        assert_eq!(*attempts.lock().unwrap(), 3);
     }
 }

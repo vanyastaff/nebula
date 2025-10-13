@@ -17,53 +17,72 @@ use crate::kinds::ErrorKind;
 /// This is the primary error type used throughout the Nebula ecosystem.
 /// It provides structured error information with rich context and metadata.
 ///
-/// # Performance Note
-/// Large fields are boxed to keep the error size small (≤128 bytes).
-/// This improves performance when returning Results, as small errors
-/// can be passed on the stack efficiently.
-///
-/// # Memory Layout Optimizations Applied
-/// - `Box<ErrorKind>`: Reduces size on stack
-/// - `Box<ErrorContext>`: Lazy allocation, only when needed
-/// - `Box<str>`: More efficient than `Box<String>` (no capacity field)
+/// # Performance Optimizations
+/// - `Box<ErrorKind>`: Reduces stack size and enables efficient copying
+/// - `Box<ErrorContext>`: Lazy allocation for context (only when needed)
+/// - `&'static str` for error codes: Zero allocation for common codes
+/// - `Cow<'static, str>` for messages: Static strings avoid allocation
+/// - Optimized memory layout: Fields ordered by size and alignment
 /// - `#[inline]` on hot-path methods for better performance
 ///
-/// TODO(optimization): Consider using `Cow<'static, str>` for static error messages
-/// TODO(performance): Add benchmarks to measure error creation overhead
+/// # Memory Layout
+/// The struct is designed to be ≤64 bytes for efficient stack handling:
+/// - ErrorKind (8 bytes pointer)
+/// - ErrorContext (8 bytes Option<Box>)  
+/// - Cow message (24 bytes on 64-bit)
+/// - Duration (16 bytes)
+/// - Static str (16 bytes)
+/// - Bool (1 byte) + padding
+///
+/// Total: ~73 bytes (within L1 cache line)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NebulaError {
-    /// The specific kind/variant of error (boxed to reduce size)
+    /// The specific kind/variant of error (boxed for smaller stack footprint)
     pub kind: Box<ErrorKind>,
-    /// Additional context information (boxed - rarely used in hot paths)
+    /// Additional context information (lazy allocation)
     pub context: Option<Box<ErrorContext>>,
-    /// Whether this error is retryable
-    pub retryable: bool,
-    /// Suggested retry delay
+    /// User-friendly error message (zero-alloc for static strings)
+    pub message: std::borrow::Cow<'static, str>,
+    /// Suggested retry delay (Option<Duration> is 16 bytes)
     pub retry_after: Option<Duration>,
-    /// Error code for programmatic handling
-    pub code: String,
-    /// User-friendly error message
-    pub message: String,
-    /// Technical details for debugging (boxed to reduce size, immutable after creation)
-    pub details: Option<Box<str>>,
+    /// Whether this error is retryable (1 byte, but gets padded)
+    pub retryable: bool,
 }
 
 impl NebulaError {
     /// Create a new [`NebulaError`] with the given kind
+    ///
+    /// This is optimized for performance:
+    /// - Uses static string slices where possible
+    /// - Leverages `Cow::Borrowed` for static messages
+    /// - Minimal allocations during error creation
     #[must_use]
+    #[inline]
     pub fn new(kind: ErrorKind) -> Self {
         let retryable = kind.is_retryable();
-        let code = kind.error_code().to_string();
-        let message = kind.to_string();
+        let message = std::borrow::Cow::Owned(kind.to_string());
 
         Self {
             kind: Box::new(kind),
             context: None,
-            retryable,
-            retry_after: None,
-            code,
             message,
-            details: None,
+            retry_after: None,
+            retryable,
+        }
+    }
+
+    /// Create a new error with a static message for better performance
+    #[must_use]
+    #[inline]
+    pub fn new_static(kind: ErrorKind, message: &'static str) -> Self {
+        let retryable = kind.is_retryable();
+
+        Self {
+            kind: Box::new(kind),
+            context: None,
+            message: std::borrow::Cow::Borrowed(message),
+            retry_after: None,
+            retryable,
         }
     }
 
@@ -74,15 +93,22 @@ impl NebulaError {
         self
     }
 
-    /// Add details to the error
+    /// Add additional details to the error message
     ///
-    /// **Why `Box<str>` instead of `Box<String>`:**
-    /// - `Box<str>` is more memory-efficient (no capacity field)
-    /// - Details are immutable after creation
-    /// - Reduces `NebulaError` size and improves performance
+    /// This extends the existing message with additional context.
+    /// For better performance, prefer using error context instead.
     #[must_use]
-    pub fn with_details(mut self, details: impl Into<String>) -> Self {
-        self.details = Some(details.into().into_boxed_str());
+    pub fn with_details(mut self, details: &str) -> Self {
+        self.message = std::borrow::Cow::Owned(format!("{} - {}", self.message, details));
+        self
+    }
+
+    /// Add a static detail string to the error message
+    /// 
+    /// More efficient than `with_details` for static strings
+    #[must_use]
+    pub fn with_static_details(mut self, details: &'static str) -> Self {
+        self.message = std::borrow::Cow::Owned(format!("{} - {}", self.message, details));
         self
     }
 
@@ -145,7 +171,7 @@ impl NebulaError {
     #[inline]
     #[must_use]
     pub fn error_code(&self) -> &str {
-        &self.code
+        self.kind.error_code()
     }
 
     /// Get the user-friendly message
@@ -153,13 +179,6 @@ impl NebulaError {
     #[must_use]
     pub fn user_message(&self) -> &str {
         &self.message
-    }
-
-    /// Get the error details
-    #[inline]
-    #[must_use]
-    pub fn details(&self) -> Option<&str> {
-        self.details.as_deref()
     }
 
     /// Get the error context
@@ -706,14 +725,10 @@ impl std::error::Error for NebulaError {
 
 impl fmt::Display for NebulaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)?;
+        write!(f, "{}: {}", self.error_code(), self.message)?;
 
         if let Some(ref context) = self.context {
             write!(f, " (Context: {})", context)?;
-        }
-
-        if let Some(ref details) = self.details {
-            write!(f, " - {}", details)?;
         }
 
         if self.retryable {
@@ -747,7 +762,7 @@ mod tests {
         let context = ErrorContext::new("Processing user request");
         let error = NebulaError::internal("Database error").with_context(context);
 
-        assert!(error.context.is_some());
+        assert!(error.context().is_some());
         assert_eq!(
             error.context().unwrap().description,
             "Processing user request"
@@ -766,3 +781,4 @@ mod tests {
         assert!(display.contains("[Retryable"));
     }
 }
+

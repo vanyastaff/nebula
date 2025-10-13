@@ -56,7 +56,10 @@ where
 /// Extension trait specifically for NebulaError Results
 pub trait NebulaResultExt<T> {
     /// Add details to the error if it fails
-    fn with_details(self, details: impl Into<String>) -> Result<T>;
+    fn with_details(self, details: &str) -> Result<T>;
+
+    /// Add static details to the error if it fails  
+    fn with_static_details(self, details: &'static str) -> Result<T>;
 
     /// Mark the error as retryable/non-retryable
     fn with_retryable(self, retryable: bool) -> Result<T>;
@@ -66,8 +69,12 @@ pub trait NebulaResultExt<T> {
 }
 
 impl<T> NebulaResultExt<T> for Result<T> {
-    fn with_details(self, details: impl Into<String>) -> Result<T> {
+    fn with_details(self, details: &str) -> Result<T> {
         self.map_err(|e| e.with_details(details))
+    }
+
+    fn with_static_details(self, details: &'static str) -> Result<T> {
+        self.map_err(|e| e.with_static_details(details))
     }
 
     fn with_retryable(self, retryable: bool) -> Result<T> {
@@ -99,7 +106,7 @@ mod tests {
 
         assert!(nebula_result.is_err());
         let error = nebula_result.unwrap_err();
-        assert!(error.context.is_some());
+        assert!(error.context().is_some());
         assert_eq!(error.context().unwrap().description, "Operation failed");
     }
 
@@ -115,7 +122,7 @@ mod tests {
 
         assert!(result_with_details.is_err());
         let error = result_with_details.unwrap_err();
-        assert_eq!(error.details(), Some("Additional debugging information"));
+        assert!(error.user_message().contains("Additional debugging information"));
         assert!(error.is_retryable());
         assert_eq!(error.retry_after(), Some(std::time::Duration::from_secs(5)));
     }
