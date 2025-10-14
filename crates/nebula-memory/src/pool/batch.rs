@@ -3,16 +3,16 @@
 //! # Safety
 //!
 //! This module implements batch allocation for efficient bulk operations:
-//! - Batch holds raw pointer to BatchAllocator
+//! - Batch holds raw pointer to `BatchAllocator`
 //! - Drop returns all objects to pool via allocator pointer
-//! - mem::take + mem::forget pattern prevents double-return
-//! - Allocator pointer remains valid (lifetime tied to get_batch borrow)
+//! - `mem::take` + `mem::forget` pattern prevents double-return
+//! - Allocator pointer remains valid (lifetime tied to `get_batch` borrow)
 //!
 //! ## Safety Contracts
 //!
-//! - Batch::drop: Dereferences allocator pointer and returns objects
+//! - `Batch::drop`: Dereferences allocator pointer and returns objects
 //! - Send implementation: Safe if T: Send (allocator pointer not shared)
-//! - Allocator pointer valid (created from &mut in get_batch)
+//! - Allocator pointer valid (created from &mut in `get_batch`)
 
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, vec::Vec};
@@ -100,7 +100,7 @@ impl<T: Poolable> BatchAllocator<T> {
         if count == 0 {
             return Ok(Batch {
                 objects: Vec::new(),
-                allocator: self as *mut _,
+                allocator: std::ptr::from_mut(self),
             });
         }
 
@@ -148,7 +148,7 @@ impl<T: Poolable> BatchAllocator<T> {
 
         Ok(Batch {
             objects,
-            allocator: self as *mut _,
+            allocator: std::ptr::from_mut(self),
         })
     }
 
@@ -158,15 +158,14 @@ impl<T: Poolable> BatchAllocator<T> {
 
         // Get all objects first
         for _ in 0..count {
-            match self.pool.try_get() {
-                Some(pooled) => objects.push(pooled.detach()),
-                None => {
-                    // Return what we got so far
-                    for obj in objects {
-                        self.pool.return_object(obj);
-                    }
-                    return None;
+            if let Some(pooled) = self.pool.try_get() {
+                objects.push(pooled.detach())
+            } else {
+                // Return what we got so far
+                for obj in objects {
+                    self.pool.return_object(obj);
                 }
+                return None;
             }
         }
 
@@ -185,7 +184,7 @@ impl<T: Poolable> BatchAllocator<T> {
 
         Some(Batch {
             objects,
-            allocator: self as *mut _,
+            allocator: std::ptr::from_mut(self),
         })
     }
 
@@ -206,6 +205,7 @@ impl<T: Poolable> BatchAllocator<T> {
     }
 
     /// Get batch size hint
+    #[must_use]
     pub fn batch_size_hint(&self) -> usize {
         self.batch_size_hint
     }
@@ -228,6 +228,7 @@ impl<T: Poolable> BatchAllocator<T> {
     }
 
     /// Get underlying pool
+    #[must_use]
     pub fn pool(&self) -> &ObjectPool<T> {
         &self.pool
     }

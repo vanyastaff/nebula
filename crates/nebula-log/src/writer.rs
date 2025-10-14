@@ -43,7 +43,7 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
                     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
                     let prefix = path.file_name().ok_or_else(|| {
                         use crate::core::LogError;
-                        nebula_error::NebulaError::log_config_error(format!(
+                        LogError::configuration_error(format!(
                             "Invalid file path (no filename): '{}'",
                             path.display()
                         ))
@@ -54,7 +54,7 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
                     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
                     let prefix = path.file_name().ok_or_else(|| {
                         use crate::core::LogError;
-                        nebula_error::NebulaError::log_config_error(format!(
+                        LogError::configuration_error(format!(
                             "Invalid file path (no filename): '{}'",
                             path.display()
                         ))
@@ -63,7 +63,7 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
                 }
                 Some(Rolling::Size(_)) => {
                     use crate::core::LogError;
-                    return Err(nebula_error::NebulaError::log_config_error(
+                    return Err(LogError::configuration_error(
                         "Size-based rolling is not yet implemented. Use Daily or Hourly.",
                     ));
                 }
@@ -84,7 +84,7 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
             // TODO(feature): Implement proper multi-writer with fanout or tee functionality
             if writers.is_empty() {
                 use crate::core::LogError;
-                return Err(nebula_error::NebulaError::log_config_error(
+                return Err(LogError::configuration_error(
                     "Multi writer needs at least one writer",
                 ));
             }

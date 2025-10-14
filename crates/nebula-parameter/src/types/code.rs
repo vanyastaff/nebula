@@ -48,7 +48,7 @@ pub struct CodeParameterOptions {
     pub readonly: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum CodeLanguage {
     #[serde(rename = "javascript")]
     JavaScript,
@@ -89,13 +89,8 @@ pub enum CodeLanguage {
     #[serde(rename = "markdown")]
     Markdown,
     #[serde(rename = "text")]
+    #[default]
     PlainText,
-}
-
-impl Default for CodeLanguage {
-    fn default() -> Self {
-        CodeLanguage::PlainText
-    }
 }
 
 impl Parameter for CodeParameter {
@@ -191,6 +186,7 @@ impl Displayable for CodeParameter {
 
 impl CodeParameter {
     /// Get the programming language
+    #[must_use]
     pub fn get_language(&self) -> CodeLanguage {
         self.options
             .as_ref()
@@ -200,22 +196,19 @@ impl CodeParameter {
     }
 
     /// Check if the editor is read-only
+    #[must_use]
     pub fn is_readonly(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.readonly)
-            .unwrap_or(false)
+        self.options.as_ref().is_some_and(|opts| opts.readonly)
     }
 
     /// Count lines in current code
+    #[must_use]
     pub fn get_line_count(&self) -> usize {
-        self.value
-            .as_ref()
-            .map(|code| code.lines().count())
-            .unwrap_or(0)
+        self.value.as_ref().map_or(0, |code| code.lines().count())
     }
 
     /// Get language file extension
+    #[must_use]
     pub fn get_file_extension(&self) -> &'static str {
         match self.get_language() {
             CodeLanguage::JavaScript => ".js",

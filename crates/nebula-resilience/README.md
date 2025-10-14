@@ -21,7 +21,6 @@ Production-ready resilience patterns for Rust applications, fully integrated wit
 - **Configuration**: Built on `nebula-config` for flexible configuration management
 - **Logging**: Structured logging with `nebula-log`
 - **Dynamic Values**: Runtime configuration using `nebula-value`
-- **Error Handling**: Unified error handling with `nebula-error`
 
 ### 📊 Advanced Features
 - **Policy Composition**: Combine multiple patterns

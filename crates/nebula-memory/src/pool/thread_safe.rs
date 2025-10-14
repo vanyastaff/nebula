@@ -152,7 +152,10 @@ impl<T: Poolable> ThreadSafePool<T> {
 
     /// Get object with timeout
     #[cfg(feature = "std")]
-    pub fn get_timeout(&self, timeout: Option<Duration>) -> MemoryResult<ThreadSafePooledValue<'_, T>> {
+    pub fn get_timeout(
+        &self,
+        timeout: Option<Duration>,
+    ) -> MemoryResult<ThreadSafePooledValue<'_, T>> {
         #[cfg(feature = "stats")]
         self.stats.record_get();
 
@@ -265,16 +268,14 @@ impl<T: Poolable> ThreadSafePool<T> {
         self.callbacks.on_checkin(&obj);
 
         // Validate object if configured
-        if self.config.validate_on_return {
-            if !obj.validate() || !obj.is_reusable() {
-                self.callbacks.on_destroy(&obj);
-                #[cfg(feature = "stats")]
-                {
-                    self.stats.record_destruction();
-                    self.update_memory_stats();
-                }
-                return;
+        if self.config.validate_on_return && (!obj.validate() || !obj.is_reusable()) {
+            self.callbacks.on_destroy(&obj);
+            #[cfg(feature = "stats")]
+            {
+                self.stats.record_destruction();
+                self.update_memory_stats();
             }
+            return;
         }
 
         let mut inner = match self.inner.lock() {
@@ -288,17 +289,17 @@ impl<T: Poolable> ThreadSafePool<T> {
         }
 
         // Check pool size limit
-        if let Some(max) = self.config.max_capacity {
-            if inner.objects.len() >= max {
-                drop(inner);
-                self.callbacks.on_destroy(&obj);
-                #[cfg(feature = "stats")]
-                {
-                    self.stats.record_destruction();
-                    self.update_memory_stats();
-                }
-                return;
+        if let Some(max) = self.config.max_capacity
+            && inner.objects.len() >= max
+        {
+            drop(inner);
+            self.callbacks.on_destroy(&obj);
+            #[cfg(feature = "stats")]
+            {
+                self.stats.record_destruction();
+                self.update_memory_stats();
             }
+            return;
         }
 
         obj.reset();
@@ -491,7 +492,7 @@ pub struct ThreadSafePooledValue<'a, T: Poolable> {
     pool: &'a ThreadSafePool<T>,
 }
 
-impl<'a, T: Poolable> ThreadSafePooledValue<'a, T> {
+impl<T: Poolable> ThreadSafePooledValue<'_, T> {
     /// Detach value from pool
     pub fn detach(mut self) -> T {
         let value = unsafe { ManuallyDrop::take(&mut self.value) };
@@ -500,7 +501,7 @@ impl<'a, T: Poolable> ThreadSafePooledValue<'a, T> {
     }
 }
 
-impl<'a, T: Poolable> Deref for ThreadSafePooledValue<'a, T> {
+impl<T: Poolable> Deref for ThreadSafePooledValue<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -508,13 +509,13 @@ impl<'a, T: Poolable> Deref for ThreadSafePooledValue<'a, T> {
     }
 }
 
-impl<'a, T: Poolable> DerefMut for ThreadSafePooledValue<'a, T> {
+impl<T: Poolable> DerefMut for ThreadSafePooledValue<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
     }
 }
 
-impl<'a, T: Poolable> Drop for ThreadSafePooledValue<'a, T> {
+impl<T: Poolable> Drop for ThreadSafePooledValue<'_, T> {
     fn drop(&mut self) {
         let obj = unsafe { ManuallyDrop::take(&mut self.value) };
         self.pool.return_object(obj);

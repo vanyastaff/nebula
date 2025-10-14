@@ -165,7 +165,7 @@ impl ExpressionEngine {
         let expr_content =
             if expression.trim().starts_with("{{") && expression.trim().ends_with("}}") {
                 let trimmed = expression.trim();
-                &trimmed[2..trimmed.len() - 2].trim()
+                trimmed[2..trimmed.len() - 2].trim()
             } else {
                 expression
             };

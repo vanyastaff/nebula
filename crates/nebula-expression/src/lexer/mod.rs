@@ -2,10 +2,10 @@
 //!
 //! This module implements a lexer that converts expression strings into tokens.
 
+use crate::ExpressionError;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::core::span::Span;
 use crate::core::token::{Token, TokenKind};
-use nebula_error::NebulaError;
 
 /// Lexer for tokenizing expression strings
 pub struct Lexer<'a> {
@@ -205,7 +205,7 @@ impl<'a> Lexer<'a> {
             ch if ch.is_alphabetic() || ch == '_' => self.read_identifier_or_keyword()?,
 
             _ => {
-                return Err(NebulaError::expression_syntax_error(format!(
+                return Err(ExpressionError::expression_syntax_error(format!(
                     "Unexpected character '{}' at position {}",
                     ch, self.position
                 )));
@@ -280,7 +280,7 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        Err(NebulaError::expression_syntax_error(
+        Err(ExpressionError::expression_syntax_error(
             "Unterminated string literal",
         ))
     }
@@ -338,7 +338,7 @@ impl<'a> Lexer<'a> {
         let end_pos = self.position;
 
         if start_pos == end_pos {
-            return Err(NebulaError::expression_syntax_error(
+            return Err(ExpressionError::expression_syntax_error(
                 "Expected variable name after $",
             ));
         }
@@ -382,12 +382,12 @@ impl<'a> Lexer<'a> {
             num_str
                 .parse::<f64>()
                 .map(|f| Token::new(TokenKind::Float(f), span))
-                .map_err(|_| NebulaError::expression_syntax_error("Invalid float literal"))
+                .map_err(|_| ExpressionError::expression_syntax_error("Invalid float literal"))
         } else {
             num_str
                 .parse::<i64>()
                 .map(|i| Token::new(TokenKind::Integer(i), span))
-                .map_err(|_| NebulaError::expression_syntax_error("Invalid integer literal"))
+                .map_err(|_| ExpressionError::expression_syntax_error("Invalid integer literal"))
         }
     }
 

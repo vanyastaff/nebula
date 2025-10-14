@@ -31,7 +31,7 @@ pub type EvictionEntry<'a, K, V> = (&'a K, &'a CacheEntry<V>);
 /// Trait for selecting victims (can be used with dyn)
 pub trait VictimSelector<K, V>: Send + Sync {
     /// Choose a key to evict from given entries
-    fn select_victim<'a>(&self, entries: &[EvictionEntry<'a, K, V>]) -> Option<K>;
+    fn select_victim(&self, entries: &[EvictionEntry<'_, K, V>]) -> Option<K>;
 }
 
 /// Trait for cache eviction policies
@@ -60,7 +60,7 @@ where
     V: 'a,
 {
     // Collect entries to a Vec for selector
-    let entries: Vec<EvictionEntry<K, V>> = entries.collect();
+    let entries: Vec<EvictionEntry<'_, K, V>> = entries.collect();
     selector.select_victim(&entries)
 }
 
@@ -83,7 +83,10 @@ mod tests {
         #[cfg(feature = "std")]
         {
             let ttl: TtlPolicy<String> = TtlPolicy::new(std::time::Duration::from_secs(60));
-            assert_eq!(<TtlPolicy<String> as EvictionPolicy<String, ()>>::name(&ttl), "TTL");
+            assert_eq!(
+                <TtlPolicy<String> as EvictionPolicy<String, ()>>::name(&ttl),
+                "TTL"
+            );
         }
     }
 }

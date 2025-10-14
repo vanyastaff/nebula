@@ -15,7 +15,7 @@ use once_cell::sync::OnceCell;
 
 use chrono::{Datelike, Duration, Local, NaiveDate, Utc, Weekday};
 
-use crate::core::{NebulaError, ValueResult};
+use crate::core::{ValueError, ValueResult};
 
 /// Unix epoch as Julian Day Number (used for conversions)
 /// This is the number of days from January 1, 4713 BCE (proleptic Gregorian calendar)
@@ -36,13 +36,13 @@ impl DateInner {
     pub fn new(year: i32, month: u32, day: u32) -> ValueResult<Self> {
         // Validate month
         if month == 0 || month > 12 {
-            return Err(NebulaError::validation(format!("Invalid month: {}", month)));
+            return Err(ValueError::validation(format!("Invalid month: {}", month)));
         }
 
         // Validate day
         let max_day = Self::days_in_month(year, month);
         if day == 0 || day > max_day {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Invalid date: year={}, month={}, day={}",
                 year, month, day
             )));
@@ -161,13 +161,13 @@ impl Date {
     pub fn from_julian_day(jd: i32) -> ValueResult<Self> {
         NaiveDate::from_num_days_from_ce_opt(jd - UNIX_EPOCH_JULIAN_DAY)
             .map(Self::from_naive_date)
-            .ok_or_else(|| NebulaError::validation(format!("Invalid Julian day: {}", jd)))
+            .ok_or_else(|| ValueError::validation(format!("Invalid Julian day: {}", jd)))
     }
 
     /// Creates from day of year
     pub fn from_year_day(year: i32, day_of_year: u16) -> ValueResult<Self> {
         if day_of_year == 0 || day_of_year > 366 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Invalid day_of_year: {}",
                 day_of_year
             )));
@@ -175,7 +175,7 @@ impl Date {
 
         let is_leap = DateInner::is_leap_year(year);
         if !is_leap && day_of_year > 365 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Invalid day_of_year: {}",
                 day_of_year
             )));
@@ -190,7 +190,7 @@ impl Date {
             remaining -= days_in_month;
         }
 
-        Err(NebulaError::validation(format!(
+        Err(ValueError::validation(format!(
             "Invalid day_of_year: {}",
             day_of_year
         )))
@@ -199,7 +199,7 @@ impl Date {
     /// Creates from ISO week date (year, week, day)
     pub fn from_iso_week(year: i32, week: u32, weekday: u32) -> ValueResult<Self> {
         if week == 0 || week > 53 || weekday == 0 || weekday > 7 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Invalid ISO week date: {}-W{:02}-{}",
                 year, week, weekday
             )));
@@ -210,7 +210,7 @@ impl Date {
         NaiveDate::from_isoywd_opt(year, week, weekday_chrono)
             .map(Self::from_naive_date)
             .ok_or_else(|| {
-                NebulaError::validation(format!(
+                ValueError::validation(format!(
                     "Invalid ISO week date: {}-W{:02}-{}",
                     year, week, weekday
                 ))
@@ -230,7 +230,7 @@ impl Date {
     pub fn parse_iso(s: &str) -> ValueResult<Self> {
         let parts: Vec<&str> = s.split('-').collect();
         if parts.len() != 3 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Invalid ISO date format: {}",
                 s
             )));
@@ -238,15 +238,15 @@ impl Date {
 
         let year = parts[0]
             .parse::<i32>()
-            .map_err(|_| NebulaError::validation(format!("Invalid year: {}", parts[0])))?;
+            .map_err(|_| ValueError::validation(format!("Invalid year: {}", parts[0])))?;
 
         let month = parts[1]
             .parse::<u32>()
-            .map_err(|_| NebulaError::validation(format!("Invalid month: {}", parts[1])))?;
+            .map_err(|_| ValueError::validation(format!("Invalid month: {}", parts[1])))?;
 
         let day = parts[2]
             .parse::<u32>()
-            .map_err(|_| NebulaError::validation(format!("Invalid day: {}", parts[2])))?;
+            .map_err(|_| ValueError::validation(format!("Invalid day: {}", parts[2])))?;
 
         Self::new(year, month, day)
     }
@@ -366,7 +366,7 @@ impl Date {
         let date = self.inner.to_naive();
         date.checked_add_signed(Duration::days(days))
             .map(Self::from_naive_date)
-            .ok_or_else(|| NebulaError::validation("Date arithmetic overflow"))
+            .ok_or_else(|| ValueError::validation("Date arithmetic overflow"))
     }
 
     /// Adds weeks to the date
@@ -616,7 +616,7 @@ impl Default for Date {
 }
 
 impl FromStr for Date {
-    type Err = NebulaError;
+    type Err = ValueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse_iso(s)

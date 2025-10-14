@@ -5,14 +5,14 @@
 //! This module implements a lock-free Treiber stack for object pooling:
 //! - Atomic operations for concurrent access
 //! - CAS-based push/pop operations
-//! - ManuallyDrop for controlled object lifecycle
+//! - `ManuallyDrop` for controlled object lifecycle
 //! - Memory ordering: Acquire/Release for synchronization
 //!
 //! ## Invariants
 //!
-//! - Nodes created by Box::into_raw, destroyed by Box::from_raw
+//! - Nodes created by `Box::into_raw`, destroyed by `Box::from_raw`
 //! - CAS ensures exclusive ownership transfer
-//! - ManuallyDrop prevents double-drop
+//! - `ManuallyDrop` prevents double-drop
 //! - Treiber stack algorithm guarantees linearizability
 //! - Memory ordering provides proper synchronization
 
@@ -78,7 +78,7 @@ impl<T: Poolable> LockFreePool<T> {
     /// Helper: Set next pointer in node
     ///
     /// # Safety
-    /// - node must be valid pointer from Box::into_raw
+    /// - node must be valid pointer from `Box::into_raw`
     /// - node must be exclusively owned by caller
     /// - next can be null or valid node pointer
     #[inline]
@@ -103,15 +103,13 @@ impl<T: Poolable> LockFreePool<T> {
         // - Acquire ordering ensures we see all writes to node
         // - next field access is safe
         debug_assert!(!node.is_null(), "node must be non-null");
-        unsafe {
-            (*node).next
-        }
+        unsafe { (*node).next }
     }
 
     /// Helper: Convert node pointer back to owned Box
     ///
     /// # Safety
-    /// - node must have been created by Box::into_raw
+    /// - node must have been created by `Box::into_raw`
     /// - Caller must have exclusive ownership (e.g., after successful CAS)
     /// - node must be valid, properly aligned, initialized
     #[inline]
@@ -125,9 +123,7 @@ impl<T: Poolable> LockFreePool<T> {
             0,
             "node must be properly aligned"
         );
-        unsafe {
-            Box::from_raw(node)
-        }
+        unsafe { Box::from_raw(node) }
     }
 
     /// Create new lock-free pool
@@ -306,23 +302,21 @@ impl<T: Poolable> LockFreePool<T> {
         self.callbacks.on_checkin(&obj);
 
         // Validate object if configured
-        if self.config.validate_on_return {
-            if !obj.validate() || !obj.is_reusable() {
-                self.callbacks.on_destroy(&obj);
-                #[cfg(feature = "stats")]
-                self.stats.record_destruction();
-                return;
-            }
+        if self.config.validate_on_return && (!obj.validate() || !obj.is_reusable()) {
+            self.callbacks.on_destroy(&obj);
+            #[cfg(feature = "stats")]
+            self.stats.record_destruction();
+            return;
         }
 
         // Check pool size limit
-        if let Some(max) = self.config.max_capacity {
-            if self.size.load(Ordering::Relaxed) >= max {
-                self.callbacks.on_destroy(&obj);
-                #[cfg(feature = "stats")]
-                self.stats.record_destruction();
-                return;
-            }
+        if let Some(max) = self.config.max_capacity
+            && self.size.load(Ordering::Relaxed) >= max
+        {
+            self.callbacks.on_destroy(&obj);
+            #[cfg(feature = "stats")]
+            self.stats.record_destruction();
+            return;
         }
 
         obj.reset();
@@ -535,7 +529,7 @@ pub struct LockFreePooledValue<'a, T: Poolable> {
     pool: &'a LockFreePool<T>,
 }
 
-impl<'a, T: Poolable> LockFreePooledValue<'a, T> {
+impl<T: Poolable> LockFreePooledValue<'_, T> {
     /// Detach value from pool
     pub fn detach(mut self) -> T {
         // SAFETY: We own the ManuallyDrop value exclusively, and we're taking it out
@@ -547,7 +541,7 @@ impl<'a, T: Poolable> LockFreePooledValue<'a, T> {
     }
 }
 
-impl<'a, T: Poolable> Deref for LockFreePooledValue<'a, T> {
+impl<T: Poolable> Deref for LockFreePooledValue<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -555,13 +549,13 @@ impl<'a, T: Poolable> Deref for LockFreePooledValue<'a, T> {
     }
 }
 
-impl<'a, T: Poolable> DerefMut for LockFreePooledValue<'a, T> {
+impl<T: Poolable> DerefMut for LockFreePooledValue<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
     }
 }
 
-impl<'a, T: Poolable> Drop for LockFreePooledValue<'a, T> {
+impl<T: Poolable> Drop for LockFreePooledValue<'_, T> {
     fn drop(&mut self) {
         // SAFETY: This is the Drop impl, which runs exactly once. We're taking the value
         // out of ManuallyDrop to return it to the pool. The value is fully initialized

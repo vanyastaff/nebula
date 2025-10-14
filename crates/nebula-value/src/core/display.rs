@@ -162,9 +162,10 @@ impl Value {
 
         // Check max depth
         if let Some(max) = config.max_depth
-            && depth >= max {
-                return write!(output, "...");
-            }
+            && depth >= max
+        {
+            return write!(output, "...");
+        }
 
         match self {
             Value::Null => write!(output, "null"),
@@ -293,7 +294,6 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_display_null() {

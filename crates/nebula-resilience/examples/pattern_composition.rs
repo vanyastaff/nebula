@@ -9,7 +9,7 @@
 //! Run with: cargo run --example pattern_composition
 
 use nebula_resilience::prelude::*;
-use nebula_resilience::{retry, RateLimiter, TokenBucket};
+use nebula_resilience::{RateLimiter, TokenBucket, retry};
 use std::sync::Arc;
 use std::time::Duration;
 

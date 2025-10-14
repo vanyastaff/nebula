@@ -70,6 +70,7 @@ impl ResourceConfig for TracerConfig {
 }
 
 /// Tracer instance with OpenTelemetry integration
+#[derive(Debug)]
 pub struct TracerInstance {
     instance_id: uuid::Uuid,
     resource_id: ResourceId,
@@ -112,6 +113,7 @@ impl ResourceInstance for TracerInstance {
 }
 
 /// Tracer resource with OpenTelemetry integration
+#[derive(Debug)]
 pub struct TracerResource;
 
 #[async_trait::async_trait]

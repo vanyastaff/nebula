@@ -58,7 +58,7 @@ impl Base64 {
     /// - alphabet: Standard
     /// - `require_padding`: false (padding is optional)
     /// - `allow_whitespace`: false
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             alphabet: Base64Alphabet::Standard,
@@ -192,9 +192,7 @@ impl TypedValidator for Base64 {
                 };
                 return Err(ValidationError::new(
                     "invalid_base64_char",
-                    format!(
-                        "Invalid Base64 character '{c}' at position {i}{alphabet_hint}"
-                    ),
+                    format!("Invalid Base64 character '{c}' at position {i}{alphabet_hint}"),
                 ));
             }
         }

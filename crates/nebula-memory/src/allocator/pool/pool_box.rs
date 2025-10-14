@@ -16,14 +16,14 @@ pub struct PoolBox<T> {
 }
 
 impl<T> PoolBox<T> {
-    /// Creates a new PoolBox by allocating from the given pool
+    /// Creates a new `PoolBox` by allocating from the given pool
     #[must_use = "allocated value must be used"]
     pub fn new_in(value: T, allocator: &PoolAllocator) -> Result<Self, AllocError> {
         let layout = Layout::new::<T>();
 
         unsafe {
             let ptr = allocator.allocate(layout)?;
-            let typed_ptr = ptr.as_ptr() as *mut T;
+            let typed_ptr = ptr.as_ptr().cast::<T>();
             typed_ptr.write(value);
 
             // typed_ptr is non-null (from successful allocation), but use explicit check
@@ -41,6 +41,7 @@ impl<T> PoolBox<T> {
     }
 
     /// Gets a reference to the contained value
+    #[must_use]
     pub fn as_ref(&self) -> &T {
         unsafe { self.ptr.as_ref() }
     }
@@ -50,7 +51,8 @@ impl<T> PoolBox<T> {
         unsafe { self.ptr.as_mut() }
     }
 
-    /// Consumes the PoolBox and returns the contained value
+    /// Consumes the `PoolBox` and returns the contained value
+    #[must_use]
     pub fn into_inner(self) -> T {
         let value = unsafe { ptr::read(self.ptr.as_ptr()) };
 

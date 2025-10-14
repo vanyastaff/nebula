@@ -92,7 +92,7 @@ impl Expressible for HiddenParameter {
             }
             _ => {
                 // Hidden parameters are flexible and can store any value as string
-                self.value = Some(format!("{:?}", value));
+                self.value = Some(format!("{value:?}"));
                 Ok(())
             }
         }

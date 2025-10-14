@@ -1,6 +1,6 @@
 //! Simple scheduled cache with TTL cleanup
 //!
-//! This module provides a lightweight wrapper around ComputeCache with
+//! This module provides a lightweight wrapper around `ComputeCache` with
 //! periodic TTL-based cleanup. For the 80% use case in workflow automation.
 
 #![cfg(feature = "std")]
@@ -63,6 +63,7 @@ where
     ///
     /// * `max_entries` - Maximum number of entries before eviction
     /// * `cleanup_interval` - How often to check for expired entries
+    #[must_use]
     pub fn new(max_entries: usize, cleanup_interval: Duration) -> Self {
         let cache = Arc::new(Mutex::new(ComputeCache::new(max_entries)));
         let ttls: Arc<Mutex<HashMap<K, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -106,6 +107,7 @@ where
     }
 
     /// Create with custom configuration
+    #[must_use]
     pub fn with_config(config: CacheConfig, cleanup_interval: Duration) -> Self {
         let cache = Arc::new(Mutex::new(ComputeCache::with_config(config)));
         let ttls: Arc<Mutex<HashMap<K, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -151,7 +153,7 @@ where
         let mut cache = self.cache.lock();
         let mut ttls = self.ttls.lock();
 
-        cache.insert(key.clone(), value);
+        let _ = cache.insert(key.clone(), value);
         ttls.insert(key, Instant::now() + ttl);
     }
 
@@ -212,6 +214,7 @@ where
 
     /// Get current size
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         let cache = self.cache.lock();
         cache.len()
@@ -219,6 +222,7 @@ where
 
     /// Check if empty
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -243,6 +247,7 @@ where
 
     /// Get the cleanup interval
     #[inline]
+    #[must_use]
     pub fn cleanup_interval(&self) -> Duration {
         self.cleanup_interval
     }

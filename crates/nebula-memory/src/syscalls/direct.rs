@@ -7,8 +7,8 @@
 //!
 //! All functions in this module perform unsafe FFI calls to OS primitives:
 //! - **Unix**: libc functions (mmap, munmap, mprotect, madvise, msync, etc.)
-//! - **Windows**: WinAPI functions (VirtualAlloc, VirtualFree, VirtualProtect, etc.)
-//! - **Fallback**: std::alloc for unsupported platforms
+//! - **Windows**: `WinAPI` functions (`VirtualAlloc`, `VirtualFree`, `VirtualProtect`, etc.)
+//! - **Fallback**: `std::alloc` for unsupported platforms
 //!
 //! ## Safety Contracts
 //!
@@ -185,7 +185,7 @@ pub fn memory_map(
         // OS validates parameters and returns null on error.
         let ptr = unsafe {
             VirtualAlloc(
-                addr_ptr as *mut winapi::ctypes::c_void,
+                addr_ptr.cast::<winapi::ctypes::c_void>(),
                 size,
                 alloc_type,
                 page_protection,
@@ -195,7 +195,7 @@ pub fn memory_map(
         if ptr.is_null() {
             Err(io::Error::last_os_error())
         } else {
-            Ok(ptr as *mut u8)
+            Ok(ptr.cast::<u8>())
         }
     }
 
@@ -245,7 +245,7 @@ pub fn memory_unmap(addr: *mut u8, size: usize) -> io::Result<()> {
 
         // SAFETY: FFI call to Windows VirtualFree. Caller guarantees addr is from VirtualAlloc.
         // MEM_RELEASE with size=0 releases entire region.
-        let result = unsafe { VirtualFree(addr as *mut winapi::ctypes::c_void, 0, MEM_RELEASE) };
+        let result = unsafe { VirtualFree(addr.cast::<winapi::ctypes::c_void>(), 0, MEM_RELEASE) };
         if result == 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -299,10 +299,10 @@ pub fn memory_protect(addr: *mut u8, size: usize, protection: MemoryProtection) 
         // - old_protect receives previous protection value
         let result = unsafe {
             VirtualProtect(
-                addr as *mut winapi::ctypes::c_void,
+                addr.cast::<winapi::ctypes::c_void>(),
                 size,
                 prot,
-                &mut old_protect,
+                &raw mut old_protect,
             )
         };
 
@@ -389,10 +389,8 @@ pub fn memory_advise(addr: *mut u8, size: usize, advice: MemoryAdvice) -> io::Re
                 // SAFETY: FFI call to VirtualFree with MEM_DECOMMIT to mark pages as don't need.
                 // - addr/size should be valid (caller responsibility)
                 // - MEM_DECOMMIT decommits but doesn't release (reversible)
-                unsafe {
-                    VirtualFree(addr as *mut winapi::ctypes::c_void, size, MEM_DECOMMIT)
-                }
-            },
+                unsafe { VirtualFree(addr.cast::<winapi::ctypes::c_void>(), size, MEM_DECOMMIT) }
+            }
             _ => 1, // No-op for other advice types
         };
 
@@ -615,8 +613,8 @@ pub fn get_memory_page_info(addr: *const u8) -> io::Result<MemoryPageInfo> {
         unsafe {
             let mut info: MEMORY_BASIC_INFORMATION = std::mem::zeroed();
             let result = VirtualQuery(
-                addr as *const winapi::ctypes::c_void,
-                &mut info,
+                addr.cast::<winapi::ctypes::c_void>(),
+                &raw mut info,
                 std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
             );
 

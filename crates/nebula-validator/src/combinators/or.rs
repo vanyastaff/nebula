@@ -306,7 +306,7 @@ where
 ///
 /// let combined = or_any(validators);
 /// ```
-#[must_use] 
+#[must_use]
 pub fn or_any<V>(
     validators: Vec<V>,
 ) -> impl TypedValidator<Input = V::Input, Output = V::Output, Error = OrAnyError<V::Error>>

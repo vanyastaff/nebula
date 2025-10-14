@@ -145,16 +145,19 @@ impl Displayable for SecretParameter {
 
 impl SecretParameter {
     /// Get the value length without exposing the actual value
+    #[must_use]
     pub fn value_length(&self) -> Option<usize> {
-        self.value.as_ref().map(|v| v.len())
+        self.value.as_ref().map(nebula_value::Text::len)
     }
 
     /// Check if the secret value is set (without exposing it)
+    #[must_use]
     pub fn has_value(&self) -> bool {
         self.value.is_some() && !self.value.as_ref().unwrap().is_empty()
     }
 
     /// Create a masked representation of the value for display
+    #[must_use]
     pub fn masked_value(&self) -> Option<String> {
         self.value
             .as_ref()

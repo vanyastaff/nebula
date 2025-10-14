@@ -5,16 +5,20 @@
 extern crate alloc;
 pub mod collections;
 pub mod core;
+pub mod error;
 pub mod scalar;
 #[cfg(feature = "temporal")]
 pub mod temporal;
+
 // Re-export core types
-pub use core::{
-    NebulaError, NebulaResult, ResultExt,
-    error::{ValueErrorExt, ValueResult, ValueResultExt},
-    limits::ValueLimits,
-    value::Value,
-};
+pub use core::{ConversionError, ConversionResult, ResultExt, limits::ValueLimits, value::Value};
+
+// Re-export standalone error
+pub use error::{ValueError, ValueResult, ValueResultExt};
+
+// Re-export serde-specific errors
+#[cfg(feature = "serde")]
+pub use core::{SerdeError, SerdeResult};
 
 // Re-export scalar and collection types
 pub use collections::{Array, Object};
@@ -35,10 +39,15 @@ pub use core::convert::{JsonValueExt, ValueRefExt};
 /// Prelude for common imports
 pub mod prelude {
     pub use crate::{Array, Boolean, Bytes, Float, Integer, Object, Text};
-    pub use crate::{NebulaError, Value, ValueErrorExt, ValueResult, ValueResultExt};
+    pub use crate::{
+        ConversionError, ConversionResult, Value, ValueError, ValueResult, ValueResultExt,
+    };
 
     #[cfg(feature = "temporal")]
     pub use crate::{Date, DateTime, Duration, Time};
+
+    #[cfg(feature = "serde")]
+    pub use crate::{SerdeError, SerdeResult};
 
     #[cfg(feature = "serde")]
     pub use serde_json::json;

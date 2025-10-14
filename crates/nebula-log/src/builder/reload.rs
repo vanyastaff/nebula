@@ -26,10 +26,10 @@ impl ReloadHandle {
     pub fn reload(&self, filter: &str) -> LogResult<()> {
         use crate::core::LogError;
         let new_filter = EnvFilter::try_new(filter)
-            .map_err(|e| nebula_error::NebulaError::log_filter_error(filter, e.to_string()))?;
-        self.filter.reload(new_filter).map_err(|e| {
-            nebula_error::NebulaError::log_config_error(format!("Failed to reload filter: {e}"))
-        })?;
+            .map_err(|e| LogError::filter_parsing_error(format!("{}: {}", filter, e)))?;
+        self.filter
+            .reload(new_filter)
+            .map_err(|e| LogError::configuration_error(format!("Failed to reload filter: {e}")))?;
         *self.current_filter.lock() = filter.to_string();
         Ok(())
     }

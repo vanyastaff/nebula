@@ -40,7 +40,10 @@ pub(super) fn generate_validator(input: &DeriveInput) -> syn::Result<TokenStream
 
     for field in &fields.named {
         let Some(field_name) = &field.ident else {
-            return Err(syn::Error::new_spanned(field, "named fields must have idents"));
+            return Err(syn::Error::new_spanned(
+                field,
+                "named fields must have idents",
+            ));
         };
         let field_type = &field.ty;
 

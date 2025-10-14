@@ -103,7 +103,7 @@ pub type OAuth2ClientCredentials = crate::core::adapter::FlowCredential<ClientCr
 
 impl OAuth2ClientCredentials {
     /// Create a new `OAuth2` client credentials credential
-    #[must_use] 
+    #[must_use]
     pub fn create() -> Self {
         Self::from_flow(ClientCredentialsFlow)
     }

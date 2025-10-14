@@ -149,7 +149,7 @@ pub enum ErrorStrategy {
 
 impl ErrorCollector {
     /// Create new error collector
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -178,7 +178,7 @@ impl ErrorCollector {
     }
 
     /// Check if any errors collected
-    #[must_use] 
+    #[must_use]
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
     }
@@ -194,9 +194,15 @@ impl ErrorCollector {
         }
 
         match self.strategy {
-            ErrorStrategy::FirstError => Err(self.errors.into_iter().next()
+            ErrorStrategy::FirstError => Err(self
+                .errors
+                .into_iter()
+                .next()
                 .expect("errors is non-empty (checked above)")),
-            ErrorStrategy::LastError => Err(self.errors.into_iter().last()
+            ErrorStrategy::LastError => Err(self
+                .errors
+                .into_iter()
+                .last()
                 .expect("errors is non-empty (checked above)")),
             ErrorStrategy::MostSevere => {
                 let most_severe = self
@@ -213,10 +219,17 @@ impl ErrorCollector {
                 Err(most_severe)
             }
             ErrorStrategy::CombineAll => {
-                let messages: Vec<String> = self.errors.iter().map(std::string::ToString::to_string).collect();
+                let messages: Vec<String> = self
+                    .errors
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect();
                 Err(ResilienceError::Custom {
                     message: format!("Multiple errors: {}", messages.join("; ")),
-                    retryable: self.errors.iter().any(super::error::ResilienceError::is_retryable),
+                    retryable: self
+                        .errors
+                        .iter()
+                        .any(super::error::ResilienceError::is_retryable),
                     source: None,
                 })
             }

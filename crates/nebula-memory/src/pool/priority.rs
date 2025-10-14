@@ -167,7 +167,7 @@ impl<T: Poolable> PriorityPool<T> {
 
         Ok(PriorityPooledValue {
             value: ManuallyDrop::new(obj),
-            pool: self as *mut _,
+            pool: std::ptr::from_mut(self),
         })
     }
 
@@ -184,9 +184,8 @@ impl<T: Poolable> PriorityPool<T> {
             if wrapper.priority >= min_priority && found.is_none() {
                 found = Some(wrapper);
                 break;
-            } else {
-                temp.push(wrapper);
             }
+            temp.push(wrapper);
         }
 
         // Return objects we didn't use
@@ -204,7 +203,7 @@ impl<T: Poolable> PriorityPool<T> {
 
             Ok(PriorityPooledValue {
                 value: ManuallyDrop::new(obj),
-                pool: self as *mut _,
+                pool: std::ptr::from_mut(self),
             })
         } else {
             // Create new object
@@ -230,7 +229,7 @@ impl<T: Poolable> PriorityPool<T> {
 
             Ok(PriorityPooledValue {
                 value: ManuallyDrop::new(obj),
-                pool: self as *mut _,
+                pool: std::ptr::from_mut(self),
             })
         }
     }
@@ -243,37 +242,35 @@ impl<T: Poolable> PriorityPool<T> {
         self.callbacks.on_checkin(&obj);
 
         // Validate object
-        if self.config.validate_on_return {
-            if !obj.validate() || !obj.is_reusable() {
-                self.callbacks.on_destroy(&obj);
-                #[cfg(feature = "stats")]
-                self.stats.record_destruction();
-                return;
-            }
+        if self.config.validate_on_return && (!obj.validate() || !obj.is_reusable()) {
+            self.callbacks.on_destroy(&obj);
+            #[cfg(feature = "stats")]
+            self.stats.record_destruction();
+            return;
         }
 
         let priority = obj.priority();
 
         // Check pool size - evict lowest priority if needed
-        if let Some(max) = self.config.max_capacity {
-            if self.objects.len() >= max {
-                // Check if new object has higher priority than lowest
-                if let Some(lowest) = self.objects.peek() {
-                    if priority <= lowest.priority {
-                        // Don't keep the new object
-                        self.callbacks.on_destroy(&obj);
-                        #[cfg(feature = "stats")]
-                        self.stats.record_destruction();
-                        return;
-                    }
-                }
+        if let Some(max) = self.config.max_capacity
+            && self.objects.len() >= max
+        {
+            // Check if new object has higher priority than lowest
+            if let Some(lowest) = self.objects.peek()
+                && priority <= lowest.priority
+            {
+                // Don't keep the new object
+                self.callbacks.on_destroy(&obj);
+                #[cfg(feature = "stats")]
+                self.stats.record_destruction();
+                return;
+            }
 
-                // Evict lowest priority object
-                if let Some(wrapper) = self.objects.pop() {
-                    self.callbacks.on_destroy(&wrapper.value);
-                    #[cfg(feature = "stats")]
-                    self.stats.record_destruction();
-                }
+            // Evict lowest priority object
+            if let Some(wrapper) = self.objects.pop() {
+                self.callbacks.on_destroy(&wrapper.value);
+                #[cfg(feature = "stats")]
+                self.stats.record_destruction();
             }
         }
 
@@ -306,11 +303,13 @@ impl<T: Poolable> PriorityPool<T> {
     }
 
     /// Get number of available objects
+    #[must_use]
     pub fn available(&self) -> usize {
         self.objects.len()
     }
 
     /// Get highest priority in pool
+    #[must_use]
     pub fn highest_priority(&self) -> Option<u8> {
         self.objects.peek().map(|w| w.priority)
     }

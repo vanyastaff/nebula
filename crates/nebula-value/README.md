@@ -368,6 +368,5 @@ at your option.
 
 ## See Also
 
-- [nebula-error](../nebula-error) - Error handling
 - [nebula-log](../nebula-log) - Logging utilities
 - [Nebula Workflow Engine](https://github.com/vanyastaff/nebula)

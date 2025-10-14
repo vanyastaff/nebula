@@ -114,7 +114,7 @@ impl From<ExpirableValue> for nebula_value::Value {
 }
 
 impl ExpirableValue {
-    /// Creates a new ExpirableValue with the specified TTL in seconds
+    /// Creates a new `ExpirableValue` with the specified TTL in seconds
     pub fn new(value: nebula_value::Value, ttl: u64) -> Self {
         let now = Utc::now();
         let expires_at = now + Duration::seconds(ttl as i64);
@@ -154,22 +154,24 @@ impl ExpirableValue {
         self.expires_at = Utc::now() + Duration::seconds(ttl as i64);
     }
 
-    /// Create a new ExpirableValue with a string value
+    /// Create a new `ExpirableValue` with a string value
     pub fn new_string(value: impl Into<String>, ttl: u64) -> Self {
         Self::new(nebula_value::Value::text(value.into()), ttl)
     }
 
-    /// Create a new ExpirableValue with a boolean value
+    /// Create a new `ExpirableValue` with a boolean value
+    #[must_use]
     pub fn new_bool(value: bool, ttl: u64) -> Self {
         Self::new(nebula_value::Value::boolean(value), ttl)
     }
 
-    /// Create a new ExpirableValue with an integer value
+    /// Create a new `ExpirableValue` with an integer value
+    #[must_use]
     pub fn new_int(value: i64, ttl: u64) -> Self {
         Self::new(nebula_value::Value::integer(value), ttl)
     }
 
-    /// Create a new ExpirableValue from ParameterValue (MaybeExpression<Value>)
+    /// Create a new `ExpirableValue` from `ParameterValue` (`MaybeExpression`<Value>)
     pub fn from_parameter_value(param_value: &MaybeExpression<Value>, ttl: u64) -> Self {
         let nebula_val = match param_value {
             MaybeExpression::Value(v) => v.clone(),
@@ -215,39 +217,35 @@ impl HasValue for ExpirableParameter {
 
     fn get(&self) -> Option<&Self::Value> {
         // Check if value is expired and handle auto-clear
-        if let Some(value) = &self.value {
-            if value.is_expired() {
-                if let Some(options) = &self.options {
-                    if options.auto_clear_expired {
-                        return None; // Act as if no value exists
-                    }
-                }
-            }
+        if let Some(value) = &self.value
+            && value.is_expired()
+            && let Some(options) = &self.options
+            && options.auto_clear_expired
+        {
+            return None; // Act as if no value exists
         }
         self.value.as_ref()
     }
 
     fn get_mut(&mut self) -> Option<&mut Self::Value> {
         // Check if value is expired and handle auto-clear
-        if let Some(value) = &self.value {
-            if value.is_expired() {
-                if let Some(options) = &self.options {
-                    if options.auto_clear_expired {
-                        self.value = None;
-                        return None;
-                    }
-                }
-            }
+        if let Some(value) = &self.value
+            && value.is_expired()
+            && let Some(options) = &self.options
+            && options.auto_clear_expired
+        {
+            self.value = None;
+            return None;
         }
         self.value.as_mut()
     }
 
     fn set(&mut self, mut value: Self::Value) -> Result<(), ParameterError> {
         // Auto-refresh if enabled
-        if let Some(options) = &self.options {
-            if options.auto_refresh {
-                value.refresh(options.ttl);
-            }
+        if let Some(options) = &self.options
+            && options.auto_refresh
+        {
+            value.refresh(options.ttl);
         }
         self.value = Some(value);
         Ok(())
@@ -268,10 +266,10 @@ impl Expressible for ExpirableParameter {
         // Convert ExpirableValue to MaybeExpression<Value>
         // Return the inner value if not expired, otherwise None
         self.value.as_ref().and_then(|exp_val| {
-            if !exp_val.is_expired() {
-                Some(MaybeExpression::Value(exp_val.value.clone()))
-            } else {
+            if exp_val.is_expired() {
                 None
+            } else {
+                Some(MaybeExpression::Value(exp_val.value.clone()))
             }
         })
     }
@@ -282,7 +280,7 @@ impl Expressible for ExpirableParameter {
     ) -> Result<(), ParameterError> {
         let value = value.into();
         // Get TTL from options or use default
-        let ttl = self.options.as_ref().map(|opts| opts.ttl).unwrap_or(3600); // Default 1 hour
+        let ttl = self.options.as_ref().map_or(3600, |opts| opts.ttl); // Default 1 hour
 
         let exp_val = ExpirableValue::from_parameter_value(&value, ttl);
         self.value = Some(exp_val);
@@ -354,7 +352,7 @@ impl ExpirableParameter {
 
     /// Check if the current value has expired
     pub fn is_expired(&self) -> bool {
-        self.value.as_ref().map(|v| v.is_expired()).unwrap_or(true)
+        self.value.as_ref().is_none_or(ExpirableValue::is_expired)
     }
 
     /// Get the remaining TTL in seconds
@@ -366,17 +364,16 @@ impl ExpirableParameter {
 
     /// Get the age of the current value in seconds
     pub fn age(&self) -> Option<u64> {
-        self.value.as_ref().map(|v| v.age())
+        self.value.as_ref().map(ExpirableValue::age)
     }
 
     /// Check if the value is expiring soon
     pub fn is_expiring_soon(&self) -> bool {
-        if let Some(value) = &self.value {
-            if let Some(options) = &self.options {
-                if let Some(threshold) = options.warning_threshold {
-                    return value.is_expiring_soon(threshold);
-                }
-            }
+        if let Some(value) = &self.value
+            && let Some(options) = &self.options
+            && let Some(threshold) = options.warning_threshold
+        {
+            return value.is_expiring_soon(threshold);
         }
         false
     }
@@ -385,7 +382,7 @@ impl ExpirableParameter {
     #[must_use = "operation result must be checked"]
     pub fn refresh_ttl(&mut self) -> Result<(), ParameterError> {
         if let Some(value) = &mut self.value {
-            let ttl = self.options.as_ref().map(|o| o.ttl).unwrap_or(DEFAULT_TTL);
+            let ttl = self.options.as_ref().map_or(DEFAULT_TTL, |o| o.ttl);
             value.refresh(ttl);
             Ok(())
         } else {
@@ -399,10 +396,10 @@ impl ExpirableParameter {
     /// Get the actual value if not expired
     pub fn get_actual_value(&self) -> Option<&nebula_value::Value> {
         if let Some(value) = self.get() {
-            if !value.is_expired() {
-                Some(&value.value)
-            } else {
+            if value.is_expired() {
                 None
+            } else {
+                Some(&value.value)
             }
         } else {
             None
@@ -411,6 +408,6 @@ impl ExpirableParameter {
 
     /// Get the TTL configuration
     pub fn get_ttl_config(&self) -> u64 {
-        self.options.as_ref().map(|o| o.ttl).unwrap_or(DEFAULT_TTL)
+        self.options.as_ref().map_or(DEFAULT_TTL, |o| o.ttl)
     }
 }

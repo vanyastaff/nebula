@@ -58,7 +58,7 @@ where
 /// assert!(validator.validate(&vec![1, 2, 3]).is_ok());
 /// assert!(validator.validate(&vec![1, 2]).is_err());
 /// ```
-#[must_use] 
+#[must_use]
 pub fn min_size<T>(min: usize) -> MinSize<T>
 where
     T: Clone,
@@ -122,7 +122,7 @@ where
 /// assert!(validator.validate(&vec![1, 2, 3]).is_ok());
 /// assert!(validator.validate(&vec![1, 2, 3, 4]).is_err());
 /// ```
-#[must_use] 
+#[must_use]
 pub fn max_size<T>(max: usize) -> MaxSize<T>
 where
     T: Clone,
@@ -187,7 +187,7 @@ where
 /// assert!(validator.validate(&vec![1, 2]).is_err());
 /// assert!(validator.validate(&vec![1, 2, 3, 4]).is_err());
 /// ```
-#[must_use] 
+#[must_use]
 pub fn exact_size<T>(size: usize) -> ExactSize<T>
 where
     T: Clone,
@@ -246,7 +246,7 @@ where
 /// assert!(validator.validate(&vec![1]).is_ok());
 /// assert!(validator.validate(&vec![]).is_err());
 /// ```
-#[must_use] 
+#[must_use]
 pub fn not_empty_collection<T>() -> NotEmptyCollection<T>
 where
     T: Clone,

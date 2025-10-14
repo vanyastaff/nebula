@@ -9,8 +9,6 @@
 //! - **Interactive authentication** - Multi-step flows with user interaction
 //! - **Secure storage** - Zero-copy secrets with automatic zeroization
 //! - **Minimal boilerplate** - ~30-50 lines to add new integrations
-
-#![warn(missing_docs)]
 #![deny(unsafe_code)]
 #![forbid(unsafe_code)]
 

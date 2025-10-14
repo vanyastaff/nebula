@@ -5,7 +5,7 @@
 //!
 //! # Architecture
 //!
-//! - **direct.rs** - Direct syscall wrappers (mmap, VirtualAlloc, etc.)
+//! - **direct.rs** - Direct syscall wrappers (mmap, `VirtualAlloc`, etc.)
 //! - **info.rs** - Allocator-specific memory information
 //! - **numa.rs** - NUMA-aware allocation (when available)
 //!
@@ -41,6 +41,7 @@ pub struct AllocatorCapabilities {
 
 impl AllocatorCapabilities {
     /// Detect available allocator capabilities
+    #[must_use]
     pub fn detect() -> Self {
         #[cfg(target_os = "linux")]
         {

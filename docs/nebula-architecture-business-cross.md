@@ -277,50 +277,6 @@ let user = ctx.measure("database.query", async {
 
 ---
 
-### nebula-error
-**Назначение:** Унифицированная обработка ошибок с контекстом.
-
-**Ключевые возможности:**
-- Error hierarchy
-- Context propagation
-- Recovery strategies
-- Localization support
-
-```rust
-#[derive(Error, Debug)]
-pub enum NebulaError {
-    #[error("Workflow error: {0}")]
-    Workflow(#[from] WorkflowError),
-    
-    #[error("Action error: {0}")]
-    Action(#[from] ActionError),
-    
-    #[error("Resource error: {0}")]
-    Resource(#[from] ResourceError),
-}
-
-// Контекстные ошибки
-pub trait ErrorContextExt {
-    fn with_context(self, ctx: &ExecutionContext) -> ContextualError;
-}
-
-// Recovery strategies
-pub enum ErrorRecoveryStrategy {
-    Retry { policy: RetryPolicy },
-    Fallback { handler: Box<dyn Fn() -> Result<Value>> },
-    Compensate { action: ActionId },
-    Skip,
-}
-
-// Использование
-db.query(sql)
-    .await
-    .context("Failed to query database")
-    .with_context(&ctx)?;
-```
-
----
-
 ### nebula-resilience
 **Назначение:** Паттерны устойчивости для надежной работы.
 

@@ -49,7 +49,8 @@ impl Default for ArenaStats {
 }
 
 impl ArenaStats {
-    /// Creates a new ArenaStats instance
+    /// Creates a new `ArenaStats` instance
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

@@ -32,7 +32,7 @@
 //! - Error rate: `rate(http_errors_total[5m])`
 //! - 95th percentile latency: `histogram_quantile(0.95, http_request_duration_seconds_bucket)`
 
-use nebula_log::observability::{emit_event, register_hook, ObservabilityEvent, ObservabilityHook};
+use nebula_log::observability::{ObservabilityEvent, ObservabilityHook, emit_event, register_hook};
 use nebula_log::{info, warn};
 use std::sync::Arc;
 use std::time::Duration;
@@ -94,7 +94,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Grafana Dashboard ===");
     println!("Import this JSON for a basic dashboard:\n");
-    println!(r#"{{
+    println!(
+        r#"{{
   "dashboard": {{
     "title": "Nebula Observability",
     "panels": [
@@ -112,7 +113,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       }}
     ]
   }}
-}}"#);
+}}"#
+    );
 
     println!("\n=== PromQL Query Examples ===");
     println!("Event rate (5m):     rate(operation_events_total[5m])");

@@ -15,10 +15,9 @@ use std::hash::{Hash, Hasher};
 
 use im::HashMap;
 
-use crate::core::NebulaError;
-use crate::core::error::{ValueErrorExt, ValueResult};
-use crate::core::limits::ValueLimits;
 use crate::core::Value;
+use crate::core::limits::ValueLimits;
+use crate::core::{ValueError, ValueResult};
 
 /// Type alias for values stored in objects
 pub type ValueItem = Value;
@@ -87,8 +86,7 @@ impl Object {
 
     /// Get value by key or error
     pub fn try_get(&self, key: &str) -> ValueResult<&ValueItem> {
-        self.get(key)
-            .ok_or_else(|| NebulaError::value_key_not_found(key))
+        self.get(key).ok_or_else(|| ValueError::key_not_found(key))
     }
 
     /// Check if key exists
@@ -383,7 +381,7 @@ mod tests {
             ("c".to_string(), Value::integer(3)),
         ]);
 
-        let filtered = obj.filter(|_k, v| v.as_integer().unwrap() > 1);
+        let filtered = obj.filter(|_k, v| v.as_integer().map(|i| i.value()).unwrap_or(0) > 1);
         assert_eq!(filtered.len(), 2);
         assert!(!filtered.contains_key("a"));
         assert!(filtered.contains_key("b"));

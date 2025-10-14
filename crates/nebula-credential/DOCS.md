@@ -90,7 +90,7 @@ nebula-credential/
 ## Integration Points
 
 **Used By**: All workflow nodes/actions accessing external APIs
-**Uses**: `nebula-core`, `nebula-error`, `reqwest`, `base64`
+**Uses**: `nebula-core`,  `reqwest`, `base64`
 
 ## When to Use
 

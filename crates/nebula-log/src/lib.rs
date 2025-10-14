@@ -46,13 +46,13 @@ pub use layer::context::{Context, ContextGuard, Fields};
 pub use timing::{Timed, Timer, TimerGuard};
 
 // Re-export core types
-pub use core::{LogError, LogResult, LogResultExt, NebulaError, NebulaResult, ResultExt};
+pub use core::{LogError, LogResult, LogResultExt};
 
 /// Prelude for common imports
 pub mod prelude {
     pub use crate::{
-        Level, LogError, LogResult, LogResultExt, NebulaError, Timed, Timer, auto_init, debug,
-        error, info, init, init_with, instrument, span, trace, warn,
+        Level, LogError, LogResult, LogResultExt, Timed, Timer, auto_init, debug, error, info,
+        init, init_with, instrument, span, trace, warn,
     };
 
     pub use tracing::{Span, field};

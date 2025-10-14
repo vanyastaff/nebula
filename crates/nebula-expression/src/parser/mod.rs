@@ -2,11 +2,11 @@
 //!
 //! This module implements a recursive descent parser with precedence climbing for operators.
 
+use crate::ExpressionError;
 use crate::core::ast::{BinaryOp, Expr};
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::core::span::Span;
 use crate::core::token::{Token, TokenKind};
-use nebula_error::NebulaError;
 use nebula_value::Value;
 use std::sync::Arc;
 
@@ -42,7 +42,7 @@ impl<'a> Parser<'a> {
     /// Parse expression with depth tracking
     fn parse_expression_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
         if depth > MAX_PARSER_DEPTH {
-            return Err(NebulaError::expression_parse_error(format!(
+            return Err(ExpressionError::expression_parse_error(format!(
                 "Maximum parser recursion depth ({}) exceeded",
                 MAX_PARSER_DEPTH
             )));
@@ -82,7 +82,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 name
             } else {
-                return Err(NebulaError::expression_parse_error(
+                return Err(ExpressionError::expression_parse_error(
                     "Expected function name after |",
                 ));
             };
@@ -138,7 +138,7 @@ impl<'a> Parser<'a> {
                 TokenKind::And => BinaryOp::And,
                 TokenKind::Or => BinaryOp::Or,
                 _ => {
-                    return Err(NebulaError::expression_parse_error(format!(
+                    return Err(ExpressionError::expression_parse_error(format!(
                         "Unexpected operator: {}",
                         self.current_token()
                     )));
@@ -195,7 +195,7 @@ impl<'a> Parser<'a> {
                         self.advance();
                         name
                     } else {
-                        return Err(NebulaError::expression_parse_error(
+                        return Err(ExpressionError::expression_parse_error(
                             "Expected property name after .",
                         ));
                     };
@@ -318,7 +318,7 @@ impl<'a> Parser<'a> {
                                 k
                             }
                             _ => {
-                                return Err(NebulaError::expression_parse_error(
+                                return Err(ExpressionError::expression_parse_error(
                                     "Expected object key",
                                 ));
                             }
@@ -338,7 +338,7 @@ impl<'a> Parser<'a> {
                 Ok(Expr::Object(pairs))
             }
 
-            _ => Err(NebulaError::expression_parse_error(format!(
+            _ => Err(ExpressionError::expression_parse_error(format!(
                 "Unexpected token: {}",
                 self.current_token()
             ))),
@@ -400,7 +400,7 @@ impl<'a> Parser<'a> {
                         self.advance();
                         name
                     } else {
-                        return Err(NebulaError::expression_parse_error(
+                        return Err(ExpressionError::expression_parse_error(
                             "Expected property name after .",
                         ));
                     };
@@ -454,7 +454,7 @@ impl<'a> Parser<'a> {
             self.advance();
             Ok(())
         } else {
-            Err(NebulaError::expression_parse_error(format!(
+            Err(ExpressionError::expression_parse_error(format!(
                 "Expected {}, found {}",
                 expected,
                 self.current_token()

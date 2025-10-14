@@ -79,7 +79,7 @@ impl LoggerBuilder {
         // Create the filter
         let filter = EnvFilter::try_new(&self.config.level).map_err(|e| {
             use crate::core::LogError;
-            nebula_error::NebulaError::log_filter_error(&self.config.level, e.to_string())
+            LogError::filter_parsing_error(format!("{}: {}", &self.config.level, e))
         })?;
 
         // Get writer for the format layer

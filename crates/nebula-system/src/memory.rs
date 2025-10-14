@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 // Internal crates
-use crate::core::{NebulaError, SystemError, SystemResult};
+use crate::core::{SystemError, SystemResult};
 use crate::info::SystemInfo;
 
 // Re-export from region for convenience
@@ -28,13 +28,13 @@ pub enum MemoryPressure {
 
 impl MemoryPressure {
     /// Check if memory pressure is concerning (High or Critical)
-    #[must_use] 
+    #[must_use]
     pub fn is_concerning(&self) -> bool {
         *self >= MemoryPressure::High
     }
 
     /// Check if memory pressure is critical
-    #[must_use] 
+    #[must_use]
     pub fn is_critical(&self) -> bool {
         *self == MemoryPressure::Critical
     }
@@ -57,7 +57,7 @@ pub struct MemoryInfo {
 }
 
 /// Get current memory information
-#[must_use] 
+#[must_use]
 pub fn current() -> MemoryInfo {
     let sys_memory = SystemInfo::current_memory();
     let used = sys_memory.total.saturating_sub(sys_memory.available);
@@ -69,11 +69,13 @@ pub fn current() -> MemoryInfo {
     let usage_percent = if sys_memory.total > 0 {
         used.checked_mul(10000)
             .and_then(|v| v.checked_div(sys_memory.total))
-            .map(|v| v as f64 / 100.0)
-            .unwrap_or_else(|| {
-                // Fallback to direct f64 if overflow (extremely rare)
-                (used as f64 / sys_memory.total as f64) * 100.0
-            })
+            .map_or_else(
+                || {
+                    // Fallback to direct f64 if overflow (extremely rare)
+                    (used as f64 / sys_memory.total as f64) * 100.0
+                },
+                |v| v as f64 / 100.0,
+            )
     } else {
         0.0
     };
@@ -98,7 +100,7 @@ pub fn current() -> MemoryInfo {
 }
 
 /// Get current memory pressure
-#[must_use] 
+#[must_use]
 pub fn pressure() -> MemoryPressure {
     current().pressure
 }
@@ -112,7 +114,7 @@ pub use crate::utils::format_bytes_usize as format_bytes;
 #[cfg(feature = "memory")]
 /// Low-level memory management helpers backed by the `region` crate.
 pub mod management {
-    use super::{MemoryProtection, SystemError, SystemResult, NebulaError};
+    use super::{MemoryProtection, SystemError, SystemResult};
 
     /// Memory region information
     #[derive(Debug, Clone)]
@@ -172,7 +174,7 @@ pub mod management {
                 std::mem::forget(alloc);
                 ptr
             })
-            .map_err(|e| NebulaError::system_memory_error("allocate", e.to_string()))
+            .map_err(|e| SystemError::memory_operation_error(format!("allocate: {e}")))
     }
 
     /// Free allocated memory
@@ -192,7 +194,7 @@ pub mod management {
     ///
     /// Always returns [`NebulaError::SystemError`] with "not supported" message.
     pub unsafe fn free(_ptr: *mut u8, _size: usize) -> SystemResult<()> {
-        Err(NebulaError::system_not_supported(
+        Err(SystemError::feature_not_supported(
             "Manual free is not supported for region allocations; use RAII handle instead",
         ))
     }
@@ -242,7 +244,7 @@ pub mod management {
         // system call to change memory protection flags.
         unsafe {
             region::protect(ptr, size, protection)
-                .map_err(|e| NebulaError::system_memory_error("protect", e.to_string()))
+                .map_err(|e| SystemError::memory_operation_error(format!("protect: {e}")))
         }
     }
 
@@ -292,7 +294,7 @@ pub mod management {
         // until unlock() is called. This is intentional but means caller MUST call unlock.
         region::lock(ptr, size)
             .map(|_guard| ())
-            .map_err(|e| NebulaError::system_memory_error("lock", e.to_string()))
+            .map_err(|e| SystemError::memory_operation_error(format!("lock: {e}")))
     }
 
     /// Unlock memory pages
@@ -332,7 +334,7 @@ pub mod management {
         // and ptr/size match the original lock() call. We delegate to region::unlock
         // which performs the OS-level system call.
         region::unlock(ptr, size)
-            .map_err(|e| NebulaError::system_memory_error("unlock", e.to_string()))
+            .map_err(|e| SystemError::memory_operation_error(format!("unlock: {e}")))
     }
 
     /// Query memory region information
@@ -380,7 +382,7 @@ pub mod management {
         // We delegate to region::query which uses platform-specific APIs to
         // retrieve memory region information from the OS.
         let region = region::query(ptr)
-            .map_err(|e| NebulaError::system_memory_error("query", e.to_string()))?;
+            .map_err(|e| SystemError::memory_operation_error(format!("query: {e}")))?;
 
         Ok(MemoryRegion {
             // Base address is approximated by the queried pointer since region base may be inaccessible here

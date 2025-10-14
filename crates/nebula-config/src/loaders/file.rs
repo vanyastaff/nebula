@@ -99,16 +99,20 @@ impl FileLoader {
     }
 
     /// Convert YAML value to JSON value
-    fn yaml_to_json(&self, yaml: &yaml_rust2::Yaml, path: &Path) -> ConfigResult<serde_json::Value> {
+    fn yaml_to_json(
+        &self,
+        yaml: &yaml_rust2::Yaml,
+        path: &Path,
+    ) -> ConfigResult<serde_json::Value> {
         use yaml_rust2::Yaml;
 
         match yaml {
             Yaml::Real(s) | Yaml::String(s) => {
                 // Try to parse as number first
-                if let Ok(num) = s.parse::<f64>() {
-                    if let Some(json_num) = serde_json::Number::from_f64(num) {
-                        return Ok(serde_json::Value::Number(json_num));
-                    }
+                if let Ok(num) = s.parse::<f64>()
+                    && let Some(json_num) = serde_json::Number::from_f64(num)
+                {
+                    return Ok(serde_json::Value::Number(json_num));
                 }
                 Ok(serde_json::Value::String(s.clone()))
             }
@@ -224,10 +228,10 @@ impl FileLoader {
         if let Ok(int_val) = value.parse::<i64>() {
             return serde_json::Value::Number(serde_json::Number::from(int_val));
         }
-        if let Ok(float_val) = value.parse::<f64>() {
-            if let Some(num) = serde_json::Number::from_f64(float_val) {
-                return serde_json::Value::Number(num);
-            }
+        if let Ok(float_val) = value.parse::<f64>()
+            && let Some(num) = serde_json::Number::from_f64(float_val)
+        {
+            return serde_json::Value::Number(num);
         }
 
         serde_json::Value::String(value.to_string())

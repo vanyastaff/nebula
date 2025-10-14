@@ -46,7 +46,7 @@ impl Json {
     /// Default settings:
     /// - `allow_primitives`: true (allows strings, numbers, booleans, null)
     /// - `max_depth`: None (no limit)
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             allow_primitives: true,
@@ -113,12 +113,13 @@ impl Json {
 
     fn parse_value(&self, input: &str, depth: usize) -> Result<(), ValidationError> {
         if let Some(max) = self.max_depth
-            && depth > max {
-                return Err(ValidationError::new(
-                    "json_too_deep",
-                    format!("JSON nesting exceeds maximum depth of {max}"),
-                ));
-            }
+            && depth > max
+        {
+            return Err(ValidationError::new(
+                "json_too_deep",
+                format!("JSON nesting exceeds maximum depth of {max}"),
+            ));
+        }
 
         let trimmed = input.trim();
         if trimmed.is_empty() {
@@ -268,21 +269,7 @@ impl Json {
                     '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' => escape = false,
                     'u' => {
                         // Unicode escape: \uXXXX
-                        for _ in 0..4 {
-                            if let Some(hex) = chars.next() {
-                                if !hex.is_ascii_hexdigit() {
-                                    return Err(ValidationError::new(
-                                        "invalid_json_unicode",
-                                        "Invalid unicode escape sequence",
-                                    ));
-                                }
-                            } else {
-                                return Err(ValidationError::new(
-                                    "invalid_json_unicode",
-                                    "Incomplete unicode escape sequence",
-                                ));
-                            }
-                        }
+                        Self::validate_unicode_escape(&mut chars)?;
                         escape = false;
                     }
                     _ => {
@@ -297,14 +284,15 @@ impl Json {
                     '\\' => escape = true,
                     '"' => {
                         // Check if this is the closing quote
-                        if chars.next().is_none() {
-                            return Ok(());
-                        }
-                        // If there are more characters, it's invalid
-                        return Err(ValidationError::new(
-                            "invalid_json_string",
-                            "Extra characters after closing quote",
-                        ));
+                        return if chars.next().is_none() {
+                            Ok(())
+                        } else {
+                            // If there are more characters, it's invalid
+                            Err(ValidationError::new(
+                                "invalid_json_string",
+                                "Extra characters after closing quote",
+                            ))
+                        };
                     }
                     '\x00'..='\x1F' => {
                         return Err(ValidationError::new(
@@ -321,6 +309,30 @@ impl Json {
             "unclosed_json_string",
             "JSON string is not closed",
         ))
+    }
+
+    fn validate_unicode_escape<I>(chars: &mut I) -> Result<(), ValidationError>
+    where
+        I: Iterator<Item = char>,
+    {
+        for _ in 0..4 {
+            match chars.next() {
+                Some(hex) if hex.is_ascii_hexdigit() => continue,
+                Some(_) => {
+                    return Err(ValidationError::new(
+                        "invalid_json_unicode",
+                        "Invalid unicode escape sequence",
+                    ));
+                }
+                None => {
+                    return Err(ValidationError::new(
+                        "invalid_json_unicode",
+                        "Incomplete unicode escape sequence",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn parse_number(&self, input: &str) -> Result<(), ValidationError> {
@@ -376,28 +388,30 @@ impl Json {
 
         // Optional exponent
         if let Some(&c) = chars.peek()
-            && (c == 'e' || c == 'E') {
+            && (c == 'e' || c == 'E')
+        {
+            chars.next();
+            if let Some(&sign) = chars.peek()
+                && (sign == '+' || sign == '-')
+            {
                 chars.next();
-                if let Some(&sign) = chars.peek()
-                    && (sign == '+' || sign == '-') {
-                        chars.next();
-                    }
-                let mut has_digit = false;
-                while let Some(&c) = chars.peek() {
-                    if c.is_ascii_digit() {
-                        chars.next();
-                        has_digit = true;
-                    } else {
-                        break;
-                    }
-                }
-                if !has_digit {
-                    return Err(ValidationError::new(
-                        "invalid_json_number",
-                        "Exponent must have digits",
-                    ));
+            }
+            let mut has_digit = false;
+            while let Some(&c) = chars.peek() {
+                if c.is_ascii_digit() {
+                    chars.next();
+                    has_digit = true;
+                } else {
+                    break;
                 }
             }
+            if !has_digit {
+                return Err(ValidationError::new(
+                    "invalid_json_number",
+                    "Exponent must have digits",
+                ));
+            }
+        }
 
         if chars.next().is_some() {
             return Err(ValidationError::new(

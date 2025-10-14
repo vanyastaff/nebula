@@ -22,7 +22,6 @@ zeroize = { version = "1.8.1", features = ["zeroize_derive"] }
 
 # Core types
 nebula-core = { path = "../nebula-core" }
-nebula-error = { path = "../nebula-error" }
 nebula-log = { path = "../nebula-log" }
 
 # Errors
@@ -47,5 +46,4 @@ pretty_assertions = "1.4"
 default = []
 storage-postgres = ["sqlx"]
 
-[lints]
-workspace = true
+

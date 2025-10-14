@@ -1,10 +1,10 @@
 //! Math functions
 
 use super::{check_arg_count, check_min_arg_count, get_number_arg};
+use crate::ExpressionError;
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
-use nebula_error::NebulaError;
 use nebula_value::Value;
 
 /// Absolute value
@@ -96,7 +96,7 @@ pub fn sqrt(
     check_arg_count("sqrt", args, 1)?;
     let num = args[0].to_float()?;
     if num < 0.0 {
-        return Err(NebulaError::expression_invalid_argument(
+        return Err(ExpressionError::expression_invalid_argument(
             "sqrt",
             "Cannot take square root of negative number",
         ));

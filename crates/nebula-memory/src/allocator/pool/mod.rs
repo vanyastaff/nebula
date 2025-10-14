@@ -4,7 +4,7 @@
 //! Provides O(1) allocation/deallocation for same-sized objects.
 //!
 //! ## Modules
-//! - `allocator` - Main PoolAllocator implementation with lock-free free list
+//! - `allocator` - Main `PoolAllocator` implementation with lock-free free list
 //! - `config` - Configuration variants (production, debug, performance)
 //! - `pool_box` - RAII smart pointer for pool-allocated objects
 //! - `stats` - Statistics tracking types

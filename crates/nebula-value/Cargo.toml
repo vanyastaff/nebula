@@ -15,7 +15,6 @@ description = "Value type system for Nebula workflow engine"
 
 [dependencies]
 # Nebula ecosystem (CRITICAL - must be compatible versions)
-nebula-error = { path = "../nebula-error" }
 nebula-log = { path = "../nebula-log" }
 # nebula-memory = { path = "../nebula-memory", optional = true }  # TEMP: disabled - missing docs
 # nebula-validator = { path = "../nebula-validator", optional = true }  # TEMP: disabled due to cyclic dependency
@@ -31,8 +30,6 @@ arc-swap = "1.7"
 # Small value optimization
 smallvec = { version = "1.13", features = ["union", "const_generics"] }
 
-# Fast hashing
-ahash = "0.8"
 
 # Async runtime
 tokio = { workspace = true, optional = true }

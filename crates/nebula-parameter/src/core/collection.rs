@@ -1,6 +1,5 @@
 //! Type-safe parameter collection with dependency tracking
 
-use std::any::Any;
 use std::collections::HashMap;
 
 use nebula_core::ParameterKey;
@@ -14,12 +13,13 @@ pub struct ParameterCollection {
     /// Storage for all parameters
     parameters: HashMap<ParameterKey, Box<dyn ParameterValue>>,
 
-    /// Dependency graph (parameter_key -> depends_on_keys)
+    /// Dependency graph (`parameter_key` -> `depends_on_keys`)
     dependencies: HashMap<ParameterKey, Vec<ParameterKey>>,
 }
 
 impl ParameterCollection {
     /// Create a new empty parameter collection
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -115,11 +115,13 @@ impl ParameterCollection {
     }
 
     /// Get the number of parameters
+    #[must_use]
     pub fn len(&self) -> usize {
         self.parameters.len()
     }
 
     /// Check if the collection is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.parameters.is_empty()
     }
@@ -159,10 +161,10 @@ impl ParameterCollection {
 
         // Validate in topological order (dependencies first)
         for key in self.topological_sort() {
-            if let Some(param) = self.parameters.get(&key) {
-                if let Err(e) = param.validate_erased().await {
-                    errors.push((key.clone(), e));
-                }
+            if let Some(param) = self.parameters.get(&key)
+                && let Err(e) = param.validate_erased().await
+            {
+                errors.push((key.clone(), e));
             }
         }
 
@@ -221,6 +223,7 @@ impl ParameterCollection {
     }
 
     /// Create a snapshot of all parameter values
+    #[must_use]
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             values: self
@@ -258,11 +261,13 @@ pub enum ValidationResult {
 
 impl ValidationResult {
     /// Check if validation passed
+    #[must_use]
     pub fn is_valid(&self) -> bool {
         matches!(self, ValidationResult::Valid)
     }
 
     /// Get validation errors
+    #[must_use]
     pub fn errors(&self) -> Option<&[(ParameterKey, ParameterError)]> {
         match self {
             ValidationResult::Valid => None,
@@ -279,6 +284,7 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// Create an empty snapshot
+    #[must_use]
     pub fn new() -> Self {
         Self {
             values: HashMap::new(),
@@ -286,11 +292,13 @@ impl Snapshot {
     }
 
     /// Get the number of captured values
+    #[must_use]
     pub fn len(&self) -> usize {
         self.values.len()
     }
 
     /// Check if snapshot is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }

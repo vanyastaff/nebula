@@ -1,6 +1,5 @@
 //! Authenticated resource trait for credential-based resources
 
-
 #[cfg(feature = "credentials")]
 use crate::credentials::ResourceCredentialProvider;
 

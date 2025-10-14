@@ -1,6 +1,8 @@
 //! Core parameter traits
 
-use crate::core::display_stub::{DisplayContext, ParameterCondition, ParameterDisplay, ParameterDisplayError};
+use crate::core::display_stub::{
+    DisplayContext, ParameterCondition, ParameterDisplay, ParameterDisplayError,
+};
 use crate::core::validation::ParameterValidation;
 use crate::core::{ParameterError, ParameterKind, ParameterMetadata};
 pub use async_trait::async_trait;
@@ -121,6 +123,7 @@ pub trait Parameter: Send + Sync {
 ///     }
 /// }
 /// ```
+#[async_trait]
 pub trait HasValue: Parameter + Debug {
     /// The concrete value type for this parameter
     type Value: Clone + PartialEq + Debug + Send + Sync + 'static;
@@ -260,12 +263,11 @@ pub trait HasValueExt: HasValue {
     ///
     /// If no default is set, clears the value instead.
     fn reset(&mut self) -> Result<(), ParameterError> {
-        match self.default().cloned() {
-            Some(default) => self.set(default),
-            None => {
-                self.clear();
-                Ok(())
-            }
+        if let Some(default) = self.default().cloned() {
+            self.set(default)
+        } else {
+            self.clear();
+            Ok(())
         }
     }
 
@@ -371,17 +373,16 @@ pub trait HasValueExt: HasValue {
             Ok(()) => Ok(old),
             Err(original_error) => {
                 // Try to restore old value
-                if let Some(old_val) = old {
-                    if let Err(_restore_error) = self.set(old_val) {
-                        // Critical: both operations failed, parameter is poisoned
-                        return Err(ParameterError::InvalidValue {
-                            key: self.metadata().key.clone(),
-                            reason: format!(
-                                "Failed to set value and restore old value: {}",
-                                original_error
-                            ),
-                        });
-                    }
+                if let Some(old_val) = old
+                    && let Err(_restore_error) = self.set(old_val)
+                {
+                    // Critical: both operations failed, parameter is poisoned
+                    return Err(ParameterError::InvalidValue {
+                        key: self.metadata().key.clone(),
+                        reason: format!(
+                            "Failed to set value and restore old value: {original_error}"
+                        ),
+                    });
                 }
                 Err(original_error)
             }
@@ -465,7 +466,7 @@ where
     }
 
     fn clear_erased(&mut self) {
-        self.clear()
+        self.clear();
     }
 
     fn get_erased(&self) -> Option<Value> {
@@ -618,7 +619,7 @@ pub trait Validatable: HasValue + Send + Sync {
                 .await
                 .map_err(|e| ParameterError::InvalidValue {
                     key: self.metadata().key.clone(),
-                    reason: format!("{}", e),
+                    reason: format!("{e}"),
                 })?;
         }
 
@@ -745,6 +746,7 @@ pub trait Validatable: HasValue + Send + Sync {
 /// let value = param.resolve(&engine, &context).await.unwrap();
 /// assert_eq!(value, "Alice");
 /// ```
+#[async_trait::async_trait]
 pub trait Expressible: HasValue {
     // --- Required methods ---
 
@@ -786,7 +788,7 @@ pub trait Expressible: HasValue {
     ///
     /// Returns `None` if the parameter stores a concrete value or has no value.
     fn get_expression(&self) -> Option<String> {
-        self.expression_ref().map(|s| s.to_string())
+        self.expression_ref().map(std::string::ToString::to_string)
     }
 
     /// Set an expression string
@@ -819,14 +821,12 @@ pub trait Expressible: HasValue {
         context: &EvaluationContext,
     ) -> Result<Value, ParameterError> {
         match self.to_expression() {
-            Some(MaybeExpression::Expression(expr)) => {
-                engine
-                    .evaluate(&expr.source, context)
-                    .map_err(|e| ParameterError::InvalidValue {
-                        key: self.metadata().key.clone(),
-                        reason: format!("Expression evaluation failed: {}", e),
-                    })
-            }
+            Some(MaybeExpression::Expression(expr)) => engine
+                .evaluate(&expr.source, context)
+                .map_err(|e| ParameterError::InvalidValue {
+                    key: self.metadata().key.clone(),
+                    reason: format!("Expression evaluation failed: {e}"),
+                }),
             Some(MaybeExpression::Value(v)) => Ok(v),
             None => Err(ParameterError::MissingValue {
                 key: self.metadata().key.clone(),
@@ -939,7 +939,7 @@ pub trait Expressible: HasValue {
 ///
 /// # Use Cases
 ///
-/// - Show API key field only when auth type is "api_key"
+/// - Show API key field only when auth type is "`api_key`"
 /// - Hide advanced options unless "advanced mode" is enabled
 /// - Display region-specific fields based on selected region
 ///

@@ -1,11 +1,11 @@
 //! Type conversion functions
 
 use super::check_arg_count;
+use crate::ExpressionError;
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
-use nebula_error::NebulaError;
-use nebula_value::{Value, JsonValueExt};
+use nebula_value::{JsonValueExt, Value};
 
 /// Convert value to string
 pub fn to_string(
@@ -31,7 +31,7 @@ pub fn to_number(
     } else if let Ok(float_val) = args[0].to_float() {
         Ok(Value::float(float_val))
     } else {
-        Err(NebulaError::expression_type_error(
+        Err(ExpressionError::expression_type_error(
             "convertible to number",
             args[0].kind().name(),
         ))
@@ -58,7 +58,7 @@ pub fn to_json(
 
     use nebula_value::ValueRefExt;
     let json_string = serde_json::to_string(&args[0].to_json()).map_err(|e| {
-        NebulaError::expression_eval_error(format!("Failed to serialize to JSON: {}", e))
+        ExpressionError::expression_eval_error(format!("Failed to serialize to JSON: {}", e))
     })?;
 
     Ok(Value::text(json_string))
@@ -74,10 +74,11 @@ pub fn parse_json(
 
     let json_str = args[0]
         .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[0].kind().name()))?;
+        .ok_or_else(|| ExpressionError::expression_type_error("string", args[0].kind().name()))?;
 
-    let json: serde_json::Value = serde_json::from_str(json_str)
-        .map_err(|e| NebulaError::expression_eval_error(format!("Failed to parse JSON: {}", e)))?;
+    let json: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
+        ExpressionError::expression_eval_error(format!("Failed to parse JSON: {}", e))
+    })?;
 
     Ok(json.to_nebula_value_or_null())
 }

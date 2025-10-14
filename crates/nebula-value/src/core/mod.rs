@@ -53,24 +53,32 @@ pub mod path;
 pub mod serde;
 pub mod value;
 
-pub use conversions::ValueConversion;
+pub use conversions::{ConversionError, ConversionResult, ValueConversion};
 /// Convenient re-exports of the most commonly used core types.
-pub use error::{ValueErrorExt, ValueResult, ValueResultExt};
+pub use error::{ValueError, ValueResult, ValueResultExt};
 pub use hash::{HashableValue, HashableValueExt};
 pub use kind::ValueKind;
 pub use path::PathSegment;
+#[cfg(feature = "serde")]
+pub use serde::{SerdeError, SerdeResult};
 pub use value::Value;
-
-/// Re-export NebulaError for unified error handling
-pub use nebula_error::{NebulaError, Result as NebulaResult, ResultExt};
 
 /// A dynamic error result type alias for ad-hoc usage.
 pub type DynResult<T> = Result<T, Box<dyn std::error::Error>>;
 
+/// Result extension for converting errors
+pub trait ResultExt<T> {
+    /// Convert error to ValueError with message
+    fn value_error<S: Into<String>>(self, msg: S) -> ValueResult<T>;
+}
+
+impl<T, E: std::error::Error> ResultExt<T> for Result<T, E> {
+    fn value_error<S: Into<String>>(self, msg: S) -> ValueResult<T> {
+        self.map_err(|_| ValueError::validation(msg))
+    }
+}
+
 /// A small prelude to import frequently used types in one go.
 pub mod prelude {
-    pub use super::{
-        NebulaError, NebulaResult, PathSegment, Value, ValueErrorExt, ValueResult, ValueResultExt,
-    };
-    pub use nebula_error::ErrorContext;
+    pub use super::{PathSegment, ResultExt, Value, ValueError, ValueResult, ValueResultExt};
 }

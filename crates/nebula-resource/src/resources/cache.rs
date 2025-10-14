@@ -43,6 +43,7 @@ impl ResourceConfig for CacheConfig {
 }
 
 /// Cache resource instance
+#[derive(Debug)]
 pub struct CacheInstance {
     instance_id: uuid::Uuid,
     resource_id: ResourceId,
@@ -85,6 +86,7 @@ impl ResourceInstance for CacheInstance {
 }
 
 /// Cache resource
+#[derive(Debug)]
 pub struct CacheResource;
 
 #[async_trait::async_trait]

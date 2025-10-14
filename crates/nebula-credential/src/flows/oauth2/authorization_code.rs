@@ -141,7 +141,7 @@ pub struct OAuth2AuthorizationCode {
 
 impl OAuth2AuthorizationCode {
     /// Create new `OAuth2` Authorization Code credential
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             flow: AuthorizationCodeFlow,
@@ -274,17 +274,19 @@ impl InteractiveCredential for OAuth2AuthorizationCode {
 
         // Add PKCE verifier if used
         if let Some(pkce_verifier) = partial_state.data.get("pkce_verifier")
-            && !pkce_verifier.is_null() {
-                let verifier: String = serde_json::from_value(pkce_verifier.clone())
-                    .map_err(|e| CredentialError::Internal(e.to_string()))?;
-                form_data.push(("code_verifier", verifier));
-            }
+            && !pkce_verifier.is_null()
+        {
+            let verifier: String = serde_json::from_value(pkce_verifier.clone())
+                .map_err(|e| CredentialError::Internal(e.to_string()))?;
+            form_data.push(("code_verifier", verifier));
+        }
 
         // Add client_secret if provided
         if let Some(client_secret) = partial_state.data.get("client_secret")
-            && let Some(secret) = client_secret.as_str() {
-                form_data.push(("client_secret", secret.to_string()));
-            }
+            && let Some(secret) = client_secret.as_str()
+        {
+            form_data.push(("client_secret", secret.to_string()));
+        }
 
         // Exchange code for token
         let response = ctx

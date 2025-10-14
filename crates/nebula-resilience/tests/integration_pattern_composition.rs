@@ -8,8 +8,8 @@
 
 use nebula_resilience::prelude::*;
 use nebula_resilience::retry;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -55,7 +55,11 @@ async fn test_retry_with_circuit_breaker() {
 
     // Should have retried 2 times before success
     let total_attempts = attempt_count.load(Ordering::SeqCst);
-    assert!(total_attempts >= 3, "Expected at least 3 attempts, got {}", total_attempts);
+    assert!(
+        total_attempts >= 3,
+        "Expected at least 3 attempts, got {}",
+        total_attempts
+    );
 }
 
 /// Test: Circuit breaker opens after threshold failures
@@ -100,7 +104,10 @@ async fn test_circuit_breaker_opens_after_failures() {
         .await;
 
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), ResilienceError::CircuitBreakerOpen { .. }));
+    assert!(matches!(
+        result.unwrap_err(),
+        ResilienceError::CircuitBreakerOpen { .. }
+    ));
 
     // Operation should not have been executed
     assert_eq!(attempt_count.load(Ordering::SeqCst), before_count);
@@ -165,7 +172,10 @@ async fn test_full_policy_composition() {
     // Register comprehensive policy
     let policy = ResiliencePolicy::default()
         .with_timeout(Duration::from_secs(2))
-        .with_retry(RetryStrategy::exponential_backoff(3, Duration::from_millis(100)))
+        .with_retry(RetryStrategy::exponential_backoff(
+            3,
+            Duration::from_millis(100),
+        ))
         .with_circuit_breaker(CircuitBreakerConfig {
             failure_threshold: 5,
             reset_timeout: Duration::from_secs(5),
@@ -222,8 +232,7 @@ async fn test_full_policy_composition() {
 async fn test_manager_concurrent_access() {
     let manager = Arc::new(ResilienceManager::with_defaults());
 
-    let policy = ResiliencePolicy::default()
-        .with_timeout(Duration::from_millis(500));
+    let policy = ResiliencePolicy::default().with_timeout(Duration::from_millis(500));
 
     manager.register_service("concurrent-test", policy).await;
 

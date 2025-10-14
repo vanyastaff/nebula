@@ -16,7 +16,7 @@ use once_cell::sync::OnceCell;
 
 use chrono::{NaiveTime, Timelike};
 
-use crate::core::{NebulaError, ValueResult};
+use crate::core::{ValueError, ValueResult};
 
 /// Internal time storage (nanoseconds since midnight)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -42,25 +42,25 @@ impl TimeInner {
     pub fn new(hour: u32, minute: u32, second: u32, nanos: u32) -> ValueResult<Self> {
         // Validate components
         if hour >= 24 {
-            return Err(NebulaError::validation(format!("Invalid hour: {}", hour)));
+            return Err(ValueError::validation(format!("Invalid hour: {}", hour)));
         }
 
         if minute >= 60 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Invalid minute: {}",
                 minute
             )));
         }
 
         if second >= 60 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Invalid second: {}",
                 second
             )));
         }
 
         if nanos >= Self::NANOS_PER_SECOND as u32 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Invalid nanoseconds: {}",
                 nanos
             )));
@@ -96,7 +96,7 @@ impl TimeInner {
     /// Creates from total nanoseconds since midnight
     pub fn from_nanos(nanos: u64) -> ValueResult<Self> {
         if nanos > Self::MAX_NANOS {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Nanoseconds {} exceeds max {}",
                 nanos,
                 Self::MAX_NANOS
@@ -214,7 +214,7 @@ impl Time {
     /// Creates a new Time with milliseconds
     pub fn with_millis(hour: u32, minute: u32, second: u32, millis: u32) -> ValueResult<Self> {
         if millis >= 1000 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Invalid milliseconds: {}",
                 millis
             )));
@@ -225,7 +225,7 @@ impl Time {
     /// Creates a new Time with microseconds
     pub fn with_micros(hour: u32, minute: u32, second: u32, micros: u32) -> ValueResult<Self> {
         if micros >= 1_000_000 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Invalid microseconds: {}",
                 micros
             )));
@@ -280,7 +280,7 @@ impl Time {
     /// Creates from seconds since midnight
     pub fn from_seconds(seconds: u32) -> ValueResult<Self> {
         if seconds >= 86400 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Seconds {} >= 86400",
                 seconds
             )));
@@ -296,7 +296,7 @@ impl Time {
     /// Creates from milliseconds since midnight
     pub fn from_millis(millis: u64) -> ValueResult<Self> {
         if millis >= 86_400_000 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Milliseconds {} >= 86400000",
                 millis
             )));
@@ -337,10 +337,10 @@ impl Time {
             let nanos = if nano_str.len() <= 9 {
                 let padded = format!("{:0<9}", nano_str);
                 padded.parse::<u32>().map_err(|_| {
-                    NebulaError::validation(format!("Invalid nanoseconds: {}", nano_str))
+                    ValueError::validation(format!("Invalid nanoseconds: {}", nano_str))
                 })?
             } else {
-                return Err(NebulaError::validation(format!(
+                return Err(ValueError::validation(format!(
                     "Too many decimal places: {}",
                     nano_str
                 )));
@@ -351,9 +351,9 @@ impl Time {
         };
 
         // Parse HH:MM:SS
-        let parts: Vec<&str> = time_part.split(':').collect();
+        let parts: Vec<_> = time_part.split(':').collect();
         if parts.len() < 2 || parts.len() > 3 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Invalid time format: {}",
                 s
             )));
@@ -361,16 +361,16 @@ impl Time {
 
         let hour = parts[0]
             .parse::<u32>()
-            .map_err(|_| NebulaError::validation(format!("Invalid hour: {}", parts[0])))?;
+            .map_err(|_| ValueError::validation(format!("Invalid hour: {}", parts[0])))?;
 
         let minute = parts[1]
             .parse::<u32>()
-            .map_err(|_| NebulaError::validation(format!("Invalid minute: {}", parts[1])))?;
+            .map_err(|_| ValueError::validation(format!("Invalid minute: {}", parts[1])))?;
 
         let second = if parts.len() == 3 {
             parts[2]
                 .parse::<u32>()
-                .map_err(|_| NebulaError::validation(format!("Invalid second: {}", parts[2])))?
+                .map_err(|_| ValueError::validation(format!("Invalid second: {}", parts[2])))?
         } else {
             0
         };
@@ -388,13 +388,13 @@ impl Time {
         } else if s.to_uppercase().ends_with(" PM") {
             (&s[..s.len() - 3], true)
         } else {
-            return Err(NebulaError::validation("Missing AM/PM indicator"));
+            return Err(ValueError::validation("Missing AM/PM indicator"));
         };
 
         // Parse the time part
         let parts: Vec<&str> = time_part.trim().split(':').collect();
         if parts.is_empty() || parts.len() > 3 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Invalid 12-hour format: {}",
                 s
             )));
@@ -402,10 +402,10 @@ impl Time {
 
         let hour12 = parts[0]
             .parse::<u32>()
-            .map_err(|_| NebulaError::validation(format!("Invalid hour: {}", parts[0])))?;
+            .map_err(|_| ValueError::validation(format!("Invalid hour: {}", parts[0])))?;
 
         if hour12 == 0 || hour12 > 12 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Invalid hour (12-hour format): {}",
                 hour12
             )));
@@ -414,7 +414,7 @@ impl Time {
         let minute = if parts.len() > 1 {
             parts[1]
                 .parse::<u32>()
-                .map_err(|_| NebulaError::validation(format!("Invalid minute: {}", parts[1])))?
+                .map_err(|_| ValueError::validation(format!("Invalid minute: {}", parts[1])))?
         } else {
             0
         };
@@ -422,7 +422,7 @@ impl Time {
         let second = if parts.len() > 2 {
             parts[2]
                 .parse::<u32>()
-                .map_err(|_| NebulaError::validation(format!("Invalid second: {}", parts[2])))?
+                .map_err(|_| ValueError::validation(format!("Invalid second: {}", parts[2])))?
         } else {
             0
         };
@@ -543,7 +543,7 @@ impl Time {
     pub fn add_duration(&self, duration: StdDuration) -> ValueResult<Self> {
         let total_nanos = duration.as_nanos();
         if total_nanos > TimeInner::MAX_NANOS as u128 {
-            return Err(NebulaError::validation(
+            return Err(ValueError::validation(
                 "Duration too large for time operation",
             ));
         }
@@ -556,7 +556,7 @@ impl Time {
     pub fn sub_duration(&self, duration: StdDuration) -> ValueResult<Self> {
         let total_nanos = duration.as_nanos();
         if total_nanos > TimeInner::MAX_NANOS as u128 {
-            return Err(NebulaError::validation(
+            return Err(ValueError::validation(
                 "Duration too large for time operation",
             ));
         }
@@ -928,7 +928,7 @@ impl Default for Time {
 }
 
 impl FromStr for Time {
-    type Err = NebulaError;
+    type Err = ValueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // Try ISO format first, then 12-hour format

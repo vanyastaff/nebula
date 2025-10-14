@@ -553,7 +553,6 @@ dependencies = [
 name = "nebula-log"
 version = "0.1.0"
 dependencies = [
- "nebula-error",
  "once_cell",
  "parking_lot",
  "pin-project",

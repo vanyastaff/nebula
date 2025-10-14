@@ -263,8 +263,53 @@ impl From<Value> for serde_json::Value {
     }
 }
 
-// NOTE: TryFrom<serde_json::Value> and From<serde_json::Value> are now defined
-// in core/conversions.rs (always available, not gated by "serde" feature)
+/// Convert serde_json::Value to Value (centralized in serde module)
+#[cfg(feature = "serde")]
+impl From<serde_json::Value> for Value {
+    fn from(j: serde_json::Value) -> Self {
+        match j {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Boolean(b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Integer(Integer::new(i))
+                } else if let Some(u) = n.as_u64() {
+                    if u <= i64::MAX as u64 {
+                        Value::Integer(Integer::new(u as i64))
+                    } else {
+                        Value::Float(Float::new(u as f64))
+                    }
+                } else if let Some(f) = n.as_f64() {
+                    Value::Float(Float::new(f))
+                } else {
+                    Value::Null
+                }
+            }
+            serde_json::Value::String(s) => Value::Text(Text::new(s)),
+            serde_json::Value::Array(arr) => {
+                let items: Vec<Value> = arr.into_iter().map(Value::from).collect();
+                Value::Array(Array::from_vec(items))
+            }
+            serde_json::Value::Object(map) => {
+                let obj = map
+                    .into_iter()
+                    .map(|(k, v)| (k, Value::from(v)))
+                    .collect::<Vec<(String, Value)>>();
+                Value::Object(Object::from_iter(obj))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<&serde_json::Value> for Value {
+    fn from(j: &serde_json::Value) -> Self {
+        Value::from(j.clone())
+    }
+}
+
+// NOTE: serde_json -> Value conversions are defined above in this module.
+// Keeping them here avoids duplication and conflicting blanket impls.
 
 #[cfg(test)]
 mod tests {
@@ -395,5 +440,125 @@ mod tests {
         let val = Value::integer(42);
         let json: serde_json::Value = val.into();
         assert_eq!(json, serde_json::json!(42));
+    }
+}
+
+// ============================================================================
+// SERDE-SPECIFIC ERRORS
+// ============================================================================
+
+use thiserror::Error;
+
+/// Serialization and deserialization errors
+///
+/// Specialized errors for serde operations.
+/// Kept separate for zero-allocation optimizations in hot paths.
+#[non_exhaustive]
+#[derive(Error, Debug, Clone)]
+pub enum SerdeError {
+    /// Serialization error
+    #[error("Serialization error: {message}")]
+    Serialization { message: String },
+
+    /// Deserialization error
+    #[error("Deserialization error: {message}")]
+    Deserialization { message: String },
+
+    /// Invalid format
+    #[error("Invalid format: {format}")]
+    InvalidFormat { format: String },
+}
+
+impl SerdeError {
+    /// Create a serialization error
+    #[inline]
+    pub fn serialization(message: impl Into<String>) -> Self {
+        Self::Serialization {
+            message: message.into(),
+        }
+    }
+
+    /// Create a deserialization error
+    #[inline]
+    pub fn deserialization(message: impl Into<String>) -> Self {
+        Self::Deserialization {
+            message: message.into(),
+        }
+    }
+
+    /// Create an invalid format error
+    #[inline]
+    pub fn invalid_format(format: impl Into<String>) -> Self {
+        Self::InvalidFormat {
+            format: format.into(),
+        }
+    }
+
+    /// Get error code for monitoring
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Serialization { .. } => "SERDE_SERIALIZATION",
+            Self::Deserialization { .. } => "SERDE_DESERIALIZATION",
+            Self::InvalidFormat { .. } => "SERDE_INVALID_FORMAT",
+        }
+    }
+
+    /// Check if this is a client error
+    #[inline]
+    pub fn is_client_error(&self) -> bool {
+        true // Usually client data issues
+    }
+}
+
+/// Convert from serde_json errors
+impl From<serde_json::Error> for SerdeError {
+    fn from(error: serde_json::Error) -> Self {
+        if error.is_io() {
+            Self::Serialization {
+                message: error.to_string(),
+            }
+        } else {
+            Self::Deserialization {
+                message: error.to_string(),
+            }
+        }
+    }
+}
+
+/// Result type for serde operations
+pub type SerdeResult<T> = std::result::Result<T, SerdeError>;
+
+#[cfg(test)]
+mod serde_error_tests {
+    use super::*;
+
+    #[test]
+    fn test_serialization_error() {
+        let err = SerdeError::serialization("Failed to encode");
+        assert_eq!(err.code(), "SERDE_SERIALIZATION");
+        assert!(err.to_string().contains("Failed to encode"));
+    }
+
+    #[test]
+    fn test_deserialization_error() {
+        let err = SerdeError::deserialization("Invalid JSON");
+        assert_eq!(err.code(), "SERDE_DESERIALIZATION");
+        assert!(err.to_string().contains("Invalid JSON"));
+    }
+
+    #[test]
+    fn test_from_serde_json() {
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid json");
+        assert!(json_err.is_err());
+
+        let serde_err: SerdeError = json_err.unwrap_err().into();
+        assert!(matches!(serde_err, SerdeError::Deserialization { .. }));
+    }
+
+    #[test]
+    fn test_invalid_format() {
+        let err = SerdeError::invalid_format("YAML");
+        assert_eq!(err.code(), "SERDE_INVALID_FORMAT");
+        assert!(err.to_string().contains("YAML"));
     }
 }

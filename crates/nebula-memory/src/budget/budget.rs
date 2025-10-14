@@ -1,7 +1,7 @@
 //! Core memory budget implementation
 //!
 //! This module provides the core implementation of the memory budgeting system,
-//! including the MemoryBudget struct and related types.
+//! including the `MemoryBudget` struct and related types.
 
 use parking_lot::{Mutex, RwLock};
 use std::sync::{Arc, Weak};
@@ -31,11 +31,13 @@ pub enum BudgetState {
 
 impl BudgetState {
     /// Check if the budget is in a healthy state
+    #[must_use]
     pub fn is_healthy(&self) -> bool {
         matches!(self, Self::Normal | Self::HighUsage)
     }
 
     /// Check if the budget is in a critical state
+    #[must_use]
     pub fn is_critical(&self) -> bool {
         matches!(self, Self::Critical | Self::Exceeded)
     }
@@ -170,6 +172,7 @@ impl UsageHistory {
 
 impl MemoryBudget {
     /// Create a new memory budget with the given configuration
+    #[must_use]
     pub fn new(config: BudgetConfig) -> Arc<Self> {
         let history = if config.tracking_window.is_some() && config.collect_stats {
             Some(UsageHistory::new(
@@ -354,10 +357,10 @@ impl MemoryBudget {
         }
 
         // Check parent if needed
-        if let Some(ref parent) = self.parent {
-            if !parent.can_allocate(size) {
-                return false;
-            }
+        if let Some(ref parent) = self.parent
+            && !parent.can_allocate(size)
+        {
+            return false;
         }
 
         true

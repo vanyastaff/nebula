@@ -304,19 +304,25 @@ mod integration_tests {
         // Test the base validator
         assert!(base_validator.validate(&"hello".to_string()).is_ok()); // Valid length
         assert!(base_validator.validate(&"hi".to_string()).is_err()); // Too short
-        assert!(base_validator
-            .validate(&"verylongstringthatistoolong".to_string())
-            .is_err()); // Too long
+        assert!(
+            base_validator
+                .validate(&"verylongstringthatistoolong".to_string())
+                .is_err()
+        ); // Too long
 
         // Test Optional separately
         let optional_validator = Optional::new(MinLength { min: 5 });
         assert!(optional_validator.validate(&None).is_ok()); // None is valid
-        assert!(optional_validator
-            .validate(&Some("hello".to_string()))
-            .is_ok()); // Valid
-        assert!(optional_validator
-            .validate(&Some("hi".to_string()))
-            .is_err()); // Too short
+        assert!(
+            optional_validator
+                .validate(&Some("hello".to_string()))
+                .is_ok()
+        ); // Valid
+        assert!(
+            optional_validator
+                .validate(&Some("hi".to_string()))
+                .is_err()
+        ); // Too short
     }
 
     #[test]
@@ -458,8 +464,10 @@ mod doc_tests {
 
         assert!(validator.validate(&"hello".to_string()).is_ok());
         assert!(validator.validate(&"hi".to_string()).is_err());
-        assert!(validator
-            .validate(&"verylongstringthatistoolong".to_string())
-            .is_err());
+        assert!(
+            validator
+                .validate(&"verylongstringthatistoolong".to_string())
+                .is_err()
+        );
     }
 }

@@ -34,11 +34,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "timeout": 30,
         "retries": 3,
         "verbose": true
-    }"#.parse()?;
+    }"#
+    .parse()?;
 
     let endpoints = Array::from_vec(vec![
         "https://api.example.com".into(),
-        "https://backup.example.com".into()
+        "https://backup.example.com".into(),
     ]);
 
     let config = ObjectBuilder::new()

@@ -567,7 +567,6 @@ at your option.
 
 - [nebula-derive](../nebula-derive) - Derive macros for validation
 - [nebula-parameter](../nebula-parameter) - Parameter handling with validation
-- [nebula-error](../nebula-error) - Error handling
 - [nebula-log](../nebula-log) - Logging infrastructure
 
 ## Status

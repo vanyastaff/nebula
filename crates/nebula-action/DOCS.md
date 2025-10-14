@@ -63,7 +63,6 @@ nebula-action/
 - `nebula-parameter` - Parameter validation
 - `nebula-resource` - Resource access
 - `nebula-credential` - Authentication
-- `nebula-error` - Error handling
 - `nebula-core` - Core types (IDs, scopes)
 
 **Will be used by**: Workflow execution engine

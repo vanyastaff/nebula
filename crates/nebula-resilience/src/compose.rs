@@ -259,7 +259,7 @@ impl<T: Send + 'static> Default for LayerBuilder<T> {
 
 impl<T: Send + 'static> LayerBuilder<T> {
     /// Create new layer builder
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self { layers: Vec::new() }
     }
@@ -301,7 +301,7 @@ impl<T: Send + 'static> LayerBuilder<T> {
     }
 
     /// Build the composed stack
-    #[must_use] 
+    #[must_use]
     pub fn build(self) -> Arc<dyn LayerStack<T> + Send + Sync> {
         // Build stack from outermost to innermost
         let mut stack: Arc<dyn LayerStack<T> + Send + Sync> = Arc::new(TerminalLayer);

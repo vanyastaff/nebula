@@ -4,7 +4,7 @@
 //!
 //! This module implements a thread-safe arena using atomic operations and careful synchronization:
 //! - Chunks use atomic bump pointers (compare-and-swap) for lock-free allocations
-//! - A global current_chunk pointer enables fast-path allocations without locks
+//! - A global `current_chunk` pointer enables fast-path allocations without locks
 //! - Chunk allocation is synchronized with a mutex to prevent races
 //! - All memory is properly aligned and lifetime-bound to the arena
 //! - Memory is never deallocated until the arena is reset or dropped
@@ -131,6 +131,7 @@ pub struct ThreadSafeArena {
 
 impl ThreadSafeArena {
     /// Creates a new thread-safe arena with given configuration
+    #[must_use]
     pub fn new(config: ArenaConfig) -> Self {
         Self {
             chunks: RwLock::new(Vec::new()),
@@ -142,41 +143,49 @@ impl ThreadSafeArena {
     }
 
     /// Creates arena with production config - optimized for performance
+    #[must_use]
     pub fn production(capacity: usize) -> Self {
         Self::new(ArenaConfig::production().with_initial_size(capacity))
     }
 
     /// Creates arena with debug config - optimized for debugging
+    #[must_use]
     pub fn debug(capacity: usize) -> Self {
         Self::new(ArenaConfig::debug().with_initial_size(capacity))
     }
 
     /// Creates arena with performance config (alias for production)
+    #[must_use]
     pub fn performance(capacity: usize) -> Self {
         Self::production(capacity)
     }
 
     /// Creates arena with conservative config - balanced
+    #[must_use]
     pub fn conservative(capacity: usize) -> Self {
         Self::new(ArenaConfig::conservative().with_initial_size(capacity))
     }
 
     /// Creates a tiny thread-safe arena (4KB)
+    #[must_use]
     pub fn tiny() -> Self {
         Self::new(ArenaConfig::small_objects().with_initial_size(4 * 1024))
     }
 
     /// Creates a small thread-safe arena (64KB)
+    #[must_use]
     pub fn small() -> Self {
         Self::new(ArenaConfig::default().with_initial_size(64 * 1024))
     }
 
     /// Creates a medium thread-safe arena (1MB)
+    #[must_use]
     pub fn medium() -> Self {
         Self::new(ArenaConfig::default().with_initial_size(1024 * 1024))
     }
 
     /// Creates a large thread-safe arena (16MB)
+    #[must_use]
     pub fn large() -> Self {
         Self::new(ArenaConfig::large_objects().with_initial_size(16 * 1024 * 1024))
     }
@@ -223,7 +232,7 @@ impl ThreadSafeArena {
         }
 
         let chunk = Arc::new(chunk);
-        let chunk_ptr = Arc::as_ptr(&chunk) as *mut ThreadSafeChunk;
+        let chunk_ptr = Arc::as_ptr(&chunk).cast_mut();
 
         // Update current chunk pointer
         self.current_chunk.store(chunk_ptr, Ordering::Release);
@@ -280,12 +289,11 @@ impl ThreadSafeArena {
         chunk
             .try_alloc(size, align)
             .ok_or(MemoryError::allocation_failed(0, 1))
-            .map(|ptr| {
+            .inspect(|ptr| {
                 if let Some(start) = start_time {
                     self.stats
                         .record_allocation(size, start.elapsed().as_nanos() as u64);
                 }
-                ptr
             })
     }
 
@@ -293,7 +301,8 @@ impl ThreadSafeArena {
     #[inline]
     #[must_use = "allocated memory must be used"]
     pub fn alloc<T>(&self, value: T) -> Result<&T, MemoryError> {
-        let ptr = self.alloc_bytes_aligned(mem::size_of::<T>(), mem::align_of::<T>())? as *mut T;
+        let ptr =
+            (self.alloc_bytes_aligned(mem::size_of::<T>(), mem::align_of::<T>())?).cast::<T>();
 
         // SAFETY: Writing initialized value to freshly allocated memory.
         // - ptr is properly aligned for T (alloc_bytes_aligned ensures this)
@@ -316,7 +325,7 @@ impl ThreadSafeArena {
         }
 
         let ptr =
-            self.alloc_bytes_aligned(mem::size_of_val(slice), mem::align_of::<T>())? as *mut T;
+            (self.alloc_bytes_aligned(mem::size_of_val(slice), mem::align_of::<T>())?).cast::<T>();
 
         // SAFETY: Copying slice data to freshly allocated memory.
         // - ptr is properly aligned for T (alloc_bytes_aligned ensures this)
@@ -414,6 +423,7 @@ impl<'a, T: ?Sized + Sync> ThreadSafeArenaRef<'a, T> {
     }
 
     /// Gets immutable reference to the value
+    #[must_use]
     pub fn get(&self) -> &T {
         // SAFETY: Converting NonNull<T> to &T.
         // - ptr was created from arena allocation (valid, aligned, initialized)
@@ -424,7 +434,7 @@ impl<'a, T: ?Sized + Sync> ThreadSafeArenaRef<'a, T> {
     }
 }
 
-impl<'a, T: ?Sized + Sync> std::ops::Deref for ThreadSafeArenaRef<'a, T> {
+impl<T: ?Sized + Sync> std::ops::Deref for ThreadSafeArenaRef<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -437,14 +447,14 @@ impl<'a, T: ?Sized + Sync> std::ops::Deref for ThreadSafeArenaRef<'a, T> {
 // - _arena: &'a ThreadSafeArena is Send (immutable reference to Sync type)
 // - T: Sync means &T can be sent to another thread safely
 // - The reference is immutable, so no exclusive access issues
-unsafe impl<'a, T: ?Sized + Sync> Send for ThreadSafeArenaRef<'a, T> {}
+unsafe impl<T: ?Sized + Sync> Send for ThreadSafeArenaRef<'_, T> {}
 
 // SAFETY: ThreadSafeArenaRef<'a, T> is Sync if T is Sync because:
 // - ThreadSafeArenaRef only provides immutable access via Deref
 // - T: Sync means multiple threads can share &T safely
 // - Arena is Sync, ensuring underlying memory is properly synchronized
 // - No interior mutability in ThreadSafeArenaRef itself
-unsafe impl<'a, T: ?Sized + Sync> Sync for ThreadSafeArenaRef<'a, T> {}
+unsafe impl<T: ?Sized + Sync> Sync for ThreadSafeArenaRef<'_, T> {}
 
 #[cfg(test)]
 mod tests {

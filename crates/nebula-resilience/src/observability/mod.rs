@@ -6,5 +6,7 @@
 pub mod hooks;
 pub mod spans;
 
-pub use hooks::{LogLevel, LoggingHook, MetricsHook, ObservabilityHook, ObservabilityHooks, PatternEvent};
+pub use hooks::{
+    LogLevel, LoggingHook, MetricsHook, ObservabilityHook, ObservabilityHooks, PatternEvent,
+};
 pub use spans::{SpanGuard, create_span, record_error, record_success};

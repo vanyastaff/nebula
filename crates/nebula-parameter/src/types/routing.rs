@@ -124,6 +124,7 @@ impl From<RoutingValue> for nebula_value::Value {
 
 impl RoutingValue {
     /// Create a new routing value with no connections
+    #[must_use]
     pub fn new() -> Self {
         Self {
             connected_node_id: None,
@@ -154,11 +155,13 @@ impl RoutingValue {
     }
 
     /// Check if this routing value has a connection
+    #[must_use]
     pub fn is_connected(&self) -> bool {
         self.connected_node_id.is_some()
     }
 
     /// Get the connected node ID
+    #[must_use]
     pub fn connection_id(&self) -> Option<&String> {
         self.connected_node_id.as_ref()
     }
@@ -170,10 +173,9 @@ impl RoutingValue {
     }
 
     /// Get connection metadata
+    #[must_use]
     pub fn get_metadata(&self, key: &str) -> Option<nebula_value::Value> {
-        self.connection_metadata
-            .get(key)
-            .cloned()
+        self.connection_metadata.get(key).cloned()
     }
 }
 
@@ -311,6 +313,7 @@ impl RoutingParameter {
     }
 
     /// Get the child parameter
+    #[must_use]
     pub fn child(&self) -> Option<&Box<dyn Parameter>> {
         self.children.as_ref()
     }
@@ -342,19 +345,19 @@ impl RoutingParameter {
     }
 
     /// Check if this parameter has a connection
+    #[must_use]
     pub fn is_connected(&self) -> bool {
-        self.value
-            .as_ref()
-            .map(|v| v.is_connected())
-            .unwrap_or(false)
+        self.value.as_ref().is_some_and(RoutingValue::is_connected)
     }
 
     /// Get the connected node ID
+    #[must_use]
     pub fn connected_node_id(&self) -> Option<&String> {
         self.value.as_ref()?.connection_id()
     }
 
     /// Get the connection name
+    #[must_use]
     pub fn connection_name(&self) -> Option<&String> {
         self.value.as_ref()?.connection_name.as_ref()
     }
@@ -370,6 +373,7 @@ impl RoutingParameter {
     }
 
     /// Get connection metadata
+    #[must_use]
     pub fn get_connection_metadata(&self, key: &str) -> Option<nebula_value::Value> {
         self.value.as_ref()?.get_metadata(key)
     }
@@ -385,6 +389,7 @@ impl RoutingParameter {
     }
 
     /// Get connection label
+    #[must_use]
     pub fn connection_label(&self) -> Option<&String> {
         self.options.as_ref()?.connection_label.as_ref()
     }
@@ -400,11 +405,9 @@ impl RoutingParameter {
     }
 
     /// Check if connection is required
+    #[must_use]
     pub fn is_connection_required(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|o| o.connection_required)
-            .unwrap_or(false)
+        self.options.as_ref().is_some_and(|o| o.connection_required)
     }
 
     /// Validate the routing parameter

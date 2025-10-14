@@ -160,48 +160,47 @@ impl NumberParameter {
     fn validate_number(&self, num: f64) -> Result<(), ParameterError> {
         if let Some(options) = &self.options {
             // Check minimum
-            if let Some(min) = options.min {
-                if num < min {
-                    return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("Value {} is below minimum {}", num, min),
-                    });
-                }
+            if let Some(min) = options.min
+                && num < min
+            {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Value {num} is below minimum {min}"),
+                });
             }
 
             // Check maximum
-            if let Some(max) = options.max {
-                if num > max {
-                    return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("Value {} is above maximum {}", num, max),
-                    });
-                }
+            if let Some(max) = options.max
+                && num > max
+            {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Value {num} is above maximum {max}"),
+                });
             }
 
             // Check step
-            if let Some(step) = options.step {
-                if let Some(min) = options.min {
-                    let offset = (num - min) % step;
-                    if offset.abs() > f64::EPSILON {
-                        return Err(ParameterError::InvalidValue {
-                            key: self.metadata.key.clone(),
-                            reason: format!("Value {} does not align with step {}", num, step),
-                        });
-                    }
+            if let Some(step) = options.step
+                && let Some(min) = options.min
+            {
+                let offset = (num - min) % step;
+                if offset.abs() > f64::EPSILON {
+                    return Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!("Value {num} does not align with step {step}"),
+                    });
                 }
             }
 
             // Apply precision if specified
             if let Some(precision) = options.precision {
-                let multiplier = 10_f64.powi(precision as i32);
+                let multiplier = 10_f64.powi(i32::from(precision));
                 let rounded = (num * multiplier).round() / multiplier;
                 if (num - rounded).abs() > f64::EPSILON {
                     return Err(ParameterError::InvalidValue {
                         key: self.metadata.key.clone(),
                         reason: format!(
-                            "Value {} exceeds precision of {} decimal places",
-                            num, precision
+                            "Value {num} exceeds precision of {precision} decimal places"
                         ),
                     });
                 }
@@ -212,26 +211,31 @@ impl NumberParameter {
     }
 
     /// Get the minimum allowed value
+    #[must_use]
     pub fn get_min(&self) -> Option<f64> {
         self.options.as_ref().and_then(|opts| opts.min)
     }
 
     /// Get the maximum allowed value
+    #[must_use]
     pub fn get_max(&self) -> Option<f64> {
         self.options.as_ref().and_then(|opts| opts.max)
     }
 
     /// Get the step increment
+    #[must_use]
     pub fn get_step(&self) -> Option<f64> {
         self.options.as_ref().and_then(|opts| opts.step)
     }
 
     /// Get the precision (decimal places)
+    #[must_use]
     pub fn get_precision(&self) -> Option<u8> {
         self.options.as_ref().and_then(|opts| opts.precision)
     }
 
     /// Check if the current value is within bounds
+    #[must_use]
     pub fn is_within_bounds(&self) -> bool {
         if let Some(value) = self.value {
             self.validate_number(value).is_ok()

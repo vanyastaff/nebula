@@ -43,6 +43,7 @@ impl ResourceConfig for MessageQueueConfig {
 }
 
 /// Message queue resource instance
+#[derive(Debug)]
 pub struct MessageQueueInstance {
     instance_id: uuid::Uuid,
     resource_id: ResourceId,
@@ -83,6 +84,7 @@ impl ResourceInstance for MessageQueueInstance {
     }
 }
 
+#[derive(Debug)]
 pub struct MessageQueueResource;
 
 #[async_trait::async_trait]

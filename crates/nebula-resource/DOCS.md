@@ -49,7 +49,7 @@ pub trait Poolable {
 ## Integration Points
 
 **Used By**: All workflow nodes/actions requiring external resources
-**Uses**: `nebula-credential`, `nebula-error`, `nebula-resilience`
+**Uses**: `nebula-credential`, `nebula-resilience`
 
 ## When to Use
 

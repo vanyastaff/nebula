@@ -24,13 +24,8 @@ pub use config::{
     ResilienceConfigManager,
 };
 pub use dynamic::{
-    BulkheadConfigBuilder,
-    CircuitBreakerConfigBuilder,
-    DynamicConfig,
-    DynamicConfigBuilder,
-    DynamicConfigurable,
-    ResiliencePresets,
-    RetryConfigBuilder,
+    BulkheadConfigBuilder, CircuitBreakerConfigBuilder, DynamicConfig, DynamicConfigBuilder,
+    DynamicConfigurable, ResiliencePresets, RetryConfigBuilder,
 };
 pub use error::{ErrorClass, ErrorContext, ResilienceError};
 pub use metrics::{MetricKind, MetricSnapshot, Metrics, MetricsCollector};
@@ -55,4 +50,3 @@ pub mod constants {
     /// Default rate limit
     pub const DEFAULT_RATE_LIMIT: f64 = 100.0;
 }
-

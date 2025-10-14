@@ -109,7 +109,7 @@ impl Expressible for RadioParameter {
             MaybeExpression::Value(nebula_value::Value::Text(s)) => {
                 // Use Text directly
                 // Validate that the value is one of the available options or "other"
-                if self.is_valid_option(&s.as_str()) {
+                if self.is_valid_option(s.as_str()) {
                     self.value = Some(s);
                     Ok(())
                 } else {
@@ -174,51 +174,55 @@ impl RadioParameter {
         }
 
         // Check if "other" is allowed and this might be an "other" value
-        if let Some(radio_options) = &self.radio_options {
-            if radio_options.allow_other {
-                // For "other" option, we accept any non-empty string
-                return !value.is_empty();
-            }
+        if let Some(radio_options) = &self.radio_options
+            && radio_options.allow_other
+        {
+            // For "other" option, we accept any non-empty string
+            return !value.is_empty();
         }
 
         false
     }
 
     /// Get option by value
+    #[must_use]
     pub fn get_option_by_value(&self, value: &str) -> Option<&SelectOption> {
         self.options.iter().find(|option| option.value == value)
     }
 
     /// Get option by key
+    #[must_use]
     pub fn get_option_by_key(&self, key: &str) -> Option<&SelectOption> {
         self.options.iter().find(|option| option.key == key)
     }
 
     /// Get the display name for the current value
+    #[must_use]
     pub fn get_display_name(&self) -> Option<String> {
         if let Some(value) = &self.value {
             if let Some(option) = self.get_option_by_value(value) {
                 return Some(option.name.clone());
             }
             // If not found in options and "other" is allowed, return as-is
-            if let Some(radio_options) = &self.radio_options {
-                if radio_options.allow_other {
-                    return Some(value.to_string());
-                }
+            if let Some(radio_options) = &self.radio_options
+                && radio_options.allow_other
+            {
+                return Some(value.to_string());
             }
         }
         None
     }
 
     /// Check if "other" option is allowed
+    #[must_use]
     pub fn allows_other(&self) -> bool {
         self.radio_options
             .as_ref()
-            .map(|opts| opts.allow_other)
-            .unwrap_or(false)
+            .is_some_and(|opts| opts.allow_other)
     }
 
     /// Get the "other" option label
+    #[must_use]
     pub fn get_other_label(&self) -> String {
         self.radio_options
             .as_ref()

@@ -151,6 +151,7 @@ pub struct MultiLevelStats {
 
 impl MultiLevelStats {
     /// Create a new stats object with the given number of levels
+    #[must_use]
     pub fn new(level_count: usize) -> Self {
         Self {
             requests: 0,
@@ -167,6 +168,7 @@ impl MultiLevelStats {
     }
 
     /// Calculate the hit rate for a specific level
+    #[must_use]
     pub fn level_hit_rate(&self, level: usize) -> f64 {
         if level >= self.level_hits.len() || self.requests == 0 {
             return 0.0;
@@ -176,6 +178,7 @@ impl MultiLevelStats {
     }
 
     /// Calculate the overall hit rate (across all levels)
+    #[must_use]
     pub fn overall_hit_rate(&self) -> f64 {
         if self.requests == 0 {
             return 0.0;
@@ -186,6 +189,7 @@ impl MultiLevelStats {
     }
 
     /// Calculate miss rate
+    #[must_use]
     pub fn miss_rate(&self) -> f64 {
         if self.requests == 0 {
             return 0.0;
@@ -194,6 +198,7 @@ impl MultiLevelStats {
     }
 
     /// Calculate promotion rate
+    #[must_use]
     pub fn promotion_rate(&self) -> f64 {
         if self.requests == 0 {
             return 0.0;
@@ -202,6 +207,7 @@ impl MultiLevelStats {
     }
 
     /// Get the most effective cache level
+    #[must_use]
     pub fn most_effective_level(&self) -> Option<usize> {
         self.level_hits
             .iter()
@@ -211,6 +217,7 @@ impl MultiLevelStats {
     }
 
     /// Calculate average access depth (lower is better)
+    #[must_use]
     pub fn avg_access_depth(&self) -> f64 {
         if self.requests == 0 {
             return 0.0;
@@ -256,17 +263,17 @@ impl MultiLevelStats {
     /// Update efficiency metrics
     pub fn update_efficiency(&mut self, level_metrics: &[Option<CacheMetrics>]) {
         for (idx, metrics_opt) in level_metrics.iter().enumerate() {
-            if let Some(metrics) = metrics_opt {
-                if idx < self.level_efficiency.len() {
-                    self.level_efficiency[idx] = metrics.efficiency_score();
-                }
+            if let Some(metrics) = metrics_opt
+                && idx < self.level_efficiency.len()
+            {
+                self.level_efficiency[idx] = metrics.efficiency_score();
             }
         }
     }
 }
 
 /// Configuration for promotion policy in multi-level cache
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum PromotionPolicy {
     /// Always promote to higher levels on access
     Always,
@@ -277,21 +284,17 @@ pub enum PromotionPolicy {
     /// Never promote automatically
     Never,
     /// Adaptive promotion based on cache performance
+    #[default]
     Adaptive,
 }
 
-impl Default for PromotionPolicy {
-    fn default() -> Self {
-        PromotionPolicy::Adaptive
-    }
-}
-
 /// Demotion policy for moving items to lower levels
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum DemotionPolicy {
     /// Never demote
     Never,
     /// Demote least recently used items when cache is full
+    #[default]
     LRU,
     /// Demote least frequently used items
     LFU,
@@ -299,12 +302,6 @@ pub enum DemotionPolicy {
     Age,
     /// Adaptive demotion
     Adaptive,
-}
-
-impl Default for DemotionPolicy {
-    fn default() -> Self {
-        DemotionPolicy::LRU
-    }
 }
 
 /// Configuration for multi-level cache
@@ -347,6 +344,7 @@ impl Default for MultiLevelConfig {
 
 impl MultiLevelConfig {
     /// Create a new configuration
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -389,6 +387,7 @@ impl MultiLevelConfig {
     }
 
     /// Configure for high performance
+    #[must_use]
     pub fn for_high_performance() -> Self {
         Self::new()
             .with_promotion_policy(PromotionPolicy::Always)
@@ -397,6 +396,7 @@ impl MultiLevelConfig {
     }
 
     /// Configure for memory efficiency
+    #[must_use]
     pub fn for_memory_efficiency() -> Self {
         Self::new()
             .with_promotion_policy(PromotionPolicy::AfterNAccesses(3))
@@ -430,6 +430,7 @@ where
     V: Clone + Send + Sync + 'static,
 {
     /// Create a new multi-level cache with the given levels
+    #[must_use]
     pub fn new(levels: Vec<Box<dyn CacheLevel<K, V>>>) -> Self {
         let level_count = levels.len();
         Self {
@@ -443,6 +444,7 @@ where
     }
 
     /// Create a new multi-level cache with configuration
+    #[must_use]
     pub fn with_config(levels: Vec<Box<dyn CacheLevel<K, V>>>, config: MultiLevelConfig) -> Self {
         let level_count = levels.len();
         let mut cache = Self {
@@ -502,7 +504,7 @@ where
                         if level_idx < stats.avg_response_time_ns.len() {
                             // Simple moving average
                             stats.avg_response_time_ns[level_idx] =
-                                (stats.avg_response_time_ns[level_idx] + response_time) / 2;
+                                u64::midpoint(stats.avg_response_time_ns[level_idx], response_time);
                         }
                     }
                 }
@@ -643,11 +645,13 @@ where
     }
 
     /// Get the number of levels in the cache
+    #[must_use]
     pub fn level_count(&self) -> usize {
         self.levels.len()
     }
 
     /// Get information about a specific level
+    #[must_use]
     pub fn level_info(&self, level: usize) -> Option<LevelInfo> {
         self.levels.get(level).map(|l| LevelInfo {
             name: l.name().to_string(),
@@ -661,6 +665,7 @@ where
     }
 
     /// Get information about all levels
+    #[must_use]
     pub fn all_levels_info(&self) -> Vec<LevelInfo> {
         (0..self.level_count())
             .filter_map(|i| self.level_info(i))
@@ -668,6 +673,7 @@ where
     }
 
     /// Get the statistics for the multi-level cache
+    #[must_use]
     pub fn stats(&self) -> MultiLevelStats {
         if self.config.track_stats {
             let mut stats = self.stats.read().clone();
@@ -723,6 +729,7 @@ where
 
     /// Clean up expired entries in all levels
     #[cfg(feature = "std")]
+    #[must_use]
     pub fn cleanup_expired(&self) -> usize {
         self.levels
             .iter()
@@ -731,6 +738,7 @@ where
     }
 
     /// Get cache efficiency report
+    #[must_use]
     pub fn efficiency_report(&self) -> CacheEfficiencyReport {
         let stats = self.stats();
         let level_infos = self.all_levels_info();
@@ -770,21 +778,19 @@ where
             );
         }
 
-        if let Some(most_effective) = stats.most_effective_level() {
-            if most_effective > 0 {
-                recommendations.push(format!(
-                    "Level {} is most effective - consider increasing size of higher levels",
-                    most_effective
+        if let Some(most_effective) = stats.most_effective_level()
+            && most_effective > 0
+        {
+            recommendations.push(format!(
+                    "Level {most_effective} is most effective - consider increasing size of higher levels"
                 ));
-            }
         }
 
         // Check individual level efficiency
         for (idx, &efficiency) in stats.level_efficiency.iter().enumerate() {
             if efficiency < 50.0 {
                 recommendations.push(format!(
-                    "Level {} has low efficiency ({:.1}%) - review configuration",
-                    idx, efficiency
+                    "Level {idx} has low efficiency ({efficiency:.1}%) - review configuration"
                 ));
             }
         }
@@ -809,7 +815,7 @@ where
                 let access_counts = self.access_counts.read();
                 access_counts
                     .get(key)
-                    .map_or(false, |&count| count >= threshold)
+                    .is_some_and(|&count| count >= threshold)
             }
             PromotionPolicy::FrequencyBased(threshold) => {
                 let access_counts = self.access_counts.read();
@@ -834,7 +840,7 @@ where
         }
     }
 
-    /// Promote a value to higher levels (limited by max_promotions_per_op)
+    /// Promote a value to higher levels (limited by `max_promotions_per_op`)
     fn promote_to_higher_levels(&self, key: &K, value: &V, found_level: usize) {
         let max_promotions = self.config.max_promotions_per_op.min(found_level);
         let mut promotions = 0;
@@ -896,7 +902,7 @@ pub struct CacheEfficiencyReport {
     pub recommendations: Vec<String>,
 }
 
-/// Enhanced cache level implementation using ComputeCache
+/// Enhanced cache level implementation using `ComputeCache`
 pub struct ComputeCacheLevel<K, V>
 where
     K: CacheKey,
@@ -916,6 +922,7 @@ where
     V: Clone,
 {
     /// Create a new compute cache level
+    #[must_use]
     pub fn new(name: &str, priority: usize, config: CacheConfig) -> Self {
         Self {
             name: name.to_string(),
@@ -925,6 +932,7 @@ where
     }
 
     /// Create with capacity
+    #[must_use]
     pub fn with_capacity(name: &str, priority: usize, capacity: usize) -> Self {
         Self::new(name, priority, CacheConfig::new(capacity))
     }

@@ -71,9 +71,9 @@ impl FileWatcher {
     /// Convert notify event to config watch event
     ///
     /// TODO: Use this helper in file watching implementation to convert
-    /// raw notify events to ConfigWatchEvent with proper categorization.
+    /// raw notify events to `ConfigWatchEvent` with proper categorization.
     #[allow(dead_code)]
-    fn convert_event(&self, event: Event, source: &ConfigSource) -> Option<ConfigWatchEvent> {
+    fn convert_event(&self, event: &Event, source: &ConfigSource) -> Option<ConfigWatchEvent> {
         let event_type = match event.kind {
             EventKind::Create(_) => ConfigWatchEventType::Created,
             EventKind::Modify(_) => ConfigWatchEventType::Modified,
@@ -102,10 +102,10 @@ impl FileWatcher {
                 if let Some(path) = &event.path {
                     let now = std::time::Instant::now();
 
-                    if let Some(last_time) = last_events.get(path) {
-                        if now.duration_since(*last_time) < debounce_duration {
-                            continue; // Skip this event
-                        }
+                    if let Some(last_time) = last_events.get(path)
+                        && now.duration_since(*last_time) < debounce_duration
+                    {
+                        continue; // Skip this event
                     }
 
                     last_events.insert(path.clone(), now);

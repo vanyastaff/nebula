@@ -44,7 +44,7 @@ pub struct TrackedAllocator<A> {
 }
 
 impl<A> TrackedAllocator<A> {
-    /// Creates a new TrackedAllocator wrapping the provided allocator
+    /// Creates a new `TrackedAllocator` wrapping the provided allocator
     pub fn new(allocator: A) -> Self {
         Self {
             inner: allocator,
@@ -125,7 +125,7 @@ unsafe impl<A: Allocator> Allocator for TrackedAllocator<A> {
     /// # Safety
     ///
     /// Caller must ensure:
-    /// - `layout` has non-zero size (unless A::supports_zero_sized_allocs())
+    /// - `layout` has non-zero size (unless `A::supports_zero_sized_allocs()`)
     /// - `layout.align()` is a power of two
     /// - `layout.size()` when rounded up to nearest multiple of align does not overflow isize
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
@@ -242,7 +242,7 @@ unsafe impl<A: BulkAllocator> BulkAllocator for TrackedAllocator<A> {
     /// # Safety
     ///
     /// Caller must ensure:
-    /// - `ptr` was allocated by this allocator via allocate_contiguous with same `layout` and `count`
+    /// - `ptr` was allocated by this allocator via `allocate_contiguous` with same `layout` and `count`
     /// - `ptr` is currently allocated (not already deallocated)
     unsafe fn deallocate_contiguous(&self, ptr: NonNull<u8>, layout: Layout, count: usize) {
         // SAFETY: Forwarding to inner's bulk deallocate.
@@ -257,7 +257,7 @@ unsafe impl<A: BulkAllocator> BulkAllocator for TrackedAllocator<A> {
     /// # Safety
     ///
     /// Caller must ensure:
-    /// - `ptr` was allocated via allocate_contiguous with `layout` and `old_count`
+    /// - `ptr` was allocated via `allocate_contiguous` with `layout` and `old_count`
     /// - `layout` matches the original allocation
     /// - `old_count` matches the original count
     /// - If reallocation fails, `ptr` remains valid with original layout/count

@@ -3,25 +3,25 @@
 //! # Safety
 //!
 //! This module implements a single-threaded bump allocator arena:
-//! - RefCell for chunk list mutation (runtime borrow checking)
+//! - `RefCell` for chunk list mutation (runtime borrow checking)
 //! - Cell for current pointer (no synchronization, single-threaded)
-//! - Linked list of chunks (grows on demand via growth_factor)
+//! - Linked list of chunks (grows on demand via `growth_factor`)
 //! - Position markers enable scoped resets
 //!
 //! ## Invariants
 //!
-//! - current_ptr always within [chunk.start(), chunk.end()] or null
+//! - `current_ptr` always within [`chunk.start()`, `chunk.end()`] or null
 //! - Allocations never overlap (bump pointer moves forward monotonically)
 //! - Chunks linked in reverse allocation order (newest first)
-//! - Position validation ensures chunk_ptr matches current arena state
-//! - reset_to_position verifies offset doesn't exceed current_ptr
+//! - Position validation ensures `chunk_ptr` matches current arena state
+//! - `reset_to_position` verifies offset doesn't exceed `current_ptr`
 //!
 //! ## Memory Management
 //!
-//! - Chunks allocated via std::alloc::alloc with Layout
-//! - Chunks deallocated in Drop via std::alloc::dealloc
+//! - Chunks allocated via `std::alloc::alloc` with Layout
+//! - Chunks deallocated in Drop via `std::alloc::dealloc`
 //! - Growth factor determines next chunk size (exponential growth)
-//! - Optional zero_memory for security/debugging
+//! - Optional `zero_memory` for security/debugging
 //! - No individual deallocation (arena discipline)
 //!
 //! ## Not Thread-Safe
@@ -29,7 +29,7 @@
 //! - Uses Cell/RefCell instead of atomics
 //! - No Send/Sync implementations
 //! - Designed for single-threaded high performance
-//! - See ThreadSafeArena for multi-threaded version
+//! - See `ThreadSafeArena` for multi-threaded version
 
 use std::alloc::{Layout, alloc, dealloc};
 use std::cell::{Cell, RefCell};
@@ -152,6 +152,7 @@ pub struct Arena {
 
 impl Arena {
     /// Creates new arena with specified configuration
+    #[must_use]
     pub fn new(config: ArenaConfig) -> Self {
         Self {
             chunks: RefCell::new(None),
@@ -163,56 +164,67 @@ impl Arena {
     }
 
     /// Creates new arena with default config and minimum capacity
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self::new(ArenaConfig::default().with_initial_size(capacity))
     }
 
     /// Creates arena with production config - optimized for performance
+    #[must_use]
     pub fn production(capacity: usize) -> Self {
         Self::new(ArenaConfig::production().with_initial_size(capacity))
     }
 
     /// Creates arena with debug config - optimized for debugging
+    #[must_use]
     pub fn debug(capacity: usize) -> Self {
         Self::new(ArenaConfig::debug().with_initial_size(capacity))
     }
 
     /// Creates arena with performance config (alias for production)
+    #[must_use]
     pub fn performance(capacity: usize) -> Self {
         Self::production(capacity)
     }
 
     /// Creates arena with conservative config - balanced
+    #[must_use]
     pub fn conservative(capacity: usize) -> Self {
         Self::new(ArenaConfig::conservative().with_initial_size(capacity))
     }
 
     /// Creates arena optimized for small frequent allocations
+    #[must_use]
     pub fn small_objects(capacity: usize) -> Self {
         Self::new(ArenaConfig::small_objects().with_initial_size(capacity))
     }
 
     /// Creates arena optimized for large infrequent allocations
+    #[must_use]
     pub fn large_objects(capacity: usize) -> Self {
         Self::new(ArenaConfig::large_objects().with_initial_size(capacity))
     }
 
     /// Creates a tiny arena (4KB) for testing or minimal use
+    #[must_use]
     pub fn tiny() -> Self {
         Self::new(ArenaConfig::small_objects().with_initial_size(4 * 1024))
     }
 
     /// Creates a small arena (64KB) for common use
+    #[must_use]
     pub fn small() -> Self {
         Self::new(ArenaConfig::default().with_initial_size(64 * 1024))
     }
 
     /// Creates a medium arena (1MB) for standard applications
+    #[must_use]
     pub fn medium() -> Self {
         Self::new(ArenaConfig::default().with_initial_size(1024 * 1024))
     }
 
     /// Creates a large arena (16MB) for heavy workloads
+    #[must_use]
     pub fn large() -> Self {
         Self::new(ArenaConfig::large_objects().with_initial_size(16 * 1024 * 1024))
     }
@@ -306,7 +318,8 @@ impl Arena {
     /// Allocates and initializes a value
     #[must_use = "allocated memory must be used"]
     pub fn alloc<T>(&self, value: T) -> Result<&mut T, MemoryError> {
-        let ptr = self.alloc_bytes_aligned(mem::size_of::<T>(), mem::align_of::<T>())? as *mut T;
+        let ptr =
+            (self.alloc_bytes_aligned(mem::size_of::<T>(), mem::align_of::<T>())?).cast::<T>();
 
         // SAFETY: Initializing allocated memory and creating reference.
         // - ptr is valid (just allocated via alloc_bytes_aligned)
@@ -324,8 +337,8 @@ impl Arena {
     /// Allocates space for uninitialized value
     #[must_use = "allocated memory must be used"]
     pub fn alloc_uninit<T>(&self) -> Result<&mut MaybeUninit<T>, MemoryError> {
-        let ptr = self.alloc_bytes_aligned(mem::size_of::<T>(), mem::align_of::<T>())?
-            as *mut MaybeUninit<T>;
+        let ptr = (self.alloc_bytes_aligned(mem::size_of::<T>(), mem::align_of::<T>())?)
+            .cast::<MaybeUninit<T>>();
 
         // SAFETY: Creating reference to uninitialized memory.
         // - ptr is valid (just allocated via alloc_bytes_aligned)
@@ -344,7 +357,7 @@ impl Arena {
         }
 
         let ptr =
-            self.alloc_bytes_aligned(mem::size_of_val(slice), mem::align_of::<T>())? as *mut T;
+            (self.alloc_bytes_aligned(mem::size_of_val(slice), mem::align_of::<T>())?).cast::<T>();
 
         // SAFETY: Copying slice to allocated memory and creating slice reference.
         // - ptr is valid (just allocated via alloc_bytes_aligned)
@@ -421,8 +434,7 @@ impl Arena {
         let chunks = self.chunks.borrow();
         let chunk_ptr = chunks
             .as_ref()
-            .map(|c| c.start() as *const u8)
-            .unwrap_or(ptr::null());
+            .map_or(ptr::null(), |c| c.start().cast_const());
 
         let offset = if chunk_ptr.is_null() {
             0
@@ -471,8 +483,7 @@ impl Arena {
         // Verify position is from this arena
         let chunk_ptr = chunks
             .as_ref()
-            .map(|c| c.start() as *const u8)
-            .unwrap_or(ptr::null());
+            .map_or(ptr::null(), |c| c.start().cast_const());
 
         if position.chunk_ptr != chunk_ptr {
             return Err(MemoryError::invalid_argument(
@@ -488,7 +499,7 @@ impl Arena {
             // - chunk_ptr is valid (verified to match current chunk above)
             // - position.offset will be validated below (not beyond current_ptr)
             // - Pointer arithmetic within chunk bounds (validated in next block)
-            unsafe { (chunk_ptr as *mut u8).add(position.offset) }
+            unsafe { chunk_ptr.cast_mut().add(position.offset) }
         };
 
         // Validate offset is within bounds
@@ -543,6 +554,7 @@ impl<'a, T: ?Sized> ArenaRef<'a, T> {
     }
 
     /// Gets reference to the value
+    #[must_use]
     pub fn get(&self) -> &T {
         // SAFETY: Dereferencing arena-allocated pointer.
         // - ptr is NonNull, guaranteed non-null
@@ -553,7 +565,7 @@ impl<'a, T: ?Sized> ArenaRef<'a, T> {
     }
 }
 
-impl<'a, T: ?Sized> std::ops::Deref for ArenaRef<'a, T> {
+impl<T: ?Sized> std::ops::Deref for ArenaRef<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -574,6 +586,7 @@ impl<'a, T: ?Sized> ArenaRefMut<'a, T> {
     }
 
     /// Gets reference to the value
+    #[must_use]
     pub fn get(&self) -> &T {
         // SAFETY: Dereferencing arena-allocated pointer (immutable).
         // - ptr is NonNull, guaranteed non-null
@@ -595,7 +608,7 @@ impl<'a, T: ?Sized> ArenaRefMut<'a, T> {
     }
 }
 
-impl<'a, T: ?Sized> std::ops::Deref for ArenaRefMut<'a, T> {
+impl<T: ?Sized> std::ops::Deref for ArenaRefMut<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -603,7 +616,7 @@ impl<'a, T: ?Sized> std::ops::Deref for ArenaRefMut<'a, T> {
     }
 }
 
-impl<'a, T: ?Sized> std::ops::DerefMut for ArenaRefMut<'a, T> {
+impl<T: ?Sized> std::ops::DerefMut for ArenaRefMut<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.get_mut()
     }

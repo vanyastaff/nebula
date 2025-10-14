@@ -43,6 +43,7 @@ where
     K: CacheKey,
 {
     /// Create a new TTL policy with the given default TTL
+    #[must_use]
     pub fn new(default_ttl: Duration) -> Self {
         Self {
             default_ttl,
@@ -61,7 +62,7 @@ where
     pub fn get_ttl(&self, key: &K) -> Duration {
         self.custom_ttls
             .get(key)
-            .cloned()
+            .copied()
             .unwrap_or(self.default_ttl)
     }
 
@@ -92,12 +93,12 @@ where
     }
 }
 
-/// Реализация VictimSelector для TTL policy
+/// Реализация `VictimSelector` для TTL policy
 impl<K, V> VictimSelector<K, V> for TtlPolicy<K>
 where
     K: CacheKey + Send + Sync,
 {
-    fn select_victim<'a>(&self, entries: &[EvictionEntry<'a, K, V>]) -> Option<K> {
+    fn select_victim(&self, entries: &[EvictionEntry<'_, K, V>]) -> Option<K> {
         if entries.is_empty() {
             return None;
         }
@@ -170,7 +171,7 @@ where
         self
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "TTL"
     }
 }

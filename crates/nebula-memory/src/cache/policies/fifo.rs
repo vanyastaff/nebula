@@ -81,11 +81,13 @@ where
     K: CacheKey,
 {
     /// Create a new FIFO eviction policy
+    #[must_use]
     pub fn new() -> Self {
         Self::with_config(FifoConfig::default())
     }
 
     /// Create a new FIFO policy with custom configuration
+    #[must_use]
     pub fn with_config(config: FifoConfig) -> Self {
         Self {
             _phantom: PhantomData,
@@ -97,6 +99,7 @@ where
     }
 
     /// Create a FIFO policy with specific capacity
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self::with_config(FifoConfig {
             max_tracked_items: capacity,
@@ -105,11 +108,13 @@ where
     }
 
     /// Get the number of tracked keys
+    #[must_use]
     pub fn key_count(&self) -> usize {
         self.queue.len()
     }
 
     /// Get the oldest key (next victim candidate)
+    #[must_use]
     pub fn peek_oldest(&self) -> Option<&K> {
         self.queue.front()
     }
@@ -174,7 +179,7 @@ where
         self
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "FIFO"
     }
 }
@@ -184,7 +189,7 @@ where
     K: CacheKey + Send + Sync,
     V: Send + Sync,
 {
-    fn select_victim<'a>(&self, entries: &[EvictionEntry<'a, K, V>]) -> Option<K> {
+    fn select_victim(&self, entries: &[EvictionEntry<'_, K, V>]) -> Option<K> {
         if entries.is_empty() {
             return None;
         }
@@ -228,11 +233,8 @@ mod tests {
         let key1 = "key1".to_string();
         let key2 = "key2".to_string();
         let key3 = "key3".to_string();
-        let entries: Vec<EvictionEntry<String, i32>> = vec![
-            (&key1, &entry),
-            (&key2, &entry),
-            (&key3, &entry),
-        ];
+        let entries: Vec<EvictionEntry<String, i32>> =
+            vec![(&key1, &entry), (&key2, &entry), (&key3, &entry)];
 
         // Manually track insertion order
         let mut policy_mut = FifoPolicy::<String, i32>::new();

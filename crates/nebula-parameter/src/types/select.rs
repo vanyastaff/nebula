@@ -109,7 +109,7 @@ impl Expressible for SelectParameter {
             MaybeExpression::Value(nebula_value::Value::Text(s)) => {
                 // Use Text directly
                 // Validate that the value is one of the available options
-                if self.is_valid_option(&s.as_str()) {
+                if self.is_valid_option(s.as_str()) {
                     self.value = Some(s);
                     Ok(())
                 } else {
@@ -170,21 +170,24 @@ impl SelectParameter {
     }
 
     /// Get option by value
+    #[must_use]
     pub fn get_option_by_value(&self, value: &str) -> Option<&SelectOption> {
         self.options.iter().find(|option| option.value == value)
     }
 
     /// Get option by key
+    #[must_use]
     pub fn get_option_by_key(&self, key: &str) -> Option<&SelectOption> {
         self.options.iter().find(|option| option.key == key)
     }
 
     /// Get the display name for the current value
+    #[must_use]
     pub fn get_display_name(&self) -> Option<String> {
-        if let Some(value) = &self.value {
-            if let Some(option) = self.get_option_by_value(value) {
-                return Some(option.name.clone());
-            }
+        if let Some(value) = &self.value
+            && let Some(option) = self.get_option_by_value(value)
+        {
+            return Some(option.name.clone());
         }
         None
     }

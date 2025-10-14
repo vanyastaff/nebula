@@ -64,13 +64,13 @@ pub struct ValidationContext {
 
 impl ValidationContext {
     /// Creates a new empty validation context.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Creates a context with a parent.
-    #[must_use] 
+    #[must_use]
     pub fn with_parent(parent: ValidationContext) -> Self {
         Self {
             data: HashMap::new(),
@@ -106,7 +106,7 @@ impl ValidationContext {
     /// let max: Option<&usize> = ctx.get("max_length");
     /// assert_eq!(max, Some(&100));
     /// ```
-    #[must_use] 
+    #[must_use]
     pub fn get<T: 'static>(&self, key: &str) -> Option<&T> {
         // Try local data first
         if let Some(value) = self.data.get(key) {
@@ -129,7 +129,7 @@ impl ValidationContext {
     }
 
     /// Checks if a key exists in the context.
-    #[must_use] 
+    #[must_use]
     pub fn contains(&self, key: &str) -> bool {
         self.data.contains_key(key) || self.parent.as_ref().is_some_and(|p| p.contains(key))
     }
@@ -160,7 +160,7 @@ impl ValidationContext {
     ///
     /// assert_eq!(ctx.field_path(), "user.address.zipcode");
     /// ```
-    #[must_use] 
+    #[must_use]
     pub fn field_path(&self) -> String {
         self.field_path.join(".")
     }
@@ -171,7 +171,7 @@ impl ValidationContext {
     }
 
     /// Creates a child context with this context as parent.
-    #[must_use] 
+    #[must_use]
     pub fn child(&self) -> Self {
         Self {
             data: HashMap::new(),
@@ -181,13 +181,13 @@ impl ValidationContext {
     }
 
     /// Returns the number of items in the local context (excluding parent).
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
     /// Checks if the local context is empty (excluding parent).
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
@@ -328,7 +328,7 @@ pub struct ValidationContextBuilder {
 
 impl ValidationContextBuilder {
     /// Creates a new context builder.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             context: ValidationContext::new(),
@@ -350,7 +350,7 @@ impl ValidationContextBuilder {
     }
 
     /// Builds the validation context.
-    #[must_use] 
+    #[must_use]
     pub fn build(self) -> ValidationContext {
         self.context
     }

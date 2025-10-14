@@ -76,7 +76,7 @@ impl Default for ValidatorMetadata {
 
 impl ValidatorMetadata {
     /// Creates a new metadata builder.
-    #[must_use] 
+    #[must_use]
     pub fn builder() -> ValidatorMetadataBuilder {
         ValidatorMetadataBuilder::default()
     }
@@ -161,7 +161,7 @@ pub enum ValidationComplexity {
 
 impl ValidationComplexity {
     /// Returns a numeric score for comparison (lower is cheaper).
-    #[must_use] 
+    #[must_use]
     pub fn score(&self) -> u8 {
         match self {
             Self::Constant => 1,
@@ -172,7 +172,7 @@ impl ValidationComplexity {
     }
 
     /// Returns true if this complexity is more expensive than another.
-    #[must_use] 
+    #[must_use]
     pub fn is_more_expensive_than(&self, other: &Self) -> bool {
         self.score() > other.score()
     }
@@ -273,7 +273,7 @@ impl ValidatorMetadataBuilder {
     }
 
     /// Builds the metadata.
-    #[must_use] 
+    #[must_use]
     pub fn build(self) -> ValidatorMetadata {
         ValidatorMetadata {
             name: self.name.unwrap_or_else(|| "Unknown".to_string()),
@@ -379,7 +379,7 @@ pub struct ValidatorStatistics {
 
 impl ValidatorStatistics {
     /// Creates new empty statistics.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -410,7 +410,7 @@ impl ValidatorStatistics {
     }
 
     /// Returns the success rate as a percentage.
-    #[must_use] 
+    #[must_use]
     pub fn success_rate(&self) -> f64 {
         if self.total_validations == 0 {
             0.0
@@ -420,7 +420,7 @@ impl ValidatorStatistics {
     }
 
     /// Returns the failure rate as a percentage.
-    #[must_use] 
+    #[must_use]
     pub fn failure_rate(&self) -> f64 {
         100.0 - self.success_rate()
     }

@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
 use crate::core::{Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata};
-use nebula_expression::MaybeExpression;
-use nebula_value::Value;
 
 /// Parameter for displaying a notice or information to the user
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -36,9 +34,10 @@ pub struct NoticeParameterOptions {
     pub dismissible: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum NoticeType {
     #[serde(rename = "info")]
+    #[default]
     Info,
     #[serde(rename = "warning")]
     Warning,
@@ -46,12 +45,6 @@ pub enum NoticeType {
     Error,
     #[serde(rename = "success")]
     Success,
-}
-
-impl Default for NoticeType {
-    fn default() -> Self {
-        NoticeType::Info
-    }
 }
 
 impl Parameter for NoticeParameter {

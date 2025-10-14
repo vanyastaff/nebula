@@ -164,7 +164,6 @@ fn test_builder_with_limits() {
 #[test]
 #[cfg(feature = "serde")]
 fn test_serde_integration_all_types() {
-
     // Create value with all types
     let complex = Value::Object(Object::from_iter(vec![
         ("null".to_string(), Value::Null),

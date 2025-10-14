@@ -50,7 +50,7 @@ impl DateTime {
     /// - `allow_date_only`: true (accepts YYYY-MM-DD)
     /// - `require_timezone`: false
     /// - `allow_milliseconds`: true
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             allow_date_only: true,

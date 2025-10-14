@@ -83,6 +83,12 @@ pub struct CacheFallback<T: Clone + Send + Sync> {
     last_update: Arc<RwLock<Option<std::time::Instant>>>,
 }
 
+impl<T: Clone + Send + Sync> Default for CacheFallback<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Clone + Send + Sync> CacheFallback<T> {
     /// Create new cache fallback
     pub fn new() -> Self {
@@ -109,9 +115,10 @@ impl<T: Clone + Send + Sync> CacheFallback<T> {
     /// Check if cache is valid
     async fn is_valid(&self) -> bool {
         if let Some(ttl) = self.ttl
-            && let Some(last_update) = *self.last_update.read().await {
-                return last_update.elapsed() < ttl;
-            }
+            && let Some(last_update) = *self.last_update.read().await
+        {
+            return last_update.elapsed() < ttl;
+        }
         true
     }
 }
@@ -142,9 +149,15 @@ pub struct ChainFallback<T> {
     fallbacks: Vec<Arc<dyn FallbackStrategy<T>>>,
 }
 
+impl<T> Default for ChainFallback<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> ChainFallback<T> {
     /// Create new chain fallback
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             fallbacks: Vec::new(),
@@ -183,9 +196,15 @@ pub struct PriorityFallback<T> {
     default: Option<Arc<dyn FallbackStrategy<T>>>,
 }
 
+impl<T> Default for PriorityFallback<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> PriorityFallback<T> {
     /// Create new priority fallback
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             fallbacks: HashMap::new(),

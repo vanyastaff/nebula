@@ -17,12 +17,14 @@ pub struct ListValue {
 }
 
 impl ListValue {
-    /// Create a new ListValue
+    /// Create a new `ListValue`
+    #[must_use]
     pub fn new(items: Vec<nebula_value::Value>) -> Self {
         Self { items }
     }
 
-    /// Create an empty ListValue
+    /// Create an empty `ListValue`
+    #[must_use]
     pub fn empty() -> Self {
         Self { items: Vec::new() }
     }
@@ -33,11 +35,13 @@ impl ListValue {
     }
 
     /// Get item count
+    #[must_use]
     pub fn len(&self) -> usize {
         self.items.len()
     }
 
     /// Check if the list is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -251,6 +255,7 @@ impl ListParameter {
     }
 
     /// Get the template parameter
+    #[must_use]
     pub fn template(&self) -> Option<&Box<dyn Parameter>> {
         self.item_template.as_ref()
     }
@@ -270,6 +275,7 @@ impl ListParameter {
     }
 
     /// Get child parameter by index
+    #[must_use]
     pub fn get_child(&self, index: usize) -> Option<&Box<dyn Parameter>> {
         self.children.get(index)
     }
@@ -280,6 +286,7 @@ impl ListParameter {
     }
 
     /// Get all children
+    #[must_use]
     pub fn children(&self) -> &[Box<dyn Parameter>] {
         &self.children
     }
@@ -290,6 +297,7 @@ impl ListParameter {
     }
 
     /// Get children count
+    #[must_use]
     pub fn children_count(&self) -> usize {
         self.children.len()
     }
@@ -336,7 +344,7 @@ impl ListParameter {
                         .remove(old_index)
                         .map_err(|e| ParameterError::InvalidValue {
                             key: self.metadata.key.clone(),
-                            reason: format!("Failed to remove item: {}", e),
+                            reason: format!("Failed to remove item: {e}"),
                         })?;
 
                 // Insert at new position
@@ -344,7 +352,7 @@ impl ListParameter {
                     items_after_remove.insert(new_index, item).map_err(|e| {
                         ParameterError::InvalidValue {
                             key: self.metadata.key.clone(),
-                            reason: format!("Failed to insert item: {}", e),
+                            reason: format!("Failed to insert item: {e}"),
                         }
                     })?;
 

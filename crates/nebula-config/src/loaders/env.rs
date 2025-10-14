@@ -155,19 +155,18 @@ impl EnvLoader {
         }
 
         // Try to parse as float
-        if let Ok(float_val) = value.parse::<f64>() {
-            if let Some(num) = serde_json::Number::from_f64(float_val) {
-                return serde_json::Value::Number(num);
-            }
+        if let Ok(float_val) = value.parse::<f64>()
+            && let Some(num) = serde_json::Number::from_f64(float_val)
+        {
+            return serde_json::Value::Number(num);
         }
 
         // Try to parse as JSON (for arrays and objects)
-        if (value.starts_with('{') && value.ends_with('}'))
-            || (value.starts_with('[') && value.ends_with(']'))
+        if ((value.starts_with('{') && value.ends_with('}'))
+            || (value.starts_with('[') && value.ends_with(']')))
+            && let Ok(json_val) = serde_json::from_str(value)
         {
-            if let Ok(json_val) = serde_json::from_str(value) {
-                return json_val;
-            }
+            return json_val;
         }
 
         // Parse comma-separated values as array

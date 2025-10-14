@@ -3,17 +3,17 @@
 //! # Safety
 //!
 //! This module implements TTL-based pooling with automatic expiration:
-//! - TtlPooledValue holds raw pointer to pool
-//! - ManuallyDrop for controlled object lifecycle
+//! - `TtlPooledValue` holds raw pointer to pool
+//! - `ManuallyDrop` for controlled object lifecycle
 //! - Drop returns object to pool with new timestamp
 //! - Expired objects removed during cleanup or get operations
 //!
 //! ## Safety Contracts
 //!
-//! - TtlPooledValue::detach: ManuallyDrop::take + mem::forget prevents drop
-//! - TtlPooledValue::drop: ManuallyDrop::take + pool deref + return_object
+//! - `TtlPooledValue::detach`: `ManuallyDrop::take` + `mem::forget` prevents drop
+//! - `TtlPooledValue::drop`: `ManuallyDrop::take` + pool deref + `return_object`
 //! - Send implementation: Safe if T: Send (pool pointer not shared)
-//! - Pool pointer remains valid (lifetime tied to get() borrow)
+//! - Pool pointer remains valid (lifetime tied to `get()` borrow)
 
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
@@ -202,7 +202,7 @@ impl<T: Poolable> TtlPool<T> {
 
         Ok(TtlPooledValue {
             value: ManuallyDrop::new(obj),
-            pool: self as *mut _,
+            pool: std::ptr::from_mut(self),
         })
     }
 
@@ -214,23 +214,21 @@ impl<T: Poolable> TtlPool<T> {
         self.callbacks.on_checkin(&obj);
 
         // Validate object
-        if self.config.validate_on_return {
-            if !obj.validate() || !obj.is_reusable() {
-                self.callbacks.on_destroy(&obj);
-                #[cfg(feature = "stats")]
-                self.stats.record_destruction();
-                return;
-            }
+        if self.config.validate_on_return && (!obj.validate() || !obj.is_reusable()) {
+            self.callbacks.on_destroy(&obj);
+            #[cfg(feature = "stats")]
+            self.stats.record_destruction();
+            return;
         }
 
         // Check pool size
-        if let Some(max) = self.config.max_capacity {
-            if self.objects.len() >= max {
-                self.callbacks.on_destroy(&obj);
-                #[cfg(feature = "stats")]
-                self.stats.record_destruction();
-                return;
-            }
+        if let Some(max) = self.config.max_capacity
+            && self.objects.len() >= max
+        {
+            self.callbacks.on_destroy(&obj);
+            #[cfg(feature = "stats")]
+            self.stats.record_destruction();
+            return;
         }
 
         obj.reset();
@@ -242,7 +240,7 @@ impl<T: Poolable> TtlPool<T> {
 
     /// Force cleanup of expired objects
     pub fn force_cleanup(&mut self) {
-        self.last_cleanup = Instant::now() - self.cleanup_interval;
+        self.last_cleanup = Instant::now().checked_sub(self.cleanup_interval).unwrap();
         self.cleanup_expired();
     }
 
@@ -257,11 +255,13 @@ impl<T: Poolable> TtlPool<T> {
     }
 
     /// Get number of available objects
+    #[must_use]
     pub fn available(&self) -> usize {
         self.objects.len()
     }
 
     /// Get age of oldest object
+    #[must_use]
     pub fn oldest_age(&self) -> Option<Duration> {
         self.objects.front().map(|w| w.created_at.elapsed())
     }

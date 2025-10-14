@@ -3,9 +3,9 @@
 //! Provides a fluent API for building objects with validation.
 
 use crate::collections::Object;
+use crate::core::Value;
 use crate::core::error::ValueResult;
 use crate::core::limits::ValueLimits;
-use crate::core::Value;
 
 /// Type alias for values stored in objects
 type ValueItem = Value;
@@ -72,7 +72,11 @@ impl ObjectBuilder {
     /// Returns `ValueError::LimitExceeded` if:
     /// - Key length exceeds `max_string_bytes`
     /// - Object key count would exceed `max_object_keys`
-    pub fn try_insert(mut self, key: impl Into<String>, value: impl Into<ValueItem>) -> ValueResult<Self> {
+    pub fn try_insert(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<ValueItem>,
+    ) -> ValueResult<Self> {
         let key = key.into();
 
         if let Some(ref limits) = self.limits {

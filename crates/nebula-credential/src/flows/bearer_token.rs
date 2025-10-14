@@ -64,7 +64,7 @@ pub type BearerTokenCredential = crate::core::adapter::FlowCredential<BearerToke
 
 impl BearerTokenCredential {
     /// Create a new Bearer Token credential
-    #[must_use] 
+    #[must_use]
     pub fn create() -> Self {
         Self::from_flow(BearerTokenFlow)
     }

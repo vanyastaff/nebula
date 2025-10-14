@@ -131,15 +131,15 @@ where
     V: Clone,
 {
     /// Create a new compute cache with the given maximum size
+    #[must_use]
     pub fn new(max_entries: usize) -> Self {
         Self::with_config(CacheConfig::new(max_entries))
     }
 
     /// Create a new compute cache with the given configuration
+    #[must_use]
     pub fn with_config(config: CacheConfig) -> Self {
-        let initial_capacity = config
-            .initial_capacity
-            .unwrap_or_else(|| config.max_entries);
+        let initial_capacity = config.initial_capacity.unwrap_or(config.max_entries);
 
         #[cfg(feature = "std")]
         let metrics = Arc::new(Mutex::new(CacheMetrics::new()));
@@ -249,11 +249,11 @@ where
         if let Some(entry) = self.entries.get_mut(key) {
             // Check if expired
             #[cfg(feature = "std")]
-            if let Some(ttl) = self.config.ttl {
-                if entry.is_expired(ttl) {
-                    self.entries.remove(key);
-                    return None;
-                }
+            if let Some(ttl) = self.config.ttl
+                && entry.is_expired(ttl)
+            {
+                self.entries.remove(key);
+                return None;
             }
 
             // Update access metadata
@@ -331,16 +331,19 @@ where
     }
 
     /// Get all keys currently in the cache
+    #[must_use]
     pub fn keys(&self) -> Vec<K> {
         self.entries.keys().cloned().collect()
     }
 
     /// Get cache capacity
+    #[must_use]
     pub fn capacity(&self) -> usize {
         self.config.max_entries
     }
 
     /// Get current load factor
+    #[must_use]
     pub fn load_factor(&self) -> f32 {
         self.entries.len() as f32 / self.config.max_entries as f32
     }
@@ -580,10 +583,10 @@ where
     fn evict_adaptive(&mut self) -> MemoryResult<()> {
         // Simple adaptive logic: use LFU if average access count is high, otherwise LRU
         let total_accesses: usize = self.entries.values().map(|e| e.access_count).sum();
-        let avg_accesses = if !self.entries.is_empty() {
-            total_accesses / self.entries.len()
-        } else {
+        let avg_accesses = if self.entries.is_empty() {
             0
+        } else {
+            total_accesses / self.entries.len()
         };
 
         if avg_accesses > 3 {
@@ -594,11 +597,13 @@ where
     }
 
     /// Get the current number of entries in the cache
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Check if the cache is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -615,6 +620,7 @@ where
 
     /// Get the cache metrics
     #[cfg(feature = "std")]
+    #[must_use]
     pub fn metrics(&self) -> CacheMetrics {
         if self.config.track_metrics {
             self.metrics.lock().clone()
@@ -695,7 +701,7 @@ where
 
     pub fn clear(&self) {
         let mut cache = self.inner.lock();
-        cache.clear()
+        cache.clear();
     }
 
     pub fn metrics(&self) -> CacheMetrics {

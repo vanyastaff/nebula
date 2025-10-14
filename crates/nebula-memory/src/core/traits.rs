@@ -57,11 +57,11 @@ pub trait MemoryUsage {
     /// Returns `None` if total memory is unknown or zero.
     /// Useful for implementing memory pressure warnings.
     fn memory_usage_percent(&self) -> Option<f32> {
-        self.total_memory().and_then(|total| {
+        self.total_memory().map(|total| {
             if total == 0 {
-                Some(0.0)
+                0.0
             } else {
-                Some((self.used_memory() as f32 / total as f32) * 100.0)
+                (self.used_memory() as f32 / total as f32) * 100.0
             }
         })
     }
@@ -108,11 +108,11 @@ impl core::fmt::Display for BasicMemoryUsage {
         write!(f, "used: {} bytes", self.used)?;
 
         if let Some(total) = self.total {
-            write!(f, ", total: {} bytes", total)?;
+            write!(f, ", total: {total} bytes")?;
         }
 
         if let Some(percent) = self.usage_percent {
-            write!(f, " ({:.1}%)", percent)?;
+            write!(f, " ({percent:.1}%)")?;
         }
 
         Ok(())

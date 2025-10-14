@@ -1,6 +1,6 @@
 //! CPU information and utilities
 
-use crate::core::{NebulaError, SystemError, SystemResult};
+use crate::core::{SystemError, SystemResult};
 use crate::info::SystemInfo;
 
 #[cfg(feature = "serde")]
@@ -108,13 +108,13 @@ pub enum CpuPressure {
 
 impl CpuPressure {
     /// Check if CPU pressure is concerning
-    #[must_use] 
+    #[must_use]
     pub fn is_concerning(&self) -> bool {
         *self >= CpuPressure::High
     }
 
     /// Create from usage percentage
-    #[must_use] 
+    #[must_use]
     pub fn from_usage(usage: f32) -> Self {
         if usage > 85.0 {
             CpuPressure::Critical
@@ -169,14 +169,14 @@ pub fn usage() -> CpuUsage {
 }
 
 /// Get CPU pressure level
-#[must_use] 
+#[must_use]
 pub fn pressure() -> CpuPressure {
     let usage = usage();
     CpuPressure::from_usage(usage.average)
 }
 
 /// Get CPU features
-#[must_use] 
+#[must_use]
 pub fn features() -> CpuFeatures {
     #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "sysinfo"))]
     {
@@ -203,7 +203,7 @@ pub fn features() -> CpuFeatures {
 }
 
 /// Get CPU cache information
-#[must_use] 
+#[must_use]
 pub fn cache_info() -> CacheInfo {
     let info = SystemInfo::get();
 
@@ -257,7 +257,7 @@ fn read_cache_size(path: &str) -> Option<usize> {
 }
 
 /// Get CPU topology
-#[must_use] 
+#[must_use]
 pub fn topology() -> CpuTopology {
     let info = SystemInfo::get();
 
@@ -345,7 +345,7 @@ fn parse_cpu_list(s: &str) -> Option<Vec<usize>> {
 }
 
 /// Get optimal number of threads for parallel work
-#[must_use] 
+#[must_use]
 pub fn optimal_thread_count() -> usize {
     let info = SystemInfo::get();
     let topology = topology();
@@ -363,7 +363,7 @@ pub fn optimal_thread_count() -> usize {
 /// CPU affinity management
 #[cfg(feature = "sysinfo")]
 pub mod affinity {
-    use super::{SystemResult, NebulaError, SystemError};
+    use super::{SystemError, SystemResult};
 
     /// Set CPU affinity for current thread
     #[cfg(target_os = "linux")]
@@ -400,7 +400,7 @@ pub mod affinity {
     #[cfg(not(target_os = "linux"))]
     /// Set CPU affinity for current thread (not supported on this platform)
     pub fn set_current_thread(_cpus: &[usize]) -> SystemResult<()> {
-        Err(NebulaError::system_not_supported(
+        Err(SystemError::feature_not_supported(
             "CPU affinity not supported on this platform",
         ))
     }

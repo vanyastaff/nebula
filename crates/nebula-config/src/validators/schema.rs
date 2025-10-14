@@ -48,12 +48,11 @@ impl SchemaValidator {
     /// Recursive validation helper
     fn validate_recursive(&self, data: &Value, schema: &Value, path: &str) -> ConfigResult<()> {
         // Handle schema references ($ref)
-        if let Some(schema_obj) = schema.as_object() {
-            if let Some(ref_val) = schema_obj.get("$ref") {
-                if let Some(ref_str) = ref_val.as_str() {
-                    return self.validate_ref(data, ref_str, path);
-                }
-            }
+        if let Some(schema_obj) = schema.as_object()
+            && let Some(ref_val) = schema_obj.get("$ref")
+            && let Some(ref_str) = ref_val.as_str()
+        {
+            return self.validate_ref(data, ref_str, path);
         }
 
         match schema {
@@ -93,13 +92,13 @@ impl SchemaValidator {
         }
 
         // Check const
-        if let Some(const_val) = schema_obj.get("const") {
-            if data != const_val {
-                return Err(ConfigError::validation_error(
-                    format!("Value at '{}' must be exactly {:?}", path, const_val),
-                    Some(path.to_string()),
-                ));
-            }
+        if let Some(const_val) = schema_obj.get("const")
+            && data != const_val
+        {
+            return Err(ConfigError::validation_error(
+                format!("Value at '{}' must be exactly {:?}", path, const_val),
+                Some(path.to_string()),
+            ));
         }
 
         // Type-specific validations
@@ -157,13 +156,13 @@ impl SchemaValidator {
 
     /// Validate enum constraint
     fn validate_enum(&self, data: &Value, enum_val: &Value, path: &str) -> ConfigResult<()> {
-        if let Some(enum_arr) = enum_val.as_array() {
-            if !enum_arr.contains(data) {
-                return Err(ConfigError::validation_error(
-                    format!("Value at '{}' must be one of {:?}", path, enum_arr),
-                    Some(path.to_string()),
-                ));
-            }
+        if let Some(enum_arr) = enum_val.as_array()
+            && !enum_arr.contains(data)
+        {
+            return Err(ConfigError::validation_error(
+                format!("Value at '{}' must be one of {:?}", path, enum_arr),
+                Some(path.to_string()),
+            ));
         }
         Ok(())
     }
@@ -176,75 +175,70 @@ impl SchemaValidator {
         path: &str,
     ) -> ConfigResult<()> {
         // Check required fields
-        if let Some(required) = schema_obj.get("required") {
-            if let Some(required_array) = required.as_array() {
-                for required_field in required_array {
-                    if let Some(field_name) = required_field.as_str() {
-                        if !obj.contains_key(field_name) {
-                            return Err(ConfigError::validation_error(
-                                format!(
-                                    "Required field '{}' missing at path '{}'",
-                                    field_name, path
-                                ),
-                                Some(format!("{}.{}", path, field_name)),
-                            ));
-                        }
-                    }
+        if let Some(required) = schema_obj.get("required")
+            && let Some(required_array) = required.as_array()
+        {
+            for required_field in required_array {
+                if let Some(field_name) = required_field.as_str()
+                    && !obj.contains_key(field_name)
+                {
+                    return Err(ConfigError::validation_error(
+                        format!("Required field '{}' missing at path '{}'", field_name, path),
+                        Some(format!("{}.{}", path, field_name)),
+                    ));
                 }
             }
         }
 
         // Check properties
-        if let Some(properties) = schema_obj.get("properties") {
-            if let Some(properties_obj) = properties.as_object() {
-                for (prop_name, prop_data) in obj {
-                    let new_path = if path.is_empty() {
-                        prop_name.clone()
-                    } else {
-                        format!("{}.{}", path, prop_name)
-                    };
+        if let Some(properties) = schema_obj.get("properties")
+            && let Some(properties_obj) = properties.as_object()
+        {
+            for (prop_name, prop_data) in obj {
+                let new_path = if path.is_empty() {
+                    prop_name.clone()
+                } else {
+                    format!("{}.{}", path, prop_name)
+                };
 
-                    if let Some(prop_schema) = properties_obj.get(prop_name) {
-                        self.validate_recursive(prop_data, prop_schema, &new_path)?;
-                    } else if !self.allow_additional {
-                        // Check additionalProperties
-                        let allow = schema_obj
-                            .get("additionalProperties")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(self.allow_additional);
+                if let Some(prop_schema) = properties_obj.get(prop_name) {
+                    self.validate_recursive(prop_data, prop_schema, &new_path)?;
+                } else if !self.allow_additional {
+                    // Check additionalProperties
+                    let allow = schema_obj
+                        .get("additionalProperties")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(self.allow_additional);
 
-                        if !allow {
-                            return Err(ConfigError::validation_error(
-                                format!("Additional property '{}' not allowed", new_path),
-                                Some(new_path),
-                            ));
-                        }
+                    if !allow {
+                        return Err(ConfigError::validation_error(
+                            format!("Additional property '{}' not allowed", new_path),
+                            Some(new_path),
+                        ));
                     }
                 }
             }
         }
 
         // Check property count
-        if let Some(min_props) = schema_obj.get("minProperties") {
-            if let Some(min) = min_props.as_u64() {
-                if (obj.len() as u64) < min {
-                    return Err(ConfigError::validation_error(
-                        format!("Object at '{}' must have at least {} properties", path, min),
-                        Some(path.to_string()),
-                    ));
-                }
-            }
+        if let Some(min_props) = schema_obj.get("minProperties")
+            && let Some(min) = min_props.as_u64()
+            && (obj.len() as u64) < min
+        {
+            return Err(ConfigError::validation_error(
+                format!("Object at '{}' must have at least {} properties", path, min),
+                Some(path.to_string()),
+            ));
         }
 
-        if let Some(max_props) = schema_obj.get("maxProperties") {
-            if let Some(max) = max_props.as_u64() {
-                if (obj.len() as u64) > max {
-                    return Err(ConfigError::validation_error(
-                        format!("Object at '{}' must have at most {} properties", path, max),
-                        Some(path.to_string()),
-                    ));
-                }
-            }
+        if let Some(max_props) = schema_obj.get("maxProperties")
+            && let Some(max) = max_props.as_u64()
+            && (obj.len() as u64) > max
+        {
+            return Err(ConfigError::validation_error(
+                format!("Object at '{}' must have at most {} properties", path, max),
+                Some(path.to_string()),
+            ));
         }
 
         Ok(())
@@ -276,40 +270,38 @@ impl SchemaValidator {
         }
 
         // Check array length
-        if let Some(min_items) = schema_obj.get("minItems") {
-            if let Some(min) = min_items.as_u64() {
-                if (arr.len() as u64) < min {
-                    return Err(ConfigError::validation_error(
-                        format!("Array at '{}' must have at least {} items", path, min),
-                        Some(path.to_string()),
-                    ));
-                }
-            }
+        if let Some(min_items) = schema_obj.get("minItems")
+            && let Some(min) = min_items.as_u64()
+            && (arr.len() as u64) < min
+        {
+            return Err(ConfigError::validation_error(
+                format!("Array at '{}' must have at least {} items", path, min),
+                Some(path.to_string()),
+            ));
         }
 
-        if let Some(max_items) = schema_obj.get("maxItems") {
-            if let Some(max) = max_items.as_u64() {
-                if (arr.len() as u64) > max {
-                    return Err(ConfigError::validation_error(
-                        format!("Array at '{}' must have at most {} items", path, max),
-                        Some(path.to_string()),
-                    ));
-                }
-            }
+        if let Some(max_items) = schema_obj.get("maxItems")
+            && let Some(max) = max_items.as_u64()
+            && (arr.len() as u64) > max
+        {
+            return Err(ConfigError::validation_error(
+                format!("Array at '{}' must have at most {} items", path, max),
+                Some(path.to_string()),
+            ));
         }
 
         // Check unique items
-        if let Some(unique) = schema_obj.get("uniqueItems") {
-            if unique.as_bool().unwrap_or(false) {
-                let mut seen = std::collections::HashSet::new();
-                for item in arr {
-                    let item_str = serde_json::to_string(item).unwrap_or_default();
-                    if !seen.insert(item_str) {
-                        return Err(ConfigError::validation_error(
-                            format!("Array at '{}' must have unique items", path),
-                            Some(path.to_string()),
-                        ));
-                    }
+        if let Some(unique) = schema_obj.get("uniqueItems")
+            && unique.as_bool().unwrap_or(false)
+        {
+            let mut seen = std::collections::HashSet::new();
+            for item in arr {
+                let item_str = serde_json::to_string(item).unwrap_or_default();
+                if !seen.insert(item_str) {
+                    return Err(ConfigError::validation_error(
+                        format!("Array at '{}' must have unique items", path),
+                        Some(path.to_string()),
+                    ));
                 }
             }
         }
@@ -325,55 +317,50 @@ impl SchemaValidator {
         path: &str,
     ) -> ConfigResult<()> {
         // Check length constraints
-        if let Some(min_length) = schema_obj.get("minLength") {
-            if let Some(min) = min_length.as_u64() {
-                if (s.len() as u64) < min {
-                    return Err(ConfigError::validation_error(
-                        format!("String at '{}' must be at least {} characters", path, min),
-                        Some(path.to_string()),
-                    ));
-                }
-            }
+        if let Some(min_length) = schema_obj.get("minLength")
+            && let Some(min) = min_length.as_u64()
+            && (s.len() as u64) < min
+        {
+            return Err(ConfigError::validation_error(
+                format!("String at '{}' must be at least {} characters", path, min),
+                Some(path.to_string()),
+            ));
         }
 
-        if let Some(max_length) = schema_obj.get("maxLength") {
-            if let Some(max) = max_length.as_u64() {
-                if (s.len() as u64) > max {
-                    return Err(ConfigError::validation_error(
-                        format!("String at '{}' must be at most {} characters", path, max),
-                        Some(path.to_string()),
-                    ));
-                }
-            }
+        if let Some(max_length) = schema_obj.get("maxLength")
+            && let Some(max) = max_length.as_u64()
+            && (s.len() as u64) > max
+        {
+            return Err(ConfigError::validation_error(
+                format!("String at '{}' must be at most {} characters", path, max),
+                Some(path.to_string()),
+            ));
         }
 
         // Check pattern
-        if let Some(pattern) = schema_obj.get("pattern") {
-            if let Some(pattern_str) = pattern.as_str() {
-                match regex::Regex::new(pattern_str) {
-                    Ok(re) => {
-                        if !re.is_match(s) {
-                            return Err(ConfigError::validation_error(
-                                format!(
-                                    "String at '{}' must match pattern '{}'",
-                                    path, pattern_str
-                                ),
-                                Some(path.to_string()),
-                            ));
-                        }
+        if let Some(pattern) = schema_obj.get("pattern")
+            && let Some(pattern_str) = pattern.as_str()
+        {
+            match regex::Regex::new(pattern_str) {
+                Ok(re) => {
+                    if !re.is_match(s) {
+                        return Err(ConfigError::validation_error(
+                            format!("String at '{}' must match pattern '{}'", path, pattern_str),
+                            Some(path.to_string()),
+                        ));
                     }
-                    Err(_) => {
-                        nebula_log::warn!("Invalid regex pattern in schema: {}", pattern_str);
-                    }
+                }
+                Err(_) => {
+                    nebula_log::warn!("Invalid regex pattern in schema: {}", pattern_str);
                 }
             }
         }
 
         // Check format
-        if let Some(format) = schema_obj.get("format") {
-            if let Some(format_str) = format.as_str() {
-                self.validate_string_format(s, format_str, path)?;
-            }
+        if let Some(format) = schema_obj.get("format")
+            && let Some(format_str) = format.as_str()
+        {
+            self.validate_string_format(s, format_str, path)?;
         }
 
         Ok(())
@@ -389,65 +376,64 @@ impl SchemaValidator {
         let value = n.as_f64().unwrap_or(0.0);
 
         // Check minimum
-        if let Some(minimum) = schema_obj.get("minimum") {
-            if let Some(min) = minimum.as_f64() {
-                let exclusive = schema_obj
-                    .get("exclusiveMinimum")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+        if let Some(minimum) = schema_obj.get("minimum")
+            && let Some(min) = minimum.as_f64()
+        {
+            let exclusive = schema_obj
+                .get("exclusiveMinimum")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
-                if (exclusive && value <= min) || (!exclusive && value < min) {
-                    return Err(ConfigError::validation_error(
-                        format!(
-                            "Number at '{}' must be {} {}",
-                            path,
-                            if exclusive {
-                                "greater than"
-                            } else {
-                                "at least"
-                            },
-                            min
-                        ),
-                        Some(path.to_string()),
-                    ));
-                }
+            if (exclusive && value <= min) || (!exclusive && value < min) {
+                return Err(ConfigError::validation_error(
+                    format!(
+                        "Number at '{}' must be {} {}",
+                        path,
+                        if exclusive {
+                            "greater than"
+                        } else {
+                            "at least"
+                        },
+                        min
+                    ),
+                    Some(path.to_string()),
+                ));
             }
         }
 
         // Check maximum
-        if let Some(maximum) = schema_obj.get("maximum") {
-            if let Some(max) = maximum.as_f64() {
-                let exclusive = schema_obj
-                    .get("exclusiveMaximum")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+        if let Some(maximum) = schema_obj.get("maximum")
+            && let Some(max) = maximum.as_f64()
+        {
+            let exclusive = schema_obj
+                .get("exclusiveMaximum")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
-                if (exclusive && value >= max) || (!exclusive && value > max) {
-                    return Err(ConfigError::validation_error(
-                        format!(
-                            "Number at '{}' must be {} {}",
-                            path,
-                            if exclusive { "less than" } else { "at most" },
-                            max
-                        ),
-                        Some(path.to_string()),
-                    ));
-                }
+            if (exclusive && value >= max) || (!exclusive && value > max) {
+                return Err(ConfigError::validation_error(
+                    format!(
+                        "Number at '{}' must be {} {}",
+                        path,
+                        if exclusive { "less than" } else { "at most" },
+                        max
+                    ),
+                    Some(path.to_string()),
+                ));
             }
         }
 
         // Check multipleOf
-        if let Some(multiple_of) = schema_obj.get("multipleOf") {
-            if let Some(divisor) = multiple_of.as_f64() {
-                if divisor != 0.0 {
-                    let remainder = value % divisor;
-                    if remainder.abs() > f64::EPSILON {
-                        return Err(ConfigError::validation_error(
-                            format!("Number at '{}' must be a multiple of {}", path, divisor),
-                            Some(path.to_string()),
-                        ));
-                    }
-                }
+        if let Some(multiple_of) = schema_obj.get("multipleOf")
+            && let Some(divisor) = multiple_of.as_f64()
+            && divisor != 0.0
+        {
+            let remainder = value % divisor;
+            if remainder.abs() > f64::EPSILON {
+                return Err(ConfigError::validation_error(
+                    format!("Number at '{}' must be a multiple of {}", path, divisor),
+                    Some(path.to_string()),
+                ));
             }
         }
 
@@ -482,17 +468,16 @@ impl SchemaValidator {
     /// Validate reference
     fn validate_ref(&self, data: &Value, ref_str: &str, path: &str) -> ConfigResult<()> {
         // Simple implementation - just validate against definitions
-        if ref_str.starts_with("#/definitions/") {
-            let def_name = &ref_str[14..];
-            if let Some(definitions) = self.schema.get("definitions") {
-                if let Some(def_schema) = definitions.get(def_name) {
-                    return self.validate_recursive(data, def_schema, path);
-                }
+        if let Some(def_name) = ref_str.strip_prefix("#/definitions/") {
+            if let Some(definitions) = self.schema.get("definitions")
+                && let Some(def_schema) = definitions.get(def_name)
+            {
+                return self.validate_recursive(data, def_schema, path);
             }
         }
 
         Err(ConfigError::validation_error(
-            format!("Cannot resolve reference '{}' at path '{}'", ref_str, path),
+            format!("Cannot resolve reference '{ref_str}' at path '{path}'"),
             Some(path.to_string()),
         ))
     }
@@ -514,16 +499,14 @@ impl SchemaValidator {
         match value {
             Value::String(s) => {
                 // String to number
-                if target_types.contains(&"number".to_string()) {
-                    if s.parse::<f64>().is_ok() {
-                        return true;
-                    }
+                if target_types.contains(&"number".to_string()) && s.parse::<f64>().is_ok() {
+                    return true;
                 }
                 // String to boolean
-                if target_types.contains(&"boolean".to_string()) {
-                    if s.eq_ignore_ascii_case("true") || s.eq_ignore_ascii_case("false") {
-                        return true;
-                    }
+                if target_types.contains(&"boolean".to_string())
+                    && (s.eq_ignore_ascii_case("true") || s.eq_ignore_ascii_case("false"))
+                {
+                    return true;
                 }
             }
             Value::Number(_) => {

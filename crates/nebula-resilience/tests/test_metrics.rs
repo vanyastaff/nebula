@@ -8,7 +8,9 @@ async fn test_get_metrics_for_registered_service() {
     let manager = ResilienceManager::with_defaults();
 
     // Register a service with default policy
-    manager.register_service("test-api", ResiliencePolicy::default()).await;
+    manager
+        .register_service("test-api", ResiliencePolicy::default())
+        .await;
 
     // Get metrics
     let metrics = manager.get_metrics("test-api").await;
@@ -57,9 +59,15 @@ async fn test_get_all_metrics() {
     let manager = ResilienceManager::with_defaults();
 
     // Register multiple services
-    manager.register_service("api1", ResiliencePolicy::default()).await;
-    manager.register_service("api2", ResiliencePolicy::default()).await;
-    manager.register_service("api3", ResiliencePolicy::default()).await;
+    manager
+        .register_service("api1", ResiliencePolicy::default())
+        .await;
+    manager
+        .register_service("api2", ResiliencePolicy::default())
+        .await;
+    manager
+        .register_service("api3", ResiliencePolicy::default())
+        .await;
 
     // Get all metrics
     let all_metrics = manager.get_all_metrics().await;
@@ -74,7 +82,9 @@ async fn test_get_all_metrics() {
 async fn test_metrics_after_service_unregister() {
     let manager = ResilienceManager::with_defaults();
 
-    manager.register_service("temp-api", ResiliencePolicy::default()).await;
+    manager
+        .register_service("temp-api", ResiliencePolicy::default())
+        .await;
 
     // Verify service exists
     assert!(manager.get_metrics("temp-api").await.is_some());

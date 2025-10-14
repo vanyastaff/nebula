@@ -44,7 +44,7 @@ Nebula - высокопроизводительный workflow engine на Rust,
 ├─────────────────────────────────────────────────────────┤
 │              Cross-Cutting Concerns Layer               │
 │  (nebula-config, nebula-log, nebula-metrics,            │
-│   nebula-error, nebula-resilience, nebula-system,       │
+│    nebula-resilience, nebula-system,                    │
 │   nebula-validator, nebula-locale)                      │
 ├─────────────────────────────────────────────────────────┤
 │                Infrastructure Layer                     │

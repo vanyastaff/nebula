@@ -2,9 +2,8 @@
 //!
 //! Supports JSON path-like syntax: $.user.name, $.items[0]
 
-use crate::core::NebulaError;
-use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::value::Value;
+use crate::core::{ValueError, ValueResult};
 
 /// Path segment for navigating values
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,7 +45,7 @@ impl Value {
             (Value::Object(_), PathSegment::Key(_)) | (Value::Array(_), PathSegment::Index(_))
                 if segments.len() > 1 =>
             {
-                return Err(NebulaError::validation(
+                return Err(ValueError::validation(
                     "Multi-level path access not yet supported for Array/Object (requires owned return)",
                 ));
             }
@@ -55,14 +54,14 @@ impl Value {
             // but Array/Object need conversion from serde_json::Value
             #[cfg(feature = "serde")]
             (Value::Object(_), PathSegment::Key(_)) | (Value::Array(_), PathSegment::Index(_)) => {
-                return Err(NebulaError::validation(
+                return Err(ValueError::validation(
                     "Path access for Array/Object requires owned Value (not yet implemented)",
                 ));
             }
 
             #[cfg(not(feature = "serde"))]
             (Value::Object(_), PathSegment::Key(_)) | (Value::Array(_), PathSegment::Index(_)) => {
-                return Err(NebulaError::validation(
+                return Err(ValueError::validation(
                     "Path access for collections requires 'serde' feature",
                 ));
             }
@@ -76,19 +75,18 @@ impl Value {
                 // Type mismatch errors
                 (val, PathSegment::Key(key)) => {
                     Err(
-                        NebulaError::value_type_mismatch("Object", val.kind().name()).with_details(
+                        ValueError::type_mismatch("Object", val.kind().name()).with_context(
                             format!("Cannot access key '{}' on {}", key, val.kind().name()),
                         ),
                     )
                 }
 
                 (val, PathSegment::Index(idx)) => {
-                    Err(NebulaError::value_type_mismatch("Array", val.kind().name())
-                        .with_details(format!(
-                            "Cannot access index {} on {}",
-                            idx,
-                            val.kind().name()
-                        )))
+                    Err(
+                        ValueError::type_mismatch("Array", val.kind().name()).with_context(
+                            format!("Cannot access index {} on {}", idx, val.kind().name()),
+                        ),
+                    )
                 }
             };
         }
@@ -104,24 +102,32 @@ impl Value {
     // ==================== Convenience Methods ====================
 
     /// Get value from object by key (if this is an object)
-    pub fn get_key(&self, key: &str) -> ValueResult<Option<Value>> {
+    ///
+    /// Returns `Some(&Value)` if this is an Object and the key exists.
+    /// Returns `None` if this is an Object but the key doesn't exist, or if this is not an Object.
+    ///
+    /// This is a simplified API - use `as_object()` first if you need to distinguish
+    /// between "not an object" and "key not found".
+    #[must_use]
+    pub fn get_key(&self, key: &str) -> Option<&Value> {
         match self {
-            Value::Object(obj) => Ok(obj.get(key).cloned()),
-            _ => Err(NebulaError::value_type_mismatch(
-                "Object",
-                self.kind().name(),
-            )),
+            Value::Object(obj) => obj.get(key),
+            _ => None,
         }
     }
 
     /// Get value from array by index (if this is an array)
-    pub fn get_index(&self, index: usize) -> ValueResult<Option<Value>> {
+    ///
+    /// Returns `Some(&Value)` if this is an Array and the index is valid.
+    /// Returns `None` if this is an Array but the index is out of bounds, or if this is not an Array.
+    ///
+    /// This is a simplified API - use `as_array()` first if you need to distinguish
+    /// between "not an array" and "index out of bounds".
+    #[must_use]
+    pub fn get_index(&self, index: usize) -> Option<&Value> {
         match self {
-            Value::Array(arr) => Ok(arr.get(index).cloned()),
-            _ => Err(NebulaError::value_type_mismatch(
-                "Array",
-                self.kind().name(),
-            )),
+            Value::Array(arr) => arr.get(index),
+            _ => None,
         }
     }
 }
@@ -167,7 +173,7 @@ fn parse_path(path: &str) -> ValueResult<Vec<PathSegment>> {
 
                 let index = index_str
                     .parse::<usize>()
-                    .map_err(|_| NebulaError::value_parse_error("path index", index_str))?;
+                    .map_err(|_| ValueError::parse_error("path index", index_str))?;
 
                 segments.push(PathSegment::Index(index));
             }
@@ -245,14 +251,14 @@ mod tests {
     fn test_get_key_type_mismatch() {
         let val = Value::integer(42);
         let result = val.get_key("foo");
-        assert!(result.is_err());
+        assert!(result.is_none());
     }
 
     #[test]
     fn test_get_index_type_mismatch() {
         let val = Value::text("hello");
         let result = val.get_index(0);
-        assert!(result.is_err());
+        assert!(result.is_none());
     }
 
     // Note: Full path access tests require proper Value integration with Array/Object

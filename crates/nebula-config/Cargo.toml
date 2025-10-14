@@ -41,9 +41,7 @@ dashmap = "6.1.0"
 
 # Internal crates
 nebula-derive = { path = "../nebula-derive" }
-nebula-error = { path = "../nebula-error" }
 nebula-log = { path = "../nebula-log" }
 nebula-value = { path = "../nebula-value" }
 
-[lints]
-workspace = true
+

@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
-use crate::{ResilienceError, ResilienceResult};
 use super::RateLimiter;
+use crate::{ResilienceError, ResilienceResult};
 
 /// Token bucket rate limiter
 ///

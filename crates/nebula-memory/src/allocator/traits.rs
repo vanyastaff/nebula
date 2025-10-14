@@ -26,9 +26,9 @@
 //!
 //! All unsafe traits in this module impose strict contracts on implementors:
 //! - **Allocator**: Returned pointers must be valid, aligned, and exclusive
-//! - **BulkAllocator**: Contiguous allocation must prevent buffer overflows
-//! - **ThreadSafeAllocator**: Operations must be safe across threads
-//! - **TypedAllocator**: Type-safe wrapper (safe trait, unsafe methods)
+//! - **`BulkAllocator`**: Contiguous allocation must prevent buffer overflows
+//! - **`ThreadSafeAllocator`**: Operations must be safe across threads
+//! - **`TypedAllocator`**: Type-safe wrapper (safe trait, unsafe methods)
 //!
 //! ## Default Implementation Safety
 //!
@@ -72,7 +72,7 @@ fn validate_layout(layout: Layout) -> AllocResult<()> {
 
     // Check for potential overflow when adding padding
     if layout.size() > isize::MAX as usize - (layout.align() - 1) {
-        return Err(AllocError::size_overflow(layout.size(), layout.align()));
+        return Err(AllocError::size_overflow("layout calculation"));
     }
 
     Ok(())
@@ -146,7 +146,7 @@ pub unsafe trait Allocator {
             return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
         }
 
-        let result = match new_layout.size().cmp(&old_layout.size()) {
+        match new_layout.size().cmp(&old_layout.size()) {
             // SAFETY: Delegating to grow with valid parameters.
             // - ptr is valid (caller contract)
             // - old_layout matches original allocation (caller contract)
@@ -172,9 +172,7 @@ pub unsafe trait Allocator {
                     unsafe { self.grow(ptr, old_layout, new_layout) }
                 }
             }
-        };
-
-        result
+        }
     }
 
     /// Attempts to extend an existing allocation
@@ -214,8 +212,8 @@ pub unsafe trait Allocator {
         // - Both pointers properly aligned for u8 access
         unsafe {
             core::ptr::copy_nonoverlapping(
-                ptr.as_ptr() as *const u8,
-                new_ptr.as_ptr() as *mut u8,
+                ptr.as_ptr().cast_const(),
+                new_ptr.as_ptr().cast::<u8>(),
                 old_layout.size(),
             );
         }
@@ -277,6 +275,7 @@ pub unsafe trait Allocator {
     /// - On 32-bit systems: typically around 2^31 - 1 bytes
     /// - Some allocators may have smaller limits due to implementation
     ///   constraints
+    #[must_use]
     fn max_allocation_size() -> usize {
         // Layout::max_size() is unstable, use safe maximum
         isize::MAX as usize
@@ -286,6 +285,7 @@ pub unsafe trait Allocator {
     ///
     /// Most allocators support zero-sized allocations by returning a non-null
     /// dangling pointer. Some specialized allocators might not support this.
+    #[must_use]
     fn supports_zero_sized_allocs() -> bool {
         true
     }
@@ -336,7 +336,7 @@ pub unsafe trait BulkAllocator: Allocator {
         let total_size = layout
             .size()
             .checked_mul(count)
-            .ok_or_else(|| AllocError::size_overflow(layout.size(), layout.align()))?;
+            .ok_or_else(|| AllocError::size_overflow("layout calculation"))?;
 
         // Check against maximum allocation size
         if total_size > Self::max_allocation_size() {
@@ -413,12 +413,12 @@ pub unsafe trait BulkAllocator: Allocator {
         let old_total_size = layout
             .size()
             .checked_mul(old_count)
-            .ok_or_else(|| AllocError::size_overflow(layout.size(), layout.align()))?;
+            .ok_or_else(|| AllocError::size_overflow("layout calculation"))?;
 
         let new_total_size = layout
             .size()
             .checked_mul(new_count)
-            .ok_or_else(|| AllocError::size_overflow(layout.size(), layout.align()))?;
+            .ok_or_else(|| AllocError::size_overflow("layout calculation"))?;
 
         let old_layout = Layout::from_size_align(old_total_size, layout.align())
             .map_err(|_| AllocError::invalid_layout("invalid layout"))?;
@@ -525,7 +525,7 @@ pub trait TypedAllocator: Allocator {
         let ptr = unsafe { self.allocate(layout)? };
         // Cast [u8] pointer to T pointer
         // ptr is guaranteed non-null from allocate, but explicit check for safety
-        let typed_ptr = ptr.as_ptr() as *mut T;
+        let typed_ptr = ptr.as_ptr().cast::<T>();
         NonNull::new(typed_ptr)
             .ok_or_else(|| AllocError::allocation_failed(layout.size(), layout.align()))
     }
@@ -597,7 +597,8 @@ pub trait TypedAllocator: Allocator {
             return Ok(NonNull::dangling());
         }
 
-        let layout = Layout::array::<T>(count).map_err(|_| AllocError::size_overflow(0, 0))?;
+        let layout =
+            Layout::array::<T>(count).map_err(|_| AllocError::size_overflow("array layout"))?;
 
         // SAFETY: Allocating memory for array of T.
         // - layout is valid (Layout::array checks for overflow)
@@ -606,7 +607,7 @@ pub trait TypedAllocator: Allocator {
         let ptr = unsafe { self.allocate(layout)? };
         // Cast [u8] pointer to T pointer
         // ptr is guaranteed non-null from allocate, but explicit check for safety
-        let typed_ptr = ptr.as_ptr() as *mut T;
+        let typed_ptr = ptr.as_ptr().cast::<T>();
         NonNull::new(typed_ptr)
             .ok_or_else(|| AllocError::allocation_failed(layout.size(), layout.align()))
     }
@@ -770,7 +771,7 @@ pub struct AllocatedValue<'a, T, A: Allocator + ?Sized> {
     _phantom: core::marker::PhantomData<T>,
 }
 
-impl<'a, T, A: Allocator + ?Sized> core::ops::Deref for AllocatedValue<'a, T, A> {
+impl<T, A: Allocator + ?Sized> core::ops::Deref for AllocatedValue<'_, T, A> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -779,14 +780,14 @@ impl<'a, T, A: Allocator + ?Sized> core::ops::Deref for AllocatedValue<'a, T, A>
     }
 }
 
-impl<'a, T, A: Allocator + ?Sized> core::ops::DerefMut for AllocatedValue<'a, T, A> {
+impl<T, A: Allocator + ?Sized> core::ops::DerefMut for AllocatedValue<'_, T, A> {
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: ptr is valid and initialized (from alloc_init)
         unsafe { self.ptr.as_mut() }
     }
 }
 
-impl<'a, T, A: Allocator + ?Sized> Drop for AllocatedValue<'a, T, A> {
+impl<T, A: Allocator + ?Sized> Drop for AllocatedValue<'_, T, A> {
     fn drop(&mut self) {
         // SAFETY: ptr was allocated by self.allocator via alloc_init
         unsafe {
@@ -806,7 +807,7 @@ pub struct AllocatedArray<'a, T, A: Allocator + ?Sized> {
     _phantom: core::marker::PhantomData<T>,
 }
 
-impl<'a, T, A: Allocator + ?Sized> AllocatedArray<'a, T, A> {
+impl<T, A: Allocator + ?Sized> AllocatedArray<'_, T, A> {
     /// Get length of array
     pub fn len(&self) -> usize {
         self.count
@@ -830,7 +831,7 @@ impl<'a, T, A: Allocator + ?Sized> AllocatedArray<'a, T, A> {
     }
 }
 
-impl<'a, T, A: Allocator + ?Sized> core::ops::Deref for AllocatedArray<'a, T, A> {
+impl<T, A: Allocator + ?Sized> core::ops::Deref for AllocatedArray<'_, T, A> {
     type Target = [T];
 
     fn deref(&self) -> &[T] {
@@ -838,13 +839,13 @@ impl<'a, T, A: Allocator + ?Sized> core::ops::Deref for AllocatedArray<'a, T, A>
     }
 }
 
-impl<'a, T, A: Allocator + ?Sized> core::ops::DerefMut for AllocatedArray<'a, T, A> {
+impl<T, A: Allocator + ?Sized> core::ops::DerefMut for AllocatedArray<'_, T, A> {
     fn deref_mut(&mut self) -> &mut [T] {
         self.as_mut_slice()
     }
 }
 
-impl<'a, T, A: Allocator + ?Sized> Drop for AllocatedArray<'a, T, A> {
+impl<T, A: Allocator + ?Sized> Drop for AllocatedArray<'_, T, A> {
     fn drop(&mut self) {
         // SAFETY: ptr was allocated by self.allocator via alloc_array_cloned
         // Must drop all elements before deallocating
@@ -857,7 +858,7 @@ impl<'a, T, A: Allocator + ?Sized> Drop for AllocatedArray<'a, T, A> {
     }
 }
 
-/// Blanket implementation: all Allocators automatically implement TypedAllocator
+/// Blanket implementation: all Allocators automatically implement `TypedAllocator`
 ///
 /// This means any type implementing [`Allocator`] gets the type-safe API for free.
 impl<A: Allocator + ?Sized> TypedAllocator for A {}
@@ -929,7 +930,7 @@ unsafe impl<T: Allocator + ?Sized> Allocator for &T {
     }
 }
 
-/// Blanket implementation of BulkAllocator for references
+/// Blanket implementation of `BulkAllocator` for references
 ///
 /// # Safety
 ///
@@ -969,7 +970,7 @@ unsafe impl<T: BulkAllocator + ?Sized> BulkAllocator for &T {
     }
 }
 
-/// Blanket implementation of MemoryUsage for references
+/// Blanket implementation of `MemoryUsage` for references
 impl<T: MemoryUsage + ?Sized> MemoryUsage for &T {
     fn used_memory(&self) -> usize {
         (**self).used_memory()

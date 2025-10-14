@@ -137,7 +137,7 @@ pub struct FileParameterOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_size: Option<u64>,
 
-    /// Allow multiple file selection (creates array of FileReference)
+    /// Allow multiple file selection (creates array of `FileReference`)
     #[serde(default)]
     pub multiple: bool,
 
@@ -267,43 +267,37 @@ impl FileParameter {
         if let Some(options) = &self.options {
             // Check file size constraints
             if let Some(size) = file_ref.size {
-                if let Some(max_size) = options.max_size {
-                    if size > max_size {
-                        return Err(ParameterError::InvalidValue {
-                            key: self.metadata.key.clone(),
-                            reason: format!(
-                                "File size {} bytes exceeds maximum {} bytes",
-                                size, max_size
-                            ),
-                        });
-                    }
+                if let Some(max_size) = options.max_size
+                    && size > max_size
+                {
+                    return Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!("File size {size} bytes exceeds maximum {max_size} bytes"),
+                    });
                 }
-                if let Some(min_size) = options.min_size {
-                    if size < min_size {
-                        return Err(ParameterError::InvalidValue {
-                            key: self.metadata.key.clone(),
-                            reason: format!(
-                                "File size {} bytes is below minimum {} bytes",
-                                size, min_size
-                            ),
-                        });
-                    }
+                if let Some(min_size) = options.min_size
+                    && size < min_size
+                {
+                    return Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!("File size {size} bytes is below minimum {min_size} bytes"),
+                    });
                 }
             }
 
             // Check accepted formats
-            if let Some(accepted_formats) = &options.accepted_formats {
-                if !accepted_formats.is_empty() {
-                    let is_format_accepted = self.check_file_format(file_ref, accepted_formats);
-                    if !is_format_accepted {
-                        return Err(ParameterError::InvalidValue {
-                            key: self.metadata.key.clone(),
-                            reason: format!(
-                                "File format not accepted. Accepted formats: {}",
-                                accepted_formats.join(", ")
-                            ),
-                        });
-                    }
+            if let Some(accepted_formats) = &options.accepted_formats
+                && !accepted_formats.is_empty()
+            {
+                let is_format_accepted = self.check_file_format(file_ref, accepted_formats);
+                if !is_format_accepted {
+                    return Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!(
+                            "File format not accepted. Accepted formats: {}",
+                            accepted_formats.join(", ")
+                        ),
+                    });
                 }
             }
         }
@@ -315,19 +309,18 @@ impl FileParameter {
     fn check_file_format(&self, file_ref: &FileReference, accepted_formats: &[String]) -> bool {
         for format in accepted_formats {
             // Check MIME type match
-            if let Some(mime_type) = &file_ref.mime_type {
-                if self.mime_type_matches(mime_type, format) {
-                    return true;
-                }
+            if let Some(mime_type) = &file_ref.mime_type
+                && self.mime_type_matches(mime_type, format)
+            {
+                return true;
             }
 
             // Check extension match
-            if format.starts_with('.') {
-                if let Some(extension) = file_ref.path.extension() {
-                    if format[1..].eq_ignore_ascii_case(&extension.to_string_lossy()) {
-                        return true;
-                    }
-                }
+            if format.starts_with('.')
+                && let Some(extension) = file_ref.path.extension()
+                && format[1..].eq_ignore_ascii_case(&extension.to_string_lossy())
+            {
+                return true;
             }
         }
         false
@@ -340,8 +333,7 @@ impl FileParameter {
         }
 
         // Handle wildcard patterns like "image/*"
-        if format.ends_with("/*") {
-            let base_type = &format[..format.len() - 2];
+        if let Some(base_type) = format.strip_suffix("/*") {
             return mime_type.starts_with(base_type);
         }
 
@@ -349,34 +341,37 @@ impl FileParameter {
     }
 
     /// Get the file name from current value
+    #[must_use]
     pub fn get_file_name(&self) -> Option<&String> {
         self.value.as_ref().map(|f| &f.name)
     }
 
     /// Get the file path from current value
+    #[must_use]
     pub fn get_file_path(&self) -> Option<&PathBuf> {
         self.value.as_ref().map(|f| &f.path)
     }
 
     /// Get the file size from current value
+    #[must_use]
     pub fn get_file_size(&self) -> Option<u64> {
         self.value.as_ref().and_then(|f| f.size)
     }
 
     /// Get the MIME type from current value
+    #[must_use]
     pub fn get_mime_type(&self) -> Option<&String> {
         self.value.as_ref().and_then(|f| f.mime_type.as_ref())
     }
 
     /// Check if multiple files are allowed
+    #[must_use]
     pub fn allows_multiple(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.multiple)
-            .unwrap_or(false)
+        self.options.as_ref().is_some_and(|opts| opts.multiple)
     }
 
     /// Get accepted file formats
+    #[must_use]
     pub fn get_accepted_formats(&self) -> Option<&Vec<String>> {
         self.options
             .as_ref()
@@ -384,11 +379,13 @@ impl FileParameter {
     }
 
     /// Get maximum file size
+    #[must_use]
     pub fn get_max_size(&self) -> Option<u64> {
         self.options.as_ref().and_then(|opts| opts.max_size)
     }
 
     /// Format file size for display
+    #[must_use]
     pub fn format_file_size(size_bytes: u64) -> String {
         const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
         let mut size = size_bytes as f64;

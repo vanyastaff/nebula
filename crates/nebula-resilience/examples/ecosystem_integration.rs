@@ -72,31 +72,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let retry_strategy = RetryStrategy::exponential_backoff(3, Duration::from_millis(500));
     let api_result = retry(retry_strategy, || async {
-            info!(
-                operation = "api_call",
-                endpoint = "/users",
-                "Making HTTP API call"
-            );
+        info!(
+            operation = "api_call",
+            endpoint = "/users",
+            "Making HTTP API call"
+        );
 
-            // Simulate HTTP call
-            sleep(Duration::from_millis(200)).await;
+        // Simulate HTTP call
+        sleep(Duration::from_millis(200)).await;
 
-            // Simulate network issues
-            if rand::random::<f64>() > 0.8 {
-                return Err(ResilienceError::Timeout {
-                    duration: Duration::from_secs(10),
-                    context: Some("HTTP request timeout".to_string()),
-                });
-            }
+        // Simulate network issues
+        if rand::random::<f64>() > 0.8 {
+            return Err(ResilienceError::Timeout {
+                duration: Duration::from_secs(10),
+                context: Some("HTTP request timeout".to_string()),
+            });
+        }
 
-            Ok(serde_json::json!({
-                "users": [
-                    {"id": 1, "name": "Alice"},
-                    {"id": 2, "name": "Bob"}
-                ]
-            }))
-        })
-        .await;
+        Ok(serde_json::json!({
+            "users": [
+                {"id": 1, "name": "Alice"},
+                {"id": 2, "name": "Bob"}
+            ]
+        }))
+    })
+    .await;
 
     log_result!(api_result, "api_call", "HTTP API operation");
 

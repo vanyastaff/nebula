@@ -27,7 +27,7 @@ pub struct MinLength {
 
 impl MinLength {
     /// Creates a new minimum length validator.
-    #[must_use] 
+    #[must_use]
     pub fn new(min: usize) -> Self {
         Self { min }
     }
@@ -70,7 +70,7 @@ impl TypedValidator for MinLength {
 /// let validator = min_length(5);
 /// assert!(validator.validate("hello").is_ok());
 /// ```
-#[must_use] 
+#[must_use]
 pub fn min_length(min: usize) -> MinLength {
     MinLength::new(min)
 }
@@ -98,7 +98,7 @@ pub struct MaxLength {
 
 impl MaxLength {
     /// Creates a new maximum length validator.
-    #[must_use] 
+    #[must_use]
     pub fn new(max: usize) -> Self {
         Self { max }
     }
@@ -132,7 +132,7 @@ impl TypedValidator for MaxLength {
 }
 
 /// Creates a maximum length validator.
-#[must_use] 
+#[must_use]
 pub fn max_length(max: usize) -> MaxLength {
     MaxLength::new(max)
 }
@@ -161,7 +161,7 @@ pub struct ExactLength {
 
 impl ExactLength {
     /// Creates a new exact length validator.
-    #[must_use] 
+    #[must_use]
     pub fn new(length: usize) -> Self {
         Self { length }
     }
@@ -200,7 +200,7 @@ impl TypedValidator for ExactLength {
 }
 
 /// Creates an exact length validator.
-#[must_use] 
+#[must_use]
 pub fn exact_length(length: usize) -> ExactLength {
     ExactLength::new(length)
 }
@@ -237,7 +237,7 @@ impl LengthRange {
     /// # Panics
     ///
     /// Panics if `min > max`.
-    #[must_use] 
+    #[must_use]
     pub fn new(min: usize, max: usize) -> Self {
         assert!(min <= max, "min must be <= max");
         Self { min, max }
@@ -289,7 +289,7 @@ impl TypedValidator for LengthRange {
 }
 
 /// Creates a length range validator.
-#[must_use] 
+#[must_use]
 pub fn length_range(min: usize, max: usize) -> LengthRange {
     LengthRange::new(min, max)
 }
@@ -345,7 +345,7 @@ impl TypedValidator for NotEmpty {
 }
 
 /// Creates a not-empty validator.
-#[must_use] 
+#[must_use]
 pub const fn not_empty() -> NotEmpty {
     NotEmpty
 }

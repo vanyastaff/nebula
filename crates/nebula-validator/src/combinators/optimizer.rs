@@ -42,7 +42,7 @@ pub struct ValidatorChainOptimizer {
 
 impl ValidatorChainOptimizer {
     /// Creates a new optimizer with default settings.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             reorder_by_complexity: true,
@@ -75,13 +75,14 @@ impl ValidatorChainOptimizer {
     /// Checks if one validator should run before another.
     ///
     /// Returns true if `a` should run before `b`.
-    #[must_use] 
+    #[must_use]
     pub fn should_run_first(&self, meta_a: &ValidatorMetadata, meta_b: &ValidatorMetadata) -> bool {
         if !self.reorder_by_complexity {
             return false; // No reordering
         }
 
-        let complexity_diff = i32::from(meta_b.complexity.score()) - i32::from(meta_a.complexity.score());
+        let complexity_diff =
+            i32::from(meta_b.complexity.score()) - i32::from(meta_a.complexity.score());
 
         // Only reorder if difference is significant
         if complexity_diff.unsigned_abs() < self.min_complexity_diff {
@@ -204,7 +205,7 @@ impl ValidatorChainOptimizer {
     /// let optimized = optimizer.optimize_chain(validators);
     /// // Result: [cheap_validator, medium_validator, expensive_validator]
     /// ```
-    #[must_use] 
+    #[must_use]
     pub fn optimize_chain<V>(&self, validators: Vec<V>) -> Vec<V>
     where
         V: TypedValidator,
@@ -230,7 +231,7 @@ impl ValidatorChainOptimizer {
     /// Optimizes a chain using runtime statistics.
     ///
     /// Considers both complexity and selectivity scores from stats.
-    #[must_use] 
+    #[must_use]
     pub fn optimize_chain_with_stats<V>(&self, validators: Vec<(V, ValidatorStats)>) -> Vec<V>
     where
         V: TypedValidator,
@@ -292,13 +293,13 @@ pub struct OptimizationReport {
 
 impl OptimizationReport {
     /// Checks if optimization is recommended.
-    #[must_use] 
+    #[must_use]
     pub fn is_optimization_recommended(&self) -> bool {
         !self.recommendations.is_empty() || self.estimated_speedup > 1.1
     }
 
     /// Returns a human-readable summary.
-    #[must_use] 
+    #[must_use]
     pub fn summary(&self) -> String {
         let mut lines = vec![
             format!("Complexity: {:?}", self.original_complexity),
@@ -360,7 +361,7 @@ pub enum OptimizationStrategy {
 
 impl OptimizationStrategy {
     /// Returns a description of the strategy.
-    #[must_use] 
+    #[must_use]
     pub fn description(&self) -> &str {
         match self {
             Self::None => "No optimization applied",
@@ -371,7 +372,7 @@ impl OptimizationStrategy {
     }
 
     /// Applies the strategy to determine run order.
-    #[must_use] 
+    #[must_use]
     pub fn compare_validators(
         &self,
         meta_a: &ValidatorMetadata,
@@ -450,7 +451,7 @@ pub struct ValidatorStats {
 
 impl ValidatorStats {
     /// Creates new empty statistics.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -467,7 +468,7 @@ impl ValidatorStats {
     }
 
     /// Returns the failure rate (0.0 to 1.0).
-    #[must_use] 
+    #[must_use]
     pub fn failure_rate(&self) -> f64 {
         if self.call_count == 0 {
             return 0.0;
@@ -476,7 +477,7 @@ impl ValidatorStats {
     }
 
     /// Returns the average time per call (nanoseconds).
-    #[must_use] 
+    #[must_use]
     pub fn average_time_ns(&self) -> f64 {
         if self.call_count == 0 {
             return 0.0;
@@ -485,7 +486,7 @@ impl ValidatorStats {
     }
 
     /// Returns a selectivity score (higher = more selective/likely to fail).
-    #[must_use] 
+    #[must_use]
     pub fn selectivity_score(&self) -> f64 {
         self.failure_rate()
     }

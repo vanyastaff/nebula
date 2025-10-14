@@ -6,8 +6,8 @@
 //! # Safety
 //!
 //! This module uses platform-specific syscalls to query memory information:
-//! - Unix: libc::sysconf for page size
-//! - Windows: GetSystemInfo with SYSTEM_INFO structure
+//! - Unix: `libc::sysconf` for page size
+//! - Windows: `GetSystemInfo` with `SYSTEM_INFO` structure
 //! - All FFI calls validated by OS
 
 use std::fmt;
@@ -30,6 +30,7 @@ pub enum MemoryPressureLevel {
 impl MemoryPressureLevel {
     /// Check if memory pressure is concerning
     #[inline]
+    #[must_use]
     pub fn is_concerning(&self) -> bool {
         matches!(self, Self::High | Self::Critical)
     }
@@ -54,6 +55,7 @@ pub struct MemoryInfo {
 
 impl MemoryInfo {
     /// Get current allocator-relevant memory information
+    #[must_use]
     pub fn get() -> Self {
         let sys_info = nebula_system::info::SystemInfo::get();
 
@@ -67,6 +69,7 @@ impl MemoryInfo {
     }
 
     /// Calculate memory pressure level
+    #[must_use]
     pub fn pressure_level(&self) -> MemoryPressureLevel {
         if self.total == 0 {
             return MemoryPressureLevel::Unknown;
@@ -86,6 +89,7 @@ impl MemoryInfo {
     }
 
     /// Format memory size as human-readable string
+    #[must_use]
     pub fn format_size(size: usize) -> String {
         nebula_system::utils::format_bytes_usize(size)
     }
@@ -103,7 +107,7 @@ impl fmt::Display for MemoryInfo {
         }
 
         if let Some(numa_nodes) = self.numa_nodes {
-            writeln!(f, "  NUMA Nodes: {}", numa_nodes)?;
+            writeln!(f, "  NUMA Nodes: {numa_nodes}")?;
         }
 
         writeln!(f, "  Pressure: {:?}", self.pressure_level())?;
@@ -142,6 +146,7 @@ pub trait MemoryMonitor: Send + Sync {
 }
 
 /// Get page size using platform-specific syscalls
+#[must_use]
 pub fn get_page_size() -> usize {
     #[cfg(unix)]
     {
@@ -164,7 +169,7 @@ pub fn get_page_size() -> usize {
         // - OS validates all structure fields
         unsafe {
             let mut info: SYSTEM_INFO = std::mem::zeroed();
-            GetSystemInfo(&mut info);
+            GetSystemInfo(&raw mut info);
             info.dwPageSize as usize
         }
     }

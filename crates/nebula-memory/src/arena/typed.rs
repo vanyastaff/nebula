@@ -3,15 +3,15 @@
 //! # Safety
 //!
 //! This module implements a type-safe arena optimized for single-type allocations:
-//! - TypedChunk stores T values in Box<[MaybeUninit<T>]>
-//! - NonNull pointers to chunks managed via RefCell
+//! - `TypedChunk` stores T values in Box<[`MaybeUninit`<T>]>
+//! - `NonNull` pointers to chunks managed via `RefCell`
 //! - Single-threaded access (no Sync without explicit synchronization)
-//! - Pointer dereferencing protected by RefCell borrow checking
+//! - Pointer dereferencing protected by `RefCell` borrow checking
 //!
 //! ## Safety Contracts
 //!
-//! - Chunk pointers valid while arena exists (owned by RefCell)
-//! - MaybeUninit properly initialized before creating references
+//! - Chunk pointers valid while arena exists (owned by `RefCell`)
+//! - `MaybeUninit` properly initialized before creating references
 //! - Slice construction from contiguous arena-allocated pointers
 //! - Send implementation safe if T: Send (arena is single-threaded)
 
@@ -63,6 +63,7 @@ pub struct TypedArena<T> {
 
 impl<T> TypedArena<T> {
     /// Create a new typed arena
+    #[must_use]
     pub fn new() -> Self {
         TypedArena {
             chunks: RefCell::new(None),
@@ -77,25 +78,23 @@ impl<T> TypedArena<T> {
     /// Helper: Check if current chunk has capacity for allocation
     ///
     /// # Safety
-    /// - chunk_ptr must be valid NonNull pointing to TypedChunk<T>
-    /// - chunk must be owned by arena's RefCell
+    /// - `chunk_ptr` must be valid `NonNull` pointing to `TypedChunk`<T>
+    /// - chunk must be owned by arena's `RefCell`
     #[inline]
     unsafe fn chunk_has_capacity(chunk_ptr: NonNull<TypedChunk<T>>, index: usize) -> bool {
         // SAFETY: Dereferencing chunk pointer to check capacity.
         // - chunk_ptr is NonNull (caller contract)
         // - Pointer valid (owned by arena's RefCell)
         // - Read-only access to capacity (no mutation)
-        unsafe {
-            index < (*chunk_ptr.as_ptr()).capacity()
-        }
+        unsafe { index < (*chunk_ptr.as_ptr()).capacity() }
     }
 
     /// Helper: Get pointer to element in chunk storage
     ///
     /// # Safety
-    /// - chunk_ptr must be valid NonNull pointing to TypedChunk<T>
+    /// - `chunk_ptr` must be valid `NonNull` pointing to `TypedChunk`<T>
     /// - index must be within chunk capacity bounds
-    /// - Caller must ensure chunk is owned by arena's RefCell
+    /// - Caller must ensure chunk is owned by arena's `RefCell`
     #[inline]
     unsafe fn get_elem_ptr(chunk_ptr: NonNull<TypedChunk<T>>, index: usize) -> *mut T {
         // SAFETY: Accessing chunk storage at index.
@@ -105,7 +104,10 @@ impl<T> TypedArena<T> {
         // - as_mut_ptr returns raw pointer for writing
         unsafe {
             let chunk = &mut *chunk_ptr.as_ptr();
-            debug_assert!(index < chunk.capacity(), "index must be within chunk capacity");
+            debug_assert!(
+                index < chunk.capacity(),
+                "index must be within chunk capacity"
+            );
             chunk.storage[index].as_mut_ptr()
         }
     }
@@ -113,7 +115,7 @@ impl<T> TypedArena<T> {
     /// Helper: Write value to element pointer
     ///
     /// # Safety
-    /// - elem_ptr must point to valid, uninitialized memory
+    /// - `elem_ptr` must point to valid, uninitialized memory
     /// - Memory must be properly aligned for T
     /// - Caller takes ownership of the value
     #[inline]
@@ -134,6 +136,7 @@ impl<T> TypedArena<T> {
     }
 
     /// Create a new typed arena with initial capacity
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         let arena = Self::new();
         arena.chunk_capacity.set(capacity);
@@ -141,36 +144,43 @@ impl<T> TypedArena<T> {
     }
 
     /// Creates typed arena optimized for production (capacity = 256 elements)
+    #[must_use]
     pub fn production() -> Self {
         Self::with_capacity(256)
     }
 
     /// Creates typed arena optimized for debugging (capacity = 16 elements)
+    #[must_use]
     pub fn debug() -> Self {
         Self::with_capacity(16)
     }
 
     /// Creates typed arena with performance config (alias for production)
+    #[must_use]
     pub fn performance() -> Self {
         Self::production()
     }
 
     /// Creates a tiny typed arena (4 elements)
+    #[must_use]
     pub fn tiny() -> Self {
         Self::with_capacity(4)
     }
 
     /// Creates a small typed arena (32 elements)
+    #[must_use]
     pub fn small() -> Self {
         Self::with_capacity(32)
     }
 
     /// Creates a medium typed arena (128 elements)
+    #[must_use]
     pub fn medium() -> Self {
         Self::with_capacity(128)
     }
 
     /// Creates a large typed arena (1024 elements)
+    #[must_use]
     pub fn large() -> Self {
         Self::with_capacity(1024)
     }
@@ -207,9 +217,10 @@ impl<T> TypedArena<T> {
         let index = self.current_index.get();
 
         // Check if we need a new chunk using helper
-        let needs_chunk = self.current_chunk.borrow().map_or(true, |chunk| unsafe {
-            !Self::chunk_has_capacity(chunk, index)
-        });
+        let needs_chunk = self
+            .current_chunk
+            .borrow()
+            .is_none_or(|chunk| unsafe { !Self::chunk_has_capacity(chunk, index) });
 
         if needs_chunk {
             self.allocate_chunk()?;
@@ -247,9 +258,10 @@ impl<T> TypedArena<T> {
         let index = self.current_index.get();
 
         // Check if we need a new chunk using helper
-        let needs_chunk = self.current_chunk.borrow().map_or(true, |chunk| unsafe {
-            !Self::chunk_has_capacity(chunk, index)
-        });
+        let needs_chunk = self
+            .current_chunk
+            .borrow()
+            .is_none_or(|chunk| unsafe { !Self::chunk_has_capacity(chunk, index) });
 
         if needs_chunk {
             self.allocate_chunk()?;
@@ -295,7 +307,7 @@ impl<T> TypedArena<T> {
 
         for value in values {
             let ptr = self.alloc(*value)?;
-            result.push(ptr as *mut T);
+            result.push(std::ptr::from_mut::<T>(ptr));
         }
 
         // Convert to slice
@@ -383,7 +395,7 @@ impl<'a, T> TypedArenaRef<'a, T> {
     }
 }
 
-impl<'a, T> std::ops::Deref for TypedArenaRef<'a, T> {
+impl<T> std::ops::Deref for TypedArenaRef<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -391,7 +403,7 @@ impl<'a, T> std::ops::Deref for TypedArenaRef<'a, T> {
     }
 }
 
-impl<'a, T> AsRef<T> for TypedArenaRef<'a, T> {
+impl<T> AsRef<T> for TypedArenaRef<'_, T> {
     fn as_ref(&self) -> &T {
         self.value
     }

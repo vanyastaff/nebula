@@ -1,402 +1,372 @@
-//! # Error Types for nebula-memory
+//! Standalone error types for nebula-memory
 //!
-//! This module provides error handling for memory management operations,
-//! using the nebula-error MemoryError kind directly.
+//! Uses thiserror for clean, idiomatic Rust error definitions.
 
 use core::alloc::Layout;
 use core::fmt;
-
-pub use nebula_error::{
-    NebulaError, Result as NebulaResult, kinds::MemoryError as MemoryErrorKind,
-};
+use thiserror::Error;
 
 #[cfg(feature = "logging")]
 use nebula_log::{debug, error, warn};
 
 // ============================================================================
-// Main Error Type
+// Main Error Types
 // ============================================================================
 
-/// Memory management error type that wraps nebula-error MemoryError
-#[derive(Debug, Clone)]
-pub struct MemoryError {
-    /// The underlying nebula error
-    inner: NebulaError,
-    /// Optional layout information for allocation errors
-    layout: Option<Layout>,
+/// Memory management errors
+#[non_exhaustive]
+#[derive(Error, Debug, Clone)]
+pub enum MemoryError {
+    // --- Allocation Errors ---
+    #[error("Memory allocation failed: {size} bytes with {align} byte alignment")]
+    AllocationFailed { size: usize, align: usize },
+
+    #[error("Invalid memory layout: {reason}")]
+    InvalidLayout { reason: String },
+
+    #[error("Size overflow during operation: {operation}")]
+    SizeOverflow { operation: String },
+
+    #[error("Invalid alignment: {alignment}")]
+    InvalidAlignment { alignment: usize },
+
+    #[error("Allocation exceeds maximum size: {size} bytes (max: {max_size})")]
+    ExceedsMaxSize { size: usize, max_size: usize },
+
+    // --- Pool Errors ---
+    #[error("Memory pool '{pool_id}' exhausted (capacity: {capacity})")]
+    PoolExhausted { pool_id: String, capacity: usize },
+
+    #[error("Invalid configuration: {reason}")]
+    InvalidConfig { reason: String },
+
+    // --- Arena Errors ---
+    #[error("Arena '{arena_id}' exhausted: requested {requested} bytes, available {available}")]
+    ArenaExhausted {
+        arena_id: String,
+        requested: usize,
+        available: usize,
+    },
+
+    // --- Cache Errors ---
+    #[error("Cache miss for key: {key}")]
+    CacheMiss { key: String },
+
+    #[error("Cache overflow: {current} bytes used, {max} bytes maximum")]
+    CacheOverflow { current: usize, max: usize },
+
+    #[error("Invalid cache key: {reason}")]
+    InvalidCacheKey { reason: String },
+
+    // --- Budget Errors ---
+    #[error("Memory budget exceeded: {used} bytes used, {limit} bytes limit")]
+    BudgetExceeded { used: usize, limit: usize },
+
+    // --- System Errors ---
+    #[error("Memory corruption detected in {component}: {details}")]
+    Corruption { component: String, details: String },
+
+    #[error("Concurrent access error: {details}")]
+    ConcurrentAccess { details: String },
+
+    #[error("Invalid state: {reason}")]
+    InvalidState { reason: String },
+
+    #[error("Initialization failed: {reason}")]
+    InitializationFailed { reason: String },
 }
 
 impl MemoryError {
-    /// Creates a new memory error from MemoryErrorKind
-    pub fn new(kind: MemoryErrorKind) -> Self {
-        #[cfg(feature = "logging")]
-        {
-            if kind.is_critical() {
-                error!("Critical memory error: {}", kind);
-            } else {
-                warn!("Memory error: {}", kind);
-            }
+    /// Check if error is retryable
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::PoolExhausted { .. }
+                | Self::ArenaExhausted { .. }
+                | Self::CacheOverflow { .. }
+                | Self::BudgetExceeded { .. }
+        )
+    }
+
+    /// Get error code for categorization
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::AllocationFailed { .. } => "MEM:ALLOC:FAILED",
+            Self::InvalidLayout { .. } => "MEM:ALLOC:LAYOUT",
+            Self::SizeOverflow { .. } => "MEM:ALLOC:OVERFLOW",
+            Self::InvalidAlignment { .. } => "MEM:ALLOC:ALIGN",
+            Self::ExceedsMaxSize { .. } => "MEM:ALLOC:MAX",
+            Self::PoolExhausted { .. } => "MEM:POOL:EXHAUSTED",
+            Self::InvalidConfig { .. } => "MEM:CONFIG:INVALID",
+            Self::ArenaExhausted { .. } => "MEM:ARENA:EXHAUSTED",
+            Self::CacheMiss { .. } => "MEM:CACHE:MISS",
+            Self::CacheOverflow { .. } => "MEM:CACHE:OVERFLOW",
+            Self::InvalidCacheKey { .. } => "MEM:CACHE:KEY",
+            Self::BudgetExceeded { .. } => "MEM:BUDGET:EXCEEDED",
+            Self::Corruption { .. } => "MEM:SYSTEM:CORRUPTION",
+            Self::ConcurrentAccess { .. } => "MEM:SYSTEM:CONCURRENT",
+            Self::InvalidState { .. } => "MEM:SYSTEM:STATE",
+            Self::InitializationFailed { .. } => "MEM:SYSTEM:INIT",
         }
-
-        Self {
-            inner: NebulaError::new(nebula_error::ErrorKind::Memory(kind)),
-            layout: None,
-        }
-    }
-
-    /// Creates an error with layout information
-    pub fn with_layout(kind: MemoryErrorKind, layout: Layout) -> Self {
-        let mut error = Self::new(kind);
-        error.layout = Some(layout);
-        error.inner = error.inner.with_details(format!(
-            "layout: {} bytes, {} align",
-            layout.size(),
-            layout.align()
-        ));
-        error
-    }
-
-    /// Adds context to the error
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_context<K, V>(mut self, key: K, value: V) -> Self
-    where
-        K: Into<String>,
-        V: fmt::Display,
-    {
-        self.inner = self
-            .inner
-            .with_details(format!("{}: {}", key.into(), value));
-        self
-    }
-
-    /// Returns the error code string
-    pub fn code(&self) -> &str {
-        &self.inner.code
-    }
-
-    /// Returns the layout if available
-    pub fn layout(&self) -> Option<Layout> {
-        self.layout
-    }
-
-    /// Returns the underlying NebulaError
-    pub fn inner(&self) -> &NebulaError {
-        &self.inner
-    }
-
-    /// Converts into the underlying NebulaError
-    pub fn into_inner(self) -> NebulaError {
-        self.inner
     }
 
     // ============================================================================
     // Convenience Constructors - Allocation Errors
     // ============================================================================
 
-    /// Creates an allocation failed error
+    /// Create allocation failed error
     pub fn allocation_failed(size: usize, align: usize) -> Self {
-        Self::new(MemoryErrorKind::AllocationFailed { size, align })
+        #[cfg(feature = "logging")]
+        error!(
+            "Memory allocation failed: {} bytes with {} alignment",
+            size, align
+        );
+
+        Self::AllocationFailed { size, align }
     }
 
-    /// Creates an allocation failed error with layout
+    /// Create allocation failed error from layout
+    #[must_use]
     pub fn allocation_failed_with_layout(layout: Layout) -> Self {
-        Self::with_layout(
-            MemoryErrorKind::AllocationFailed {
-                size: layout.size(),
-                align: layout.align(),
-            },
-            layout,
-        )
+        Self::allocation_failed(layout.size(), layout.align())
     }
 
-    /// Creates an invalid layout error
+    /// Create invalid layout error
     pub fn invalid_layout(reason: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::InvalidLayout {
+        Self::InvalidLayout {
             reason: reason.into(),
-        })
+        }
     }
 
-    /// Creates a size overflow error
-    pub fn size_overflow(size: usize, align: usize) -> Self {
-        Self::new(MemoryErrorKind::SizeOverflow {
-            operation: format!("{}x{} byte allocation", size, align),
-        })
+    /// Create size overflow error
+    pub fn size_overflow(operation: impl Into<String>) -> Self {
+        Self::SizeOverflow {
+            operation: operation.into(),
+        }
     }
 
-    /// Creates an invalid alignment error
+    /// Create invalid alignment error
+    #[must_use]
     pub fn invalid_alignment(alignment: usize) -> Self {
-        Self::new(MemoryErrorKind::InvalidAlignment { alignment })
+        Self::InvalidAlignment { alignment }
     }
 
-    // ============================================================================
-    // Convenience Constructors - Pool Errors
-    // ============================================================================
+    /// Create allocation too large error
+    #[must_use]
+    pub fn allocation_too_large(size: usize, max_size: usize) -> Self {
+        Self::ExceedsMaxSize { size, max_size }
+    }
 
-    /// Creates a pool exhausted error
+    // --- Pool Errors ---
+
+    /// Create pool exhausted error
     pub fn pool_exhausted(pool_id: impl Into<String>, capacity: usize) -> Self {
-        Self::new(MemoryErrorKind::PoolExhausted {
-            pool_id: pool_id.into(),
+        let pool_id_str = pool_id.into();
+
+        #[cfg(feature = "logging")]
+        warn!("Memory pool exhausted: {}", pool_id_str);
+
+        Self::PoolExhausted {
+            pool_id: pool_id_str,
             capacity,
-        })
+        }
     }
 
-    /// Creates an invalid pool configuration error
+    /// Create invalid pool config error
     pub fn invalid_pool_config(reason: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::InvalidConfig {
+        Self::InvalidConfig {
             reason: format!("invalid pool config: {}", reason.into()),
-        })
+        }
     }
 
-    /// Creates an invalid config error (generic)
+    /// Create invalid config error
     pub fn invalid_config(reason: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::InvalidConfig {
+        Self::InvalidConfig {
             reason: reason.into(),
-        })
+        }
     }
 
-    // ============================================================================
-    // Convenience Constructors - Arena Errors
-    // ============================================================================
+    // --- Arena Errors ---
 
-    /// Creates an arena exhausted error
+    /// Create arena exhausted error
     pub fn arena_exhausted(
         arena_id: impl Into<String>,
         requested: usize,
         available: usize,
     ) -> Self {
-        Self::new(MemoryErrorKind::ArenaExhausted {
+        Self::ArenaExhausted {
             arena_id: arena_id.into(),
             requested,
             available,
-        })
+        }
     }
 
-    /// Creates an invalid arena operation error
+    /// Create invalid arena operation error
     pub fn invalid_arena_operation(operation: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::InvalidState {
+        Self::InvalidState {
             reason: format!("invalid arena operation: {}", operation.into()),
-        })
+        }
     }
 
-    // ============================================================================
-    // Convenience Constructors - Cache Errors
-    // ============================================================================
+    // --- Cache Errors ---
 
-    /// Creates a cache miss error
+    /// Create cache miss error
     pub fn cache_miss(key: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::CacheMiss { key: key.into() })
+        Self::CacheMiss { key: key.into() }
     }
 
-    /// Creates a cache full error
+    /// Create cache full error
+    #[must_use]
     pub fn cache_full(capacity: usize) -> Self {
-        Self::new(MemoryErrorKind::CacheOverflow {
+        Self::CacheOverflow {
             current: capacity,
             max: capacity,
-        })
+        }
     }
 
-    /// Creates an invalid cache key error
+    /// Create invalid cache key error
     pub fn invalid_cache_key(key: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::InvalidCacheKey {
+        Self::InvalidCacheKey {
             reason: format!("invalid key: {}", key.into()),
-        })
+        }
     }
 
-    // ============================================================================
-    // Convenience Constructors - Budget Errors
-    // ============================================================================
+    // --- Budget Errors ---
 
-    /// Creates a budget exceeded error
+    /// Create budget exceeded error
+    #[must_use]
     pub fn budget_exceeded(used: usize, limit: usize) -> Self {
-        Self::new(MemoryErrorKind::BudgetExceeded { used, limit })
+        Self::BudgetExceeded { used, limit }
     }
 
-    /// Creates an invalid budget error
+    /// Create invalid budget error
     pub fn invalid_budget(reason: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::InvalidConfig {
+        Self::InvalidConfig {
             reason: format!("invalid budget: {}", reason.into()),
-        })
+        }
     }
 
-    // ============================================================================
-    // Convenience Constructors - System Errors
-    // ============================================================================
+    // --- System Errors ---
 
-    /// Creates a memory corruption error
+    /// Create memory corruption error
     pub fn corruption(component: impl Into<String>, details: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::Corruption {
-            component: component.into(),
+        let component_str = component.into();
+        let details_str = details.into();
+
+        #[cfg(feature = "logging")]
+        error!("Memory corruption: {} - {}", component_str, details_str);
+
+        Self::Corruption {
+            component: component_str,
+            details: details_str,
+        }
+    }
+
+    /// Create concurrent access error
+    pub fn concurrent_access(details: impl Into<String>) -> Self {
+        Self::ConcurrentAccess {
             details: details.into(),
-        })
+        }
     }
 
-    /// Creates a concurrent access error
-    pub fn concurrent_access(resource: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::ConcurrentAccess {
-            details: format!("concurrent access to {}", resource.into()),
-        })
-    }
-
-    /// Creates a leak detected error
+    /// Create leak detected error
     pub fn leak_detected(size: usize, location: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::Corruption {
+        Self::Corruption {
             component: "memory tracker".into(),
             details: format!("leak detected: {} bytes at {}", size, location.into()),
-        })
+        }
     }
 
-    /// Creates a fragmentation error
+    /// Create fragmentation error
+    #[must_use]
     pub fn fragmentation(available: usize, largest_block: usize, requested: usize) -> Self {
-        Self::new(MemoryErrorKind::InvalidState {
+        Self::InvalidState {
             reason: format!(
-                "fragmentation: {} bytes available, largest block {}, requested {}",
-                available, largest_block, requested
+                "fragmentation: {available} bytes available, largest block {largest_block}, requested {requested}"
             ),
-        })
+        }
     }
 
-    /// Creates an initialization failed error
+    /// Create initialization failed error
     pub fn initialization_failed(component: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::InitializationFailed {
+        Self::InitializationFailed {
             reason: format!("failed to initialize {}", component.into()),
-        })
+        }
     }
 
-    /// Creates an invalid input error
+    /// Create invalid input error
     pub fn invalid_input(reason: impl Into<String>) -> Self {
         Self::invalid_layout(reason)
     }
 
-    /// Creates an invalid argument error (alias for invalid_input)
+    /// Create invalid argument error (alias for `invalid_input`)
     pub fn invalid_argument(reason: impl Into<String>) -> Self {
         Self::invalid_input(reason)
     }
 
-    /// Creates an invalid index error
+    /// Create invalid index error
+    #[must_use]
     pub fn invalid_index(index: usize, max: usize) -> Self {
-        Self::new(MemoryErrorKind::InvalidState {
-            reason: format!("invalid index {} (max: {})", index, max),
-        })
+        Self::InvalidState {
+            reason: format!("invalid index {index} (max: {max})"),
+        }
     }
 
-    /// Creates a decompression failed error
+    /// Create decompression failed error
     pub fn decompression_failed(reason: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::InvalidState {
+        Self::InvalidState {
             reason: format!("decompression failed: {}", reason.into()),
-        })
+        }
     }
 
-    /// Creates a monitor error
+    /// Create monitor error
     pub fn monitor_error(reason: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::InvalidState {
+        Self::InvalidState {
             reason: format!("monitor error: {}", reason.into()),
-        })
+        }
     }
 
-    /// Creates a not supported error
+    /// Create not supported error
     pub fn not_supported(operation: impl Into<String>) -> Self {
-        Self::new(MemoryErrorKind::InvalidState {
+        Self::InvalidState {
             reason: format!("operation not supported: {}", operation.into()),
-        })
+        }
     }
 
-    /// Creates an out of memory error
+    /// Create out of memory error
+    #[must_use]
     pub fn out_of_memory(size: usize, align: usize) -> Self {
         Self::allocation_failed(size, align)
     }
 
-    /// Creates an out of memory error with layout
+    /// Create out of memory error with layout
+    #[must_use]
     pub fn out_of_memory_with_layout(layout: Layout) -> Self {
         Self::allocation_failed_with_layout(layout)
     }
 
-    /// Creates an allocation too large error
-    pub fn allocation_too_large(size: usize, max_size: usize) -> Self {
-        Self::new(MemoryErrorKind::ExceedsMaxSize { size, max_size })
-    }
-
-    // ============================================================================
-    // Error Type Checks
-    // ============================================================================
-
-    /// Checks if this is an invalid alignment error
+    /// Check if this is an invalid alignment error
+    #[must_use]
     pub fn is_invalid_alignment(&self) -> bool {
-        matches!(
-            *self.inner.kind,
-            nebula_error::ErrorKind::Memory(MemoryErrorKind::InvalidAlignment { .. })
-        )
-    }
-}
-
-impl From<MemoryErrorKind> for MemoryError {
-    fn from(kind: MemoryErrorKind) -> Self {
-        Self::new(kind)
-    }
-}
-
-impl From<MemoryError> for NebulaError {
-    fn from(error: MemoryError) -> Self {
-        error.inner
-    }
-}
-
-impl fmt::Display for MemoryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(layout) = self.layout {
-            write!(
-                f,
-                "Memory error for {} bytes with {} alignment: {}",
-                layout.size(),
-                layout.align(),
-                self.inner
-            )
-        } else {
-            write!(f, "{}", self.inner)
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for MemoryError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.inner)
+        matches!(self, Self::InvalidAlignment { .. })
     }
 }
 
 // ============================================================================
-// Result Type and Utilities
+// Result Types
 // ============================================================================
 
 /// Result type for memory operations
-pub type MemoryResult<T> = Result<T, MemoryError>;
+pub type MemoryResult<T> = core::result::Result<T, MemoryError>;
 
-// Type aliases for backward compatibility with allocator module
+/// Generic result type alias
+pub type Result<T> = MemoryResult<T>;
+
+/// Type aliases for allocator module backward compatibility
 pub type AllocError = MemoryError;
 pub type AllocResult<T> = MemoryResult<T>;
-
-/// Extension trait for Result types
-pub trait MemoryResultExt<T> {
-    /// Maps a memory error with additional context
-    fn map_memory_err<F>(self, f: F) -> MemoryResult<T>
-    where
-        F: FnOnce(MemoryError) -> MemoryError;
-
-    /// Adds context message to memory error
-    fn context(self, msg: &str) -> MemoryResult<T>;
-}
-
-impl<T> MemoryResultExt<T> for MemoryResult<T> {
-    fn map_memory_err<F>(self, f: F) -> MemoryResult<T>
-    where
-        F: FnOnce(MemoryError) -> MemoryError,
-    {
-        self.map_err(f)
-    }
-
-    fn context(self, msg: &str) -> MemoryResult<T> {
-        self.map_err(|e| e.with_context("context", msg))
-    }
-}
 
 // ============================================================================
 // Tests
@@ -410,14 +380,14 @@ mod tests {
     fn test_memory_error_creation() {
         let error = MemoryError::allocation_failed(1024, 8);
         assert!(!error.to_string().is_empty());
+        assert!(error.to_string().contains("1024"));
     }
 
     #[test]
     fn test_error_with_layout() {
         let layout = Layout::new::<u64>();
         let error = MemoryError::allocation_failed_with_layout(layout);
-
-        assert_eq!(error.layout(), Some(layout));
+        assert!(error.to_string().contains(&layout.size().to_string()));
     }
 
     #[test]
@@ -435,17 +405,35 @@ mod tests {
     fn test_arena_errors() {
         let error = MemoryError::arena_exhausted("test_arena", 1024, 512);
         assert!(!error.to_string().is_empty());
+        assert!(error.to_string().contains("test_arena"));
     }
 
     #[test]
     fn test_budget_errors() {
         let error = MemoryError::budget_exceeded(2048, 1024);
         assert!(!error.to_string().is_empty());
+        assert!(error.to_string().contains("2048"));
     }
 
     #[test]
     fn test_corruption_errors() {
         let error = MemoryError::corruption("allocator", "invalid pointer");
         assert!(!error.to_string().is_empty());
+        assert!(error.to_string().contains("allocator"));
+    }
+
+    #[test]
+    fn test_error_codes() {
+        let error = MemoryError::allocation_failed(1024, 8);
+        assert_eq!(error.code(), "MEM:ALLOC:FAILED");
+
+        let error = MemoryError::pool_exhausted("test", 100);
+        assert_eq!(error.code(), "MEM:POOL:EXHAUSTED");
+    }
+
+    #[test]
+    fn test_retryable() {
+        assert!(MemoryError::pool_exhausted("test", 100).is_retryable());
+        assert!(!MemoryError::invalid_alignment(8).is_retryable());
     }
 }

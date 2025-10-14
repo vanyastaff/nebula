@@ -50,7 +50,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             timeout: Some(Duration::from_secs(10)),
         });
 
-    manager.register_service("payment-api", payment_policy).await;
+    manager
+        .register_service("payment-api", payment_policy)
+        .await;
     println!("  ✓ Custom policy registered\n");
 
     // Example 3: Execute operation with custom policy
@@ -100,7 +102,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\n  Circuit Breaker:");
             println!("    - State: {:?}", cb_stats.state);
             println!("    - Failure count: {}", cb_stats.failure_count);
-            println!("    - Half-open operations: {}", cb_stats.half_open_operations);
+            println!(
+                "    - Half-open operations: {}",
+                cb_stats.half_open_operations
+            );
         }
 
         if let Some(bh_stats) = metrics.bulkhead {

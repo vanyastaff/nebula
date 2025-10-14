@@ -77,7 +77,7 @@ impl ResiliencePolicy {
     }
 
     /// Create a basic policy with timeout and retry
-    #[must_use] 
+    #[must_use]
     pub fn basic(timeout: Duration, retry_attempts: usize) -> Self {
         Self {
             timeout: Some(timeout),
@@ -96,7 +96,7 @@ impl ResiliencePolicy {
     }
 
     /// Create a robust policy with all resilience patterns
-    #[must_use] 
+    #[must_use]
     pub fn robust(
         timeout: Duration,
         retry_attempts: usize,
@@ -122,7 +122,7 @@ impl ResiliencePolicy {
     }
 
     /// Create a policy optimized for microservices
-    #[must_use] 
+    #[must_use]
     pub fn microservice() -> Self {
         Self {
             timeout: Some(Duration::from_secs(10)),
@@ -234,7 +234,7 @@ impl ResiliencePolicy {
     }
 
     /// Check if policy has any resilience patterns enabled
-    #[must_use] 
+    #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.timeout.is_some()
             || self.retry.is_some()
@@ -243,7 +243,7 @@ impl ResiliencePolicy {
     }
 
     /// Get estimated maximum execution time including retries
-    #[must_use] 
+    #[must_use]
     pub fn max_execution_time(&self) -> Option<Duration> {
         let base_timeout = self.timeout.unwrap_or(Duration::from_secs(60));
 
@@ -329,11 +329,12 @@ impl ResilienceConfig for ResiliencePolicy {
         // Check for conflicting configurations
         if let (Some(_timeout), Some(_retry)) = (self.timeout, &self.retry)
             && let Some(max_exec_time) = self.max_execution_time()
-                && max_exec_time > Duration::from_secs(600) {
-                    return Err(ConfigError::validation(
-                        "Combined timeout and retry configuration would exceed 10 minutes",
-                    ));
-                }
+            && max_exec_time > Duration::from_secs(600)
+        {
+            return Err(ConfigError::validation(
+                "Combined timeout and retry configuration would exceed 10 minutes",
+            ));
+        }
 
         Ok(())
     }

@@ -83,6 +83,7 @@ impl ResourceConfig for DatabaseConfig {
 }
 
 /// Generic database resource instance (mock implementation)
+#[derive(Debug)]
 pub struct DatabaseInstance {
     instance_id: uuid::Uuid,
     resource_id: ResourceId,
@@ -144,6 +145,7 @@ impl DatabaseInstance {
 /// - `PostgresResource` - `PostgreSQL`
 /// - `MySqlResource` - MySQL/MariaDB
 /// - `MongoDbResource` - `MongoDB`
+#[derive(Debug)]
 pub struct DatabaseResource;
 
 #[async_trait::async_trait]

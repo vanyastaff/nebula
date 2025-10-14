@@ -25,6 +25,7 @@ pub struct ArenaScope {
 
 impl ArenaScope {
     /// Create a new arena scope with given configuration
+    #[must_use]
     pub fn new(config: ArenaConfig) -> Self {
         Self {
             arena: Arena::new(config),
@@ -32,6 +33,7 @@ impl ArenaScope {
     }
 
     /// Create a new arena scope with default configuration
+    #[must_use]
     pub fn with_default() -> Self {
         Self::new(ArenaConfig::default())
     }
@@ -135,6 +137,7 @@ impl<'a> ArenaGuard<'a> {
     }
 
     /// Returns the saved position
+    #[must_use]
     pub fn position(&self) -> Position {
         self.position
     }
@@ -147,7 +150,7 @@ impl<'a> ArenaGuard<'a> {
     }
 }
 
-impl<'a> Drop for ArenaGuard<'a> {
+impl Drop for ArenaGuard<'_> {
     fn drop(&mut self) {
         if self.active {
             let _ = self.arena.reset_to_position(self.position);

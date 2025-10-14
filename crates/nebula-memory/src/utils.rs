@@ -13,7 +13,7 @@
 //!
 //! ## Memory Operations
 //!
-//! - `secure_zero`: write_bytes with compiler fence to prevent optimization
+//! - `secure_zero`: `write_bytes` with compiler fence to prevent optimization
 //! - `prefetch_read/write`: Platform intrinsics for cache prefetching
 //! - `copy_aligned_simd`: AVX2/SSE SIMD operations for bulk copy
 //! - `fill_simd`: AVX2 pattern filling with broadcast
@@ -23,9 +23,9 @@
 //!
 //! - SIMD functions require valid pointers for full length
 //! - Prefetch accepts any pointer (hint only, no UB if invalid)
-//! - copy_nonoverlapping requires non-overlapping regions
+//! - `copy_nonoverlapping` requires non-overlapping regions
 //! - Pointer arithmetic validated by caller
-//! - compiler_fence prevents optimizer reordering
+//! - `compiler_fence` prevents optimizer reordering
 
 use core::ptr;
 use core::sync::atomic::{Ordering, compiler_fence, fence};
@@ -45,6 +45,7 @@ use crate::allocator::{AllocError, AllocResult};
 /// assert_eq!(align_up(9, 8), 16);
 /// ```
 #[inline(always)]
+#[must_use]
 pub const fn align_up(value: usize, alignment: usize) -> usize {
     debug_assert!(alignment.is_power_of_two());
     (value + alignment - 1) & !(alignment - 1)
@@ -61,6 +62,7 @@ pub const fn align_up(value: usize, alignment: usize) -> usize {
 /// assert_eq!(align_down(9, 8), 8);
 /// ```
 #[inline(always)]
+#[must_use]
 pub const fn align_down(value: usize, alignment: usize) -> usize {
     debug_assert!(alignment.is_power_of_two());
     value & !(alignment - 1)
@@ -77,6 +79,7 @@ pub const fn align_down(value: usize, alignment: usize) -> usize {
 /// assert!(!is_aligned(17, 8));
 /// ```
 #[inline(always)]
+#[must_use]
 pub const fn is_aligned(value: usize, alignment: usize) -> bool {
     debug_assert!(alignment.is_power_of_two());
     value & (alignment - 1) == 0
@@ -93,6 +96,7 @@ pub const fn is_aligned(value: usize, alignment: usize) -> bool {
 /// assert_eq!(padding_needed(9, 8), 7);
 /// ```
 #[inline(always)]
+#[must_use]
 pub const fn padding_needed(value: usize, alignment: usize) -> usize {
     align_up(value, alignment) - value
 }
@@ -108,6 +112,7 @@ pub const fn padding_needed(value: usize, alignment: usize) -> usize {
 /// assert_eq!(next_power_of_two(9), 16);
 /// ```
 #[inline(always)]
+#[must_use]
 pub const fn next_power_of_two(mut value: usize) -> usize {
     if value == 0 {
         return 1;
@@ -395,6 +400,7 @@ pub unsafe fn compare_simd(a: *const u8, b: *const u8, len: usize) -> bool {
 /// SIMD-optimized memory compare (fallback)
 #[inline]
 #[cfg(not(all(feature = "simd", target_arch = "x86_64", target_feature = "avx2")))]
+#[must_use]
 pub unsafe fn compare_simd(a: *const u8, b: *const u8, len: usize) -> bool {
     if len == 0 {
         return true;
@@ -422,6 +428,7 @@ pub struct Timer {
 #[cfg(feature = "std")]
 impl Timer {
     #[inline]
+    #[must_use]
     pub fn new(name: &'static str) -> Self {
         Self {
             start: Instant::now(),
@@ -430,6 +437,7 @@ impl Timer {
     }
 
     #[inline]
+    #[must_use]
     pub fn elapsed(&self) -> Duration {
         self.start.elapsed()
     }
@@ -450,7 +458,7 @@ impl Drop for Timer {
 // Checked Arithmetic for Overflow Safety
 // ============================================================================
 
-/// Extension trait for checked arithmetic operations that return AllocResult
+/// Extension trait for checked arithmetic operations that return `AllocResult`
 ///
 /// This trait provides a consistent way to handle overflow/underflow in
 /// memory-related calculations throughout the crate.
@@ -467,16 +475,16 @@ impl Drop for Timer {
 /// assert!(usize::MAX.try_add(1).is_err());
 /// ```
 pub trait CheckedArithmetic: Sized {
-    /// Checked addition. Returns AllocError on overflow.
+    /// Checked addition. Returns `AllocError` on overflow.
     fn try_add(self, rhs: Self) -> AllocResult<Self>;
 
-    /// Checked subtraction. Returns AllocError on underflow.
+    /// Checked subtraction. Returns `AllocError` on underflow.
     fn try_sub(self, rhs: Self) -> AllocResult<Self>;
 
-    /// Checked multiplication. Returns AllocError on overflow.
+    /// Checked multiplication. Returns `AllocError` on overflow.
     fn try_mul(self, rhs: Self) -> AllocResult<Self>;
 
-    /// Checked division. Returns AllocError on division by zero.
+    /// Checked division. Returns `AllocError` on division by zero.
     fn try_div(self, rhs: Self) -> AllocResult<Self>;
 }
 
@@ -484,19 +492,19 @@ impl CheckedArithmetic for usize {
     #[inline]
     fn try_add(self, rhs: Self) -> AllocResult<Self> {
         self.checked_add(rhs)
-            .ok_or_else(|| AllocError::invalid_layout(&format!("overflow: {} + {}", self, rhs)))
+            .ok_or_else(|| AllocError::invalid_layout(format!("overflow: {self} + {rhs}")))
     }
 
     #[inline]
     fn try_sub(self, rhs: Self) -> AllocResult<Self> {
         self.checked_sub(rhs)
-            .ok_or_else(|| AllocError::invalid_layout(&format!("underflow: {} - {}", self, rhs)))
+            .ok_or_else(|| AllocError::invalid_layout(format!("underflow: {self} - {rhs}")))
     }
 
     #[inline]
     fn try_mul(self, rhs: Self) -> AllocResult<Self> {
         self.checked_mul(rhs)
-            .ok_or_else(|| AllocError::invalid_layout(&format!("overflow: {} * {}", self, rhs)))
+            .ok_or_else(|| AllocError::invalid_layout(format!("overflow: {self} * {rhs}")))
     }
 
     #[inline]
@@ -510,19 +518,19 @@ impl CheckedArithmetic for isize {
     #[inline]
     fn try_add(self, rhs: Self) -> AllocResult<Self> {
         self.checked_add(rhs)
-            .ok_or_else(|| AllocError::invalid_layout(&format!("overflow: {} + {}", self, rhs)))
+            .ok_or_else(|| AllocError::invalid_layout(format!("overflow: {self} + {rhs}")))
     }
 
     #[inline]
     fn try_sub(self, rhs: Self) -> AllocResult<Self> {
         self.checked_sub(rhs)
-            .ok_or_else(|| AllocError::invalid_layout(&format!("underflow: {} - {}", self, rhs)))
+            .ok_or_else(|| AllocError::invalid_layout(format!("underflow: {self} - {rhs}")))
     }
 
     #[inline]
     fn try_mul(self, rhs: Self) -> AllocResult<Self> {
         self.checked_mul(rhs)
-            .ok_or_else(|| AllocError::invalid_layout(&format!("overflow: {} * {}", self, rhs)))
+            .ok_or_else(|| AllocError::invalid_layout(format!("overflow: {self} * {rhs}")))
     }
 
     #[inline]
@@ -545,6 +553,7 @@ pub use nebula_system::utils::PlatformInfo;
 ///
 /// Uses actual syscall-based detection via syscalls module instead of hardcoded values
 #[inline]
+#[must_use]
 pub fn page_size() -> usize {
     crate::syscalls::get_page_size()
 }
@@ -611,8 +620,9 @@ pub fn memory_barrier_ex(barrier_type: BarrierType) {
 pub struct MemoryOps;
 
 impl MemoryOps {
-    /// Create new MemoryOps instance
+    /// Create new `MemoryOps` instance
     #[inline]
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -684,6 +694,7 @@ pub struct Backoff {
 impl Backoff {
     /// Create new backoff with default parameters
     #[inline]
+    #[must_use]
     pub fn new() -> Self {
         Self {
             current: 1,
@@ -693,12 +704,14 @@ impl Backoff {
 
     /// Create backoff with custom maximum
     #[inline]
+    #[must_use]
     pub fn with_max(max: u32) -> Self {
         Self { current: 1, max }
     }
 
-    /// Create backoff with custom maximum spin (alias for with_max)
+    /// Create backoff with custom maximum spin (alias for `with_max`)
     #[inline]
+    #[must_use]
     pub fn with_max_spin(max: u32) -> Self {
         Self::with_max(max)
     }
@@ -749,6 +762,7 @@ pub struct PrefetchManager {
 impl PrefetchManager {
     /// Create new prefetch manager
     #[inline]
+    #[must_use]
     pub fn new() -> Self {
         Self {
             distance: cache_line_size() * 2,
@@ -835,6 +849,7 @@ pub mod perf {
     }
 
     /// Measures throughput in operations per second
+    #[must_use]
     pub fn calculate_throughput(operations: u64, duration: Duration) -> f64 {
         if duration.as_secs_f64() == 0.0 {
             0.0
@@ -844,9 +859,10 @@ pub mod perf {
     }
 
     /// Formats throughput as human-readable string
+    #[must_use]
     pub fn format_throughput(ops_per_sec: f64) -> String {
         if ops_per_sec < 1_000.0 {
-            format!("{:.2} ops/s", ops_per_sec)
+            format!("{ops_per_sec:.2} ops/s")
         } else if ops_per_sec < 1_000_000.0 {
             format!("{:.2}K ops/s", ops_per_sec / 1_000.0)
         } else if ops_per_sec < 1_000_000_000.0 {

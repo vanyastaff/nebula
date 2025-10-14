@@ -29,22 +29,17 @@ impl Default for OvercommitPolicy {
 }
 
 /// Mode for memory reservations
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReservationMode {
     /// Strict reservations that guarantee memory availability
     Strict,
 
     /// Best-effort reservations that may fail under pressure
+    #[default]
     BestEffort,
 
     /// Elastic reservations that can shrink under pressure
     Elastic,
-}
-
-impl Default for ReservationMode {
-    fn default() -> Self {
-        Self::BestEffort
-    }
 }
 
 /// Configuration for the memory budgeting system
@@ -144,6 +139,7 @@ impl BudgetConfig {
     }
 
     /// Calculate the effective limit including overcommitment
+    #[must_use]
     pub fn effective_limit(&self) -> usize {
         match self.overcommit_policy {
             OvercommitPolicy::None => self.limit,

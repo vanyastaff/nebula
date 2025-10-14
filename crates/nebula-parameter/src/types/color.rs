@@ -52,9 +52,10 @@ pub struct ColorParameterOptions {
     pub palette: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum ColorFormat {
     #[serde(rename = "hex")]
+    #[default]
     Hex,
     #[serde(rename = "rgb")]
     Rgb,
@@ -62,12 +63,6 @@ pub enum ColorFormat {
     Hsl,
     #[serde(rename = "hsv")]
     Hsv,
-}
-
-impl Default for ColorFormat {
-    fn default() -> Self {
-        ColorFormat::Hex
-    }
 }
 
 impl Parameter for ColorParameter {
@@ -133,7 +128,7 @@ impl Expressible for ColorParameter {
                 } else {
                     Err(ParameterError::InvalidValue {
                         key: self.metadata.key.clone(),
-                        reason: format!("Invalid color format: {}", s),
+                        reason: format!("Invalid color format: {s}"),
                     })
                 }
             }
@@ -210,23 +205,24 @@ impl ColorParameter {
 
     /// Check if string is valid RGB color (rgb(r,g,b) or rgba(r,g,b,a))
     fn is_valid_rgb_color(&self, color: &str) -> bool {
-        color.starts_with("rgb(") && color.ends_with(")")
-            || color.starts_with("rgba(") && color.ends_with(")")
+        color.starts_with("rgb(") && color.ends_with(')')
+            || color.starts_with("rgba(") && color.ends_with(')')
     }
 
     /// Check if string is valid HSL color (hsl(h,s%,l%) or hsla(h,s%,l%,a))
     fn is_valid_hsl_color(&self, color: &str) -> bool {
-        color.starts_with("hsl(") && color.ends_with(")")
-            || color.starts_with("hsla(") && color.ends_with(")")
+        color.starts_with("hsl(") && color.ends_with(')')
+            || color.starts_with("hsla(") && color.ends_with(')')
     }
 
     /// Check if string is valid HSV color
     fn is_valid_hsv_color(&self, color: &str) -> bool {
-        color.starts_with("hsv(") && color.ends_with(")")
-            || color.starts_with("hsva(") && color.ends_with(")")
+        color.starts_with("hsv(") && color.ends_with(')')
+            || color.starts_with("hsva(") && color.ends_with(')')
     }
 
     /// Convert color to specified format (basic implementation)
+    #[must_use]
     pub fn convert_to_format(&self, format: ColorFormat) -> Option<String> {
         let current_value = self.value.as_ref()?;
 
@@ -234,7 +230,7 @@ impl ColorParameter {
         // In a real application, you'd use a proper color conversion library
         match format {
             ColorFormat::Hex if !current_value.starts_with("#") => {
-                Some(format!("#{}", current_value))
+                Some(format!("#{current_value}"))
             }
             _ => Some(current_value.to_string()),
         }

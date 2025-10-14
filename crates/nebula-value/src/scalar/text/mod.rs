@@ -11,9 +11,8 @@ use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::sync::Arc;
 
-use crate::core::NebulaError;
-use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::limits::ValueLimits;
+use crate::core::{ValueError, ValueResult};
 
 /// UTF-8 text string with efficient cloning
 ///
@@ -109,10 +108,7 @@ impl Text {
 
     /// Split by delimiter
     pub fn split(&self, delimiter: &str) -> Vec<Text> {
-        self.inner
-            .split(delimiter)
-            .map(Text::from_str)
-            .collect()
+        self.inner.split(delimiter).map(Text::from_str).collect()
     }
 
     /// Replace all occurrences of a pattern
@@ -123,7 +119,7 @@ impl Text {
     /// Get a substring by byte range
     pub fn substring(&self, start: usize, end: usize) -> ValueResult<Text> {
         if start > end || end > self.len() {
-            return Err(NebulaError::value_out_of_range(
+            return Err(ValueError::out_of_range(
                 format!("{}..{}", start, end),
                 "0",
                 self.len().to_string(),
@@ -132,7 +128,7 @@ impl Text {
 
         // Ensure we're on character boundaries
         if !self.inner.is_char_boundary(start) || !self.inner.is_char_boundary(end) {
-            return Err(NebulaError::validation(
+            return Err(ValueError::validation(
                 "substring indices must be on character boundaries",
             ));
         }

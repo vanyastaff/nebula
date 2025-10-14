@@ -32,7 +32,7 @@ pub struct Port {
 
 impl Port {
     /// Creates a new port validator (allows all valid ports 1-65535).
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             allow_well_known: true,

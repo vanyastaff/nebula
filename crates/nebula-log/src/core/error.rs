@@ -1,100 +1,98 @@
 //! Error handling for nebula-log
-//!
-//! This module provides unified error handling using [`NebulaError`] from the nebula-error crate.
-//! All logging operations return [`LogResult<T>`] which is an alias for `Result<T, NebulaError>`.
 
-use nebula_error::{NebulaError, Result as NebulaResult};
+use thiserror::Error;
 
-/// Type alias for Result with [`NebulaError`] for logging operations
-pub type LogResult<T> = NebulaResult<T>;
+/// Result type for logging operations
+pub type LogResult<T> = Result<T, LogError>;
 
-// ==================== Log-specific NebulaError Extensions ====================
-
-/// Extension trait for creating log-specific [`NebulaError`] instances
-pub trait LogError {
-    /// Create a configuration error
-    fn log_config_error(message: impl Into<String>) -> Self;
-
-    /// Create a filter parsing error
-    fn log_filter_error(filter: impl Into<String>, reason: impl Into<String>) -> Self;
-
-    /// Create a writer initialization error
-    fn log_writer_error(writer: impl Into<String>, reason: impl Into<String>) -> Self;
-
-    /// Create a telemetry setup error
-    fn log_telemetry_error(service: impl Into<String>, reason: impl Into<String>) -> Self;
-
-    /// Create a log format error
-    fn log_format_error(format: impl Into<String>, reason: impl Into<String>) -> Self;
-
-    /// Create a log rotation error
-    fn log_rotation_error(reason: impl Into<String>) -> Self;
+/// Error types for logging operations
+#[derive(Error, Debug)]
+pub enum LogError {
+    /// Configuration error occurred
+    #[error("Configuration error: {0}")]
+    ConfigurationError(String),
+    /// Filter parsing failed
+    #[error("Filter parsing error: {0}")]
+    FilterParsingError(String),
+    /// Writer initialization failed
+    #[error("Writer initialization error: {0}")]
+    WriterInitializationError(String),
+    /// Telemetry setup failed
+    #[error("Telemetry setup error: {0}")]
+    TelemetrySetupError(String),
+    /// Formatting error occurred
+    #[error("Format error: {0}")]
+    FormatError(String),
+    /// Log rotation failed
+    #[error("Log rotation error: {0}")]
+    LogRotationError(String),
+    /// Internal logging error
+    #[error("Internal error: {0}")]
+    InternalError(String),
+    /// I/O operation failed
+    #[error("IO error: {0}")]
+    IoError(String),
+    /// Invalid input provided
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+    /// Invalid argument provided
+    #[error("Invalid argument: {0}")]
+    InvalidArgument(String),
+    /// Invalid state encountered
+    #[error("Invalid state: {0}")]
+    InvalidState(String),
+    /// Invalid operation attempted
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
+    /// Invalid configuration provided
+    #[error("Invalid configuration: {0}")]
+    InvalidConfiguration(String),
+    /// Invalid filter specified
+    #[error("Invalid filter: {0}")]
+    InvalidFilter(String),
+    /// Invalid writer specified
+    #[error("Invalid writer: {0}")]
+    InvalidWriter(String),
 }
 
-impl LogError for NebulaError {
+impl LogError {
     /// Create a configuration error
-    fn log_config_error(message: impl Into<String>) -> Self {
-        Self::validation(format!("Configuration error: {}", message.into()))
+    pub fn configuration_error(message: impl Into<String>) -> Self {
+        Self::ConfigurationError(message.into())
     }
 
     /// Create a filter parsing error
-    fn log_filter_error(filter: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::validation(format!(
-            "Invalid filter '{}': {}",
-            filter.into(),
-            reason.into()
-        ))
+    pub fn filter_parsing_error(message: impl Into<String>) -> Self {
+        Self::FilterParsingError(message.into())
     }
 
     /// Create a writer initialization error
-    fn log_writer_error(writer: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::internal(format!(
-            "Writer '{}' error: {}",
-            writer.into(),
-            reason.into()
-        ))
+    pub fn writer_initialization_error(message: impl Into<String>) -> Self {
+        Self::WriterInitializationError(message.into())
     }
 
     /// Create a telemetry setup error
-    fn log_telemetry_error(service: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::internal(format!(
-            "Telemetry service '{}' error: {}",
-            service.into(),
-            reason.into()
-        ))
+    pub fn telemetry_setup_error(message: impl Into<String>) -> Self {
+        Self::TelemetrySetupError(message.into())
     }
 
-    /// Create a log format error
-    fn log_format_error(format: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::validation(format!(
-            "Format '{}' error: {}",
-            format.into(),
-            reason.into()
-        ))
+    /// Create a format error
+    pub fn format_error(message: impl Into<String>) -> Self {
+        Self::FormatError(message.into())
     }
 
     /// Create a log rotation error
-    fn log_rotation_error(reason: impl Into<String>) -> Self {
-        Self::internal(format!("Log rotation error: {}", reason.into()))
+    pub fn log_rotation_error(message: impl Into<String>) -> Self {
+        Self::LogRotationError(message.into())
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    /// Create an internal error
+    pub fn internal_error(message: impl Into<String>) -> Self {
+        Self::InternalError(message.into())
+    }
 
-    #[test]
-    fn test_log_error_ext() {
-        let error = NebulaError::log_config_error("Invalid log level");
-        assert!(error.is_client_error());
-        assert_eq!(error.error_code(), "VALIDATION_ERROR");
-
-        let error = NebulaError::log_filter_error("debug", "syntax error");
-        assert!(error.is_client_error());
-        assert!(error.user_message().contains("Invalid filter 'debug'"));
-
-        let error = NebulaError::log_writer_error("file", "permission denied");
-        assert!(error.is_server_error());
-        assert!(error.user_message().contains("Writer 'file' error"));
+    /// Create an I/O error
+    pub fn io_error(message: impl Into<String>) -> Self {
+        Self::IoError(message.into())
     }
 }

@@ -56,6 +56,7 @@ pub struct OptionLoadContext<'a> {
 }
 
 impl<'a> OptionLoadContext<'a> {
+    #[must_use]
     pub fn new(parameters: &'a HashMap<String, MaybeExpression<Value>>) -> Self {
         Self {
             parameters,
@@ -91,11 +92,13 @@ pub enum SelectOptions {
 
 impl SelectOptions {
     /// Create static options
+    #[must_use]
     pub fn static_options(options: Vec<SelectOption>) -> Self {
         SelectOptions::Static(options)
     }
 
     /// Create dynamic options
+    #[must_use]
     pub fn dynamic_options(loader: OptionLoader) -> Self {
         SelectOptions::Dynamic(DynamicOptions { loader })
     }

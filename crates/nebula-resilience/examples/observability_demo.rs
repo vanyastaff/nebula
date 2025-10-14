@@ -4,9 +4,9 @@
 //! resilience pattern execution with metrics, logging, and tracing.
 
 use nebula_resilience::{
-    observability::{LogLevel, LoggingHook, MetricsHook, ObservabilityHooks, PatternEvent},
     CircuitBreaker, CircuitBreakerConfig, ResilienceError, ResilienceManager, ResiliencePolicy,
     RetryStrategy,
+    observability::{LogLevel, LoggingHook, MetricsHook, ObservabilityHooks, PatternEvent},
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,7 +23,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let logging_hook = Arc::new(LoggingHook::new(LogLevel::Info));
 
     let hooks = ObservabilityHooks::new()
-        .with_hook(metrics_hook.clone() as Arc<dyn nebula_resilience::observability::ObservabilityHook>)
+        .with_hook(
+            metrics_hook.clone() as Arc<dyn nebula_resilience::observability::ObservabilityHook>
+        )
         .with_hook(logging_hook);
 
     hooks.initialize();

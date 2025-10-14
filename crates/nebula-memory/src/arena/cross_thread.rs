@@ -3,15 +3,15 @@
 //! # Safety
 //!
 //! This module provides thread-safe arena access through explicit locking:
-//! - CrossThreadArena uses Arc<Mutex<Arena>> for exclusive access across threads
-//! - CrossThreadArenaRef provides synchronized access to arena-allocated values
-//! - UnsafeCell<*mut T> requires external synchronization via Mutex guard
+//! - `CrossThreadArena` uses Arc<Mutex<Arena>> for exclusive access across threads
+//! - `CrossThreadArenaRef` provides synchronized access to arena-allocated values
+//! - `UnsafeCell`<*mut T> requires external synchronization via Mutex guard
 //! - Send/Sync implementations require T: Send for safe cross-thread transfer
 //!
 //! ## Safety Contracts
 //!
 //! - Mutex ensures exclusive access (only one thread accesses arena at a time)
-//! - CrossThreadArenaRef::with/with_mut lock arena before pointer dereferencing
+//! - `CrossThreadArenaRef::with/with_mut` lock arena before pointer dereferencing
 //! - Arena lifetime tied to Arc (values valid while any reference exists)
 //! - Send/Sync only implemented when T: Send (ensures safe value transfer)
 
@@ -25,7 +25,7 @@ use crate::error::MemoryError;
 
 /// An arena that can be safely moved between threads
 ///
-/// Unlike ThreadSafeArena which allows concurrent access, CrossThreadArena
+/// Unlike `ThreadSafeArena` which allows concurrent access, `CrossThreadArena`
 /// ensures exclusive access but can be passed between threads.
 pub struct CrossThreadArena {
     inner: Arc<Mutex<Arena>>,
@@ -33,6 +33,7 @@ pub struct CrossThreadArena {
 
 impl CrossThreadArena {
     /// Create a new cross-thread arena
+    #[must_use]
     pub fn new(config: ArenaConfig) -> Self {
         CrossThreadArena {
             inner: Arc::new(Mutex::new(Arena::new(config))),
@@ -40,11 +41,13 @@ impl CrossThreadArena {
     }
 
     /// Create with default configuration
+    #[must_use]
     pub fn default() -> Self {
         Self::new(ArenaConfig::default())
     }
 
     /// Lock the arena for exclusive access
+    #[must_use]
     pub fn lock(&self) -> CrossThreadArenaGuard<'_> {
         CrossThreadArenaGuard {
             guard: self.inner.lock(),
@@ -52,6 +55,7 @@ impl CrossThreadArena {
     }
 
     /// Try to lock the arena without blocking
+    #[must_use]
     pub fn try_lock(&self) -> Option<CrossThreadArenaGuard<'_>> {
         self.inner
             .try_lock()
@@ -64,6 +68,7 @@ impl CrossThreadArena {
     }
 
     /// Get statistics
+    #[must_use]
     pub fn stats(&self) -> ArenaStats {
         self.inner.lock().stats().snapshot().into()
     }
@@ -75,7 +80,7 @@ impl CrossThreadArena {
         let ptr = guard.alloc(value)?;
 
         Ok(CrossThreadArenaRef {
-            ptr: UnsafeCell::new(ptr as *mut T),
+            ptr: UnsafeCell::new(std::ptr::from_mut::<T>(ptr)),
             arena: Arc::clone(&self.inner),
             _phantom: PhantomData,
         })
@@ -107,7 +112,7 @@ pub struct CrossThreadArenaGuard<'a> {
     guard: parking_lot::MutexGuard<'a, Arena>,
 }
 
-impl<'a> CrossThreadArenaGuard<'a> {
+impl CrossThreadArenaGuard<'_> {
     /// Allocate bytes
     #[must_use = "allocated memory must be used"]
     pub fn alloc_bytes(&self, size: usize, align: usize) -> Result<*mut u8, MemoryError> {
@@ -202,12 +207,12 @@ unsafe impl<T: Send> Sync for CrossThreadArenaRef<T> {}
 
 impl<T: Clone> Clone for CrossThreadArenaRef<T> {
     fn clone(&self) -> Self {
-        let value = self.with(|v| v.clone());
+        let value = self.with(std::clone::Clone::clone);
         let guard = self.arena.lock();
         let ptr = guard.alloc(value).unwrap();
 
         CrossThreadArenaRef {
-            ptr: UnsafeCell::new(ptr as *mut T),
+            ptr: UnsafeCell::new(std::ptr::from_mut::<T>(ptr)),
             arena: Arc::clone(&self.arena),
             _phantom: PhantomData,
         }
@@ -220,6 +225,7 @@ pub struct CrossThreadArenaBuilder {
 }
 
 impl CrossThreadArenaBuilder {
+    #[must_use]
     pub fn new() -> Self {
         CrossThreadArenaBuilder {
             config: ArenaConfig::default(),
@@ -256,6 +262,7 @@ impl CrossThreadArenaBuilder {
         self
     }
 
+    #[must_use]
     pub fn build(self) -> CrossThreadArena {
         CrossThreadArena::new(self.config)
     }

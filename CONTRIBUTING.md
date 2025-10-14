@@ -327,7 +327,6 @@ pub fn validate_email(email: &str) -> Result<(), ValidationError> {
 nebula/
 ├── crates/
 │   ├── nebula-validator/     # Core validation library
-│   ├── nebula-error/          # Error handling
 │   ├── nebula-resource/       # Resource management
 │   └── ...                    # Other crates
 ├── examples/                  # Example code

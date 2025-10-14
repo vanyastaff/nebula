@@ -40,7 +40,7 @@ pub struct IpAddress {
 
 impl IpAddress {
     /// Creates a new IP address validator (allows both IPv4 and IPv6).
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             allow_v4: true,
@@ -65,7 +65,7 @@ impl IpAddress {
     }
 
     /// Check if address is private (RFC 1918, RFC 4193).
-    #[must_use] 
+    #[must_use]
     pub fn is_private(&self, addr: &IpAddr) -> bool {
         match addr {
             IpAddr::V4(ipv4) => {
@@ -84,7 +84,7 @@ impl IpAddress {
     }
 
     /// Check if address is loopback.
-    #[must_use] 
+    #[must_use]
     pub fn is_loopback(&self, addr: &IpAddr) -> bool {
         addr.is_loopback()
     }

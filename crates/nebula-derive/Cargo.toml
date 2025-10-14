@@ -31,5 +31,4 @@ trybuild = "1.0"
 nebula-validator = { path = "../nebula-validator" }
 nebula-parameter = { path = "../nebula-parameter" }
 
-[lints]
-workspace = true
+

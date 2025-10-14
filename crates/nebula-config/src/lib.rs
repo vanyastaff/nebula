@@ -27,7 +27,6 @@
 //! ```
 
 #![deny(unused_must_use)]
-#![warn(missing_docs)]
 // Pragmatic clippy allows for a large, complex configuration system
 // These are intentional design decisions, not oversights:
 
@@ -91,7 +90,6 @@ pub mod prelude {
     };
 
     // Re-export nebula ecosystem types for convenience
-    pub use nebula_error::NebulaError;
     pub use nebula_log::{debug, error, info, warn};
     pub use nebula_value::Value as NebulaValue;
 
@@ -247,7 +245,7 @@ pub mod utils {
                 let docs = YamlLoader::load_from_str(content).map_err(|e| {
                     ConfigError::parse_error(
                         std::path::PathBuf::from("string"),
-                        format!("YAML parse error: {:?}", e),
+                        format!("YAML parse error: {e:?}"),
                     )
                 })?;
                 if docs.is_empty() {
@@ -298,6 +296,12 @@ pub mod utils {
                             return Err(ConfigError::parse_error(
                                 std::path::PathBuf::from("string"),
                                 "Bad YAML value encountered",
+                            ));
+                        }
+                        Yaml::Alias(_) => {
+                            return Err(ConfigError::parse_error(
+                                std::path::PathBuf::from("string"),
+                                "Unsupported YAML type",
                             ));
                         }
                         _ => {
@@ -385,10 +389,10 @@ pub mod utils {
                     if let Ok(int_val) = v.parse::<i64>() {
                         return serde_json::Value::Number(serde_json::Number::from(int_val));
                     }
-                    if let Ok(float_val) = v.parse::<f64>() {
-                        if let Some(num) = serde_json::Number::from_f64(float_val) {
-                            return serde_json::Value::Number(num);
-                        }
+                    if let Ok(float_val) = v.parse::<f64>()
+                        && let Some(num) = serde_json::Number::from_f64(float_val)
+                    {
+                        return serde_json::Value::Number(num);
                     }
                     serde_json::Value::String(v.to_string())
                 }

@@ -5,7 +5,7 @@ use nebula_value::Value;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Temporary stub for DisplayContext
+/// Temporary stub for `DisplayContext`
 #[derive(Debug, Clone, Default)]
 pub struct DisplayContext {
     /// Map of parameter keys to their current values
@@ -13,6 +13,7 @@ pub struct DisplayContext {
 }
 
 impl DisplayContext {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -23,12 +24,13 @@ impl DisplayContext {
         self
     }
 
+    #[must_use]
     pub fn get(&self, key: &ParameterKey) -> Option<&Value> {
         self.values.get(key)
     }
 }
 
-/// Temporary stub for ParameterDisplay
+/// Temporary stub for `ParameterDisplay`
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParameterDisplay {
     // Placeholder - empty struct for now
@@ -37,18 +39,22 @@ pub struct ParameterDisplay {
 }
 
 impl ParameterDisplay {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn should_display(&self, _context: &HashMap<ParameterKey, Value>) -> bool {
         true
     }
 
+    #[must_use]
     pub fn get_dependencies(&self) -> Vec<ParameterKey> {
         Vec::new()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         true
     }
@@ -62,7 +68,7 @@ impl ParameterDisplay {
     }
 }
 
-/// Temporary stub for ParameterCondition
+/// Temporary stub for `ParameterCondition`
 #[derive(Debug, Clone)]
 pub struct ParameterCondition {
     // Placeholder
@@ -74,7 +80,7 @@ impl ParameterCondition {
     }
 }
 
-/// Temporary stub for ParameterDisplayError
+/// Temporary stub for `ParameterDisplayError`
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Display error: {message}")]
 pub struct ParameterDisplayError {

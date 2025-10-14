@@ -7,15 +7,7 @@ pub mod builder;
 pub mod config;
 
 pub use builder::{
-    BulkheadConfigBuilder,
-    CircuitBreakerConfigBuilder,
-    DynamicConfigBuilder,
-    RetryConfigBuilder,
+    BulkheadConfigBuilder, CircuitBreakerConfigBuilder, DynamicConfigBuilder, RetryConfigBuilder,
 };
 
-pub use config::{
-    DynamicConfig,
-    DynamicConfigurable,
-    ResiliencePresets,
-};
-
+pub use config::{DynamicConfig, DynamicConfigurable, ResiliencePresets};

@@ -3,23 +3,23 @@
 //! # Safety
 //!
 //! This module implements a thread-safe LIFO stack allocator:
-//! - Memory buffer wrapped in SyncUnsafeCell for interior mutability
+//! - Memory buffer wrapped in `SyncUnsafeCell` for interior mutability
 //! - Atomic top pointer for lock-free allocation via CAS
 //! - Deallocations only supported for most recent allocation (stack discipline)
 //! - Markers enable batch deallocation by restoring stack position
 //!
 //! ## Invariants
 //!
-//! - All pointers within [start_addr, end_addr) bounds
+//! - All pointers within [`start_addr`, `end_addr`) bounds
 //! - top pointer moves monotonically upward (or resets to start)
-//! - Allocations aligned properly via align_up
+//! - Allocations aligned properly via `align_up`
 //! - CAS loop ensures exclusive ownership of allocated ranges
-//! - try_pop verifies pointer matches most recent allocation
-//! - restore_to_marker validates marker is within valid range
+//! - `try_pop` verifies pointer matches most recent allocation
+//! - `restore_to_marker` validates marker is within valid range
 //!
 //! ## Thread Safety
 //!
-//! - Atomic top pointer with AcqRel ordering for allocation CAS
+//! - Atomic top pointer with `AcqRel` ordering for allocation CAS
 //! - Acquire loads ensure visibility of previous allocations
 //! - Release stores ensure new allocations visible to other threads
 //! - Statistics tracked with atomic operations (Relaxed ordering)
@@ -28,7 +28,7 @@
 //!
 //! - Acquire: Loading top pointer (read barrier, see previous writes)
 //! - Release: Storing top pointer (write barrier, publish changes)
-//! - AcqRel: CAS success (both acquire and release semantics)
+//! - `AcqRel`: CAS success (both acquire and release semantics)
 //! - Relaxed: Statistics updates (ordering not critical)
 
 use core::alloc::Layout;
@@ -125,7 +125,7 @@ impl StackAllocator {
         // Wrap in SyncUnsafeCell for interior mutability
         let boxed_slice = vec.into_boxed_slice();
         let len = boxed_slice.len();
-        let ptr = Box::into_raw(boxed_slice) as *mut u8;
+        let ptr = Box::into_raw(boxed_slice).cast::<u8>();
         // SAFETY: Transmuting Box<[u8]> to Box<SyncUnsafeCell<[u8]>>.
         // - SyncUnsafeCell is repr(transparent), has same layout as UnsafeCell<T>
         // - UnsafeCell<T> is repr(transparent), has same layout as T
@@ -179,12 +179,13 @@ impl StackAllocator {
     }
 
     /// Creates a stack allocator from a pre-allocated boxed slice
+    #[must_use]
     pub fn from_boxed_slice(memory: Box<[u8]>) -> Self {
         let capacity = memory.len();
 
         // Wrap in SyncUnsafeCell for interior mutability
         let len = memory.len();
-        let ptr = Box::into_raw(memory) as *mut u8;
+        let ptr = Box::into_raw(memory).cast::<u8>();
         // SAFETY: Transmuting Box<[u8]> to Box<SyncUnsafeCell<[u8]>>.
         // - SyncUnsafeCell is repr(transparent) over UnsafeCell
         // - UnsafeCell is repr(transparent) over T
@@ -357,38 +358,34 @@ impl StackAllocator {
                 )
             };
 
-            match result {
-                Ok(_) => {
-                    // Update statistics if tracking is enabled
-                    if self.config.track_stats {
-                        self.total_allocs.fetch_add(1, Ordering::Relaxed);
-                        let current_used = new_top - self.start_addr;
-                        atomic_max(&self.peak_usage, current_used);
-                    }
-
-                    // Fill with alloc pattern if debugging
-                    // SAFETY: Writing pattern to newly allocated memory.
-                    // - CAS success guarantees exclusive ownership of [aligned_addr, new_top)
-                    // - aligned_addr is valid (within [start_addr, end_addr), checked above)
-                    // - size bytes available (new_top = aligned_addr + size, validated)
-                    // - Memory is ours to initialize
-                    if let Some(pattern) = self.config.alloc_pattern {
-                        unsafe {
-                            ptr::write_bytes(aligned_addr as *mut u8, pattern, size);
-                        }
-                    }
-
-                    // Convert address to NonNull with explicit check
-                    // aligned_addr is non-zero (start_addr > 0), but use explicit check for safety
-                    return NonNull::new(aligned_addr as *mut u8);
+            if result.is_ok() {
+                // Update statistics if tracking is enabled
+                if self.config.track_stats {
+                    self.total_allocs.fetch_add(1, Ordering::Relaxed);
+                    let current_used = new_top - self.start_addr;
+                    atomic_max(&self.peak_usage, current_used);
                 }
-                Err(_) => {
-                    // Increment attempts and use backoff
-                    attempts += 1;
-                    if let Some(ref mut b) = backoff {
-                        b.spin();
+
+                // Fill with alloc pattern if debugging
+                // SAFETY: Writing pattern to newly allocated memory.
+                // - CAS success guarantees exclusive ownership of [aligned_addr, new_top)
+                // - aligned_addr is valid (within [start_addr, end_addr), checked above)
+                // - size bytes available (new_top = aligned_addr + size, validated)
+                // - Memory is ours to initialize
+                if let Some(pattern) = self.config.alloc_pattern {
+                    unsafe {
+                        ptr::write_bytes(aligned_addr as *mut u8, pattern, size);
                     }
                 }
+
+                // Convert address to NonNull with explicit check
+                // aligned_addr is non-zero (start_addr > 0), but use explicit check for safety
+                return NonNull::new(aligned_addr as *mut u8);
+            }
+            // Increment attempts and use backoff
+            attempts += 1;
+            if let Some(ref mut b) = backoff {
+                b.spin();
             }
         }
     }
@@ -482,7 +479,7 @@ unsafe impl Allocator for StackAllocator {
             //   copy_nonoverlapping which requires non-overlap. However, if allocate
             //   succeeded, new_ptr is beyond old ptr (stack grows up), so no overlap.
             unsafe {
-                ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr() as *mut u8, copy_size);
+                ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr().cast::<u8>(), copy_size);
             }
         }
 

@@ -6,8 +6,6 @@ use crate::core::{
     Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
     ParameterMetadata, ParameterValidation, Validatable,
 };
-use nebula_expression::MaybeExpression;
-use nebula_value::Value;
 
 /// Parameter for date selection
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
@@ -137,33 +135,30 @@ impl DateParameter {
         if date.len() == 10 && date.chars().nth(4) == Some('-') && date.chars().nth(7) == Some('-')
         {
             let parts: Vec<&str> = date.split('-').collect();
-            if parts.len() == 3 {
-                if let (Ok(year), Ok(month), Ok(day)) = (
+            if parts.len() == 3
+                && let (Ok(year), Ok(month), Ok(day)) = (
                     parts[0].parse::<u32>(),
                     parts[1].parse::<u32>(),
                     parts[2].parse::<u32>(),
-                ) {
-                    return year >= 1900
-                        && year <= 2100
-                        && month >= 1
-                        && month <= 12
-                        && day >= 1
-                        && day <= 31;
-                }
+                )
+            {
+                return (1900..=2100).contains(&year)
+                    && (1..=12).contains(&month)
+                    && (1..=31).contains(&day);
             }
         }
 
         // Check against min/max dates if specified
         if let Some(options) = &self.options {
-            if let Some(min_date) = &options.min_date {
-                if date < min_date.as_str() {
-                    return false;
-                }
+            if let Some(min_date) = &options.min_date
+                && date < min_date.as_str()
+            {
+                return false;
             }
-            if let Some(max_date) = &options.max_date {
-                if date > max_date.as_str() {
-                    return false;
-                }
+            if let Some(max_date) = &options.max_date
+                && date > max_date.as_str()
+            {
+                return false;
             }
         }
 
@@ -171,6 +166,7 @@ impl DateParameter {
     }
 
     /// Get the date format for display
+    #[must_use]
     pub fn get_format(&self) -> String {
         self.options
             .as_ref()
@@ -180,10 +176,8 @@ impl DateParameter {
     }
 
     /// Check if this date parameter includes time
+    #[must_use]
     pub fn includes_time(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.include_time)
-            .unwrap_or(false)
+        self.options.as_ref().is_some_and(|opts| opts.include_time)
     }
 }

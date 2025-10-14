@@ -102,11 +102,7 @@ fn using_builders() -> ValueResult<()> {
     println!("4. Using Builders:");
 
     // ArrayBuilder
-    let array = ArrayBuilder::new()
-        .push(1)
-        .push(2)
-        .push(3)
-        .build()?;
+    let array = ArrayBuilder::new().push(1).push(2).push(3).build()?;
 
     println!("  Built array: {} items", array.len());
 

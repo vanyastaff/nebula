@@ -10,11 +10,11 @@ pub mod object;
 pub mod string;
 pub mod util;
 
+use crate::ExpressionError;
 use crate::context::EvaluationContext;
 use crate::core::ast::Expr;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
-use nebula_error::NebulaError;
 use nebula_value::Value;
 use std::collections::HashMap;
 
@@ -62,7 +62,7 @@ impl BuiltinRegistry {
         let func = self
             .functions
             .get(name)
-            .ok_or_else(|| NebulaError::expression_function_not_found(name))?;
+            .ok_or_else(|| ExpressionError::expression_function_not_found(name))?;
 
         func(args, evaluator, context)
     }
@@ -179,7 +179,7 @@ pub(crate) fn check_arg_count(
     expected: usize,
 ) -> ExpressionResult<()> {
     if args.len() != expected {
-        Err(NebulaError::expression_invalid_argument(
+        Err(ExpressionError::expression_invalid_argument(
             func_name,
             format!("Expected {} arguments, got {}", expected, args.len()),
         ))
@@ -195,7 +195,7 @@ pub(crate) fn check_min_arg_count(
     min: usize,
 ) -> ExpressionResult<()> {
     if args.len() < min {
-        Err(NebulaError::expression_invalid_argument(
+        Err(ExpressionError::expression_invalid_argument(
             func_name,
             format!("Expected at least {} arguments, got {}", min, args.len()),
         ))
@@ -209,7 +209,7 @@ pub(crate) fn check_min_arg_count(
 pub(crate) fn extract_lambda(arg: &Expr) -> ExpressionResult<(&str, &Expr)> {
     match arg {
         Expr::Lambda { param, body } => Ok((param, body)),
-        _ => Err(NebulaError::expression_invalid_argument(
+        _ => Err(ExpressionError::expression_invalid_argument(
             "lambda",
             "Expected a lambda expression",
         )),
@@ -225,14 +225,14 @@ pub(crate) fn get_string_arg<'a>(
 ) -> ExpressionResult<&'a str> {
     args.get(index)
         .ok_or_else(|| {
-            NebulaError::expression_invalid_argument(
+            ExpressionError::expression_invalid_argument(
                 func_name,
                 format!("Missing argument '{}' at position {}", arg_name, index),
             )
         })?
         .as_str()
         .ok_or_else(|| {
-            NebulaError::expression_invalid_argument(
+            ExpressionError::expression_invalid_argument(
                 func_name,
                 format!(
                     "Argument '{}' must be a string, got {}",
@@ -252,14 +252,14 @@ pub(crate) fn get_int_arg(
 ) -> ExpressionResult<i64> {
     args.get(index)
         .ok_or_else(|| {
-            NebulaError::expression_invalid_argument(
+            ExpressionError::expression_invalid_argument(
                 func_name,
                 format!("Missing argument '{}' at position {}", arg_name, index),
             )
         })?
         .to_integer()
         .map_err(|_| {
-            NebulaError::expression_invalid_argument(
+            ExpressionError::expression_invalid_argument(
                 func_name,
                 format!(
                     "Argument '{}' must be an integer, got {}",
@@ -278,14 +278,14 @@ pub(crate) fn get_number_arg(
     arg_name: &str,
 ) -> ExpressionResult<f64> {
     let val = args.get(index).ok_or_else(|| {
-        NebulaError::expression_invalid_argument(
+        ExpressionError::expression_invalid_argument(
             func_name,
             format!("Missing argument '{}' at position {}", arg_name, index),
         )
     })?;
 
     val.to_float().map_err(|_| {
-        NebulaError::expression_invalid_argument(
+        ExpressionError::expression_invalid_argument(
             func_name,
             format!(
                 "Argument '{}' must be a number, got {}",
@@ -305,14 +305,14 @@ pub(crate) fn get_array_arg<'a>(
 ) -> ExpressionResult<&'a nebula_value::Array> {
     args.get(index)
         .ok_or_else(|| {
-            NebulaError::expression_invalid_argument(
+            ExpressionError::expression_invalid_argument(
                 func_name,
                 format!("Missing argument '{}' at position {}", arg_name, index),
             )
         })?
         .as_array()
         .ok_or_else(|| {
-            NebulaError::expression_invalid_argument(
+            ExpressionError::expression_invalid_argument(
                 func_name,
                 format!(
                     "Argument '{}' must be an array, got {}",
@@ -332,14 +332,14 @@ pub(crate) fn get_object_arg<'a>(
 ) -> ExpressionResult<&'a nebula_value::Object> {
     args.get(index)
         .ok_or_else(|| {
-            NebulaError::expression_invalid_argument(
+            ExpressionError::expression_invalid_argument(
                 func_name,
                 format!("Missing argument '{}' at position {}", arg_name, index),
             )
         })?
         .as_object()
         .ok_or_else(|| {
-            NebulaError::expression_invalid_argument(
+            ExpressionError::expression_invalid_argument(
                 func_name,
                 format!(
                     "Argument '{}' must be an object, got {}",

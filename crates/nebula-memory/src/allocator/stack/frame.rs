@@ -20,6 +20,7 @@ impl<'a> StackFrame<'a> {
     }
 
     /// Gets the underlying allocator
+    #[must_use]
     pub fn allocator(&self) -> &'a StackAllocator {
         self.allocator
     }
@@ -31,7 +32,7 @@ impl<'a> StackFrame<'a> {
     }
 }
 
-impl<'a> Drop for StackFrame<'a> {
+impl Drop for StackFrame<'_> {
     fn drop(&mut self) {
         unsafe {
             let _ = self.allocator.restore_to_marker(self.marker);

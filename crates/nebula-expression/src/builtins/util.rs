@@ -1,10 +1,10 @@
 //! Utility functions
 
 use super::check_arg_count;
+use crate::ExpressionError;
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
-use nebula_error::NebulaError;
 use nebula_value::Value;
 
 /// Get the length of a string or array
@@ -17,7 +17,7 @@ pub fn length(
     match &args[0] {
         Value::Text(t) => Ok(Value::integer(t.len() as i64)),
         Value::Array(arr) => Ok(Value::integer(arr.len() as i64)),
-        _ => Err(NebulaError::expression_type_error(
+        _ => Err(ExpressionError::expression_type_error(
             "string or array",
             args[0].kind().name(),
         )),
@@ -92,7 +92,9 @@ pub fn uuid(
     _eval: &Evaluator,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
-    Err(nebula_error::NebulaError::expression_function_not_found(
-        "uuid (feature 'uuid' not enabled)",
-    ))
+    Err(
+        nebula_error::ExpressionError::expression_function_not_found(
+            "uuid (feature 'uuid' not enabled)",
+        ),
+    )
 }

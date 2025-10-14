@@ -65,7 +65,7 @@ where
     tokio_timeout(duration, future)
 }
 
-/// Execute a future with a timeout, converting errors to ResilienceError
+/// Execute a future with a timeout, converting errors to `ResilienceError`
 ///
 /// This variant converts both timeout and operation errors into `ResilienceError`.
 /// When the operation completes with an error, it's wrapped as a `Custom` error.
@@ -92,7 +92,7 @@ where
     match tokio_timeout(duration, future).await {
         Ok(Ok(result)) => Ok(result),
         Ok(Err(e)) => Err(ResilienceError::Custom {
-            message: format!("Operation failed: {}", e),
+            message: format!("Operation failed: {e}"),
             retryable: false,
             source: None,
         }),

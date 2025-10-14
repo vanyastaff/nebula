@@ -16,10 +16,11 @@ use {alloc::string::String, core::time::Duration};
 use crate::error::{MemoryError, MemoryResult};
 
 /// Eviction policy for cache entries
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EvictionPolicy {
     /// Least Recently Used - evict entries that haven't been accessed in the
     /// longest time
+    #[default]
     LRU,
     /// Least Frequently Used - evict entries that are accessed least frequently
     LFU,
@@ -31,12 +32,6 @@ pub enum EvictionPolicy {
     TTL,
     /// Adaptive - dynamically choose policy based on access patterns
     Adaptive,
-}
-
-impl Default for EvictionPolicy {
-    fn default() -> Self {
-        EvictionPolicy::LRU
-    }
 }
 
 /// Configuration for cache implementations
@@ -79,6 +74,7 @@ impl Default for CacheConfig {
 
 impl CacheConfig {
     /// Create a new cache configuration
+    #[must_use]
     pub fn new(max_entries: usize) -> Self {
         Self {
             max_entries,
@@ -138,6 +134,7 @@ impl CacheConfig {
     }
 
     /// Preset configuration for high-throughput scenarios
+    #[must_use]
     pub fn for_high_throughput(max_entries: usize) -> Self {
         Self::new(max_entries)
             .with_policy(EvictionPolicy::LFU)
@@ -147,6 +144,7 @@ impl CacheConfig {
     }
 
     /// Preset configuration for memory-constrained environments
+    #[must_use]
     pub fn for_memory_constrained(max_entries: usize) -> Self {
         Self::new(max_entries)
             .with_policy(EvictionPolicy::LRU)
@@ -157,6 +155,7 @@ impl CacheConfig {
 
     /// Preset configuration for time-sensitive caching
     #[cfg(feature = "std")]
+    #[must_use]
     pub fn for_time_sensitive(max_entries: usize, ttl: Duration) -> Self {
         Self::new(max_entries)
             .with_policy(EvictionPolicy::TTL)
@@ -186,16 +185,16 @@ impl CacheConfig {
         }
 
         #[cfg(feature = "std")]
-        if let Some(ttl) = self.ttl {
-            if ttl.as_nanos() == 0 {
-                return Err(MemoryError::invalid_config("configuration error"));
-            }
+        if let Some(ttl) = self.ttl
+            && ttl.as_nanos() == 0
+        {
+            return Err(MemoryError::invalid_config("configuration error"));
         }
 
-        if let Some(initial) = self.initial_capacity {
-            if initial > self.max_entries {
-                return Err(MemoryError::invalid_config("configuration error"));
-            }
+        if let Some(initial) = self.initial_capacity
+            && initial > self.max_entries
+        {
+            return Err(MemoryError::invalid_config("configuration error"));
         }
 
         #[cfg(feature = "std")]
@@ -204,35 +203,32 @@ impl CacheConfig {
                 return Err(MemoryError::invalid_config("configuration error"));
             }
 
-            if let Some(ttl) = self.ttl {
-                if cleanup_interval >= ttl {
-                    return Err(MemoryError::invalid_config("configuration error"));
-                }
+            if let Some(ttl) = self.ttl
+                && cleanup_interval >= ttl
+            {
+                return Err(MemoryError::invalid_config("configuration error"));
             }
         }
 
         // Validate policy-specific requirements
-        match self.policy {
-            EvictionPolicy::TTL => {
-                if self.ttl.is_none() {
-                    return Err(MemoryError::invalid_config("configuration error"));
-                }
-            }
-            _ => {}
+        if self.policy == EvictionPolicy::TTL && self.ttl.is_none() {
+            return Err(MemoryError::invalid_config("configuration error"));
         }
 
         Ok(())
     }
 
     /// Get the recommended initial capacity
+    #[must_use]
     pub fn effective_initial_capacity(&self) -> usize {
-        self.initial_capacity.unwrap_or_else(|| {
+        self.initial_capacity.unwrap_or({
             // Calculate based on load factor and max entries
             ((self.max_entries as f32) * self.load_factor) as usize
         })
     }
 
     /// Check if the configuration is optimized for the given scenario
+    #[must_use]
     pub fn is_optimized_for_scenario(&self, scenario: CacheScenario) -> bool {
         match scenario {
             CacheScenario::HighThroughput => {
@@ -255,7 +251,7 @@ impl CacheConfig {
                     && self.load_factor <= 0.6
                     && self
                         .initial_capacity
-                        .map_or(false, |cap| cap <= self.max_entries / 4)
+                        .is_some_and(|cap| cap <= self.max_entries / 4)
             }
         }
     }
@@ -297,11 +293,13 @@ pub struct CacheMetrics {
 
 impl CacheMetrics {
     /// Create a new empty metrics object
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Calculate the hit rate (0.0-1.0)
+    #[must_use]
     pub fn hit_rate(&self) -> f64 {
         let total = self.hits + self.misses;
         if total == 0 {
@@ -312,11 +310,13 @@ impl CacheMetrics {
     }
 
     /// Calculate the miss rate (0.0-1.0)
+    #[must_use]
     pub fn miss_rate(&self) -> f64 {
         1.0 - self.hit_rate()
     }
 
     /// Calculate average compute time per miss (nanoseconds)
+    #[must_use]
     pub fn avg_compute_time_ns(&self) -> u64 {
         if self.misses > 0 {
             self.compute_time_ns / self.misses as u64
@@ -327,6 +327,7 @@ impl CacheMetrics {
 
     /// Calculate cache efficiency score (0.0-100.0)
     /// Higher score means better performance
+    #[must_use]
     pub fn efficiency_score(&self) -> f64 {
         let hit_rate = self.hit_rate();
         let compute_penalty = if self.misses > 0 {
@@ -341,11 +342,13 @@ impl CacheMetrics {
     }
 
     /// Get total number of cache operations
+    #[must_use]
     pub fn total_operations(&self) -> usize {
         self.hits + self.misses
     }
 
     /// Calculate eviction rate (evictions per operation)
+    #[must_use]
     pub fn eviction_rate(&self) -> f64 {
         let total_ops = self.total_operations();
         if total_ops > 0 {
@@ -378,6 +381,7 @@ impl CacheMetrics {
     }
 
     /// Generate a performance report
+    #[must_use]
     pub fn performance_report(&self) -> CachePerformanceReport {
         CachePerformanceReport {
             hit_rate: self.hit_rate(),

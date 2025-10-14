@@ -193,29 +193,29 @@ impl MultiSelectParameter {
 
         // Check min/max constraints
         if let Some(options) = &self.multi_select_options {
-            if let Some(min) = options.min_selections {
-                if selections.len() < min {
-                    return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!(
-                            "Must select at least {} options, got {}",
-                            min,
-                            selections.len()
-                        ),
-                    });
-                }
+            if let Some(min) = options.min_selections
+                && selections.len() < min
+            {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!(
+                        "Must select at least {} options, got {}",
+                        min,
+                        selections.len()
+                    ),
+                });
             }
-            if let Some(max) = options.max_selections {
-                if selections.len() > max {
-                    return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!(
-                            "Must select at most {} options, got {}",
-                            max,
-                            selections.len()
-                        ),
-                    });
-                }
+            if let Some(max) = options.max_selections
+                && selections.len() > max
+            {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!(
+                        "Must select at most {} options, got {}",
+                        max,
+                        selections.len()
+                    ),
+                });
             }
         }
 
@@ -235,16 +235,19 @@ impl MultiSelectParameter {
     }
 
     /// Get option by value
+    #[must_use]
     pub fn get_option_by_value(&self, value: &str) -> Option<&SelectOption> {
         self.options.iter().find(|option| option.value == value)
     }
 
     /// Get option by key
+    #[must_use]
     pub fn get_option_by_key(&self, key: &str) -> Option<&SelectOption> {
         self.options.iter().find(|option| option.key == key)
     }
 
     /// Get display names for current selections
+    #[must_use]
     pub fn get_display_names(&self) -> Vec<String> {
         if let Some(selections) = &self.value {
             selections
@@ -266,7 +269,7 @@ impl MultiSelectParameter {
         if !self.is_valid_option(&value) {
             return Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
-                reason: format!("Value '{}' is not a valid option", value),
+                reason: format!("Value '{value}' is not a valid option"),
             });
         }
 
@@ -314,45 +317,49 @@ impl MultiSelectParameter {
     }
 
     /// Check if a value is currently selected
+    #[must_use]
     pub fn is_selected(&self, value: &str) -> bool {
         self.value
             .as_ref()
-            .map(|selections| selections.contains(&value.to_string()))
-            .unwrap_or(false)
+            .is_some_and(|selections| selections.contains(&value.to_string()))
     }
 
     /// Get the number of current selections
+    #[must_use]
     pub fn selection_count(&self) -> usize {
-        self.value.as_ref().map(|v| v.len()).unwrap_or(0)
+        self.value.as_ref().map_or(0, std::vec::Vec::len)
     }
 
     /// Check if minimum selections requirement is met
+    #[must_use]
     pub fn meets_minimum(&self) -> bool {
-        if let Some(options) = &self.multi_select_options {
-            if let Some(min) = options.min_selections {
-                return self.selection_count() >= min;
-            }
+        if let Some(options) = &self.multi_select_options
+            && let Some(min) = options.min_selections
+        {
+            return self.selection_count() >= min;
         }
         true // No minimum requirement
     }
 
     /// Check if maximum selections limit is exceeded
+    #[must_use]
     pub fn exceeds_maximum(&self) -> bool {
-        if let Some(options) = &self.multi_select_options {
-            if let Some(max) = options.max_selections {
-                return self.selection_count() > max;
-            }
+        if let Some(options) = &self.multi_select_options
+            && let Some(max) = options.max_selections
+        {
+            return self.selection_count() > max;
         }
         false // No maximum limit
     }
 
     /// Get available slots for more selections
+    #[must_use]
     pub fn remaining_slots(&self) -> Option<usize> {
-        if let Some(options) = &self.multi_select_options {
-            if let Some(max) = options.max_selections {
-                let current = self.selection_count();
-                return Some(max.saturating_sub(current));
-            }
+        if let Some(options) = &self.multi_select_options
+            && let Some(max) = options.max_selections
+        {
+            let current = self.selection_count();
+            return Some(max.saturating_sub(current));
         }
         None // No limit
     }

@@ -27,21 +27,12 @@ use crate::cache::compute::{CacheEntry, CacheKey};
 use super::{EvictionEntry, EvictionPolicy, VictimSelector};
 
 /// Configuration for Random eviction policy
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RandomConfig {
     /// Enable seeded random for reproducibility in tests
     pub seeded: bool,
     /// Seed value if seeded mode is enabled
     pub seed: u64,
-}
-
-impl Default for RandomConfig {
-    fn default() -> Self {
-        Self {
-            seeded: false,
-            seed: 0,
-        }
-    }
 }
 
 /// Random cache eviction policy
@@ -77,11 +68,13 @@ where
     K: CacheKey,
 {
     /// Create a new random eviction policy
+    #[must_use]
     pub fn new() -> Self {
         Self::with_config(RandomConfig::default())
     }
 
     /// Create a new random policy with custom configuration
+    #[must_use]
     pub fn with_config(config: RandomConfig) -> Self {
         Self {
             _phantom: PhantomData,
@@ -91,11 +84,13 @@ where
     }
 
     /// Create a seeded random policy for reproducible behavior
+    #[must_use]
     pub fn with_seed(seed: u64) -> Self {
         Self::with_config(RandomConfig { seeded: true, seed })
     }
 
     /// Get the number of tracked keys
+    #[must_use]
     pub fn key_count(&self) -> usize {
         self.keys.len()
     }
@@ -136,7 +131,7 @@ where
         self
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Random"
     }
 }
@@ -146,7 +141,7 @@ where
     K: CacheKey + Send + Sync,
     V: Send + Sync,
 {
-    fn select_victim<'a>(&self, entries: &[EvictionEntry<'a, K, V>]) -> Option<K> {
+    fn select_victim(&self, entries: &[EvictionEntry<'_, K, V>]) -> Option<K> {
         if entries.is_empty() {
             return None;
         }
@@ -186,11 +181,8 @@ mod tests {
         let key1 = "key1".to_string();
         let key2 = "key2".to_string();
         let key3 = "key3".to_string();
-        let entries: Vec<EvictionEntry<String, i32>> = vec![
-            (&key1, &entry),
-            (&key2, &entry),
-            (&key3, &entry),
-        ];
+        let entries: Vec<EvictionEntry<String, i32>> =
+            vec![(&key1, &entry), (&key2, &entry), (&key3, &entry)];
 
         // Should select one of the keys
         let victim = policy.as_victim_selector().select_victim(&entries);

@@ -101,7 +101,7 @@ impl<E> CombinatorError<E> {
     }
 
     /// Creates a NOT error when validator unexpectedly passes.
-    #[must_use] 
+    #[must_use]
     pub fn not_passed() -> Self {
         Self::NotValidatorPassed
     }
@@ -123,7 +123,7 @@ impl<E> CombinatorError<E> {
     }
 
     /// Creates a required value missing error.
-    #[must_use] 
+    #[must_use]
     pub fn required_missing() -> Self {
         Self::RequiredValueMissing
     }
@@ -134,7 +134,7 @@ impl<E> CombinatorError<E> {
     }
 
     /// Creates a multiple failures error.
-    #[must_use] 
+    #[must_use]
     pub fn multiple_failed(errors: Vec<E>) -> Self {
         Self::MultipleFailed(errors)
     }

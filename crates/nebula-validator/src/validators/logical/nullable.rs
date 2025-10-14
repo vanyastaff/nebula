@@ -33,7 +33,7 @@ impl<T> TypedValidator for Required<T> {
     }
 }
 
-#[must_use] 
+#[must_use]
 pub fn required<T>() -> Required<T> {
     Required {
         _phantom: PhantomData,
@@ -48,7 +48,7 @@ pub fn required<T>() -> Required<T> {
 /// This is an alias for Required.
 pub type NotNull<T> = Required<T>;
 
-#[must_use] 
+#[must_use]
 pub fn not_null<T>() -> NotNull<T> {
     Required {
         _phantom: PhantomData,

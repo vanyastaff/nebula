@@ -28,6 +28,7 @@ pub struct AllocatorStats {
 
 impl AllocatorStats {
     /// Creates a new empty stats object
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             allocated_bytes: 0,
@@ -47,6 +48,7 @@ impl AllocatorStats {
     }
 
     /// Calculate the average allocation size
+    #[must_use]
     pub fn average_allocation_size(&self) -> Option<f64> {
         if self.allocation_count > 0 {
             Some(self.total_bytes_allocated as f64 / self.allocation_count as f64)
@@ -56,12 +58,14 @@ impl AllocatorStats {
     }
 
     /// Calculate the net allocated memory (allocations - deallocations)
+    #[must_use]
     pub fn net_allocated_bytes(&self) -> isize {
         self.allocated_bytes as isize
     }
 
     /// Calculate current allocation efficiency (0.0 to 1.0)
     /// Higher values indicate fewer failed allocations
+    #[must_use]
     pub fn allocation_efficiency(&self) -> f64 {
         let total_attempts = self.allocation_count + self.failed_allocations;
         if total_attempts > 0 {
@@ -73,6 +77,7 @@ impl AllocatorStats {
 
     /// Calculate memory turnover rate
     /// High values indicate frequent alloc/dealloc cycles
+    #[must_use]
     pub fn memory_turnover_rate(&self) -> Option<f64> {
         if self.peak_allocated_bytes > 0 {
             Some(self.total_bytes_allocated as f64 / self.peak_allocated_bytes as f64)
@@ -82,17 +87,20 @@ impl AllocatorStats {
     }
 
     /// Check if there are any active allocations
+    #[must_use]
     pub fn has_active_allocations(&self) -> bool {
         self.allocation_count > self.deallocation_count
     }
 
     /// Get the balance of allocations vs deallocations
+    #[must_use]
     pub fn allocation_balance(&self) -> isize {
         self.allocation_count as isize - self.deallocation_count as isize
     }
 
     /// Calculate fragmentation indicator (imperfect but useful)
     /// Lower values indicate better memory usage
+    #[must_use]
     pub fn fragmentation_indicator(&self) -> Option<f64> {
         if self.peak_allocated_bytes > 0 && self.allocated_bytes > 0 {
             Some(1.0 - (self.allocated_bytes as f64 / self.peak_allocated_bytes as f64))
@@ -119,7 +127,7 @@ impl core::fmt::Display for AllocatorStats {
         writeln!(f, "  Failed allocations: {}", self.failed_allocations)?;
 
         if let Some(avg) = self.average_allocation_size() {
-            writeln!(f, "  Average allocation size: {:.2} bytes", avg)?;
+            writeln!(f, "  Average allocation size: {avg:.2} bytes")?;
         }
 
         writeln!(
@@ -129,7 +137,7 @@ impl core::fmt::Display for AllocatorStats {
         )?;
 
         if let Some(turnover) = self.memory_turnover_rate() {
-            writeln!(f, "  Memory turnover rate: {:.2}x", turnover)?;
+            writeln!(f, "  Memory turnover rate: {turnover:.2}x")?;
         }
 
         Ok(())
@@ -158,6 +166,7 @@ pub struct AtomicAllocatorStats {
 
 impl AtomicAllocatorStats {
     /// Creates a new empty atomic stats object
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             allocated_bytes: AtomicUsize::new(0),
@@ -193,28 +202,24 @@ impl AtomicAllocatorStats {
         let new_allocated;
         loop {
             let current = self.allocated_bytes.load(Ordering::Relaxed);
-            match current.checked_add(size) {
-                Some(next) => {
-                    match self.allocated_bytes.compare_exchange_weak(
-                        current,
-                        next,
-                        Ordering::Relaxed,
-                        Ordering::Relaxed,
-                    ) {
-                        Ok(_) => {
-                            new_allocated = next;
-                            break;
-                        }
-                        Err(_) => continue,
+            if let Some(next) = current.checked_add(size) {
+                match self.allocated_bytes.compare_exchange_weak(
+                    current,
+                    next,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        new_allocated = next;
+                        break;
                     }
-                }
-                None => {
-                    // Saturate at usize::MAX on overflow
-                    new_allocated = usize::MAX;
-                    self.allocated_bytes.store(usize::MAX, Ordering::Relaxed);
-                    break;
+                    Err(_) => continue,
                 }
             }
+            // Saturate at usize::MAX on overflow
+            new_allocated = usize::MAX;
+            self.allocated_bytes.store(usize::MAX, Ordering::Relaxed);
+            break;
         }
 
         // Update peak if necessary (using compare_exchange loop for accuracy)
@@ -379,6 +384,7 @@ pub struct OptionalStats {
 
 impl OptionalStats {
     /// Create new optional stats (enabled)
+    #[must_use]
     pub fn enabled() -> Self {
         Self {
             stats: Some(AtomicAllocatorStats::new()),
@@ -386,6 +392,7 @@ impl OptionalStats {
     }
 
     /// Create new optional stats (disabled)
+    #[must_use]
     pub const fn disabled() -> Self {
         Self { stats: None }
     }
@@ -420,7 +427,7 @@ impl OptionalStats {
 
     /// Get statistics snapshot if enabled
     pub fn snapshot(&self) -> Option<AllocatorStats> {
-        self.stats.as_ref().map(|s| s.snapshot())
+        self.stats.as_ref().map(AtomicAllocatorStats::snapshot)
     }
 
     /// Reset statistics if enabled
@@ -610,6 +617,7 @@ pub struct BatchedStats {
 #[cfg(feature = "std")]
 impl BatchedStats {
     /// Create new batched statistics
+    #[must_use]
     pub fn new() -> Self {
         Self {
             global: AtomicAllocatorStats::new(),

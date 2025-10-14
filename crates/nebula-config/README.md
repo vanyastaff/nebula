@@ -16,7 +16,6 @@ Production-ready configuration management for Rust applications, fully integrate
 
 ### 🌟 Ecosystem Integration
 - **NebulaValue**: Native support for `nebula-value` types for dynamic configuration
-- **NebulaError**: Unified error handling with `nebula-error`
 - **Structured Logging**: Built-in logging with `nebula-log`
 - **Type Safety**: Full Rust type system integration
 
@@ -249,27 +248,6 @@ let config = ConfigBuilder::new()
 let current_port: u16 = config.get("server.port").await?;
 ```
 
-## Error Handling
-
-Full integration with `nebula-error`:
-
-```rust
-use nebula_config::prelude::*;
-
-match config.get::<String>("missing.key").await {
-    Ok(value) => info!(value = %value, "Configuration found"),
-    Err(config_err) => {
-        // ConfigError automatically converts to NebulaError
-        let nebula_error: NebulaError = config_err.into();
-
-        if nebula_error.is_not_found() {
-            warn!("Configuration key not found, using default");
-        } else if nebula_error.is_validation_error() {
-            error!(error = %nebula_error, "Configuration validation failed");
-        }
-    }
-}
-```
 
 ## Structured Logging
 

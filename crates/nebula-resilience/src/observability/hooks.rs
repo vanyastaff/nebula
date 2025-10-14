@@ -24,7 +24,7 @@ pub enum LogLevel {
 pub enum PatternEvent {
     /// Operation started
     Started {
-        /// Pattern name (retry, circuit_breaker, etc.)
+        /// Pattern name (retry, `circuit_breaker`, etc.)
         pattern: String,
         /// Service or operation name
         operation: String,
@@ -103,10 +103,7 @@ impl fmt::Display for PatternEvent {
                 operation,
                 duration,
             } => {
-                write!(
-                    f,
-                    "{pattern} succeeded for {operation} in {duration:?}"
-                )
+                write!(f, "{pattern} succeeded for {operation} in {duration:?}")
             }
             Self::Failed {
                 pattern,
@@ -124,10 +121,7 @@ impl fmt::Display for PatternEvent {
                 attempt,
                 max_attempts,
             } => {
-                write!(
-                    f,
-                    "Retry attempt {attempt}/{max_attempts} for {operation}"
-                )
+                write!(f, "Retry attempt {attempt}/{max_attempts} for {operation}")
             }
             Self::CircuitBreakerStateChanged {
                 service,
@@ -303,7 +297,9 @@ impl ObservabilityHook for MetricsHook {
             PatternEvent::RetryAttempt { .. } => {
                 self.collector.increment("retry.attempts");
             }
-            PatternEvent::CircuitBreakerStateChanged { service, to_state, .. } => {
+            PatternEvent::CircuitBreakerStateChanged {
+                service, to_state, ..
+            } => {
                 self.collector
                     .increment(format!("circuit_breaker.{service}.state.{to_state}"));
             }

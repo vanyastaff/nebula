@@ -1,6 +1,5 @@
 //! Configuration error types
 
-use nebula_error::NebulaError;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
@@ -343,86 +342,8 @@ impl From<notify::Error> for ConfigError {
     }
 }
 
-// ==================== NebulaError Integration ====================
-
-impl From<ConfigError> for NebulaError {
-    fn from(err: ConfigError) -> Self {
-        match err {
-            ConfigError::FileNotFound { path } => {
-                NebulaError::not_found("config_file", path.to_string_lossy())
-            }
-            ConfigError::FileReadError { path, message } => NebulaError::internal(format!(
-                "Failed to read config file {}: {}",
-                path.display(),
-                message
-            )),
-            ConfigError::ParseError { path, message } => NebulaError::validation(format!(
-                "Failed to parse config file {}: {}",
-                path.display(),
-                message
-            )),
-            ConfigError::ValidationError { message, field } => {
-                let msg = match field {
-                    Some(field) => {
-                        format!("Configuration validation failed for field '{field}': {message}")
-                    }
-                    None => format!("Configuration validation failed: {message}"),
-                };
-                NebulaError::validation(msg)
-            }
-            ConfigError::SourceError { message, origin } => NebulaError::internal(format!(
-                "Configuration source error from '{}': {}",
-                origin, message
-            )),
-            ConfigError::EnvVarNotFound { name } => {
-                NebulaError::not_found("environment_variable", name)
-            }
-            ConfigError::EnvVarParseError { name, value } => NebulaError::validation(format!(
-                "Failed to parse environment variable {}: '{}'",
-                name, value
-            )),
-            ConfigError::ReloadError { message } => {
-                NebulaError::internal(format!("Configuration reload failed: {message}"))
-            }
-            ConfigError::WatchError { message } => {
-                NebulaError::internal(format!("Configuration watch error: {message}"))
-            }
-            ConfigError::MergeError { message } => {
-                NebulaError::internal(format!("Configuration merge failed: {message}"))
-            }
-            ConfigError::TypeError {
-                message,
-                expected,
-                actual,
-            } => NebulaError::validation(format!(
-                "Type error: {} (expected {}, got {})",
-                message, expected, actual
-            )),
-            ConfigError::PathError { message, path } => {
-                NebulaError::validation(format!("Path error for '{path}': {message}"))
-            }
-            ConfigError::FormatNotSupported { format } => {
-                NebulaError::validation(format!("Configuration format not supported: {format}"))
-            }
-            ConfigError::EncryptionError { message } => {
-                NebulaError::internal(format!("Configuration encryption error: {message}"))
-            }
-            ConfigError::DecryptionError { message } => {
-                NebulaError::internal(format!("Configuration decryption error: {message}"))
-            }
-        }
-    }
-}
-
-impl From<NebulaError> for ConfigError {
-    fn from(err: NebulaError) -> Self {
-        if err.is_client_error() {
-            ConfigError::validation_error(err.user_message().to_string(), None)
-        } else {
-            ConfigError::source_error(err.user_message().to_string(), "nebula_error")
-        }
-    }
-}
+// ConfigError can be converted to other error types as needed
+// by implementing From traits in consuming crates
 
 /// Helper functions for creating ConfigErrors with better integration
 impl ConfigError {

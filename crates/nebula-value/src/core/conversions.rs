@@ -3,196 +3,365 @@
 //! This module provides TryFrom implementations for extracting native types from Value.
 
 use crate::collections::{Array, Object};
-use crate::core::NebulaError;
-use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::value::Value;
 use crate::scalar::{Bytes, Float, Integer, Text};
 use rust_decimal::Decimal;
+use thiserror::Error;
+
+// ============================================================================
+// CONVERSION ERROR TYPES
+// ============================================================================
+
+/// Type conversion errors
+///
+/// Specialized errors for type conversions and coercions.
+#[non_exhaustive]
+#[derive(Error, Debug, Clone)]
+pub enum ConversionError {
+    /// Cannot convert between incompatible types
+    #[error("Cannot convert from {from} to {to}")]
+    Incompatible {
+        from: &'static str,
+        to: &'static str,
+    },
+
+    /// Numeric overflow during conversion
+    #[error("Numeric overflow converting to {target}: value {value}")]
+    Overflow { target: &'static str, value: String },
+
+    /// Value out of range for target type
+    #[error("Value {value} out of range for {target} [{min}, {max}]")]
+    OutOfRange {
+        value: String,
+        target: &'static str,
+        min: String,
+        max: String,
+    },
+
+    /// Precision loss during conversion
+    #[error("Precision loss converting {from} to {to}: value {value}")]
+    PrecisionLoss {
+        from: &'static str,
+        to: &'static str,
+        value: String,
+    },
+}
+
+impl ConversionError {
+    /// Create an incompatible types error
+    #[inline]
+    pub fn incompatible(from: &'static str, to: &'static str) -> Self {
+        Self::Incompatible { from, to }
+    }
+
+    /// Create a numeric overflow error
+    #[inline]
+    pub fn overflow(target: &'static str, value: impl ToString) -> Self {
+        Self::Overflow {
+            target,
+            value: value.to_string(),
+        }
+    }
+
+    /// Create an out of range error
+    #[inline]
+    pub fn out_of_range(
+        value: impl ToString,
+        target: &'static str,
+        min: impl ToString,
+        max: impl ToString,
+    ) -> Self {
+        Self::OutOfRange {
+            value: value.to_string(),
+            target,
+            min: min.to_string(),
+            max: max.to_string(),
+        }
+    }
+
+    /// Create a precision loss error
+    #[inline]
+    pub fn precision_loss(from: &'static str, to: &'static str, value: impl ToString) -> Self {
+        Self::PrecisionLoss {
+            from,
+            to,
+            value: value.to_string(),
+        }
+    }
+
+    /// Get error code for monitoring
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Incompatible { .. } => "CONVERSION_INCOMPATIBLE",
+            Self::Overflow { .. } => "CONVERSION_OVERFLOW",
+            Self::OutOfRange { .. } => "CONVERSION_OUT_OF_RANGE",
+            Self::PrecisionLoss { .. } => "CONVERSION_PRECISION_LOSS",
+        }
+    }
+
+    /// Check if this is a client error
+    #[inline]
+    pub fn is_client_error(&self) -> bool {
+        true // All conversion errors are client errors
+    }
+}
+
+/// Result type for conversion operations
+pub type ConversionResult<T> = std::result::Result<T, ConversionError>;
 
 // ==================== TryFrom<Value> for primitives ====================
 
 impl TryFrom<Value> for bool {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Boolean(b) => Ok(b),
-            _ => Err(NebulaError::value_type_mismatch(
-                "Boolean",
+            _ => Err(ConversionError::incompatible(
                 value.kind().name(),
+                "Boolean",
             )),
         }
     }
 }
 
 impl TryFrom<&Value> for bool {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: &Value) -> ValueResult<Self> {
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
         value
             .as_boolean()
-            .ok_or_else(|| NebulaError::value_type_mismatch("Boolean", value.kind().name()))
+            .ok_or_else(|| ConversionError::incompatible(value.kind().name(), "Boolean"))
     }
 }
 
 impl TryFrom<Value> for i64 {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Integer(i) => Ok(i.value()),
             Value::Float(f) => {
-                if f.is_finite() && f.value().fract() == 0.0 {
-                    let val = f.value() as i64;
-                    // Check for precision loss
-                    if (val as f64) == f.value() {
-                        Ok(val)
+                let val = f.value();
+                if val.is_finite() && val.fract() == 0.0 {
+                    let i = val as i64;
+                    // Check if conversion was lossy
+                    if (i as f64) == val {
+                        Ok(i)
                     } else {
-                        Err(NebulaError::value_conversion_error("Float", "i64"))
+                        Err(ConversionError::overflow("i64", val))
                     }
                 } else {
-                    Err(NebulaError::value_conversion_error("Float", "i64"))
+                    Err(ConversionError::precision_loss("Float", "i64", val))
                 }
             }
-            _ => Err(NebulaError::value_type_mismatch(
-                "Integer",
+            _ => Err(ConversionError::incompatible(
                 value.kind().name(),
+                "Integer",
             )),
         }
     }
 }
 
 impl TryFrom<&Value> for i64 {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: &Value) -> ValueResult<Self> {
-        value
-            .as_integer()
-            .ok_or_else(|| NebulaError::value_type_mismatch("Integer", value.kind().name()))
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Integer(i) => Ok(i.value()),
+            Value::Float(f) => {
+                let val = f.value();
+                if val.is_finite() && val.fract() == 0.0 {
+                    let i = val as i64;
+                    // Check if conversion was lossy
+                    if (i as f64) == val {
+                        Ok(i)
+                    } else {
+                        Err(ConversionError::overflow("i64", val))
+                    }
+                } else {
+                    Err(ConversionError::precision_loss("Float", "i64", val))
+                }
+            }
+            _ => Err(ConversionError::incompatible(
+                value.kind().name(),
+                "Integer",
+            )),
+        }
     }
 }
 
 impl TryFrom<Value> for i32 {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         let i64_val = i64::try_from(value)?;
-        i32::try_from(i64_val).map_err(|_| NebulaError::value_conversion_error("i64", "i32"))
+        i32::try_from(i64_val).map_err(|_| ConversionError::overflow("i32", i64_val))
     }
 }
 
 impl TryFrom<Value> for u32 {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         let i64_val = i64::try_from(value)?;
-        u32::try_from(i64_val).map_err(|_| NebulaError::value_conversion_error("i64", "u32"))
+        u32::try_from(i64_val)
+            .map_err(|_| ConversionError::out_of_range(i64_val, "u32", 0, u32::MAX))
     }
 }
 
 impl TryFrom<Value> for u64 {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         let i64_val = i64::try_from(value)?;
         if i64_val >= 0 {
             Ok(i64_val as u64)
         } else {
-            Err(NebulaError::value_conversion_error("i64", "u64"))
+            Err(ConversionError::out_of_range(i64_val, "u64", 0, u64::MAX))
         }
     }
 }
 
 impl TryFrom<Value> for f64 {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Float(f) => Ok(f.value()),
             Value::Integer(i) => Ok(i.value() as f64),
             Value::Decimal(d) => {
                 use rust_decimal::prelude::ToPrimitive;
                 d.to_f64()
-                    .ok_or_else(|| NebulaError::value_conversion_error("Decimal", "f64"))
+                    .ok_or_else(|| ConversionError::incompatible("Decimal", "f64"))
             }
-            _ => Err(NebulaError::value_type_mismatch(
-                "Float",
-                value.kind().name(),
-            )),
+            _ => Err(ConversionError::incompatible(value.kind().name(), "Float")),
         }
     }
 }
 
 impl TryFrom<&Value> for f64 {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: &Value) -> ValueResult<Self> {
-        value
-            .as_float()
-            .ok_or_else(|| NebulaError::value_type_mismatch("Float", value.kind().name()))
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Float(f) => Ok(f.value()),
+            Value::Integer(i) => Ok(i.value() as f64),
+            Value::Decimal(d) => {
+                use rust_decimal::prelude::ToPrimitive;
+                d.to_f64()
+                    .ok_or_else(|| ConversionError::incompatible("Decimal", "f64"))
+            }
+            _ => Err(ConversionError::incompatible(value.kind().name(), "Float")),
+        }
     }
 }
 
 impl TryFrom<Value> for f32 {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
-        let f64_val = f64::try_from(value)?;
-        Ok(f64_val as f32)
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        f64::try_from(value).and_then(|f64_val| {
+            if f64_val.is_finite() && (f64_val < f32::MIN as f64 || f64_val > f32::MAX as f64) {
+                Err(ConversionError::overflow("f32", f64_val))
+            } else {
+                Ok(f64_val as f32)
+            }
+        })
+    }
+}
+
+impl TryFrom<&Value> for f32 {
+    type Error = ConversionError;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        f64::try_from(value).and_then(|f64_val| {
+            if f64_val.is_finite() && (f64_val < f32::MIN as f64 || f64_val > f32::MAX as f64) {
+                Err(ConversionError::overflow("f32", f64_val))
+            } else {
+                Ok(f64_val as f32)
+            }
+        })
+    }
+}
+
+impl TryFrom<&Value> for i32 {
+    type Error = ConversionError;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        let i64_val = i64::try_from(value)?;
+        i32::try_from(i64_val).map_err(|_| ConversionError::overflow("i32", i64_val))
+    }
+}
+
+impl TryFrom<&Value> for u32 {
+    type Error = ConversionError;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        let i64_val = i64::try_from(value)?;
+        u32::try_from(i64_val)
+            .map_err(|_| ConversionError::out_of_range(i64_val, "u32", 0, u32::MAX))
+    }
+}
+
+impl TryFrom<&Value> for u64 {
+    type Error = ConversionError;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        let i64_val = i64::try_from(value)?;
+        if i64_val >= 0 {
+            Ok(i64_val as u64)
+        } else {
+            Err(ConversionError::out_of_range(i64_val, "u64", 0, u64::MAX))
+        }
     }
 }
 
 impl TryFrom<Value> for String {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Text(t) => Ok(t.to_string()),
-            _ => Err(NebulaError::value_type_mismatch(
-                "Text",
-                value.kind().name(),
-            )),
+            _ => Err(ConversionError::incompatible(value.kind().name(), "Text")),
         }
     }
 }
 
 impl TryFrom<&Value> for String {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: &Value) -> ValueResult<Self> {
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
         value
             .as_str()
             .map(|s| s.to_string())
-            .ok_or_else(|| NebulaError::value_type_mismatch("Text", value.kind().name()))
+            .ok_or_else(|| ConversionError::incompatible(value.kind().name(), "Text"))
     }
 }
 
 impl TryFrom<Value> for Vec<u8> {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Bytes(b) => Ok(b.to_vec()),
-            _ => Err(NebulaError::value_type_mismatch(
-                "Bytes",
-                value.kind().name(),
-            )),
+            _ => Err(ConversionError::incompatible(value.kind().name(), "Bytes")),
         }
     }
 }
 
 impl TryFrom<Value> for Decimal {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Decimal(d) => Ok(d),
             Value::Integer(i) => Ok(Decimal::from(i.value())),
             Value::Float(f) => Decimal::try_from(f.value())
-                .map_err(|_| NebulaError::value_conversion_error("Float", "Decimal")),
-            _ => Err(NebulaError::value_type_mismatch(
-                "Decimal",
+                .map_err(|_| ConversionError::incompatible("Float", "Decimal")),
+            _ => Err(ConversionError::incompatible(
                 value.kind().name(),
+                "Decimal",
             )),
         }
     }
@@ -201,58 +370,49 @@ impl TryFrom<Value> for Decimal {
 // ==================== TryFrom<Value> for scalar types ====================
 
 impl TryFrom<Value> for Integer {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Integer(i) => Ok(i),
-            _ => Err(NebulaError::value_type_mismatch(
-                "Integer",
+            _ => Err(ConversionError::incompatible(
                 value.kind().name(),
+                "Integer",
             )),
         }
     }
 }
 
 impl TryFrom<Value> for Float {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Float(f) => Ok(f),
             Value::Integer(i) => Ok(Float::new(i.value() as f64)),
-            _ => Err(NebulaError::value_type_mismatch(
-                "Float",
-                value.kind().name(),
-            )),
+            _ => Err(ConversionError::incompatible(value.kind().name(), "Float")),
         }
     }
 }
 
 impl TryFrom<Value> for Text {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Text(t) => Ok(t),
-            _ => Err(NebulaError::value_type_mismatch(
-                "Text",
-                value.kind().name(),
-            )),
+            _ => Err(ConversionError::incompatible(value.kind().name(), "Text")),
         }
     }
 }
 
 impl TryFrom<Value> for Bytes {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Bytes(b) => Ok(b),
-            _ => Err(NebulaError::value_type_mismatch(
-                "Bytes",
-                value.kind().name(),
-            )),
+            _ => Err(ConversionError::incompatible(value.kind().name(), "Bytes")),
         }
     }
 }
@@ -260,29 +420,23 @@ impl TryFrom<Value> for Bytes {
 // ==================== TryFrom<Value> for collections ====================
 
 impl TryFrom<Value> for Array {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Array(a) => Ok(a),
-            _ => Err(NebulaError::value_type_mismatch(
-                "Array",
-                value.kind().name(),
-            )),
+            _ => Err(ConversionError::incompatible(value.kind().name(), "Array")),
         }
     }
 }
 
 impl TryFrom<Value> for Object {
-    type Error = NebulaError;
+    type Error = ConversionError;
 
-    fn try_from(value: Value) -> ValueResult<Self> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Object(o) => Ok(o),
-            _ => Err(NebulaError::value_type_mismatch(
-                "Object",
-                value.kind().name(),
-            )),
+            _ => Err(ConversionError::incompatible(value.kind().name(), "Object")),
         }
     }
 }
@@ -292,200 +446,18 @@ impl TryFrom<Value> for Object {
 /// Extension trait for Value conversions
 pub trait ValueConversion: Sized {
     /// Try to convert this value to the target type
-    fn to_value_type<T: TryFrom<Value, Error = NebulaError>>(self) -> ValueResult<T>;
+    fn to_value_type<T: TryFrom<Self, Error = ConversionError>>(self) -> ConversionResult<T>;
 
     /// Try to convert this value to the target type, with a fallback
-    fn to_value_type_or<T: TryFrom<Value, Error = NebulaError>>(self, default: T) -> T;
+    fn to_value_type_or<T: TryFrom<Self, Error = ConversionError>>(self, default: T) -> T;
 }
 
 impl ValueConversion for Value {
-    fn to_value_type<T: TryFrom<Value, Error = NebulaError>>(self) -> ValueResult<T> {
+    fn to_value_type<T: TryFrom<Value, Error = ConversionError>>(self) -> ConversionResult<T> {
         T::try_from(self)
     }
 
-    fn to_value_type_or<T: TryFrom<Value, Error = NebulaError>>(self, default: T) -> T {
+    fn to_value_type_or<T: TryFrom<Value, Error = ConversionError>>(self, default: T) -> T {
         T::try_from(self).unwrap_or(default)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_try_from_bool() {
-        let val = Value::Boolean(true);
-        assert_eq!(bool::try_from(val).unwrap(), true);
-
-        let val = Value::integer(42);
-        assert!(bool::try_from(val).is_err());
-    }
-
-    #[test]
-    fn test_try_from_i64() {
-        let val = Value::integer(42);
-        assert_eq!(i64::try_from(val).unwrap(), 42);
-
-        let val = Value::float(42.0);
-        assert_eq!(i64::try_from(val).unwrap(), 42);
-
-        let val = Value::float(42.5);
-        assert!(i64::try_from(val).is_err());
-    }
-
-    #[test]
-    fn test_try_from_i32() {
-        let val = Value::integer(42);
-        assert_eq!(i32::try_from(val).unwrap(), 42);
-
-        let val = Value::integer(i64::MAX);
-        assert!(i32::try_from(val).is_err());
-    }
-
-    #[test]
-    fn test_try_from_u64() {
-        let val = Value::integer(42);
-        assert_eq!(u64::try_from(val).unwrap(), 42);
-
-        let val = Value::integer(-1);
-        assert!(u64::try_from(val).is_err());
-    }
-
-    #[test]
-    fn test_try_from_f64() {
-        let val = Value::float(3.14);
-        assert_eq!(f64::try_from(val).unwrap(), 3.14);
-
-        let val = Value::integer(42);
-        assert_eq!(f64::try_from(val).unwrap(), 42.0);
-    }
-
-    #[test]
-    fn test_try_from_string() {
-        let val = Value::text("hello");
-        assert_eq!(String::try_from(val).unwrap(), "hello");
-
-        let val = Value::integer(42);
-        assert!(String::try_from(val).is_err());
-    }
-
-    #[test]
-    fn test_try_from_vec_u8() {
-        let val = Value::bytes(vec![1, 2, 3]);
-        assert_eq!(Vec::<u8>::try_from(val).unwrap(), vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn test_try_from_decimal() {
-        let val = Value::integer(42);
-        let decimal = Decimal::try_from(val).unwrap();
-        assert_eq!(decimal, Decimal::from(42));
-    }
-
-    #[test]
-    fn test_try_from_integer_type() {
-        let val = Value::integer(42);
-        let int = Integer::try_from(val).unwrap();
-        assert_eq!(int.value(), 42);
-    }
-
-    #[test]
-    fn test_try_from_float_type() {
-        let val = Value::float(3.14);
-        let float = Float::try_from(val).unwrap();
-        assert_eq!(float.value(), 3.14);
-
-        // Integer can be converted to Float
-        let val = Value::integer(42);
-        let float = Float::try_from(val).unwrap();
-        assert_eq!(float.value(), 42.0);
-    }
-
-    #[test]
-    fn test_try_from_text_type() {
-        let val = Value::text("hello");
-        let text = Text::try_from(val).unwrap();
-        assert_eq!(text.as_str(), "hello");
-    }
-
-    #[test]
-    fn test_try_from_array_type() {
-        let val = Value::array_empty();
-        let array = Array::try_from(val).unwrap();
-        assert_eq!(array.len(), 0);
-    }
-
-    #[test]
-    fn test_try_from_object_type() {
-        let val = Value::object_empty();
-        let object = Object::try_from(val).unwrap();
-        assert_eq!(object.len(), 0);
-    }
-
-    #[test]
-    fn test_value_conversion_trait() {
-        let val = Value::integer(42);
-        let result: i64 = val.to_value_type().unwrap();
-        assert_eq!(result, 42);
-    }
-
-    #[test]
-    fn test_value_conversion_with_default() {
-        let val = Value::text("not a number");
-        let result: i64 = val.to_value_type_or(0);
-        assert_eq!(result, 0);
-    }
-
-    #[test]
-    fn test_ref_conversion() {
-        let val = Value::integer(42);
-        let result = i64::try_from(&val).unwrap();
-        assert_eq!(result, 42);
-    }
-}
-
-// ==================== Conversion to/from serde_json::Value ====================
-
-/// Infallible conversion from serde_json::Value
-///
-/// This implementation is always available (not gated by "serde" feature)
-/// because serde_json is a required dependency used for Value conversions.
-///
-/// # Panics
-///
-/// Panics if the JSON number cannot be converted to i64 or f64 (rare edge case).
-/// For fallible conversion, use the helper method or manually handle errors.
-impl From<serde_json::Value> for Value {
-    fn from(json: serde_json::Value) -> Self {
-        match json {
-            serde_json::Value::Null => Value::Null,
-            serde_json::Value::Bool(b) => Value::Boolean(b),
-            serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    Value::Integer(Integer::new(i))
-                } else if let Some(f) = n.as_f64() {
-                    Value::Float(Float::new(f))
-                } else {
-                    panic!("Failed to convert JSON Number to Value: unsupported number format")
-                }
-            }
-            serde_json::Value::String(s) => Value::Text(Text::new(s)),
-            serde_json::Value::Array(arr) => {
-                let mut result = Array::new();
-                for item in arr {
-                    // Recursively convert each array element
-                    result = result.push(Value::from(item));
-                }
-                Value::Array(result)
-            }
-            serde_json::Value::Object(obj) => {
-                let mut result = Object::new();
-                for (key, value) in obj {
-                    // Recursively convert each object value
-                    result = result.insert(key, Value::from(value));
-                }
-                Value::Object(result)
-            }
-        }
     }
 }

@@ -1,5 +1,4 @@
 #![warn(clippy::all)]
-#![warn(missing_docs)]
 
 //! # nebula-expression
 //!
@@ -130,6 +129,7 @@
 pub mod builtins;
 pub mod context;
 pub mod engine;
+pub mod error;
 pub mod error_formatter;
 pub mod maybe;
 pub mod template;
@@ -147,7 +147,6 @@ pub mod parser;
 
 // Re-exports
 pub use context::{EvaluationContext, EvaluationContextBuilder};
-pub use core::error::{ExpressionErrorExt, ExpressionResult};
 pub use engine::ExpressionEngine;
 pub use maybe::{CachedExpression, MaybeExpression};
 pub use template::{MaybeTemplate, Template};
@@ -163,14 +162,16 @@ pub use core::token::{Token, TokenKind};
 #[doc(hidden)]
 pub use template::{Position, TemplatePart};
 
+// Re-export error types
+pub use error::{ExpressionError, ExpressionErrorExt, ExpressionResult};
+
 // Re-export nebula types for convenience
-pub use nebula_error::NebulaError;
 pub use nebula_value::Value;
 
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::{
-        EvaluationContext, EvaluationContextBuilder, ExpressionEngine, ExpressionErrorExt,
-        ExpressionResult, MaybeExpression, MaybeTemplate, NebulaError, Template, Value,
+        EvaluationContext, EvaluationContextBuilder, ExpressionEngine, ExpressionError,
+        ExpressionErrorExt, ExpressionResult, MaybeExpression, MaybeTemplate, Template, Value,
     };
 }

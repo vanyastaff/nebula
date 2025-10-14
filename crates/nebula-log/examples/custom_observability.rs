@@ -6,7 +6,7 @@
 //! - Integration with external monitoring systems
 //! - Advanced observability patterns
 
-use nebula_log::observability::{emit_event, register_hook, ObservabilityEvent, ObservabilityHook};
+use nebula_log::observability::{ObservabilityEvent, ObservabilityHook, emit_event, register_hook};
 use nebula_log::{info, warn};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};

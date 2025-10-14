@@ -202,7 +202,6 @@ pub type SystemResult<T> = Result<T, SystemError>;
 - Resource allocation
 
 ### Uses
-- `nebula-error` - Error handling
 - `sysinfo` - Cross-platform system info
 - `region` - Memory management
 

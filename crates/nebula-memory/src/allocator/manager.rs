@@ -15,7 +15,7 @@ use super::{AllocError, AllocResult, Allocator, ThreadSafeAllocator};
 
 /// Unique identifier for registered allocators
 ///
-/// Uses NonZeroUsize for memory efficiency (allows Option<AllocatorId> to be same size)
+/// Uses `NonZeroUsize` for memory efficiency (allows Option<AllocatorId> to be same size)
 /// and provides type safety preventing accidental mixing with raw usizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AllocatorId(NonZeroUsize);
@@ -138,7 +138,8 @@ pub struct AllocatorManager {
 }
 
 impl AllocatorManager {
-    /// Creates a new AllocatorManager
+    /// Creates a new `AllocatorManager`
+    #[must_use]
     pub fn new() -> Self {
         Self {
             allocators: Default::default(),
@@ -438,7 +439,7 @@ macro_rules! set_active_allocator {
 ///
 /// # Safety
 ///
-/// This impl is safe because AllocatorManager correctly implements the Allocator contract:
+/// This impl is safe because `AllocatorManager` correctly implements the Allocator contract:
 /// - All allocations are delegated to registered allocators that uphold memory safety
 /// - Active allocator switching is atomic and properly synchronized
 /// - No data races can occur in allocation/deallocation paths
@@ -470,11 +471,11 @@ unsafe impl Allocator for AllocatorManager {
 
 /// # Safety
 ///
-/// AllocatorManager is thread-safe because:
-/// - Registry uses lock-free DashMap (std) or RwLock (no_std) for concurrent access
-/// - Active allocator ID is stored in AtomicUsize with proper memory ordering
+/// `AllocatorManager` is thread-safe because:
+/// - Registry uses lock-free `DashMap` (std) or `RwLock` (`no_std`) for concurrent access
+/// - Active allocator ID is stored in `AtomicUsize` with proper memory ordering
 /// - All registered allocators must be Send + Sync by trait bound
-/// - Allocator switching is atomic and properly synchronized (SeqCst ordering)
+/// - Allocator switching is atomic and properly synchronized (`SeqCst` ordering)
 unsafe impl ThreadSafeAllocator for AllocatorManager {}
 
 #[cfg(test)]

@@ -56,7 +56,7 @@ impl Slug {
     /// - `min_length`: 1
     /// - `max_length`: 255
     /// - `allow_consecutive_hyphens`: false
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             min_length: 1,

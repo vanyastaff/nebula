@@ -6,8 +6,8 @@
 //!
 //! # Safety
 //!
-//! This module wraps the standard library's System allocator (GlobalAlloc trait):
-//! - All allocations delegate to std::alloc::System
+//! This module wraps the standard library's System allocator (`GlobalAlloc` trait):
+//! - All allocations delegate to `std::alloc::System`
 //! - Zero-sized allocations handled specially (dangling pointer, no actual alloc)
 //! - realloc optimization used when alignment matches (falls back to alloc+copy+dealloc)
 //! - Thread safety guaranteed by underlying system allocator
@@ -51,15 +51,17 @@ use super::{AllocError, AllocResult, Allocator, BulkAllocator, MemoryUsage, Thre
 pub struct SystemAllocator;
 
 impl SystemAllocator {
-    /// Creates a new SystemAllocator
+    /// Creates a new `SystemAllocator`
     ///
-    /// This is a zero-cost operation as the SystemAllocator contains no state.
+    /// This is a zero-cost operation as the `SystemAllocator` contains no state.
     #[inline]
+    #[must_use]
     pub const fn new() -> Self {
         SystemAllocator
     }
 
     /// Returns information about the system allocator
+    #[must_use]
     pub fn info() -> &'static str {
         #[cfg(target_os = "linux")]
         return "Linux system allocator (typically glibc malloc or musl)";
@@ -181,7 +183,7 @@ unsafe impl Allocator for SystemAllocator {
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     ptr.as_ptr(),
-                    new_ptr.as_ptr() as *mut u8,
+                    new_ptr.as_ptr().cast::<u8>(),
                     copy_size,
                 );
             }

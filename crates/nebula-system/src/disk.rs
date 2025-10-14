@@ -282,10 +282,10 @@ pub fn optimal_block_size(mount_point: Option<&str>) -> usize {
     if let Some(mp) = mount_point {
         if let Some(disk) = get_disk(mp) {
             match disk.disk_type {
-                DiskType::SSD => 4096,       // 4KB for SSDs
-                DiskType::HDD => 65536,      // 64KB for HDDs
+                DiskType::SSD => 4096,        // 4KB for SSDs
+                DiskType::HDD => 65536,       // 64KB for HDDs
                 DiskType::Network => 131_072, // 128KB for network
-                _ => 8192,                   // 8KB default
+                _ => 8192,                    // 8KB default
             }
         } else {
             8192

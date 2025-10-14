@@ -404,7 +404,7 @@ pub struct MultiField<T> {
 
 impl<T> MultiField<T> {
     /// Creates a new multi-field validator.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             validators: Vec::new(),
@@ -424,8 +424,7 @@ impl<T> MultiField<T> {
         self.validators.push(Box::new(move |input: &T| {
             let field_value = accessor(input);
             validator.validate(field_value).map(|_| ()).map_err(|err| {
-                ValidationError::new("field_validation", format!("{err}"))
-                    .with_field(name.clone())
+                ValidationError::new("field_validation", format!("{err}")).with_field(name.clone())
             })
         }));
         self
@@ -597,7 +596,8 @@ mod tests {
 
     #[test]
     fn test_field_name_accessor() {
-        let validator: Field<TestUser, u32, _, _> = named_field("age", MinValue { min: 18 }, get_age);
+        let validator: Field<TestUser, u32, _, _> =
+            named_field("age", MinValue { min: 18 }, get_age);
         assert_eq!(validator.field_name(), Some("age"));
     }
 
@@ -664,7 +664,8 @@ mod tests {
 
     #[test]
     fn test_field_into_parts() {
-        let validator: Field<TestUser, u32, _, _> = named_field("age", MinValue { min: 18 }, get_age);
+        let validator: Field<TestUser, u32, _, _> =
+            named_field("age", MinValue { min: 18 }, get_age);
         let (name, min_value, _accessor) = validator.into_parts();
         assert_eq!(name, Some("age".to_string()));
         assert_eq!(min_value.min, 18);

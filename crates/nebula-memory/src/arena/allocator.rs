@@ -7,22 +7,22 @@
 //! # Safety
 //!
 //! This module contains arena-based allocation utilities:
-//! - ArenaAllocator: Wrapper providing allocator interface
-//! - ArenaBackedVec: Arena-allocated vector with manual growth
+//! - `ArenaAllocator`: Wrapper providing allocator interface
+//! - `ArenaBackedVec`: Arena-allocated vector with manual growth
 //!
 //! ## Safety Contracts
 //!
-//! - allocate/allocate_slice: Caller must initialize before use
-//! - ArenaBackedVec: Internal pointer valid while arena alive
+//! - `allocate/allocate_slice`: Caller must initialize before use
+//! - `ArenaBackedVec`: Internal pointer valid while arena alive
 //! - push: Bounds-checked, writes to allocated capacity
 //! - pop/get: Pointer arithmetic within allocated range
-//! - clear: drop_in_place for all elements
-//! - as_slice: Creates slice from valid pointer and len
+//! - clear: `drop_in_place` for all elements
+//! - `as_slice`: Creates slice from valid pointer and len
 //!
 //! ## Memory Management
 //!
 //! - Arc<Arena>: Shared ownership of arena
-//! - ArenaBackedVec: Doesn't deallocate (arena manages memory)
+//! - `ArenaBackedVec`: Doesn't deallocate (arena manages memory)
 //! - Drop: Calls clear but doesn't free memory (arena-owned)
 
 use std::alloc::Layout;
@@ -63,6 +63,7 @@ impl<A> ArenaAllocator<A> {
     }
 
     /// Get a reference to the underlying arena
+    #[must_use]
     pub fn arena(&self) -> &Arc<A> {
         &self.arena
     }
@@ -121,6 +122,7 @@ impl<A: ArenaAllocate> ArenaAllocator<A> {
     }
 
     /// Create a new vector backed by this arena
+    #[must_use]
     pub fn new_vec<T>(&self) -> ArenaBackedVec<T, A> {
         ArenaBackedVec::new(self.arena.clone())
     }
@@ -136,11 +138,13 @@ impl<A: ArenaAllocate> ArenaAllocator<A> {
 
 impl ArenaAllocator<Arena> {
     /// Create a new allocator with a basic arena
+    #[must_use]
     pub fn new_basic() -> Self {
         Self::new(Arc::new(Arena::new(Default::default())))
     }
 
     /// Create a new allocator with a basic arena with specified capacity
+    #[must_use]
     pub fn new_basic_with_capacity(capacity: usize) -> Self {
         Self::new(Arc::new(Arena::with_capacity(capacity)))
     }
@@ -148,11 +152,13 @@ impl ArenaAllocator<Arena> {
 
 impl ArenaAllocator<ThreadSafeArena> {
     /// Create a new allocator with a thread-safe arena
+    #[must_use]
     pub fn new_thread_safe() -> Self {
         Self::new(Arc::new(ThreadSafeArena::new(Default::default())))
     }
 
     /// Create a new allocator with a thread-safe arena with specified config
+    #[must_use]
     pub fn new_thread_safe_with_config(config: super::ArenaConfig) -> Self {
         Self::new(Arc::new(ThreadSafeArena::new(config)))
     }
@@ -224,7 +230,7 @@ impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
         let ptr = unsafe { allocator.alloc_bytes(layout.size(), layout.align())? };
 
         Ok(Self {
-            data: ptr as *mut T,
+            data: ptr.cast::<T>(),
             len: 0,
             capacity,
             allocator,
@@ -269,6 +275,7 @@ impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
     }
 
     /// Get a reference to an element
+    #[must_use]
     pub fn get(&self, index: usize) -> Option<&T> {
         if index < self.len {
             // SAFETY: Creating reference to element.
@@ -296,16 +303,19 @@ impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
     }
 
     /// Returns the length of the vector
+    #[must_use]
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// Returns true if the vector is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Returns the capacity of the vector
+    #[must_use]
     pub fn capacity(&self) -> usize {
         self.capacity
     }
@@ -327,6 +337,7 @@ impl<T, A: ArenaAllocate> ArenaBackedVec<T, A> {
     }
 
     /// Get a slice of the vector
+    #[must_use]
     pub fn as_slice(&self) -> &[T] {
         // SAFETY: Creating slice from vector data.
         // - data is valid pointer (allocated from arena)
@@ -398,6 +409,7 @@ impl<A: ArenaAllocate> ArenaString<A> {
     }
 
     /// Get the string as a str
+    #[must_use]
     pub fn as_str(&self) -> &str {
         // SAFETY: Creating &str from bytes.
         // - ArenaString constructed from valid UTF-8 in from_str

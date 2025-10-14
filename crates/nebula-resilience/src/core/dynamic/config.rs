@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nebula_value::{Object, Value};
 use crate::core::config::{ConfigError, ConfigResult, ResilienceConfig};
+use nebula_value::{Object, Value};
 
 /// Get current timestamp as ISO 8601 string
 fn current_timestamp() -> String {

@@ -1,7 +1,7 @@
-//! Concurrent compute cache using DashMap for lock-free access
+//! Concurrent compute cache using `DashMap` for lock-free access
 //!
-//! This module provides a high-performance concurrent cache that uses DashMap
-//! for lock-free read and write operations, eliminating RwLock contention.
+//! This module provides a high-performance concurrent cache that uses `DashMap`
+//! for lock-free read and write operations, eliminating `RwLock` contention.
 
 #![cfg(feature = "std")]
 
@@ -13,13 +13,13 @@ use super::compute::CacheEntry;
 use super::config::CacheConfig;
 use crate::error::{MemoryError, MemoryResult};
 
-/// Trait for cache keys (same as ComputeCache)
+/// Trait for cache keys (same as `ComputeCache`)
 pub trait CacheKey: Hash + Eq + Clone + Send + Sync {}
 
 // Implement CacheKey for common types
 impl<T: Hash + Eq + Clone + Send + Sync> CacheKey for T {}
 
-/// A lock-free concurrent compute cache using DashMap
+/// A lock-free concurrent compute cache using `DashMap`
 ///
 /// This cache provides high-performance concurrent access without lock contention.
 /// It's ideal for read-heavy workloads with occasional writes (cache misses).
@@ -27,7 +27,7 @@ impl<T: Hash + Eq + Clone + Send + Sync> CacheKey for T {}
 /// # Performance characteristics:
 /// - **Reads**: Lock-free, scales linearly with CPU cores
 /// - **Writes**: Fine-grained locking per shard, minimal contention
-/// - **Memory**: Slightly higher than RwLock<HashMap> due to sharding overhead
+/// - **Memory**: Slightly higher than `RwLock`<HashMap> due to sharding overhead
 ///
 /// # Trade-offs:
 /// - Does not update access metadata on reads (sacrifice LRU accuracy for performance)
@@ -50,15 +50,15 @@ where
     V: Clone + Send + Sync,
 {
     /// Create a new concurrent cache with the given maximum size
+    #[must_use]
     pub fn new(max_entries: usize) -> Self {
         Self::with_config(CacheConfig::new(max_entries))
     }
 
     /// Create a new concurrent cache with the given configuration
+    #[must_use]
     pub fn with_config(config: CacheConfig) -> Self {
-        let initial_capacity = config
-            .initial_capacity
-            .unwrap_or_else(|| config.max_entries);
+        let initial_capacity = config.initial_capacity.unwrap_or(config.max_entries);
 
         Self {
             entries: Arc::new(DashMap::with_capacity(initial_capacity)),
@@ -128,11 +128,13 @@ where
     }
 
     /// Get the current number of entries in the cache
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Check if the cache is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -143,6 +145,7 @@ where
     }
 
     /// Get cache capacity
+    #[must_use]
     pub fn capacity(&self) -> usize {
         self.config.max_entries
     }

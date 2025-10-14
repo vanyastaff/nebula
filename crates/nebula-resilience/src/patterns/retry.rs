@@ -87,7 +87,7 @@ impl Default for RetryStrategy {
 
 impl RetryStrategy {
     /// Create a fixed delay retry strategy
-    #[must_use] 
+    #[must_use]
     pub fn fixed_delay(max_attempts: usize, delay: Duration) -> Self {
         Self {
             max_attempts,
@@ -97,7 +97,7 @@ impl RetryStrategy {
     }
 
     /// Create a linear backoff retry strategy
-    #[must_use] 
+    #[must_use]
     pub fn linear_backoff(max_attempts: usize, base_delay: Duration) -> Self {
         Self {
             max_attempts,
@@ -110,7 +110,7 @@ impl RetryStrategy {
     }
 
     /// Create an exponential backoff retry strategy
-    #[must_use] 
+    #[must_use]
     pub fn exponential_backoff(max_attempts: usize, base_delay: Duration) -> Self {
         Self {
             max_attempts,
@@ -125,7 +125,7 @@ impl RetryStrategy {
     }
 
     /// Create a custom retry strategy with specific delays
-    #[must_use] 
+    #[must_use]
     pub fn custom_delays(delays: Vec<Duration>) -> Self {
         let max_attempts = delays.len();
         Self {
@@ -143,7 +143,7 @@ impl RetryStrategy {
     }
 
     /// Check if an error should be retried
-    #[must_use] 
+    #[must_use]
     pub fn should_retry(&self, error: &ResilienceError) -> bool {
         match error {
             ResilienceError::Timeout { .. } => self.retry_condition.on_timeout,
@@ -162,7 +162,7 @@ impl RetryStrategy {
     }
 
     /// Calculate delay for a specific attempt (1-indexed)
-    #[must_use] 
+    #[must_use]
     pub fn delay_for_attempt(&self, attempt: usize) -> Option<Duration> {
         if attempt > self.max_attempts {
             return None;
@@ -243,7 +243,7 @@ impl Default for RetryCondition {
 
 impl RetryCondition {
     /// Create a permissive retry condition (retry most errors)
-    #[must_use] 
+    #[must_use]
     pub fn permissive() -> Self {
         Self {
             on_timeout: true,
@@ -255,7 +255,7 @@ impl RetryCondition {
     }
 
     /// Create a conservative retry condition (retry only safe errors)
-    #[must_use] 
+    #[must_use]
     pub fn conservative() -> Self {
         Self {
             on_timeout: true,

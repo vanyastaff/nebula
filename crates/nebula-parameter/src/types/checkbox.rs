@@ -7,9 +7,7 @@ use crate::core::{
     ParameterMetadata, ParameterValidation, Validatable,
 };
 
-use nebula_expression::MaybeExpression;
 use nebula_value::Boolean;
-use nebula_value::Value;
 
 /// Parameter for boolean checkbox
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]

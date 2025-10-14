@@ -36,7 +36,7 @@ pub use stats::PoolStats;
 pub use thread_safe::ThreadSafePool;
 pub use ttl::TtlPool;
 
-/// Type alias for ROADMAP compatibility - PooledObject is same as PooledValue
+/// Type alias for ROADMAP compatibility - `PooledObject` is same as `PooledValue`
 pub type PooledObject<T> = PooledValue<T>;
 
 /// Configuration for object pools
@@ -106,6 +106,7 @@ impl Default for PoolConfig {
 
 impl PoolConfig {
     /// Create a bounded pool configuration
+    #[must_use]
     pub fn bounded(capacity: usize) -> Self {
         Self {
             initial_capacity: capacity,
@@ -116,6 +117,7 @@ impl PoolConfig {
     }
 
     /// Create an unbounded pool configuration
+    #[must_use]
     pub fn unbounded(initial_capacity: usize) -> Self {
         Self {
             initial_capacity,

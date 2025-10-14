@@ -459,8 +459,8 @@ pub mod utils {
                 } else {
                     version = version.with_pre(pre);
                 }
-            } else if pre_build_str.starts_with('+') {
-                version = version.with_build(&pre_build_str[1..]);
+            } else if let Some(stripped) = pre_build_str.strip_prefix('+') {
+                version = version.with_build(stripped);
             }
         }
 

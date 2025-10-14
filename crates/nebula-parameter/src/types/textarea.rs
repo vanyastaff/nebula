@@ -107,29 +107,29 @@ impl Expressible for TextareaParameter {
                 // Use Text directly
                 // Validate length constraints from options
                 if let Some(options) = &self.options {
-                    if let Some(min_len) = options.min_length {
-                        if s.len() < min_len {
-                            return Err(ParameterError::InvalidValue {
-                                key: self.metadata.key.clone(),
-                                reason: format!(
-                                    "Text too short: {} chars, minimum {}",
-                                    s.len(),
-                                    min_len
-                                ),
-                            });
-                        }
+                    if let Some(min_len) = options.min_length
+                        && s.len() < min_len
+                    {
+                        return Err(ParameterError::InvalidValue {
+                            key: self.metadata.key.clone(),
+                            reason: format!(
+                                "Text too short: {} chars, minimum {}",
+                                s.len(),
+                                min_len
+                            ),
+                        });
                     }
-                    if let Some(max_len) = options.max_length {
-                        if s.len() > max_len {
-                            return Err(ParameterError::InvalidValue {
-                                key: self.metadata.key.clone(),
-                                reason: format!(
-                                    "Text too long: {} chars, maximum {}",
-                                    s.len(),
-                                    max_len
-                                ),
-                            });
-                        }
+                    if let Some(max_len) = options.max_length
+                        && s.len() > max_len
+                    {
+                        return Err(ParameterError::InvalidValue {
+                            key: self.metadata.key.clone(),
+                            reason: format!(
+                                "Text too long: {} chars, maximum {}",
+                                s.len(),
+                                max_len
+                            ),
+                        });
                     }
                 }
                 self.value = Some(s);
@@ -169,17 +169,19 @@ impl Displayable for TextareaParameter {
 
 impl TextareaParameter {
     /// Get character count for current value
+    #[must_use]
     pub fn character_count(&self) -> usize {
-        self.value.as_ref().map(|v| v.len()).unwrap_or(0)
+        self.value.as_ref().map_or(0, nebula_value::Text::len)
     }
 
-    /// Get remaining characters if max_length is set
+    /// Get remaining characters if `max_length` is set
+    #[must_use]
     pub fn remaining_characters(&self) -> Option<i32> {
-        if let Some(options) = &self.options {
-            if let Some(max_len) = options.max_length {
-                let current = self.character_count();
-                return Some(max_len as i32 - current as i32);
-            }
+        if let Some(options) = &self.options
+            && let Some(max_len) = options.max_length
+        {
+            let current = self.character_count();
+            return Some(max_len as i32 - current as i32);
         }
         None
     }

@@ -54,7 +54,7 @@ impl Uuid {
     /// - `allow_lowercase`: true
     /// - `allow_braces`: false
     /// - `specific_version`: None (any version)
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             allow_uppercase: true,
@@ -193,9 +193,7 @@ impl TypedValidator for Uuid {
                 };
                 return Err(ValidationError::new(
                     "invalid_uuid_char",
-                    format!(
-                        "Invalid UUID character '{c}' at position {i}{case_hint}"
-                    ),
+                    format!("Invalid UUID character '{c}' at position {i}{case_hint}"),
                 ));
             }
         }
@@ -206,9 +204,7 @@ impl TypedValidator for Uuid {
                 if version != expected_version {
                     return Err(ValidationError::new(
                         "invalid_uuid_version",
-                        format!(
-                            "Expected UUID version {expected_version}, found {version}"
-                        ),
+                        format!("Expected UUID version {expected_version}, found {version}"),
                     ));
                 }
             } else {

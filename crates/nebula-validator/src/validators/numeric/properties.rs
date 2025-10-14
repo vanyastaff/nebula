@@ -53,7 +53,7 @@ where
 /// assert!(validator.validate(&0).is_err());
 /// assert!(validator.validate(&-5).is_err());
 /// ```
-#[must_use] 
+#[must_use]
 pub fn positive<T>() -> Positive<T>
 where
     T: PartialOrd + Default + Display,
@@ -112,7 +112,7 @@ where
 /// assert!(validator.validate(&0).is_err());
 /// assert!(validator.validate(&5).is_err());
 /// ```
-#[must_use] 
+#[must_use]
 pub fn negative<T>() -> Negative<T>
 where
     T: PartialOrd + Default + Display,
@@ -168,7 +168,7 @@ where
 /// assert!(validator.validate(&0).is_ok());
 /// assert!(validator.validate(&3).is_err());
 /// ```
-#[must_use] 
+#[must_use]
 pub fn even<T>() -> Even<T>
 where
     T: Copy + std::ops::Rem<Output = T> + PartialEq + From<u8>,
@@ -225,7 +225,7 @@ where
 /// assert!(validator.validate(&0).is_err());
 /// assert!(validator.validate(&4).is_err());
 /// ```
-#[must_use] 
+#[must_use]
 pub fn odd<T>() -> Odd<T>
 where
     T: Copy + std::ops::Rem<Output = T> + PartialEq + From<u8>,

@@ -56,6 +56,7 @@ pub struct AtomicCacheStats {
 
 impl AtomicCacheStats {
     /// Create a new stats tracker
+    #[must_use]
     pub fn new() -> Self {
         Self {
             hits: AtomicU64::new(0),
@@ -174,7 +175,7 @@ impl Default for AtomicCacheStats {
 ///
 /// This is a point-in-time snapshot of cache statistics that can be
 /// cheaply copied and analyzed without holding locks.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct CacheStats {
     /// Number of cache hits
     pub hits: u64,
@@ -194,6 +195,7 @@ pub struct CacheStats {
 
 impl CacheStats {
     /// Calculate hit rate as a percentage (0.0 to 100.0)
+    #[must_use]
     pub fn hit_rate(&self) -> f64 {
         let total = self.hits + self.misses;
         if total == 0 {
@@ -204,32 +206,21 @@ impl CacheStats {
     }
 
     /// Calculate miss rate as a percentage (0.0 to 100.0)
+    #[must_use]
     pub fn miss_rate(&self) -> f64 {
         100.0 - self.hit_rate()
     }
 
     /// Get total number of requests (hits + misses)
+    #[must_use]
     pub fn total_requests(&self) -> u64 {
         self.hits + self.misses
     }
 
     /// Check if cache is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entry_count == 0
-    }
-}
-
-impl Default for CacheStats {
-    fn default() -> Self {
-        Self {
-            hits: 0,
-            misses: 0,
-            evictions: 0,
-            insertions: 0,
-            deletions: 0,
-            entry_count: 0,
-            size_bytes: 0,
-        }
     }
 }
 
@@ -244,7 +235,7 @@ pub trait StatsProvider {
 
 /// Simple stats collector for manual tracking
 ///
-/// Unlike AtomicCacheStats, this is not thread-safe and should be used
+/// Unlike `AtomicCacheStats`, this is not thread-safe and should be used
 /// only in single-threaded contexts or with external synchronization.
 #[derive(Debug, Clone)]
 pub struct StatsCollector {
@@ -253,6 +244,7 @@ pub struct StatsCollector {
 
 impl StatsCollector {
     /// Create a new stats collector
+    #[must_use]
     pub fn new() -> Self {
         Self {
             stats: CacheStats::default(),
@@ -289,6 +281,7 @@ impl StatsCollector {
     }
 
     /// Get current statistics
+    #[must_use]
     pub fn stats(&self) -> &CacheStats {
         &self.stats
     }

@@ -45,7 +45,7 @@ pub struct MacAddress {
 
 impl MacAddress {
     /// Creates a new MAC address validator (allows all formats).
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             allow_colon: true,

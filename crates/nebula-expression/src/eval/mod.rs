@@ -2,11 +2,11 @@
 //!
 //! This module implements the evaluation of parsed expression ASTs.
 
+use crate::ExpressionError;
 use crate::builtins::BuiltinRegistry;
 use crate::context::EvaluationContext;
 use crate::core::ast::{BinaryOp, Expr};
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
-use nebula_error::NebulaError;
 use nebula_value::Value;
 use nebula_value::ValueRefExt;
 use parking_lot::Mutex;
@@ -52,7 +52,7 @@ impl Evaluator {
     ) -> ExpressionResult<Value> {
         // Check recursion depth limit
         if depth > MAX_RECURSION_DEPTH {
-            return Err(NebulaError::expression_eval_error(format!(
+            return Err(ExpressionError::expression_eval_error(format!(
                 "Maximum recursion depth ({}) exceeded",
                 MAX_RECURSION_DEPTH
             )));
@@ -61,8 +61,8 @@ impl Evaluator {
             Expr::Literal(val) => Ok(val.clone()),
 
             Expr::Variable(name) => context
-                .resolve_variable(&**name)
-                .ok_or_else(|| NebulaError::expression_variable_not_found(&**name)),
+                .resolve_variable(name)
+                .ok_or_else(|| ExpressionError::expression_variable_not_found(&**name)),
 
             Expr::Identifier(name) => {
                 // Try to resolve as a constant or special value
@@ -75,7 +75,7 @@ impl Evaluator {
                 match val {
                     Value::Integer(i) => Ok(Value::integer(-i.value())),
                     Value::Float(f) => Ok(Value::float(-f.value())),
-                    _ => Err(NebulaError::expression_type_error(
+                    _ => Err(ExpressionError::expression_type_error(
                         "number",
                         val.kind().name(),
                     )),
@@ -141,7 +141,7 @@ impl Evaluator {
 
             Expr::Lambda { .. } => {
                 // Lambdas are handled specially in higher-order functions
-                Err(NebulaError::expression_eval_error(
+                Err(ExpressionError::expression_eval_error(
                     "Lambda expressions can only be used as function arguments",
                 ))
             }
@@ -231,7 +231,7 @@ impl Evaluator {
             (Value::Text(l), Value::Text(r)) => {
                 Ok(Value::text(format!("{}{}", l.as_str(), r.as_str())))
             }
-            _ => Err(NebulaError::expression_type_error(
+            _ => Err(ExpressionError::expression_type_error(
                 "number or string",
                 format!("{} and {}", left.kind().name(), right.kind().name()),
             )),
@@ -245,7 +245,7 @@ impl Evaluator {
             (Value::Float(l), Value::Float(r)) => Ok(Value::float(l.value() - r.value())),
             (Value::Integer(l), Value::Float(r)) => Ok(Value::float(l.value() as f64 - r.value())),
             (Value::Float(l), Value::Integer(r)) => Ok(Value::float(l.value() - r.value() as f64)),
-            _ => Err(NebulaError::expression_type_error(
+            _ => Err(ExpressionError::expression_type_error(
                 "number",
                 format!("{} and {}", left.kind().name(), right.kind().name()),
             )),
@@ -259,7 +259,7 @@ impl Evaluator {
             (Value::Float(l), Value::Float(r)) => Ok(Value::float(l.value() * r.value())),
             (Value::Integer(l), Value::Float(r)) => Ok(Value::float(l.value() as f64 * r.value())),
             (Value::Float(l), Value::Integer(r)) => Ok(Value::float(l.value() * r.value() as f64)),
-            _ => Err(NebulaError::expression_type_error(
+            _ => Err(ExpressionError::expression_type_error(
                 "number",
                 format!("{} and {}", left.kind().name(), right.kind().name()),
             )),
@@ -271,29 +271,29 @@ impl Evaluator {
         match (left, right) {
             (Value::Integer(l), Value::Integer(r)) => {
                 if r.value() == 0 {
-                    return Err(NebulaError::expression_division_by_zero());
+                    return Err(ExpressionError::expression_division_by_zero());
                 }
                 Ok(Value::integer(l.value() / r.value()))
             }
             (Value::Float(l), Value::Float(r)) => {
                 if r.value() == 0.0 {
-                    return Err(NebulaError::expression_division_by_zero());
+                    return Err(ExpressionError::expression_division_by_zero());
                 }
                 Ok(Value::float(l.value() / r.value()))
             }
             (Value::Integer(l), Value::Float(r)) => {
                 if r.value() == 0.0 {
-                    return Err(NebulaError::expression_division_by_zero());
+                    return Err(ExpressionError::expression_division_by_zero());
                 }
                 Ok(Value::float(l.value() as f64 / r.value()))
             }
             (Value::Float(l), Value::Integer(r)) => {
                 if r.value() == 0 {
-                    return Err(NebulaError::expression_division_by_zero());
+                    return Err(ExpressionError::expression_division_by_zero());
                 }
                 Ok(Value::float(l.value() / r.value() as f64))
             }
-            _ => Err(NebulaError::expression_type_error(
+            _ => Err(ExpressionError::expression_type_error(
                 "number",
                 format!("{} and {}", left.kind().name(), right.kind().name()),
             )),
@@ -305,11 +305,11 @@ impl Evaluator {
         match (left, right) {
             (Value::Integer(l), Value::Integer(r)) => {
                 if r.value() == 0 {
-                    return Err(NebulaError::expression_division_by_zero());
+                    return Err(ExpressionError::expression_division_by_zero());
                 }
                 Ok(Value::integer(l.value() % r.value()))
             }
-            _ => Err(NebulaError::expression_type_error(
+            _ => Err(ExpressionError::expression_type_error(
                 "integer",
                 format!("{} and {}", left.kind().name(), right.kind().name()),
             )),
@@ -333,7 +333,7 @@ impl Evaluator {
             (Value::Float(l), Value::Integer(r)) => {
                 Ok(Value::float(l.value().powf(r.value() as f64)))
             }
-            _ => Err(NebulaError::expression_type_error(
+            _ => Err(ExpressionError::expression_type_error(
                 "number",
                 format!("{} and {}", left.kind().name(), right.kind().name()),
             )),
@@ -352,7 +352,7 @@ impl Evaluator {
                 Ok(Value::boolean(l.value() < (r.value() as f64)))
             }
             (Value::Text(l), Value::Text(r)) => Ok(Value::boolean(l.as_str() < r.as_str())),
-            _ => Err(NebulaError::expression_type_error(
+            _ => Err(ExpressionError::expression_type_error(
                 "comparable values",
                 format!("{} and {}", left.kind().name(), right.kind().name()),
             )),
@@ -371,7 +371,7 @@ impl Evaluator {
                 Ok(Value::boolean(l.value() > (r.value() as f64)))
             }
             (Value::Text(l), Value::Text(r)) => Ok(Value::boolean(l.as_str() > r.as_str())),
-            _ => Err(NebulaError::expression_type_error(
+            _ => Err(ExpressionError::expression_type_error(
                 "comparable values",
                 format!("{} and {}", left.kind().name(), right.kind().name()),
             )),
@@ -390,7 +390,7 @@ impl Evaluator {
                 Ok(Value::boolean(l.value() <= (r.value() as f64)))
             }
             (Value::Text(l), Value::Text(r)) => Ok(Value::boolean(l.as_str() <= r.as_str())),
-            _ => Err(NebulaError::expression_type_error(
+            _ => Err(ExpressionError::expression_type_error(
                 "comparable values",
                 format!("{} and {}", left.kind().name(), right.kind().name()),
             )),
@@ -409,7 +409,7 @@ impl Evaluator {
                 Ok(Value::boolean(l.value() >= (r.value() as f64)))
             }
             (Value::Text(l), Value::Text(r)) => Ok(Value::boolean(l.as_str() >= r.as_str())),
-            _ => Err(NebulaError::expression_type_error(
+            _ => Err(ExpressionError::expression_type_error(
                 "comparable values",
                 format!("{} and {}", left.kind().name(), right.kind().name()),
             )),
@@ -421,11 +421,11 @@ impl Evaluator {
     fn regex_match(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         let text = left
             .as_str()
-            .ok_or_else(|| NebulaError::expression_type_error("string", left.kind().name()))?;
+            .ok_or_else(|| ExpressionError::expression_type_error("string", left.kind().name()))?;
 
         let pattern = right
             .as_str()
-            .ok_or_else(|| NebulaError::expression_type_error("string", right.kind().name()))?;
+            .ok_or_else(|| ExpressionError::expression_type_error("string", right.kind().name()))?;
 
         // Try to get from cache first
         let mut cache = self.regex_cache.lock();
@@ -435,7 +435,7 @@ impl Evaluator {
         } else {
             // Cache miss - compile and cache
             let new_regex = Regex::new(pattern)
-                .map_err(|e| NebulaError::expression_regex_error(e.to_string()))?;
+                .map_err(|e| ExpressionError::expression_regex_error(e.to_string()))?;
             cache.insert(pattern.to_string(), new_regex.clone());
             new_regex
         };
@@ -446,7 +446,7 @@ impl Evaluator {
 
     #[cfg(not(feature = "regex"))]
     fn regex_match(&self, _left: &Value, _right: &Value) -> ExpressionResult<Value> {
-        Err(NebulaError::expression_eval_error(
+        Err(ExpressionError::expression_eval_error(
             "Regex matching is not enabled (feature 'regex' not enabled)",
         ))
     }
@@ -456,11 +456,14 @@ impl Evaluator {
         match obj {
             Value::Object(o) => {
                 let json_val = o.get(property).ok_or_else(|| {
-                    NebulaError::expression_eval_error(format!("Property '{}' not found", property))
+                    ExpressionError::expression_eval_error(format!(
+                        "Property '{}' not found",
+                        property
+                    ))
                 })?;
                 Ok(json_val.clone())
             }
-            _ => Err(NebulaError::expression_type_error(
+            _ => Err(ExpressionError::expression_type_error(
                 "object",
                 obj.kind().name(),
             )),
@@ -476,27 +479,30 @@ impl Evaluator {
                 let actual_idx = if idx < 0 { len + idx } else { idx };
 
                 if actual_idx < 0 || actual_idx >= len {
-                    return Err(NebulaError::expression_index_out_of_bounds(
+                    return Err(ExpressionError::expression_index_out_of_bounds(
                         actual_idx as usize,
                         len as usize,
                     ));
                 }
 
                 let json_val = arr.get(actual_idx as usize).ok_or_else(|| {
-                    NebulaError::expression_index_out_of_bounds(actual_idx as usize, len as usize)
+                    ExpressionError::expression_index_out_of_bounds(
+                        actual_idx as usize,
+                        len as usize,
+                    )
                 })?;
                 Ok(json_val.clone())
             }
             Value::Object(o) => {
                 let key = index.as_str().ok_or_else(|| {
-                    NebulaError::expression_type_error("string", index.kind().name())
+                    ExpressionError::expression_type_error("string", index.kind().name())
                 })?;
                 let json_val = o.get(key).ok_or_else(|| {
-                    NebulaError::expression_eval_error(format!("Key '{}' not found", key))
+                    ExpressionError::expression_eval_error(format!("Key '{}' not found", key))
                 })?;
                 Ok(json_val.clone())
             }
-            _ => Err(NebulaError::expression_type_error(
+            _ => Err(ExpressionError::expression_type_error(
                 "array or object",
                 obj.kind().name(),
             )),

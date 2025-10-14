@@ -12,9 +12,8 @@ use std::hash::{Hash, Hasher};
 use base64::Engine;
 use bytes::Bytes as BytesBuf;
 
-use crate::core::NebulaError;
-use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::limits::ValueLimits;
+use crate::core::{ValueError, ValueResult};
 
 /// Binary data with efficient cloning
 ///
@@ -59,7 +58,7 @@ impl Bytes {
         let engine = base64::engine::general_purpose::STANDARD;
         let decoded = engine
             .decode(encoded)
-            .map_err(|e| NebulaError::value_parse_error("base64", e.to_string()))?;
+            .map_err(|e| ValueError::parse_error("base64", e.to_string()))?;
 
         Ok(Self::new(decoded))
     }
@@ -98,7 +97,7 @@ impl Bytes {
     /// Get a sub-slice by range
     pub fn slice(&self, start: usize, end: usize) -> ValueResult<Bytes> {
         if start > end || end > self.len() {
-            return Err(NebulaError::value_out_of_range(
+            return Err(ValueError::out_of_range(
                 format!("{}..{}", start, end),
                 "0",
                 self.len().to_string(),

@@ -1,11 +1,11 @@
 //! Date and time functions
 
 use super::{check_arg_count, check_min_arg_count};
+use crate::ExpressionError;
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
 use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Timelike, Utc};
-use nebula_error::NebulaError;
 use nebula_value::Value;
 
 /// Get current timestamp as Unix seconds
@@ -39,9 +39,9 @@ pub fn format_date(
     let dt = parse_datetime(&args[0])?;
 
     if args.len() >= 2 {
-        let format_str = args[1]
-            .as_str()
-            .ok_or_else(|| NebulaError::expression_type_error("string", args[1].kind().name()))?;
+        let format_str = args[1].as_str().ok_or_else(|| {
+            ExpressionError::expression_type_error("string", args[1].kind().name())
+        })?;
 
         let formatted = format_datetime(&dt, format_str)?;
         Ok(Value::text(formatted))
@@ -75,7 +75,7 @@ pub fn date_add(
     let amount = args[1].to_integer()?;
     let unit = args[2]
         .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[2].kind().name()))?;
+        .ok_or_else(|| ExpressionError::expression_type_error("string", args[2].kind().name()))?;
 
     let new_dt = match unit.to_lowercase().as_str() {
         "seconds" | "second" | "s" => dt + chrono::Duration::seconds(amount),
@@ -84,7 +84,7 @@ pub fn date_add(
         "days" | "day" | "d" => dt + chrono::Duration::days(amount),
         "weeks" | "week" | "w" => dt + chrono::Duration::weeks(amount),
         _ => {
-            return Err(NebulaError::expression_invalid_argument(
+            return Err(ExpressionError::expression_invalid_argument(
                 "date_add",
                 format!("Invalid unit: {}", unit),
             ));
@@ -106,7 +106,7 @@ pub fn date_subtract(
     let amount = args[1].to_integer()?;
     let unit = args[2]
         .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[2].kind().name()))?;
+        .ok_or_else(|| ExpressionError::expression_type_error("string", args[2].kind().name()))?;
 
     let new_dt = match unit.to_lowercase().as_str() {
         "seconds" | "second" | "s" => dt - chrono::Duration::seconds(amount),
@@ -115,7 +115,7 @@ pub fn date_subtract(
         "days" | "day" | "d" => dt - chrono::Duration::days(amount),
         "weeks" | "week" | "w" => dt - chrono::Duration::weeks(amount),
         _ => {
-            return Err(NebulaError::expression_invalid_argument(
+            return Err(ExpressionError::expression_invalid_argument(
                 "date_subtract",
                 format!("Invalid unit: {}", unit),
             ));
@@ -137,7 +137,7 @@ pub fn date_diff(
     let dt2 = parse_datetime(&args[1])?;
     let unit = args[2]
         .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[2].kind().name()))?;
+        .ok_or_else(|| ExpressionError::expression_type_error("string", args[2].kind().name()))?;
 
     let duration = dt1.signed_duration_since(dt2);
 
@@ -148,7 +148,7 @@ pub fn date_diff(
         "days" | "day" | "d" => duration.num_days(),
         "weeks" | "week" | "w" => duration.num_weeks(),
         _ => {
-            return Err(NebulaError::expression_invalid_argument(
+            return Err(ExpressionError::expression_invalid_argument(
                 "date_diff",
                 format!("Invalid unit: {}", unit),
             ));
@@ -246,7 +246,7 @@ fn parse_datetime(value: &Value) -> ExpressionResult<DateTime<Utc>> {
             let dt = Utc
                 .timestamp_opt(timestamp, 0)
                 .single()
-                .ok_or_else(|| NebulaError::expression_eval_error("Invalid timestamp"))?;
+                .ok_or_else(|| ExpressionError::expression_eval_error("Invalid timestamp"))?;
             Ok(dt)
         }
         Value::Text(s) => {
@@ -277,12 +277,12 @@ fn parse_datetime(value: &Value) -> ExpressionResult<DateTime<Utc>> {
                 }
             }
 
-            Err(NebulaError::expression_eval_error(format!(
+            Err(ExpressionError::expression_eval_error(format!(
                 "Cannot parse date: {}",
                 s
             )))
         }
-        _ => Err(NebulaError::expression_type_error(
+        _ => Err(ExpressionError::expression_type_error(
             "integer or string",
             value.kind().name(),
         )),

@@ -57,7 +57,6 @@ This crate will integrate with:
 - `nebula-parameter` - Parameter validation and binding
 - `nebula-resource` - Resource access (DB, HTTP, etc.)
 - `nebula-credential` - Authentication
-- `nebula-error` - Error handling
 
 ## License
 

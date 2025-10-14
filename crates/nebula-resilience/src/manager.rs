@@ -50,7 +50,7 @@ pub struct PolicyBuilder {
 
 impl PolicyBuilder {
     /// Create a new policy builder
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -84,7 +84,7 @@ impl PolicyBuilder {
     }
 
     /// Build the policy
-    #[must_use] 
+    #[must_use]
     pub fn build(self) -> ResiliencePolicy {
         ResiliencePolicy {
             timeout: self.timeout,
@@ -140,14 +140,14 @@ impl ExecutionContext {
 
 /// Modern resilience manager with proper async semantics and concurrent access
 ///
-/// Uses DashMap for lock-free concurrent reads, optimized for high-throughput scenarios.
+/// Uses `DashMap` for lock-free concurrent reads, optimized for high-throughput scenarios.
 #[derive(Debug)]
 pub struct ResilienceManager {
-    /// Service policies (concurrent HashMap for lock-free reads)
+    /// Service policies (concurrent `HashMap` for lock-free reads)
     policies: Arc<DashMap<String, Arc<ResiliencePolicy>>>,
-    /// Circuit breakers per service (concurrent HashMap)
+    /// Circuit breakers per service (concurrent `HashMap`)
     circuit_breakers: Arc<DashMap<String, Arc<CircuitBreaker>>>,
-    /// Bulkheads per service (concurrent HashMap)
+    /// Bulkheads per service (concurrent `HashMap`)
     bulkheads: Arc<DashMap<String, Arc<Bulkhead>>>,
     /// Default policy for unregistered services (Arc for cheap cloning)
     default_policy: Arc<ResiliencePolicy>,
@@ -166,7 +166,7 @@ impl ResilienceManager {
     }
 
     /// Create manager with default settings
-    #[must_use] 
+    #[must_use]
     pub fn with_defaults() -> Self {
         let default_policy = PolicyBuilder::new()
             .with_timeout(Duration::from_secs(30))
@@ -239,12 +239,12 @@ impl ResilienceManager {
 
     /// Get policy for service (or default)
     ///
-    /// Returns Arc for cheap cloning - lock-free read with DashMap
+    /// Returns Arc for cheap cloning - lock-free read with `DashMap`
     fn get_policy(&self, service: &str) -> Arc<ResiliencePolicy> {
-        self.policies
-            .get(service)
-            .map(|entry| Arc::clone(entry.value()))
-            .unwrap_or_else(|| Arc::clone(&self.default_policy))
+        self.policies.get(service).map_or_else(
+            || Arc::clone(&self.default_policy),
+            |entry| Arc::clone(entry.value()),
+        )
     }
 
     /// Core execution logic with proper composition and optimized locking
@@ -259,11 +259,13 @@ impl ResilienceManager {
         T: Send,
     {
         // Get components with lock-free reads from DashMap
-        let circuit_breaker = self.circuit_breakers
+        let circuit_breaker = self
+            .circuit_breakers
             .get(&context.service_name)
             .map(|entry| Arc::clone(entry.value()));
 
-        let bulkhead = self.bulkheads
+        let bulkhead = self
+            .bulkheads
             .get(&context.service_name)
             .map(|entry| Arc::clone(entry.value()));
 
@@ -414,9 +416,9 @@ impl ResilienceManager {
             service_name: service.to_string(),
             circuit_breaker,
             bulkhead,
-            total_operations: 0,   // TODO: Track in future with metrics collector
-            failed_operations: 0,  // TODO: Track in future with metrics collector
-            avg_latency_ms: 0.0,   // TODO: Track in future with metrics collector
+            total_operations: 0,  // TODO: Track in future with metrics collector
+            failed_operations: 0, // TODO: Track in future with metrics collector
+            avg_latency_ms: 0.0,  // TODO: Track in future with metrics collector
         })
     }
 
@@ -443,7 +445,11 @@ impl ResilienceManager {
         let mut metrics = std::collections::HashMap::new();
 
         // Lock-free iteration over all registered services
-        let services: Vec<String> = self.policies.iter().map(|entry| entry.key().clone()).collect();
+        let services: Vec<String> = self
+            .policies
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
 
         for service in services {
             if let Some(service_metrics) = self.get_metrics(&service).await {
@@ -463,9 +469,13 @@ impl ResilienceManager {
     }
 
     /// Get all registered services
+    #[must_use]
     pub fn list_services(&self) -> Vec<String> {
         // Lock-free iteration
-        self.policies.iter().map(|entry| entry.key().clone()).collect()
+        self.policies
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect()
     }
 }
 

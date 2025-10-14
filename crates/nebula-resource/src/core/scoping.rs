@@ -85,7 +85,7 @@ impl ResourceScope {
     }
 
     /// Get the scope hierarchy level (lower numbers = broader scope)
-    #[must_use] 
+    #[must_use]
     pub fn hierarchy_level(&self) -> u8 {
         match self {
             Self::Global => 0,
@@ -98,35 +98,36 @@ impl ResourceScope {
     }
 
     /// Check if this scope is broader than another scope
-    #[must_use] 
+    #[must_use]
     pub fn is_broader_than(&self, other: &ResourceScope) -> bool {
         self.hierarchy_level() < other.hierarchy_level()
     }
 
     /// Check if this scope is narrower than another scope
-    #[must_use] 
+    #[must_use]
     pub fn is_narrower_than(&self, other: &ResourceScope) -> bool {
         self.hierarchy_level() > other.hierarchy_level()
     }
 
     /// Check if this scope contains another scope
-    #[must_use] 
+    #[must_use]
     pub fn contains(&self, other: &ResourceScope) -> bool {
         match (self, other) {
             // Global contains everything
             (Self::Global, _) => true,
 
             // Tenant contains workflow, execution, and action in same tenant
-            (Self::Tenant { tenant_id: t1 },
-Self::Workflow { .. } | Self::Execution { .. } | Self::Action { .. }) => {
+            (
+                Self::Tenant { tenant_id: t1 },
+                Self::Workflow { .. } | Self::Execution { .. } | Self::Action { .. },
+            ) => {
                 // Note: This is simplified - in reality we'd need context to check tenant ownership
                 true
             }
             (Self::Tenant { tenant_id: t1 }, Self::Tenant { tenant_id: t2 }) => t1 == t2,
 
             // Workflow contains execution and action in same workflow
-            (Self::Workflow { workflow_id: w1 },
-Self::Execution { .. } | Self::Action { .. }) => {
+            (Self::Workflow { workflow_id: w1 }, Self::Execution { .. } | Self::Action { .. }) => {
                 // Note: This is simplified - in reality we'd need context to check workflow ownership
                 true
             }
@@ -162,7 +163,7 @@ Self::Execution { .. } | Self::Action { .. }) => {
     }
 
     /// Generate a scope key for storage/lookup
-    #[must_use] 
+    #[must_use]
     pub fn scope_key(&self) -> String {
         match self {
             Self::Global => "global".to_string(),
@@ -181,7 +182,7 @@ Self::Execution { .. } | Self::Action { .. }) => {
     }
 
     /// Get a human-readable description of the scope
-    #[must_use] 
+    #[must_use]
     pub fn description(&self) -> String {
         match self {
             Self::Global => "Global scope (shared across all workflows and tenants)".to_string(),
@@ -208,7 +209,6 @@ impl fmt::Display for ResourceScope {
     }
 }
 
-
 /// Scoping strategy for resource allocation
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -225,7 +225,7 @@ pub enum ScopingStrategy {
 
 impl ScopingStrategy {
     /// Check if a resource scope is compatible with a requested scope using this strategy
-    #[must_use] 
+    #[must_use]
     pub fn is_compatible(
         &self,
         resource_scope: &ResourceScope,
@@ -240,7 +240,6 @@ impl ScopingStrategy {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -48,7 +48,6 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(incomplete_features)]
-#![warn(missing_docs)]
 #![warn(clippy::all)]
 #![warn(rust_2018_idioms)]
 
@@ -58,45 +57,50 @@ extern crate alloc;
 // Error types
 pub mod error;
 
-// Core functionality - foundational types and traits
-pub mod core;
-
-// Memory allocators - the heart of nebula-memory
+// Core modules
 pub mod allocator;
-
-// Utility functions and helpers
-pub mod utils;
-
-// Re-export core types for convenience
-pub use crate::core::MemoryConfig;
-pub use crate::error::{MemoryError, MemoryResult};
-
-// Core features that depend on allocators
 #[cfg(feature = "arena")]
 #[cfg_attr(docsrs, doc(cfg(feature = "arena")))]
 pub mod arena;
-
-#[cfg(feature = "pool")]
-#[cfg_attr(docsrs, doc(cfg(feature = "pool")))]
-pub mod pool;
-
-#[cfg(feature = "cache")]
-#[cfg_attr(docsrs, doc(cfg(feature = "cache")))]
-pub mod cache;
-
-// Advanced features
-#[cfg(feature = "stats")]
-#[cfg_attr(docsrs, doc(cfg(feature = "stats")))]
-pub mod stats;
-
-#[cfg(feature = "budget")]
-#[cfg_attr(docsrs, doc(cfg(feature = "budget")))]
-pub mod budget;
-
-// Async support
 #[cfg(feature = "async")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub mod async_support;
+#[cfg(feature = "budget")]
+#[cfg_attr(docsrs, doc(cfg(feature = "budget")))]
+pub mod budget;
+#[cfg(feature = "cache")]
+#[cfg_attr(docsrs, doc(cfg(feature = "cache")))]
+pub mod cache;
+pub mod core;
+#[cfg(all(feature = "std", feature = "monitoring"))]
+#[cfg_attr(docsrs, doc(cfg(feature = "monitoring")))]
+pub mod monitoring;
+#[cfg(feature = "pool")]
+#[cfg_attr(docsrs, doc(cfg(feature = "pool")))]
+pub mod pool;
+#[cfg(feature = "stats")]
+#[cfg_attr(docsrs, doc(cfg(feature = "stats")))]
+pub mod stats;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod syscalls;
+pub mod utils;
+
+// Core functionality - foundational types and traits
+
+// Memory allocators - the heart of nebula-memory
+
+// Utility functions and helpers
+
+// Re-export core types for convenience
+pub use crate::core::MemoryConfig;
+pub use crate::error::{MemoryError, MemoryResult, Result};
+
+// Core features that depend on allocators
+
+// Advanced features
+
+// Async support
 
 // Streaming module not yet implemented
 // #[cfg(feature = "streaming")]
@@ -104,14 +108,8 @@ pub mod async_support;
 // pub mod streaming;
 
 // Low-level system calls for allocators
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
-pub mod syscalls;
 
 // System integration
-#[cfg(all(feature = "std", feature = "monitoring"))]
-#[cfg_attr(docsrs, doc(cfg(feature = "monitoring")))]
-pub mod monitoring;
 
 // Public API exports
 pub mod prelude {
@@ -120,7 +118,9 @@ pub mod prelude {
     // Core types
     pub use crate::core::MemoryConfig;
     pub use crate::core::traits::{MemoryManager, MemoryUsage, Resettable};
-    pub use crate::error::{MemoryError, MemoryResult};
+
+    // Error types (standalone!)
+    pub use crate::error::{MemoryError, MemoryResult, Result};
 
     // Allocator types
     pub use crate::allocator::{
@@ -179,8 +179,7 @@ pub fn init() -> MemoryResult<()> {
     }
 
     // Initialize global allocator manager
-    crate::allocator::GlobalAllocatorManager::init()
-        .map_err(|e| MemoryError::initialization_failed(e))?;
+    crate::allocator::GlobalAllocatorManager::init().map_err(MemoryError::initialization_failed)?;
 
     #[cfg(feature = "logging")]
     {

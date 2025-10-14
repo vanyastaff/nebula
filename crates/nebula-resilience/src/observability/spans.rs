@@ -24,11 +24,7 @@ use std::time::Instant;
 ///     }).await
 /// }
 /// ```
-pub async fn create_span<F, Fut, T, E>(
-    pattern: &str,
-    operation: &str,
-    f: F,
-) -> Result<T, E>
+pub async fn create_span<F, Fut, T, E>(pattern: &str, operation: &str, f: F) -> Result<T, E>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<T, E>>,
@@ -120,10 +116,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_span_success() {
-        let result = create_span("test", "operation", || async {
-            Ok::<_, &str>(42)
-        })
-        .await;
+        let result = create_span("test", "operation", || async { Ok::<_, &str>(42) }).await;
 
         assert_eq!(result, Ok(42));
     }

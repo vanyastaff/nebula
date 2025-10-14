@@ -74,7 +74,7 @@ pub type PasswordCredential = crate::core::adapter::FlowCredential<PasswordFlow>
 
 impl PasswordCredential {
     /// Create a new Password credential
-    #[must_use] 
+    #[must_use]
     pub fn create() -> Self {
         Self::from_flow(PasswordFlow)
     }

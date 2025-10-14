@@ -74,7 +74,7 @@ pub type BasicAuthCredential = crate::core::adapter::FlowCredential<BasicAuthFlo
 
 impl BasicAuthCredential {
     /// Create a new Basic Auth credential
-    #[must_use] 
+    #[must_use]
     pub fn create() -> Self {
         Self::from_flow(BasicAuthFlow)
     }

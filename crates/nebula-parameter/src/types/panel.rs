@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
 use crate::core::{Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata};
-use nebula_expression::MaybeExpression;
-use nebula_value::Value;
 
 /// Panel parameter - container for organizing parameters into sections/tabs
 #[derive(Serialize)]
@@ -136,11 +134,13 @@ impl Panel {
     }
 
     /// Get the number of children in this panel
+    #[must_use]
     pub fn child_count(&self) -> usize {
         self.children.len()
     }
 
     /// Check if this panel is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.children.is_empty()
     }
@@ -174,6 +174,7 @@ impl Displayable for PanelParameter {
 
 impl PanelParameter {
     /// Create a new panel parameter
+    #[must_use]
     pub fn new(metadata: ParameterMetadata) -> Self {
         Self {
             metadata,
@@ -189,6 +190,7 @@ impl PanelParameter {
     }
 
     /// Get a panel by key
+    #[must_use]
     pub fn get_panel(&self, key: &str) -> Option<&Panel> {
         self.panels.iter().find(|p| p.key == key)
     }
@@ -199,11 +201,13 @@ impl PanelParameter {
     }
 
     /// Get all panel keys
+    #[must_use]
     pub fn get_panel_keys(&self) -> Vec<&str> {
         self.panels.iter().map(|p| p.key.as_str()).collect()
     }
 
     /// Get the default active panel key
+    #[must_use]
     pub fn get_default_panel(&self) -> Option<&str> {
         self.options
             .as_ref()
@@ -212,34 +216,43 @@ impl PanelParameter {
     }
 
     /// Check if multiple panels can be open at once
+    #[must_use]
     pub fn allows_multiple_open(&self) -> bool {
         self.options
             .as_ref()
-            .map(|opts| opts.allow_multiple_open)
-            .unwrap_or(false)
+            .is_some_and(|opts| opts.allow_multiple_open)
     }
 
     /// Get the total number of panels
+    #[must_use]
     pub fn panel_count(&self) -> usize {
         self.panels.len()
     }
 
     /// Get all enabled panels
+    #[must_use]
     pub fn get_enabled_panels(&self) -> Vec<&Panel> {
         self.panels.iter().filter(|p| p.enabled).collect()
     }
 
     /// Get all parameters from all panels (flattened)
+    #[must_use]
     pub fn get_all_parameters(&self) -> Vec<&dyn Parameter> {
         self.panels
             .iter()
-            .flat_map(|panel| panel.children.iter().map(|child| child.as_ref()))
+            .flat_map(|panel| panel.children.iter().map(std::convert::AsRef::as_ref))
             .collect()
     }
 
     /// Get parameters from a specific panel
+    #[must_use]
     pub fn get_panel_parameters(&self, panel_key: &str) -> Option<Vec<&dyn Parameter>> {
-        self.get_panel(panel_key)
-            .map(|panel| panel.children.iter().map(|child| child.as_ref()).collect())
+        self.get_panel(panel_key).map(|panel| {
+            panel
+                .children
+                .iter()
+                .map(std::convert::AsRef::as_ref)
+                .collect()
+        })
     }
 }

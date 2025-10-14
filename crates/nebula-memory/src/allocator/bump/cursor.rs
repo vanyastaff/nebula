@@ -35,7 +35,7 @@ impl Cursor for AtomicCursor {
 
     #[inline]
     fn store(&self, val: usize, ordering: Ordering) {
-        self.0.store(val, ordering)
+        self.0.store(val, ordering);
     }
 
     #[inline]
@@ -67,7 +67,7 @@ impl Cursor for CellCursor {
 
     #[inline]
     fn store(&self, val: usize, _ordering: Ordering) {
-        self.0.set(val)
+        self.0.set(val);
     }
 
     #[inline]

@@ -90,7 +90,7 @@ pub struct Email {
 }
 
 impl Email {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         // Simple email pattern - can be made more strict
         let pattern = regex::Regex::new(
@@ -138,7 +138,7 @@ impl TypedValidator for Email {
     }
 }
 
-#[must_use] 
+#[must_use]
 pub fn email() -> Email {
     Email::new()
 }
@@ -154,7 +154,7 @@ pub struct Url {
 }
 
 impl Url {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         let pattern = regex::Regex::new(r"^https?://[^\s/$.?#].[^\s]*$")
             .expect("hardcoded URL regex pattern is valid");
@@ -200,7 +200,7 @@ impl TypedValidator for Url {
     }
 }
 
-#[must_use] 
+#[must_use]
 pub fn url() -> Url {
     Url::new()
 }
@@ -234,7 +234,7 @@ impl TypedValidator for Uuid {
     }
 }
 
-#[must_use] 
+#[must_use]
 pub const fn uuid() -> Uuid {
     Uuid
 }

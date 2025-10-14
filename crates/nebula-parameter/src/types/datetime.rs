@@ -39,7 +39,7 @@ pub struct DateTimeParameter {
 
 #[derive(Debug, Clone, Builder, Serialize, Deserialize)]
 pub struct DateTimeParameterOptions {
-    /// DateTime format string (e.g., "YYYY-MM-DD HH:mm:ss", "DD/MM/YYYY HH:mm")
+    /// `DateTime` format string (e.g., "YYYY-MM-DD HH:mm:ss", "DD/MM/YYYY HH:mm")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
 
@@ -127,7 +127,7 @@ impl Expressible for DateTimeParameter {
                 } else {
                     Err(ParameterError::InvalidValue {
                         key: self.metadata.key.clone(),
-                        reason: format!("Invalid datetime format or out of range: {}", s),
+                        reason: format!("Invalid datetime format or out of range: {s}"),
                     })
                 }
             }
@@ -179,15 +179,15 @@ impl DateTimeParameter {
         if self.validate_iso_datetime(datetime) {
             // Check against min/max datetime if specified
             if let Some(options) = &self.options {
-                if let Some(min_datetime) = &options.min_datetime {
-                    if datetime < min_datetime.as_str() {
-                        return false;
-                    }
+                if let Some(min_datetime) = &options.min_datetime
+                    && datetime < min_datetime.as_str()
+                {
+                    return false;
                 }
-                if let Some(max_datetime) = &options.max_datetime {
-                    if datetime > max_datetime.as_str() {
-                        return false;
-                    }
+                if let Some(max_datetime) = &options.max_datetime
+                    && datetime > max_datetime.as_str()
+                {
+                    return false;
                 }
             }
             return true;
@@ -235,7 +235,10 @@ impl DateTimeParameter {
             date_parts[1].parse::<u32>(),
             date_parts[2].parse::<u32>(),
         ) {
-            if year < 1900 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31 {
+            if !(1900..=2100).contains(&year)
+                || !(1..=12).contains(&month)
+                || !(1..=31).contains(&day)
+            {
                 return false;
             }
         } else {
@@ -248,7 +251,7 @@ impl DateTimeParameter {
         // Remove timezone suffix if present
         if time_part.ends_with('Z') {
             time_part = &time_part[..time_part.len() - 1];
-        } else if time_part.contains('+') || time_part.rfind('-').map_or(false, |pos| pos > 2) {
+        } else if time_part.contains('+') || time_part.rfind('-').is_some_and(|pos| pos > 2) {
             // Handle timezone offsets like +03:00 or -05:00
             if let Some(tz_pos) = time_part
                 .rfind('+')
@@ -294,6 +297,7 @@ impl DateTimeParameter {
     }
 
     /// Get the datetime format for display
+    #[must_use]
     pub fn get_format(&self) -> String {
         self.options
             .as_ref()
@@ -303,14 +307,13 @@ impl DateTimeParameter {
     }
 
     /// Check if 12-hour format should be used
+    #[must_use]
     pub fn uses_12_hour_format(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.use_12_hour)
-            .unwrap_or(false)
+        self.options.as_ref().is_some_and(|opts| opts.use_12_hour)
     }
 
     /// Get timezone
+    #[must_use]
     pub fn get_timezone(&self) -> Option<&String> {
         self.options
             .as_ref()

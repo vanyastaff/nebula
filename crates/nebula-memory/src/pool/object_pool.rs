@@ -3,17 +3,17 @@
 //! # Safety
 //!
 //! This module implements single-threaded object pooling with RAII:
-//! - ObjectPool owns all pooled objects in Vec<T>
-//! - PooledValue uses NonNull<ObjectPool<T>> pointer to pool
-//! - ManuallyDrop prevents automatic drop of value (manual control)
+//! - `ObjectPool` owns all pooled objects in Vec<T>
+//! - `PooledValue` uses `NonNull`<`ObjectPool`<T>> pointer to pool
+//! - `ManuallyDrop` prevents automatic drop of value (manual control)
 //! - Drop implementation returns object to pool
 //!
 //! ## Safety Contracts
 //!
-//! - PooledValue::pool: NonNull pointer created from &mut self (valid while pool exists)
-//! - PooledValue::detach: ManuallyDrop::take extracts value, mem::forget prevents drop
-//! - PooledValue::drop: ManuallyDrop::take + pool.as_mut() returns object
-//! - PooledValue::pool(): Dereferences NonNull (safe while pool exists)
+//! - `PooledValue::pool`: `NonNull` pointer created from &mut self (valid while pool exists)
+//! - `PooledValue::detach`: `ManuallyDrop::take` extracts value, `mem::forget` prevents drop
+//! - `PooledValue::drop`: `ManuallyDrop::take` + `pool.as_mut()` returns object
+//! - `PooledValue::pool()`: Dereferences `NonNull` (safe while pool exists)
 //! - Send implementation: Safe if T: Send (pool pointer not shared)
 
 #[cfg(not(feature = "std"))]
@@ -194,29 +194,27 @@ impl<T: Poolable> ObjectPool<T> {
         self.callbacks.on_checkin(&obj);
 
         // Validate object if configured
-        if self.config.validate_on_return {
-            if !obj.validate() || !obj.is_reusable() {
-                self.callbacks.on_destroy(&obj);
-                #[cfg(feature = "stats")]
-                {
-                    self.stats.record_destruction();
-                    self.update_memory_stats();
-                }
-                return;
+        if self.config.validate_on_return && (!obj.validate() || !obj.is_reusable()) {
+            self.callbacks.on_destroy(&obj);
+            #[cfg(feature = "stats")]
+            {
+                self.stats.record_destruction();
+                self.update_memory_stats();
             }
+            return;
         }
 
         // Check if we should grow the pool
-        if let Some(max) = self.config.max_capacity {
-            if self.objects.len() >= max {
-                self.callbacks.on_destroy(&obj);
-                #[cfg(feature = "stats")]
-                {
-                    self.stats.record_destruction();
-                    self.update_memory_stats();
-                }
-                return;
+        if let Some(max) = self.config.max_capacity
+            && self.objects.len() >= max
+        {
+            self.callbacks.on_destroy(&obj);
+            #[cfg(feature = "stats")]
+            {
+                self.stats.record_destruction();
+                self.update_memory_stats();
             }
+            return;
         }
 
         obj.reset();
@@ -292,11 +290,13 @@ impl<T: Poolable> ObjectPool<T> {
     }
 
     /// Get number of available objects
+    #[must_use]
     pub fn available(&self) -> usize {
         self.objects.len()
     }
 
     /// Get pool capacity
+    #[must_use]
     pub fn capacity(&self) -> usize {
         self.objects.capacity()
     }
@@ -414,13 +414,13 @@ impl<T: Poolable> Deref for PooledValue<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &*self.value
+        &self.value
     }
 }
 
 impl<T: Poolable> DerefMut for PooledValue<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut *self.value
+        &mut self.value
     }
 }
 

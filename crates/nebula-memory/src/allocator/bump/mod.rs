@@ -6,7 +6,7 @@
 //! # Safety
 //!
 //! This module implements a bump allocator with careful synchronization:
-//! - Memory buffer wrapped in SyncUnsafeCell for interior mutability
+//! - Memory buffer wrapped in `SyncUnsafeCell` for interior mutability
 //! - Atomic cursor (or Cell for !Send) ensures exclusive allocation ranges
 //! - Compare-and-swap prevents overlapping allocations in multi-threaded mode
 //! - Checkpoint/restore with generation counters prevent use-after-restore
@@ -14,7 +14,7 @@
 //! ## Invariants
 //!
 //! - Allocated memory ranges never overlap (enforced by atomic CAS)
-//! - All pointers within [start_addr, end_addr) bounds
+//! - All pointers within [`start_addr`, `end_addr`) bounds
 //! - Cursor only moves forward (monotonic within a generation)
 //! - Checkpoints validated by generation counter
 //! - Individual deallocation not supported (no-op)
@@ -116,7 +116,7 @@ impl BumpAllocator {
         // We need to convert Box<[u8]> into Box<SyncUnsafeCell<[u8]>>
         let boxed_slice = vec.into_boxed_slice();
         let len = boxed_slice.len();
-        let ptr = Box::into_raw(boxed_slice) as *mut u8;
+        let ptr = Box::into_raw(boxed_slice).cast::<u8>();
         // SAFETY: Transmuting Box<[u8]> to Box<SyncUnsafeCell<[u8]>>.
         // - SyncUnsafeCell is repr(transparent), identical layout to inner type
         // - ptr is a valid Box<[u8]> pointer from Box::into_raw
@@ -340,49 +340,45 @@ impl BumpAllocator {
                 Ordering::Acquire,
             );
 
-            match result {
-                Ok(_) => {
-                    self.stats.record_allocation(actual_size);
-                    let usage = new_current - self.start_addr;
-                    atomic_max(&self.peak_usage, usage);
+            if result.is_ok() {
+                self.stats.record_allocation(actual_size);
+                let usage = new_current - self.start_addr;
+                atomic_max(&self.peak_usage, usage);
 
-                    // Calculate return pointer with proper provenance through UnsafeCell
-                    let offset = aligned - self.start_addr;
-                    // SAFETY: Getting pointer to freshly allocated memory using slice indexing.
-                    // - memory.get() returns *mut [u8] to our buffer
-                    // - offset is within bounds: aligned < new_current <= end_addr (checked above)
-                    // - CAS success means we exclusively own [aligned, new_current) range
-                    // - get_unchecked_mut provides bounds-checked access in debug mode
-                    // - No other thread can allocate overlapping range (cursor advanced)
-                    let ptr = unsafe {
-                        let memory_ptr = self.memory.get();
-                        let slice = &mut *memory_ptr;
-                        slice.get_unchecked_mut(offset..).as_mut_ptr()
-                    };
+                // Calculate return pointer with proper provenance through UnsafeCell
+                let offset = aligned - self.start_addr;
+                // SAFETY: Getting pointer to freshly allocated memory using slice indexing.
+                // - memory.get() returns *mut [u8] to our buffer
+                // - offset is within bounds: aligned < new_current <= end_addr (checked above)
+                // - CAS success means we exclusively own [aligned, new_current) range
+                // - get_unchecked_mut provides bounds-checked access in debug mode
+                // - No other thread can allocate overlapping range (cursor advanced)
+                let ptr = unsafe {
+                    let memory_ptr = self.memory.get();
+                    let slice = &mut *memory_ptr;
+                    slice.get_unchecked_mut(offset..).as_mut_ptr()
+                };
 
-                    // Fill with pattern if configured
-                    if let Some(pattern) = self.config.alloc_pattern {
-                        // SAFETY: Writing pattern to freshly allocated, uninitialized memory.
-                        // - ptr points to [aligned, aligned+actual_size) range
-                        // - This range is exclusively owned (just allocated via CAS)
-                        // - write_bytes writes pattern to every byte
-                        // - actual_size is within allocated range (checked above)
-                        unsafe {
-                            core::ptr::write_bytes(ptr, pattern, actual_size);
-                        }
-                    }
-
-                    // Convert raw pointer to NonNull with explicit check
-                    // ptr is guaranteed non-null (buffer from Box + valid offset)
-                    // but we use explicit check for additional safety
-                    return NonNull::new(ptr);
-                }
-                Err(_) => {
-                    attempts += 1;
-                    if self.config.thread_safe {
-                        backoff.spin();
+                // Fill with pattern if configured
+                if let Some(pattern) = self.config.alloc_pattern {
+                    // SAFETY: Writing pattern to freshly allocated, uninitialized memory.
+                    // - ptr points to [aligned, aligned+actual_size) range
+                    // - This range is exclusively owned (just allocated via CAS)
+                    // - write_bytes writes pattern to every byte
+                    // - actual_size is within allocated range (checked above)
+                    unsafe {
+                        core::ptr::write_bytes(ptr, pattern, actual_size);
                     }
                 }
+
+                // Convert raw pointer to NonNull with explicit check
+                // ptr is guaranteed non-null (buffer from Box + valid offset)
+                // but we use explicit check for additional safety
+                return NonNull::new(ptr);
+            }
+            attempts += 1;
+            if self.config.thread_safe {
+                backoff.spin();
             }
         }
     }
@@ -448,7 +444,7 @@ impl Resettable for BumpAllocator {
     /// - All allocations from this allocator are no longer in use
     /// - Reset is properly synchronized if allocator is shared across threads
     unsafe fn reset(&self) {
-        self.reset_internal()
+        self.reset_internal();
     }
 }
 
@@ -458,6 +454,6 @@ impl StatisticsProvider for BumpAllocator {
     }
 
     fn reset_statistics(&self) {
-        self.stats.reset()
+        self.stats.reset();
     }
 }

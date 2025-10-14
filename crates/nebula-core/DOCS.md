@@ -168,7 +168,6 @@ impl Scoped for MyResource {
 - All other Nebula crates
 
 ### Uses
-- `nebula-error` - Error utilities
 - `nebula-log` - Logging infrastructure
 
 ## When to Use

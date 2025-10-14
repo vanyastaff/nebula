@@ -17,8 +17,8 @@ pub(crate) fn lit_str(value: &str) -> LitStr {
 
 /// Converts a field name to a readable error field name.
 ///
-/// Transforms snake_case field names to more human-readable format for error messages.
-/// For example, "user_name" becomes "user name" in error messages.
+/// Transforms `snake_case` field names to more human-readable format for error messages.
+/// For example, `"user_name"` becomes "user name" in error messages.
 ///
 /// # Examples
 ///

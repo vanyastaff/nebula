@@ -39,7 +39,6 @@ pub enum PoolStrategy {
     Adaptive,
 }
 
-
 /// Statistics about pool usage
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -97,7 +96,7 @@ impl Default for PoolStats {
 
 impl PoolStats {
     /// Calculate current utilization percentage (0.0 to 1.0)
-    #[must_use] 
+    #[must_use]
     pub fn calculate_utilization(&self, max_size: usize) -> f64 {
         if max_size == 0 {
             0.0
@@ -107,19 +106,19 @@ impl PoolStats {
     }
 
     /// Check if pool is under-utilized (< 30% used)
-    #[must_use] 
+    #[must_use]
     pub fn is_underutilized(&self) -> bool {
         self.utilization < 0.3
     }
 
     /// Check if pool is over-utilized (> 80% used)
-    #[must_use] 
+    #[must_use]
     pub fn is_overutilized(&self) -> bool {
         self.utilization > 0.8
     }
 
     /// Get scaling recommendation based on utilization
-    #[must_use] 
+    #[must_use]
     pub fn scaling_recommendation(&self, max_size: usize) -> ScalingRecommendation {
         if self.is_overutilized() && self.active_count >= max_size {
             ScalingRecommendation::ScaleUp {
@@ -254,6 +253,7 @@ pub struct ShutdownStats {
 }
 
 /// Entry in the resource pool
+#[derive(Debug)]
 struct PoolEntry<T> {
     /// The resource instance
     instance: TypedResourceInstance<T>,
@@ -512,6 +512,27 @@ pub struct ResourcePool<T> {
     adaptive_state: Arc<Mutex<AdaptiveState>>,
 }
 
+impl<T> std::fmt::Debug for ResourcePool<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let available_count = self.available.lock().len();
+        let acquired_count = self.acquired.lock().len();
+        f.debug_struct("ResourcePool")
+            .field("config", &self.config)
+            .field("strategy", &self.strategy)
+            .field("available_count", &available_count)
+            .field("acquired_count", &acquired_count)
+            .field("stats", &self.stats)
+            .field("factory", &"<function>")
+            .field(
+                "health_checker",
+                &self.health_checker.as_ref().map(|_| "<checker>"),
+            )
+            .field("wrr_current_index", &self.wrr_current_index)
+            .field("adaptive_state", &self.adaptive_state)
+            .finish()
+    }
+}
+
 impl<T> ResourcePool<T>
 where
     T: Send + Sync + 'static,
@@ -695,13 +716,13 @@ where
     }
 
     /// Get current pool statistics
-    #[must_use] 
+    #[must_use]
     pub fn stats(&self) -> PoolStats {
         self.stats.read().clone()
     }
 
     /// Get pool monitoring insights
-    #[must_use] 
+    #[must_use]
     pub fn monitoring_insights(&self) -> PoolMonitoringInsights {
         let stats = self.stats.read();
         let recommendation = stats.scaling_recommendation(self.config.max_size);
@@ -745,7 +766,7 @@ where
             score -= ((stats.avg_wait_time_ms - 50.0) / 500.0).min(0.2);
         }
 
-        score.max(0.0).min(1.0)
+        score.clamp(0.0, 1.0)
     }
 
     /// Perform maintenance on the pool (cleanup expired resources)
@@ -786,9 +807,10 @@ where
                     && matches!(
                         health.state,
                         crate::core::traits::HealthState::Unhealthy { .. }
-                    ) {
-                        failed_validations += 1;
-                    }
+                    )
+                {
+                    failed_validations += 1;
+                }
             }
 
             // Remove unhealthy resources
@@ -951,7 +973,7 @@ where
     }
 
     /// Select resource using weighted round robin strategy
-    fn select_weighted_round_robin(&self, available: &mut Vec<PoolEntry<T>>) -> usize {
+    fn select_weighted_round_robin(&self, available: &mut [PoolEntry<T>]) -> usize {
         if available.is_empty() {
             return 0;
         }
@@ -996,7 +1018,7 @@ where
     }
 
     /// Select resource using adaptive strategy
-    fn select_adaptive(&self, available: &mut Vec<PoolEntry<T>>) -> usize {
+    fn select_adaptive(&self, available: &mut [PoolEntry<T>]) -> usize {
         if available.is_empty() {
             return 0;
         }
@@ -1117,6 +1139,7 @@ where
 }
 
 /// A resource that's been acquired from a pool
+#[derive(Debug)]
 pub struct PooledResource<T> {
     /// Instance ID
     instance_id: Uuid,
@@ -1140,7 +1163,7 @@ impl<T> PooledResource<T> {
     }
 
     /// Get a cloned Arc to the underlying resource
-    #[must_use] 
+    #[must_use]
     pub fn get_instance(&self) -> Option<Arc<T>> {
         let acquired = self.acquired.lock();
         acquired
@@ -1149,7 +1172,7 @@ impl<T> PooledResource<T> {
     }
 
     /// Get the instance ID
-    #[must_use] 
+    #[must_use]
     pub fn instance_id(&self) -> Uuid {
         self.instance_id
     }
@@ -1168,9 +1191,20 @@ pub struct PoolManager {
     pools: Arc<RwLock<std::collections::HashMap<String, Arc<dyn PoolTrait>>>>,
 }
 
+impl std::fmt::Debug for PoolManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pool_count = self.pools.read().len();
+        let pool_ids: Vec<String> = self.pools.read().keys().cloned().collect();
+        f.debug_struct("PoolManager")
+            .field("pool_count", &pool_count)
+            .field("pool_ids", &pool_ids)
+            .finish()
+    }
+}
+
 impl PoolManager {
     /// Create a new pool manager
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             pools: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -1201,10 +1235,15 @@ impl PoolManager {
     }
 
     /// Perform maintenance on all pools
-    pub async fn maintain_all(&self) -> ResourceResult<std::collections::HashMap<String, MaintenanceStats>> {
+    pub async fn maintain_all(
+        &self,
+    ) -> ResourceResult<std::collections::HashMap<String, MaintenanceStats>> {
         let pools = {
             let pools_guard = self.pools.read();
-            pools_guard.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect::<Vec<_>>()
+            pools_guard
+                .iter()
+                .map(|(k, v)| (k.clone(), Arc::clone(v)))
+                .collect::<Vec<_>>()
         };
 
         let mut results = std::collections::HashMap::new();
@@ -1225,10 +1264,15 @@ impl PoolManager {
     }
 
     /// Shutdown all pools
-    pub async fn shutdown_all(&self) -> ResourceResult<std::collections::HashMap<String, ShutdownStats>> {
+    pub async fn shutdown_all(
+        &self,
+    ) -> ResourceResult<std::collections::HashMap<String, ShutdownStats>> {
         let pools = {
             let pools_guard = self.pools.read();
-            pools_guard.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect::<Vec<_>>()
+            pools_guard
+                .iter()
+                .map(|(k, v)| (k.clone(), Arc::clone(v)))
+                .collect::<Vec<_>>()
         };
 
         let mut results = std::collections::HashMap::new();

@@ -20,7 +20,7 @@ pub struct MetricsCollector {
 
 impl MetricsCollector {
     /// Create new metrics collector
-    #[must_use] 
+    #[must_use]
     pub fn new(enabled: bool) -> Self {
         Self {
             metrics: Arc::new(RwLock::new(HashMap::new())),
@@ -75,14 +75,14 @@ impl MetricsCollector {
     }
 
     /// Get metric snapshot
-    #[must_use] 
+    #[must_use]
     pub fn snapshot(&self, name: &str) -> Option<MetricSnapshot> {
         let metrics = self.metrics.read();
         metrics.get(name).map(Metric::snapshot)
     }
 
     /// Get all metrics
-    #[must_use] 
+    #[must_use]
     pub fn all_metrics(&self) -> HashMap<String, MetricSnapshot> {
         let metrics = self.metrics.read();
         metrics
@@ -280,7 +280,7 @@ impl Metrics {
     }
 
     /// Start timer
-    #[must_use] 
+    #[must_use]
     pub fn timer(&self, name: &str) -> MetricTimer {
         self.collector.start_timer(self.format_name(name))
     }

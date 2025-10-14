@@ -112,15 +112,9 @@ fn merge_operations() -> ValueResult<()> {
     println!("4. Merge Operations:");
 
     // Merge objects
-    let obj1 = ObjectBuilder::new()
-        .insert("a", 1)
-        .insert("b", 2)
-        .build()?;
+    let obj1 = ObjectBuilder::new().insert("a", 1).insert("b", 2).build()?;
 
-    let obj2 = ObjectBuilder::new()
-        .insert("c", 3)
-        .insert("d", 4)
-        .build()?;
+    let obj2 = ObjectBuilder::new().insert("c", 3).insert("d", 4).build()?;
 
     let merged = Value::Object(obj1).merge(&Value::Object(obj2))?;
     println!(
@@ -133,15 +127,9 @@ fn merge_operations() -> ValueResult<()> {
     );
 
     // Merge arrays (concatenation)
-    let arr1 = ArrayBuilder::new()
-        .push(1)
-        .push(2)
-        .build()?;
+    let arr1 = ArrayBuilder::new().push(1).push(2).build()?;
 
-    let arr2 = ArrayBuilder::new()
-        .push(3)
-        .push(4)
-        .build()?;
+    let arr2 = ArrayBuilder::new().push(3).push(4).build()?;
 
     let merged_arr = Value::Array(arr1).merge(&Value::Array(arr2))?;
     println!(

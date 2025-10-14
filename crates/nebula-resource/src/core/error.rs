@@ -1,6 +1,4 @@
 //! Error types for resource management
-
-use nebula_error::NebulaError;
 use thiserror::Error;
 
 /// Result type for resource operations
@@ -322,7 +320,7 @@ impl ResourceError {
     }
 
     /// Check if this error is retryable
-    #[must_use] 
+    #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::Unavailable { retryable, .. } => *retryable,
@@ -334,7 +332,7 @@ impl ResourceError {
     }
 
     /// Get the resource ID associated with this error (if any)
-    #[must_use] 
+    #[must_use]
     pub fn resource_id(&self) -> Option<&str> {
         match self {
             Self::Configuration { .. } => None,
@@ -351,130 +349,5 @@ impl ResourceError {
             | Self::InvalidStateTransition { resource_id, .. }
             | Self::Internal { resource_id, .. } => Some(resource_id),
         }
-    }
-}
-
-// Integration with nebula-error
-impl From<NebulaError> for ResourceError {
-    fn from(error: NebulaError) -> Self {
-        Self::Internal {
-            resource_id: "unknown".to_string(),
-            message: error.to_string(),
-            source: Some(Box::new(error)),
-        }
-    }
-}
-
-impl From<ResourceError> for NebulaError {
-    fn from(error: ResourceError) -> Self {
-        use nebula_error::kinds::resource::ResourceError as NebulaResourceError;
-
-        let resource_error = match error {
-            ResourceError::Configuration { message, .. } => {
-                NebulaResourceError::InvalidConfiguration {
-                    resource_id: "config".to_string(),
-                    reason: message,
-                }
-            }
-            ResourceError::Initialization {
-                resource_id,
-                reason,
-                ..
-            } => NebulaResourceError::InitializationFailed {
-                resource_id,
-                reason,
-            },
-            ResourceError::Unavailable {
-                resource_id,
-                reason,
-                retryable,
-            } => NebulaResourceError::Unavailable {
-                resource_id,
-                reason,
-                retryable,
-            },
-            ResourceError::HealthCheck {
-                resource_id,
-                reason,
-                attempt,
-            } => NebulaResourceError::HealthCheckFailed {
-                resource_id,
-                attempt,
-                reason,
-            },
-            ResourceError::MissingCredential {
-                credential_id,
-                resource_id,
-            } => NebulaResourceError::MissingCredential {
-                credential_id,
-                resource_id,
-            },
-            ResourceError::Cleanup {
-                resource_id,
-                reason,
-                ..
-            } => NebulaResourceError::CleanupFailed {
-                resource_id,
-                reason,
-            },
-            ResourceError::Timeout {
-                resource_id,
-                timeout_ms,
-                operation,
-            } => NebulaResourceError::Timeout {
-                resource_id,
-                operation,
-                timeout_ms,
-            },
-            ResourceError::CircuitBreakerOpen {
-                resource_id,
-                retry_after_ms,
-            } => NebulaResourceError::CircuitBreakerOpen {
-                resource_id,
-                retry_after_ms,
-            },
-            ResourceError::PoolExhausted {
-                resource_id,
-                current_size,
-                max_size,
-                waiters,
-            } => NebulaResourceError::PoolExhausted {
-                resource_id,
-                current_size,
-                max_size,
-                waiters,
-            },
-            ResourceError::DependencyFailure {
-                resource_id,
-                dependency_id,
-                reason,
-            } => NebulaResourceError::DependencyFailure {
-                resource_id,
-                dependency_id,
-                reason,
-            },
-            ResourceError::CircularDependency { cycle } => {
-                NebulaResourceError::CircularDependency { cycle }
-            }
-            ResourceError::InvalidStateTransition {
-                resource_id,
-                from,
-                to,
-            } => NebulaResourceError::InvalidStateTransition {
-                resource_id,
-                from,
-                to,
-            },
-            ResourceError::Internal {
-                resource_id,
-                message,
-                ..
-            } => NebulaResourceError::InvalidState {
-                resource_id,
-                reason: message,
-            },
-        };
-
-        NebulaError::new(nebula_error::ErrorKind::Resource(resource_error))
     }
 }

@@ -48,7 +48,7 @@ pub enum HealthState {
 
 impl HealthStatus {
     /// Create a healthy status
-    #[must_use] 
+    #[must_use]
     pub fn healthy() -> Self {
         Self {
             state: HealthState::Healthy,
@@ -82,7 +82,7 @@ impl HealthStatus {
     }
 
     /// Add latency information
-    #[must_use] 
+    #[must_use]
     pub fn with_latency(mut self, latency: std::time::Duration) -> Self {
         self.latency = Some(latency);
         self
@@ -95,7 +95,7 @@ impl HealthStatus {
     }
 
     /// Check if the resource is considered healthy enough to use
-    #[must_use] 
+    #[must_use]
     pub fn is_usable(&self) -> bool {
         match &self.state {
             HealthState::Healthy => true,
@@ -107,7 +107,7 @@ impl HealthStatus {
     }
 
     /// Get a numeric score for the health status (0.0 = unhealthy, 1.0 = healthy)
-    #[must_use] 
+    #[must_use]
     pub fn score(&self) -> f64 {
         match &self.state {
             HealthState::Healthy => 1.0,

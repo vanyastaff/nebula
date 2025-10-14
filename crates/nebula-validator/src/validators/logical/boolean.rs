@@ -30,7 +30,7 @@ impl TypedValidator for IsTrue {
     }
 }
 
-#[must_use] 
+#[must_use]
 pub const fn is_true() -> IsTrue {
     IsTrue
 }
@@ -63,7 +63,7 @@ impl TypedValidator for IsFalse {
     }
 }
 
-#[must_use] 
+#[must_use]
 pub const fn is_false() -> IsFalse {
     IsFalse
 }

@@ -149,6 +149,7 @@ pub enum TlsVersion {
 }
 
 /// HTTP client resource instance
+#[derive(Debug)]
 pub struct HttpClientInstance {
     /// Instance metadata
     instance_id: Uuid,
@@ -272,10 +273,7 @@ impl HttpClientInstance {
     ) -> ResourceResult<HttpResponse> {
         self.touch();
         let json = serde_json::to_vec(body).map_err(|e| {
-            ResourceError::internal(
-                "http_client:1.0",
-                format!("Failed to serialize JSON: {e}"),
-            )
+            ResourceError::internal("http_client:1.0", format!("Failed to serialize JSON: {e}"))
         })?;
 
         let mut headers = HashMap::new();
@@ -569,10 +567,8 @@ impl HealthCheckable for HttpClientInstance {
                 }
                 Err(e) => {
                     let latency = start.elapsed();
-                    Ok(
-                        HealthStatus::unhealthy(format!("Health check failed: {e}"))
-                            .with_latency(latency),
-                    )
+                    Ok(HealthStatus::unhealthy(format!("Health check failed: {e}"))
+                        .with_latency(latency))
                 }
             }
         } else {
@@ -637,11 +633,12 @@ impl Poolable for HttpClientInstance {
 }
 
 /// HTTP client resource
+#[derive(Debug)]
 pub struct HttpClientResource;
 
 impl HttpClientResource {
     /// Create a new HTTP client resource
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -718,7 +715,7 @@ pub struct HttpResponse {
 
 impl HttpResponse {
     /// Check if the response indicates success (2xx status code)
-    #[must_use] 
+    #[must_use]
     pub fn is_success(&self) -> bool {
         (200..300).contains(&self.status)
     }

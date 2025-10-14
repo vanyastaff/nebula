@@ -1,6 +1,6 @@
 //! Simple LRU (Least Recently Used) cache eviction policy
 //!
-//! This module provides a straightforward LRU implementation using a VecDeque.
+//! This module provides a straightforward LRU implementation using a `VecDeque`.
 //! When the cache is full, it evicts the least recently used entry.
 //!
 //! This is a simplified version that focuses on clarity and correctness over
@@ -35,7 +35,7 @@ use super::{EvictionEntry, EvictionPolicy, VictimSelector};
 /// it's moved to the front of the queue. When eviction is needed, the key at the back
 /// (least recently used) is selected.
 ///
-/// This implementation uses a VecDeque for simplicity and clarity. For extremely
+/// This implementation uses a `VecDeque` for simplicity and clarity. For extremely
 /// high-throughput scenarios with millions of accesses per second, a doubly-linked
 /// list might be more efficient, but for typical caching use cases this is sufficient.
 ///
@@ -70,6 +70,7 @@ where
     K: CacheKey,
 {
     /// Create a new LRU eviction policy
+    #[must_use]
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,
@@ -79,11 +80,13 @@ where
     }
 
     /// Get the number of tracked keys
+    #[must_use]
     pub fn len(&self) -> usize {
         self.queue.len()
     }
 
     /// Check if the policy is tracking any keys
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
@@ -139,7 +142,7 @@ where
         self
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "LRU"
     }
 }
@@ -149,7 +152,7 @@ where
     K: CacheKey + Send + Sync,
     V: Send + Sync,
 {
-    fn select_victim<'a>(&self, _entries: &[EvictionEntry<'a, K, V>]) -> Option<K> {
+    fn select_victim(&self, _entries: &[EvictionEntry<'_, K, V>]) -> Option<K> {
         // Return the least recently used key (back of queue)
         self.queue.back().cloned()
     }

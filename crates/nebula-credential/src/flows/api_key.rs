@@ -64,7 +64,7 @@ pub type ApiKeyCredential = crate::core::adapter::FlowCredential<ApiKeyFlow>;
 
 impl ApiKeyCredential {
     /// Create a new API key credential
-    #[must_use] 
+    #[must_use]
     pub fn create() -> Self {
         Self::from_flow(ApiKeyFlow)
     }

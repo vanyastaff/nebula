@@ -20,7 +20,7 @@ pub struct DependencyGraph {
 
 impl DependencyGraph {
     /// Create a new empty dependency graph
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             dependencies: HashMap::new(),
@@ -81,13 +81,13 @@ impl DependencyGraph {
     }
 
     /// Get all dependencies for a resource
-    #[must_use] 
+    #[must_use]
     pub fn get_dependencies(&self, resource: &ResourceId) -> Vec<ResourceId> {
         self.dependencies.get(resource).cloned().unwrap_or_default()
     }
 
     /// Get all dependents of a resource (what depends on this resource)
-    #[must_use] 
+    #[must_use]
     pub fn get_dependents(&self, resource: &ResourceId) -> Vec<ResourceId> {
         self.dependents.get(resource).cloned().unwrap_or_default()
     }
@@ -96,7 +96,7 @@ impl DependencyGraph {
     ///
     /// # Returns
     /// `Some(cycle_path)` if a cycle is detected, None otherwise
-    #[must_use] 
+    #[must_use]
     pub fn detect_cycle(&self) -> Option<Vec<ResourceId>> {
         let mut visited = HashSet::new();
         let mut rec_stack = HashSet::new();
@@ -252,7 +252,7 @@ impl DependencyGraph {
     }
 
     /// Get all transitive dependencies of a resource
-    #[must_use] 
+    #[must_use]
     pub fn get_all_dependencies(&self, resource: &ResourceId) -> HashSet<ResourceId> {
         let mut all_deps = HashSet::new();
         self.collect_dependencies(resource, &mut all_deps);
@@ -271,7 +271,7 @@ impl DependencyGraph {
     }
 
     /// Check if resource A depends on resource B (directly or transitively)
-    #[must_use] 
+    #[must_use]
     pub fn depends_on(&self, resource: &ResourceId, depends_on: &ResourceId) -> bool {
         let all_deps = self.get_all_dependencies(resource);
         all_deps.contains(depends_on)

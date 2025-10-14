@@ -184,7 +184,7 @@ where
     }
 }
 
-#[must_use] 
+#[must_use]
 pub fn unique<T>() -> Unique<T>
 where
     T: Hash + Eq,

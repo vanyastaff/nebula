@@ -96,6 +96,7 @@ impl From<GroupValue> for nebula_value::Value {
 }
 
 impl GroupValue {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             values: nebula_value::Object::new(),
@@ -109,11 +110,13 @@ impl GroupValue {
     }
 
     /// Get a field value
+    #[must_use]
     pub fn get_field(&self, key: &str) -> Option<nebula_value::Value> {
         self.values.get(key).cloned()
     }
 
     /// Check if the group has any values
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
@@ -190,7 +193,7 @@ impl Expressible for GroupParameter {
 
                 for (key, val) in obj.entries() {
                     // val is already nebula_value::Value
-                    group_value.set_field(key.to_string(), val.clone());
+                    group_value.set_field(key.clone(), val.clone());
                 }
 
                 if self.is_valid_group_value(&group_value)? {
@@ -241,21 +244,20 @@ impl GroupParameter {
     /// Validate if a group value is valid for this parameter
     fn is_valid_group_value(&self, group_value: &GroupValue) -> Result<bool, ParameterError> {
         // Check for expression values
-        if let Some(nebula_value::Value::Text(expr)) = group_value.get_field("_expression") {
-            if expr.as_str().starts_with("{{") && expr.as_str().ends_with("}}") {
-                return Ok(true); // Allow expressions
-            }
+        if let Some(nebula_value::Value::Text(expr)) = group_value.get_field("_expression")
+            && expr.as_str().starts_with("{{")
+            && expr.as_str().ends_with("}}")
+        {
+            return Ok(true); // Allow expressions
         }
 
         // Validate each field
         for field in &self.fields {
-            if field.required {
-                if !group_value.values.contains_key(&field.key) {
-                    return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("Required field '{}' is missing", field.key),
-                    });
-                }
+            if field.required && !group_value.values.contains_key(&field.key) {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Required field '{}' is missing", field.key),
+                });
             }
 
             // Validate field type if value exists
@@ -296,6 +298,7 @@ impl GroupParameter {
     }
 
     /// Get field definition by key
+    #[must_use]
     pub fn get_field(&self, key: &str) -> Option<&GroupField> {
         self.fields.iter().find(|f| f.key == key)
     }
@@ -306,11 +309,13 @@ impl GroupParameter {
     }
 
     /// Check if a field is required
+    #[must_use]
     pub fn is_field_required(&self, key: &str) -> bool {
-        self.get_field(key).map(|f| f.required).unwrap_or(false)
+        self.get_field(key).is_some_and(|f| f.required)
     }
 
     /// Get default values for all fields
+    #[must_use]
     pub fn get_default_group_value(&self) -> GroupValue {
         let mut group_value = GroupValue::new();
 

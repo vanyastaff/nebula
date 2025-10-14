@@ -25,7 +25,6 @@ regex = "1.11.1"
 url = "2.4"
 
 # Internal crates
-nebula-error = { path = "../nebula-error" }
 nebula-log = { path = "../nebula-log" }
 
 # Randomness
@@ -81,5 +80,4 @@ harness = false
 name = "combinators"
 harness = false
 
-[lints]
-workspace = true
+

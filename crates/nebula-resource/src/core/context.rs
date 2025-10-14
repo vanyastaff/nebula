@@ -146,7 +146,7 @@ pub struct EnvironmentContext {
 
 impl ResourceContext {
     /// Create a new resource context with minimal information
-    #[must_use] 
+    #[must_use]
     pub fn new(
         workflow_id: String,
         workflow_name: String,
@@ -201,7 +201,7 @@ impl ResourceContext {
     }
 
     /// Create a builder for more complex context construction
-    #[must_use] 
+    #[must_use]
     pub fn builder() -> ResourceContextBuilder {
         ResourceContextBuilder::new()
     }
@@ -227,14 +227,14 @@ impl ResourceContext {
     }
 
     /// Set the resource scope
-    #[must_use] 
+    #[must_use]
     pub fn with_scope(mut self, scope: ResourceScope) -> Self {
         self.scope = scope;
         self
     }
 
     /// Set action context
-    #[must_use] 
+    #[must_use]
     pub fn with_action(mut self, action: ActionContext) -> Self {
         self.action = Some(action);
         self
@@ -253,7 +253,7 @@ impl ResourceContext {
     }
 
     /// Create a derived context for a child action
-    #[must_use] 
+    #[must_use]
     pub fn derive_for_action(&self, action_id: String, action_name: String) -> Self {
         let mut derived = self.clone();
         derived.context_id = Uuid::new_v4();
@@ -269,7 +269,7 @@ impl ResourceContext {
     }
 
     /// Get all context fields as a flat map for structured logging
-    #[must_use] 
+    #[must_use]
     pub fn to_log_fields(&self) -> HashMap<String, serde_json::Value> {
         let mut fields = HashMap::new();
 
@@ -347,13 +347,14 @@ impl ResourceContext {
 }
 
 /// Builder for constructing `ResourceContext` instances
+#[derive(Debug)]
 pub struct ResourceContextBuilder {
     context: ResourceContext,
 }
 
 impl ResourceContextBuilder {
     /// Create a new builder
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             context: ResourceContext::new(
@@ -366,7 +367,7 @@ impl ResourceContextBuilder {
     }
 
     /// Set workflow information
-    #[must_use] 
+    #[must_use]
     pub fn workflow(mut self, id: String, name: String, version: String) -> Self {
         self.context.workflow = WorkflowContext {
             workflow_id: id,
@@ -378,7 +379,7 @@ impl ResourceContextBuilder {
     }
 
     /// Set execution information
-    #[must_use] 
+    #[must_use]
     pub fn execution(mut self, id: String, attempt: u32) -> Self {
         self.context.execution.execution_id = id;
         self.context.execution.attempt_number = attempt;
@@ -386,7 +387,7 @@ impl ResourceContextBuilder {
     }
 
     /// Set environment information
-    #[must_use] 
+    #[must_use]
     pub fn environment(mut self, env: String, region: String, tier: String) -> Self {
         self.context.environment.environment = env;
         self.context.environment.region = region;
@@ -395,7 +396,7 @@ impl ResourceContextBuilder {
     }
 
     /// Set tracing information
-    #[must_use] 
+    #[must_use]
     pub fn tracing(mut self, trace_id: String, span_id: String) -> Self {
         self.context.tracing.trace_id = trace_id;
         self.context.tracing.span_id = span_id;
@@ -403,7 +404,7 @@ impl ResourceContextBuilder {
     }
 
     /// Set identity information
-    #[must_use] 
+    #[must_use]
     pub fn identity(mut self, user_id: Option<String>, tenant_id: Option<String>) -> Self {
         self.context.identity.user_id = user_id;
         self.context.identity.tenant_id = tenant_id;
@@ -411,7 +412,7 @@ impl ResourceContextBuilder {
     }
 
     /// Set resource scope
-    #[must_use] 
+    #[must_use]
     pub fn scope(mut self, scope: ResourceScope) -> Self {
         self.context.scope = scope;
         self
@@ -438,7 +439,7 @@ impl ResourceContextBuilder {
     }
 
     /// Build the final context
-    #[must_use] 
+    #[must_use]
     pub fn build(self) -> ResourceContext {
         self.context
     }

@@ -3,7 +3,7 @@
 use sha2::{Digest, Sha256};
 
 /// Generate random state parameter for `OAuth2` (URL-safe base64)
-#[must_use] 
+#[must_use]
 pub fn generate_random_state() -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
@@ -12,7 +12,7 @@ pub fn generate_random_state() -> String {
 }
 
 /// Generate PKCE code verifier (43-128 characters, URL-safe)
-#[must_use] 
+#[must_use]
 pub fn generate_pkce_verifier() -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
@@ -21,7 +21,7 @@ pub fn generate_pkce_verifier() -> String {
 }
 
 /// Generate PKCE code challenge from verifier using S256 method
-#[must_use] 
+#[must_use]
 pub fn generate_code_challenge(verifier: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(verifier.as_bytes());

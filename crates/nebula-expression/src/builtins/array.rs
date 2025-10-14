@@ -1,10 +1,10 @@
 //! Array manipulation functions
 
 use super::{check_arg_count, check_min_arg_count, get_array_arg};
+use crate::ExpressionError;
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
-use nebula_error::NebulaError;
 use nebula_value::Value;
 
 /// Get the length of an array
@@ -28,7 +28,7 @@ pub fn first(
     let arr = get_array_arg("first", args, 0, "array")?;
     let json_val = arr
         .get(0)
-        .ok_or_else(|| NebulaError::expression_eval_error("Array is empty"))?;
+        .ok_or_else(|| ExpressionError::expression_eval_error("Array is empty"))?;
     Ok(json_val.clone())
 }
 
@@ -42,11 +42,11 @@ pub fn last(
     let arr = get_array_arg("last", args, 0, "array")?;
     let len = arr.len();
     if len == 0 {
-        return Err(NebulaError::expression_eval_error("Array is empty"));
+        return Err(ExpressionError::expression_eval_error("Array is empty"));
     }
     let json_val = arr
         .get(len - 1)
-        .ok_or_else(|| NebulaError::expression_eval_error("Array is empty"))?;
+        .ok_or_else(|| ExpressionError::expression_eval_error("Array is empty"))?;
     Ok(json_val.clone())
 }
 
@@ -57,7 +57,7 @@ pub fn filter(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     // Note: This would require special handling in the evaluator to pass lambdas
-    Err(NebulaError::expression_eval_error(
+    Err(ExpressionError::expression_eval_error(
         "filter requires lambda support in evaluator",
     ))
 }
@@ -68,7 +68,7 @@ pub fn map(
     _eval: &Evaluator,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
-    Err(NebulaError::expression_eval_error(
+    Err(ExpressionError::expression_eval_error(
         "map requires lambda support in evaluator",
     ))
 }
@@ -79,7 +79,7 @@ pub fn reduce(
     _eval: &Evaluator,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
-    Err(NebulaError::expression_eval_error(
+    Err(ExpressionError::expression_eval_error(
         "reduce requires lambda support in evaluator",
     ))
 }
@@ -98,9 +98,7 @@ pub fn sort(
     // Sort the values
     elements.sort_by(|a, b| match (a, b) {
         (Value::Integer(x), Value::Integer(y)) => x.cmp(y),
-        (Value::Float(x), Value::Float(y)) => {
-            x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
-        }
+        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
         (Value::Text(x), Value::Text(y)) => x.cmp(y),
         _ => std::cmp::Ordering::Equal,
     });
@@ -133,7 +131,7 @@ pub fn join(
     let arr = get_array_arg("join", args, 0, "array")?;
     let separator = args[1]
         .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[1].kind().name()))?;
+        .ok_or_else(|| ExpressionError::expression_type_error("string", args[1].kind().name()))?;
 
     // Use iterator directly without intermediate Vec allocation
     let result = arr
@@ -181,7 +179,7 @@ pub fn concat(
         .sum();
 
     let mut result = Vec::with_capacity(total_size);
-    for (i, arg) in args.iter().enumerate() {
+    for (i, _arg) in args.iter().enumerate() {
         let arr = get_array_arg("concat", args, i, "array")?;
         result.extend(arr.iter().cloned());
     }

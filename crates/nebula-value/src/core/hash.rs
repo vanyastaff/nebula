@@ -333,28 +333,31 @@ mod tests {
     #[test]
     fn test_hashable_value_ext() {
         let value = Value::integer(42).hashable();
-        assert_eq!(value.as_value().as_integer(), Some(42));
+        assert_eq!(value.as_value().as_integer().map(|i| i.value()), Some(42));
     }
 
     #[test]
     fn test_hashable_into_inner() {
         let hashable = HashableValue(Value::integer(42));
         let value = hashable.into_inner();
-        assert_eq!(value.as_integer(), Some(42));
+        assert_eq!(value.as_integer().map(|i| i.value()), Some(42));
     }
 
     #[test]
     fn test_hashable_from_value() {
         let value = Value::integer(42);
         let hashable = HashableValue::from(value);
-        assert_eq!(hashable.as_value().as_integer(), Some(42));
+        assert_eq!(
+            hashable.as_value().as_integer().map(|i| i.value()),
+            Some(42)
+        );
     }
 
     #[test]
     fn test_hashable_to_value() {
         let hashable = HashableValue(Value::integer(42));
         let value = Value::from(hashable);
-        assert_eq!(value.as_integer(), Some(42));
+        assert_eq!(value.as_integer().map(|i| i.value()), Some(42));
     }
 
     #[test]

@@ -15,10 +15,9 @@ use std::ops::Index;
 
 use im::Vector;
 
-use crate::core::NebulaError;
-use crate::core::error::{ValueErrorExt, ValueResult};
-use crate::core::limits::ValueLimits;
 use crate::core::Value;
+use crate::core::limits::ValueLimits;
+use crate::core::{ValueError, ValueResult};
 
 /// Type alias for items stored in arrays
 pub type ValueItem = Value;
@@ -100,7 +99,7 @@ impl Array {
     /// Returns `ValueError::IndexOutOfBounds` if `index >= len()`
     pub fn try_get(&self, index: usize) -> ValueResult<&ValueItem> {
         self.get(index)
-            .ok_or_else(|| NebulaError::value_index_out_of_bounds(index, self.len()))
+            .ok_or_else(|| ValueError::index_out_of_bounds(index, self.len()))
     }
 
     /// Push an element (returns new Array, original unchanged)
@@ -116,7 +115,11 @@ impl Array {
     /// # Errors
     ///
     /// Returns `ValueError::LimitExceeded` if array length would exceed `max_array_length`
-    pub fn push_with_limit(&self, value: impl Into<ValueItem>, limits: &ValueLimits) -> ValueResult<Self> {
+    pub fn push_with_limit(
+        &self,
+        value: impl Into<ValueItem>,
+        limits: &ValueLimits,
+    ) -> ValueResult<Self> {
         limits.check_array_length(self.len() + 1)?;
         Ok(self.push(value))
     }
@@ -135,7 +138,7 @@ impl Array {
     /// Returns `ValueError::IndexOutOfBounds` if `index >= len()`
     pub fn set(&self, index: usize, value: impl Into<ValueItem>) -> ValueResult<Self> {
         if index >= self.len() {
-            return Err(NebulaError::value_index_out_of_bounds(index, self.len()));
+            return Err(ValueError::index_out_of_bounds(index, self.len()));
         }
 
         let mut new_vec = self.inner.clone();
@@ -150,7 +153,7 @@ impl Array {
     /// Returns `ValueError::IndexOutOfBounds` if `index > len()`
     pub fn insert(&self, index: usize, value: impl Into<ValueItem>) -> ValueResult<Self> {
         if index > self.len() {
-            return Err(NebulaError::value_index_out_of_bounds(index, self.len()));
+            return Err(ValueError::index_out_of_bounds(index, self.len()));
         }
 
         let mut new_vec = self.inner.clone();
@@ -165,7 +168,7 @@ impl Array {
     /// Returns `ValueError::IndexOutOfBounds` if `index >= len()`
     pub fn remove(&self, index: usize) -> ValueResult<(Self, ValueItem)> {
         if index >= self.len() {
-            return Err(NebulaError::value_index_out_of_bounds(index, self.len()));
+            return Err(ValueError::index_out_of_bounds(index, self.len()));
         }
 
         let mut new_vec = self.inner.clone();
@@ -196,7 +199,7 @@ impl Array {
     /// Get a slice of the array
     pub fn slice(&self, start: usize, end: usize) -> ValueResult<Self> {
         if start > end || end > self.len() {
-            return Err(NebulaError::value_out_of_range(
+            return Err(ValueError::out_of_range(
                 format!("{}..{}", start, end),
                 "0",
                 self.len().to_string(),
@@ -299,7 +302,11 @@ mod tests {
 
     #[test]
     fn test_array_from_vec() {
-        let arr = Array::from_vec(vec![Value::integer(1), Value::integer(2), Value::integer(3)]);
+        let arr = Array::from_vec(vec![
+            Value::integer(1),
+            Value::integer(2),
+            Value::integer(3),
+        ]);
         assert_eq!(arr.len(), 3);
         assert_eq!(arr.get(0), Some(&Value::integer(1)));
     }

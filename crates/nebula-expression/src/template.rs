@@ -4,11 +4,11 @@
 //! cache the parsed structure for fast rendering, and provide detailed error information
 //! including line and column numbers.
 
+use crate::ExpressionError;
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::engine::ExpressionEngine;
 use crate::error_formatter::format_template_error;
-use nebula_error::NebulaError;
 use nebula_log::trace;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -161,10 +161,10 @@ impl Template {
                             let formatted_error = format_template_error(
                                 &self.source,
                                 *position,
-                                &e.message,
+                                &e.to_string(),
                                 Some(content.trim()),
                             );
-                            return Err(NebulaError::expression_eval_error(formatted_error));
+                            return Err(ExpressionError::expression_eval_error(formatted_error));
                         }
                     }
                 }
@@ -273,7 +273,7 @@ impl Template {
                         "Unclosed '{{' - expected closing '}}'",
                         None,
                     );
-                    return Err(NebulaError::expression_parse_error(formatted_error));
+                    return Err(ExpressionError::expression_parse_error(formatted_error));
                 }
             } else {
                 // Regular character
@@ -463,7 +463,7 @@ mod tests {
         let result = Template::new("Hello {{ $input");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.message.contains("Unclosed"));
+        assert!(err.to_string().contains("Unclosed"));
     }
 
     #[test]
@@ -494,7 +494,7 @@ Line 3: Done"#,
         let result = template.render(&engine, &context);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.message.contains("line 1"));
+        assert!(err.to_string().contains("line 1"));
     }
 
     #[test]

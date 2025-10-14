@@ -69,6 +69,7 @@ impl ResourceConfig for MetricsConfig {
 }
 
 /// Metrics instance with Prometheus exporter
+#[derive(Debug)]
 pub struct MetricsInstance {
     instance_id: uuid::Uuid,
     resource_id: ResourceId,
@@ -154,6 +155,7 @@ impl MetricsInstance {
 }
 
 /// Metrics resource with Prometheus integration
+#[derive(Debug)]
 pub struct MetricsResource;
 
 #[async_trait::async_trait]

@@ -26,8 +26,14 @@ fn test_workflow_state_management() {
 
     // Add metadata
     let metadata = Object::new()
-        .insert("created_at".to_string(), Value::text("2024-01-01T00:00:00Z"))
-        .insert("updated_at".to_string(), Value::text("2024-01-01T00:01:00Z"))
+        .insert(
+            "created_at".to_string(),
+            Value::text("2024-01-01T00:00:00Z"),
+        )
+        .insert(
+            "updated_at".to_string(),
+            Value::text("2024-01-01T00:01:00Z"),
+        )
         .insert("version".to_string(), Value::integer(1));
     workflow_state = workflow_state.insert("metadata".to_string(), Value::Object(metadata));
 
@@ -38,7 +44,10 @@ fn test_workflow_state_management() {
 
     // Update status
     workflow_state = workflow_state.insert("status".to_string(), Value::text("completed"));
-    assert_eq!(workflow_state.get("status"), Some(&Value::text("completed")));
+    assert_eq!(
+        workflow_state.get("status"),
+        Some(&Value::text("completed"))
+    );
 
     // Clone for history
     let workflow_snapshot = workflow_state.clone();
@@ -48,18 +57,24 @@ fn test_workflow_state_management() {
 #[test]
 fn test_workflow_array_processing() {
     // Scenario: Process a list of tasks
-    let task1 = Value::Object(Object::new()
-        .insert("id".to_string(), Value::integer(1))
-        .insert("name".to_string(), Value::text("task1"))
-        .insert("completed".to_string(), Value::boolean(false)));
-    let task2 = Value::Object(Object::new()
-        .insert("id".to_string(), Value::integer(2))
-        .insert("name".to_string(), Value::text("task2"))
-        .insert("completed".to_string(), Value::boolean(false)));
-    let task3 = Value::Object(Object::new()
-        .insert("id".to_string(), Value::integer(3))
-        .insert("name".to_string(), Value::text("task3"))
-        .insert("completed".to_string(), Value::boolean(false)));
+    let task1 = Value::Object(
+        Object::new()
+            .insert("id".to_string(), Value::integer(1))
+            .insert("name".to_string(), Value::text("task1"))
+            .insert("completed".to_string(), Value::boolean(false)),
+    );
+    let task2 = Value::Object(
+        Object::new()
+            .insert("id".to_string(), Value::integer(2))
+            .insert("name".to_string(), Value::text("task2"))
+            .insert("completed".to_string(), Value::boolean(false)),
+    );
+    let task3 = Value::Object(
+        Object::new()
+            .insert("id".to_string(), Value::integer(3))
+            .insert("name".to_string(), Value::text("task3"))
+            .insert("completed".to_string(), Value::boolean(false)),
+    );
 
     let tasks = Array::from_vec(vec![task1, task2, task3]);
 
@@ -67,10 +82,12 @@ fn test_workflow_array_processing() {
 
     // Mark first task as completed
     let _task1 = tasks.get(0).unwrap().clone();
-    let updated_task = Value::Object(Object::new()
-        .insert("id".to_string(), Value::integer(1))
-        .insert("name".to_string(), Value::text("task1"))
-        .insert("completed".to_string(), Value::boolean(true)));
+    let updated_task = Value::Object(
+        Object::new()
+            .insert("id".to_string(), Value::integer(1))
+            .insert("name".to_string(), Value::text("task1"))
+            .insert("completed".to_string(), Value::boolean(true)),
+    );
 
     // Create new array with updated task (persistent data structure)
     let updated_tasks = tasks.push(updated_task);
@@ -113,7 +130,8 @@ fn test_nested_object_access() {
     let config = Object::from_iter(vec![
         (
             "app".to_string(),
-            parse_json(r#"{
+            parse_json(
+                r#"{
                 "name": "workflow-engine",
                 "version": "1.0.0",
                 "features": {
@@ -121,15 +139,18 @@ fn test_nested_object_access() {
                     "monitoring": true,
                     "cache_size": 1000
                 }
-            }"#),
+            }"#,
+            ),
         ),
         (
             "database".to_string(),
-            parse_json(r#"{
+            parse_json(
+                r#"{
                 "host": "localhost",
                 "port": 5432,
                 "pool_size": 10
-            }"#),
+            }"#,
+            ),
         ),
     ]);
 
@@ -152,7 +173,7 @@ fn test_value_merging_in_workflow() {
     ]));
 
     let user_config = Value::Object(Object::from_iter(vec![
-        ("timeout".to_string(), Value::integer(60)),         // Override
+        ("timeout".to_string(), Value::integer(60)), // Override
         ("custom_option".to_string(), Value::boolean(true)), // New
     ]));
 
@@ -204,11 +225,13 @@ fn test_json_roundtrip_workflow() {
         ("progress".to_string(), Value::float(0.75)),
         (
             "tasks".to_string(),
-            parse_json(r#"[
+            parse_json(
+                r#"[
                 {"name": "init", "done": true},
                 {"name": "process", "done": true},
                 {"name": "finalize", "done": false}
-            ]"#),
+            ]"#,
+            ),
         ),
     ]));
 

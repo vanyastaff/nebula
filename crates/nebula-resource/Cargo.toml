@@ -58,7 +58,6 @@ full = [
 [dependencies]
 # Nebula ecosystem
 nebula-log = { path = "../nebula-log" }
-nebula-error = { path = "../nebula-error" }
 nebula-derive = { path = "../nebula-derive" }
 nebula-credential = { path = "../nebula-credential", optional = true }
 nebula-resilience = { path = "../nebula-resilience" }
@@ -126,5 +125,4 @@ testcontainers = "0.15"
 testcontainers-modules = { version = "0.3", features = ["postgres"] }
 
 
-[lints]
-workspace = true
+

@@ -30,7 +30,7 @@ pub mod size {
     pub const SMALL: usize = 64 * KB;
 
     /// Typical medium allocation
-    pub const MEDIUM: usize = 1 * MB;
+    pub const MEDIUM: usize = MB;
 
     /// Typical large allocation
     pub const LARGE: usize = 16 * MB;

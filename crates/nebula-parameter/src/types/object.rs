@@ -37,7 +37,7 @@ pub struct ObjectParameter {
 }
 
 /// Configuration options for object parameters
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, Builder, Serialize, Deserialize, Default)]
 pub struct ObjectParameterOptions {
     /// Whether to allow additional properties beyond defined children
     #[serde(default)]
@@ -51,14 +51,6 @@ pub struct ObjectValue {
     pub values: nebula_value::Object,
 }
 
-impl Default for ObjectParameterOptions {
-    fn default() -> Self {
-        Self {
-            allow_additional_properties: false,
-        }
-    }
-}
-
 impl From<ObjectValue> for nebula_value::Value {
     fn from(obj: ObjectValue) -> Self {
         nebula_value::Value::Object(obj.values)
@@ -66,7 +58,8 @@ impl From<ObjectValue> for nebula_value::Value {
 }
 
 impl ObjectValue {
-    /// Create a new empty ObjectValue
+    /// Create a new empty `ObjectValue`
+    #[must_use]
     pub fn new() -> Self {
         Self {
             values: nebula_value::Object::new(),
@@ -80,6 +73,7 @@ impl ObjectValue {
     }
 
     /// Get a field value
+    #[must_use]
     pub fn get_field(&self, key: &str) -> Option<nebula_value::Value> {
         self.values.get(key).cloned()
     }
@@ -95,6 +89,7 @@ impl ObjectValue {
     }
 
     /// Check if the object has any values
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
@@ -110,11 +105,13 @@ impl ObjectValue {
     }
 
     /// Check if field exists
+    #[must_use]
     pub fn contains_field(&self, key: &str) -> bool {
         self.values.contains_key(key)
     }
 
     /// Get field count
+    #[must_use]
     pub fn field_count(&self) -> usize {
         self.values.len()
     }
@@ -285,36 +282,35 @@ impl ObjectParameter {
     /// Validate if an object value is valid for this parameter
     fn is_valid_object_value(&self, object_value: &ObjectValue) -> Result<bool, ParameterError> {
         // Check for expression values
-        if let Some(nebula_value::Value::Text(expr)) = object_value.get_field("_expression") {
-            if expr.as_str().starts_with("{{") && expr.as_str().ends_with("}}") {
-                return Ok(true); // Allow expressions
-            }
+        if let Some(nebula_value::Value::Text(expr)) = object_value.get_field("_expression")
+            && expr.as_str().starts_with("{{")
+            && expr.as_str().ends_with("}}")
+        {
+            return Ok(true); // Allow expressions
         }
 
         // For container architecture, validate that all required child parameters have values
         for (key, child) in &self.children {
-            if child.metadata().required {
-                if !object_value.contains_field(key) {
-                    return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("Required field '{}' is missing", key),
-                    });
-                }
+            if child.metadata().required && !object_value.contains_field(key) {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Required field '{key}' is missing"),
+                });
             }
         }
 
         // Check for additional properties if not allowed
-        if let Some(options) = &self.options {
-            if !options.allow_additional_properties {
-                let defined_children: std::collections::HashSet<_> = self.children.keys().collect();
+        if let Some(options) = &self.options
+            && !options.allow_additional_properties
+        {
+            let defined_children: std::collections::HashSet<_> = self.children.keys().collect();
 
-                for key in object_value.keys() {
-                    if !defined_children.contains(key) && key != "_expression" {
-                        return Err(ParameterError::InvalidValue {
-                            key: self.metadata.key.clone(),
-                            reason: format!("Additional property '{}' is not allowed", key),
-                        });
-                    }
+            for key in object_value.keys() {
+                if !defined_children.contains(key) && key != "_expression" {
+                    return Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!("Additional property '{key}' is not allowed"),
+                    });
                 }
             }
         }
@@ -323,6 +319,7 @@ impl ObjectParameter {
     }
 
     /// Get child parameter by key
+    #[must_use]
     pub fn get_child(&self, key: &str) -> Option<&Box<dyn Parameter>> {
         self.children.get(key)
     }
@@ -338,6 +335,7 @@ impl ObjectParameter {
     }
 
     /// Get all children as (key, parameter) pairs
+    #[must_use]
     pub fn children(&self) -> &HashMap<String, Box<dyn Parameter>> {
         &self.children
     }
@@ -348,14 +346,15 @@ impl ObjectParameter {
     }
 
     /// Check if a child is required
+    #[must_use]
     pub fn is_child_required(&self, key: &str) -> bool {
         self.children
             .get(key)
-            .map(|c| c.metadata().required)
-            .unwrap_or(false)
+            .is_some_and(|c| c.metadata().required)
     }
 
     /// Get default values for all children
+    #[must_use]
     pub fn get_default_object_value(&self) -> ObjectValue {
         let mut object_value = ObjectValue::new();
 
@@ -390,6 +389,7 @@ impl ObjectParameter {
     }
 
     /// Check if a child exists
+    #[must_use]
     pub fn has_child(&self, key: &str) -> bool {
         self.children.contains_key(key)
     }
@@ -404,6 +404,7 @@ impl ObjectParameter {
     }
 
     /// Get children count
+    #[must_use]
     pub fn children_count(&self) -> usize {
         self.children.len()
     }
@@ -422,7 +423,8 @@ impl ObjectParameter {
             .filter(|(_key, child)| !child.metadata().required)
     }
 
-    /// Check if all required children have values in the current ObjectValue
+    /// Check if all required children have values in the current `ObjectValue`
+    #[must_use]
     pub fn has_all_required_values(&self) -> bool {
         if let Some(value) = &self.value {
             self.get_required_children()
@@ -442,12 +444,11 @@ impl ObjectParameter {
             && !self
                 .options
                 .as_ref()
-                .map(|o| o.allow_additional_properties)
-                .unwrap_or(false)
+                .is_some_and(|o| o.allow_additional_properties)
         {
             return Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
-                reason: format!("Field '{}' is not defined in this object", key),
+                reason: format!("Field '{key}' is not defined in this object"),
             });
         }
 
@@ -463,6 +464,7 @@ impl ObjectParameter {
     }
 
     /// Get a field value from the object
+    #[must_use]
     pub fn get_field_value(&self, key: &str) -> Option<nebula_value::Value> {
         self.value.as_ref().and_then(|obj| obj.get_field(key))
     }

@@ -40,6 +40,7 @@ impl Default for PoolConfig {
 
 impl PoolConfig {
     /// Production configuration - optimized for performance
+    #[must_use]
     pub fn production() -> Self {
         Self {
             track_stats: false,
@@ -51,6 +52,7 @@ impl PoolConfig {
     }
 
     /// Debug configuration - optimized for debugging
+    #[must_use]
     pub fn debug() -> Self {
         Self {
             track_stats: true,
@@ -62,6 +64,7 @@ impl PoolConfig {
     }
 
     /// Performance configuration - minimal overhead
+    #[must_use]
     pub fn performance() -> Self {
         Self {
             track_stats: false,

@@ -144,7 +144,7 @@ impl Expressible for TimeParameter {
                 } else {
                     Err(ParameterError::InvalidValue {
                         key: self.metadata.key.clone(),
-                        reason: format!("Invalid time format or out of range: {}", s),
+                        reason: format!("Invalid time format or out of range: {s}"),
                     })
                 }
             }
@@ -174,11 +174,11 @@ impl TimeParameter {
         }
 
         // Basic time validation - supports HH:mm and HH:mm:ss formats
-        if let Some(options) = &self.options {
-            if let Some(_format) = &options.format {
-                // Custom format validation would go here
-                // For now, just do basic validation
-            }
+        if let Some(options) = &self.options
+            && let Some(_format) = &options.format
+        {
+            // Custom format validation would go here
+            // For now, just do basic validation
         }
 
         // Basic validation for common time formats
@@ -227,6 +227,7 @@ impl TimeParameter {
     }
 
     /// Get the time format for display
+    #[must_use]
     pub fn get_format(&self) -> String {
         self.options
             .as_ref()
@@ -236,22 +237,21 @@ impl TimeParameter {
     }
 
     /// Check if seconds should be included
+    #[must_use]
     pub fn includes_seconds(&self) -> bool {
         self.options
             .as_ref()
-            .map(|opts| opts.include_seconds)
-            .unwrap_or(false)
+            .is_some_and(|opts| opts.include_seconds)
     }
 
     /// Check if 12-hour format should be used
+    #[must_use]
     pub fn uses_12_hour_format(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.use_12_hour)
-            .unwrap_or(false)
+        self.options.as_ref().is_some_and(|opts| opts.use_12_hour)
     }
 
     /// Get the step in minutes
+    #[must_use]
     pub fn get_step_minutes(&self) -> u32 {
         self.options
             .as_ref()

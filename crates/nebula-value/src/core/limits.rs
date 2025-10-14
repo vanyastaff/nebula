@@ -3,7 +3,7 @@
 //! This module provides configurable limits for Value operations to prevent
 //! resource exhaustion attacks and accidental memory issues.
 
-use crate::core::NebulaError;
+use crate::core::ValueError;
 
 /// Configurable limits for Value operations
 ///
@@ -86,9 +86,9 @@ impl ValueLimits {
     /// Validate array length
     #[inline]
     #[must_use = "validation result must be handled"]
-    pub fn check_array_length(&self, len: usize) -> Result<(), NebulaError> {
+    pub fn check_array_length(&self, len: usize) -> Result<(), ValueError> {
         if len > self.max_array_length {
-            Err(NebulaError::validation(format!(
+            Err(ValueError::validation(format!(
                 "Array length {} exceeds maximum of {}",
                 len, self.max_array_length
             )))
@@ -100,9 +100,9 @@ impl ValueLimits {
     /// Validate object key count
     #[inline]
     #[must_use = "validation result must be handled"]
-    pub fn check_object_keys(&self, count: usize) -> Result<(), NebulaError> {
+    pub fn check_object_keys(&self, count: usize) -> Result<(), ValueError> {
         if count > self.max_object_keys {
-            Err(NebulaError::validation(format!(
+            Err(ValueError::validation(format!(
                 "Object key count {} exceeds maximum of {}",
                 count, self.max_object_keys
             )))
@@ -114,9 +114,9 @@ impl ValueLimits {
     /// Validate string byte length
     #[inline]
     #[must_use = "validation result must be handled"]
-    pub fn check_string_bytes(&self, bytes: usize) -> Result<(), NebulaError> {
+    pub fn check_string_bytes(&self, bytes: usize) -> Result<(), ValueError> {
         if bytes > self.max_string_bytes {
-            Err(NebulaError::validation(format!(
+            Err(ValueError::validation(format!(
                 "String byte length {} exceeds maximum of {}",
                 bytes, self.max_string_bytes
             )))
@@ -128,9 +128,9 @@ impl ValueLimits {
     /// Validate bytes length
     #[inline]
     #[must_use = "validation result must be handled"]
-    pub fn check_bytes_length(&self, len: usize) -> Result<(), NebulaError> {
+    pub fn check_bytes_length(&self, len: usize) -> Result<(), ValueError> {
         if len > self.max_bytes_length {
-            Err(NebulaError::validation(format!(
+            Err(ValueError::validation(format!(
                 "Bytes length {} exceeds maximum of {}",
                 len, self.max_bytes_length
             )))
@@ -142,9 +142,9 @@ impl ValueLimits {
     /// Validate nesting depth
     #[inline]
     #[must_use = "validation result must be handled"]
-    pub fn check_nesting_depth(&self, depth: usize) -> Result<(), NebulaError> {
+    pub fn check_nesting_depth(&self, depth: usize) -> Result<(), ValueError> {
         if depth > self.max_nesting_depth {
-            Err(NebulaError::validation(format!(
+            Err(ValueError::validation(format!(
                 "Nesting depth {} exceeds maximum of {}",
                 depth, self.max_nesting_depth
             )))

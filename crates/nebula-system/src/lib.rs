@@ -72,7 +72,7 @@ pub mod network;
 pub mod disk;
 
 // Re-exports
-pub use core::{NebulaError, NebulaResult, ResultExt, SystemError, SystemResult, SystemResultExt};
+pub use core::{SystemError, SystemResult, SystemResultExt};
 pub use info::SystemInfo;
 
 #[cfg(feature = "memory")]
@@ -90,7 +90,7 @@ pub fn init() -> SystemResult<()> {
 }
 
 /// Get a formatted summary of system information
-#[must_use] 
+#[must_use]
 pub fn summary() -> String {
     info::summary()
 }

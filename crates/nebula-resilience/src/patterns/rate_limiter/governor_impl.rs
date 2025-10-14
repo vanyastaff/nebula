@@ -1,12 +1,12 @@
 //! Governor-based GCRA rate limiter implementation
 
 use async_trait::async_trait;
-use std::future::Future;
-use governor::{Quota, RateLimiter as GovernorLimiter, DefaultDirectRateLimiter};
 use governor::clock::{Clock, DefaultClock};
+use governor::{DefaultDirectRateLimiter, Quota, RateLimiter as GovernorLimiter};
+use std::future::Future;
 
-use crate::{ResilienceError, ResilienceResult};
 use super::RateLimiter;
+use crate::{ResilienceError, ResilienceResult};
 
 /// Governor-based rate limiter using GCRA (Generic Cell Rate Algorithm)
 ///
@@ -51,8 +51,10 @@ impl GovernorRateLimiter {
         // Convert rate to quota
         // governor uses NonZeroU32 for rate, so we need to be careful
         let rate_u32 = safe_rate.ceil() as u32;
-        let quota = Quota::per_second(std::num::NonZeroU32::new(rate_u32.max(1)).expect("Rate must be > 0"))
-            .allow_burst(std::num::NonZeroU32::new(safe_burst.max(1)).expect("Burst must be > 0"));
+        let quota = Quota::per_second(
+            std::num::NonZeroU32::new(rate_u32.max(1)).expect("Rate must be > 0"),
+        )
+        .allow_burst(std::num::NonZeroU32::new(safe_burst.max(1)).expect("Burst must be > 0"));
 
         Self {
             limiter: GovernorLimiter::direct(quota),
@@ -76,7 +78,7 @@ impl GovernorRateLimiter {
 impl RateLimiter for GovernorRateLimiter {
     async fn acquire(&self) -> ResilienceResult<()> {
         match self.limiter.check() {
-            Ok(_) => Ok(()),
+            Ok(()) => Ok(()),
             Err(negative) => {
                 // Calculate retry_after from the negative decision
                 let wait_duration = negative.wait_time_from(DefaultClock::default().now());

@@ -34,7 +34,6 @@ domain-key = { version = "0.1.1", features = ["serde"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
 
 # Internal crates
-nebula-error = { path = "../nebula-error" }
 nebula-log = { path = "../nebula-log" }
 
 [dev-dependencies]

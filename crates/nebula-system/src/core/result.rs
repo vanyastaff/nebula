@@ -1,7 +1,6 @@
 //! Result type and extension traits for system operations
 
 use crate::core::error::{SystemError, SystemResult};
-use nebula_error::{ErrorContext, NebulaError};
 
 /// Extension trait for Result types (system-specific)
 pub trait SystemResultExt<T> {
@@ -28,38 +27,43 @@ where
     E: std::error::Error,
 {
     fn or_system_error<S: Into<String>>(self, msg: S) -> SystemResult<T> {
-        self.map_err(|_| NebulaError::internal(msg))
+        self.map_err(|_| SystemError::platform_error(msg))
     }
 
     fn with_system_context<S: Into<String>, F>(self, f: F) -> SystemResult<T>
     where
         F: FnOnce() -> S,
     {
-        self.map_err(|e| NebulaError::internal(format!("{}: {}", f().into(), e)))
+        self.map_err(|e| SystemError::platform_error(format!("{}: {}", f().into(), e)))
     }
 
     fn with_component(self, component: impl Into<String>) -> SystemResult<T> {
         self.map_err(|e| {
-            NebulaError::internal(format!("{e}")).with_context(
-                ErrorContext::new("System operation failed").with_component(component),
-            )
+            SystemError::platform_error(format!(
+                "System operation failed in component {}: {}",
+                component.into(),
+                e
+            ))
         })
     }
 
     fn with_operation(self, operation: impl Into<String>) -> SystemResult<T> {
         self.map_err(|e| {
-            NebulaError::internal(format!("{e}")).with_context(
-                ErrorContext::new("System operation failed").with_operation(operation),
-            )
+            SystemError::platform_error(format!(
+                "System operation {} failed: {}",
+                operation.into(),
+                e
+            ))
         })
     }
 
     fn with_platform_context(self, platform: impl Into<String>) -> SystemResult<T> {
         self.map_err(|e| {
-            NebulaError::internal(format!("{e}")).with_context(
-                ErrorContext::new("Platform-specific operation failed")
-                    .with_metadata("platform", platform.into()),
-            )
+            SystemError::platform_error(format!(
+                "Platform {} operation failed: {}",
+                platform.into(),
+                e
+            ))
         })
     }
 }
@@ -84,35 +88,28 @@ pub trait SystemIoResultExt {
 // Specific implementations for common error types
 impl SystemIoResultExt for Result<(), std::io::Error> {
     fn or_system_error<S: Into<String>>(self, msg: S) -> SystemResult<()> {
-        self.map_err(|e| {
-            let code = e.raw_os_error();
-            NebulaError::system_platform_error(format!("{}: {}", msg.into(), e), code)
-        })
+        self.map_err(|e| SystemError::platform_error(format!("{}: {}", msg.into(), e)))
     }
 
     fn with_system_context<S: Into<String>, F>(self, f: F) -> SystemResult<()>
     where
         F: FnOnce() -> S,
     {
-        self.map_err(|e| {
-            let code = e.raw_os_error();
-            NebulaError::system_platform_error(format!("{}: {}", f().into(), e), code)
-        })
+        self.map_err(|e| SystemError::platform_error(format!("{}: {}", f().into(), e)))
     }
 
     fn with_component(self, component: impl Into<String>) -> SystemResult<()> {
         self.map_err(|e| {
-            let code = e.raw_os_error();
-            NebulaError::system_platform_error(format!("{e}"), code)
-                .with_context(ErrorContext::new("IO operation failed").with_component(component))
+            SystemError::platform_error(format!(
+                "IO operation failed in component {}: {e}",
+                component.into()
+            ))
         })
     }
 
     fn with_operation(self, operation: impl Into<String>) -> SystemResult<()> {
         self.map_err(|e| {
-            let code = e.raw_os_error();
-            NebulaError::system_platform_error(format!("{e}"), code)
-                .with_context(ErrorContext::new("IO operation failed").with_operation(operation))
+            SystemError::platform_error(format!("IO operation {} failed: {e}", operation.into()))
         })
     }
 }
@@ -129,8 +126,7 @@ mod tests {
 
         assert!(system_result.is_err());
         let error = system_result.unwrap_err();
-        assert!(error.is_server_error());
-        assert!(error.user_message().contains("File operation failed"));
+        assert!(matches!(error, SystemError::PlatformError(_)));
     }
 
     #[test]
@@ -140,10 +136,6 @@ mod tests {
 
         assert!(system_result.is_err());
         let error = system_result.unwrap_err();
-        assert!(error.context().is_some());
-        assert_eq!(
-            error.context().unwrap().component(),
-            Some("cpu-info".to_string())
-        );
+        assert!(matches!(error, SystemError::PlatformError(_)));
     }
 }

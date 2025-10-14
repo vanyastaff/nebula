@@ -18,6 +18,3 @@ pub mod result;
 // Re-export core types
 pub use error::{SystemError, SystemResult};
 pub use result::SystemResultExt;
-
-// Re-export NebulaError for unified error handling
-pub use nebula_error::{NebulaError, Result as NebulaResult, ResultExt};

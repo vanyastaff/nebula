@@ -109,7 +109,7 @@ impl SystemInfo {
     /// Returns a cheap reference-counted pointer to the cached system info.
     /// `Arc::clone` is cheap (just increments a counter).
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn get() -> Arc<SystemInfo> {
         Arc::clone(&SYSTEM_INFO)
     }
@@ -277,11 +277,7 @@ fn page_size() -> usize {
 
 fn detect_cache_line_size() -> usize {
     // Most modern processors use 64-byte cache lines
-    match std::env::consts::ARCH {
-        "x86_64" | "x86" => 64,
-        "aarch64" | "arm" => 64,
-        _ => 64,
-    }
+    64
 }
 
 fn detect_allocation_granularity() -> usize {
@@ -297,6 +293,7 @@ fn detect_numa_nodes() -> usize {
     1
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn detect_huge_page_size() -> Option<usize> {
     #[cfg(target_os = "linux")]
     return Some(2 * 1024 * 1024); // 2MB on Linux
@@ -324,7 +321,7 @@ pub fn init() -> SystemResult<()> {
 }
 
 /// Get a formatted summary of system information
-#[must_use] 
+#[must_use]
 pub fn summary() -> String {
     let info = SystemInfo::get();
 

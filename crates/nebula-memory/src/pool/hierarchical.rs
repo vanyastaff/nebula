@@ -3,15 +3,15 @@
 //! # Safety
 //!
 //! This module implements hierarchical pooling with parent-child borrowing:
-//! - HierarchicalPooledValue holds raw pointer to pool
-//! - ManuallyDrop for controlled object lifecycle
+//! - `HierarchicalPooledValue` holds raw pointer to pool
+//! - `ManuallyDrop` for controlled object lifecycle
 //! - Drop returns object to correct pool (local or parent)
 //! - Arc<Mutex> ensures pool stays alive while values exist
 //!
 //! ## Safety Contracts
 //!
-//! - HierarchicalPooledValue::detach: ManuallyDrop::take + mem::forget prevents drop
-//! - HierarchicalPooledValue::drop: ManuallyDrop::take + pool deref + return_object
+//! - `HierarchicalPooledValue::detach`: `ManuallyDrop::take` + `mem::forget` prevents drop
+//! - `HierarchicalPooledValue::drop`: `ManuallyDrop::take` + pool deref + `return_object`
 //! - Send implementation: Safe if T: Send (pool pointer not shared)
 //! - Pool pointer remains valid (Arc keeps pool alive)
 
@@ -122,7 +122,7 @@ impl<T: Poolable> HierarchicalPool<T> {
         if let Ok(value) = self.local.get() {
             return Ok(HierarchicalPooledValue {
                 value: ManuallyDrop::new(value.detach()),
-                pool: self as *mut _,
+                pool: std::ptr::from_mut(self),
                 borrowed: false,
             });
         }
@@ -150,7 +150,7 @@ impl<T: Poolable> HierarchicalPool<T> {
             self.borrowed_count += 1;
             return Ok(HierarchicalPooledValue {
                 value: ManuallyDrop::new(value),
-                pool: self as *mut _,
+                pool: std::ptr::from_mut(self),
                 borrowed: true,
             });
         }
@@ -269,13 +269,13 @@ impl<T: Poolable> Deref for HierarchicalPooledValue<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &*self.value
+        &self.value
     }
 }
 
 impl<T: Poolable> DerefMut for HierarchicalPooledValue<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut *self.value
+        &mut self.value
     }
 }
 
@@ -301,7 +301,7 @@ impl<T: Poolable> Drop for HierarchicalPooledValue<T> {
 // - Drop on destination thread safely returns object to pool (via Arc<Mutex>)
 unsafe impl<T: Poolable + Send> Send for HierarchicalPooledValue<T> {}
 
-/// Extension trait for Arc<Mutex<HierarchicalPool<T>>>
+/// Extension trait for Arc<Mutex<`HierarchicalPool`<T>>>
 ///
 /// This trait provides ergonomic methods that hide the Arc<Mutex<>> complexity
 /// from users, making the API cleaner and preventing common lifetime issues.

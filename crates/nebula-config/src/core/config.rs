@@ -517,7 +517,7 @@ fn json_to_value(json: &serde_json::Value) -> NebulaValue {
         serde_json::Value::String(s) => NebulaValue::text(s.clone()),
         serde_json::Value::Array(arr) => {
             // Recursively convert each JSON value to NebulaValue
-            let items: Vec<NebulaValue> = arr.iter().map(|v| json_to_value(v)).collect();
+            let items: Vec<NebulaValue> = arr.iter().map(json_to_value).collect();
             NebulaValue::Array(nebula_value::Array::from(items))
         }
         serde_json::Value::Object(obj) => {
@@ -594,7 +594,7 @@ fn flatten_value(prefix: &str, value: &NebulaValue) -> HashMap<String, NebulaVal
                 };
 
                 // val is already NebulaValue from iter()
-                let nested = flatten_value(&full_key, &val);
+                let nested = flatten_value(&full_key, val);
                 map.extend(nested);
             }
         }
@@ -610,11 +610,11 @@ fn flatten_value(prefix: &str, value: &NebulaValue) -> HashMap<String, NebulaVal
 impl Drop for Config {
     fn drop(&mut self) {
         // Try to stop watching if possible
-        if let Some(watcher) = &self.watcher {
-            if watcher.is_watching() {
-                // We can't await in drop, so we just log
-                nebula_log::debug!("Config dropped while still watching");
-            }
+        if let Some(watcher) = &self.watcher
+            && watcher.is_watching()
+        {
+            // We can't await in drop, so we just log
+            nebula_log::debug!("Config dropped while still watching");
         }
     }
 }

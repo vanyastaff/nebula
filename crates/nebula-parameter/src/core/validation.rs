@@ -7,7 +7,7 @@
 //!
 //! - `ParameterValidation` - Configuration holding validators
 //! - Fluent builder API for common validation patterns
-//! - Integration with nebula-validator's TypedValidator trait
+//! - Integration with nebula-validator's `TypedValidator` trait
 //!
 //! # Examples
 //!
@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// conveniences like required field checking and custom error messages.
 ///
 /// Note: The validator itself is not serialized, only the configuration (required, message, key).
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct ParameterValidation {
     /// The underlying validator (type-erased for storage)
     /// Not serialized - validators must be reconstructed when deserializing
@@ -63,17 +63,6 @@ pub struct ParameterValidation {
     key: Option<ParameterKey>,
 }
 
-impl Default for ParameterValidation {
-    fn default() -> Self {
-        Self {
-            validator: None,
-            required: false,
-            message: None,
-            key: None,
-        }
-    }
-}
-
 impl std::fmt::Debug for ParameterValidation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ParameterValidation")
@@ -87,6 +76,7 @@ impl std::fmt::Debug for ParameterValidation {
 
 impl ParameterValidation {
     /// Create a new empty validation
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -136,11 +126,13 @@ impl ParameterValidation {
     }
 
     /// Get the custom validation message
+    #[must_use]
     pub fn message(&self) -> Option<&str> {
         self.message.as_deref()
     }
 
     /// Check if validation is required
+    #[must_use]
     pub fn is_required(&self) -> bool {
         self.required
     }
@@ -210,6 +202,7 @@ pub struct StringValidationBuilder {
 }
 
 impl StringValidationBuilder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             min_len: None,
@@ -285,6 +278,7 @@ impl StringValidationBuilder {
         self
     }
 
+    #[must_use]
     pub fn build(self) -> ParameterValidation {
         // Build composite validator
         let mut validators: Vec<
@@ -329,7 +323,9 @@ impl StringValidationBuilder {
         }
 
         // Combine all validators with AND logic
-        let validator = if !validators.is_empty() {
+        let validator = if validators.is_empty() {
+            None
+        } else {
             // Create a composite validator that checks all conditions
             Some(Arc::new(StringCompositeValidator { validators })
                 as Arc<
@@ -337,8 +333,6 @@ impl StringValidationBuilder {
                         + Send
                         + Sync,
                 >)
-        } else {
-            None
         };
 
         ParameterValidation {
@@ -369,6 +363,7 @@ pub struct NumberValidationBuilder {
 }
 
 impl NumberValidationBuilder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             min_val: None,
@@ -430,6 +425,7 @@ impl NumberValidationBuilder {
         self
     }
 
+    #[must_use]
     pub fn build(self) -> ParameterValidation {
         let mut validators: Vec<
             Box<
@@ -465,15 +461,15 @@ impl NumberValidationBuilder {
             validators.push(Box::new(odd()));
         }
 
-        let validator = if !validators.is_empty() {
+        let validator = if validators.is_empty() {
+            None
+        } else {
             Some(Arc::new(NumberCompositeValidator { validators })
                 as Arc<
                     dyn AsyncValidator<Input = Value, Output = (), Error = ValidationError>
                         + Send
                         + Sync,
                 >)
-        } else {
-            None
         };
 
         ParameterValidation {
@@ -567,26 +563,31 @@ impl AsyncValidator for NumberCompositeValidator {
 
 impl ParameterValidation {
     /// Start building string validation
+    #[must_use]
     pub fn string() -> StringValidationBuilder {
         StringValidationBuilder::new()
     }
 
     /// Start building number validation
+    #[must_use]
     pub fn number() -> NumberValidationBuilder {
         NumberValidationBuilder::new()
     }
 
     /// Quick email validation
+    #[must_use]
     pub fn email() -> Self {
         Self::string().email().build()
     }
 
     /// Quick URL validation
+    #[must_use]
     pub fn url() -> Self {
         Self::string().url().build()
     }
 
     /// Quick required validation
+    #[must_use]
     pub fn required_field() -> Self {
         Self {
             validator: None,

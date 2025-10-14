@@ -62,6 +62,7 @@ impl ResourceConfig for MemoryCacheConfig {
 }
 
 /// In-memory cache resource
+#[derive(Debug)]
 pub struct MemoryCacheResource;
 
 #[async_trait::async_trait]
@@ -120,6 +121,7 @@ impl Resource for MemoryCacheResource {
 }
 
 /// In-memory cache instance
+#[derive(Debug)]
 pub struct MemoryCacheInstance {
     instance_id: uuid::Uuid,
     resource_id: ResourceId,
@@ -324,6 +326,7 @@ struct CacheEntry {
 }
 
 /// LRU Cache implementation
+#[derive(Debug)]
 struct LruCache<K: Hash + Eq, V> {
     map: HashMap<K, (V, usize)>, // (value, access_order)
     capacity: usize,
@@ -427,7 +430,7 @@ pub struct CacheStatistics {
 
 impl CacheStatistics {
     /// Calculate hit rate (0.0 to 1.0)
-    #[must_use] 
+    #[must_use]
     pub fn hit_rate(&self) -> f64 {
         let total = self.hits + self.misses;
         if total == 0 {
@@ -438,7 +441,7 @@ impl CacheStatistics {
     }
 
     /// Calculate total requests
-    #[must_use] 
+    #[must_use]
     pub fn total_requests(&self) -> u64 {
         self.hits + self.misses
     }

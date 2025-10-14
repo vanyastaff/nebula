@@ -8,8 +8,8 @@
 
 use nebula_resilience::prelude::*;
 use nebula_resilience::{RateLimiter, TokenBucket};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -184,10 +184,7 @@ async fn test_manager_operation_isolation() {
     let results: Vec<_> = futures::future::join_all(handles).await;
 
     // All operations should succeed
-    let mut values: Vec<u64> = results
-        .into_iter()
-        .map(|r| r.unwrap().unwrap())
-        .collect();
+    let mut values: Vec<u64> = results.into_iter().map(|r| r.unwrap().unwrap()).collect();
 
     values.sort();
 

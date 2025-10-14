@@ -143,10 +143,9 @@ impl RetryConfigBuilder {
         }
 
         // Set values in parent config
-        self.parent.inner.set_value(
-            "retry.max_attempts",
-            Value::from(max_attempts as i64),
-        )?;
+        self.parent
+            .inner
+            .set_value("retry.max_attempts", Value::from(max_attempts as i64))?;
 
         self.parent.inner.set_value(
             "retry.base_delay_ms",
@@ -202,9 +201,9 @@ impl CircuitBreakerConfigBuilder {
     /// # Errors
     /// Returns error if required fields are not set.
     pub fn done(mut self) -> ConfigResult<DynamicConfigBuilder> {
-        let failure_threshold = self
-            .failure_threshold
-            .ok_or_else(|| ConfigError::validation("circuit_breaker.failure_threshold is required"))?;
+        let failure_threshold = self.failure_threshold.ok_or_else(|| {
+            ConfigError::validation("circuit_breaker.failure_threshold is required")
+        })?;
 
         let reset_timeout = self
             .reset_timeout
@@ -312,10 +311,9 @@ impl BulkheadConfigBuilder {
             Value::from(max_concurrency as i64),
         )?;
 
-        self.parent.inner.set_value(
-            "bulkhead.queue_size",
-            Value::from(queue_size as i64),
-        )?;
+        self.parent
+            .inner
+            .set_value("bulkhead.queue_size", Value::from(queue_size as i64))?;
 
         // Set optional values
         if let Some(timeout) = self.timeout {
@@ -412,9 +410,11 @@ mod tests {
 
         // Verify all configs are set
         assert!(config.get_value("retry.max_attempts").is_ok());
-        assert!(config
-            .get_value("circuit_breaker.failure_threshold")
-            .is_ok());
+        assert!(
+            config
+                .get_value("circuit_breaker.failure_threshold")
+                .is_ok()
+        );
         assert!(config.get_value("bulkhead.max_concurrency").is_ok());
     }
 
@@ -427,10 +427,12 @@ mod tests {
             .done();
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("must be greater than 0"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must be greater than 0")
+        );
     }
 
     #[test]

@@ -29,7 +29,7 @@ pub struct StateVersion {
 
 impl StateVersion {
     /// Create a new state version
-    #[must_use] 
+    #[must_use]
     pub fn new(major: u32, minor: u32, patch: u32) -> Self {
         Self {
             major,
@@ -39,13 +39,13 @@ impl StateVersion {
     }
 
     /// Check if this version is compatible with another
-    #[must_use] 
+    #[must_use]
     pub fn is_compatible_with(&self, other: &StateVersion) -> bool {
         self.major == other.major
     }
 
     /// Check if this version is newer than another
-    #[must_use] 
+    #[must_use]
     pub fn is_newer_than(&self, other: &StateVersion) -> bool {
         self.major > other.major
             || (self.major == other.major && self.minor > other.minor)
@@ -79,7 +79,7 @@ pub struct PersistedState {
 
 impl PersistedState {
     /// Create a new persisted state
-    #[must_use] 
+    #[must_use]
     pub fn new(resource_id: ResourceId, version: StateVersion, data: serde_json::Value) -> Self {
         let saved_at = chrono::Utc::now();
         let checksum = Self::calculate_checksum(&data, &saved_at);
@@ -95,14 +95,14 @@ impl PersistedState {
     }
 
     /// Verify the integrity of the persisted state
-    #[must_use] 
+    #[must_use]
     pub fn verify_integrity(&self) -> bool {
         let expected_checksum = Self::calculate_checksum(&self.data, &self.saved_at);
         self.checksum == expected_checksum
     }
 
     /// Add metadata
-    #[must_use] 
+    #[must_use]
     pub fn with_metadata(mut self, key: String, value: String) -> Self {
         self.metadata.insert(key, value);
         self
@@ -142,13 +142,14 @@ pub trait StatePersistence: Send + Sync {
 }
 
 /// In-memory state persistence (for testing and development)
+#[derive(Debug)]
 pub struct InMemoryStatePersistence {
     states: Arc<RwLock<HashMap<ResourceId, PersistedState>>>,
 }
 
 impl InMemoryStatePersistence {
     /// Create a new in-memory persistence backend
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             states: Arc::new(RwLock::new(HashMap::new())),
@@ -214,6 +215,7 @@ pub trait StateMigration: Send + Sync {
 }
 
 /// Default state migration that only supports identical versions
+#[derive(Debug)]
 pub struct NoOpStateMigration;
 
 #[async_trait]
@@ -229,9 +231,7 @@ impl StateMigration for NoOpStateMigration {
         } else {
             Err(ResourceError::internal(
                 "migration",
-                format!(
-                    "Migration from {from_version} to {to_version} is not supported"
-                ),
+                format!("Migration from {from_version} to {to_version} is not supported"),
             ))
         }
     }
@@ -255,9 +255,20 @@ pub struct StateManager {
     cache: Arc<RwLock<HashMap<ResourceId, PersistedState>>>,
 }
 
+impl std::fmt::Debug for StateManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let cache_size = self.cache.read().len();
+        f.debug_struct("StateManager")
+            .field("persistence", &"<trait object>")
+            .field("migration", &"<trait object>")
+            .field("cache_size", &cache_size)
+            .finish()
+    }
+}
+
 impl StateManager {
     /// Create a new state manager with in-memory persistence
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::with_persistence(Arc::new(InMemoryStatePersistence::new()))
     }
@@ -371,7 +382,7 @@ impl StateManager {
     }
 
     /// Get statistics about the state manager
-    #[must_use] 
+    #[must_use]
     pub fn stats(&self) -> StateManagerStats {
         let cache = self.cache.read();
         StateManagerStats {

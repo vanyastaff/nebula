@@ -69,6 +69,7 @@ impl ResourceConfig for LoggerConfig {
 }
 
 /// Logger instance with nebula-log integration
+#[derive(Debug)]
 pub struct LoggerInstance {
     instance_id: uuid::Uuid,
     resource_id: ResourceId,
@@ -111,6 +112,7 @@ impl ResourceInstance for LoggerInstance {
 }
 
 /// Logger resource with nebula-log integration
+#[derive(Debug)]
 pub struct LoggerResource;
 
 #[async_trait::async_trait]
@@ -152,10 +154,7 @@ impl Resource for LoggerResource {
         // Note: The LoggerGuard is dropped immediately after initialization, which is fine
         // because nebula-log sets up a global logger that persists
         let _guard = nebula_log::init_with(logger_config).map_err(|e| {
-            ResourceError::initialization(
-                "logger:1.0",
-                format!("Failed to initialize logger: {e}"),
-            )
+            ResourceError::initialization("logger:1.0", format!("Failed to initialize logger: {e}"))
         })?;
 
         Ok(LoggerInstance {

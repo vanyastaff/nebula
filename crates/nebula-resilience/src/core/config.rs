@@ -144,7 +144,6 @@ pub enum Environment {
     Production,
 }
 
-
 /// Configurable trait for resilience patterns
 pub trait Configurable {
     /// Configuration type for this pattern
@@ -174,7 +173,7 @@ impl ResilienceConfigManager {
     }
 
     /// Create from existing nebula config
-    #[must_use] 
+    #[must_use]
     pub fn from_config(config: NebulaConfig) -> Self {
         Self { config }
     }

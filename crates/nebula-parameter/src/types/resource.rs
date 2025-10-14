@@ -26,6 +26,7 @@ pub struct ResourceContext<'a> {
 }
 
 impl<'a> ResourceContext<'a> {
+    #[must_use]
     pub fn new(parameters: &'a HashMap<String, MaybeExpression<Value>>) -> Self {
         Self {
             parameters,
@@ -86,7 +87,7 @@ pub struct ResourceParameterOptions {
     pub placeholder: Option<String>,
 }
 
-/// Parameter for dynamic resource selection (like n8n's ResourceLocator)
+/// Parameter for dynamic resource selection (like n8n's `ResourceLocator`)
 #[derive(Serialize)]
 pub struct ResourceParameter {
     #[serde(flatten)]
@@ -128,6 +129,7 @@ impl std::fmt::Debug for ResourceParameter {
 
 impl ResourceParameter {
     /// Create a new resource parameter
+    #[must_use]
     pub fn new(metadata: ParameterMetadata) -> Self {
         Self {
             metadata,
@@ -194,22 +196,19 @@ impl ResourceParameter {
     }
 
     /// Check if search is enabled
+    #[must_use]
     pub fn is_searchable(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.searchable)
-            .unwrap_or(false)
+        self.options.as_ref().is_some_and(|opts| opts.searchable)
     }
 
     /// Check if pagination is enabled
+    #[must_use]
     pub fn is_paginated(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|opts| opts.paginated)
-            .unwrap_or(false)
+        self.options.as_ref().is_some_and(|opts| opts.paginated)
     }
 
     /// Get placeholder text
+    #[must_use]
     pub fn get_placeholder(&self) -> Option<&str> {
         self.options
             .as_ref()

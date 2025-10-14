@@ -5,7 +5,7 @@
 /// A span in the source code
 ///
 /// Uses u32 for positions to reduce memory footprint (supports files up to 4GB).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Span {
     /// Start byte offset in the source
     pub start: u32,
@@ -97,12 +97,6 @@ impl Span {
         }
 
         (start_lc, (line, col))
-    }
-}
-
-impl Default for Span {
-    fn default() -> Self {
-        Self { start: 0, end: 0 }
     }
 }
 

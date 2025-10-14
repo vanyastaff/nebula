@@ -332,7 +332,7 @@ pub struct ParameterBuilder<T, S = Unvalidated> {
 
 impl<T> ParameterBuilder<T, Unvalidated> {
     /// Creates a new parameter builder.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             value: None,
@@ -434,7 +434,7 @@ pub struct ValidationGroup<S = Unvalidated> {
 
 impl ValidationGroup<Unvalidated> {
     /// Creates a new validation group.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             params: Vec::new(),

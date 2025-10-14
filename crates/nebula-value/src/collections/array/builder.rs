@@ -3,10 +3,9 @@
 //! Provides a fluent API for building arrays with validation.
 
 use crate::collections::Array;
-use crate::core::NebulaError;
-use crate::core::error::{ValueErrorExt, ValueResult};
-use crate::core::limits::ValueLimits;
 use crate::core::Value;
+use crate::core::limits::ValueLimits;
+use crate::core::{ValueError, ValueResult};
 
 /// Type alias for items stored in arrays
 type ValueItem = Value;
@@ -117,10 +116,7 @@ impl ArrayBuilder {
     /// Returns `ValueError::LimitExceeded` if array length would exceed `max_array_length`
     pub fn insert(mut self, index: usize, item: impl Into<ValueItem>) -> ValueResult<Self> {
         if index > self.items.len() {
-            return Err(NebulaError::value_index_out_of_bounds(
-                index,
-                self.items.len(),
-            ));
+            return Err(ValueError::index_out_of_bounds(index, self.items.len()));
         }
 
         if let Some(ref limits) = self.limits {
@@ -138,10 +134,7 @@ impl ArrayBuilder {
     /// Returns `ValueError::IndexOutOfBounds` if `index >= len()`
     pub fn remove(mut self, index: usize) -> ValueResult<Self> {
         if index >= self.items.len() {
-            return Err(NebulaError::value_index_out_of_bounds(
-                index,
-                self.items.len(),
-            ));
+            return Err(ValueError::index_out_of_bounds(index, self.items.len()));
         }
 
         self.items.remove(index);

@@ -26,7 +26,7 @@ impl<'a> BumpScope<'a> {
     }
 }
 
-impl<'a> Drop for BumpScope<'a> {
+impl Drop for BumpScope<'_> {
     fn drop(&mut self) {
         // Ignore errors during drop - we can't propagate them
         // The restore() method validates the checkpoint internally

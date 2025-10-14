@@ -1,10 +1,10 @@
 //! String manipulation functions
 
 use super::{check_arg_count, check_min_arg_count, get_int_arg, get_string_arg};
+use crate::ExpressionError;
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
-use nebula_error::NebulaError;
 use nebula_value::Value;
 
 /// Get the length of a string
@@ -16,7 +16,7 @@ pub fn length(
     check_arg_count("length", args, 1)?;
     let s = args[0]
         .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[0].kind().name()))?;
+        .ok_or_else(|| ExpressionError::expression_type_error("string", args[0].kind().name()))?;
     Ok(Value::integer(s.len() as i64))
 }
 
@@ -63,10 +63,7 @@ pub fn split(
     let s = get_string_arg("split", args, 0, "text")?;
     let delimiter = get_string_arg("split", args, 1, "delimiter")?;
 
-    let parts: Vec<_> = s
-        .split(delimiter)
-        .map(|part| Value::text(part))
-        .collect();
+    let parts: Vec<_> = s.split(delimiter).map(Value::text).collect();
     Ok(Value::Array(nebula_value::Array::from_vec(parts)))
 }
 
@@ -117,10 +114,10 @@ pub fn contains(
     check_arg_count("contains", args, 2)?;
     let s = args[0]
         .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[0].kind().name()))?;
+        .ok_or_else(|| ExpressionError::expression_type_error("string", args[0].kind().name()))?;
     let needle = args[1]
         .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[1].kind().name()))?;
+        .ok_or_else(|| ExpressionError::expression_type_error("string", args[1].kind().name()))?;
 
     Ok(Value::boolean(s.contains(needle)))
 }
@@ -134,10 +131,10 @@ pub fn starts_with(
     check_arg_count("starts_with", args, 2)?;
     let s = args[0]
         .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[0].kind().name()))?;
+        .ok_or_else(|| ExpressionError::expression_type_error("string", args[0].kind().name()))?;
     let prefix = args[1]
         .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[1].kind().name()))?;
+        .ok_or_else(|| ExpressionError::expression_type_error("string", args[1].kind().name()))?;
 
     Ok(Value::boolean(s.starts_with(prefix)))
 }
@@ -151,10 +148,10 @@ pub fn ends_with(
     check_arg_count("ends_with", args, 2)?;
     let s = args[0]
         .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[0].kind().name()))?;
+        .ok_or_else(|| ExpressionError::expression_type_error("string", args[0].kind().name()))?;
     let suffix = args[1]
         .as_str()
-        .ok_or_else(|| NebulaError::expression_type_error("string", args[1].kind().name()))?;
+        .ok_or_else(|| ExpressionError::expression_type_error("string", args[1].kind().name()))?;
 
     Ok(Value::boolean(s.ends_with(suffix)))
 }

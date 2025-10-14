@@ -18,8 +18,14 @@ fn main() -> Result<(), ConfigError> {
         .done()?
         .build();
 
-    println!("   Max attempts: {:?}", retry_config.get_value("retry.max_attempts")?);
-    println!("   Base delay: {:?}", retry_config.get_value("retry.base_delay_ms")?);
+    println!(
+        "   Max attempts: {:?}",
+        retry_config.get_value("retry.max_attempts")?
+    );
+    println!(
+        "   Base delay: {:?}",
+        retry_config.get_value("retry.base_delay_ms")?
+    );
 
     // Example 2: Circuit breaker configuration
     println!("\n2. Building circuit breaker configuration:");
@@ -31,9 +37,18 @@ fn main() -> Result<(), ConfigError> {
         .done()?
         .build();
 
-    println!("   Failure threshold: {:?}", cb_config.get_value("circuit_breaker.failure_threshold")?);
-    println!("   Reset timeout: {:?}", cb_config.get_value("circuit_breaker.reset_timeout_ms")?);
-    println!("   Half-open max ops: {:?}", cb_config.get_value("circuit_breaker.half_open_max_operations")?);
+    println!(
+        "   Failure threshold: {:?}",
+        cb_config.get_value("circuit_breaker.failure_threshold")?
+    );
+    println!(
+        "   Reset timeout: {:?}",
+        cb_config.get_value("circuit_breaker.reset_timeout_ms")?
+    );
+    println!(
+        "   Half-open max ops: {:?}",
+        cb_config.get_value("circuit_breaker.half_open_max_operations")?
+    );
 
     // Example 3: Bulkhead configuration
     println!("\n3. Building bulkhead configuration:");
@@ -45,9 +60,18 @@ fn main() -> Result<(), ConfigError> {
         .done()?
         .build();
 
-    println!("   Max concurrency: {:?}", bulkhead_config.get_value("bulkhead.max_concurrency")?);
-    println!("   Queue size: {:?}", bulkhead_config.get_value("bulkhead.queue_size")?);
-    println!("   Timeout: {:?}", bulkhead_config.get_value("bulkhead.timeout_ms")?);
+    println!(
+        "   Max concurrency: {:?}",
+        bulkhead_config.get_value("bulkhead.max_concurrency")?
+    );
+    println!(
+        "   Queue size: {:?}",
+        bulkhead_config.get_value("bulkhead.queue_size")?
+    );
+    println!(
+        "   Timeout: {:?}",
+        bulkhead_config.get_value("bulkhead.timeout_ms")?
+    );
 
     // Example 4: Complete configuration with multiple patterns
     println!("\n4. Building complete configuration with all patterns:");
@@ -69,15 +93,18 @@ fn main() -> Result<(), ConfigError> {
         .build();
 
     println!("   Configuration successfully built with:");
-    println!("   - Retry: {} attempts, {}ms base delay",
+    println!(
+        "   - Retry: {} attempts, {}ms base delay",
         complete_config.get_value("retry.max_attempts")?,
         complete_config.get_value("retry.base_delay_ms")?
     );
-    println!("   - Circuit Breaker: {} failures, {}ms reset timeout",
+    println!(
+        "   - Circuit Breaker: {} failures, {}ms reset timeout",
         complete_config.get_value("circuit_breaker.failure_threshold")?,
         complete_config.get_value("circuit_breaker.reset_timeout_ms")?
     );
-    println!("   - Bulkhead: {} concurrent, {} queue size",
+    println!(
+        "   - Bulkhead: {} concurrent, {} queue size",
         complete_config.get_value("bulkhead.max_concurrency")?,
         complete_config.get_value("bulkhead.queue_size")?
     );

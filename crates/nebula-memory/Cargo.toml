@@ -88,9 +88,11 @@ lz4_flex = { version = "0.11", optional = true, default-features = false }
 backtrace = { version = "0.3", optional = true }
 rand = { version = "0.8", optional = true }
 
+# Errors
+thiserror = { workspace = true }
+
 # Internal crates
 nebula-core = { path = "..\\nebula-core" }
-nebula-error = { path = "..\\nebula-error" }
 nebula-log = { path = "..\\nebula-log", optional = true }
 nebula-system = { path = "..\\nebula-system" }
 
@@ -109,5 +111,3 @@ targets = [
     "x86_64-pc-windows-msvc"
 ]
 
-[lints]
-workspace = true

@@ -40,7 +40,7 @@ pub struct HedgeExecutor {
 
 impl HedgeExecutor {
     /// Create new hedge executor
-    #[must_use] 
+    #[must_use]
     pub fn new(config: HedgeConfig) -> Self {
         Self { config }
     }
@@ -127,7 +127,7 @@ pub struct AdaptiveHedgeExecutor {
 
 impl AdaptiveHedgeExecutor {
     /// Create new adaptive hedge executor
-    #[must_use] 
+    #[must_use]
     pub fn new(config: HedgeConfig) -> Self {
         Self {
             base_config: config,
@@ -225,7 +225,7 @@ pub struct BimodalHedgeExecutor {
 
 impl BimodalHedgeExecutor {
     /// Create new bimodal hedge executor
-    #[must_use] 
+    #[must_use]
     pub fn new(
         fast_threshold: Duration,
         fast_config: HedgeConfig,

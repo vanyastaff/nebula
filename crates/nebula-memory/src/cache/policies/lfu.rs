@@ -27,11 +27,12 @@ use {
 use crate::cache::{CacheEntry, CacheKey};
 
 /// Frequency tracking modes for different scenarios
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FrequencyMode {
     /// Simple counter (classic LFU)
     SimpleCounter,
     /// Exponential decay (frequency aging)
+    #[default]
     ExponentialDecay,
     /// Sliding window with time-based decay
     SlidingWindow,
@@ -39,12 +40,6 @@ pub enum FrequencyMode {
     Adaptive,
     /// Probabilistic counting (Count-Min Sketch)
     Probabilistic,
-}
-
-impl Default for FrequencyMode {
-    fn default() -> Self {
-        FrequencyMode::ExponentialDecay
-    }
 }
 
 /// Configuration for LFU policy
@@ -190,11 +185,13 @@ where
     K: CacheKey,
 {
     /// Create a new LFU policy with default configuration
+    #[must_use]
     pub fn new() -> Self {
         Self::with_config(LfuConfig::default())
     }
 
     /// Create a new LFU policy with custom configuration
+    #[must_use]
     pub fn with_config(config: LfuConfig) -> Self {
         Self {
             _phantom: PhantomData,
@@ -217,6 +214,7 @@ where
     }
 
     /// Create LFU policy optimized for high-frequency access patterns
+    #[must_use]
     pub fn for_high_frequency() -> Self {
         Self::with_config(LfuConfig {
             frequency_mode: FrequencyMode::ExponentialDecay,
@@ -230,6 +228,7 @@ where
     }
 
     /// Create LFU policy optimized for temporal patterns
+    #[must_use]
     pub fn for_temporal_patterns() -> Self {
         Self::with_config(LfuConfig {
             frequency_mode: FrequencyMode::SlidingWindow,
@@ -242,6 +241,7 @@ where
     }
 
     /// Create LFU policy for memory-constrained environments
+    #[must_use]
     pub fn for_memory_constrained() -> Self {
         Self::with_config(LfuConfig {
             frequency_mode: FrequencyMode::SimpleCounter,
@@ -285,10 +285,10 @@ where
         }
 
         // Update histogram if enabled
-        if self.config.enable_histogram {
-            if let Some(&freq) = self.frequencies.get(key) {
-                *self.frequency_histogram.entry(freq).or_insert(0) += 1;
-            }
+        if self.config.enable_histogram
+            && let Some(&freq) = self.frequencies.get(key)
+        {
+            *self.frequency_histogram.entry(freq).or_insert(0) += 1;
         }
 
         // Perform aging if needed
@@ -357,6 +357,7 @@ where
     }
 
     /// Select a victim for eviction
+    #[must_use]
     pub fn select_victim(&self) -> Option<K> {
         // Find the minimum frequency bucket with items
         let mut current_freq = self.min_frequency;
@@ -419,8 +420,8 @@ where
         self.frequencies.get(key).copied()
     }
 
-
     /// Get frequency histogram
+    #[must_use]
     pub fn get_frequency_histogram(&self) -> &HashMap<u64, usize> {
         &self.frequency_histogram
     }
@@ -498,13 +499,10 @@ where
     #[cfg(feature = "std")]
     fn record_windowed_access(&mut self, key: &K) {
         let now = Instant::now();
-        let cutoff = now - self.config.time_window;
+        let cutoff = now.checked_sub(self.config.time_window).unwrap();
 
         // Get or create access history for this key
-        let history = self
-            .access_history
-            .entry(key.clone())
-            .or_insert_with(VecDeque::new);
+        let history = self.access_history.entry(key.clone()).or_default();
 
         // Remove old accesses outside the window
         while let Some(front) = history.front() {
@@ -573,9 +571,8 @@ where
         use core::hash::{Hash as _, Hasher};
         use std::collections::hash_map::RandomState;
         use std::hash::BuildHasher;
-        let mut hasher = RandomState::new().build_hasher();
-        key.hash(&mut hasher);
-        hasher.finish()
+
+        RandomState::new().hash_one(key)
     }
 
     /// Add key to frequency bucket
@@ -712,7 +709,7 @@ where
         let mut sorted_frequencies = frequencies.clone();
         sorted_frequencies.sort_unstable();
         let mid = sorted_frequencies.len() / 2;
-        self.frequency_distribution.median = if sorted_frequencies.len() % 2 == 0 {
+        self.frequency_distribution.median = if sorted_frequencies.len().is_multiple_of(2) {
             (sorted_frequencies[mid - 1] + sorted_frequencies[mid]) as f64 / 2.0
         } else {
             sorted_frequencies[mid] as f64
@@ -728,10 +725,10 @@ where
             total_keys: self.frequencies.len(),
             min_frequency: self.min_frequency,
             max_frequency: self.frequencies.values().max().copied().unwrap_or(0),
-            avg_frequency: if !self.frequencies.is_empty() {
-                self.frequencies.values().sum::<u64>() as f64 / self.frequencies.len() as f64
-            } else {
+            avg_frequency: if self.frequencies.is_empty() {
                 0.0
+            } else {
+                self.frequencies.values().sum::<u64>() as f64 / self.frequencies.len() as f64
             },
             frequency_spread: self.frequency_distribution.max - self.frequency_distribution.min,
             hot_spot_ratio: self.access_pattern.hot_spot_ratio,
@@ -761,7 +758,7 @@ where
     }
 }
 
-/// EvictionPolicy implementation for LFU
+/// `EvictionPolicy` implementation for LFU
 impl<K, V> super::EvictionPolicy<K, V> for LfuPolicy<K, V>
 where
     K: CacheKey + Send + Sync,
@@ -783,18 +780,18 @@ where
         self
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "LFU"
     }
 }
 
-/// VictimSelector implementation for LFU
+/// `VictimSelector` implementation for LFU
 impl<K, V> super::VictimSelector<K, V> for LfuPolicy<K, V>
 where
     K: CacheKey + Send + Sync,
     V: Send + Sync,
 {
-    fn select_victim<'a>(&self, _entries: &[super::EvictionEntry<'a, K, V>]) -> Option<K> {
+    fn select_victim(&self, _entries: &[super::EvictionEntry<'_, K, V>]) -> Option<K> {
         self.select_victim()
     }
 }

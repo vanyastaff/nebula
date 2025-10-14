@@ -21,7 +21,7 @@ use nebula_log::{debug, info, warn};
 // ============================================================================
 
 /// Global memory system configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MemoryConfig {
     /// Allocator configuration
     pub allocator: AllocatorConfig,
@@ -42,31 +42,15 @@ pub struct MemoryConfig {
     pub stats: StatsConfig,
 }
 
-impl Default for MemoryConfig {
-    fn default() -> Self {
-        Self {
-            allocator: AllocatorConfig::default(),
-            #[cfg(feature = "pool")]
-            pool: PoolConfig::default(),
-            #[cfg(feature = "arena")]
-            arena: ArenaConfig::default(),
-            #[cfg(feature = "cache")]
-            cache: CacheConfig::default(),
-            #[cfg(feature = "budget")]
-            budget: BudgetConfig::default(),
-            #[cfg(feature = "stats")]
-            stats: StatsConfig::default(),
-        }
-    }
-}
-
 impl MemoryConfig {
     /// Create a new configuration with default values
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Production configuration - optimized for maximum performance
+    #[must_use]
     pub fn production() -> Self {
         let mut config = Self::default();
         config.allocator = AllocatorConfig::production();
@@ -90,6 +74,7 @@ impl MemoryConfig {
     }
 
     /// Debug configuration - optimized for debugging and error detection
+    #[must_use]
     pub fn debug() -> Self {
         let mut config = Self::default();
         config.allocator = AllocatorConfig::debug();
@@ -113,11 +98,13 @@ impl MemoryConfig {
     }
 
     /// Create a configuration optimized for high-performance scenarios
+    #[must_use]
     pub fn high_performance() -> Self {
         Self::production()
     }
 
     /// Create a configuration optimized for low memory usage
+    #[must_use]
     pub fn low_memory() -> Self {
         let mut config = Self::default();
         config.allocator = AllocatorConfig::low_memory();
@@ -149,34 +136,34 @@ impl MemoryConfig {
 
         self.allocator
             .validate()
-            .map_err(|e| MemoryError::invalid_config(format!("allocator: {}", e)))?;
+            .map_err(|e| MemoryError::invalid_config(format!("allocator: {e}")))?;
 
         #[cfg(feature = "pool")]
         {
             self.pool
                 .validate()
-                .map_err(|e| MemoryError::invalid_config(format!("pool: {}", e)))?;
+                .map_err(|e| MemoryError::invalid_config(format!("pool: {e}")))?;
         }
 
         #[cfg(feature = "arena")]
         {
             self.arena
                 .validate()
-                .map_err(|e| MemoryError::invalid_config(format!("arena: {}", e)))?;
+                .map_err(|e| MemoryError::invalid_config(format!("arena: {e}")))?;
         }
 
         #[cfg(feature = "cache")]
         {
             self.cache
                 .validate()
-                .map_err(|e| MemoryError::invalid_config(format!("cache: {}", e)))?;
+                .map_err(|e| MemoryError::invalid_config(format!("cache: {e}")))?;
         }
 
         #[cfg(feature = "budget")]
         {
             self.budget
                 .validate()
-                .map_err(|e| MemoryError::invalid_config(format!("budget: {}", e)))?;
+                .map_err(|e| MemoryError::invalid_config(format!("budget: {e}")))?;
         }
 
         #[cfg(feature = "logging")]
@@ -221,6 +208,7 @@ impl Default for AllocatorConfig {
 
 impl AllocatorConfig {
     /// Production configuration - optimized for maximum performance
+    #[must_use]
     pub fn production() -> Self {
         Self {
             default_allocator: AllocatorType::Bump,
@@ -232,6 +220,7 @@ impl AllocatorConfig {
     }
 
     /// Debug configuration - optimized for debugging and error detection
+    #[must_use]
     pub fn debug() -> Self {
         Self {
             default_allocator: AllocatorType::Tracked,
@@ -243,11 +232,13 @@ impl AllocatorConfig {
     }
 
     /// Configuration optimized for high performance (alias for production)
+    #[must_use]
     pub fn high_performance() -> Self {
         Self::production()
     }
 
     /// Configuration optimized for low memory usage
+    #[must_use]
     pub fn low_memory() -> Self {
         Self {
             default_allocator: AllocatorType::System,
@@ -354,6 +345,7 @@ impl Default for PoolConfig {
 #[cfg(feature = "pool")]
 impl PoolConfig {
     /// Production configuration - optimized for maximum performance
+    #[must_use]
     pub fn production() -> Self {
         Self {
             default_capacity: 128,
@@ -366,6 +358,7 @@ impl PoolConfig {
     }
 
     /// Debug configuration - optimized for debugging and error detection
+    #[must_use]
     pub fn debug() -> Self {
         Self {
             default_capacity: 16,
@@ -378,11 +371,13 @@ impl PoolConfig {
     }
 
     /// Configuration optimized for high performance (alias for production)
+    #[must_use]
     pub fn high_performance() -> Self {
         Self::production()
     }
 
     /// Configuration optimized for low memory usage
+    #[must_use]
     pub fn low_memory() -> Self {
         Self {
             default_capacity: 8,
@@ -472,6 +467,7 @@ impl Default for ArenaConfig {
 #[cfg(feature = "arena")]
 impl ArenaConfig {
     /// Production configuration - optimized for maximum performance
+    #[must_use]
     pub fn production() -> Self {
         Self {
             default_size: 1024 * 1024,   // 1MB
@@ -483,6 +479,7 @@ impl ArenaConfig {
     }
 
     /// Debug configuration - optimized for debugging and error detection
+    #[must_use]
     pub fn debug() -> Self {
         Self {
             default_size: 64 * 1024,    // 64KB
@@ -494,11 +491,13 @@ impl ArenaConfig {
     }
 
     /// Configuration optimized for high performance (alias for production)
+    #[must_use]
     pub fn high_performance() -> Self {
         Self::production()
     }
 
     /// Configuration optimized for low memory usage
+    #[must_use]
     pub fn low_memory() -> Self {
         Self {
             default_size: 4 * 1024, // 4KB
@@ -580,6 +579,7 @@ impl Default for CacheConfig {
 #[cfg(feature = "cache")]
 impl CacheConfig {
     /// Production configuration - optimized for maximum performance
+    #[must_use]
     pub fn production() -> Self {
         Self {
             default_capacity: 1024,
@@ -591,6 +591,7 @@ impl CacheConfig {
     }
 
     /// Debug configuration - optimized for debugging and error detection
+    #[must_use]
     pub fn debug() -> Self {
         Self {
             default_capacity: 128,
@@ -602,11 +603,13 @@ impl CacheConfig {
     }
 
     /// Configuration optimized for high performance (alias for production)
+    #[must_use]
     pub fn high_performance() -> Self {
         Self::production()
     }
 
     /// Configuration optimized for low memory usage
+    #[must_use]
     pub fn low_memory() -> Self {
         Self {
             default_capacity: 64,
@@ -683,12 +686,12 @@ impl Default for BudgetConfig {
 impl BudgetConfig {
     /// Validate budget configuration
     pub fn validate(&self) -> MemoryResult<()> {
-        if let (Some(global), Some(operation)) = (self.global_budget, self.operation_budget) {
-            if operation > global {
-                return Err(MemoryError::invalid_config(
-                    "operation_budget cannot exceed global_budget",
-                ));
-            }
+        if let (Some(global), Some(operation)) = (self.global_budget, self.operation_budget)
+            && operation > global
+        {
+            return Err(MemoryError::invalid_config(
+                "operation_budget cannot exceed global_budget",
+            ));
         }
 
         Ok(())
@@ -755,6 +758,7 @@ impl MemoryConfig {
     }
 
     /// Create a builder for the configuration
+    #[must_use]
     pub fn builder() -> MemoryConfigBuilder {
         MemoryConfigBuilder::new()
     }
@@ -764,7 +768,7 @@ impl MemoryConfig {
 // Configuration Builder
 // ============================================================================
 
-/// Builder for MemoryConfig
+/// Builder for `MemoryConfig`
 #[derive(Debug, Default)]
 pub struct MemoryConfigBuilder {
     config: MemoryConfig,
@@ -772,6 +776,7 @@ pub struct MemoryConfigBuilder {
 
 impl MemoryConfigBuilder {
     /// Create a new configuration builder
+    #[must_use]
     pub fn new() -> Self {
         Self {
             config: MemoryConfig::default(),

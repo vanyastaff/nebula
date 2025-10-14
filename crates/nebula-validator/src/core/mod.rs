@@ -144,7 +144,7 @@ pub mod prelude {
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Returns the version string.
-#[must_use] 
+#[must_use]
 pub fn version() -> &'static str {
     VERSION
 }
@@ -154,7 +154,7 @@ pub fn version() -> &'static str {
 // ============================================================================
 
 /// Returns information about enabled features.
-#[must_use] 
+#[must_use]
 pub fn features() -> Features {
     Features {
         async_support: cfg!(feature = "async"),
@@ -344,8 +344,9 @@ mod core_tests {
     fn test_validate_with_all_failure() {
         let valid = AlwaysValid;
         let fails = AlwaysFails;
-        let validators: Vec<&dyn TypedValidator<Input = str, Output = (), Error = ValidationError>> =
-            vec![&valid, &fails];
+        let validators: Vec<
+            &dyn TypedValidator<Input = str, Output = (), Error = ValidationError>,
+        > = vec![&valid, &fails];
         let result = validate_with_all("test", validators);
         assert!(result.is_err());
     }
@@ -354,8 +355,9 @@ mod core_tests {
     fn test_validate_with_any_success() {
         let valid = AlwaysValid;
         let fails = AlwaysFails;
-        let validators: Vec<&dyn TypedValidator<Input = str, Output = (), Error = ValidationError>> =
-            vec![&fails, &valid];
+        let validators: Vec<
+            &dyn TypedValidator<Input = str, Output = (), Error = ValidationError>,
+        > = vec![&fails, &valid];
         let result = validate_with_any("test", validators);
         assert!(result.is_ok());
     }

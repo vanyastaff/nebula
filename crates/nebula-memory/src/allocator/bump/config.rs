@@ -46,6 +46,7 @@ impl Default for BumpConfig {
 
 impl BumpConfig {
     /// Production configuration - optimized for maximum performance
+    #[must_use]
     pub fn production() -> Self {
         Self {
             track_stats: false,
@@ -59,6 +60,7 @@ impl BumpConfig {
     }
 
     /// Debug configuration - optimized for debugging and error detection
+    #[must_use]
     pub fn debug() -> Self {
         Self {
             track_stats: true,
@@ -72,6 +74,7 @@ impl BumpConfig {
     }
 
     /// Single-threaded configuration - avoids atomic overhead
+    #[must_use]
     pub fn single_thread() -> Self {
         Self {
             thread_safe: false,
@@ -80,6 +83,7 @@ impl BumpConfig {
     }
 
     /// Performance-optimized configuration
+    #[must_use]
     pub fn performance() -> Self {
         Self {
             track_stats: false,
@@ -93,6 +97,7 @@ impl BumpConfig {
     }
 
     /// Conservative configuration - balanced defaults
+    #[must_use]
     pub fn conservative() -> Self {
         Self {
             track_stats: true,

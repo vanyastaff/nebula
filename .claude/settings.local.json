@@ -115,7 +115,14 @@
       "Bash(xargs:*)",
       "Bash(do grep -A 2 \"^#\\[cfg(test)\\]\" \"$file\")",
       "Bash(do echo -n \"$crate: \")",
-      "Bash(do sed -i 's/yaml_rust/yaml_rust2/g' \"$file\")"
+      "Bash(do sed -i 's/yaml_rust/yaml_rust2/g' \"$file\")",
+      "Bash(do sed -i 's/NebulaError::/ValueError::/g' \"$file\")",
+      "Bash(do sed -i 's|use crate::core::error::ValueErrorExt;|use crate::core::error::ValueErrorExt;\\nuse crate::core::{ValueError, ValueResult};|' \"$file\")",
+      "Bash(do sed -i 's/type Err = NebulaError/type Err = ValueError/g; s/type Error = NebulaError/type Error = ValueError/g' \"$file\")",
+      "Bash(do echo \"=== $crate/Cargo.toml ===\")",
+      "Bash(do if [ -f \"$file\" ])",
+      "Bash(then head -20 \"$file\")",
+      "Bash(do sed -i '0,/use crate::core::error::{ExpressionError, ExpressionErrorExt};/{//d;}' \"$file\")",
     ],
     "deny": [],
     "ask": []

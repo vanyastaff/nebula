@@ -80,7 +80,7 @@ pub use self::cross_thread::{
     CrossThreadArena, CrossThreadArenaBuilder, CrossThreadArenaGuard, CrossThreadArenaRef,
 };
 pub use self::local::{
-    LocalArena, LocalRef, LocalRefMut, alloc_local, with_arena, reset_local_arena,
+    LocalArena, LocalRef, LocalRefMut, alloc_local, reset_local_arena, with_arena,
     with_local_arena, with_local_arena_mut,
 };
 pub use self::scope::{ArenaGuard, ArenaScope};
@@ -113,7 +113,7 @@ pub trait ArenaAllocate {
     /// Allocates and initializes a value
     fn alloc<T>(&self, value: T) -> Result<&mut T, MemoryError> {
         let layout = Layout::new::<T>();
-        let ptr = unsafe { self.alloc_bytes(layout.size(), layout.align())? } as *mut T;
+        let ptr = unsafe { self.alloc_bytes(layout.size(), layout.align())? }.cast::<T>();
 
         unsafe {
             ptr.write(value);
@@ -128,7 +128,7 @@ pub trait ArenaAllocate {
         }
 
         let layout = Layout::for_value(slice);
-        let ptr = unsafe { self.alloc_bytes(layout.size(), layout.align())? } as *mut T;
+        let ptr = unsafe { self.alloc_bytes(layout.size(), layout.align())? }.cast::<T>();
 
         unsafe {
             std::ptr::copy_nonoverlapping(slice.as_ptr(), ptr, slice.len());
@@ -196,6 +196,7 @@ pub struct ArenaConfig {
 
 impl ArenaConfig {
     /// Creates new config with default values
+    #[must_use]
     pub fn new() -> Self {
         Self {
             initial_size: 4096, // 4KB
@@ -212,6 +213,7 @@ impl ArenaConfig {
     }
 
     /// Production configuration - optimized for maximum performance
+    #[must_use]
     pub fn production() -> Self {
         Self {
             initial_size: 64 * 1024,           // 64KB - larger initial size
@@ -228,6 +230,7 @@ impl ArenaConfig {
     }
 
     /// Debug configuration - optimized for debugging and error detection
+    #[must_use]
     pub fn debug() -> Self {
         Self {
             initial_size: 4096,               // 4KB - small chunks for catching errors
@@ -244,11 +247,13 @@ impl ArenaConfig {
     }
 
     /// Performance configuration (alias for production)
+    #[must_use]
     pub fn performance() -> Self {
         Self::production()
     }
 
     /// Conservative configuration - balanced between performance and safety
+    #[must_use]
     pub fn conservative() -> Self {
         Self {
             initial_size: 16 * 1024, // 16KB
@@ -265,6 +270,7 @@ impl ArenaConfig {
     }
 
     /// Small objects configuration - for frequent small allocations
+    #[must_use]
     pub fn small_objects() -> Self {
         Self {
             initial_size: 8 * 1024,           // 8KB
@@ -281,6 +287,7 @@ impl ArenaConfig {
     }
 
     /// Large objects configuration - for infrequent large allocations
+    #[must_use]
     pub fn large_objects() -> Self {
         Self {
             initial_size: 256 * 1024,          // 256KB
@@ -297,6 +304,7 @@ impl ArenaConfig {
     }
 
     /// Creates config from global memory configuration
+    #[must_use]
     pub fn from_memory_config(_config: &crate::core::config::MemoryConfig) -> Self {
         // TODO: Proper mapping between core::config::ArenaConfig and arena::ArenaConfig
         Self::default()
@@ -399,36 +407,43 @@ impl Default for ArenaConfig {
 // Arena creation helpers
 
 /// Creates new arena with default config
+#[must_use]
 pub fn new_arena() -> Arena {
     Arena::new(ArenaConfig::default())
 }
 
 /// Creates new arena with initial capacity
+#[must_use]
 pub fn new_arena_with_capacity(capacity: usize) -> Arena {
     Arena::new(ArenaConfig::default().with_initial_size(capacity))
 }
 
 /// Creates new typed arena
+#[must_use]
 pub fn new_typed_arena<T>() -> TypedArena<T> {
     TypedArena::new()
 }
 
 /// Creates new typed arena with capacity
+#[must_use]
 pub fn new_typed_arena_with_capacity<T>(capacity: usize) -> TypedArena<T> {
     TypedArena::with_capacity(capacity)
 }
 
 /// Creates new thread-safe arena
+#[must_use]
 pub fn new_thread_safe_arena() -> ThreadSafeArena {
     ThreadSafeArena::new(ArenaConfig::default())
 }
 
 /// Creates new thread-safe arena with config
+#[must_use]
 pub fn new_thread_safe_arena_with_config(config: ArenaConfig) -> ThreadSafeArena {
     ThreadSafeArena::new(config)
 }
 
 /// Creates new cross-thread arena
+#[must_use]
 pub fn new_cross_thread_arena() -> CrossThreadArena {
     CrossThreadArena::new(ArenaConfig::default())
 }
@@ -465,6 +480,7 @@ pub enum ArenaHint {
 }
 
 /// Apply hints to arena configuration
+#[must_use]
 pub fn apply_hints(mut config: ArenaConfig, hints: &[ArenaHint]) -> ArenaConfig {
     for hint in hints {
         match hint {

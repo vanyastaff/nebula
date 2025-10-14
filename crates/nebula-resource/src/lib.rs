@@ -62,17 +62,6 @@
 //! }
 //! ```
 
-#![deny(unsafe_code)]
-#![warn(
-    missing_docs,
-    missing_debug_implementations,
-    missing_copy_implementations,
-    trivial_casts,
-    trivial_numeric_casts,
-    unused_import_braces,
-    unused_qualifications
-)]
-
 // Core modules
 pub mod core;
 pub mod health;

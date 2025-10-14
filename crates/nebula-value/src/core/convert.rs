@@ -36,11 +36,13 @@ impl ValueRefExt for Value {
                 serde_json::Value::String(encoded)
             }
             // Array and Object need to convert nested Values to serde_json::Value
-            Value::Array(arr) => serde_json::Value::Array(
-                arr.iter().map(|v| v.to_json()).collect()
-            ),
+            Value::Array(arr) => {
+                serde_json::Value::Array(arr.iter().map(|v| v.to_json()).collect())
+            }
             Value::Object(obj) => serde_json::Value::Object(
-                obj.entries().map(|(k, v)| (k.clone(), v.to_json())).collect()
+                obj.entries()
+                    .map(|(k, v)| (k.clone(), v.to_json()))
+                    .collect(),
             ),
             #[cfg(feature = "temporal")]
             Value::Date(d) => serde_json::Value::String(d.to_iso_string().to_string()),

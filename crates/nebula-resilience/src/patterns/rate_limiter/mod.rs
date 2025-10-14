@@ -2,11 +2,11 @@
 //!
 //! This module provides multiple rate limiting algorithms for different use cases:
 //!
-//! - **TokenBucket**: Classic token bucket with refill rate
-//! - **LeakyBucket**: Leaky bucket with constant leak rate
-//! - **SlidingWindow**: Sliding time window counter
-//! - **AdaptiveRateLimiter**: Self-adjusting based on error rates
-//! - **GovernorRateLimiter**: Production-grade GCRA algorithm
+//! - **`TokenBucket`**: Classic token bucket with refill rate
+//! - **`LeakyBucket`**: Leaky bucket with constant leak rate
+//! - **`SlidingWindow`**: Sliding time window counter
+//! - **`AdaptiveRateLimiter`**: Self-adjusting based on error rates
+//! - **`GovernorRateLimiter`**: Production-grade GCRA algorithm
 //!
 //! # Examples
 //!
@@ -23,17 +23,17 @@ use std::sync::Arc;
 use crate::ResilienceResult;
 
 // Re-export implementations
-mod token_bucket;
-mod leaky_bucket;
-mod sliding_window;
 mod adaptive;
 mod governor_impl;
+mod leaky_bucket;
+mod sliding_window;
+mod token_bucket;
 
-pub use token_bucket::TokenBucket;
-pub use leaky_bucket::LeakyBucket;
-pub use sliding_window::SlidingWindow;
 pub use adaptive::AdaptiveRateLimiter;
 pub use governor_impl::GovernorRateLimiter;
+pub use leaky_bucket::LeakyBucket;
+pub use sliding_window::SlidingWindow;
+pub use token_bucket::TokenBucket;
 
 /// Rate limiter trait
 ///

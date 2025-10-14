@@ -6,9 +6,9 @@
 //! - execute() with successful operations
 //! - execute() with failures triggering circuit open
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use std::time::Duration;
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use nebula_resilience::{CircuitBreaker, CircuitBreakerConfig, ResilienceError};
+use std::time::Duration;
 
 fn circuit_breaker_closed_execute(c: &mut Criterion) {
     let mut group = c.benchmark_group("circuit_breaker/closed");
@@ -27,9 +27,9 @@ fn circuit_breaker_closed_execute(c: &mut Criterion) {
                 let cb = CircuitBreaker::with_config(config);
 
                 b.to_async(&rt).iter(|| async {
-                    let result = cb.execute(|| async {
-                        Ok::<_, ResilienceError>(black_box(42))
-                    }).await;
+                    let result = cb
+                        .execute(|| async { Ok::<_, ResilienceError>(black_box(42)) })
+                        .await;
                     black_box(result)
                 });
             },
@@ -52,9 +52,8 @@ fn circuit_breaker_can_execute(c: &mut Criterion) {
         };
         let cb = CircuitBreaker::with_config(config);
 
-        b.to_async(&rt).iter(|| async {
-            black_box(cb.can_execute().await)
-        });
+        b.to_async(&rt)
+            .iter(|| async { black_box(cb.can_execute().await) });
     });
 
     // Benchmark: Check if can execute (circuit open)
@@ -70,15 +69,14 @@ fn circuit_breaker_can_execute(c: &mut Criterion) {
         // Trigger circuit open
         rt.block_on(async {
             for _ in 0..2 {
-                let _ = cb.execute(|| async {
-                    Err::<(), _>(ResilienceError::custom("fail"))
-                }).await;
+                let _ = cb
+                    .execute(|| async { Err::<(), _>(ResilienceError::custom("fail")) })
+                    .await;
             }
         });
 
-        b.to_async(&rt).iter(|| async {
-            black_box(cb.can_execute().await)
-        });
+        b.to_async(&rt)
+            .iter(|| async { black_box(cb.can_execute().await) });
     });
 
     group.finish();
@@ -104,9 +102,9 @@ fn circuit_breaker_state_transitions(c: &mut Criterion) {
                 rt.block_on(async {
                     // Trigger failures to open circuit
                     for _ in 0..3 {
-                        let _ = cb.execute(|| async {
-                            Err::<(), _>(ResilienceError::custom("fail"))
-                        }).await;
+                        let _ = cb
+                            .execute(|| async { Err::<(), _>(ResilienceError::custom("fail")) })
+                            .await;
                     }
                 })
             },
@@ -129,9 +127,9 @@ fn circuit_breaker_state_transitions(c: &mut Criterion) {
 
                 // Open the circuit
                 rt.block_on(async {
-                    let _ = cb.execute(|| async {
-                        Err::<(), _>(ResilienceError::custom("fail"))
-                    }).await;
+                    let _ = cb
+                        .execute(|| async { Err::<(), _>(ResilienceError::custom("fail")) })
+                        .await;
 
                     // Wait for reset timeout
                     tokio::time::sleep(Duration::from_millis(15)).await;
@@ -142,9 +140,7 @@ fn circuit_breaker_state_transitions(c: &mut Criterion) {
             |cb| {
                 rt.block_on(async {
                     // Successful operation should transition to Closed
-                    let _ = cb.execute(|| async {
-                        Ok::<_, ResilienceError>(42)
-                    }).await;
+                    let _ = cb.execute(|| async { Ok::<_, ResilienceError>(42) }).await;
                 })
             },
             criterion::BatchSize::SmallInput,
@@ -166,9 +162,8 @@ fn circuit_breaker_stats(c: &mut Criterion) {
         };
         let cb = CircuitBreaker::with_config(config);
 
-        b.to_async(&rt).iter(|| async {
-            black_box(cb.stats().await)
-        });
+        b.to_async(&rt)
+            .iter(|| async { black_box(cb.stats().await) });
     });
 
     group.finish();

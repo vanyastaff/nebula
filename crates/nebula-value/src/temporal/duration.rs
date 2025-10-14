@@ -1,4 +1,4 @@
-use crate::core::{NebulaError, ValueResult};
+use crate::core::{ValueError, ValueResult};
 use core::fmt;
 use core::time::Duration as StdDuration;
 
@@ -50,13 +50,13 @@ impl Duration {
     /// Create from floating-point seconds
     pub fn from_secs_f64(secs: f64) -> ValueResult<Self> {
         if !secs.is_finite() {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Duration must be finite, got {}",
                 secs
             )));
         }
         if secs < 0.0 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Duration cannot be negative: {}",
                 secs
             )));
@@ -67,13 +67,13 @@ impl Duration {
     /// Create from floating-point seconds (32-bit)
     pub fn from_secs_f32(secs: f32) -> ValueResult<Self> {
         if !secs.is_finite() {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Duration must be finite, got {}",
                 secs
             )));
         }
         if secs < 0.0 {
-            return Err(NebulaError::validation(format!(
+            return Err(ValueError::validation(format!(
                 "Duration cannot be negative: {}",
                 secs
             )));

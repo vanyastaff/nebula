@@ -97,7 +97,7 @@ impl From<ModeValue> for nebula_value::Value {
 }
 
 impl ModeValue {
-    /// Create a new ModeValue
+    /// Create a new `ModeValue`
     pub fn new(key: impl Into<String>, value: nebula_value::Value) -> Self {
         Self {
             key: key.into(),
@@ -105,7 +105,7 @@ impl ModeValue {
         }
     }
 
-    /// Create a new ModeValue with a string value
+    /// Create a new `ModeValue` with a string value
     pub fn text(key: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             key: key.into(),
@@ -113,7 +113,7 @@ impl ModeValue {
         }
     }
 
-    /// Create a new ModeValue with a boolean value
+    /// Create a new `ModeValue` with a boolean value
     pub fn boolean(key: impl Into<String>, value: bool) -> Self {
         Self {
             key: key.into(),
@@ -121,7 +121,7 @@ impl ModeValue {
         }
     }
 
-    /// Create a new ModeValue with an integer value
+    /// Create a new `ModeValue` with an integer value
     pub fn integer(key: impl Into<String>, value: i64) -> Self {
         Self {
             key: key.into(),
@@ -129,7 +129,7 @@ impl ModeValue {
         }
     }
 
-    /// Create a new ModeValue from ParameterValue (MaybeExpression<Value>)
+    /// Create a new `ModeValue` from `ParameterValue` (`MaybeExpression`<Value>)
     pub fn from_parameter_value(
         key: impl Into<String>,
         param_value: &MaybeExpression<Value>,
@@ -213,7 +213,9 @@ impl Expressible for ModeParameter {
                 // Convert expression source to text value
                 let mode_value = ModeValue {
                     key: self.metadata.key.clone().to_string(),
-                    value: nebula_value::Value::Text(nebula_value::Text::from(expr.source.as_str())),
+                    value: nebula_value::Value::Text(nebula_value::Text::from(
+                        expr.source.as_str(),
+                    )),
                 };
                 self.value = Some(mode_value);
                 Ok(())
@@ -282,7 +284,7 @@ impl ModeParameter {
         if !self.modes.iter().any(|m| m.key == mode_key) {
             return Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
-                reason: format!("Mode '{}' is not available for this parameter", mode_key),
+                reason: format!("Mode '{mode_key}' is not available for this parameter"),
             });
         }
 

@@ -85,8 +85,7 @@ pub struct ValidationError {
 }
 
 /// Severity level of a validation error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ErrorSeverity {
     /// Error that must be fixed (default).
     #[default]
@@ -96,7 +95,6 @@ pub enum ErrorSeverity {
     /// Informational message.
     Info,
 }
-
 
 impl ValidationError {
     /// Creates a new validation error with a code and message.
@@ -245,13 +243,13 @@ impl ValidationError {
     }
 
     /// Returns true if this error has nested errors.
-    #[must_use] 
+    #[must_use]
     pub fn has_nested(&self) -> bool {
         !self.nested.is_empty()
     }
 
     /// Returns the number of errors (including nested).
-    #[must_use] 
+    #[must_use]
     pub fn total_error_count(&self) -> usize {
         1 + self
             .nested
@@ -261,7 +259,7 @@ impl ValidationError {
     }
 
     /// Flattens all errors into a single list (depth-first).
-    #[must_use] 
+    #[must_use]
     pub fn flatten(&self) -> Vec<&ValidationError> {
         let mut result = vec![self];
         for nested in &self.nested {
@@ -398,7 +396,7 @@ pub struct ValidationErrors {
 
 impl ValidationErrors {
     /// Creates a new empty error collection.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self { errors: Vec::new() }
     }
@@ -414,25 +412,25 @@ impl ValidationErrors {
     }
 
     /// Returns true if there are any errors.
-    #[must_use] 
+    #[must_use]
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
     }
 
     /// Returns the number of errors.
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.errors.len()
     }
 
     /// Returns true if empty.
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.errors.is_empty()
     }
 
     /// Returns all errors.
-    #[must_use] 
+    #[must_use]
     pub fn errors(&self) -> &[ValidationError] {
         &self.errors
     }
@@ -535,33 +533,5 @@ mod tests {
 
         let flattened = error.flatten();
         assert_eq!(flattened.len(), 4); // root + 2 children + 1 grandchild
-    }
-}
-
-// ============================================================================
-// NEBULA ERROR INTEGRATION
-// ============================================================================
-
-/// Convert `ValidationError` to `NebulaError`
-impl From<ValidationError> for nebula_error::NebulaError {
-    fn from(err: ValidationError) -> Self {
-        let mut message = format!("[{}] {}", err.code, err.message);
-
-        if let Some(field) = &err.field {
-            message = format!("{message} (field: {field})");
-        }
-
-        if !err.params.is_empty() {
-            message = format!("{} (params: {:?})", message, err.params);
-        }
-
-        nebula_error::NebulaError::validation(message)
-    }
-}
-
-/// Convert `NebulaError` to `ValidationError`
-impl From<nebula_error::NebulaError> for ValidationError {
-    fn from(err: nebula_error::NebulaError) -> Self {
-        ValidationError::new("nebula_error", err.to_string())
     }
 }

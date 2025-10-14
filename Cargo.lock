@@ -234,9 +234,6 @@ name = "anyhow"
 version = "1.0.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
-dependencies = [
- "backtrace",
-]
 
 [[package]]
 name = "arc-swap"
@@ -919,16 +916,6 @@ checksum = "1bfb12502f3fc46cca1bb51ac28df9d618d813cdc3d2f25b9fe775a34af26bb3"
 dependencies = [
  "generic-array",
  "typenum",
-]
-
-[[package]]
-name = "ctor"
-version = "0.2.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32a2785755761f3ddc1492979ce1e48d2c00d09311c39e4466429188f3dd6501"
-dependencies = [
- "quote",
- "syn 2.0.106",
 ]
 
 [[package]]
@@ -2733,7 +2720,6 @@ dependencies = [
  "dashmap",
  "futures",
  "nebula-derive",
- "nebula-error",
  "nebula-log",
  "nebula-value",
  "notify",
@@ -2757,7 +2743,6 @@ dependencies = [
  "chrono",
  "dashmap",
  "domain-key",
- "nebula-error",
  "nebula-log",
  "pretty_assertions",
  "serde",
@@ -2776,7 +2761,6 @@ dependencies = [
  "base64 0.22.1",
  "domain-key",
  "nebula-core",
- "nebula-error",
  "nebula-log",
  "pretty_assertions",
  "rand 0.8.5",
@@ -2806,37 +2790,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "nebula-error"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bincode",
- "bitflags 2.9.4",
- "chrono",
- "criterion 0.7.0",
- "ctor",
- "pretty_assertions",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "smallvec",
- "smol_str",
- "static_assertions",
- "thiserror 2.0.17",
- "tokio",
- "tokio-test",
- "uuid",
-]
-
-[[package]]
 name = "nebula-expression"
 version = "0.1.0"
 dependencies = [
  "chrono",
  "criterion 0.7.0",
  "nebula-core",
- "nebula-error",
  "nebula-log",
  "nebula-memory",
  "nebula-value",
@@ -2846,6 +2805,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "thiserror 2.0.17",
  "uuid",
 ]
 
@@ -2857,7 +2817,6 @@ dependencies = [
  "criterion 0.7.0",
  "flate2",
  "metrics 0.23.1",
- "nebula-error",
  "once_cell",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -2900,7 +2859,6 @@ dependencies = [
  "libc",
  "lz4_flex",
  "nebula-core",
- "nebula-error",
  "nebula-log",
  "nebula-system",
  "once_cell",
@@ -2908,6 +2866,7 @@ dependencies = [
  "proptest",
  "rand 0.8.5",
  "spin",
+ "thiserror 2.0.17",
  "tokio",
  "winapi",
 ]
@@ -2921,7 +2880,6 @@ dependencies = [
  "chrono",
  "nebula-core",
  "nebula-derive",
- "nebula-error",
  "nebula-expression",
  "nebula-validator",
  "nebula-value",
@@ -2946,7 +2904,6 @@ dependencies = [
  "humantime-serde",
  "nebula-config",
  "nebula-core",
- "nebula-error",
  "nebula-log",
  "nebula-value",
  "parking_lot",
@@ -2973,7 +2930,6 @@ dependencies = [
  "mongodb",
  "nebula-credential",
  "nebula-derive",
- "nebula-error",
  "nebula-log",
  "nebula-resilience",
  "opentelemetry",
@@ -3006,7 +2962,6 @@ version = "0.1.0"
 dependencies = [
  "criterion 0.7.0",
  "libc",
- "nebula-error",
  "once_cell",
  "parking_lot",
  "pretty_assertions",
@@ -3033,7 +2988,6 @@ dependencies = [
  "dashmap",
  "futures",
  "moka",
- "nebula-error",
  "nebula-log",
  "pretty_assertions",
  "rand 0.8.5",
@@ -3050,7 +3004,6 @@ dependencies = [
 name = "nebula-value"
 version = "0.1.0"
 dependencies = [
- "ahash 0.8.12",
  "arc-swap",
  "async-trait",
  "base64 0.22.1",
@@ -3060,7 +3013,6 @@ dependencies = [
  "dashmap",
  "im",
  "lazy_static",
- "nebula-error",
  "nebula-log",
  "once_cell",
  "parking_lot",
@@ -4819,15 +4771,6 @@ dependencies = [
  "serde",
  "static_assertions",
  "version_check",
-]
-
-[[package]]
-name = "smol_str"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
-dependencies = [
- "serde",
 ]
 
 [[package]]

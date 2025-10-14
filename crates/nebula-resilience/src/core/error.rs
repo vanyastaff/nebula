@@ -4,8 +4,8 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::time::Duration;
 
-// Import NebulaError for integration
-use nebula_error::NebulaError;
+// ResilienceError can be converted to other error types as needed
+// by implementing From traits in consuming crates
 
 /// Core resilience errors
 #[derive(Debug)]
@@ -164,10 +164,7 @@ impl fmt::Display for ResilienceError {
                 max_concurrency,
                 queued,
             } => {
-                write!(
-                    f,
-                    "Bulkhead full: max={max_concurrency}, queued={queued}"
-                )
+                write!(f, "Bulkhead full: max={max_concurrency}, queued={queued}")
             }
             Self::RateLimitExceeded {
                 limit,
@@ -268,7 +265,7 @@ impl ResilienceError {
     }
 
     /// Create a bulkhead full error
-    #[must_use] 
+    #[must_use]
     pub fn bulkhead_full(max_concurrency: usize) -> Self {
         Self::BulkheadFull {
             max_concurrency,
@@ -277,7 +274,7 @@ impl ResilienceError {
     }
 
     /// Create a retry limit exceeded error with cause
-    #[must_use] 
+    #[must_use]
     pub fn retry_limit_exceeded_with_cause(attempts: usize, last_error: Option<Box<Self>>) -> Self {
         Self::RetryLimitExceeded {
             attempts,
@@ -286,7 +283,7 @@ impl ResilienceError {
     }
 
     /// Classify the error for decision making
-    #[must_use] 
+    #[must_use]
     pub fn classify(&self) -> ErrorClass {
         match self {
             Self::Timeout { .. } => ErrorClass::Transient,
@@ -308,7 +305,7 @@ impl ResilienceError {
     }
 
     /// Check if the error is retryable
-    #[must_use] 
+    #[must_use]
     pub fn is_retryable(&self) -> bool {
         matches!(
             self.classify(),
@@ -317,7 +314,7 @@ impl ResilienceError {
     }
 
     /// Check if the error is terminal
-    #[must_use] 
+    #[must_use]
     pub fn is_terminal(&self) -> bool {
         matches!(
             self.classify(),
@@ -326,7 +323,7 @@ impl ResilienceError {
     }
 
     /// Get retry delay hint if available
-    #[must_use] 
+    #[must_use]
     pub fn retry_after(&self) -> Option<Duration> {
         match self {
             Self::RateLimitExceeded { retry_after, .. }
@@ -368,124 +365,5 @@ impl ErrorContext {
     }
 }
 
-// ==================== NebulaError Integration ====================
-
-impl From<ResilienceError> for NebulaError {
-    fn from(err: ResilienceError) -> Self {
-        match err {
-            ResilienceError::Timeout { duration, context } => {
-                let msg = match context {
-                    Some(ctx) => format!("Operation timed out after {duration:?}: {ctx}"),
-                    None => format!("Operation timed out after {duration:?}"),
-                };
-                NebulaError::timeout("resilience-operation", duration).with_details(msg)
-            }
-            ResilienceError::CircuitBreakerOpen { state, retry_after } => {
-                let msg = match retry_after {
-                    Some(duration) => {
-                        format!("Circuit breaker is {state} (retry after {duration:?})")
-                    }
-                    None => format!("Circuit breaker is {state}"),
-                };
-                NebulaError::service_unavailable("circuit-breaker", msg)
-            }
-            ResilienceError::BulkheadFull {
-                max_concurrency,
-                queued,
-            } => NebulaError::new(nebula_error::ErrorKind::System(
-                nebula_error::kinds::SystemError::resource_exhausted(format!(
-                    "Bulkhead full: max={max_concurrency}, queued={queued}"
-                )),
-            )),
-            ResilienceError::RateLimitExceeded {
-                limit,
-                current: _,
-                retry_after: _,
-            } => {
-                // Convert f64 limit to u32 for NebulaError API
-                let limit_u32 = limit as u32;
-                let period = Duration::from_secs(1); // Assume per-second limit
-                NebulaError::rate_limit_exceeded(limit_u32, period)
-            }
-            ResilienceError::RetryLimitExceeded {
-                attempts,
-                last_error,
-            } => {
-                let msg = match last_error {
-                    Some(err) => {
-                        format!("Retry limit exceeded after {attempts} attempts: {err}")
-                    }
-                    None => format!("Retry limit exceeded after {attempts} attempts"),
-                };
-                NebulaError::internal(msg)
-            }
-            ResilienceError::FallbackFailed {
-                reason,
-                original_error,
-            } => {
-                let msg = match original_error {
-                    Some(err) => format!("Fallback failed: {reason} (original: {err})"),
-                    None => format!("Fallback failed: {reason}"),
-                };
-                NebulaError::internal(msg)
-            }
-            ResilienceError::Cancelled { reason } => {
-                let msg = match reason {
-                    Some(r) => r.clone(),
-                    None => "Operation cancelled".to_string(),
-                };
-                NebulaError::execution_cancelled(msg)
-            }
-            ResilienceError::InvalidConfig { message } => {
-                NebulaError::validation(format!("Invalid resilience configuration: {message}"))
-            }
-            ResilienceError::Custom {
-                message,
-                retryable,
-                source: _,
-            } => {
-                if retryable {
-                    NebulaError::service_unavailable("resilience-custom", message)
-                } else {
-                    NebulaError::internal(message)
-                }
-            }
-        }
-    }
-}
-
-impl From<NebulaError> for ResilienceError {
-    fn from(err: NebulaError) -> Self {
-        // Classify NebulaError into appropriate ResilienceError
-        // Since specific is_* methods don't exist, we classify by error code or kind
-        let code = err.error_code();
-
-        if code.contains("timeout") {
-            ResilienceError::Timeout {
-                duration: err.retry_after().unwrap_or(Duration::from_secs(30)),
-                context: Some(err.user_message().to_string()),
-            }
-        } else if code.contains("rate_limit") {
-            ResilienceError::RateLimitExceeded {
-                retry_after: err.retry_after(),
-                limit: 100.0,   // Default limit
-                current: 150.0, // Assumed over limit
-            }
-        } else if err.is_client_error() {
-            ResilienceError::InvalidConfig {
-                message: err.user_message().to_string(),
-            }
-        } else if code.contains("cancel") {
-            ResilienceError::Cancelled {
-                reason: Some(err.user_message().to_string()),
-            }
-        } else {
-            // Map other errors to Custom
-            ResilienceError::Custom {
-                message: err.user_message().to_string(),
-                retryable: err.is_retryable(),
-                source: None,
-            }
-        }
-    }
-}
+// ResilienceError can be converted to other error types as needed
+// by implementing From traits in consuming crates

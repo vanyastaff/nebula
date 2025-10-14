@@ -62,7 +62,7 @@ impl Hex {
     /// - `min_length`: None (no minimum)
     /// - `max_length`: None (no maximum)
     /// - `case_sensitive`: None (allows any case)
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             allow_prefix: true,
@@ -80,7 +80,7 @@ impl Hex {
     }
 
     /// Require the "0x" prefix.
-    #[must_use] 
+    #[must_use]
     pub fn require_prefix(self) -> RequirePrefixHex {
         RequirePrefixHex {
             min_length: self.min_length,
@@ -168,20 +168,22 @@ impl TypedValidator for Hex {
 
         // Check length constraints
         if let Some(min) = self.min_length
-            && hex_str.len() < min {
-                return Err(ValidationError::new(
-                    "hex_too_short",
-                    format!("Hex string must be at least {min} characters"),
-                ));
-            }
+            && hex_str.len() < min
+        {
+            return Err(ValidationError::new(
+                "hex_too_short",
+                format!("Hex string must be at least {min} characters"),
+            ));
+        }
 
         if let Some(max) = self.max_length
-            && hex_str.len() > max {
-                return Err(ValidationError::new(
-                    "hex_too_long",
-                    format!("Hex string must not exceed {max} characters"),
-                ));
-            }
+            && hex_str.len() > max
+        {
+            return Err(ValidationError::new(
+                "hex_too_long",
+                format!("Hex string must not exceed {max} characters"),
+            ));
+        }
 
         // Validate characters
         for c in hex_str.chars() {

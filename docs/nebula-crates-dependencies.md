@@ -46,20 +46,11 @@ aws-sdk-s3 = "0.35"
 
 ## Cross-Cutting Concerns Layer
 
-### nebula-error
-```toml
-[dependencies]
-nebula-core = { workspace = true }
-thiserror = "1.0"
-anyhow = "1.0"
-backtrace = "0.3"
-```
 
 ### nebula-config
 ```toml
 [dependencies]
 nebula-core = { workspace = true }
-nebula-error = { workspace = true }
 config = "0.13"
 serde = { version = "1.0", features = ["derive"] }
 notify = "6.0"  # для hot-reload
@@ -70,7 +61,6 @@ tokio = { version = "1.0", features = ["fs", "sync"] }
 ```toml
 [dependencies]
 nebula-core = { workspace = true }
-nebula-error = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 serde_json = "1.0"
@@ -98,7 +88,6 @@ tokio = { version = "1.0", features = ["time"] }
 ```toml
 [dependencies]
 nebula-core = { workspace = true }
-nebula-error = { workspace = true }
 fluent = "0.16"
 unic-langid = "0.9"
 ```
@@ -107,7 +96,6 @@ unic-langid = "0.9"
 ```toml
 [dependencies]
 nebula-core = { workspace = true }
-nebula-error = { workspace = true }
 nebula-locale = { workspace = true, optional = true }
 regex = "1.9"
 async-trait = "0.1"
@@ -117,7 +105,6 @@ async-trait = "0.1"
 ```toml
 [dependencies]
 nebula-core = { workspace = true }
-nebula-error = { workspace = true }
 nebula-metrics = { workspace = true }
 tokio = { version = "1.0", features = ["time", "sync"] }
 futures = "0.3"
@@ -143,7 +130,6 @@ bytes = "1.0"
 [dependencies]
 nebula-core = { workspace = true }
 nebula-value = { workspace = true }
-nebula-error = { workspace = true }
 pest = "2.7"  # парсер
 pest_derive = "2.7"
 async-trait = "0.1"
@@ -164,7 +150,6 @@ tokio = { version = "1.0", features = ["sync"] }
 ```toml
 [dependencies]
 nebula-core = { workspace = true }
-nebula-error = { workspace = true }
 async-trait = "0.1"
 tokio = { version = "1.0", features = ["sync", "rt"] }
 futures = "0.3"
@@ -175,7 +160,6 @@ futures = "0.3"
 [dependencies]
 nebula-core = { workspace = true }
 nebula-storage = { workspace = true }
-nebula-error = { workspace = true }
 async-trait = "0.1"
 ```
 
@@ -185,7 +169,6 @@ async-trait = "0.1"
 nebula-core = { workspace = true }
 nebula-value = { workspace = true }
 nebula-validator = { workspace = true }
-nebula-error = { workspace = true }
 nebula-derive = { workspace = true, optional = true }
 serde = { version = "1.0", features = ["derive"] }
 petgraph = "0.6"  # для графов workflow
@@ -200,7 +183,6 @@ nebula-value = { workspace = true }
 nebula-expression = { workspace = true }
 nebula-memory = { workspace = true }
 nebula-eventbus = { workspace = true }
-nebula-error = { workspace = true }
 nebula-log = { workspace = true }
 nebula-metrics = { workspace = true }
 tokio = { version = "1.0", features = ["full"] }
@@ -216,7 +198,6 @@ nebula-core = { workspace = true }
 nebula-value = { workspace = true }
 nebula-validator = { workspace = true }
 nebula-expression = { workspace = true }
-nebula-error = { workspace = true }
 nebula-derive = { workspace = true, optional = true }
 serde = { version = "1.0", features = ["derive"] }
 ```
@@ -225,7 +206,6 @@ serde = { version = "1.0", features = ["derive"] }
 ```toml
 [dependencies]
 nebula-core = { workspace = true }
-nebula-error = { workspace = true }
 nebula-storage = { workspace = true }
 nebula-derive = { workspace = true, optional = true }
 async-trait = "0.1"
@@ -240,7 +220,6 @@ nebula-core = { workspace = true }
 nebula-value = { workspace = true }
 nebula-parameter = { workspace = true }
 nebula-credential = { workspace = true, optional = true }
-nebula-error = { workspace = true }
 nebula-derive = { workspace = true, optional = true }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
@@ -253,7 +232,6 @@ nebula-core = { workspace = true }
 nebula-action = { workspace = true }
 nebula-credential = { workspace = true }
 nebula-parameter = { workspace = true }
-nebula-error = { workspace = true }
 semver = "1.0"
 ```
 
@@ -264,7 +242,6 @@ semver = "1.0"
 [dependencies]
 nebula-core = { workspace = true }
 nebula-credential = { workspace = true }
-nebula-error = { workspace = true }
 nebula-metrics = { workspace = true }
 nebula-resilience = { workspace = true }
 nebula-derive = { workspace = true, optional = true }
@@ -280,7 +257,6 @@ nebula-node = { workspace = true }
 nebula-action = { workspace = true }
 nebula-workflow = { workspace = true }
 nebula-storage = { workspace = true }
-nebula-error = { workspace = true }
 tantivy = "0.20"  # для поиска
 semver = "1.0"
 ```
@@ -296,7 +272,6 @@ nebula-resource = { workspace = true }
 nebula-memory = { workspace = true }
 nebula-metrics = { workspace = true }
 nebula-resilience = { workspace = true }
-nebula-error = { workspace = true }
 tokio = { version = "1.0", features = ["full"] }
 ```
 
@@ -307,7 +282,6 @@ nebula-core = { workspace = true }
 nebula-runtime = { workspace = true }
 nebula-metrics = { workspace = true }
 nebula-log = { workspace = true }
-nebula-error = { workspace = true }
 tokio = { version = "1.0", features = ["full"] }
 futures = "0.3"
 crossbeam = "0.8"
@@ -326,7 +300,6 @@ nebula-registry = { workspace = true }
 nebula-storage = { workspace = true }
 nebula-eventbus = { workspace = true }
 nebula-idempotency = { workspace = true }
-nebula-error = { workspace = true }
 nebula-log = { workspace = true }
 nebula-metrics = { workspace = true }
 nebula-config = { workspace = true }
@@ -341,7 +314,6 @@ tokio = { version = "1.0", features = ["full"] }
 nebula-core = { workspace = true }
 nebula-resource = { workspace = true }
 nebula-storage = { workspace = true }
-nebula-error = { workspace = true }
 nebula-config = { workspace = true }
 async-trait = "0.1"
 ```
@@ -355,7 +327,6 @@ nebula-worker = { workspace = true }
 nebula-storage = { workspace = true }
 nebula-eventbus = { workspace = true }
 nebula-metrics = { workspace = true }
-nebula-error = { workspace = true }
 raft = "0.7"
 tonic = "0.10"  # для gRPC
 prost = "0.12"
@@ -384,7 +355,6 @@ nebula-workflow = { workspace = true }
 nebula-action = { workspace = true }
 nebula-parameter = { workspace = true }
 nebula-value = { workspace = true }
-nebula-error = { workspace = true }
 nebula-derive = { workspace = true, optional = true }
 
 [features]
@@ -401,7 +371,6 @@ nebula-core = { workspace = true }
 nebula-engine = { workspace = true }
 nebula-registry = { workspace = true }
 nebula-tenant = { workspace = true }
-nebula-error = { workspace = true }
 nebula-locale = { workspace = true }
 axum = "0.7"
 tower = "0.4"

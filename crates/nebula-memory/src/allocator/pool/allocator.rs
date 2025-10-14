@@ -5,16 +5,16 @@
 //! This module implements a thread-safe pool allocator using lock-free free list:
 //! - Fixed-size blocks organized in a singly-linked free list
 //! - Atomic head pointer with CAS for thread-safe allocation/deallocation
-//! - SyncUnsafeCell wrapper for interior mutability of memory buffer
+//! - `SyncUnsafeCell` wrapper for interior mutability of memory buffer
 //! - Free blocks store next pointer in first bytes (intrusive list)
 //!
 //! ## Invariants
 //!
-//! - All blocks are properly aligned to block_align
+//! - All blocks are properly aligned to `block_align`
 //! - Free list contains only valid, unallocated blocks
 //! - Atomic CAS prevents double-allocation
 //! - Block pointers validated on deallocation (bounds + alignment)
-//! - free_count tracks free blocks for O(1) queries
+//! - `free_count` tracks free blocks for O(1) queries
 
 use core::alloc::Layout;
 use core::cell::UnsafeCell;
@@ -121,15 +121,15 @@ impl PoolAllocator {
     /// Creates a new pool allocator with custom configuration
     ///
     /// # Parameters
-    /// - `block_size`: Size of each block in bytes (must be >= size_of::<*mut u8>())
+    /// - `block_size`: Size of each block in bytes (must be >= `size_of::`<*mut u8>())
     /// - `block_align`: Alignment requirement for blocks (must be power of 2)
     /// - `block_count`: Number of blocks to allocate in the pool
     /// - `config`: Configuration for the allocator
     ///
     /// # Errors
     /// Returns an error if:
-    /// - block_size is too small to hold a pointer
-    /// - block_align is not a power of 2
+    /// - `block_size` is too small to hold a pointer
+    /// - `block_align` is not a power of 2
     /// - Memory allocation fails
     pub fn with_config(
         block_size: usize,
@@ -154,7 +154,7 @@ impl PoolAllocator {
         let aligned_block_size = align_up(block_size, block_align);
         let total_size = aligned_block_size
             .checked_mul(block_count)
-            .ok_or_else(|| AllocError::size_overflow(aligned_block_size, block_align))?;
+            .ok_or_else(|| AllocError::size_overflow("block size calculation"))?;
 
         // Allocate memory buffer
         let mut vec = vec![0u8; total_size];
@@ -167,7 +167,7 @@ impl PoolAllocator {
         // Wrap in SyncUnsafeCell for interior mutability
         let boxed_slice = vec.into_boxed_slice();
         let len = boxed_slice.len();
-        let ptr = Box::into_raw(boxed_slice) as *mut u8;
+        let ptr = Box::into_raw(boxed_slice).cast::<u8>();
         // SAFETY: Transmuting Box<[u8]> to Box<SyncUnsafeCell<[u8]>>.
         // - SyncUnsafeCell is repr(transparent), identical layout to inner type
         // - ptr is a valid Box<[u8]> pointer from Box::into_raw
@@ -406,35 +406,32 @@ impl PoolAllocator {
             let next = unsafe { (*head).next };
 
             // Try to atomically update the head to point to the next block
-            match self.free_head.compare_exchange_weak(
+            if let Ok(_) = self.free_head.compare_exchange_weak(
                 head,
                 next,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => {
-                    // Successfully removed the block from free list
-                    self.free_count.fetch_sub(1, Ordering::Relaxed);
+                // Successfully removed the block from free list
+                self.free_count.fetch_sub(1, Ordering::Relaxed);
 
-                    // Update statistics
-                    if self.config.track_stats {
-                        self.total_allocs.fetch_add(1, Ordering::Relaxed);
-                        let current_used = self.used_memory();
-                        atomic_max(&self.peak_usage, current_used);
-                    }
+                // Update statistics
+                if self.config.track_stats {
+                    self.total_allocs.fetch_add(1, Ordering::Relaxed);
+                    let current_used = self.used_memory();
+                    atomic_max(&self.peak_usage, current_used);
+                }
 
-                    // Convert pointer to NonNull with explicit check
-                    // head is non-null (checked at loop start), but use explicit check for safety
-                    return NonNull::new(head as *mut u8);
+                // Convert pointer to NonNull with explicit check
+                // head is non-null (checked at loop start), but use explicit check for safety
+                return NonNull::new(head.cast::<u8>());
+            } else {
+                // Another thread modified the list, backoff and retry
+                attempts += 1;
+                if let Some(ref mut b) = backoff {
+                    b.spin();
                 }
-                Err(_) => {
-                    // Another thread modified the list, backoff and retry
-                    attempts += 1;
-                    if let Some(ref mut b) = backoff {
-                        b.spin();
-                    }
-                    continue;
-                }
+                continue;
             }
         }
     }
@@ -448,7 +445,7 @@ impl PoolAllocator {
 
         // Validate alignment and bounds
         let addr = ptr.as_ptr() as usize;
-        if (addr - self.start_addr) % self.block_size != 0 {
+        if !(addr - self.start_addr).is_multiple_of(self.block_size) {
             return false; // Not aligned to block boundary
         }
 
@@ -464,7 +461,7 @@ impl PoolAllocator {
             }
         }
 
-        let block = ptr.as_ptr() as *mut FreeBlock;
+        let block = ptr.as_ptr().cast::<FreeBlock>();
         let mut backoff = if self.config.use_backoff {
             Some(Backoff::new())
         } else {
@@ -484,30 +481,25 @@ impl PoolAllocator {
             }
 
             // Try to atomically set this block as the new head
-            match self.free_head.compare_exchange_weak(
-                head,
-                block,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    self.free_count.fetch_add(1, Ordering::Relaxed);
+            if self
+                .free_head
+                .compare_exchange_weak(head, block, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                self.free_count.fetch_add(1, Ordering::Relaxed);
 
-                    // Update statistics
-                    if self.config.track_stats {
-                        self.total_deallocs.fetch_add(1, Ordering::Relaxed);
-                    }
+                // Update statistics
+                if self.config.track_stats {
+                    self.total_deallocs.fetch_add(1, Ordering::Relaxed);
+                }
 
-                    return true;
-                }
-                Err(_) => {
-                    // Retry with backoff
-                    if let Some(ref mut b) = backoff {
-                        b.spin();
-                    }
-                    continue;
-                }
+                return true;
             }
+            // Retry with backoff
+            if let Some(ref mut b) = backoff {
+                b.spin();
+            }
+            continue;
         }
     }
 
@@ -538,7 +530,7 @@ unsafe impl Allocator for PoolAllocator {
     /// # Safety
     ///
     /// Caller must ensure:
-    /// - `layout.size()` <= block_size and `layout.align()` <= block_align
+    /// - `layout.size()` <= `block_size` and `layout.align()` <= `block_align`
     /// - Returned pointer not used after allocator reset/drop
     /// - Pool allocator only supports fixed-size allocations
     unsafe fn allocate(&self, layout: Layout) -> AllocResult<NonNull<[u8]>> {
@@ -584,7 +576,7 @@ unsafe impl Allocator for PoolAllocator {
     /// Caller must ensure:
     /// - `ptr` was allocated by this pool with `old_layout`
     /// - `old_layout` matches original allocation
-    /// - `new_layout` fits within block_size and block_align
+    /// - `new_layout` fits within `block_size` and `block_align`
     /// - On failure, `ptr` remains valid with `old_layout`
     unsafe fn reallocate(
         &self,
@@ -618,7 +610,7 @@ unsafe impl Allocator for PoolAllocator {
             // - copy_size is min of both sizes (no overflow)
             // - Regions don't overlap (different blocks from pool)
             unsafe {
-                ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr() as *mut u8, copy_size);
+                ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr().cast::<u8>(), copy_size);
             }
         }
 

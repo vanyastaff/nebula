@@ -204,7 +204,7 @@ pub struct CacheStats {
 
 impl CacheStats {
     /// Returns the cache utilization as a percentage (0.0 to 1.0).
-    #[must_use] 
+    #[must_use]
     pub fn utilization(&self) -> f64 {
         if self.capacity == 0 {
             0.0

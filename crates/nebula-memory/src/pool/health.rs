@@ -75,6 +75,7 @@ pub struct PoolHealthMonitor {
 
 impl PoolHealthMonitor {
     /// Create new health monitor
+    #[must_use]
     pub fn new(config: HealthConfig, capacity: usize) -> Self {
         Self {
             config,
@@ -224,7 +225,7 @@ pub struct LeakDetectionReport {
     /// Known leaked objects
     pub known_leaks: u64,
 
-    /// Potential leaks (checkouts - returns - known_leaks)
+    /// Potential leaks (checkouts - returns - `known_leaks`)
     pub potential_leaks: u64,
 
     /// Leak rate (0.0 - 1.0)
@@ -233,11 +234,13 @@ pub struct LeakDetectionReport {
 
 impl LeakDetectionReport {
     /// Check if leaks are detected
+    #[must_use]
     pub fn has_leaks(&self) -> bool {
         self.known_leaks > 0 || self.potential_leaks > 0
     }
 
     /// Get total suspected leaks
+    #[must_use]
     pub fn total_leaks(&self) -> u64 {
         self.known_leaks + self.potential_leaks
     }
@@ -257,6 +260,7 @@ pub struct HealthMetrics {
 
 impl HealthMetrics {
     /// Get pool utilization (0.0 - 1.0)
+    #[must_use]
     pub fn utilization(&self) -> f64 {
         if self.pool_capacity > 0 {
             (self.pool_capacity - self.available_objects) as f64 / self.pool_capacity as f64
@@ -266,6 +270,7 @@ impl HealthMetrics {
     }
 
     /// Get failure rate (0.0 - 1.0)
+    #[must_use]
     pub fn failure_rate(&self) -> f64 {
         if self.total_checkouts > 0 {
             self.total_failures as f64 / self.total_checkouts as f64
@@ -275,6 +280,7 @@ impl HealthMetrics {
     }
 
     /// Check if pool is healthy
+    #[must_use]
     pub fn is_healthy(&self) -> bool {
         matches!(self.health_status, PoolHealth::Healthy)
     }

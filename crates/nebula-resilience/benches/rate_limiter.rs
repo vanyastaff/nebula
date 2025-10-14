@@ -8,10 +8,9 @@
 //! - GovernorRateLimiter throughput (GCRA)
 //! - Comparison between different algorithms
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use nebula_resilience::{
-    TokenBucket, LeakyBucket, SlidingWindow, AdaptiveRateLimiter,
-    RateLimiter, ResilienceError,
+    AdaptiveRateLimiter, LeakyBucket, RateLimiter, ResilienceError, SlidingWindow, TokenBucket,
 };
 use std::sync::Arc;
 
@@ -20,40 +19,28 @@ fn rate_limiter_acquire(c: &mut Criterion) {
 
     // TokenBucket
     for &rate in &[100, 1000, 10000] {
-        group.bench_with_input(
-            BenchmarkId::new("token_bucket", rate),
-            &rate,
-            |b, &rate| {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                let limiter = Arc::new(TokenBucket::new(rate, rate as f64));
+        group.bench_with_input(BenchmarkId::new("token_bucket", rate), &rate, |b, &rate| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let limiter = Arc::new(TokenBucket::new(rate, rate as f64));
 
-                b.to_async(&rt).iter(|| {
-                    let limiter = Arc::clone(&limiter);
-                    async move {
-                        black_box(limiter.acquire().await)
-                    }
-                });
-            },
-        );
+            b.to_async(&rt).iter(|| {
+                let limiter = Arc::clone(&limiter);
+                async move { black_box(limiter.acquire().await) }
+            });
+        });
     }
 
     // LeakyBucket
     for &rate in &[100, 1000, 10000] {
-        group.bench_with_input(
-            BenchmarkId::new("leaky_bucket", rate),
-            &rate,
-            |b, &rate| {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                let limiter = Arc::new(LeakyBucket::new(rate, rate as f64));
+        group.bench_with_input(BenchmarkId::new("leaky_bucket", rate), &rate, |b, &rate| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let limiter = Arc::new(LeakyBucket::new(rate, rate as f64));
 
-                b.to_async(&rt).iter(|| {
-                    let limiter = Arc::clone(&limiter);
-                    async move {
-                        black_box(limiter.acquire().await)
-                    }
-                });
-            },
-        );
+            b.to_async(&rt).iter(|| {
+                let limiter = Arc::clone(&limiter);
+                async move { black_box(limiter.acquire().await) }
+            });
+        });
     }
 
     // SlidingWindow
@@ -67,9 +54,7 @@ fn rate_limiter_acquire(c: &mut Criterion) {
 
                 b.to_async(&rt).iter(|| {
                     let limiter = Arc::clone(&limiter);
-                    async move {
-                        black_box(limiter.acquire().await)
-                    }
+                    async move { black_box(limiter.acquire().await) }
                 });
             },
         );
@@ -89,9 +74,9 @@ fn rate_limiter_execute(c: &mut Criterion) {
         b.to_async(&rt).iter(|| {
             let limiter = Arc::clone(&limiter);
             async move {
-                let result = limiter.execute(|| async {
-                    Ok::<_, ResilienceError>(black_box(42))
-                }).await;
+                let result = limiter
+                    .execute(|| async { Ok::<_, ResilienceError>(black_box(42)) })
+                    .await;
                 black_box(result)
             }
         });
@@ -109,9 +94,9 @@ fn rate_limiter_execute(c: &mut Criterion) {
         b.to_async(&rt).iter(|| {
             let limiter = Arc::clone(&limiter);
             async move {
-                let result = limiter.execute(|| async {
-                    Ok::<_, ResilienceError>(black_box(42))
-                }).await;
+                let result = limiter
+                    .execute(|| async { Ok::<_, ResilienceError>(black_box(42)) })
+                    .await;
                 black_box(result)
             }
         });
@@ -127,18 +112,16 @@ fn rate_limiter_current_rate(c: &mut Criterion) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let limiter = TokenBucket::new(1000, 1000.0);
 
-        b.to_async(&rt).iter(|| async {
-            black_box(limiter.current_rate().await)
-        });
+        b.to_async(&rt)
+            .iter(|| async { black_box(limiter.current_rate().await) });
     });
 
     group.bench_function("sliding_window", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let limiter = SlidingWindow::new(std::time::Duration::from_secs(1), 1000);
 
-        b.to_async(&rt).iter(|| async {
-            black_box(limiter.current_rate().await)
-        });
+        b.to_async(&rt)
+            .iter(|| async { black_box(limiter.current_rate().await) });
     });
 
     group.finish();
@@ -163,9 +146,7 @@ fn rate_limiter_contention(c: &mut Criterion) {
                         let mut handles = vec![];
                         for _ in 0..num_tasks {
                             let limiter = Arc::clone(&limiter);
-                            let handle = tokio::spawn(async move {
-                                limiter.acquire().await
-                            });
+                            let handle = tokio::spawn(async move { limiter.acquire().await });
                             handles.push(handle);
                         }
 

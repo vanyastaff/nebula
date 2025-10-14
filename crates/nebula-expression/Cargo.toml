@@ -15,10 +15,12 @@ categories = ["template-engine", "parser-implementations"]
 [dependencies]
 # Nebula internal crates
 nebula-core = { path = "../nebula-core" }
-nebula-error = { path = "../nebula-error" }
 nebula-log = { path = "../nebula-log" }
 nebula-memory = { path = "../nebula-memory", features = ["cache"] }
 nebula-value = { path = "../nebula-value", features = ["temporal", "serde"] }
+
+# Error handling
+thiserror = { workspace = true }
 
 # External dependencies
 serde = { workspace = true }

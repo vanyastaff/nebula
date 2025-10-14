@@ -2,9 +2,8 @@
 //!
 //! This module implements operations on Value with proper type coercion
 
-use crate::core::NebulaError;
-use crate::core::error::{ValueErrorExt, ValueResult};
 use crate::core::value::Value;
+use crate::core::{ValueError, ValueResult};
 use crate::scalar::Float;
 
 impl Value {
@@ -17,7 +16,7 @@ impl Value {
             (Value::Integer(a), Value::Integer(b)) => a
                 .checked_add(*b)
                 .map(Value::Integer)
-                .ok_or_else(|| NebulaError::validation("Integer overflow in addition")),
+                .ok_or_else(|| ValueError::validation("Integer overflow in addition")),
 
             // Float + Float
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a + *b)),
@@ -41,7 +40,7 @@ impl Value {
             // Array concatenation
             (Value::Array(a), Value::Array(b)) => Ok(Value::Array(a.concat(b))),
 
-            _ => Err(NebulaError::value_operation_not_supported(
+            _ => Err(ValueError::operation_not_supported(
                 "add",
                 format!("{} + {}", self.kind().name(), other.kind().name()),
             )),
@@ -55,7 +54,7 @@ impl Value {
             (Value::Integer(a), Value::Integer(b)) => a
                 .checked_sub(*b)
                 .map(Value::Integer)
-                .ok_or_else(|| NebulaError::validation("Integer overflow in subtraction")),
+                .ok_or_else(|| ValueError::validation("Integer overflow in subtraction")),
 
             // Float - Float
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a - *b)),
@@ -73,7 +72,7 @@ impl Value {
             // Decimal
             (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(*a - *b)),
 
-            _ => Err(NebulaError::value_operation_not_supported(
+            _ => Err(ValueError::operation_not_supported(
                 "subtract",
                 format!("{} - {}", self.kind().name(), other.kind().name()),
             )),
@@ -87,7 +86,7 @@ impl Value {
             (Value::Integer(a), Value::Integer(b)) => a
                 .checked_mul(*b)
                 .map(Value::Integer)
-                .ok_or_else(|| NebulaError::validation("Integer overflow in multiplication")),
+                .ok_or_else(|| ValueError::validation("Integer overflow in multiplication")),
 
             // Float * Float
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a * *b)),
@@ -105,7 +104,7 @@ impl Value {
             // Decimal
             (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(*a * *b)),
 
-            _ => Err(NebulaError::value_operation_not_supported(
+            _ => Err(ValueError::operation_not_supported(
                 "multiply",
                 format!("{} * {}", self.kind().name(), other.kind().name()),
             )),
@@ -117,17 +116,17 @@ impl Value {
         match (self, other) {
             // Check for division by zero
             (_, Value::Integer(b)) if b.value() == 0 => {
-                Err(NebulaError::validation("Division by zero"))
+                Err(ValueError::validation("Division by zero"))
             }
             (_, Value::Float(b)) if b.value() == 0.0 => {
-                Err(NebulaError::validation("Division by zero"))
+                Err(ValueError::validation("Division by zero"))
             }
 
             // Integer / Integer
             (Value::Integer(a), Value::Integer(b)) => a
                 .checked_div(*b)
                 .map(Value::Integer)
-                .ok_or_else(|| NebulaError::validation("Integer overflow in division")),
+                .ok_or_else(|| ValueError::validation("Integer overflow in division")),
 
             // Float / Float
             (Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a / *b)),
@@ -145,12 +144,12 @@ impl Value {
             // Decimal
             (Value::Decimal(a), Value::Decimal(b)) => {
                 if b.is_zero() {
-                    return Err(NebulaError::validation("Division by zero"));
+                    return Err(ValueError::validation("Division by zero"));
                 }
                 Ok(Value::Decimal(*a / *b))
             }
 
-            _ => Err(NebulaError::value_operation_not_supported(
+            _ => Err(ValueError::operation_not_supported(
                 "divide",
                 format!("{} / {}", self.kind().name(), other.kind().name()),
             )),
@@ -161,15 +160,15 @@ impl Value {
     pub fn rem(&self, other: &Value) -> ValueResult<Value> {
         match (self, other) {
             (_, Value::Integer(b)) if b.value() == 0 => {
-                Err(NebulaError::validation("Modulo by zero"))
+                Err(ValueError::validation("Modulo by zero"))
             }
 
             (Value::Integer(a), Value::Integer(b)) => a
                 .checked_rem(*b)
                 .map(Value::Integer)
-                .ok_or_else(|| NebulaError::validation("Integer overflow in modulo")),
+                .ok_or_else(|| ValueError::validation("Integer overflow in modulo")),
 
-            _ => Err(NebulaError::value_operation_not_supported(
+            _ => Err(ValueError::operation_not_supported(
                 "modulo",
                 format!("{} % {}", self.kind().name(), other.kind().name()),
             )),
@@ -205,7 +204,7 @@ impl Value {
             // Bytes
             (Value::Bytes(a), Value::Bytes(b)) => Ok(a.cmp(b)),
 
-            _ => Err(NebulaError::value_operation_not_supported(
+            _ => Err(ValueError::operation_not_supported(
                 "compare",
                 format!("{} <=> {}", self.kind().name(), other.kind().name()),
             )),
@@ -297,9 +296,7 @@ impl Value {
     /// to completely override nested values.
     pub fn merge_shallow(&self, other: &Value) -> ValueResult<Value> {
         match (self, other) {
-            (Value::Object(a), Value::Object(b)) => {
-                Ok(Value::Object(a.merge_shallow(b)))
-            }
+            (Value::Object(a), Value::Object(b)) => Ok(Value::Object(a.merge_shallow(b))),
             _ => self.merge(other),
         }
     }
@@ -333,10 +330,7 @@ impl Value {
 
                 Ok(Value::Object(result))
             }
-            _ => Err(NebulaError::value_type_mismatch(
-                "Object",
-                self.kind().name(),
-            )),
+            _ => Err(ValueError::type_mismatch("Object", self.kind().name())),
         }
     }
 
@@ -346,7 +340,7 @@ impl Value {
     where
         F: Fn(&Value, &Value, &str) -> ValueResult<Value> + Copy,
     {
-        Err(NebulaError::validation(
+        Err(ValueError::validation(
             "merge_with requires 'serde' feature to be enabled",
         ))
     }
@@ -363,10 +357,7 @@ impl Value {
                 // which may not be desired for all use cases
                 Ok(Value::Array(a.concat(b)))
             }
-            _ => Err(NebulaError::value_type_mismatch(
-                "Array",
-                self.kind().name(),
-            )),
+            _ => Err(ValueError::type_mismatch("Array", self.kind().name())),
         }
     }
 }
@@ -382,7 +373,7 @@ mod tests {
         let result = a.add(&b).unwrap();
 
         assert!(result.is_integer());
-        assert_eq!(result.as_integer(), Some(15));
+        assert_eq!(result.as_integer().map(|i| i.value()), Some(15));
     }
 
     #[test]
@@ -392,7 +383,7 @@ mod tests {
         let result = a.add(&b).unwrap();
 
         assert!(result.is_float());
-        assert_eq!(result.as_float(), Some(15.8));
+        assert_eq!(result.as_float().map(|f| f.value()), Some(15.8));
     }
 
     #[test]
@@ -402,7 +393,7 @@ mod tests {
         let result = a.add(&b).unwrap();
 
         assert!(result.is_float());
-        assert_eq!(result.as_float(), Some(15.5));
+        assert_eq!(result.as_float().map(|f| f.value()), Some(15.5));
     }
 
     #[test]
@@ -421,7 +412,7 @@ mod tests {
         let b = Value::integer(3);
         let result = a.sub(&b).unwrap();
 
-        assert_eq!(result.as_integer(), Some(7));
+        assert_eq!(result.as_integer().map(|i| i.value()), Some(7));
     }
 
     #[test]
@@ -430,7 +421,7 @@ mod tests {
         let b = Value::integer(3);
         let result = a.mul(&b).unwrap();
 
-        assert_eq!(result.as_integer(), Some(15));
+        assert_eq!(result.as_integer().map(|i| i.value()), Some(15));
     }
 
     #[test]
@@ -439,7 +430,7 @@ mod tests {
         let b = Value::integer(2);
         let result = a.div(&b).unwrap();
 
-        assert_eq!(result.as_integer(), Some(5));
+        assert_eq!(result.as_integer().map(|i| i.value()), Some(5));
     }
 
     #[test]
@@ -609,7 +600,7 @@ mod tests {
         let merged = a.merge(&b).unwrap();
 
         // Non-mergeable types: right overwrites left
-        assert_eq!(merged.as_integer(), Some(20));
+        assert_eq!(merged.as_integer().map(|i| i.value()), Some(20));
     }
 
     #[test]
@@ -667,6 +658,6 @@ mod tests {
 
         // Merge with type mismatch: right overwrites
         let merged = a.merge(&b).unwrap();
-        assert_eq!(merged.as_integer(), Some(42));
+        assert_eq!(merged.as_integer().map(|i| i.value()), Some(42));
     }
 }

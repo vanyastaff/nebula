@@ -102,9 +102,7 @@ where
 
         ValidatorMetadata {
             name: format!("Map({})", inner_meta.name),
-            description: inner_meta
-                .description
-                .map(|desc| format!("Mapped: {desc}")),
+            description: inner_meta.description.map(|desc| format!("Mapped: {desc}")),
             complexity: inner_meta.complexity,
             cacheable: inner_meta.cacheable,
             estimated_time: inner_meta.estimated_time,
