@@ -1,0 +1,29 @@
+[package]
+name = "nebula-parameter-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+chrono = { workspace = true }
+
+nebula-parameter = { path = "../nebula-parameter" }
+nebula-value = { path = "../nebula-value" }
+nebula-core = { path = "../nebula-core" }
+
+egui = "0.33.0"
+egui_extras = "0.33.0"
+egui_flex = "0.5.0"
+egui_dock = "0.17.0"
+egui_file = "0.24"
+egui-dropdown = "0.13.0"
+egui-datepicker = "0.3.0"
+eframe = { version = "0.33.0", features = ["glow"] }
