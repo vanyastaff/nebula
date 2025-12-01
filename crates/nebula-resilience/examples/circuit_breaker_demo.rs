@@ -3,7 +3,7 @@
 //! This example demonstrates the circuit breaker pattern with various failure scenarios
 //! and shows the security improvements and optimizations made to the implementation.
 
-use nebula_resilience::{CircuitBreaker, CircuitBreakerConfig, ResilienceConfig, ResilienceError};
+use nebula_resilience::{CircuitBreaker, ResilienceError};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -15,14 +15,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test 1: Basic Circuit Breaker Operation
     println!("\n📊 Test 1: Basic Circuit Breaker with Fast-Path Optimization");
 
-    let config = CircuitBreakerConfig {
-        failure_threshold: 3,
-        reset_timeout: Duration::from_millis(100),
-        half_open_max_operations: 2,
-        count_timeouts: true,
-    };
-
-    let circuit_breaker = CircuitBreaker::with_config(config);
+    // Use the new const generic API - CircuitBreaker<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>
+    let circuit_breaker = CircuitBreaker::<3, 100>::with_defaults()?;
 
     // Demonstrate successful operations (fast path)
     for i in 1..=5 {
@@ -42,12 +36,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test 2: Failure Scenarios and Circuit Opening
     println!("\n📊 Test 2: Failure Scenarios and Circuit State Transitions");
 
-    let breaker = CircuitBreaker::with_config(CircuitBreakerConfig {
-        failure_threshold: 2, // Lower threshold for demo
-        reset_timeout: Duration::from_millis(500),
-        half_open_max_operations: 1,
-        count_timeouts: true,
-    });
+    // Lower threshold for demo: 2 failures, 500ms reset
+    let breaker = CircuitBreaker::<2, 500>::with_defaults()?;
 
     // Simulate failures to trigger circuit opening
     for i in 1..=4 {
@@ -102,60 +92,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => println!("  ❌ Half-open test failed: {}", e),
     }
 
-    // Test 4: Security Validation
-    println!("\n📊 Test 4: Security Validation of Configuration");
+    // Test 4: Performance with High Frequency Operations
+    println!("\n📊 Test 4: Performance Test with High Frequency Operations");
 
-    // Test extreme values that should be validated
-    let invalid_configs = vec![
-        (
-            "Zero failure threshold",
-            CircuitBreakerConfig {
-                failure_threshold: 0,
-                reset_timeout: Duration::from_secs(1),
-                half_open_max_operations: 1,
-                count_timeouts: true,
-            },
-        ),
-        (
-            "Extremely high failure threshold",
-            CircuitBreakerConfig {
-                failure_threshold: 50_000, // Should be capped
-                reset_timeout: Duration::from_secs(1),
-                half_open_max_operations: 1,
-                count_timeouts: true,
-            },
-        ),
-        (
-            "Extremely long timeout",
-            CircuitBreakerConfig {
-                failure_threshold: 5,
-                reset_timeout: Duration::from_secs(7200), // 2 hours - should be limited
-                half_open_max_operations: 1,
-                count_timeouts: true,
-            },
-        ),
-        (
-            "Zero half-open operations",
-            CircuitBreakerConfig {
-                failure_threshold: 5,
-                reset_timeout: Duration::from_secs(1),
-                half_open_max_operations: 0,
-                count_timeouts: true,
-            },
-        ),
-    ];
-
-    for (name, config) in invalid_configs {
-        match config.validate() {
-            Ok(()) => println!("  ⚠️  {} passed validation (unexpected)", name),
-            Err(e) => println!("  ✅ {} failed validation as expected: {}", name, e),
-        }
-    }
-
-    // Test 5: Performance with High Frequency Operations
-    println!("\n📊 Test 5: Performance Test with High Frequency Operations");
-
-    let perf_breaker = CircuitBreaker::new();
+    // Standard circuit breaker with defaults
+    let perf_breaker = CircuitBreaker::<5, 30_000>::with_defaults()?;
     let start = std::time::Instant::now();
     let operations = 1000;
 
@@ -174,10 +115,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  ⚡ Completed {} operations in {:?}", operations, elapsed);
     println!("  📈 Throughput: {:.2} operations/second", ops_per_sec);
 
-    // Test 6: Concurrent Access Safety
-    println!("\n📊 Test 6: Concurrent Access Safety Test");
+    // Test 5: Concurrent Access Safety
+    println!("\n📊 Test 5: Concurrent Access Safety Test");
 
-    let concurrent_breaker = std::sync::Arc::new(CircuitBreaker::new());
+    let concurrent_breaker = std::sync::Arc::new(CircuitBreaker::<5, 30_000>::with_defaults()?);
     let mut handles = vec![];
 
     for worker_id in 0..10 {
@@ -228,7 +169,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n🎉 Circuit Breaker Demo Completed Successfully!");
     println!("   ✅ Fast-path optimization working");
-    println!("   ✅ Security validation working");
     println!("   ✅ State transitions working");
     println!("   ✅ Concurrent access safe");
 

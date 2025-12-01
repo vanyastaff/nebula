@@ -9,7 +9,7 @@
 //! Run with: cargo run --example pattern_composition
 
 use nebula_resilience::prelude::*;
-use nebula_resilience::{RateLimiter, TokenBucket, retry};
+use nebula_resilience::{PolicyBuilder, RateLimiter, TokenBucket};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,21 +21,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("1. Circuit Breaker + Retry (Database):");
     println!("   Protects against cascading failures with automatic retries\n");
 
-    let circuit_breaker = CircuitBreaker::with_config(CircuitBreakerConfig {
-        failure_threshold: 3,
-        reset_timeout: Duration::from_secs(5),
-        half_open_max_operations: 2,
-        count_timeouts: true,
-    });
+    // Type-safe circuit breaker with const generics:
+    // - FAILURE_THRESHOLD = 3: Opens after 3 failures
+    // - RESET_TIMEOUT_MS = 5000: Waits 5 seconds before trying again
+    let circuit_breaker = CircuitBreaker::<3, 5000>::with_defaults()?;
 
-    let retry_strategy = RetryStrategy::exponential_backoff(3, Duration::from_millis(100));
+    // Type-safe retry with exponential backoff
+    let retry_strategy = exponential_retry::<3>()?;
 
     for i in 1..=5 {
+        let retry_ref = &retry_strategy;
         let result = circuit_breaker
-            .execute(|| {
-                let strategy = retry_strategy.clone();
-                async move {
-                    retry(strategy, || async {
+            .execute(|| async move {
+                retry_ref
+                    .execute_resilient(|| async {
                         println!("  -> Attempt {} to connect to database", i);
                         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -49,12 +48,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     })
                     .await
-                }
             })
             .await;
 
         match result {
-            Ok(data) => println!("  ✓ Operation {}: {}\n", i, data),
+            Ok((data, _stats)) => println!("  ✓ Operation {}: {}\n", i, data),
             Err(e) => println!("  ✗ Operation {} failed: {}\n", i, e),
         }
     }
@@ -102,19 +100,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Rate limits requests with circuit breaker protection\n");
 
     let rate_limiter = Arc::new(TokenBucket::new(2, 2.0)); // 2 requests per second
-    let circuit_breaker = Arc::new(CircuitBreaker::with_config(CircuitBreakerConfig {
-        failure_threshold: 2,
-        reset_timeout: Duration::from_secs(3),
-        half_open_max_operations: 1,
-        count_timeouts: false,
-    }));
+
+    // Circuit breaker with 2 failure threshold, 3 second reset
+    let api_circuit_breaker = Arc::new(CircuitBreaker::<2, 3000>::with_defaults()?);
 
     for i in 1..=6 {
         // First apply rate limiting
         match rate_limiter.acquire().await {
             Ok(_) => {
                 // Then check circuit breaker
-                let result = circuit_breaker
+                let result = api_circuit_breaker
                     .execute(|| async move {
                         println!("  -> API call {}", i);
                         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -143,27 +138,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("4. Complete Policy (All Patterns):");
     println!("   Demonstrates full ResiliencePolicy with all patterns\n");
 
-    let complete_policy = ResiliencePolicy::default()
+    let complete_policy = PolicyBuilder::new()
         .with_timeout(Duration::from_secs(5))
-        .with_retry(RetryStrategy::fixed_delay(2, Duration::from_millis(100)))
-        .with_circuit_breaker(CircuitBreakerConfig {
-            failure_threshold: 3,
-            reset_timeout: Duration::from_secs(10),
-            half_open_max_operations: 2,
-            count_timeouts: true,
-        })
+        .with_retry_fixed(2, Duration::from_millis(100))
         .with_bulkhead(BulkheadConfig {
             max_concurrency: 5,
             queue_size: 10,
             timeout: Some(Duration::from_secs(3)),
-        });
+        })
+        .build();
 
     println!("  Policy configured with:");
     println!("    - Timeout: 5s");
-    println!("    - Retry: Fixed delay (2 attempts, 100ms)");
-    println!("    - Circuit Breaker: 3 failures threshold");
+    println!("    - Retry: 2 attempts, 100ms delay");
     println!("    - Bulkhead: 5 max concurrent, 10 queue size");
-    println!("\n  Note: Use ResilienceManager to execute operations with this policy\n");
+    println!("\n  Policy: {:?}\n", complete_policy);
 
     // Example 5: Manual Composition - Circuit Breaker wrapping Bulkhead
     println!("5. Manual Composition:");

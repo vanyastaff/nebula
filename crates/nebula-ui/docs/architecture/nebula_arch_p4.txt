@@ -1,0 +1,875 @@
+# Nebula Framework - Complete Architecture Documentation
+## Part 4: Rendering, Animation & Platform Integration
+
+---
+
+## 🎨 Rendering System (nebula_rendering)
+
+### RenderProxyBox (`proxy_box.rs`)
+
+```rust
+/// Base class for render objects that forward to a single child
+pub struct RenderProxyBox {
+    size: Size,
+    child: Option<Box<dyn RenderObject>>,
+}
+
+impl RenderProxyBox {
+    pub fn new() -> Self {
+        Self {
+            size: Size::ZERO,
+            child: None,
+        }
+    }
+    
+    pub fn set_child(&mut self, child: Box<dyn RenderObject>) {
+        self.child = Some(child);
+    }
+}
+
+impl RenderObject for RenderProxyBox {
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        if let Some(child) = &mut self.child {
+            self.size = child.layout(constraints);
+        } else {
+            self.size = constraints.constrain(Size::ZERO);
+        }
+        self.size
+    }
+    
+    fn paint(&self, painter: &egui::Painter, offset: Offset) {
+        if let Some(child) = &self.child {
+            child.paint(painter, offset);
+        }
+    }
+    
+    fn size(&self) -> Size {
+        self.size
+    }
+    
+    fn visit_children(&self, visitor: &mut dyn FnMut(&dyn RenderObject)) {
+        if let Some(child) = &self.child {
+            visitor(child.as_ref());
+        }
+    }
+}
+```
+
+### Specialized Render Objects
+
+```rust
+/// RenderPadding
+pub struct RenderPadding {
+    padding: EdgeInsets,
+    size: Size,
+    child: Option<Box<dyn RenderObject>>,
+}
+
+impl RenderObject for RenderPadding {
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        let inner_constraints = constraints.deflate(&self.padding);
+        
+        if let Some(child) = &mut self.child {
+            child.layout(inner_constraints);
+        }
+        
+        self.size = constraints.constrain(Size::new(
+            self.padding.horizontal(),
+            self.padding.vertical(),
+        ));
+        self.size
+    }
+    
+    fn paint(&self, painter: &egui::Painter, offset: Offset) {
+        if let Some(child) = &self.child {
+            let child_offset = Offset::new(
+                offset.x + self.padding.left,
+                offset.y + self.padding.top,
+            );
+            child.paint(painter, child_offset);
+        }
+    }
+}
+
+/// RenderOpacity
+pub struct RenderOpacity {
+    opacity: f32,
+    proxy: RenderProxyBox,
+}
+
+impl RenderObject for RenderOpacity {
+    fn paint(&self, painter: &egui::Painter, offset: Offset) {
+        painter.set_opacity(self.opacity);
+        self.proxy.paint(painter, offset);
+        painter.set_opacity(1.0);
+    }
+}
+
+/// RenderTransform
+pub struct RenderTransform {
+    transform: Transform,
+    proxy: RenderProxyBox,
+}
+
+impl RenderObject for RenderTransform {
+    fn paint(&self, painter: &egui::Painter, offset: Offset) {
+        painter.save();
+        painter.transform(&self.transform);
+        self.proxy.paint(painter, offset);
+        painter.restore();
+    }
+}
+```
+
+---
+
+## 🎬 Animation System (nebula_animation)
+
+### AnimationController (`controller.rs`)
+
+```rust
+use std::time::{Duration, Instant};
+
+/// AnimationController - drives animations
+pub struct AnimationController {
+    value: f64,
+    duration: Duration,
+    lower_bound: f64,
+    upper_bound: f64,
+    status: AnimationStatus,
+    ticker: Option<Ticker>,
+    listeners: Vec<Box<dyn Fn(f64) + Send + Sync>>,
+    status_listeners: Vec<Box<dyn Fn(AnimationStatus) + Send + Sync>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimationStatus {
+    Dismissed,
+    Forward,
+    Reverse,
+    Completed,
+}
+
+impl AnimationController {
+    pub fn new(duration: Duration) -> Self {
+        Self {
+            value: 0.0,
+            duration,
+            lower_bound: 0.0,
+            upper_bound: 1.0,
+            status: AnimationStatus::Dismissed,
+            ticker: None,
+            listeners: Vec::new(),
+            status_listeners: Vec::new(),
+        }
+    }
+    
+    pub fn forward(&mut self) {
+        self.status = AnimationStatus::Forward;
+        self.animate_to(self.upper_bound);
+    }
+    
+    pub fn reverse(&mut self) {
+        self.status = AnimationStatus::Reverse;
+        self.animate_to(self.lower_bound);
+    }
+    
+    pub fn reset(&mut self) {
+        self.value = self.lower_bound;
+        self.status = AnimationStatus::Dismissed;
+        self.notify_listeners();
+    }
+    
+    pub fn stop(&mut self) {
+        if let Some(ticker) = &mut self.ticker {
+            ticker.stop();
+        }
+    }
+    
+    fn animate_to(&mut self, target: f64) {
+        let start_value = self.value;
+        let start_time = Instant::now();
+        
+        // Create ticker that updates value
+        // Ticker calls this closure every frame
+        let ticker = Ticker::new(move |elapsed| {
+            let t = (elapsed.as_secs_f64() / self.duration.as_secs_f64()).min(1.0);
+            self.value = start_value + (target - start_value) * t;
+            self.notify_listeners();
+            
+            if t >= 1.0 {
+                self.status = if target == self.upper_bound {
+                    AnimationStatus::Completed
+                } else {
+                    AnimationStatus::Dismissed
+                };
+                self.notify_status_listeners();
+                return TickerFuture::Complete;
+            }
+            
+            TickerFuture::Continue
+        });
+        
+        self.ticker = Some(ticker);
+    }
+    
+    pub fn add_listener<F>(&mut self, listener: F)
+    where
+        F: Fn(f64) + Send + Sync + 'static,
+    {
+        self.listeners.push(Box::new(listener));
+    }
+    
+    pub fn add_status_listener<F>(&mut self, listener: F)
+    where
+        F: Fn(AnimationStatus) + Send + Sync + 'static,
+    {
+        self.status_listeners.push(Box::new(listener));
+    }
+    
+    fn notify_listeners(&self) {
+        for listener in &self.listeners {
+            listener(self.value);
+        }
+    }
+    
+    fn notify_status_listeners(&self) {
+        for listener in &self.status_listeners {
+            listener(self.status);
+        }
+    }
+    
+    pub fn value(&self) -> f64 {
+        self.value
+    }
+    
+    pub fn status(&self) -> AnimationStatus {
+        self.status
+    }
+}
+```
+
+### Tween (`tween.rs`)
+
+```rust
+/// Tween - linear interpolation between two values
+pub trait Animatable<T> {
+    fn lerp(&self, t: f64) -> T;
+}
+
+pub struct Tween<T> {
+    begin: T,
+    end: T,
+}
+
+impl<T: Clone> Tween<T> {
+    pub fn new(begin: T, end: T) -> Self {
+        Self { begin, end }
+    }
+}
+
+impl Animatable<f64> for Tween<f64> {
+    fn lerp(&self, t: f64) -> f64 {
+        self.begin + (self.end - self.begin) * t
+    }
+}
+
+impl Animatable<Color> for Tween<Color> {
+    fn lerp(&self, t: f64) -> Color {
+        Color::lerp(&self.begin, &self.end, t)
+    }
+}
+
+impl Animatable<Size> for Tween<Size> {
+    fn lerp(&self, t: f64) -> Size {
+        Size::new(
+            self.begin.width + (self.end.width - self.begin.width) * t as f32,
+            self.begin.height + (self.end.height - self.begin.height) * t as f32,
+        )
+    }
+}
+
+/// Animation wrapper that applies a tween
+pub struct Animation<T> {
+    controller: Arc<Mutex<AnimationController>>,
+    tween: Tween<T>,
+}
+
+impl<T: Clone> Animation<T> 
+where
+    Tween<T>: Animatable<T>,
+{
+    pub fn new(controller: Arc<Mutex<AnimationController>>, tween: Tween<T>) -> Self {
+        Self { controller, tween }
+    }
+    
+    pub fn value(&self) -> T {
+        let t = self.controller.lock().unwrap().value();
+        self.tween.lerp(t)
+    }
+}
+```
+
+### Curves (`curves.rs`)
+
+```rust
+/// Curve - easing function
+pub trait Curve {
+    fn transform(&self, t: f64) -> f64;
+}
+
+pub struct Linear;
+impl Curve for Linear {
+    fn transform(&self, t: f64) -> f64 { t }
+}
+
+pub struct EaseIn;
+impl Curve for EaseIn {
+    fn transform(&self, t: f64) -> f64 {
+        t * t
+    }
+}
+
+pub struct EaseOut;
+impl Curve for EaseOut {
+    fn transform(&self, t: f64) -> f64 {
+        1.0 - (1.0 - t) * (1.0 - t)
+    }
+}
+
+pub struct EaseInOut;
+impl Curve for EaseInOut {
+    fn transform(&self, t: f64) -> f64 {
+        if t < 0.5 {
+            2.0 * t * t
+        } else {
+            1.0 - 2.0 * (1.0 - t) * (1.0 - t)
+        }
+    }
+}
+
+/// CurvedAnimation - applies curve to controller
+pub struct CurvedAnimation {
+    controller: Arc<Mutex<AnimationController>>,
+    curve: Box<dyn Curve>,
+}
+
+impl CurvedAnimation {
+    pub fn new(
+        controller: Arc<Mutex<AnimationController>>, 
+        curve: Box<dyn Curve>
+    ) -> Self {
+        Self { controller, curve }
+    }
+    
+    pub fn value(&self) -> f64 {
+        let t = self.controller.lock().unwrap().value();
+        self.curve.transform(t)
+    }
+}
+```
+
+### Animated Widgets (`transitions.rs`)
+
+```rust
+/// AnimatedBuilder - rebuilds on animation change
+pub struct AnimatedBuilder {
+    animation: Arc<Mutex<AnimationController>>,
+    builder: Box<dyn Fn(&BuildContext, f64) -> Box<dyn Widget>>,
+}
+
+impl StatelessWidget for AnimatedBuilder {
+    fn build(&self, context: &BuildContext) -> Box<dyn Widget> {
+        let value = self.animation.lock().unwrap().value();
+        (self.builder)(context, value)
+    }
+}
+
+/// FadeTransition
+pub struct FadeTransition {
+    opacity: Animation<f64>,
+    child: Box<dyn Widget>,
+}
+
+impl StatelessWidget for FadeTransition {
+    fn build(&self, context: &BuildContext) -> Box<dyn Widget> {
+        Opacity::new(self.opacity.value(), self.child.clone()).into_widget()
+    }
+}
+
+/// SlideTransition
+pub struct SlideTransition {
+    position: Animation<Offset>,
+    child: Box<dyn Widget>,
+}
+
+impl StatelessWidget for SlideTransition {
+    fn build(&self, context: &BuildContext) -> Box<dyn Widget> {
+        Transform::translate(
+            self.position.value(),
+            self.child.clone(),
+        ).into_widget()
+    }
+}
+```
+
+---
+
+## 🖱️ Gestures System (nebula_gestures)
+
+### GestureDetector (`detector.rs`)
+
+```rust
+/// GestureDetector - detects gestures on child
+pub struct GestureDetector {
+    child: Box<dyn Widget>,
+    on_tap: Option<VoidCallback>,
+    on_double_tap: Option<VoidCallback>,
+    on_long_press: Option<VoidCallback>,
+    on_pan_start: Option<Box<dyn Fn(DragStartDetails)>>,
+    on_pan_update: Option<Box<dyn Fn(DragUpdateDetails)>>,
+    on_pan_end: Option<Box<dyn Fn(DragEndDetails)>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DragStartDetails {
+    pub global_position: Offset,
+    pub local_position: Offset,
+}
+
+#[derive(Debug, Clone)]
+pub struct DragUpdateDetails {
+    pub global_position: Offset,
+    pub local_position: Offset,
+    pub delta: Offset,
+}
+
+#[derive(Debug, Clone)]
+pub struct DragEndDetails {
+    pub velocity: Velocity,
+}
+
+impl GestureDetector {
+    pub fn new(child: impl IntoWidget) -> Self {
+        Self {
+            child: child.into_widget(),
+            on_tap: None,
+            on_double_tap: None,
+            on_long_press: None,
+            on_pan_start: None,
+            on_pan_update: None,
+            on_pan_end: None,
+        }
+    }
+    
+    pub fn on_tap<F>(mut self, callback: F) -> Self 
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.on_tap = Some(Box::new(callback));
+        self
+    }
+    
+    pub fn on_pan_update<F>(mut self, callback: F) -> Self 
+    where
+        F: Fn(DragUpdateDetails) + Send + Sync + 'static,
+    {
+        self.on_pan_update = Some(Box::new(callback));
+        self
+    }
+}
+
+// RenderPointerListener - handles pointer events
+struct RenderPointerListener {
+    behavior: HitTestBehavior,
+    on_pointer_down: Option<Box<dyn Fn(PointerDownEvent)>>,
+    on_pointer_up: Option<Box<dyn Fn(PointerUpEvent)>>,
+    on_pointer_move: Option<Box<dyn Fn(PointerMoveEvent)>>,
+    proxy: RenderProxyBox,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum HitTestBehavior {
+    Deferring,
+    Opaque,
+    Translucent,
+}
+
+impl RenderObject for RenderPointerListener {
+    fn hit_test(&self, position: Offset) -> bool {
+        match self.behavior {
+            HitTestBehavior::Opaque => true,
+            HitTestBehavior::Translucent => {
+                self.proxy.child.as_ref()
+                    .map(|c| c.hit_test(position))
+                    .unwrap_or(false)
+            }
+            HitTestBehavior::Deferring => {
+                self.proxy.child.as_ref()
+                    .map(|c| c.hit_test(position))
+                    .unwrap_or(false)
+            }
+        }
+    }
+}
+```
+
+---
+
+## 🚀 Platform Integration (nebula_platform)
+
+### NebulaApp (`app.rs`)
+
+```rust
+use eframe::egui;
+
+/// NebulaApp - application entry point
+pub struct NebulaApp {
+    pub title: String,
+    pub theme: Theme,
+    pub home: Box<dyn Widget>,
+    pub debug_show_checked_mode_banner: bool,
+}
+
+impl NebulaApp {
+    pub fn new(home: impl IntoWidget) -> Self {
+        Self {
+            title: "Nebula App".to_string(),
+            theme: Theme::light(),
+            home: home.into_widget(),
+            debug_show_checked_mode_banner: true,
+        }
+    }
+    
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
+        self
+    }
+    
+    pub fn theme(mut self, theme: Theme) -> Self {
+        self.theme = theme;
+        self
+    }
+    
+    /// Run the application
+    pub fn run(self) -> Result<(), eframe::Error> {
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([1280.0, 720.0])
+                .with_title(&self.title),
+            ..Default::default()
+        };
+        
+        eframe::run_native(
+            &self.title,
+            options,
+            Box::new(|cc| {
+                Ok(Box::new(NebulaAppState::new(self, cc)))
+            }),
+        )
+    }
+}
+
+/// Internal app state
+struct NebulaAppState {
+    app: NebulaApp,
+    element_tree: ElementTree,
+    render_tree: RenderTree,
+    frame_count: u64,
+}
+
+impl NebulaAppState {
+    fn new(app: NebulaApp, cc: &eframe::CreationContext<'_>) -> Self {
+        let mut element_tree = ElementTree::new();
+        element_tree.mount_root(app.home.clone());
+        
+        Self {
+            app,
+            element_tree,
+            render_tree: RenderTree::new(),
+            frame_count: 0,
+        }
+    }
+}
+
+impl eframe::App for NebulaAppState {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.frame_count += 1;
+        
+        egui::CentralPanel::default().show(ctx, |ui| {
+            // 1. Build Phase - rebuild dirty elements
+            self.element_tree.rebuild_dirty();
+            
+            // 2. Layout Phase
+            let constraints = BoxConstraints::tight(Size::new(
+                ui.available_width(),
+                ui.available_height(),
+            ));
+            
+            if let Some(root_render) = self.element_tree.root_render_object() {
+                root_render.layout(constraints);
+            }
+            
+            // 3. Paint Phase
+            if let Some(root_render) = self.element_tree.root_render_object() {
+                root_render.paint(ui.painter(), Offset::ZERO);
+            }
+            
+            // Debug overlay
+            if self.app.debug_show_checked_mode_banner && K_DEBUG_MODE {
+                self.paint_debug_banner(ui);
+            }
+        });
+        
+        // Request repaint if dirty
+        if self.element_tree.has_dirty_elements() {
+            ctx.request_repaint();
+        }
+    }
+}
+
+impl NebulaAppState {
+    fn paint_debug_banner(&self, ui: &mut egui::Ui) {
+        let text = "DEBUG";
+        let painter = ui.painter();
+        
+        painter.rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(ui.available_width() - 60.0, 0.0),
+                egui::vec2(60.0, 30.0),
+            ),
+            0.0,
+            egui::Color32::from_rgb(200, 0, 0),
+        );
+        
+        painter.text(
+            egui::pos2(ui.available_width() - 40.0, 15.0),
+            egui::Align2::CENTER_CENTER,
+            text,
+            egui::FontId::proportional(14.0),
+            egui::Color32::WHITE,
+        );
+    }
+}
+```
+
+---
+
+## 📚 Complete Usage Example
+
+### Counter App with Animation
+
+```rust
+use nebula::prelude::*;
+use std::sync::{Arc, Mutex};
+
+fn main() {
+    NebulaApp::new(MyApp::new())
+        .title("Animated Counter")
+        .run()
+        .unwrap();
+}
+
+struct MyApp;
+
+impl StatefulWidget for MyApp {
+    type State = MyAppState;
+    
+    fn create_state(&self) -> Self::State {
+        MyAppState::new()
+    }
+}
+
+struct MyAppState {
+    count: i32,
+    controller: Arc<Mutex<AnimationController>>,
+    context: Option<BuildContext>,
+}
+
+impl MyAppState {
+    fn new() -> Self {
+        let controller = Arc::new(Mutex::new(
+            AnimationController::new(Duration::from_millis(300))
+        ));
+        
+        Self {
+            count: 0,
+            controller,
+            context: None,
+        }
+    }
+}
+
+impl State for MyAppState {
+    type Widget = MyApp;
+    
+    fn init_state(&mut self) {
+        // Listen to animation
+        let ctx = self.context.clone();
+        self.controller.lock().unwrap().add_listener(move |_| {
+            if let Some(context) = &ctx {
+                context.mark_dirty();
+            }
+        });
+    }
+    
+    fn build(&mut self, context: &BuildContext) -> Box<dyn Widget> {
+        let scale = 1.0 + self.controller.lock().unwrap().value() * 0.2;
+        
+        Container::new()
+            .padding(EdgeInsets::all(20.0))
+            .child(
+                Column::new()
+                    .main_axis_alignment(MainAxisAlignment::Center)
+                    .cross_axis_alignment(CrossAxisAlignment::Center)
+                    .children(vec![
+                        // Animated counter text
+                        Transform::scale(
+                            scale,
+                            Text::new(format!("Count: {}", self.count))
+                                .style(TextStyle::headline1())
+                                .into_widget(),
+                        ).into_widget(),
+                        
+                        SizedBox::height(20.0).into_widget(),
+                        
+                        // Button
+                        GestureDetector::new(
+                            Container::new()
+                                .padding(EdgeInsets::symmetric(16.0, 8.0))
+                                .decoration(
+                                    BoxDecoration::new()
+                                        .color(Color::from_rgb(33, 150, 243))
+                                        .border_radius(BorderRadius::circular(8.0))
+                                )
+                                .child(
+                                    Text::new("Increment")
+                                        .color(Color::WHITE)
+                                )
+                        )
+                        .on_tap(|| {
+                            self.set_state(|s| {
+                                s.count += 1;
+                                s.controller.lock().unwrap().forward();
+                                
+                                // Reset animation after completion
+                                tokio::spawn({
+                                    let ctrl = s.controller.clone();
+                                    async move {
+                                        tokio::time::sleep(Duration::from_millis(300)).await;
+                                        ctrl.lock().unwrap().reset();
+                                    }
+                                });
+                            });
+                        })
+                        .into_widget(),
+                    ])
+            )
+            .into_widget()
+    }
+    
+    fn mark_needs_build(&mut self) {
+        if let Some(ctx) = &self.context {
+            ctx.mark_dirty();
+        }
+    }
+    
+    fn context(&self) -> &BuildContext {
+        self.context.as_ref().unwrap()
+    }
+    
+    fn set_context(&mut self, context: BuildContext) {
+        self.context = Some(context);
+    }
+}
+```
+
+---
+
+## 🎯 Key Benefits
+
+### 1. **Declarative UI**
+```rust
+// Instead of imperative egui:
+if ui.button("Click").clicked() {
+    count += 1;
+}
+
+// Write declarative Nebula:
+Button::new("Click")
+    .on_pressed(|| self.set_state(|s| s.count += 1))
+```
+
+### 2. **State Preservation**
+- Keys ensure widgets survive rebuilds
+- Element tree maintains state
+- No manual state management
+
+### 3. **Performance**
+- Only dirty elements rebuild
+- RenderObjects cache layout
+- egui handles final rendering
+
+### 4. **Composability**
+```rust
+fn build_card(title: &str, content: impl IntoWidget) -> Box<dyn Widget> {
+    Container::new()
+        .decoration(BoxDecoration::new().elevation(2.0))
+        .child(
+            Column::new()
+                .children(vec![
+                    Text::new(title).into_widget(),
+                    content.into_widget(),
+                ])
+        )
+        .into_widget()
+}
+```
+
+---
+
+## 📦 Final Cargo.toml
+
+```toml
+[package]
+name = "nebula"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nebula_core = { path = "crates/nebula_core" }
+nebula_foundation = { path = "crates/nebula_foundation" }
+nebula_widgets = { path = "crates/nebula_widgets" }
+nebula_rendering = { path = "crates/nebula_rendering" }
+nebula_painting = { path = "crates/nebula_painting" }
+nebula_animation = { path = "crates/nebula_animation" }
+nebula_gestures = { path = "crates/nebula_gestures" }
+nebula_scheduler = { path = "crates/nebula_scheduler" }
+nebula_platform = { path = "crates/nebula_platform" }
+
+egui = "0.29"
+eframe = "0.29"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+
+[[example]]
+name = "counter"
+path = "examples/counter.rs"
+```
+
+---
+
+## 🏁 Conclusion
+
+Nebula provides a **Flutter-inspired declarative UI framework** built on egui with:
+
+✅ Three-tree architecture (Widget/Element/RenderObject)  
+✅ Strong type safety with Rust  
+✅ Reactive state management  
+✅ Efficient updates via keys  
+✅ Animation system  
+✅ Gesture detection  
+✅ Comprehensive diagnostics  
+
+**Start building:** `cargo run --example counter`

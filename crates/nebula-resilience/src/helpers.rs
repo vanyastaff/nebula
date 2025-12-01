@@ -9,6 +9,7 @@
 ///
 /// ```rust,no_run
 /// use nebula_resilience::{log_result, ResilienceError};
+/// use tracing::{info, warn};
 ///
 /// async fn example() -> Result<i32, ResilienceError> {
 ///     let result: Result<i32, ResilienceError> = Ok(42);
@@ -101,6 +102,7 @@ macro_rules! print_result {
 ///
 /// ```rust,no_run
 /// use nebula_resilience::{execute_logged, ResilienceError};
+/// use tracing::{info, warn};
 ///
 /// async fn example() -> Result<String, ResilienceError> {
 ///     execute_logged!(
@@ -110,7 +112,7 @@ macro_rules! print_result {
 ///             // Your operation here
 ///             Ok::<_, ResilienceError>("user_data".to_string())
 ///         }
-///     ).await
+///     )
 /// }
 /// ```
 #[macro_export]

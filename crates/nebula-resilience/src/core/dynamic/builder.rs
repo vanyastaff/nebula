@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! use nebula_resilience::DynamicConfigBuilder;
+//! use nebula_resilience::core::dynamic::builder::DynamicConfigBuilder;
 //! use std::time::Duration;
 //!
 //! # fn example() -> Result<(), Box<dyn std::error::Error>> {

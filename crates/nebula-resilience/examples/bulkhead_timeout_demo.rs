@@ -4,8 +4,7 @@
 //! performance optimizations and security improvements.
 
 use nebula_resilience::{
-    Bulkhead, BulkheadConfig, ResilienceConfig, ResilienceError, timeout,
-    timeout_with_original_error,
+    Bulkhead, BulkheadConfig, ResilienceError, timeout_fn, timeout_with_original_error,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -116,49 +115,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     long_running.await?;
 
-    // Test 4: Bulkhead Configuration Validation
-    println!("\n📊 Test 4: Bulkhead Configuration Security Validation");
-
-    let configs = vec![
-        (
-            "Valid config",
-            BulkheadConfig {
-                max_concurrency: 10,
-                queue_size: 100,
-                timeout: Some(Duration::from_secs(30)),
-            },
-        ),
-        (
-            "Zero concurrency",
-            BulkheadConfig {
-                max_concurrency: 0,
-                queue_size: 100,
-                timeout: Some(Duration::from_secs(30)),
-            },
-        ),
-        (
-            "Zero queue size",
-            BulkheadConfig {
-                max_concurrency: 10,
-                queue_size: 0,
-                timeout: Some(Duration::from_secs(30)),
-            },
-        ),
-    ];
-
-    for (name, config) in configs {
-        match config.validate() {
-            Ok(()) => println!("  ✅ {}: validation passed", name),
-            Err(e) => println!("  ❌ {}: validation failed - {}", name, e),
-        }
-    }
-
-    // Test 5: Timeout Pattern Demonstration
-    println!("\n📊 Test 5: Timeout Pattern with Error Handling");
+    // Test 4: Timeout Pattern Demonstration
+    println!("\n📊 Test 4: Timeout Pattern with Error Handling");
 
     // Test successful operation within timeout
     println!("  🧪 Testing successful operation within timeout...");
-    let result = timeout(Duration::from_millis(200), async {
+    let result = timeout_fn(Duration::from_millis(200), async {
         sleep(Duration::from_millis(100)).await;
         Ok::<String, ResilienceError>("Fast operation".to_string())
     })
@@ -172,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test operation that times out
     println!("  🧪 Testing operation that times out...");
-    let result = timeout(Duration::from_millis(100), async {
+    let result = timeout_fn(Duration::from_millis(100), async {
         sleep(Duration::from_millis(200)).await;
         Ok::<String, ResilienceError>("Slow operation".to_string())
     })
@@ -201,8 +163,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => println!("    ❌ Original error preserved: {}", e),
     }
 
-    // Test 6: Combined Bulkhead + Timeout
-    println!("\n📊 Test 6: Combined Bulkhead and Timeout Pattern");
+    // Test 5: Combined Bulkhead + Timeout
+    println!("\n📊 Test 5: Combined Bulkhead and Timeout Pattern");
 
     let combined_bulkhead = Bulkhead::new(1);
 
@@ -241,8 +203,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     blocking_task.await??;
 
-    // Test 7: Performance Under Load
-    println!("\n📊 Test 7: Performance Under Load");
+    // Test 6: Performance Under Load
+    println!("\n📊 Test 6: Performance Under Load");
 
     let perf_bulkhead = Arc::new(Bulkhead::new(10));
     let operations = 100;
@@ -280,8 +242,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  📊 Results: {} successful, {} failed", successful, failed);
     println!("  📈 Throughput: {:.2} operations/second", throughput);
 
-    // Test 8: Error Scenarios
-    println!("\n📊 Test 8: Error Handling Scenarios");
+    // Test 7: Error Scenarios
+    println!("\n📊 Test 7: Error Handling Scenarios");
 
     let error_bulkhead = Bulkhead::new(2);
 

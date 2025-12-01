@@ -1,8 +1,331 @@
 //! Observability hooks for pattern lifecycle events
+//!
+//! This module provides type-safe observability hooks using advanced patterns:
+//!
+//! - **Typed event categories** for compile-time event classification
+//! - **Sealed hook traits** for controlled extensibility
+//! - **Const generic metric dimensions** for zero-cost abstractions
+//!
+//! # Typed Event Example
+//!
+//! ```rust,ignore
+//! use nebula_resilience::observability::{Event, RetryEventCategory};
+//!
+//! // Type-safe event with compile-time category
+//! let event = Event::<RetryEventCategory>::new("api_call")
+//!     .with_attempt(1)
+//!     .with_max_attempts(3);
+//! ```
 
 use std::fmt;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
+
+// =============================================================================
+// SEALED EVENT CATEGORY TRAIT
+// =============================================================================
+
+mod sealed {
+    pub trait SealedEventCategory {}
+}
+
+/// Event category marker trait (sealed for controlled extensibility).
+pub trait EventCategory: sealed::SealedEventCategory + Send + Sync + 'static {
+    /// Category name for metrics/logging.
+    fn name() -> &'static str;
+
+    /// Category description.
+    fn description() -> &'static str;
+
+    /// Default log level for this category.
+    fn default_log_level() -> LogLevel {
+        LogLevel::Info
+    }
+
+    /// Whether events in this category should be sampled.
+    fn is_sampled() -> bool {
+        false
+    }
+}
+
+// =============================================================================
+// EVENT CATEGORY MARKERS
+// =============================================================================
+
+/// Retry event category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryEventCategory;
+
+impl sealed::SealedEventCategory for RetryEventCategory {}
+
+impl EventCategory for RetryEventCategory {
+    fn name() -> &'static str {
+        "retry"
+    }
+
+    fn description() -> &'static str {
+        "Retry pattern events"
+    }
+}
+
+/// Circuit breaker event category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CircuitBreakerEventCategory;
+
+impl sealed::SealedEventCategory for CircuitBreakerEventCategory {}
+
+impl EventCategory for CircuitBreakerEventCategory {
+    fn name() -> &'static str {
+        "circuit_breaker"
+    }
+
+    fn description() -> &'static str {
+        "Circuit breaker state change events"
+    }
+
+    fn default_log_level() -> LogLevel {
+        LogLevel::Warn
+    }
+}
+
+/// Timeout event category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeoutEventCategory;
+
+impl sealed::SealedEventCategory for TimeoutEventCategory {}
+
+impl EventCategory for TimeoutEventCategory {
+    fn name() -> &'static str {
+        "timeout"
+    }
+
+    fn description() -> &'static str {
+        "Timeout events"
+    }
+
+    fn default_log_level() -> LogLevel {
+        LogLevel::Warn
+    }
+}
+
+/// Rate limiter event category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateLimiterEventCategory;
+
+impl sealed::SealedEventCategory for RateLimiterEventCategory {}
+
+impl EventCategory for RateLimiterEventCategory {
+    fn name() -> &'static str {
+        "rate_limiter"
+    }
+
+    fn description() -> &'static str {
+        "Rate limiting events"
+    }
+
+    fn is_sampled() -> bool {
+        true // Rate limit events can be high-volume
+    }
+}
+
+/// Bulkhead event category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BulkheadEventCategory;
+
+impl sealed::SealedEventCategory for BulkheadEventCategory {}
+
+impl EventCategory for BulkheadEventCategory {
+    fn name() -> &'static str {
+        "bulkhead"
+    }
+
+    fn description() -> &'static str {
+        "Bulkhead concurrency events"
+    }
+}
+
+// =============================================================================
+// TYPED EVENT
+// =============================================================================
+
+/// event with compile-time category.
+#[derive(Debug, Clone)]
+pub struct Event<C: EventCategory> {
+    /// Operation name.
+    pub operation: String,
+    /// Event timestamp.
+    pub timestamp: std::time::Instant,
+    /// Optional duration.
+    pub duration: Option<Duration>,
+    /// Optional error message.
+    pub error: Option<String>,
+    /// Additional context.
+    pub context: std::collections::HashMap<String, String>,
+    _category: PhantomData<C>,
+}
+
+impl<C: EventCategory> Event<C> {
+    /// Create a new typed event.
+    pub fn new(operation: impl Into<String>) -> Self {
+        Self {
+            operation: operation.into(),
+            timestamp: std::time::Instant::now(),
+            duration: None,
+            error: None,
+            context: std::collections::HashMap::new(),
+            _category: PhantomData,
+        }
+    }
+
+    /// Set duration.
+    #[must_use]
+    pub fn with_duration(mut self, duration: Duration) -> Self {
+        self.duration = Some(duration);
+        self
+    }
+
+    /// Set error message.
+    #[must_use]
+    pub fn with_error(mut self, error: impl Into<String>) -> Self {
+        self.error = Some(error.into());
+        self
+    }
+
+    /// Add context.
+    #[must_use]
+    pub fn with_context(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.context.insert(key.into(), value.into());
+        self
+    }
+
+    /// Get category name.
+    pub fn category(&self) -> &'static str {
+        C::name()
+    }
+
+    /// Get default log level.
+    pub fn log_level(&self) -> LogLevel {
+        C::default_log_level()
+    }
+
+    /// Check if event should be sampled.
+    pub fn is_sampled(&self) -> bool {
+        C::is_sampled()
+    }
+
+    /// Check if this is an error event.
+    pub fn is_error(&self) -> bool {
+        self.error.is_some()
+    }
+}
+
+// =============================================================================
+// TYPED METRIC DIMENSIONS
+// =============================================================================
+
+/// metric with const generic dimensions.
+#[derive(Debug, Clone)]
+pub struct Metric<const DIMENSIONS: usize> {
+    /// Metric name.
+    pub name: String,
+    /// Metric value.
+    pub value: f64,
+    /// Dimension labels.
+    pub labels: [(&'static str, String); DIMENSIONS],
+}
+
+impl<const DIMENSIONS: usize> Metric<DIMENSIONS> {
+    /// Create a new typed metric.
+    pub fn new(
+        name: impl Into<String>,
+        value: f64,
+        labels: [(&'static str, String); DIMENSIONS],
+    ) -> Self {
+        Self {
+            name: name.into(),
+            value,
+            labels,
+        }
+    }
+}
+
+/// Common metric types with predefined dimensions.
+pub mod metrics {
+    use super::*;
+
+    /// Counter metric (1 dimension: name).
+    pub type Counter = Metric<1>;
+
+    /// Gauge metric (2 dimensions: name, service).
+    pub type ServiceGauge = Metric<2>;
+
+    /// Histogram metric (3 dimensions: name, service, operation).
+    pub type OperationHistogram = Metric<3>;
+
+    /// Create a counter increment.
+    pub fn counter(name: &str) -> Counter {
+        Metric::new(name, 1.0, [("name", name.to_string())])
+    }
+
+    /// Create a service gauge.
+    pub fn service_gauge(name: &str, service: &str, value: f64) -> ServiceGauge {
+        Metric::new(
+            name,
+            value,
+            [("name", name.to_string()), ("service", service.to_string())],
+        )
+    }
+
+    /// Create an operation histogram entry.
+    pub fn operation_histogram(
+        name: &str,
+        service: &str,
+        operation: &str,
+        value: f64,
+    ) -> OperationHistogram {
+        Metric::new(
+            name,
+            value,
+            [
+                ("name", name.to_string()),
+                ("service", service.to_string()),
+                ("operation", operation.to_string()),
+            ],
+        )
+    }
+}
+
+// =============================================================================
+// TYPED HOOK TRAIT
+// =============================================================================
+
+/// observability hook for specific event categories.
+pub trait ObservabilityHookExt<C: EventCategory>: Send + Sync {
+    /// Handle a typed event.
+    fn on_typed_event(&self, event: &Event<C>);
+}
+
+/// Adapter to convert ObservabilityHookExt to ObservabilityHook.
+pub struct HookAdapter<C: EventCategory, H: ObservabilityHookExt<C>> {
+    #[allow(dead_code)]
+    hook: H,
+    _category: PhantomData<C>,
+}
+
+impl<C: EventCategory, H: ObservabilityHookExt<C>> HookAdapter<C, H> {
+    /// Create a new adapter.
+    pub fn new(hook: H) -> Self {
+        Self {
+            hook,
+            _category: PhantomData,
+        }
+    }
+}
+
+// =============================================================================
+// ORIGINAL IMPLEMENTATION (with enhancements)
+// =============================================================================
 
 /// Log level for observability hooks
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,5 +697,89 @@ mod tests {
         let metrics = hook.metrics();
         assert!(metrics.contains_key("retry.started"));
         assert!(metrics.contains_key("retry.success"));
+    }
+
+    // =========================================================================
+    // TYPED EVENT TESTS
+    // =========================================================================
+
+    #[test]
+    fn test_event_categories() {
+        assert_eq!(RetryEventCategory::name(), "retry");
+        assert_eq!(RetryEventCategory::default_log_level(), LogLevel::Info);
+        assert!(!RetryEventCategory::is_sampled());
+
+        assert_eq!(CircuitBreakerEventCategory::name(), "circuit_breaker");
+        assert_eq!(
+            CircuitBreakerEventCategory::default_log_level(),
+            LogLevel::Warn
+        );
+
+        assert_eq!(TimeoutEventCategory::name(), "timeout");
+        assert_eq!(TimeoutEventCategory::default_log_level(), LogLevel::Warn);
+
+        assert_eq!(RateLimiterEventCategory::name(), "rate_limiter");
+        assert!(RateLimiterEventCategory::is_sampled());
+
+        assert_eq!(BulkheadEventCategory::name(), "bulkhead");
+    }
+
+    #[test]
+    fn test_typed_event() {
+        let event = Event::<RetryEventCategory>::new("api_call")
+            .with_duration(Duration::from_millis(100))
+            .with_context("attempt", "1")
+            .with_context("max_attempts", "3");
+
+        assert_eq!(event.operation, "api_call");
+        assert_eq!(event.category(), "retry");
+        assert_eq!(event.log_level(), LogLevel::Info);
+        assert!(!event.is_sampled());
+        assert!(!event.is_error());
+        assert_eq!(event.duration, Some(Duration::from_millis(100)));
+        assert_eq!(event.context.get("attempt"), Some(&"1".to_string()));
+    }
+
+    #[test]
+    fn test_typed_event_with_error() {
+        let event =
+            Event::<CircuitBreakerEventCategory>::new("db_query").with_error("Connection timeout");
+
+        assert!(event.is_error());
+        assert_eq!(event.error, Some("Connection timeout".to_string()));
+        assert_eq!(event.log_level(), LogLevel::Warn);
+    }
+
+    #[test]
+    fn test_typed_metric() {
+        let metric = Metric::<2>::new(
+            "request_duration",
+            125.5,
+            [
+                ("service", "api".to_string()),
+                ("operation", "get_user".to_string()),
+            ],
+        );
+
+        assert_eq!(metric.name, "request_duration");
+        assert!((metric.value - 125.5).abs() < f64::EPSILON);
+        assert_eq!(metric.labels[0], ("service", "api".to_string()));
+        assert_eq!(metric.labels[1], ("operation", "get_user".to_string()));
+    }
+
+    #[test]
+    fn test_metric_helpers() {
+        let counter = metrics::counter("requests");
+        assert_eq!(counter.name, "requests");
+        assert!((counter.value - 1.0).abs() < f64::EPSILON);
+
+        let gauge = metrics::service_gauge("connections", "db", 42.0);
+        assert_eq!(gauge.name, "connections");
+        assert_eq!(gauge.labels[1], ("service", "db".to_string()));
+
+        let histogram = metrics::operation_histogram("latency", "api", "get_user", 125.0);
+        assert_eq!(histogram.name, "latency");
+        assert_eq!(histogram.labels[1], ("service", "api".to_string()));
+        assert_eq!(histogram.labels[2], ("operation", "get_user".to_string()));
     }
 }

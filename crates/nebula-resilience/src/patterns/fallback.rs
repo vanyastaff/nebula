@@ -1,4 +1,15 @@
-//! Fallback strategies for graceful degradation
+//! Fallback strategies for graceful degradation.
+//!
+//! Provides fallback mechanisms to maintain service availability when primary operations fail.
+//!
+//! # Example
+//!
+//! ```rust
+//! use nebula_resilience::patterns::fallback::ValueFallback;
+//!
+//! // Return a default value on failure
+//! let fallback = ValueFallback::new("default response".to_string());
+//! ```
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -8,7 +19,13 @@ use tokio::sync::RwLock;
 
 use crate::{ResilienceError, ResilienceResult};
 
-/// Fallback strategy trait
+// =============================================================================
+// FALLBACK STRATEGY TRAIT
+// =============================================================================
+
+/// Fallback strategy trait.
+///
+/// Implement this trait to define custom fallback behavior.
 #[async_trait]
 pub trait FallbackStrategy<T>: Send + Sync {
     /// Execute fallback logic
@@ -21,15 +38,25 @@ pub trait FallbackStrategy<T>: Send + Sync {
     }
 }
 
-/// Simple value fallback
+/// Simple value fallback.
+///
+/// Returns a predetermined value when the primary operation fails.
+#[derive(Debug, Clone)]
+#[must_use = "ValueFallback should be used as a fallback strategy"]
 pub struct ValueFallback<T: Clone + Send + Sync> {
     value: T,
 }
 
 impl<T: Clone + Send + Sync> ValueFallback<T> {
-    /// Create new value fallback
+    /// Create new value fallback.
     pub fn new(value: T) -> Self {
         Self { value }
+    }
+
+    /// Returns a reference to the fallback value.
+    #[must_use]
+    pub fn value(&self) -> &T {
+        &self.value
     }
 }
 

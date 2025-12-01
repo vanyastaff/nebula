@@ -32,23 +32,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Example 2: Register a custom policy for a critical service
     println!("2. Registering custom policy for 'payment-api':");
-    let payment_policy = ResiliencePolicy::default()
+
+    // Use PolicyBuilder for creating policies with the new API
+    let payment_policy = PolicyBuilder::new()
         .with_timeout(Duration::from_secs(5))
-        .with_retry(RetryStrategy::exponential_backoff(
-            3,
-            Duration::from_millis(100),
-        ))
-        .with_circuit_breaker(CircuitBreakerConfig {
-            failure_threshold: 3,
-            reset_timeout: Duration::from_secs(30),
-            half_open_max_operations: 2,
-            count_timeouts: true,
-        })
+        .with_retry_exponential(3, Duration::from_millis(100))
         .with_bulkhead(BulkheadConfig {
             max_concurrency: 10,
             queue_size: 50,
             timeout: Some(Duration::from_secs(10)),
-        });
+        })
+        .build();
 
     manager
         .register_service("payment-api", payment_policy)

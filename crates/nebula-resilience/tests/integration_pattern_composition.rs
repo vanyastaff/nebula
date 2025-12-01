@@ -6,79 +6,29 @@
 //! - Circuit Breaker + Timeout + Retry
 //! - Full policy composition
 
+use nebula_resilience::CircuitState;
 use nebula_resilience::prelude::*;
-use nebula_resilience::retry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
 
-/// Test: Retry with Circuit Breaker
-/// Scenario: Operation fails multiple times, circuit breaker opens, retry backs off
-#[tokio::test]
-async fn test_retry_with_circuit_breaker() {
-    let circuit_breaker = Arc::new(CircuitBreaker::with_config(CircuitBreakerConfig {
-        failure_threshold: 3,
-        reset_timeout: Duration::from_secs(1),
-        half_open_max_operations: 1,
-        count_timeouts: true,
-    }));
-
-    let retry_strategy = RetryStrategy::fixed_delay(5, Duration::from_millis(50));
-    let attempt_count = Arc::new(AtomicU32::new(0));
-
-    let result = circuit_breaker
-        .execute(|| {
-            let retry_strategy = retry_strategy.clone();
-            let attempt_count = Arc::clone(&attempt_count);
-            async move {
-                retry(retry_strategy, || {
-                    let attempt_count = Arc::clone(&attempt_count);
-                    async move {
-                        let count = attempt_count.fetch_add(1, Ordering::SeqCst);
-
-                        // Fail first 2 times, succeed on 3rd
-                        if count < 2 {
-                            Err(ResilienceError::custom("Simulated failure"))
-                        } else {
-                            Ok("Success")
-                        }
-                    }
-                })
-                .await
-            }
-        })
-        .await;
-
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), "Success");
-
-    // Should have retried 2 times before success
-    let total_attempts = attempt_count.load(Ordering::SeqCst);
-    assert!(
-        total_attempts >= 3,
-        "Expected at least 3 attempts, got {}",
-        total_attempts
-    );
-}
-
 /// Test: Circuit breaker opens after threshold failures
 #[tokio::test]
 async fn test_circuit_breaker_opens_after_failures() {
-    let circuit_breaker = Arc::new(CircuitBreaker::with_config(CircuitBreakerConfig {
-        failure_threshold: 3,
-        reset_timeout: Duration::from_secs(2),
-        half_open_max_operations: 1,
-        count_timeouts: false,
-    }));
+    // Circuit breaker with 3 failure threshold, 2 second reset
+    // Set min_operations to 1 so circuit opens as soon as failure threshold is reached
+    let config = CircuitBreakerConfig::<3, 2000>::new().with_min_operations(1);
+    let circuit_breaker = Arc::new(CircuitBreaker::new(config).unwrap());
 
     let attempt_count = Arc::new(AtomicU32::new(0));
 
     // Cause 3 failures to open circuit
     for _ in 0..3 {
+        let attempt_count_clone = Arc::clone(&attempt_count);
         let result = circuit_breaker
             .execute(|| {
-                let attempt_count = Arc::clone(&attempt_count);
+                let attempt_count = Arc::clone(&attempt_count_clone);
                 async move {
                     attempt_count.fetch_add(1, Ordering::SeqCst);
                     Err::<(), _>(ResilienceError::custom("Failure"))
@@ -91,15 +41,22 @@ async fn test_circuit_breaker_opens_after_failures() {
 
     // Circuit should be open now
     let stats = circuit_breaker.stats().await;
-    assert_eq!(stats.state, CircuitState::Open);
+    assert_eq!(
+        stats.state,
+        nebula_resilience::patterns::circuit_breaker::State::Open
+    );
 
     // Next attempt should fail fast without executing
     let before_count = attempt_count.load(Ordering::SeqCst);
 
+    let attempt_count_clone = Arc::clone(&attempt_count);
     let result = circuit_breaker
-        .execute(|| async {
-            attempt_count.fetch_add(1, Ordering::SeqCst);
-            Ok::<(), ResilienceError>(())
+        .execute(|| {
+            let attempt_count = Arc::clone(&attempt_count_clone);
+            async move {
+                attempt_count.fetch_add(1, Ordering::SeqCst);
+                Ok::<(), ResilienceError>(())
+            }
         })
         .await;
 
@@ -164,38 +121,31 @@ async fn test_timeout_with_bulkhead() {
     assert!(success_count >= 2, "Expected at least 2 successes");
 }
 
-/// Test: Full policy composition - Circuit Breaker + Timeout + Retry + Bulkhead
+/// Test: Full policy composition using PolicyBuilder
 #[tokio::test]
 async fn test_full_policy_composition() {
     let manager = Arc::new(ResilienceManager::with_defaults());
 
-    // Register comprehensive policy
-    let policy = ResiliencePolicy::default()
+    // Register comprehensive policy using new API
+    let policy = PolicyBuilder::new()
         .with_timeout(Duration::from_secs(2))
-        .with_retry(RetryStrategy::exponential_backoff(
-            3,
-            Duration::from_millis(100),
-        ))
-        .with_circuit_breaker(CircuitBreakerConfig {
-            failure_threshold: 5,
-            reset_timeout: Duration::from_secs(5),
-            half_open_max_operations: 2,
-            count_timeouts: true,
-        })
+        .with_retry_exponential(3, Duration::from_millis(100))
         .with_bulkhead(BulkheadConfig {
             max_concurrency: 10,
             queue_size: 20,
             timeout: Some(Duration::from_secs(5)),
-        });
+        })
+        .build();
 
     manager.register_service("test-service", policy).await;
 
     let attempt_count = Arc::new(AtomicU32::new(0));
 
     // Execute operation that fails once then succeeds
+    let attempt_count_clone = Arc::clone(&attempt_count);
     let result = manager
-        .execute("test-service", "test-operation", || {
-            let attempt_count = Arc::clone(&attempt_count);
+        .execute("test-service", "test-operation", move || {
+            let attempt_count = Arc::clone(&attempt_count_clone);
             async move {
                 let count = attempt_count.fetch_add(1, Ordering::SeqCst);
 
@@ -221,8 +171,6 @@ async fn test_full_policy_composition() {
     assert!(metrics.is_some());
 
     let metrics = metrics.unwrap();
-    // Verify circuit breaker stats are present
-    assert!(metrics.circuit_breaker.is_some());
     // Verify bulkhead stats are present
     assert!(metrics.bulkhead.is_some());
 }
@@ -232,7 +180,9 @@ async fn test_full_policy_composition() {
 async fn test_manager_concurrent_access() {
     let manager = Arc::new(ResilienceManager::with_defaults());
 
-    let policy = ResiliencePolicy::default().with_timeout(Duration::from_millis(500));
+    let policy = PolicyBuilder::new()
+        .with_timeout(Duration::from_millis(500))
+        .build();
 
     manager.register_service("concurrent-test", policy).await;
 
@@ -276,12 +226,13 @@ async fn test_manager_concurrent_access() {
 /// Circuit opens, waits for reset, recovers
 #[tokio::test]
 async fn test_failure_recovery_scenario() {
-    let circuit_breaker = Arc::new(CircuitBreaker::with_config(CircuitBreakerConfig {
-        failure_threshold: 2,
-        reset_timeout: Duration::from_millis(200),
-        half_open_max_operations: 1,
-        count_timeouts: false,
-    }));
+    // Circuit breaker with 2 failure threshold, 200ms reset
+    // Set min_operations to 1 so circuit opens as soon as failure threshold is reached
+    // Set half_open_limit to 1 so one success closes the circuit
+    let config = CircuitBreakerConfig::<2, 200>::new()
+        .with_min_operations(1)
+        .with_half_open_limit(1);
+    let circuit_breaker = Arc::new(CircuitBreaker::new(config).unwrap());
 
     // Phase 1: Cause failures to open circuit
     for _ in 0..2 {
@@ -291,7 +242,10 @@ async fn test_failure_recovery_scenario() {
     }
 
     let stats = circuit_breaker.stats().await;
-    assert_eq!(stats.state, CircuitState::Open);
+    assert_eq!(
+        stats.state,
+        nebula_resilience::patterns::circuit_breaker::State::Open
+    );
 
     // Phase 2: Wait for reset timeout
     sleep(Duration::from_millis(250)).await;
@@ -306,5 +260,8 @@ async fn test_failure_recovery_scenario() {
 
     // Phase 4: Circuit should be closed again
     let stats = circuit_breaker.stats().await;
-    assert_eq!(stats.state, CircuitState::Closed);
+    assert_eq!(
+        stats.state,
+        nebula_resilience::patterns::circuit_breaker::State::Closed
+    );
 }

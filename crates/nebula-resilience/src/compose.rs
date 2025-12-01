@@ -1,4 +1,22 @@
-//! Modern composable resilience patterns with proper async semantics
+//! Composable resilience patterns with layer-based architecture
+//!
+//! This module provides layer composition for building resilience pipelines:
+//!
+//! - **Layer traits** for composable middleware
+//! - **LayerBuilder** for fluent API construction
+//! - **Timeout, Retry, CircuitBreaker, Bulkhead** layers
+//!
+//! # Layer Composition
+//!
+//! ```rust,ignore
+//! use nebula_resilience::compose::LayerBuilder;
+//! use std::time::Duration;
+//!
+//! let chain = LayerBuilder::new()
+//!     .with_timeout(Duration::from_secs(5))
+//!     .with_retry_exponential(3, Duration::from_millis(100))
+//!     .build();
+//! ```
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,10 +24,13 @@ use std::time::Duration;
 use crate::{
     ResilienceError, ResilienceResult,
     manager::RetryableOperation,
-    patterns::{
-        bulkhead::Bulkhead, circuit_breaker::CircuitBreaker, retry::RetryStrategy, timeout::timeout,
-    },
+    patterns::{bulkhead::Bulkhead, circuit_breaker::CircuitBreaker, timeout::timeout},
+    policy::RetryPolicyConfig,
 };
+
+// =============================================================================
+// LAYER TRAITS
+// =============================================================================
 
 /// Operation wrapper that can be boxed
 pub struct BoxedOperation<T> {
@@ -17,6 +38,7 @@ pub struct BoxedOperation<T> {
 }
 
 impl<T> BoxedOperation<T> {
+    /// Create a new boxed operation
     pub fn new<Op>(operation: Op) -> Self
     where
         Op: RetryableOperation<T> + Send + Sync + 'static,
@@ -26,6 +48,7 @@ impl<T> BoxedOperation<T> {
         }
     }
 
+    /// Create from an Arc
     pub fn from_arc(operation: Arc<dyn RetryableOperation<T> + Send + Sync>) -> Self {
         Self { operation }
     }
@@ -66,6 +89,10 @@ pub trait LayerStack<T>: Send + Sync {
     /// Execute the operation with remaining layers
     async fn execute(&self, operation: BoxedOperation<T>) -> ResilienceResult<T>;
 }
+
+// =============================================================================
+// LAYER IMPLEMENTATIONS
+// =============================================================================
 
 /// Terminal layer that just executes the operation
 pub(crate) struct TerminalLayer;
@@ -122,14 +149,14 @@ impl<T: Send + 'static> ResilienceLayer<T> for TimeoutLayer {
     }
 }
 
-/// Retry layer
+/// Retry layer using RetryPolicyConfig
 pub(crate) struct RetryLayer {
-    strategy: RetryStrategy,
+    config: RetryPolicyConfig,
 }
 
 impl RetryLayer {
-    pub(crate) fn new(strategy: RetryStrategy) -> Self {
-        Self { strategy }
+    pub(crate) fn new(config: RetryPolicyConfig) -> Self {
+        Self { config }
     }
 }
 
@@ -142,33 +169,31 @@ impl<T: Send + 'static> ResilienceLayer<T> for RetryLayer {
     ) -> ResilienceResult<T> {
         let mut last_error = None;
 
-        for attempt in 1..=self.strategy.max_attempts {
-            // Clone the operation for each attempt
+        for attempt in 0..self.config.max_attempts {
             let op_clone = operation.clone();
             let result = next.execute(op_clone).await;
 
             match result {
                 Ok(value) => return Ok(value),
-                Err(e) if attempt == self.strategy.max_attempts => {
+                Err(e) if attempt + 1 == self.config.max_attempts => {
                     last_error = Some(e);
                     break;
                 }
-                Err(e) if self.strategy.should_retry(&e) => {
+                Err(e) if e.is_retryable() => {
                     last_error = Some(e);
 
-                    if let Some(delay) = self.strategy.delay_for_attempt(attempt) {
+                    if let Some(delay) = self.config.delay_for_attempt(attempt) {
                         tokio::time::sleep(delay).await;
                     }
                 }
                 Err(e) => {
-                    // Non-retryable error
                     return Err(e);
                 }
             }
         }
 
         Err(ResilienceError::RetryLimitExceeded {
-            attempts: self.strategy.max_attempts,
+            attempts: self.config.max_attempts,
             last_error: last_error.map(Box::new),
         })
     }
@@ -196,13 +221,10 @@ impl<T: Send + 'static> ResilienceLayer<T> for CircuitBreakerLayer {
         operation: BoxedOperation<T>,
         next: Arc<dyn LayerStack<T> + Send + Sync>,
     ) -> ResilienceResult<T> {
-        // Check if circuit breaker allows execution
         self.circuit_breaker.can_execute().await?;
 
-        // Execute operation
         let result = next.execute(operation).await;
 
-        // Record result in circuit breaker
         match &result {
             Ok(_) => self.circuit_breaker.record_success().await,
             Err(_e) => self.circuit_breaker.record_failure().await,
@@ -234,10 +256,7 @@ impl<T: Send + 'static> ResilienceLayer<T> for BulkheadLayer {
         operation: BoxedOperation<T>,
         next: Arc<dyn LayerStack<T> + Send + Sync>,
     ) -> ResilienceResult<T> {
-        // Acquire permit from bulkhead
         let _permit = self.bulkhead.acquire().await?;
-
-        // Execute operation with permit held
         next.execute(operation).await
     }
 
@@ -245,6 +264,10 @@ impl<T: Send + 'static> ResilienceLayer<T> for BulkheadLayer {
         "bulkhead"
     }
 }
+
+// =============================================================================
+// LAYER BUILDER
+// =============================================================================
 
 /// Builder for composing resilience layers
 pub struct LayerBuilder<T> {
@@ -271,10 +294,32 @@ impl<T: Send + 'static> LayerBuilder<T> {
         self
     }
 
-    /// Add retry layer
+    /// Add retry layer with configuration
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_retry(mut self, strategy: RetryStrategy) -> Self {
-        self.layers.push(Arc::new(RetryLayer::new(strategy)));
+    pub fn with_retry(mut self, config: RetryPolicyConfig) -> Self {
+        self.layers.push(Arc::new(RetryLayer::new(config)));
+        self
+    }
+
+    /// Add retry layer with exponential backoff
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_retry_exponential(mut self, max_attempts: usize, base_delay: Duration) -> Self {
+        self.layers
+            .push(Arc::new(RetryLayer::new(RetryPolicyConfig::exponential(
+                max_attempts,
+                base_delay,
+            ))));
+        self
+    }
+
+    /// Add retry layer with fixed delay
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_retry_fixed(mut self, max_attempts: usize, delay: Duration) -> Self {
+        self.layers
+            .push(Arc::new(RetryLayer::new(RetryPolicyConfig::fixed(
+                max_attempts,
+                delay,
+            ))));
         self
     }
 
@@ -303,10 +348,8 @@ impl<T: Send + 'static> LayerBuilder<T> {
     /// Build the composed stack
     #[must_use]
     pub fn build(self) -> Arc<dyn LayerStack<T> + Send + Sync> {
-        // Build stack from outermost to innermost
         let mut stack: Arc<dyn LayerStack<T> + Send + Sync> = Arc::new(TerminalLayer);
 
-        // Apply layers in reverse order (last added becomes outermost)
         for layer in self.layers.into_iter().rev() {
             stack = Arc::new(ComposedStack { layer, next: stack });
         }
@@ -321,13 +364,12 @@ pub type ResilienceChain<T> = Arc<dyn LayerStack<T> + Send + Sync>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
-    /// Test helper: Create a chain from a builder
     fn create_chain<T: Send + 'static>() -> LayerBuilder<T> {
         LayerBuilder::new()
     }
 
-    /// Test helper: Execute operation with a resilience chain
     async fn execute_with_chain<T, Op>(
         chain: ResilienceChain<T>,
         operation: Op,
@@ -338,8 +380,6 @@ mod tests {
         let boxed_op = BoxedOperation::new(operation);
         chain.execute(boxed_op).await
     }
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[tokio::test]
     async fn test_layer_composition() {
@@ -356,7 +396,7 @@ mod tests {
 
         let chain = create_chain()
             .with_timeout(Duration::from_secs(5))
-            .with_retry(RetryStrategy::fixed_delay(2, Duration::from_millis(10)))
+            .with_retry_fixed(2, Duration::from_millis(10))
             .build();
 
         let result = execute_with_chain(chain, operation).await;
@@ -387,12 +427,12 @@ mod tests {
 
         let chain = create_chain()
             .with_timeout(Duration::from_secs(5))
-            .with_retry(RetryStrategy::fixed_delay(5, Duration::from_millis(10)))
+            .with_retry_fixed(5, Duration::from_millis(10))
             .build();
 
         let result = execute_with_chain(chain, operation).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 100);
-        assert_eq!(counter.load(Ordering::SeqCst), 3); // Failed twice, succeeded on third
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 }

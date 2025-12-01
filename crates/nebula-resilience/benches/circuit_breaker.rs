@@ -17,14 +17,10 @@ fn circuit_breaker_closed_execute(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("execute_success", threshold),
             &threshold,
-            |b, &threshold| {
+            |b, &_threshold| {
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                let config = CircuitBreakerConfig {
-                    failure_threshold: threshold,
-                    reset_timeout: Duration::from_secs(60),
-                    ..Default::default()
-                };
-                let cb = CircuitBreaker::with_config(config);
+                let config = CircuitBreakerConfig::<5, 60000>::new().with_min_operations(1);
+                let cb = CircuitBreaker::new(config).unwrap();
 
                 b.to_async(&rt).iter(|| async {
                     let result = cb
@@ -45,12 +41,8 @@ fn circuit_breaker_can_execute(c: &mut Criterion) {
     // Benchmark: Check if can execute (circuit closed)
     group.bench_function("closed", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let config = CircuitBreakerConfig {
-            failure_threshold: 5,
-            reset_timeout: Duration::from_secs(60),
-            ..Default::default()
-        };
-        let cb = CircuitBreaker::with_config(config);
+        let config = CircuitBreakerConfig::<5, 60000>::new().with_min_operations(1);
+        let cb = CircuitBreaker::new(config).unwrap();
 
         b.to_async(&rt)
             .iter(|| async { black_box(cb.can_execute().await) });
@@ -59,16 +51,17 @@ fn circuit_breaker_can_execute(c: &mut Criterion) {
     // Benchmark: Check if can execute (circuit open)
     group.bench_function("open", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let config = CircuitBreakerConfig {
-            failure_threshold: 2,
-            reset_timeout: Duration::from_secs(60),
-            ..Default::default()
-        };
-        let cb = CircuitBreaker::with_config(config);
+        let config = CircuitBreakerConfig::<2, 60000>::new().with_min_operations(1);
+        let cb = CircuitBreaker::new(config).unwrap();
 
         // Trigger circuit open
         rt.block_on(async {
+            // Execute minimum operations first
             for _ in 0..2 {
+                let _ = cb.execute(|| async { Ok::<(), _>(()) }).await;
+            }
+            // Now trigger failures
+            for _ in 0..3 {
                 let _ = cb
                     .execute(|| async { Err::<(), _>(ResilienceError::custom("fail")) })
                     .await;
@@ -91,17 +84,17 @@ fn circuit_breaker_state_transitions(c: &mut Criterion) {
 
         b.iter_batched(
             || {
-                let config = CircuitBreakerConfig {
-                    failure_threshold: 3,
-                    reset_timeout: Duration::from_secs(60),
-                    ..Default::default()
-                };
-                CircuitBreaker::with_config(config)
+                let config = CircuitBreakerConfig::<3, 60000>::new().with_min_operations(1);
+                CircuitBreaker::new(config).unwrap()
             },
             |cb| {
                 rt.block_on(async {
+                    // Execute minimum operations first
+                    for _ in 0..2 {
+                        let _ = cb.execute(|| async { Ok::<(), _>(()) }).await;
+                    }
                     // Trigger failures to open circuit
-                    for _ in 0..3 {
+                    for _ in 0..4 {
                         let _ = cb
                             .execute(|| async { Err::<(), _>(ResilienceError::custom("fail")) })
                             .await;
@@ -118,18 +111,20 @@ fn circuit_breaker_state_transitions(c: &mut Criterion) {
 
         b.iter_batched(
             || {
-                let config = CircuitBreakerConfig {
-                    failure_threshold: 1,
-                    reset_timeout: Duration::from_millis(10),
-                    ..Default::default()
-                };
-                let cb = CircuitBreaker::with_config(config);
+                let config = CircuitBreakerConfig::<1, 10>::new().with_min_operations(1);
+                let cb = CircuitBreaker::new(config).unwrap();
 
                 // Open the circuit
                 rt.block_on(async {
-                    let _ = cb
-                        .execute(|| async { Err::<(), _>(ResilienceError::custom("fail")) })
-                        .await;
+                    // Execute minimum operations first
+                    let _ = cb.execute(|| async { Ok::<(), _>(()) }).await;
+
+                    // Trigger failure to open circuit
+                    for _ in 0..2 {
+                        let _ = cb
+                            .execute(|| async { Err::<(), _>(ResilienceError::custom("fail")) })
+                            .await;
+                    }
 
                     // Wait for reset timeout
                     tokio::time::sleep(Duration::from_millis(15)).await;
@@ -155,12 +150,8 @@ fn circuit_breaker_stats(c: &mut Criterion) {
 
     group.bench_function("stats_collection", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let config = CircuitBreakerConfig {
-            failure_threshold: 5,
-            reset_timeout: Duration::from_secs(60),
-            ..Default::default()
-        };
-        let cb = CircuitBreaker::with_config(config);
+        let config = CircuitBreakerConfig::<5, 60000>::new().with_min_operations(1);
+        let cb = CircuitBreaker::new(config).unwrap();
 
         b.to_async(&rt)
             .iter(|| async { black_box(cb.stats().await) });

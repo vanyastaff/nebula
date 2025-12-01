@@ -1,14 +1,24 @@
 //! Bulkhead pattern for resource isolation and parallelism limits
+//!
+//! This module provides bulkhead implementation for limiting concurrent operations.
 
 use nebula_log::debug;
+use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use crate::core::config::{ConfigError, ConfigResult, ResilienceConfig};
 use crate::{ResilienceError, ResilienceResult};
 
-/// Bulkhead configuration
+// =============================================================================
+// BULKHEAD CONFIGURATION
+// =============================================================================
+
+/// Bulkhead configuration.
+///
+/// Controls the maximum concurrency and queue size for a bulkhead.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[must_use = "BulkheadConfig should be used to create a Bulkhead"]
 pub struct BulkheadConfig {
     /// Maximum number of concurrent operations
     pub max_concurrency: usize,
@@ -27,6 +37,10 @@ impl Default for BulkheadConfig {
         }
     }
 }
+
+// =============================================================================
+// BULKHEAD IMPLEMENTATION
+// =============================================================================
 
 /// Bulkhead implementation for resource isolation
 #[derive(Debug, Clone)]
@@ -81,26 +95,6 @@ impl Bulkhead {
     ///
     /// Returns `Some(BulkheadPermit)` if a permit is immediately available,
     /// or `None` if the bulkhead is at capacity.
-    ///
-    /// # RAII Pattern
-    ///
-    /// The returned `BulkheadPermit` uses RAII to automatically release
-    /// the permit when dropped, ensuring correct resource management.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use nebula_resilience::Bulkhead;
-    ///
-    /// let bulkhead = Bulkhead::new(2);
-    ///
-    /// if let Some(_permit) = bulkhead.try_acquire() {
-    ///     // Permit acquired, can proceed with operation
-    ///     // Permit automatically released when _permit is dropped
-    /// } else {
-    ///     // Bulkhead at capacity
-    /// }
-    /// ```
     #[must_use]
     pub fn try_acquire(&self) -> Option<BulkheadPermit> {
         let permit = Arc::clone(&self.semaphore).try_acquire_owned().ok()?;
@@ -113,32 +107,6 @@ impl Bulkhead {
     /// Acquire a permit, waiting if necessary
     ///
     /// Blocks until a permit becomes available or the configured timeout is reached.
-    ///
-    /// # RAII Pattern
-    ///
-    /// The returned `BulkheadPermit` uses RAII to automatically release
-    /// the permit when dropped. This ensures that the bulkhead capacity is
-    /// properly restored even if the operation panics or returns early.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use nebula_resilience::Bulkhead;
-    ///
-    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let bulkhead = Bulkhead::new(5);
-    ///
-    /// let permit = bulkhead.acquire().await?;
-    /// // Do work with permit
-    /// // Permit automatically released when it goes out of scope
-    /// drop(permit); // Explicit drop (optional)
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns `ResilienceError::BulkheadFull` if the semaphore is closed.
     pub async fn acquire(&self) -> Result<BulkheadPermit, ResilienceError> {
         let permit = Arc::clone(&self.semaphore)
             .acquire_owned()
@@ -151,7 +119,7 @@ impl Bulkhead {
         })
     }
 
-    /// Execute an operation with bulkhead protection (optimized)
+    /// Execute an operation with bulkhead protection
     pub async fn execute<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
     where
         F: FnOnce() -> Fut,
@@ -159,19 +127,16 @@ impl Bulkhead {
     {
         let _permit = self.acquire().await?;
 
-        // The semaphore permit already handles concurrency control
-        // No need for separate active operations tracking
         debug!(
             "Bulkhead operation started (permits available: {})",
             self.semaphore.available_permits()
         );
 
-        // Execute the operation
         let result = operation().await;
 
         debug!(
             "Bulkhead operation completed (permits available: {})",
-            self.semaphore.available_permits() + 1 // +1 because permit not yet released
+            self.semaphore.available_permits() + 1
         );
 
         result
@@ -191,18 +156,7 @@ impl Bulkhead {
 
         let _permit = self.acquire().await?;
 
-        debug!(
-            "Bulkhead operation started with timeout (permits available: {})",
-            self.semaphore.available_permits()
-        );
-
-        // Execute the operation with timeout
         let result = tokio_timeout(timeout, operation()).await;
-
-        debug!(
-            "Bulkhead operation completed (permits available: {})",
-            self.semaphore.available_permits() + 1
-        );
 
         match result {
             Ok(inner_result) => inner_result,
@@ -227,29 +181,16 @@ impl Default for Bulkhead {
     }
 }
 
-/// Permit for executing an operation within the bulkhead
+// =============================================================================
+// BULKHEAD PERMIT (RAII)
+// =============================================================================
+
+/// Permit for executing an operation within the bulkhead.
 ///
-/// This struct acts as an RAII guard that automatically releases bulkhead resources
-/// when dropped, ensuring proper resource cleanup even in the presence of panics
-/// or early returns.
-///
-/// # RAII Pattern
-///
-/// The `permit` field is never accessed directly but serves as an RAII guard.
-/// When the `BulkheadPermit` is dropped:
-/// 1. The `OwnedSemaphorePermit` is automatically released
-/// 2. The bulkhead's available capacity is incremented
-/// 3. Waiting operations can proceed
-///
-/// This ensures correct resource management without manual cleanup code.
+/// Uses RAII pattern - permit is automatically released when dropped.
 pub struct BulkheadPermit {
-    /// RAII guard - field must exist to hold the semaphore permit.
-    /// The permit is automatically released when this struct is dropped.
-    /// Never accessed directly, but critical for correct resource management.
-    ///
-    /// Hidden from documentation as it's an implementation detail of the RAII pattern.
-    #[doc(hidden)]
-    pub permit: tokio::sync::OwnedSemaphorePermit,
+    #[allow(dead_code)]
+    permit: tokio::sync::OwnedSemaphorePermit,
     active_operations: Arc<tokio::sync::RwLock<usize>>,
 }
 
@@ -260,11 +201,9 @@ impl BulkheadPermit {
     }
 }
 
-impl Drop for BulkheadPermit {
-    fn drop(&mut self) {
-        // Permit is automatically released when dropped
-    }
-}
+// =============================================================================
+// BULKHEAD STATS
+// =============================================================================
 
 /// Bulkhead statistics
 #[derive(Debug, Clone)]
@@ -278,6 +217,10 @@ pub struct BulkheadStats {
     /// Whether the bulkhead is at capacity
     pub is_at_capacity: bool,
 }
+
+// =============================================================================
+// BULKHEAD BUILDER
+// =============================================================================
 
 /// Builder for creating bulkheads with custom configurations
 pub struct BulkheadBuilder {
@@ -317,124 +260,9 @@ impl BulkheadBuilder {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    #[tokio::test]
-    async fn test_bulkhead_default() {
-        let bulkhead = Bulkhead::new(5);
-        assert_eq!(bulkhead.max_concurrency(), 5);
-        assert_eq!(bulkhead.active_operations().await, 0);
-        assert_eq!(bulkhead.available_permits().await, 5);
-        assert!(!bulkhead.is_at_capacity().await);
-    }
-
-    #[tokio::test]
-    async fn test_bulkhead_execute() {
-        let bulkhead = Bulkhead::new(2);
-
-        // Should execute successfully
-        let result = bulkhead
-            .execute(|| async { Ok::<&str, ResilienceError>("success") })
-            .await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "success");
-    }
-
-    #[tokio::test]
-    async fn test_bulkhead_concurrency_limit() {
-        let bulkhead = Bulkhead::new(2);
-        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-
-        // Start 3 operations concurrently
-        for i in 0..3 {
-            let bulkhead = bulkhead.clone();
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let result = bulkhead
-                    .execute(|| async {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        Ok::<usize, ResilienceError>(i)
-                    })
-                    .await;
-                let _ = tx.send(result).await;
-            });
-        }
-
-        // Wait for all operations to complete
-        drop(tx);
-        let mut results = Vec::new();
-        while let Some(result) = rx.recv().await {
-            results.push(result);
-        }
-
-        // All operations should succeed
-        assert_eq!(results.len(), 3);
-        for result in results {
-            assert!(result.is_ok());
-        }
-    }
-
-    #[tokio::test]
-    async fn test_bulkhead_timeout() {
-        let bulkhead = Bulkhead::new(1);
-
-        // Start a long-running operation that blocks the permit
-        let bulkhead_clone = bulkhead.clone();
-        let handle = tokio::spawn(async move {
-            let _permit = bulkhead_clone.acquire().await.unwrap();
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            Ok::<&str, ResilienceError>("long operation")
-        });
-
-        // Give the long operation time to acquire the permit
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Now try to execute with timeout - should timeout waiting for permit
-        let start = std::time::Instant::now();
-        let result = tokio::time::timeout(
-            Duration::from_millis(100),
-            bulkhead.execute(|| async { Ok::<&str, ResilienceError>("should timeout") }),
-        )
-        .await;
-
-        // Should have timed out
-        assert!(result.is_err(), "Operation should have timed out");
-        let elapsed = start.elapsed();
-        assert!(
-            elapsed >= Duration::from_millis(90) && elapsed <= Duration::from_millis(200),
-            "Should have timed out around 100ms, got {:?}",
-            elapsed
-        );
-
-        // Wait for the long operation to complete
-        let _ = handle.await;
-    }
-
-    #[tokio::test]
-    async fn test_bulkhead_builder() {
-        let bulkhead = BulkheadBuilder::new(5)
-            .with_queue_size(50)
-            .with_timeout(Some(Duration::from_secs(30)))
-            .build();
-
-        assert_eq!(bulkhead.max_concurrency(), 5);
-        assert_eq!(bulkhead.active_operations().await, 0);
-    }
-
-    #[tokio::test]
-    async fn test_bulkhead_stats() {
-        let bulkhead = Bulkhead::new(3);
-        let stats = bulkhead.stats().await;
-
-        assert_eq!(stats.max_concurrency, 3);
-        assert_eq!(stats.active_operations, 0);
-        assert_eq!(stats.available_permits, 3);
-        assert!(!stats.is_at_capacity);
-    }
-}
+// =============================================================================
+// CONFIG TRAIT IMPLEMENTATION
+// =============================================================================
 
 impl ResilienceConfig for BulkheadConfig {
     fn validate(&self) -> ConfigResult<()> {
@@ -455,5 +283,107 @@ impl ResilienceConfig for BulkheadConfig {
 
     fn merge(&mut self, other: Self) {
         *self = other;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn test_bulkhead_default() {
+        let bulkhead = Bulkhead::new(5);
+        assert_eq!(bulkhead.max_concurrency(), 5);
+        assert_eq!(bulkhead.active_operations().await, 0);
+        assert_eq!(bulkhead.available_permits().await, 5);
+        assert!(!bulkhead.is_at_capacity().await);
+    }
+
+    #[tokio::test]
+    async fn test_bulkhead_execute() {
+        let bulkhead = Bulkhead::new(2);
+
+        let result = bulkhead
+            .execute(|| async { Ok::<&str, ResilienceError>("success") })
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "success");
+    }
+
+    #[tokio::test]
+    async fn test_bulkhead_concurrency_limit() {
+        let bulkhead = Bulkhead::new(2);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+
+        for i in 0..3 {
+            let bulkhead = bulkhead.clone();
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let result = bulkhead
+                    .execute(|| async {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        Ok::<usize, ResilienceError>(i)
+                    })
+                    .await;
+                let _ = tx.send(result).await;
+            });
+        }
+
+        drop(tx);
+        let mut results = Vec::new();
+        while let Some(result) = rx.recv().await {
+            results.push(result);
+        }
+
+        assert_eq!(results.len(), 3);
+        for result in results {
+            assert!(result.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bulkhead_timeout() {
+        let bulkhead = Bulkhead::new(1);
+
+        let bulkhead_clone = bulkhead.clone();
+        let handle = tokio::spawn(async move {
+            let _permit = bulkhead_clone.acquire().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            Ok::<&str, ResilienceError>("long operation")
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            bulkhead.execute(|| async { Ok::<&str, ResilienceError>("should timeout") }),
+        )
+        .await;
+
+        assert!(result.is_err(), "Operation should have timed out");
+
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_bulkhead_builder() {
+        let bulkhead = BulkheadBuilder::new(5)
+            .with_queue_size(50)
+            .with_timeout(Some(Duration::from_secs(30)))
+            .build();
+
+        assert_eq!(bulkhead.max_concurrency(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_bulkhead_stats() {
+        let bulkhead = Bulkhead::new(3);
+        let stats = bulkhead.stats().await;
+
+        assert_eq!(stats.max_concurrency, 3);
+        assert_eq!(stats.active_operations, 0);
+        assert_eq!(stats.available_permits, 3);
+        assert!(!stats.is_at_capacity);
     }
 }

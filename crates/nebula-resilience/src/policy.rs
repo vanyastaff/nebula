@@ -1,14 +1,95 @@
 //! Modern resilience policies for service configuration
+//!
+//! This module provides type-safe resilience policies using the new
+//! generic retry strategy system.
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::{
     core::config::{ConfigError, ConfigResult, ResilienceConfig},
-    patterns::{
-        bulkhead::BulkheadConfig, circuit_breaker::CircuitBreakerConfig, retry::RetryStrategy,
-    },
+    patterns::{bulkhead::BulkheadConfig, circuit_breaker::CircuitBreakerConfig},
 };
+
+/// Retry configuration for policies (simplified, serializable version)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryPolicyConfig {
+    /// Maximum retry attempts
+    pub max_attempts: usize,
+    /// Base delay in milliseconds
+    pub base_delay_ms: u64,
+    /// Maximum delay in milliseconds
+    pub max_delay_ms: u64,
+    /// Backoff multiplier (x10 to avoid floats in serialization)
+    pub multiplier_x10: u64,
+    /// Whether to use jitter
+    pub use_jitter: bool,
+}
+
+impl Default for RetryPolicyConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            base_delay_ms: 100,
+            max_delay_ms: 30_000,
+            multiplier_x10: 20, // 2.0x multiplier
+            use_jitter: true,
+        }
+    }
+}
+
+impl RetryPolicyConfig {
+    /// Create exponential backoff configuration
+    pub fn exponential(max_attempts: usize, base_delay: Duration) -> Self {
+        Self {
+            max_attempts,
+            base_delay_ms: base_delay.as_millis() as u64,
+            max_delay_ms: 30_000,
+            multiplier_x10: 20,
+            use_jitter: true,
+        }
+    }
+
+    /// Create fixed delay configuration
+    pub fn fixed(max_attempts: usize, delay: Duration) -> Self {
+        Self {
+            max_attempts,
+            base_delay_ms: delay.as_millis() as u64,
+            max_delay_ms: delay.as_millis() as u64,
+            multiplier_x10: 10, // 1.0x (no growth)
+            use_jitter: false,
+        }
+    }
+
+    /// Calculate delay for a given attempt
+    pub fn delay_for_attempt(&self, attempt: usize) -> Option<Duration> {
+        if attempt >= self.max_attempts {
+            return None;
+        }
+
+        let multiplier = self.multiplier_x10 as f64 / 10.0;
+        let delay = (self.base_delay_ms as f64) * multiplier.powi(attempt as i32);
+        let capped = (delay as u64).min(self.max_delay_ms);
+
+        Some(Duration::from_millis(capped))
+    }
+
+    /// Validate the configuration
+    pub fn validate(&self) -> ConfigResult<()> {
+        if self.max_attempts == 0 {
+            return Err(ConfigError::validation("max_attempts must be > 0"));
+        }
+        if self.base_delay_ms == 0 {
+            return Err(ConfigError::validation("base_delay_ms must be > 0"));
+        }
+        if self.max_delay_ms < self.base_delay_ms {
+            return Err(ConfigError::validation(
+                "max_delay_ms must be >= base_delay_ms",
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// Modern resilience policy with type-safe configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,7 +97,7 @@ pub struct ResiliencePolicy {
     /// Timeout configuration
     pub timeout: Option<Duration>,
     /// Retry strategy configuration
-    pub retry: Option<RetryStrategy>,
+    pub retry: Option<RetryPolicyConfig>,
     /// Circuit breaker configuration
     pub circuit_breaker: Option<CircuitBreakerConfig>,
     /// Bulkhead configuration
@@ -56,7 +137,7 @@ impl Default for ResiliencePolicy {
     fn default() -> Self {
         Self {
             timeout: Some(Duration::from_secs(30)),
-            retry: Some(RetryStrategy::default()),
+            retry: Some(RetryPolicyConfig::default()),
             circuit_breaker: None,
             bulkhead: None,
             metadata: PolicyMetadata::default(),
@@ -81,7 +162,7 @@ impl ResiliencePolicy {
     pub fn basic(timeout: Duration, retry_attempts: usize) -> Self {
         Self {
             timeout: Some(timeout),
-            retry: Some(RetryStrategy::exponential_backoff(
+            retry: Some(RetryPolicyConfig::exponential(
                 retry_attempts,
                 Duration::from_millis(100),
             )),
@@ -105,7 +186,7 @@ impl ResiliencePolicy {
     ) -> Self {
         Self {
             timeout: Some(timeout),
-            retry: Some(RetryStrategy::exponential_backoff(
+            retry: Some(RetryPolicyConfig::exponential(
                 retry_attempts,
                 Duration::from_millis(100),
             )),
@@ -126,10 +207,7 @@ impl ResiliencePolicy {
     pub fn microservice() -> Self {
         Self {
             timeout: Some(Duration::from_secs(10)),
-            retry: Some(
-                RetryStrategy::exponential_backoff(3, Duration::from_millis(50))
-                    .with_condition(crate::patterns::retry::RetryCondition::conservative()),
-            ),
+            retry: Some(RetryPolicyConfig::exponential(3, Duration::from_millis(50))),
             circuit_breaker: Some(CircuitBreakerConfig::default()),
             bulkhead: Some(BulkheadConfig::default()),
             metadata: PolicyMetadata {
@@ -186,8 +264,8 @@ impl ResiliencePolicy {
 
     /// Set retry strategy
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_retry(mut self, strategy: RetryStrategy) -> Self {
-        self.retry = Some(strategy);
+    pub fn with_retry(mut self, config: RetryPolicyConfig) -> Self {
+        self.retry = Some(config);
         self
     }
 
@@ -248,8 +326,7 @@ impl ResiliencePolicy {
         let base_timeout = self.timeout.unwrap_or(Duration::from_secs(60));
 
         if let Some(retry) = &self.retry {
-            // Calculate total time with retries
-            let retry_time: Duration = (1..=retry.max_attempts)
+            let retry_time: Duration = (0..retry.max_attempts)
                 .filter_map(|attempt| retry.delay_for_attempt(attempt))
                 .sum();
 
@@ -386,5 +463,43 @@ mod tests {
         let max_time = policy.max_execution_time();
         assert!(max_time.is_some());
         assert!(max_time.unwrap() > Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_retry_policy_config() {
+        let config = RetryPolicyConfig::exponential(3, Duration::from_millis(100));
+
+        assert_eq!(
+            config.delay_for_attempt(0),
+            Some(Duration::from_millis(100))
+        );
+        assert_eq!(
+            config.delay_for_attempt(1),
+            Some(Duration::from_millis(200))
+        );
+        assert_eq!(
+            config.delay_for_attempt(2),
+            Some(Duration::from_millis(400))
+        );
+        assert_eq!(config.delay_for_attempt(3), None); // exceeds max_attempts
+    }
+
+    #[test]
+    fn test_fixed_retry_config() {
+        let config = RetryPolicyConfig::fixed(5, Duration::from_millis(500));
+
+        assert_eq!(
+            config.delay_for_attempt(0),
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(
+            config.delay_for_attempt(1),
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(
+            config.delay_for_attempt(4),
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(config.delay_for_attempt(5), None);
     }
 }

@@ -27,6 +27,12 @@ dashmap = "6.1"
 humantime-serde = "1.1.1"
 rand = "0.9"
 governor = "0.10"
+tokio-util = { version = "0.7", features = ["rt"] }
+
+# Advanced type system features
+heapless = "0.8"
+fastrand = "2.1"
+tracing = { workspace = true }
 
 # Internal crates
 nebula-config = { path = "../nebula-config" }
@@ -36,6 +42,8 @@ nebula-value = { path = "../nebula-value", features = ["serde"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
 [[bench]]
 name = "circuit_breaker"
@@ -52,5 +60,3 @@ harness = false
 [[bench]]
 name = "retry"
 harness = false
-
-

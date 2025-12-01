@@ -1,6 +1,6 @@
 //! Integration tests for metrics collection
 
-use nebula_resilience::{CircuitBreakerConfig, ResilienceManager, ResiliencePolicy};
+use nebula_resilience::prelude::*;
 use std::time::Duration;
 
 #[tokio::test]
@@ -8,9 +8,8 @@ async fn test_get_metrics_for_registered_service() {
     let manager = ResilienceManager::with_defaults();
 
     // Register a service with default policy
-    manager
-        .register_service("test-api", ResiliencePolicy::default())
-        .await;
+    let policy = PolicyBuilder::new().build();
+    manager.register_service("test-api", policy).await;
 
     // Get metrics
     let metrics = manager.get_metrics("test-api").await;
@@ -34,9 +33,12 @@ async fn test_get_metrics_for_unregistered_service() {
 async fn test_circuit_breaker_metrics() {
     let manager = ResilienceManager::with_defaults();
 
-    // Register service with circuit breaker
-    let policy = ResiliencePolicy::basic(Duration::from_secs(5), 3)
-        .with_circuit_breaker(CircuitBreakerConfig::default());
+    // Register service with circuit breaker config
+    let policy = PolicyBuilder::new()
+        .with_timeout(Duration::from_secs(5))
+        .with_retry_fixed(3, Duration::from_millis(100))
+        .with_circuit_breaker(CircuitBreakerConfig::default())
+        .build();
     manager.register_service("api-with-cb", policy).await;
 
     // Get metrics
@@ -59,15 +61,10 @@ async fn test_get_all_metrics() {
     let manager = ResilienceManager::with_defaults();
 
     // Register multiple services
-    manager
-        .register_service("api1", ResiliencePolicy::default())
-        .await;
-    manager
-        .register_service("api2", ResiliencePolicy::default())
-        .await;
-    manager
-        .register_service("api3", ResiliencePolicy::default())
-        .await;
+    let policy = PolicyBuilder::new().build();
+    manager.register_service("api1", policy.clone()).await;
+    manager.register_service("api2", policy.clone()).await;
+    manager.register_service("api3", policy).await;
 
     // Get all metrics
     let all_metrics = manager.get_all_metrics().await;
@@ -82,9 +79,8 @@ async fn test_get_all_metrics() {
 async fn test_metrics_after_service_unregister() {
     let manager = ResilienceManager::with_defaults();
 
-    manager
-        .register_service("temp-api", ResiliencePolicy::default())
-        .await;
+    let policy = PolicyBuilder::new().build();
+    manager.register_service("temp-api", policy).await;
 
     // Verify service exists
     assert!(manager.get_metrics("temp-api").await.is_some());

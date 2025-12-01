@@ -16,7 +16,7 @@ use std::time::Duration;
 /// # Examples
 ///
 /// ```
-/// use nebula_resilience::Retryable;
+/// use nebula_resilience::retryable::Retryable;
 /// use thiserror::Error;
 /// use std::time::Duration;
 ///

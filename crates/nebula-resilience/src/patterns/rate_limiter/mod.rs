@@ -1,6 +1,6 @@
-//! Advanced rate limiting implementations
+//! Rate limiting implementations.
 //!
-//! This module provides multiple rate limiting algorithms for different use cases:
+//! This module provides multiple rate limiting algorithms:
 //!
 //! - **`TokenBucket`**: Classic token bucket with refill rate
 //! - **`LeakyBucket`**: Leaky bucket with constant leak rate

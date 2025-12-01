@@ -3,9 +3,9 @@
 //! This example shows how to use observability hooks to monitor
 //! resilience pattern execution with metrics, logging, and tracing.
 
+use nebula_resilience::prelude::*;
 use nebula_resilience::{
-    CircuitBreaker, CircuitBreakerConfig, ResilienceError, ResilienceManager, ResiliencePolicy,
-    RetryStrategy,
+    PolicyBuilder, ResilienceManager,
     observability::{LogLevel, LoggingHook, MetricsHook, ObservabilityHooks, PatternEvent},
 };
 use std::sync::Arc;
@@ -73,139 +73,99 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create manager with observability
     let manager = Arc::new(ResilienceManager::with_defaults());
 
-    // Register a policy
-    let policy = ResiliencePolicy::default()
+    // Register a policy using the new PolicyBuilder API
+    let policy = PolicyBuilder::new()
         .with_timeout(Duration::from_secs(5))
-        .with_retry(RetryStrategy::fixed_delay(3, Duration::from_millis(100)));
+        .with_retry_fixed(3, Duration::from_millis(100))
+        .build();
 
-    manager.register_service("api", policy).await;
+    manager.register_service("database", policy).await;
 
-    // Execute operations and emit events
-    for i in 1..=5 {
-        hooks.emit(PatternEvent::Started {
-            pattern: "manager".to_string(),
-            operation: format!("api_call_{}", i),
-        });
+    // Execute with observability
+    let result = manager
+        .execute("database", "query", || async {
+            // Simulate database query
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Ok::<_, ResilienceError>("Query result")
+        })
+        .await;
 
-        let operation_name = format!("operation_{}", i);
-        let result = manager
-            .execute("api", &operation_name, || async {
-                // Simulate work
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                Ok::<_, ResilienceError>(format!("result_{}", i))
-            })
-            .await;
-
-        match result {
-            Ok(val) => {
-                hooks.emit(PatternEvent::Succeeded {
-                    pattern: "manager".to_string(),
-                    operation: format!("api_call_{}", i),
-                    duration: Duration::from_millis(10),
-                });
-                println!("✓ Operation {}: {}", i, val);
-            }
-            Err(e) => {
-                hooks.emit(PatternEvent::Failed {
-                    pattern: "manager".to_string(),
-                    operation: format!("api_call_{}", i),
-                    error: e.to_string(),
-                    duration: Duration::from_millis(10),
-                });
-                println!("✗ Operation {} failed: {}", i, e);
-            }
-        }
+    match result {
+        Ok(data) => println!("  ✓ Query succeeded: {}", data),
+        Err(e) => println!("  ✗ Query failed: {}", e),
     }
 
-    println!("\n3. Metrics collected:\n");
+    println!("\n3. Using Circuit Breaker with Observability\n");
 
-    // Export and display metrics
-    let metrics = metrics_hook.metrics();
-    for (name, snapshot) in metrics.iter() {
-        println!(
-            "  {}: count={}, avg={:.2}ms, min={:.2}ms, max={:.2}ms",
-            name, snapshot.count, snapshot.avg, snapshot.min, snapshot.max
-        );
+    // Create circuit breaker with const generics
+    let circuit_breaker = CircuitBreaker::<3, 5000>::with_defaults()?;
+
+    // Execute with circuit breaker
+    let db_result = circuit_breaker
+        .execute(|| async {
+            // Emit start event
+            hooks.emit(PatternEvent::Started {
+                pattern: "circuit_breaker".to_string(),
+                operation: "payment_process".to_string(),
+            });
+
+            let start = std::time::Instant::now();
+
+            // Simulate operation
+            tokio::time::sleep(Duration::from_millis(30)).await;
+
+            // Emit success event
+            hooks.emit(PatternEvent::Succeeded {
+                pattern: "circuit_breaker".to_string(),
+                operation: "payment_process".to_string(),
+                duration: start.elapsed(),
+            });
+
+            Ok::<_, ResilienceError>("Payment processed")
+        })
+        .await;
+
+    match db_result {
+        Ok(data) => println!("  ✓ Payment result: {}", data),
+        Err(e) => println!("  ✗ Payment failed: {}", e),
     }
 
-    println!("\n4. Using spans for automatic timing\n");
+    println!("\n4. Using Retry with Observability\n");
 
-    // Example with span guard
-    use nebula_resilience::observability::SpanGuard;
+    // Create retry strategy with const generics
+    let retry = exponential_retry::<3>()?;
 
-    let span = SpanGuard::new("timeout", "database_query");
-    tokio::time::sleep(Duration::from_millis(25)).await;
-    span.success();
+    let attempt_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let counter_clone = attempt_counter.clone();
 
-    println!("\n5. Circuit breaker with observability\n");
+    let retry_result = retry
+        .execute_resilient(|| {
+            let counter = counter_clone.clone();
+            async move {
+                let attempt = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-    let cb = Arc::new(CircuitBreaker::with_config(CircuitBreakerConfig {
-        failure_threshold: 3,
-        reset_timeout: Duration::from_secs(1),
-        half_open_max_operations: 1,
-        count_timeouts: true,
-    }));
-
-    // Simulate failures to trip circuit breaker
-    for i in 1..=5 {
-        let result: Result<(), ResilienceError> = cb
-            .execute(|| async {
-                if i < 4 {
-                    Err::<(), _>(ResilienceError::custom("simulated failure"))
+                // Fail first two attempts
+                if attempt < 2 {
+                    Err(ResilienceError::custom("Transient failure"))
                 } else {
-                    Ok(())
+                    Ok("Success after retries")
                 }
-            })
-            .await;
+            }
+        })
+        .await;
 
-        match result {
-            Ok(_) => {
-                hooks.emit(PatternEvent::Succeeded {
-                    pattern: "circuit_breaker".to_string(),
-                    operation: format!("attempt_{}", i),
-                    duration: Duration::from_millis(5),
-                });
-                println!("✓ Circuit breaker attempt {}: success", i);
-            }
-            Err(e) => {
-                hooks.emit(PatternEvent::Failed {
-                    pattern: "circuit_breaker".to_string(),
-                    operation: format!("attempt_{}", i),
-                    error: e.to_string(),
-                    duration: Duration::from_millis(5),
-                });
-                println!("✗ Circuit breaker attempt {}: {}", i, e);
-            }
-        }
+    match retry_result {
+        Ok((data, _stats)) => println!(
+            "  ✓ Retry succeeded: {} (after {} attempts)",
+            data,
+            attempt_counter.load(std::sync::atomic::Ordering::SeqCst)
+        ),
+        Err(e) => println!("  ✗ Retry failed: {}", e),
     }
 
-    // Check circuit state
-    let state = cb.state().await;
-    println!("\nCircuit breaker state: {:?}", state);
+    println!("\n✓ Observability demonstration completed!");
+    println!("  - Event emission works correctly");
+    println!("  - Integration with ResilienceManager verified");
 
-    hooks.emit(PatternEvent::CircuitBreakerStateChanged {
-        service: "test".to_string(),
-        from_state: "closed".to_string(),
-        to_state: format!("{:?}", state),
-    });
-
-    println!("\n6. Final metrics summary:\n");
-
-    let final_metrics = metrics_hook.metrics();
-    println!("Total metrics collected: {}", final_metrics.len());
-
-    for (name, snapshot) in final_metrics.iter() {
-        if snapshot.count > 0 {
-            println!(
-                "  {} -> {} events (avg: {:.2}ms)",
-                name, snapshot.count, snapshot.avg
-            );
-        }
-    }
-
-    // Cleanup
-    hooks.shutdown();
-
-    println!("\n=== Demo completed successfully! ===");
     Ok(())
 }

@@ -3,7 +3,7 @@
 //! This example demonstrates the type-safe builder pattern for creating
 //! dynamic configurations at compile time.
 
-use nebula_resilience::{ConfigError, DynamicConfigBuilder};
+use nebula_resilience::{ConfigError, core::DynamicConfigBuilder};
 use std::time::Duration;
 
 fn main() -> Result<(), ConfigError> {

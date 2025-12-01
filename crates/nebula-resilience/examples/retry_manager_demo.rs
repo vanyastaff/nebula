@@ -1,13 +1,10 @@
 //! Retry Strategies and Manager Integration Demonstration
 //!
 //! This example demonstrates various retry strategies and the resilience manager
-//! with the fixes for delay calculations and optimized performance.
+//! with type-safe const generic APIs.
 
-use nebula_resilience::{
-    BulkheadConfig, CircuitBreakerConfig, PolicyBuilder, ResilienceError, ResilienceManager,
-    ResilienceResult, RetryStrategy,
-};
-use std::future::Future;
+use nebula_resilience::prelude::*;
+use nebula_resilience::{PolicyBuilder, ResilienceManager};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -54,6 +51,7 @@ impl RetryableService {
         }
     }
 
+    #[allow(dead_code)]
     fn reset(&self) {
         self.failure_count.store(0, Ordering::SeqCst);
     }
@@ -64,351 +62,244 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🔄 Retry Strategies and Manager Demo");
     println!("===================================");
 
-    // Test 1: Fixed Delay Retry Strategy
-    println!("\n📊 Test 1: Fixed Delay Retry Strategy");
+    // Test 1: Exponential Retry Strategy with Const Generics
+    println!("\n📊 Test 1: Exponential Retry Strategy (Const Generics)");
 
-    let fixed_strategy = RetryStrategy::fixed_delay(3, Duration::from_millis(100));
-    println!("  ✅ Created fixed delay strategy (3 attempts, 100ms delay)");
+    // Type-safe retry: MAX_ATTEMPTS = 3
+    let exp_strategy = exponential_retry::<3>()?;
+    println!("  ✅ Created exponential retry strategy (3 attempts)");
 
-    let service = RetryableService::new("FixedDelayService", 2);
+    let service = RetryableService::new("ExponentialService", 2);
     let start = Instant::now();
 
-    println!("  🧪 Testing fixed delay retry...");
-    for attempt in 1..=3 {
-        if let Some(delay) = fixed_strategy.delay_for_attempt(attempt) {
-            println!("    ⏳ Delay for attempt {}: {:?}", attempt, delay);
-        }
-    }
-
-    // Test actual retry with the service
-    let result = retry_with_strategy(&fixed_strategy, || service.call()).await;
+    println!("  🧪 Testing exponential retry...");
+    let result = exp_strategy.execute_resilient(|| service.call()).await;
     let elapsed = start.elapsed();
 
     match result {
-        Ok(value) => println!(
+        Ok((value, _stats)) => println!(
+            "  ✅ Exponential retry succeeded: {} (took {:?})",
+            value, elapsed
+        ),
+        Err(e) => println!("  ❌ Exponential retry failed: {}", e),
+    }
+
+    // Test 2: Fixed Delay Strategy
+    println!("\n📊 Test 2: Fixed Delay Strategy");
+
+    // Type-safe: DELAY_MS = 100, MAX_ATTEMPTS = 3
+    let fixed_strategy = fixed_retry::<100, 3>()?;
+    println!("  ✅ Created fixed delay strategy (3 attempts, 100ms delay)");
+
+    let service2 = RetryableService::new("FixedDelayService", 2);
+    let start = Instant::now();
+
+    let result = fixed_strategy.execute_resilient(|| service2.call()).await;
+    let elapsed = start.elapsed();
+
+    match result {
+        Ok((value, _stats)) => println!(
             "  ✅ Fixed delay retry succeeded: {} (took {:?})",
             value, elapsed
         ),
         Err(e) => println!("  ❌ Fixed delay retry failed: {}", e),
     }
 
-    // Test 2: Linear Backoff Strategy
-    println!("\n📊 Test 2: Linear Backoff Strategy");
+    // Test 3: Aggressive Retry Strategy
+    println!("\n📊 Test 3: Aggressive Retry Strategy");
 
-    let linear_strategy = RetryStrategy::linear_backoff(4, Duration::from_millis(50));
-    println!("  ✅ Created linear backoff strategy (4 attempts, 50ms base)");
+    let aggressive_strategy = aggressive_retry::<5>()?;
+    println!("  ✅ Created aggressive retry strategy (5 attempts)");
 
-    println!("  🧪 Testing linear backoff delays...");
-    for attempt in 1..=4 {
-        if let Some(delay) = linear_strategy.delay_for_attempt(attempt) {
-            println!("    ⏳ Delay for attempt {}: {:?}", attempt, delay);
-        }
-    }
-
-    let service2 = RetryableService::new("LinearBackoffService", 3);
+    let service3 = RetryableService::new("AggressiveService", 4);
     let start = Instant::now();
 
-    let result = retry_with_strategy(&linear_strategy, || service2.call()).await;
+    let result = aggressive_strategy
+        .execute_resilient(|| service3.call())
+        .await;
     let elapsed = start.elapsed();
 
     match result {
-        Ok(value) => println!(
-            "  ✅ Linear backoff retry succeeded: {} (took {:?})",
+        Ok((value, _stats)) => println!(
+            "  ✅ Aggressive retry succeeded: {} (took {:?})",
             value, elapsed
         ),
-        Err(e) => println!("  ❌ Linear backoff retry failed: {}", e),
+        Err(e) => println!("  ❌ Aggressive retry failed: {}", e),
     }
 
-    // Test 3: Exponential Backoff Strategy (Fixed Bug)
-    println!("\n📊 Test 3: Exponential Backoff Strategy (Bug Fixed)");
+    // Test 4: Circuit Breaker + Retry Combination
+    println!("\n📊 Test 4: Circuit Breaker + Retry Combination");
 
-    let exp_strategy = RetryStrategy::exponential_backoff(4, Duration::from_millis(25));
-    println!("  ✅ Created exponential backoff strategy (4 attempts, 25ms base)");
+    let circuit_breaker = CircuitBreaker::<3, 5000>::with_defaults()?;
+    let retry = exponential_retry::<3>()?;
+    println!("  ✅ Created circuit breaker (3 failures, 5s reset) + retry (3 attempts)");
 
-    println!("  🧪 Testing exponential backoff delays (bug fix verification)...");
-    for attempt in 1..=4 {
-        if let Some(delay) = exp_strategy.delay_for_attempt(attempt) {
-            println!("    ⏳ Delay for attempt {}: {:?}", attempt, delay);
-        } else {
-            println!(
-                "    ❌ No delay for attempt {} (this was the bug!)",
-                attempt
-            );
-        }
-    }
-
-    let service3 = RetryableService::new("ExponentialService", 2);
+    let service4 = RetryableService::new("CombinedService", 2);
     let start = Instant::now();
 
-    let result = retry_with_strategy(&exp_strategy, || service3.call()).await;
+    let result = circuit_breaker
+        .execute(|| {
+            let retry_ref = &retry;
+            async move { retry_ref.execute_resilient(|| service4.call()).await }
+        })
+        .await;
     let elapsed = start.elapsed();
 
     match result {
-        Ok(value) => println!(
-            "  ✅ Exponential backoff retry succeeded: {} (took {:?})",
+        Ok((value, _stats)) => println!(
+            "  ✅ Combined pattern succeeded: {} (took {:?})",
             value, elapsed
         ),
-        Err(e) => println!("  ❌ Exponential backoff retry failed: {}", e),
-    }
-
-    // Test 4: Custom Delays Strategy
-    println!("\n📊 Test 4: Custom Delays Strategy");
-
-    let custom_delays = vec![
-        Duration::from_millis(10),
-        Duration::from_millis(50),
-        Duration::from_millis(200),
-        Duration::from_millis(500),
-    ];
-    let custom_strategy = RetryStrategy::custom_delays(custom_delays.clone());
-    println!("  ✅ Created custom delays strategy: {:?}", custom_delays);
-
-    println!("  🧪 Testing custom delays...");
-    for attempt in 1..=5 {
-        if let Some(delay) = custom_strategy.delay_for_attempt(attempt) {
-            println!("    ⏳ Delay for attempt {}: {:?}", attempt, delay);
-        } else {
-            println!("    🚫 No more delays for attempt {}", attempt);
-        }
+        Err(e) => println!("  ❌ Combined pattern failed: {}", e),
     }
 
     // Test 5: Resilience Manager Integration
-    println!("\n📊 Test 5: Resilience Manager with Optimized Locking");
+    println!("\n📊 Test 5: Resilience Manager with Policy Builder");
 
-    let manager = ResilienceManager::new(
-        PolicyBuilder::new()
-            .with_timeout(Duration::from_secs(5))
-            .with_retry(RetryStrategy::exponential_backoff(
-                3,
-                Duration::from_millis(100),
-            ))
-            .build(),
-    );
+    let policy = PolicyBuilder::new()
+        .with_timeout(Duration::from_secs(5))
+        .with_retry_exponential(3, Duration::from_millis(100))
+        .build();
 
-    // Register different policies for different services
-    manager
-        .register_service(
-            "database",
-            PolicyBuilder::new()
-                .with_timeout(Duration::from_secs(2))
-                .with_retry(RetryStrategy::exponential_backoff(
-                    5,
-                    Duration::from_millis(200),
-                ))
-                .with_circuit_breaker(CircuitBreakerConfig {
-                    failure_threshold: 3,
-                    reset_timeout: Duration::from_secs(30),
-                    half_open_max_operations: 2,
-                    count_timeouts: true,
-                })
-                .build(),
-        )
-        .await;
+    let manager = ResilienceManager::new(policy);
+    println!("  ✅ Created resilience manager with default policy");
 
-    manager
-        .register_service(
-            "cache",
-            PolicyBuilder::new()
-                .with_timeout(Duration::from_millis(500))
-                .with_retry(RetryStrategy::fixed_delay(2, Duration::from_millis(50)))
-                .with_bulkhead(BulkheadConfig {
-                    max_concurrency: 10,
-                    queue_size: 100,
-                    timeout: Some(Duration::from_secs(1)),
-                })
-                .build(),
-        )
-        .await;
+    // Register a database policy
+    let db_policy = PolicyBuilder::new()
+        .with_timeout(Duration::from_secs(2))
+        .with_retry_exponential(5, Duration::from_millis(200))
+        .build();
 
-    println!("  ✅ Configured resilience manager with multiple service policies");
+    manager.register_service("database", db_policy).await;
+    println!("  ✅ Registered database service with custom policy");
 
-    // Test database service
-    println!("  🧪 Testing database service with circuit breaker...");
-    let db_service = Arc::new(RetryableService::new("DatabaseService", 2));
+    // Register an API policy
+    let api_policy = PolicyBuilder::new()
+        .with_timeout(Duration::from_secs(10))
+        .with_retry_fixed(2, Duration::from_millis(500))
+        .build();
 
-    let db_service_clone = db_service.clone();
-    let result = manager
-        .execute("database", "query", move || {
-            let service = db_service_clone.clone();
-            async move { service.call().await }
-        })
-        .await;
+    manager.register_service("external_api", api_policy).await;
+    println!("  ✅ Registered external_api service with custom policy");
 
-    match result {
-        Ok(value) => println!("    ✅ Database operation succeeded: {}", value),
-        Err(e) => println!("    ❌ Database operation failed: {}", e),
-    }
+    // Test 6: Concurrent Retry Operations
+    println!("\n📊 Test 6: Concurrent Retry Operations");
 
-    // Test cache service
-    println!("  🧪 Testing cache service with bulkhead...");
-    let cache_service = Arc::new(RetryableService::new("CacheService", 1));
-
-    let cache_service_clone = cache_service.clone();
-    let result = manager
-        .execute("cache", "get", move || {
-            let service = cache_service_clone.clone();
-            async move { service.call().await }
-        })
-        .await;
-
-    match result {
-        Ok(value) => println!("    ✅ Cache operation succeeded: {}", value),
-        Err(e) => println!("    ❌ Cache operation failed: {}", e),
-    }
-
-    // Test 6: Concurrent Operations with Manager
-    println!("\n📊 Test 6: Concurrent Operations with Optimized Manager");
-
-    let concurrent_manager = Arc::new(manager);
+    let concurrent_strategy = Arc::new(exponential_retry::<3>()?);
     let mut handles = vec![];
 
-    println!("  🧪 Starting 10 concurrent operations...");
+    println!("  🧪 Starting 5 concurrent retry operations...");
 
-    for i in 0..10 {
-        let manager = concurrent_manager.clone();
+    for i in 1..=5 {
+        let strategy = Arc::clone(&concurrent_strategy);
         let handle = tokio::spawn(async move {
-            let service = Arc::new(RetryableService::new(format!("ConcurrentService{}", i), 1));
+            let service = RetryableService::new(format!("Concurrent-{}", i), 1);
+            let start = Instant::now();
 
-            let service_clone = service.clone();
-            let result = manager
-                .execute("database", "concurrent_query", move || {
-                    let srv = service_clone.clone();
-                    async move { srv.call().await }
-                })
-                .await;
+            let result = strategy.execute_resilient(|| service.call()).await;
+            let elapsed = start.elapsed();
 
             match result {
-                Ok(_) => print!("✅"),
-                Err(_) => print!("❌"),
+                Ok((value, _stats)) => {
+                    println!("    ✅ {} completed in {:?}", value, elapsed);
+                    Ok(())
+                }
+                Err(e) => {
+                    println!("    ❌ Concurrent-{} failed: {}", i, e);
+                    Err(e)
+                }
             }
         });
         handles.push(handle);
     }
 
+    // Wait for all concurrent operations
     for handle in handles {
-        handle.await?;
+        let _ = handle.await;
     }
-    println!(" (concurrent operations completed)");
 
-    // Test 7: Performance Benchmarking
-    println!("\n📊 Test 7: Performance Benchmarking");
+    // Test 7: Retry with Statistics
+    println!("\n📊 Test 7: Retry with Statistics");
 
-    let perf_manager = ResilienceManager::with_defaults();
-    let operations = 1000;
+    let stats_strategy = exponential_retry::<4>()?;
+    let service7 = RetryableService::new("StatsService", 3);
+
+    println!("  🧪 Testing retry with statistics collection...");
     let start = Instant::now();
 
+    let result = stats_strategy.execute(|| service7.call()).await;
+    let elapsed = start.elapsed();
+
+    match result {
+        Ok((value, stats)) => {
+            println!("  ✅ Operation succeeded: {}", value);
+            println!("    📊 Total attempts: {}", stats.total_attempts);
+            println!("    📊 Total duration: {:?}", stats.total_duration);
+            println!("    📊 Total elapsed: {:?}", elapsed);
+        }
+        Err(e) => println!("  ❌ Operation failed: {}", e),
+    }
+
+    // Test 8: Error Classification
+    println!("\n📊 Test 8: Error Classification");
+
+    let retryable_error = ResilienceError::Custom {
+        message: "Temporary network error".to_string(),
+        retryable: true,
+        source: None,
+    };
+
+    let terminal_error = ResilienceError::Custom {
+        message: "Authentication failed".to_string(),
+        retryable: false,
+        source: None,
+    };
+
+    println!("  🧪 Testing error classification...");
     println!(
-        "  ⚡ Running {} operations for performance test...",
-        operations
+        "    Retryable error is_retryable: {}",
+        retryable_error.is_retryable()
+    );
+    println!(
+        "    Terminal error is_retryable: {}",
+        terminal_error.is_retryable()
+    );
+    println!(
+        "    Retryable error is_terminal: {}",
+        retryable_error.is_terminal()
+    );
+    println!(
+        "    Terminal error is_terminal: {}",
+        terminal_error.is_terminal()
     );
 
-    for _ in 0..operations {
-        let _ = perf_manager
-            .execute("default", "perf_test", || async {
-                Ok::<String, ResilienceError>("perf_result".to_string())
-            })
-            .await;
+    // Test 9: Standard Configuration Aliases
+    println!("\n📊 Test 9: Standard Configuration Aliases");
+
+    let standard_cb = StandardCircuitBreaker::default();
+    let _fast_cb = FastCircuitBreaker::default();
+    let _slow_cb = SlowCircuitBreaker::default();
+
+    println!("  ✅ StandardCircuitBreaker: 5 failures, 30s reset");
+    println!("  ✅ FastCircuitBreaker: 3 failures, 10s reset");
+    println!("  ✅ SlowCircuitBreaker: 10 failures, 60s reset");
+
+    // Quick test with standard breaker
+    let result = standard_cb
+        .execute(|| async { Ok::<_, ResilienceError>("Quick test") })
+        .await;
+
+    match result {
+        Ok(value) => println!("  ✅ Standard breaker test: {}", value),
+        Err(e) => println!("  ❌ Standard breaker failed: {}", e),
     }
-
-    let elapsed = start.elapsed();
-    let throughput = operations as f64 / elapsed.as_secs_f64();
-
-    println!("  📊 Completed {} operations in {:?}", operations, elapsed);
-    println!("  📈 Throughput: {:.2} operations/second", throughput);
-
-    // Test 8: Error Classification and Retry Logic
-    println!("\n📊 Test 8: Error Classification and Retry Logic");
-
-    let error_strategy = RetryStrategy::exponential_backoff(3, Duration::from_millis(50));
-
-    let error_types = vec![
-        (
-            "Transient Error",
-            ResilienceError::Timeout {
-                duration: Duration::from_secs(1),
-                context: Some("Network timeout".to_string()),
-            },
-        ),
-        (
-            "Permanent Error",
-            ResilienceError::InvalidConfig {
-                message: "Invalid configuration".to_string(),
-            },
-        ),
-        (
-            "Custom Retryable",
-            ResilienceError::Custom {
-                message: "Custom retryable error".to_string(),
-                retryable: true,
-                source: None,
-            },
-        ),
-        (
-            "Custom Non-Retryable",
-            ResilienceError::Custom {
-                message: "Custom permanent error".to_string(),
-                retryable: false,
-                source: None,
-            },
-        ),
-    ];
-
-    for (name, error) in error_types {
-        let should_retry = error_strategy.should_retry(&error);
-        let error_class = error.classify();
-        println!(
-            "  🧪 {}: should_retry={}, class={:?}",
-            name, should_retry, error_class
-        );
-    }
-
-    // Test 9: Manager Metrics and Service Listing
-    println!("\n📊 Test 9: Manager Statistics");
-
-    println!("  📋 Manager configured with multiple policies");
-    println!("  📊 Manager statistics tracking all operations");
 
     println!("\n🎉 Retry and Manager Demo Completed Successfully!");
     println!("   ✅ All retry strategies working");
-    println!("   ✅ Exponential backoff bug fixed");
-    println!("   ✅ Manager optimizations active");
+    println!("   ✅ Const generic type safety verified");
+    println!("   ✅ Manager integration working");
     println!("   ✅ Error classification working");
     println!("   ✅ Concurrent operations safe");
 
     Ok(())
-}
-
-// Helper function to implement retry logic manually for demonstration
-async fn retry_with_strategy<F, Fut, T>(
-    strategy: &RetryStrategy,
-    operation: F,
-) -> ResilienceResult<T>
-where
-    F: Fn() -> Fut,
-    Fut: Future<Output = ResilienceResult<T>>,
-{
-    let mut last_error = None;
-
-    for attempt in 1..=strategy.max_attempts {
-        match operation().await {
-            Ok(result) => return Ok(result),
-            Err(error) => {
-                if attempt == strategy.max_attempts || !strategy.should_retry(&error) {
-                    return Err(error);
-                }
-
-                last_error = Some(error);
-
-                if let Some(delay) = strategy.delay_for_attempt(attempt) {
-                    sleep(delay).await;
-                }
-            }
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| ResilienceError::Custom {
-        message: "Retry failed".to_string(),
-        retryable: false,
-        source: None,
-    }))
 }

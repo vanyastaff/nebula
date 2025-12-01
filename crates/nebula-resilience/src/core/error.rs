@@ -9,6 +9,7 @@ use std::time::Duration;
 
 /// Core resilience errors
 #[derive(Debug)]
+#[must_use = "ResilienceError should be returned or handled"]
 pub enum ResilienceError {
     /// Operation timed out
     Timeout {
@@ -335,6 +336,7 @@ impl ResilienceError {
 
 /// Context for errors
 #[derive(Debug, Clone)]
+#[must_use = "ErrorContext should be used to provide error context"]
 pub struct ErrorContext {
     /// Service name
     pub service: String,

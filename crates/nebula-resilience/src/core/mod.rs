@@ -2,13 +2,26 @@
 //!
 //! This module provides the fundamental building blocks used throughout
 //! the library, including error types, traits, metrics, and configuration.
+//!
+//! # Module Overview
+//!
+//! - [`advanced`] - Advanced type system features (typestate, GADTs, variance)
+//! - [`category`] - Sealed category traits for pattern classification
+//! - [`config`] - Configuration management and validation
+//! - [`traits`] - Core resilience traits and abstractions
+//! - [`types`] - Type-safe newtypes for configuration values
 
+pub mod advanced;
+pub mod cancellation;
+pub mod categories;
+pub mod category;
 pub mod config;
 pub mod dynamic;
 mod error;
 mod metrics;
 mod result;
-mod traits;
+pub mod traits;
+pub mod types;
 
 // Re-export primary types
 pub use config::{
@@ -31,8 +44,60 @@ pub use error::{ErrorClass, ErrorContext, ResilienceError};
 pub use metrics::{MetricKind, MetricSnapshot, Metrics, MetricsCollector};
 pub use result::{AsyncResultExt, ErrorCollector, ResilienceResult, ResultExt};
 pub use traits::{
-    CircuitState, Executable, HealthCheck, PatternMetrics, ResiliencePattern, Retryable,
+    Executable, HealthCheck, PatternMetrics, ResiliencePattern, Retryable,
+    circuit_states::{Closed, HalfOpen, Open, StateTransition, TypestateCircuitState},
 };
+
+// Re-export advanced type system features
+pub use advanced::{
+    Aggressive,
+    Balanced,
+    Complete,
+    ComposedPolicy,
+    Conservative,
+    // Const-validated configs
+    ConstValidated,
+    Contravariant,
+    // Variance markers
+    Covariant,
+    Failure,
+    Invariant,
+    OperationHandle,
+    // GADT-like patterns
+    OperationOutcome,
+    Pending,
+    // Typestate pattern
+    PolicyBuilder,
+    // Strategy markers
+    Strategy,
+    StrategyConfig,
+    Success,
+    Unconfigured,
+    ValidatedRetryConfig,
+    WithCircuitBreaker,
+    WithRetry,
+};
+
+// Re-export type-safe newtypes
+pub use types::{
+    DurationExt, FailureThreshold, MaxConcurrency, RateLimit, ResilienceResultExt, RetryCount,
+    Timeout as TimeoutNewtype,
+};
+
+// Re-export cancellation support
+pub use cancellation::{
+    CancellableFuture, CancellationContext, CancellationExt, ShutdownCoordinator,
+};
+
+// Re-export unified categories
+pub use categories::{
+    Category, PatternCategory, ServiceCategory,
+    pattern::{Fallback, FlowControl, Protection, Retry, Timeout as TimeoutCategory},
+    service::{Cache, Database, Generic, Http, MessageQueue},
+};
+
+// Re-export category traits
+pub use category::{FallbackPattern, FlowControlPattern, ProtectionPattern, RateLimitingPattern};
 
 /// Core constants
 pub mod constants {

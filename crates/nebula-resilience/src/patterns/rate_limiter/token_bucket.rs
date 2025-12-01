@@ -1,6 +1,7 @@
 //! Token bucket rate limiter implementation
 
 use async_trait::async_trait;
+use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -15,6 +16,7 @@ use crate::{ResilienceError, ResilienceResult};
 /// Tokens are added at a constant rate and consumed by operations.
 ///
 /// # Security
+///
 /// - Maximum capacity limited to 100,000 to prevent memory exhaustion
 /// - Refill rate clamped between 0.001 and 10,000 req/sec
 ///
@@ -36,6 +38,17 @@ pub struct TokenBucket {
     last_refill: Arc<Mutex<Instant>>,
     /// Burst size
     burst_size: usize,
+}
+
+// C-DEBUG: All public types implement Debug
+impl fmt::Debug for TokenBucket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokenBucket")
+            .field("capacity", &self.capacity)
+            .field("refill_rate", &self.refill_rate)
+            .field("burst_size", &self.burst_size)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TokenBucket {

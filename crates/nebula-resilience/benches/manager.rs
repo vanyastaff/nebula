@@ -153,8 +153,12 @@ fn manager_execute_overhead(c: &mut Criterion) {
         let manager = ResilienceManager::with_defaults();
 
         rt.block_on(async {
+            let retry_config = nebula_resilience::patterns::retry::RetryConfig::new(
+                nebula_resilience::patterns::retry::FixedDelay::<100>::default(),
+                nebula_resilience::patterns::retry::ConservativeCondition::<3>::new(),
+            );
             let retry_strategy =
-                nebula_resilience::RetryStrategy::fixed_delay(3, Duration::from_millis(100));
+                nebula_resilience::patterns::retry::RetryStrategy::new(retry_config).unwrap();
             let policy = ResiliencePolicy::default()
                 .with_timeout(Duration::from_secs(5))
                 .with_retry(retry_strategy);

@@ -1,0 +1,520 @@
+# Nebula Framework - Complete Architecture Documentation
+## Part 2: Core Traits & Widget System (nebula_core)
+
+---
+
+## 🎯 Core Traits
+
+### Widget Trait (`widget.rs`)
+
+```rust
+use std::any::Any;
+use std::fmt::Debug;
+
+/// Widget - immutable configuration for an Element
+pub trait Widget: Any + Debug + Send + Sync {
+    /// Create the Element that manages this widget
+    fn create_element(&self) -> Box<dyn Element>;
+    
+    /// Optional key for widget identity
+    fn key(&self) -> Option<&dyn Key> { None }
+    
+    /// Type name for debugging
+    fn debug_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+    
+    /// Cast to Any for downcasting
+    fn as_any(&self) -> &dyn Any;
+}
+
+/// Helper trait for converting to Widget
+pub trait IntoWidget {
+    fn into_widget(self) -> Box<dyn Widget>;
+}
+
+impl<T: Widget + 'static> IntoWidget for T {
+    fn into_widget(self) -> Box<dyn Widget> {
+        Box::new(self)
+    }
+}
+
+// Example implementation
+#[derive(Debug, Clone)]
+pub struct Container {
+    pub key: Option<Box<dyn Key>>,
+    pub child: Option<Box<dyn Widget>>,
+}
+
+impl Widget for Container {
+    fn create_element(&self) -> Box<dyn Element> {
+        Box::new(SingleChildElement::new(self))
+    }
+    
+    fn key(&self) -> Option<&dyn Key> {
+        self.key.as_ref().map(|k| k.as_ref())
+    }
+    
+    fn as_any(&self) -> &dyn Any { self }
+}
+```
+
+---
+
+### Element Trait (`element.rs`)
+
+```rust
+/// Element - mutable state in the tree
+pub trait Element: Any + Debug {
+    // === Lifecycle ===
+    
+    /// Mount this element into the tree
+    fn mount(&mut self, parent: Option<ElementId>, slot: usize);
+    
+    /// Unmount and clean up
+    fn unmount(&mut self);
+    
+    /// Update with new widget configuration
+    fn update(&mut self, new_widget: Box<dyn Widget>);
+    
+    /// Rebuild this element (dirty check)
+    fn rebuild(&mut self);
+    
+    // === Accessors ===
+    
+    /// Get unique element ID
+    fn id(&self) -> ElementId;
+    
+    /// Get current widget
+    fn widget(&self) -> &dyn Widget;
+    
+    /// Get render object (if any)
+    fn render_object(&self) -> Option<&dyn RenderObject> { None }
+    
+    /// Get render object mutably
+    fn render_object_mut(&mut self) -> Option<&mut dyn RenderObject> { None }
+    
+    /// Is this element dirty?
+    fn is_dirty(&self) -> bool;
+    
+    /// Mark this element as needing rebuild
+    fn mark_needs_build(&mut self);
+    
+    // === Tree Navigation ===
+    
+    /// Visit children elements
+    fn visit_children(&self, visitor: &mut dyn FnMut(&dyn Element));
+    
+    /// Visit children mutably
+    fn visit_children_mut(&mut self, visitor: &mut dyn FnMut(&mut dyn Element));
+    
+    /// Get parent element ID
+    fn parent(&self) -> Option<ElementId>;
+    
+    // === BuildContext ===
+    
+    /// Create BuildContext for this element
+    fn create_build_context(&self) -> BuildContext;
+}
+
+/// Element ID - unique identifier
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ElementId(u64);
+
+impl ElementId {
+    pub fn new() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        Self(COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// Element kinds
+pub enum ElementKind {
+    ComponentElement,    // StatelessWidget, StatefulWidget
+    RenderObjectElement, // Container, Padding, etc.
+    LeafElement,         // Text, Image
+}
+```
+
+---
+
+### Element Tree (`element.rs`)
+
+```rust
+use std::collections::HashMap;
+
+/// Element tree manager
+pub struct ElementTree {
+    root: Option<Box<dyn Element>>,
+    elements: HashMap<ElementId, *mut dyn Element>,
+    dirty: Vec<ElementId>,
+    build_owner: BuildOwner,
+}
+
+impl ElementTree {
+    pub fn new() -> Self {
+        Self {
+            root: None,
+            elements: HashMap::new(),
+            dirty: Vec::new(),
+            build_owner: BuildOwner::new(),
+        }
+    }
+    
+    /// Mount root widget
+    pub fn mount_root(&mut self, widget: Box<dyn Widget>) {
+        let mut element = widget.create_element();
+        element.mount(None, 0);
+        
+        let id = element.id();
+        let ptr = &mut *element as *mut dyn Element;
+        self.elements.insert(id, ptr);
+        self.root = Some(element);
+    }
+    
+    /// Mark element as dirty
+    pub fn mark_dirty(&mut self, id: ElementId) {
+        if !self.dirty.contains(&id) {
+            self.dirty.push(id);
+        }
+    }
+    
+    /// Rebuild all dirty elements
+    pub fn rebuild_dirty(&mut self) {
+        // Sort dirty elements by depth (parent before child)
+        self.dirty.sort_by_key(|id| self.depth_of(*id));
+        
+        for id in self.dirty.drain(..) {
+            if let Some(element_ptr) = self.elements.get(&id) {
+                unsafe {
+                    (&mut **element_ptr).rebuild();
+                }
+            }
+        }
+    }
+    
+    /// Get element depth in tree
+    fn depth_of(&self, id: ElementId) -> usize {
+        // Walk up to root counting depth
+        unimplemented!()
+    }
+    
+    /// Check if there are dirty elements
+    pub fn has_dirty_elements(&self) -> bool {
+        !self.dirty.is_empty()
+    }
+}
+
+/// Build owner - manages build scope
+pub struct BuildOwner {
+    global_key_registry: HashMap<GlobalKeyId, (*mut dyn Any, BuildContext)>,
+    focus_manager: FocusManager,
+}
+
+impl BuildOwner {
+    pub fn new() -> Self {
+        Self {
+            global_key_registry: HashMap::new(),
+            focus_manager: FocusManager::new(),
+        }
+    }
+    
+    /// Register global key
+    pub fn register_global_key<T: 'static>(
+        &mut self, 
+        key: GlobalKeyId, 
+        state: &mut T,
+        context: BuildContext
+    ) {
+        let ptr = state as *mut T as *mut dyn Any;
+        self.global_key_registry.insert(key, (ptr, context));
+    }
+    
+    /// Get state by global key
+    pub fn get_state<T: 'static>(&self, key: GlobalKeyId) -> Option<&T> {
+        self.global_key_registry.get(&key)
+            .and_then(|(ptr, _)| unsafe { (*ptr as *const dyn Any).downcast_ref::<T>() })
+    }
+}
+```
+
+---
+
+### BuildContext (`build_context.rs`)
+
+```rust
+use std::sync::{Arc, RwLock};
+
+/// BuildContext - provides access to element tree
+#[derive(Clone)]
+pub struct BuildContext {
+    element_id: ElementId,
+    tree: Arc<RwLock<ElementTree>>,
+}
+
+impl BuildContext {
+    pub fn new(element_id: ElementId, tree: Arc<RwLock<ElementTree>>) -> Self {
+        Self { element_id, tree }
+    }
+    
+    /// Find ancestor widget of type T
+    pub fn find_ancestor_widget<T: Widget + 'static>(&self) -> Option<Arc<T>> {
+        let tree = self.tree.read().unwrap();
+        // Walk up tree looking for T
+        unimplemented!()
+    }
+    
+    /// Find ancestor element of type T
+    pub fn find_ancestor_element<T: Element + 'static>(&self) -> Option<&T> {
+        unimplemented!()
+    }
+    
+    /// Find render object
+    pub fn find_render_object(&self) -> Option<&dyn RenderObject> {
+        let tree = self.tree.read().unwrap();
+        tree.elements.get(&self.element_id)
+            .and_then(|ptr| unsafe { (&**ptr).render_object() })
+    }
+    
+    /// Depend on InheritedWidget
+    pub fn depend_on_inherited<T: InheritedWidget + 'static>(&self) -> Option<Arc<T>> {
+        // Walk up tree looking for InheritedWidget of type T
+        // Register dependency
+        unimplemented!()
+    }
+    
+    /// Get size after layout
+    pub fn size(&self) -> Option<Size> {
+        self.find_render_object()
+            .map(|obj| obj.size())
+    }
+    
+    /// Mark this element as needing build
+    pub fn mark_dirty(&self) {
+        self.tree.write().unwrap().mark_dirty(self.element_id);
+    }
+}
+```
+
+---
+
+### RenderObject Trait (`render_object.rs`)
+
+```rust
+use nebula_painting::*;
+
+/// RenderObject - layout and paint
+pub trait RenderObject: Any + Debug {
+    // === Layout ===
+    
+    /// Perform layout with constraints
+    fn layout(&mut self, constraints: BoxConstraints) -> Size;
+    
+    /// Get computed size
+    fn size(&self) -> Size;
+    
+    /// Get intrinsic width
+    fn get_min_intrinsic_width(&self, height: f32) -> f32 { 0.0 }
+    fn get_max_intrinsic_width(&self, height: f32) -> f32 { f32::INFINITY }
+    
+    /// Get intrinsic height
+    fn get_min_intrinsic_height(&self, width: f32) -> f32 { 0.0 }
+    fn get_max_intrinsic_height(&self, width: f32) -> f32 { f32::INFINITY }
+    
+    // === Paint ===
+    
+    /// Paint this render object
+    fn paint(&self, painter: &egui::Painter, offset: Offset);
+    
+    /// Apply effects before painting
+    fn apply_paint_transform(&self, child: &dyn RenderObject, transform: &mut Transform);
+    
+    // === Hit Testing ===
+    
+    /// Hit test at position
+    fn hit_test(&self, position: Offset) -> bool { false }
+    
+    /// Hit test children
+    fn hit_test_children(&self, position: Offset) -> bool { false }
+    
+    // === Tree ===
+    
+    /// Visit children render objects
+    fn visit_children(&self, visitor: &mut dyn FnMut(&dyn RenderObject));
+    
+    /// Visit children mutably
+    fn visit_children_mut(&mut self, visitor: &mut dyn FnMut(&mut dyn RenderObject));
+    
+    // === Semantics ===
+    
+    /// Describe semantics
+    fn describe_semantics(&self, config: &mut SemanticsConfiguration) {}
+    
+    // === Debug ===
+    
+    /// Get debug properties
+    fn debug_paint(&self, painter: &egui::Painter, offset: Offset) {
+        if K_DEBUG_MODE {
+            // Draw debug bounds
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(offset.x, offset.y),
+                egui::vec2(self.size().width, self.size().height),
+            );
+            painter.rect_stroke(rect, 0.0, (1.0, egui::Color32::RED));
+        }
+    }
+}
+
+/// Box constraints (Flutter's protocol)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoxConstraints {
+    pub min_width: f32,
+    pub max_width: f32,
+    pub min_height: f32,
+    pub max_height: f32,
+}
+
+impl BoxConstraints {
+    pub fn tight(size: Size) -> Self {
+        Self {
+            min_width: size.width,
+            max_width: size.width,
+            min_height: size.height,
+            max_height: size.height,
+        }
+    }
+    
+    pub fn loose(size: Size) -> Self {
+        Self {
+            min_width: 0.0,
+            max_width: size.width,
+            min_height: 0.0,
+            max_height: size.height,
+        }
+    }
+    
+    pub fn tight_for(width: f32, height: f32) -> Self {
+        Self::tight(Size::new(width, height))
+    }
+    
+    pub fn expand() -> Self {
+        Self {
+            min_width: f32::INFINITY,
+            max_width: f32::INFINITY,
+            min_height: f32::INFINITY,
+            max_height: f32::INFINITY,
+        }
+    }
+    
+    pub fn constrain(&self, size: Size) -> Size {
+        Size {
+            width: size.width.clamp(self.min_width, self.max_width),
+            height: size.height.clamp(self.min_height, self.max_height),
+        }
+    }
+    
+    pub fn is_tight(&self) -> bool {
+        self.min_width >= self.max_width && 
+        self.min_height >= self.max_height
+    }
+    
+    pub fn has_tight_width(&self) -> bool {
+        self.min_width >= self.max_width
+    }
+    
+    pub fn has_tight_height(&self) -> bool {
+        self.min_height >= self.max_height
+    }
+    
+    pub fn has_bounded_width(&self) -> bool {
+        self.max_width < f32::INFINITY
+    }
+    
+    pub fn has_bounded_height(&self) -> bool {
+        self.max_height < f32::INFINITY
+    }
+    
+    pub fn loosen(&self) -> Self {
+        Self {
+            min_width: 0.0,
+            max_width: self.max_width,
+            min_height: 0.0,
+            max_height: self.max_height,
+        }
+    }
+    
+    pub fn tighten(&self, width: Option<f32>, height: Option<f32>) -> Self {
+        Self {
+            min_width: width.unwrap_or(self.min_width).clamp(self.min_width, self.max_width),
+            max_width: width.unwrap_or(self.max_width).clamp(self.min_width, self.max_width),
+            min_height: height.unwrap_or(self.min_height).clamp(self.min_height, self.max_height),
+            max_height: height.unwrap_or(self.max_height).clamp(self.min_height, self.max_height),
+        }
+    }
+}
+```
+
+---
+
+## 🔄 Widget Update Algorithm
+
+```rust
+/// Determines if two widgets can be updated in place
+pub fn can_update(old_widget: &dyn Widget, new_widget: &dyn Widget) -> bool {
+    // Same runtime type
+    if old_widget.type_id() != new_widget.type_id() {
+        return false;
+    }
+    
+    // Check keys
+    match (old_widget.key(), new_widget.key()) {
+        (Some(k1), Some(k2)) => k1.equals(k2),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+// Element update logic
+impl SingleChildElement {
+    fn update(&mut self, new_widget: Box<dyn Widget>) {
+        let old_widget = std::mem::replace(&mut self.widget, new_widget);
+        
+        match (&mut self.child, self.widget.child()) {
+            (Some(old_child), Some(new_child)) => {
+                if can_update(old_child.widget(), new_child) {
+                    // Update in place
+                    old_child.update(new_child.clone());
+                } else {
+                    // Replace child
+                    old_child.unmount();
+                    let mut new_element = new_child.create_element();
+                    new_element.mount(Some(self.id), 0);
+                    self.child = Some(new_element);
+                }
+            }
+            (None, Some(new_child)) => {
+                // Mount new child
+                let mut element = new_child.create_element();
+                element.mount(Some(self.id), 0);
+                self.child = Some(element);
+            }
+            (Some(old_child), None) => {
+                // Remove child
+                old_child.unmount();
+                self.child = None;
+            }
+            (None, None) => {}
+        }
+        
+        // Update render object
+        if let Some(render) = &mut self.render_object {
+            render.update_with_widget(&self.widget);
+        }
+    }
+}
+```
+
+---
+
+**Next:** Part 3 - Widget Implementations & Framework

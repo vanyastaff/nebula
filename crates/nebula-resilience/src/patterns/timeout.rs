@@ -1,4 +1,6 @@
 //! Timeout management for async operations
+//!
+//! This module provides timeout functionality for limiting operation duration.
 
 use futures::Future;
 use std::time::Duration;
@@ -6,10 +8,13 @@ use tokio::time::{Timeout, timeout as tokio_timeout};
 
 use crate::{ResilienceError, ResilienceResult};
 
+// =============================================================================
+// TIMEOUT FUNCTIONS
+// =============================================================================
+
 /// Execute a future with a timeout
 ///
-/// This is the primary timeout wrapper that should be used for all I/O operations
-/// in the Nebula workflow engine.
+/// This is the primary timeout wrapper for all I/O operations.
 ///
 /// # Arguments
 ///
@@ -24,15 +29,15 @@ use crate::{ResilienceError, ResilienceResult};
 /// # Examples
 ///
 /// ```rust
-/// use nebula_resilience::timeout;
+/// use nebula_resilience::timeout_fn;
 /// use std::time::Duration;
 ///
 /// async fn example() -> Result<(), Box<dyn std::error::Error>> {
-///     let result = timeout(
+///     let result = timeout_fn(
 ///         Duration::from_secs(30),
 ///         async { /* your async operation */ }
 ///     ).await?;
-///     
+///
 ///     Ok(())
 /// }
 /// ```
@@ -47,17 +52,7 @@ where
 
 /// Create a timeout-aware future without executing it
 ///
-/// This is useful when you need to pass the timeout-wrapped future to other functions
-/// or when you want to control the execution timing.
-///
-/// # Arguments
-///
-/// * `duration` - Maximum time to wait for the operation
-/// * `future` - The async operation to wrap
-///
-/// # Returns
-///
-/// A `Timeout<F>` future that will automatically timeout after the specified duration
+/// Useful when you need to pass the timeout-wrapped future to other functions.
 pub fn with_timeout<T, F>(duration: Duration, future: F) -> Timeout<F>
 where
     F: Future<Output = T>,
@@ -68,19 +63,6 @@ where
 /// Execute a future with a timeout, converting errors to `ResilienceError`
 ///
 /// This variant converts both timeout and operation errors into `ResilienceError`.
-/// When the operation completes with an error, it's wrapped as a `Custom` error.
-/// When the timeout fires, it returns a `Timeout` error.
-///
-/// # Arguments
-///
-/// * `duration` - Maximum time to wait for the operation
-/// * `future` - The async operation to execute
-///
-/// # Returns
-///
-/// * `Ok(T)` - Operation completed successfully within timeout
-/// * `Err(ResilienceError::Custom)` - Original error from the operation (if operation completed)
-/// * `Err(ResilienceError::Timeout)` - Operation exceeded the timeout
 pub async fn timeout_with_original_error<T, E, F>(
     duration: Duration,
     future: F,
@@ -100,10 +82,61 @@ where
     }
 }
 
+// =============================================================================
+// TIMEOUT POLICIES
+// =============================================================================
+
+/// Marker trait for timeout policies.
+pub trait TimeoutPolicy: Send + Sync + 'static {
+    /// Policy name for observability.
+    fn name() -> &'static str;
+
+    /// Default timeout for this policy.
+    fn default_timeout() -> Duration;
+}
+
+/// Strict timeout policy - fails fast on timeout.
+#[derive(Debug, Clone, Copy)]
+pub struct StrictPolicy;
+
+impl TimeoutPolicy for StrictPolicy {
+    fn name() -> &'static str {
+        "strict"
+    }
+    fn default_timeout() -> Duration {
+        Duration::from_secs(5)
+    }
+}
+
+/// Lenient timeout policy - longer timeouts for slow operations.
+#[derive(Debug, Clone, Copy)]
+pub struct LenientPolicy;
+
+impl TimeoutPolicy for LenientPolicy {
+    fn name() -> &'static str {
+        "lenient"
+    }
+    fn default_timeout() -> Duration {
+        Duration::from_secs(60)
+    }
+}
+
+/// Adaptive timeout policy - adjusts based on operation type.
+#[derive(Debug, Clone, Copy)]
+pub struct AdaptivePolicy;
+
+impl TimeoutPolicy for AdaptivePolicy {
+    fn name() -> &'static str {
+        "adaptive"
+    }
+    fn default_timeout() -> Duration {
+        Duration::from_secs(30)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[tokio::test]
     async fn test_timeout_success() {
@@ -151,7 +184,6 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             ResilienceError::Custom { message, .. } => {
-                // Original error should be preserved as a Custom error
                 assert!(message.contains("operation failed"));
             }
             other => panic!("Expected Custom error, got: {:?}", other),

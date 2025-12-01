@@ -55,7 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Example 4: Using with actual resilience patterns
     println!("\n=== Example 4: With CircuitBreaker ===");
 
-    let circuit_breaker = CircuitBreaker::default();
+    // Use StandardCircuitBreaker which is a type alias for CircuitBreaker<5, 30_000>
+    let circuit_breaker = StandardCircuitBreaker::default();
 
     for i in 1..=5 {
         let result = circuit_breaker

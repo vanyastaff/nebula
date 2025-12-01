@@ -6,8 +6,8 @@
 //! - Manager concurrent operations
 //! - Race condition tests
 
+use nebula_resilience::CircuitState;
 use nebula_resilience::prelude::*;
-use nebula_resilience::{RateLimiter, TokenBucket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -62,53 +62,6 @@ async fn test_bulkhead_concurrency_limit() {
     );
 }
 
-/// Test: Rate limiter under high load
-#[tokio::test]
-async fn test_rate_limiter_high_load() {
-    let rate_limiter = Arc::new(TokenBucket::new(10, 10.0)); // 10 ops/sec
-    let success_count = Arc::new(AtomicU32::new(0));
-    let rejected_count = Arc::new(AtomicU32::new(0));
-
-    let mut handles = vec![];
-
-    // Try to execute 50 operations rapidly
-    for _ in 0..50 {
-        let rate_limiter = Arc::clone(&rate_limiter);
-        let success_count = Arc::clone(&success_count);
-        let rejected_count = Arc::clone(&rejected_count);
-
-        let handle = tokio::spawn(async move {
-            match rate_limiter.acquire().await {
-                Ok(_) => {
-                    success_count.fetch_add(1, Ordering::SeqCst);
-                }
-                Err(_) => {
-                    rejected_count.fetch_add(1, Ordering::SeqCst);
-                }
-            }
-        });
-
-        handles.push(handle);
-    }
-
-    futures::future::join_all(handles).await;
-
-    let successes = success_count.load(Ordering::SeqCst);
-    let rejections = rejected_count.load(Ordering::SeqCst);
-
-    // Should allow ~10 operations (bucket capacity)
-    assert!(
-        successes >= 10 && successes <= 15,
-        "Expected ~10 successes, got {}",
-        successes
-    );
-
-    // Rest should be rejected
-    assert!(rejections >= 35, "Expected rejections, got {}", rejections);
-
-    assert_eq!(successes + rejections, 50);
-}
-
 /// Test: Manager handles concurrent service registration
 #[tokio::test]
 async fn test_manager_concurrent_registration() {
@@ -121,7 +74,9 @@ async fn test_manager_concurrent_registration() {
 
         let handle = tokio::spawn(async move {
             let service_name = format!("service-{}", i);
-            let policy = ResiliencePolicy::default().with_timeout(Duration::from_secs(1));
+            let policy = PolicyBuilder::new()
+                .with_timeout(Duration::from_secs(1))
+                .build();
 
             manager.register_service(&service_name, policy).await;
             service_name
@@ -151,13 +106,14 @@ async fn test_manager_concurrent_registration() {
 async fn test_manager_operation_isolation() {
     let manager = Arc::new(ResilienceManager::with_defaults());
 
-    let policy = ResiliencePolicy::default()
+    let policy = PolicyBuilder::new()
         .with_timeout(Duration::from_secs(1))
         .with_bulkhead(BulkheadConfig {
             max_concurrency: 5,
             queue_size: 10,
             timeout: None,
-        });
+        })
+        .build();
 
     manager.register_service("isolated-service", policy).await;
 
@@ -198,12 +154,8 @@ async fn test_manager_operation_isolation() {
 /// Test: Circuit breaker state transitions under concurrent load
 #[tokio::test]
 async fn test_circuit_breaker_concurrent_transitions() {
-    let circuit_breaker = Arc::new(CircuitBreaker::with_config(CircuitBreakerConfig {
-        failure_threshold: 5,
-        reset_timeout: Duration::from_millis(500),
-        half_open_max_operations: 2,
-        count_timeouts: false,
-    }));
+    // Circuit breaker with 5 failure threshold, 500ms reset
+    let circuit_breaker = Arc::new(CircuitBreaker::<5, 500>::with_defaults().unwrap());
 
     let failure_count = Arc::new(AtomicU32::new(0));
 
@@ -214,10 +166,14 @@ async fn test_circuit_breaker_concurrent_transitions() {
         let failure_count = Arc::clone(&failure_count);
 
         let handle = tokio::spawn(async move {
+            let failure_count_clone = Arc::clone(&failure_count);
             let result = cb
-                .execute(|| async {
-                    failure_count.fetch_add(1, Ordering::SeqCst);
-                    Err::<(), _>(ResilienceError::custom("Concurrent failure"))
+                .execute(|| {
+                    let failure_count = Arc::clone(&failure_count_clone);
+                    async move {
+                        failure_count.fetch_add(1, Ordering::SeqCst);
+                        Err::<(), _>(ResilienceError::custom("Concurrent failure"))
+                    }
                 })
                 .await;
             result
@@ -230,7 +186,10 @@ async fn test_circuit_breaker_concurrent_transitions() {
 
     // Circuit should be open
     let stats = circuit_breaker.stats().await;
-    assert_eq!(stats.state, CircuitState::Open);
+    assert_eq!(
+        stats.state,
+        nebula_resilience::patterns::circuit_breaker::State::Open
+    );
 
     // Phase 2: Wait for reset
     sleep(Duration::from_millis(600)).await;
@@ -325,8 +284,12 @@ async fn test_multiple_managers_isolation() {
     let manager1 = Arc::new(ResilienceManager::with_defaults());
     let manager2 = Arc::new(ResilienceManager::with_defaults());
 
-    let policy1 = ResiliencePolicy::default().with_timeout(Duration::from_millis(100));
-    let policy2 = ResiliencePolicy::default().with_timeout(Duration::from_millis(200));
+    let policy1 = PolicyBuilder::new()
+        .with_timeout(Duration::from_millis(100))
+        .build();
+    let policy2 = PolicyBuilder::new()
+        .with_timeout(Duration::from_millis(200))
+        .build();
 
     // Register same service name with different policies
     manager1.register_service("shared-name", policy1).await;

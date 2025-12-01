@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 use nebula_resilience::prelude::*;
-use nebula_resilience::{log_result, retry};
+use nebula_resilience::{log_result, timeout_fn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,37 +13,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting resilience ecosystem integration example");
 
-    // Use predefined configurations for common scenarios
-    let db_config = ResiliencePresets::database();
-    let http_config = ResiliencePresets::http_api();
-
-    info!(
-        preset = "database",
-        config = ?db_config.to_flat_map(),
-        "Using database preset configuration"
-    );
-
-    // Create a dynamic configuration for a custom service
-    let mut custom_config = DynamicConfig::new();
-    custom_config.set_value("circuit_breaker.failure_threshold", Value::integer(10))?;
-    custom_config.set_value("retry.max_attempts", Value::integer(5))?;
-    custom_config.set_value("timeout.duration", Value::text("15s"))?;
-
-    info!(
-        service = "custom",
-        config = ?custom_config.to_flat_map(),
-        "Created custom dynamic configuration"
-    );
-
-    // Example 1: Database operations with preset configuration
+    // Example 1: Database operations with const generic circuit breaker
     info!("=== Database Operations Example ===");
 
-    let circuit_breaker = CircuitBreaker::with_config(CircuitBreakerConfig {
-        failure_threshold: 5,
-        reset_timeout: Duration::from_secs(60),
-        half_open_max_operations: 3,
-        count_timeouts: true,
-    });
+    // Type-safe circuit breaker: 5 failures threshold, 60 second reset
+    let circuit_breaker = CircuitBreaker::<5, 60_000>::with_defaults()?;
 
     let db_result = circuit_breaker
         .execute(|| async {
@@ -67,54 +41,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     log_result!(db_result, "database_query", "Database operation");
 
-    // Example 2: HTTP API with retry
+    // Example 2: HTTP API with const generic retry
     info!("=== HTTP API Example ===");
 
-    let retry_strategy = RetryStrategy::exponential_backoff(3, Duration::from_millis(500));
-    let api_result = retry(retry_strategy, || async {
-        info!(
-            operation = "api_call",
-            endpoint = "/users",
-            "Making HTTP API call"
-        );
+    // Type-safe retry: 3 max attempts with exponential backoff
+    let retry_strategy = exponential_retry::<3>()?;
 
-        // Simulate HTTP call
-        sleep(Duration::from_millis(200)).await;
+    let api_result = retry_strategy
+        .execute_resilient(|| async {
+            info!(
+                operation = "api_call",
+                endpoint = "/users",
+                "Making HTTP API call"
+            );
 
-        // Simulate network issues
-        if rand::random::<f64>() > 0.8 {
-            return Err(ResilienceError::Timeout {
-                duration: Duration::from_secs(10),
-                context: Some("HTTP request timeout".to_string()),
-            });
-        }
+            // Simulate HTTP call
+            sleep(Duration::from_millis(200)).await;
 
-        Ok(serde_json::json!({
-            "users": [
-                {"id": 1, "name": "Alice"},
-                {"id": 2, "name": "Bob"}
-            ]
-        }))
-    })
-    .await;
+            // Simulate network issues
+            if rand::random::<f64>() > 0.8 {
+                return Err(ResilienceError::Timeout {
+                    duration: Duration::from_secs(10),
+                    context: Some("HTTP request timeout".to_string()),
+                });
+            }
+
+            Ok(serde_json::json!({
+                "users": [
+                    {"id": 1, "name": "Alice"},
+                    {"id": 2, "name": "Bob"}
+                ]
+            }))
+        })
+        .await;
 
     log_result!(api_result, "api_call", "HTTP API operation");
 
-    // Example 3: File operations with light resilience
+    // Example 3: File operations with timeout
     info!("=== File Operations Example ===");
 
-    let file_config = ResiliencePresets::file_io();
-    let retry_config = file_config.get_value("retry.max_attempts")?;
-
-    info!(
-        operation = "file_operations",
-        retry_attempts = %retry_config,
-        "Performing file operations with light resilience"
-    );
-
-    // Simulate file operations
-    for i in 1..=3 {
-        let file_result = timeout(Duration::from_secs(5), async {
+    // Simulate file operations with timeout
+    for i in 1..=3u64 {
+        let file_result = timeout_fn(Duration::from_secs(5), async move {
             info!(file = %format!("file_{}.txt", i), "Processing file");
 
             // Simulate file processing
@@ -153,29 +121,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     info!(cached_value = %cache_result, "Retrieved from cache");
-
-    // Example 5: Configuration hot-reloading demonstration
-    info!("=== Configuration Hot-Reload Example ===");
-
-    let mut dynamic_config = DynamicConfig::new();
-
-    // Initial configuration
-    dynamic_config.set_value("feature.enabled", Value::boolean(true))?;
-    dynamic_config.set_value("feature.timeout", Value::text("5s"))?;
-
-    info!(
-        config = ?dynamic_config.to_flat_map(),
-        "Initial dynamic configuration"
-    );
-
-    // Simulate configuration update
-    dynamic_config.set_value("feature.timeout", Value::text("10s"))?;
-    dynamic_config.set_value("feature.retry_count", Value::integer(3))?;
-
-    info!(
-        config = ?dynamic_config.to_flat_map(),
-        "Updated dynamic configuration"
-    );
 
     info!("Resilience ecosystem integration example completed successfully");
     Ok(())
