@@ -2,13 +2,12 @@
 
 use eframe::egui;
 use nebula_parameter::{
-    TextParameter, NumberParameter, CheckboxParameter, SelectParameter,
-    TextareaParameter, DateParameter, TimeParameter, ParameterMetadata,
-    SelectOption,
+    CheckboxParameter, DateParameter, NumberParameter, ParameterMetadata, SelectOption,
+    SelectParameter, TextParameter, TextareaParameter, TimeParameter,
 };
 use nebula_parameter_ui::{
-    ParameterWidget, TextWidget, NumberWidget, CheckboxWidget, 
-    SelectWidget, TextareaWidget, DateWidget, TimeWidget,
+    CheckboxWidget, DateWidget, NumberWidget, ParameterWidget, SelectWidget, TextWidget,
+    TextareaWidget, TimeWidget,
 };
 use nebula_value::Boolean;
 

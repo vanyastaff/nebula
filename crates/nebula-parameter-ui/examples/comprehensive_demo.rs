@@ -2,20 +2,32 @@
 
 use eframe::egui;
 use nebula_parameter::{
-    TextParameter, NumberParameter, CheckboxParameter, SelectParameter,
-    TextareaParameter, DateParameter, TimeParameter, DateTimeParameter,
-    SecretParameter, ColorParameter, RadioParameter, MultiSelectParameter,
-    CodeParameter, FileParameter, ParameterMetadata, SelectOption,
+    CheckboxParameter, CodeParameter, ColorParameter, DateParameter, DateTimeParameter,
+    FileParameter, MultiSelectParameter, NumberParameter, ParameterMetadata, RadioParameter,
+    SecretParameter, SelectOption, SelectParameter, TextParameter, TextareaParameter,
+    TimeParameter,
 };
 use nebula_parameter_ui::{
-    ParameterWidget, ParameterTheme,
-    TextWidget, NumberWidget, CheckboxWidget, SelectWidget,
-    TextareaWidget, DateWidget, TimeWidget, DateTimeWidget,
-    SecretWidget, ColorWidget, RadioWidget, MultiSelectWidget,
-    CodeWidget, FileWidget, SliderWidget,
+    CheckboxWidget,
+    CodeWidget,
+    ColorWidget,
+    DateTimeWidget,
+    DateWidget,
+    FileWidget,
+    MultiSelectWidget,
+    NumberWidget,
+    ParameterTheme,
+    ParameterWidget,
+    RadioWidget,
+    SecretWidget,
+    SelectWidget,
+    SliderWidget,
     // LayoutConfig, adaptive_container,  // Temporarily disabled
     // FlexConfig, flex_container, FlexDirection, AlignItems,  // Temporarily disabled
     // GridConfig, grid_container,  // Temporarily disabled
+    TextWidget,
+    TextareaWidget,
+    TimeWidget,
 };
 use nebula_value::Boolean;
 
@@ -42,22 +54,22 @@ struct DemoApp {
     slider_widget: SliderWidget,
     checkbox_widget: CheckboxWidget,
     secret_widget: SecretWidget,
-    
+
     // Selection widgets
     select_widget: SelectWidget,
     radio_widget: RadioWidget,
     multi_select_widget: MultiSelectWidget,
-    
+
     // Date/Time widgets
     date_widget: DateWidget,
     time_widget: TimeWidget,
     datetime_widget: DateTimeWidget,
-    
+
     // Specialized widgets
     color_widget: ColorWidget,
     code_widget: CodeWidget,
     file_widget: FileWidget,
-    
+
     // Theme
     theme: ParameterTheme,
     use_light_theme: bool,
@@ -73,22 +85,22 @@ impl DemoApp {
             slider_widget: SliderWidget::new(create_slider_param()),
             checkbox_widget: CheckboxWidget::new(create_checkbox_param()),
             secret_widget: SecretWidget::new(create_secret_param()),
-            
+
             // Selection widgets
             select_widget: SelectWidget::new(create_select_param()),
             radio_widget: RadioWidget::new(create_radio_param()),
             multi_select_widget: MultiSelectWidget::new(create_multi_select_param()),
-            
+
             // Date/Time widgets
             date_widget: DateWidget::new(create_date_param()),
             time_widget: TimeWidget::new(create_time_param()),
             datetime_widget: DateTimeWidget::new(create_datetime_param()),
-            
+
             // Specialized widgets
             color_widget: ColorWidget::new(create_color_param()),
             code_widget: CodeWidget::new(create_code_param()),
             file_widget: FileWidget::new(create_file_param()),
-            
+
             // Theme
             theme: ParameterTheme::dark(),
             use_light_theme: false,
@@ -103,12 +115,18 @@ impl eframe::App for DemoApp {
             ui.horizontal(|ui| {
                 ui.heading("🚀 Nebula Parameter UI - Comprehensive Demo");
                 ui.separator();
-                
-                if ui.selectable_label(!self.use_light_theme, "🌙 Dark").clicked() {
+
+                if ui
+                    .selectable_label(!self.use_light_theme, "🌙 Dark")
+                    .clicked()
+                {
                     self.use_light_theme = false;
                     self.theme = ParameterTheme::dark();
                 }
-                if ui.selectable_label(self.use_light_theme, "☀ Light").clicked() {
+                if ui
+                    .selectable_label(self.use_light_theme, "☀ Light")
+                    .clicked()
+                {
                     self.use_light_theme = true;
                     self.theme = ParameterTheme::light();
                 }
@@ -118,144 +136,144 @@ impl eframe::App for DemoApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(10.0);
-                
+
                 // Basic Input Widgets - Flex Layout with proper alignment
                 ui.heading("📝 Basic Input Widgets");
                 ui.separator();
-                
+
                 // First row: Text, Number - Two columns with proper width calculation
                 ui.horizontal(|ui| {
                     let available_width = ui.available_width();
                     let half_width = (available_width - 16.0) / 2.0; // 16px gap between widgets
-                    
+
                     ui.allocate_ui(egui::Vec2::new(half_width, 0.0), |ui| {
                         ui.group(|ui| {
                             self.text_widget.render_with_theme(ui, &self.theme);
                         });
                     });
-                    
+
                     ui.allocate_ui(egui::Vec2::new(half_width, 0.0), |ui| {
                         ui.group(|ui| {
                             self.number_widget.render_with_theme(ui, &self.theme);
                         });
                     });
                 });
-                
+
                 // Slider takes full width
                 ui.group(|ui| {
                     self.slider_widget.render_with_theme(ui, &self.theme);
                 });
-                
+
                 // Second row: Checkbox, Secret - Two columns with proper width calculation
                 ui.horizontal(|ui| {
                     let available_width = ui.available_width();
                     let half_width = (available_width - 16.0) / 2.0; // 16px gap between widgets
-                    
+
                     ui.allocate_ui(egui::Vec2::new(half_width, 0.0), |ui| {
                         ui.group(|ui| {
                             self.checkbox_widget.render_with_theme(ui, &self.theme);
                         });
                     });
-                    
+
                     ui.allocate_ui(egui::Vec2::new(half_width, 0.0), |ui| {
                         ui.group(|ui| {
                             self.secret_widget.render_with_theme(ui, &self.theme);
                         });
                     });
                 });
-                
+
                 // Textarea takes full width
                 ui.group(|ui| {
                     self.textarea_widget.render_with_theme(ui, &self.theme);
                 });
-                
+
                 ui.add_space(20.0);
-                
+
                 // Selection Widgets - Even Grid Layout
                 ui.heading("🎯 Selection Widgets");
                 ui.separator();
-                
+
                 // Selection widgets - Two columns with proper width calculation
                 ui.horizontal(|ui| {
                     let available_width = ui.available_width();
                     let half_width = (available_width - 16.0) / 2.0; // 16px gap between widgets
-                    
+
                     ui.allocate_ui(egui::Vec2::new(half_width, 0.0), |ui| {
                         ui.group(|ui| {
                             self.select_widget.render_with_theme(ui, &self.theme);
                         });
                     });
-                    
+
                     ui.allocate_ui(egui::Vec2::new(half_width, 0.0), |ui| {
                         ui.group(|ui| {
                             self.radio_widget.render_with_theme(ui, &self.theme);
                         });
                     });
                 });
-                
+
                 // Multi-select takes more space
                 ui.group(|ui| {
                     self.multi_select_widget.render_with_theme(ui, &self.theme);
                 });
-                
+
                 ui.add_space(20.0);
-                
+
                 // Date/Time Widgets - Even Grid Layout
                 ui.heading("📅 Date & Time Widgets");
                 ui.separator();
-                
+
                 // Date/Time widgets - Two columns with proper width calculation
                 ui.horizontal(|ui| {
                     let available_width = ui.available_width();
                     let half_width = (available_width - 16.0) / 2.0; // 16px gap between widgets
-                    
+
                     ui.allocate_ui(egui::Vec2::new(half_width, 0.0), |ui| {
                         ui.group(|ui| {
                             self.date_widget.render_with_theme(ui, &self.theme);
                         });
                     });
-                    
+
                     ui.allocate_ui(egui::Vec2::new(half_width, 0.0), |ui| {
                         ui.group(|ui| {
                             self.time_widget.render_with_theme(ui, &self.theme);
                         });
                     });
                 });
-                
+
                 // DateTime takes full width
                 ui.group(|ui| {
                     self.datetime_widget.render_with_theme(ui, &self.theme);
                 });
-                
+
                 ui.add_space(20.0);
-                
+
                 // Specialized Widgets - Even Grid Layout
                 ui.heading("🎨 Specialized Widgets");
                 ui.separator();
-                
+
                 // Specialized widgets - Two columns with proper width calculation
                 ui.horizontal(|ui| {
                     let available_width = ui.available_width();
                     let half_width = (available_width - 16.0) / 2.0; // 16px gap between widgets
-                    
+
                     ui.allocate_ui(egui::Vec2::new(half_width, 0.0), |ui| {
                         ui.group(|ui| {
                             self.color_widget.render_with_theme(ui, &self.theme);
                         });
                     });
-                    
+
                     ui.allocate_ui(egui::Vec2::new(half_width, 0.0), |ui| {
                         ui.group(|ui| {
                             self.file_widget.render_with_theme(ui, &self.theme);
                         });
                     });
                 });
-                
+
                 // Code widget takes full width
                 ui.group(|ui| {
                     self.code_widget.render_with_theme(ui, &self.theme);
                 });
-                
+
                 ui.add_space(20.0);
             });
         });
@@ -417,9 +435,24 @@ fn create_radio_param() -> RadioParameter {
         value: None,
         default: None,
         options: vec![
-            SelectOption::with_description("low", "Low", "low", std::borrow::Cow::Borrowed("For non-urgent tasks")),
-            SelectOption::with_description("medium", "Medium", "medium", std::borrow::Cow::Borrowed("Standard priority")),
-            SelectOption::with_description("high", "High", "high", std::borrow::Cow::Borrowed("Urgent tasks")),
+            SelectOption::with_description(
+                "low",
+                "Low",
+                "low",
+                std::borrow::Cow::Borrowed("For non-urgent tasks"),
+            ),
+            SelectOption::with_description(
+                "medium",
+                "Medium",
+                "medium",
+                std::borrow::Cow::Borrowed("Standard priority"),
+            ),
+            SelectOption::with_description(
+                "high",
+                "High",
+                "high",
+                std::borrow::Cow::Borrowed("Urgent tasks"),
+            ),
         ],
         radio_options: None,
         display: None,
@@ -527,7 +560,9 @@ fn create_code_param() -> CodeParameter {
             .hint("This code will be executed in the runtime".to_string())
             .build()
             .expect("valid metadata"),
-        value: Some(nebula_value::Text::from("// Your code here\nconsole.log('Hello!');")),
+        value: Some(nebula_value::Text::from(
+            "// Your code here\nconsole.log('Hello!');",
+        )),
         default: None,
         options: Some(nebula_parameter::CodeParameterOptions {
             language: Some(nebula_parameter::CodeLanguage::JavaScript),
@@ -554,4 +589,3 @@ fn create_file_param() -> FileParameter {
         validation: None,
     }
 }
-

@@ -1,17 +1,14 @@
+use chrono::{Duration, Utc};
 use eframe::egui;
 use nebula_parameter::{
-    NoticeParameter, NoticeParameterOptions, NoticeType,
-    HiddenParameter,
-    ModeParameter, ModeItem, ModeValue,
-    ExpirableParameter, ExpirableParameterOptions, ExpirableValue,
-    ParameterMetadata, ParameterDisplay,
+    ExpirableParameter, ExpirableParameterOptions, ExpirableValue, HiddenParameter, ModeItem,
+    ModeParameter, ModeValue, NoticeParameter, NoticeParameterOptions, NoticeType,
+    ParameterDisplay, ParameterMetadata,
 };
 use nebula_parameter_ui::{
-    ParameterWidget, ParameterTheme,
-    NoticeWidget, HiddenWidget, ModeWidget, ExpirableWidget,
+    ExpirableWidget, HiddenWidget, ModeWidget, NoticeWidget, ParameterTheme, ParameterWidget,
 };
 use nebula_value::Text;
-use chrono::{Utc, Duration};
 
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
@@ -53,10 +50,13 @@ impl ExtendedDemoApp {
             metadata: ParameterMetadata {
                 key: "info_notice".to_string(),
                 name: "Information Notice".to_string(),
-                description: Some("This is an informational notice with dismissible option.".to_string()),
+                description: Some(
+                    "This is an informational notice with dismissible option.".to_string(),
+                ),
                 required: false,
             },
-            content: "This is an informational message that provides helpful context to users.".to_string(),
+            content: "This is an informational message that provides helpful context to users."
+                .to_string(),
             options: Some(NoticeParameterOptions {
                 notice_type: Some(NoticeType::Info),
                 dismissible: true,
@@ -86,7 +86,9 @@ impl ExtendedDemoApp {
                 description: None,
                 required: false,
             },
-            content: "Error: Failed to connect to the database. Please check your connection settings.".to_string(),
+            content:
+                "Error: Failed to connect to the database. Please check your connection settings."
+                    .to_string(),
             options: Some(NoticeParameterOptions {
                 notice_type: Some(NoticeType::Error),
                 dismissible: true,
@@ -114,7 +116,9 @@ impl ExtendedDemoApp {
             metadata: ParameterMetadata {
                 key: "hidden_param".to_string(),
                 name: "Hidden Parameter".to_string(),
-                description: Some("This parameter is not visible in the UI but stores data.".to_string()),
+                description: Some(
+                    "This parameter is not visible in the UI but stores data.".to_string(),
+                ),
                 required: false,
             },
             value: Some(Text::new("hidden_value")),
@@ -125,7 +129,9 @@ impl ExtendedDemoApp {
             metadata: ParameterMetadata {
                 key: "mode_selection".to_string(),
                 name: "Mode Selection".to_string(),
-                description: Some("Select a mode to configure different parameter sets.".to_string()),
+                description: Some(
+                    "Select a mode to configure different parameter sets.".to_string(),
+                ),
                 required: true,
             },
             value: None,
@@ -140,13 +146,17 @@ impl ExtendedDemoApp {
                 ModeItem {
                     key: "advanced".to_string(),
                     name: "Advanced Mode".to_string(),
-                    description: Some("Advanced configuration with all available options.".to_string()),
+                    description: Some(
+                        "Advanced configuration with all available options.".to_string(),
+                    ),
                     parameters: vec![],
                 },
                 ModeItem {
                     key: "expert".to_string(),
                     name: "Expert Mode".to_string(),
-                    description: Some("Expert configuration with full control over all settings.".to_string()),
+                    description: Some(
+                        "Expert configuration with full control over all settings.".to_string(),
+                    ),
                     parameters: vec![],
                 },
             ],
@@ -167,7 +177,9 @@ impl ExtendedDemoApp {
             metadata: ParameterMetadata {
                 key: "expirable_param".to_string(),
                 name: "Expirable Parameter".to_string(),
-                description: Some("This parameter has a Time-To-Live and will expire automatically.".to_string()),
+                description: Some(
+                    "This parameter has a Time-To-Live and will expire automatically.".to_string(),
+                ),
                 required: false,
             },
             value: Some(expirable_value),
