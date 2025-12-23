@@ -4719,8 +4719,10 @@ dependencies = [
  "async-trait",
  "criterion 0.5.1",
  "dashmap",
+ "fastrand",
  "futures",
  "governor",
+ "heapless",
  "humantime-serde",
  "nebula-config",
  "nebula-core",
@@ -4730,7 +4732,10 @@ dependencies = [
  "rand 0.9.2",
  "serde",
  "serde_json",
+ "thiserror 2.0.17",
  "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -8151,6 +8156,7 @@ dependencies = [
  "futures-core",
  "futures-io",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]
