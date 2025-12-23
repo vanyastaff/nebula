@@ -946,7 +946,9 @@ mod tests {
         assert!(manager.is_service_registered::<TestHttpService>());
 
         // Unregister
-        manager.unregister_service_typed::<TestDatabaseService>().await;
+        manager
+            .unregister_service_typed::<TestDatabaseService>()
+            .await;
         assert!(!manager.is_service_registered::<TestDatabaseService>());
     }
 
