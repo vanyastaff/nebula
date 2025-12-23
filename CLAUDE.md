@@ -136,6 +136,12 @@ async fn test_async() {
 
 **Commit:** `type(scope): subject`
 
+**Commit Format:**
+- Use standard commit message format
+- Do NOT add "Generated with [Claude Code]" footer
+- Do NOT add "Co-Authored-By: Claude Sonnet 4.5" footer
+- Keep commits clean and professional
+
 **Never:** force push to main, skip hooks, commit secrets
 
 ## Additional Resources
