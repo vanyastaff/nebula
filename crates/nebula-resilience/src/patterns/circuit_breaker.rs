@@ -87,6 +87,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
     CircuitBreakerConfig<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>
 {
     /// Create new configuration with validation
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             half_open_max_operations: 3,
@@ -98,22 +99,26 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
     }
 
     /// Get failure threshold (compile-time constant)
+    #[must_use] 
     pub fn failure_threshold(&self) -> usize {
         FAILURE_THRESHOLD
     }
 
     /// Get reset timeout (compile-time constant)
+    #[must_use] 
     pub fn reset_timeout(&self) -> Duration {
         Duration::from_millis(RESET_TIMEOUT_MS)
     }
 
     /// Builder methods
+    #[must_use] 
     pub fn with_half_open_limit(mut self, limit: usize) -> Self {
         self.half_open_max_operations = limit;
         self
     }
 
     /// Set the minimum number of operations required before circuit can open
+    #[must_use] 
     pub fn with_min_operations(mut self, min_operations: usize) -> Self {
         self.min_operations = min_operations;
         self
@@ -239,7 +244,6 @@ pub struct StatefulCircuitBreaker<
     state: CircuitState<S>,
     sliding_window: SlidingWindow<1000>,
     total_operations: AtomicU64,
-    #[allow(dead_code)]
     half_open_operations: AtomicUsize,
 }
 
@@ -430,7 +434,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
                     let elapsed = Instant::now().duration_since(inner.last_state_change);
                     let timeout_duration = Duration::from_millis(RESET_TIMEOUT_MS);
                     if elapsed < timeout_duration {
-                        Some(timeout_duration - elapsed)
+                        Some(timeout_duration.checked_sub(elapsed).unwrap())
                     } else {
                         Some(Duration::ZERO)
                     }
@@ -642,7 +646,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
                 let elapsed = Instant::now().duration_since(inner.last_state_change);
                 let timeout_duration = Duration::from_millis(RESET_TIMEOUT_MS);
                 let retry_after = if elapsed < timeout_duration {
-                    Some(timeout_duration - elapsed)
+                    Some(timeout_duration.checked_sub(elapsed).unwrap())
                 } else {
                     Some(Duration::ZERO)
                 };
@@ -728,16 +732,19 @@ pub type FastCircuitBreaker = CircuitBreaker<3, 10_000>;
 pub type SlowCircuitBreaker = CircuitBreaker<10, 60_000>;
 
 /// Helper functions for creating common configurations
+#[must_use] 
 pub fn fast_config() -> CircuitBreakerConfig<3, 10_000> {
     CircuitBreakerConfig::new().with_half_open_limit(2)
 }
 
 /// Create a standard circuit breaker configuration
+#[must_use] 
 pub fn standard_config() -> CircuitBreakerConfig<5, 30_000> {
     CircuitBreakerConfig::new()
 }
 
 /// Create a slow/conservative circuit breaker configuration
+#[must_use] 
 pub fn slow_config() -> CircuitBreakerConfig<10, 60_000> {
     CircuitBreakerConfig::new().with_min_operations(20)
 }

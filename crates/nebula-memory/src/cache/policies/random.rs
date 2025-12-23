@@ -146,8 +146,8 @@ where
             return None;
         }
 
-        let mut rng = rand::thread_rng();
-        let index = rng.gen_range(0..entries.len());
+        let mut rng = rand::rng();
+        let index = rng.random_range(0..entries.len());
         Some(entries[index].0.clone())
     }
 }

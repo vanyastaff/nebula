@@ -11,7 +11,7 @@ use thiserror::Error;
 #[must_use = "ResilienceError should be returned or handled"]
 pub enum ResilienceError {
     /// Operation timed out
-    #[error("Operation timed out after {duration:?}{}", context.as_ref().map(|c| format!(" - {}", c)).unwrap_or_default())]
+    #[error("Operation timed out after {duration:?}{}", context.as_ref().map(|c| format!(" - {c}")).unwrap_or_default())]
     Timeout {
         /// Duration that was exceeded
         duration: Duration,
@@ -20,7 +20,7 @@ pub enum ResilienceError {
     },
 
     /// Circuit breaker is open
-    #[error("Circuit breaker is {state}{}", retry_after.map(|d| format!(" (retry after {:?})", d)).unwrap_or_default())]
+    #[error("Circuit breaker is {state}{}", retry_after.map(|d| format!(" (retry after {d:?})")).unwrap_or_default())]
     CircuitBreakerOpen {
         /// Current circuit breaker state
         state: String,
@@ -38,7 +38,7 @@ pub enum ResilienceError {
     },
 
     /// Rate limit exceeded
-    #[error("Rate limit exceeded: limit={limit}/s, current={current}/s{}", retry_after.map(|d| format!(" (retry after {:?})", d)).unwrap_or_default())]
+    #[error("Rate limit exceeded: limit={limit}/s, current={current}/s{}", retry_after.map(|d| format!(" (retry after {d:?})")).unwrap_or_default())]
     RateLimitExceeded {
         /// Time to wait before retry
         retry_after: Option<Duration>,
@@ -49,7 +49,7 @@ pub enum ResilienceError {
     },
 
     /// Retry limit exceeded
-    #[error("Retry limit exceeded after {attempts} attempts{}", last_error.as_ref().map(|e| format!(" - last error: {}", e)).unwrap_or_default())]
+    #[error("Retry limit exceeded after {attempts} attempts{}", last_error.as_ref().map(|e| format!(" - last error: {e}")).unwrap_or_default())]
     RetryLimitExceeded {
         /// Number of attempts made
         attempts: usize,
@@ -67,7 +67,7 @@ pub enum ResilienceError {
     },
 
     /// Operation was cancelled
-    #[error("Operation cancelled{}", reason.as_ref().map(|r| format!(": {}", r)).unwrap_or_default())]
+    #[error("Operation cancelled{}", reason.as_ref().map(|r| format!(": {r}")).unwrap_or_default())]
     Cancelled {
         /// Cancellation reason
         reason: Option<String>,

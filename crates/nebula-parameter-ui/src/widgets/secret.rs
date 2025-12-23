@@ -1,28 +1,17 @@
 //! Secret input widget for SecretParameter.
-//!
-//! Uses nested Flex containers for CSS-like layout control.
 
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{RichText, TextEdit, Ui};
 use egui_flex::{Flex, FlexAlign, item};
 use egui_phosphor::regular::{EYE, EYE_SLASH};
 use nebula_parameter::core::{HasValue, Parameter};
-use nebula_parameter::types::{SecretParameter, SecretString};
+use nebula_parameter::types::SecretParameter;
 
 /// Widget for password/secret input.
-/// ```text
-/// ┌─────────────────────────────────────┐
-/// │ Label *                             │  <- Row 1: label
-/// │ [••••••••••••••••••••••••] [Show]   │  <- Row 2: input + toggle
-/// │ Current: ••••••••                   │  <- Row 3: masked indicator
-/// │ Hint text                           │  <- Row 4: hint
-/// └─────────────────────────────────────┘
-/// ```
 pub struct SecretWidget {
     parameter: SecretParameter,
     buffer: String,
     show_password: bool,
-    /// Track if the input is currently focused.
     focused: bool,
 }
 
@@ -54,13 +43,12 @@ impl ParameterWidget for SecretWidget {
         let hint = metadata.hint.clone();
         let required = metadata.required;
 
-        // Outer Flex: vertical container (left-aligned)
         Flex::vertical()
             .w_full()
             .align_items(FlexAlign::Start)
             .gap(egui::vec2(0.0, theme.spacing_sm))
             .show(ui, |flex| {
-                // Row 1: Label (left-aligned, bold)
+                // Row 1: Label
                 flex.add_ui(item(), |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -79,21 +67,19 @@ impl ParameterWidget for SecretWidget {
                     });
                 });
 
-                // Row 2: Password input with embedded toggle icon
+                // Row 2: Password input with toggle
                 flex.add_ui(item().grow(1.0), |ui| {
                     let width = ui.available_width();
                     let has_error = response.error.is_some();
 
-                    // Apply consistent input frame styling
                     let frame = theme.input_frame(self.focused, has_error);
                     frame.show(ui, |ui| {
-                        ui.set_width(width - 20.0); // Account for frame margins
+                        ui.set_width(width - 20.0);
                         ui.horizontal(|ui| {
                             ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
                             ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
                             ui.style_mut().visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
 
-                            // Text input - no frame, we use our own
                             let text_edit = if self.show_password {
                                 TextEdit::singleline(&mut self.buffer).frame(false)
                             } else {
@@ -105,7 +91,6 @@ impl ParameterWidget for SecretWidget {
                             let edit_response =
                                 ui.add(text_edit.desired_width(ui.available_width() - 30.0));
 
-                            // Track focus state
                             if edit_response.gained_focus() {
                                 self.focused = true;
                             }
@@ -115,7 +100,9 @@ impl ParameterWidget for SecretWidget {
                             }
 
                             if edit_response.changed() {
-                                if let Err(e) = self.parameter.set(SecretString::new(&self.buffer))
+                                if let Err(e) = self
+                                    .parameter
+                                    .set(nebula_value::Text::from(self.buffer.as_str()))
                                 {
                                     response.error = Some(e.to_string());
                                 } else {
@@ -123,7 +110,7 @@ impl ParameterWidget for SecretWidget {
                                 }
                             }
 
-                            // Eye icon button - inside the frame
+                            // Eye icon button
                             let icon = if self.show_password { EYE_SLASH } else { EYE };
                             let icon_btn = ui.add(egui::Button::new(icon).frame(false));
                             if icon_btn.clicked() {
@@ -133,10 +120,10 @@ impl ParameterWidget for SecretWidget {
                     });
                 });
 
-                // Row 3: Masked value indicator (if has existing secret)
-                if self.parameter.has_secret() && self.buffer.is_empty() {
+                // Row 3: Masked value indicator
+                if self.parameter.has_value() && self.buffer.is_empty() {
                     if let Some(masked) = self.parameter.masked_value() {
-                        flex.add_ui(item().grow(1.0), |ui| {
+                        flex.add_ui(item(), |ui| {
                             ui.label(
                                 RichText::new(format!("Current: {}", masked))
                                     .size(theme.hint_font_size)
@@ -146,10 +133,10 @@ impl ParameterWidget for SecretWidget {
                     }
                 }
 
-                // Row 4: Hint
+                // Hint
                 if let Some(hint_text) = &hint {
                     if !hint_text.is_empty() {
-                        flex.add_ui(item().grow(1.0), |ui| {
+                        flex.add_ui(item(), |ui| {
                             ui.label(
                                 RichText::new(hint_text)
                                     .size(theme.hint_font_size)
@@ -161,7 +148,7 @@ impl ParameterWidget for SecretWidget {
 
                 // Error
                 if let Some(ref error) = response.error {
-                    flex.add_ui(item().grow(1.0), |ui| {
+                    flex.add_ui(item(), |ui| {
                         ui.label(
                             RichText::new(error)
                                 .size(theme.hint_font_size)
@@ -178,7 +165,7 @@ impl ParameterWidget for SecretWidget {
 impl SecretWidget {
     #[must_use]
     pub fn has_value(&self) -> bool {
-        self.parameter.has_secret()
+        self.parameter.has_value()
     }
 
     pub fn clear(&mut self) {

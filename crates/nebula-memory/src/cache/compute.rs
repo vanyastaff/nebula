@@ -513,10 +513,10 @@ where
 
         #[cfg(feature = "std")]
         {
-            // True random using thread_rng
-            use rand::seq::SliceRandom;
+            // True random using rng
+            use rand::prelude::{IndexedRandom, SliceRandom};
             let keys: Vec<_> = self.entries.keys().cloned().collect();
-            if let Some(key) = keys.choose(&mut rand::thread_rng()) {
+            if let Some(key) = keys.choose(&mut rand::rng()) {
                 self.entries.remove(key);
 
                 if self.config.track_metrics {

@@ -1,6 +1,4 @@
 //! Textarea widget for TextareaParameter.
-//!
-//! Uses nested Flex containers for CSS-like layout control.
 
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{RichText, TextEdit, Ui, Widget};
@@ -12,7 +10,6 @@ use nebula_parameter::types::TextareaParameter;
 pub struct TextareaWidget {
     parameter: TextareaParameter,
     buffer: String,
-    /// Track if the input is currently focused.
     focused: bool,
 }
 
@@ -44,29 +41,19 @@ impl ParameterWidget for TextareaWidget {
         let required = metadata.required;
         let hint = metadata.hint.clone();
 
-        let rows = self
-            .parameter
-            .options
-            .as_ref()
-            .and_then(|o| o.rows)
-            .unwrap_or(4) as usize;
-
-        let placeholder = self
-            .parameter
-            .options
-            .as_ref()
-            .and_then(|o| o.placeholder.clone())
+        let placeholder = metadata
+            .placeholder
+            .clone()
             .or_else(|| Some(metadata.description.clone()))
             .filter(|s| !s.is_empty())
             .unwrap_or_default();
 
-        // Outer Flex: vertical container (left-aligned)
         Flex::vertical()
             .w_full()
             .align_items(FlexAlign::Start)
             .gap(egui::vec2(0.0, theme.spacing_sm))
             .show(ui, |flex| {
-                // Row 1: Label (left-aligned, bold)
+                // Row 1: Label
                 flex.add_ui(item(), |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -85,26 +72,24 @@ impl ParameterWidget for TextareaWidget {
                     });
                 });
 
-                // Row 2: Textarea with styled frame (full width)
+                // Row 2: Textarea
                 flex.add_ui(item().grow(1.0), |ui| {
                     let width = ui.available_width();
                     let has_error = response.error.is_some();
 
-                    // Apply consistent input frame styling
                     let frame = theme.input_frame(self.focused, has_error);
                     let inner_response = frame.show(ui, |ui| {
-                        ui.set_width(width - 20.0); // Account for frame margins
+                        ui.set_width(width - 20.0);
                         TextEdit::multiline(&mut self.buffer)
                             .hint_text(&placeholder)
-                            .desired_rows(rows)
-                            .frame(false) // We use our own frame
+                            .desired_rows(4)
+                            .frame(false)
                             .desired_width(ui.available_width())
                             .ui(ui)
                     });
 
                     let edit_response = inner_response.inner;
 
-                    // Track focus state
                     if edit_response.gained_focus() {
                         self.focused = true;
                     }
@@ -131,7 +116,7 @@ impl ParameterWidget for TextareaWidget {
                         .w_full()
                         .align_items(FlexAlign::Center)
                         .show(ui, |row| {
-                            // Hint (left)
+                            // Hint
                             if let Some(hint_text) = &hint {
                                 if !hint_text.is_empty() {
                                     row.add_ui(item(), |ui| {
@@ -147,7 +132,7 @@ impl ParameterWidget for TextareaWidget {
                             // Spacer
                             row.add_ui(item().grow(1.0), |_ui| {});
 
-                            // Character count (right)
+                            // Character count
                             row.add_ui(item(), |ui| {
                                 if let Some(remaining) = self.parameter.remaining_characters() {
                                     let color = if remaining < 0 {

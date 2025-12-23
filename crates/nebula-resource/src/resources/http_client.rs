@@ -19,7 +19,7 @@ use crate::core::{
     traits::{HealthCheckable, HealthStatus, PoolConfig, Poolable},
 };
 
-use nebula_resilience::{CircuitBreaker, CircuitBreakerConfig, RetryStrategy};
+use nebula_resilience::{CircuitBreaker, CircuitBreakerConfig};
 
 /// Configuration for HTTP client resource
 #[derive(Debug, Clone)]
@@ -45,8 +45,6 @@ pub struct HttpClientConfig {
     pub user_agent: Option<String>,
     /// TLS configuration
     pub tls_config: TlsConfig,
-    /// Retry strategy (from nebula-resilience)
-    pub retry_strategy: Option<RetryStrategy>,
     /// Circuit breaker configuration (from nebula-resilience)
     pub circuit_breaker_config: Option<CircuitBreakerConfig>,
 }
@@ -64,10 +62,6 @@ impl Default for HttpClientConfig {
             max_redirects: 10,
             user_agent: Some("nebula-resource/1.0".to_string()),
             tls_config: TlsConfig::default(),
-            retry_strategy: Some(RetryStrategy::exponential_backoff(
-                3,
-                Duration::from_millis(100),
-            )),
             circuit_breaker_config: Some(CircuitBreakerConfig::default()),
         }
     }
@@ -110,9 +104,7 @@ impl ResourceConfig for HttpClientConfig {
             self.max_connections_per_host = other.max_connections_per_host;
         }
         self.default_headers.extend(other.default_headers);
-        if other.retry_strategy.is_some() {
-            self.retry_strategy = other.retry_strategy;
-        }
+        // Retry strategy removed - use resilience patterns externally
         if other.circuit_breaker_config.is_some() {
             self.circuit_breaker_config = other.circuit_breaker_config;
         }
@@ -166,9 +158,6 @@ pub struct HttpClientInstance {
     /// Circuit breaker for resilience
     circuit_breaker: Option<Arc<CircuitBreaker>>,
 
-    /// Retry strategy
-    retry_strategy: Option<RetryStrategy>,
-
     config: HttpClientConfig,
 }
 
@@ -214,7 +203,10 @@ impl HttpClientInstance {
         let circuit_breaker = config
             .circuit_breaker_config
             .as_ref()
-            .map(|cb_config| Arc::new(CircuitBreaker::with_config(cb_config.clone())));
+            .map(|cb_config| CircuitBreaker::with_config(cb_config.clone()))
+            .transpose()
+            .map_err(|e| ResourceError::initialization("http_client:1.0", format!("Failed to create circuit breaker: {}", e)))?
+            .map(Arc::new);
 
         Ok(Self {
             instance_id: Uuid::new_v4(),
@@ -226,7 +218,6 @@ impl HttpClientInstance {
             #[cfg(feature = "http-client")]
             client: Arc::new(client),
             circuit_breaker,
-            retry_strategy: config.retry_strategy.clone(),
             config,
         })
     }
@@ -323,75 +314,28 @@ impl HttpClientInstance {
         F: FnMut() -> Fut + Send,
         Fut: Future<Output = ResourceResult<HttpResponse>> + Send,
     {
-        // Apply retry if configured
-        if let Some(ref strategy) = self.retry_strategy {
-            let mut last_error = None;
-
-            for attempt in 1..=strategy.max_attempts {
-                // Check circuit breaker before attempt
-                if let Some(ref cb) = self.circuit_breaker
-                    && cb.is_open().await
-                {
-                    return Err(ResourceError::CircuitBreakerOpen {
-                        resource_id: "http_client:1.0".to_string(),
-                        retry_after_ms: None,
-                    });
-                }
-
-                // Execute request
-                let result = f().await;
-
-                // Record success/failure in circuit breaker
-                if let Some(ref cb) = self.circuit_breaker {
-                    match &result {
-                        Ok(_) => cb.record_success().await,
-                        Err(_) => cb.record_failure().await,
-                    }
-                }
-
-                match result {
-                    Ok(response) => return Ok(response),
-                    Err(e) => {
-                        if attempt >= strategy.max_attempts {
-                            return Err(e);
-                        }
-
-                        // Calculate retry delay
-                        if let Some(delay) = strategy.delay_for_attempt(attempt - 1) {
-                            tokio::time::sleep(delay).await;
-                        }
-
-                        last_error = Some(e);
-                    }
-                }
-            }
-
-            Err(last_error.unwrap_or_else(|| {
-                ResourceError::internal("http_client:1.0", "Retry failed without error")
-            }))
-        } else {
-            // No retry, just check circuit breaker
-            if let Some(ref cb) = self.circuit_breaker
-                && cb.is_open().await
-            {
+        // Check circuit breaker before request
+        if let Some(ref cb) = self.circuit_breaker {
+            if cb.is_open().await {
                 return Err(ResourceError::CircuitBreakerOpen {
                     resource_id: "http_client:1.0".to_string(),
                     retry_after_ms: None,
                 });
             }
-
-            let result = f().await;
-
-            // Record in circuit breaker
-            if let Some(ref cb) = self.circuit_breaker {
-                match &result {
-                    Ok(_) => cb.record_success().await,
-                    Err(_) => cb.record_failure().await,
-                }
-            }
-
-            result
         }
+
+        // Execute request
+        let result = f().await;
+
+        // Record success/failure in circuit breaker
+        if let Some(ref cb) = self.circuit_breaker {
+            match &result {
+                Ok(_) => cb.record_success().await,
+                Err(_) => cb.record_failure().await,
+            }
+        }
+
+        result
     }
 
     /// Make a raw HTTP request
@@ -827,15 +771,7 @@ mod tests {
         assert!(!error_response.is_success());
     }
 
-    #[test]
-    fn test_retry_strategy_integration() {
-        let config = HttpClientConfig::default();
-        assert!(config.retry_strategy.is_some());
-
-        let strategy = config.retry_strategy.unwrap();
-        // Verify default is exponential backoff with 3 retries
-        assert_eq!(strategy.max_attempts, 3);
-    }
+    // Retry strategy removed - use nebula-resilience patterns externally
 
     #[test]
     fn test_circuit_breaker_integration() {
@@ -859,7 +795,6 @@ mod tests {
     #[test]
     fn test_resilience_disabled() {
         let mut config = HttpClientConfig::default();
-        config.retry_strategy = None;
         config.circuit_breaker_config = None;
 
         let context = ResourceContext::new(
@@ -873,7 +808,6 @@ mod tests {
             HttpClientInstance::new(ResourceId::new("http_client", "1.0"), context, config)
                 .unwrap();
 
-        assert!(instance.retry_strategy.is_none());
         assert!(instance.circuit_breaker.is_none());
     }
 }

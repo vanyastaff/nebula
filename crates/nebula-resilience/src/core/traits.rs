@@ -268,6 +268,7 @@ pub mod circuit_states {
 
     impl<S> TypestateCircuitState<S> {
         /// Create a new state with metadata
+        #[must_use] 
         pub fn new(failure_count: usize, success_count: usize) -> Self {
             Self {
                 _marker: PhantomData,
@@ -281,6 +282,7 @@ pub mod circuit_states {
         }
 
         /// Get state type name
+        #[must_use] 
         pub fn type_name(&self) -> &'static str {
             std::any::type_name::<S>()
                 .split("::")
@@ -289,6 +291,7 @@ pub mod circuit_states {
         }
 
         /// Record a failure in this state
+        #[must_use] 
         pub fn with_failure(mut self) -> Self {
             self.metadata.failure_count += 1;
             self.metadata.last_failure_time = Some(std::time::Instant::now());
@@ -296,12 +299,14 @@ pub mod circuit_states {
         }
 
         /// Record a success in this state
+        #[must_use] 
         pub fn with_success(mut self) -> Self {
             self.metadata.success_count += 1;
             self
         }
 
-        /// Get the name of the current state type (alias for type_name for compatibility)
+        /// Get the name of the current state type (alias for `type_name` for compatibility)
+        #[must_use] 
         pub fn state_name(&self) -> &'static str {
             self.type_name()
         }
@@ -320,21 +325,21 @@ pub mod circuit_states {
         }
     }
 
-    /// Open -> HalfOpen transition
+    /// Open -> `HalfOpen` transition
     impl StateTransition<Open, HalfOpen> for TypestateCircuitState<HalfOpen> {
         fn transition(from: TypestateCircuitState<Open>) -> TypestateCircuitState<HalfOpen> {
             TypestateCircuitState::new(from.metadata.failure_count, 0)
         }
     }
 
-    /// HalfOpen -> Closed transition
+    /// `HalfOpen` -> Closed transition
     impl StateTransition<HalfOpen, Closed> for TypestateCircuitState<Closed> {
         fn transition(from: TypestateCircuitState<HalfOpen>) -> TypestateCircuitState<Closed> {
             TypestateCircuitState::new(0, from.metadata.success_count)
         }
     }
 
-    /// HalfOpen -> Open transition
+    /// `HalfOpen` -> Open transition
     impl StateTransition<HalfOpen, Open> for TypestateCircuitState<Open> {
         fn transition(from: TypestateCircuitState<HalfOpen>) -> TypestateCircuitState<Open> {
             TypestateCircuitState::new(from.metadata.failure_count + 1, 0)
@@ -412,7 +417,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64> sealed::Sealed
 }
 impl sealed::Sealed for super::super::patterns::bulkhead::Bulkhead {}
 
-/// Default implementation of Retryable for ResilienceError
+/// Default implementation of Retryable for `ResilienceError`
 impl<const MAX_ATTEMPTS: usize> Retryable<MAX_ATTEMPTS> for ResilienceError {
     type Error = ResilienceError;
 
@@ -455,16 +460,19 @@ impl<const DEFAULT_MS: u64> Default for TimeoutConfig<DEFAULT_MS> {
 
 impl<const DEFAULT_MS: u64> TimeoutConfig<DEFAULT_MS> {
     /// Create new timeout configuration
+    #[must_use] 
     pub fn new(timeout_ms: u64) -> Self {
         Self { timeout_ms }
     }
 
     /// Get timeout as Duration
+    #[must_use] 
     pub fn as_duration(&self) -> Duration {
         Duration::from_millis(self.timeout_ms)
     }
 
     /// Check if timeout is reasonable
+    #[must_use] 
     pub fn is_reasonable(&self) -> bool {
         self.timeout_ms > 0 && self.timeout_ms < 300_000 // Max 5 minutes
     }
@@ -509,9 +517,10 @@ impl fmt::Display for TimeoutValidationError {
 impl std::error::Error for TimeoutValidationError {}
 
 /// Function for creating validated timeouts
+#[must_use] 
 pub fn timeout<const MS: u64>() -> TimeoutConfig<MS> {
-    let config = TimeoutConfig::new(MS);
-    config
+    
+    TimeoutConfig::new(MS)
 }
 
 #[cfg(test)]

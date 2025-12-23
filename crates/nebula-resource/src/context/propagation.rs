@@ -13,7 +13,8 @@ pub struct HttpContextPropagator {
 impl HttpContextPropagator {
     /// Create a new HTTP context propagator
     pub fn new() -> Self {
-        let mut header_mappings = HashMap::new();
+        // Pre-allocate for 5 standard mappings
+        let mut header_mappings = HashMap::with_capacity(5);
         header_mappings.insert("workflow-id".to_string(), "X-Nebula-Workflow-Id".to_string());
         header_mappings.insert("execution-id".to_string(), "X-Nebula-Execution-Id".to_string());
         header_mappings.insert("action-id".to_string(), "X-Nebula-Action-Id".to_string());
@@ -89,7 +90,8 @@ impl ContextPropagation for HttpContextPropagator {
     }
 
     async fn inject_context(&self, context: &ExecutionContext) -> crate::core::error::ResourceResult<HashMap<String, String>> {
-        let mut headers = HashMap::new();
+        // Pre-allocate capacity: 5 required + 1 traceparent + 1 optional baggage = ~7
+        let mut headers = HashMap::with_capacity(7);
 
         // Inject required fields
         headers.insert(self.get_header_name("workflow-id"), context.workflow_id.clone());
@@ -185,7 +187,8 @@ impl ContextPropagation for MessageQueueContextPropagator {
     }
 
     async fn inject_context(&self, context: &ExecutionContext) -> crate::core::error::ResourceResult<HashMap<String, String>> {
-        let mut properties = HashMap::new();
+        // Pre-allocate capacity: 5 required + 2 tracing + 1 optional parent = ~8
+        let mut properties = HashMap::with_capacity(8);
 
         // Inject required fields
         properties.insert(self.get_property_name("workflow-id"), context.workflow_id.clone());
@@ -268,7 +271,8 @@ impl ContextPropagation for EnvironmentContextPropagator {
     }
 
     async fn inject_context(&self, context: &ExecutionContext) -> crate::core::error::ResourceResult<HashMap<String, String>> {
-        let mut env_vars = HashMap::new();
+        // Pre-allocate capacity: 5 required + 2 tracing = 7
+        let mut env_vars = HashMap::with_capacity(7);
 
         env_vars.insert(self.get_var_name("workflow-id"), context.workflow_id.clone());
         env_vars.insert(self.get_var_name("execution-id"), context.execution_id.clone());

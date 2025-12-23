@@ -37,13 +37,19 @@ impl ValueRefExt for Value {
             }
             // Array and Object need to convert nested Values to serde_json::Value
             Value::Array(arr) => {
-                serde_json::Value::Array(arr.iter().map(|v| v.to_json()).collect())
+                // Pre-allocate capacity to avoid multiple reallocations
+                let mut vec = Vec::with_capacity(arr.len());
+                vec.extend(arr.iter().map(|v| v.to_json()));
+                serde_json::Value::Array(vec)
             }
-            Value::Object(obj) => serde_json::Value::Object(
-                obj.entries()
-                    .map(|(k, v)| (k.clone(), v.to_json()))
-                    .collect(),
-            ),
+            Value::Object(obj) => {
+                // Pre-allocate capacity to avoid rehashing
+                let entries = obj.entries();
+                let (size_hint, _) = entries.size_hint();
+                let mut map = serde_json::Map::with_capacity(size_hint);
+                map.extend(entries.map(|(k, v)| (k.clone(), v.to_json())));
+                serde_json::Value::Object(map)
+            },
             #[cfg(feature = "temporal")]
             Value::Date(d) => serde_json::Value::String(d.to_iso_string().to_string()),
             #[cfg(feature = "temporal")]
@@ -51,7 +57,11 @@ impl ValueRefExt for Value {
             #[cfg(feature = "temporal")]
             Value::DateTime(dt) => serde_json::Value::String(dt.to_iso_string().to_string()),
             #[cfg(feature = "temporal")]
-            Value::Duration(dur) => serde_json::Value::Number((dur.as_millis() as u64).into()),
+            Value::Duration(dur) => {
+                // Clamp to u64::MAX for unrealistically large durations (>584 million years)
+                let millis = dur.as_millis().min(u64::MAX as u128) as u64;
+                serde_json::Value::Number(millis.into())
+            }
         }
     }
 }

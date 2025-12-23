@@ -1,6 +1,4 @@
 //! Select widget for SelectParameter.
-//!
-//! Uses nested Flex containers for CSS-like layout control.
 
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{ComboBox, RichText, Ui};
@@ -9,17 +7,9 @@ use nebula_parameter::core::{HasValue, Parameter};
 use nebula_parameter::types::SelectParameter;
 
 /// Widget for single-choice dropdown selection.
-/// ```text
-/// ┌─────────────────────────────────────┐
-/// │ Label *                             │  <- Row 1: label
-/// │ [▼ Selected option            ]     │  <- Row 2: dropdown (full width)
-/// │ Hint text                           │  <- Row 3: hint
-/// └─────────────────────────────────────┘
-/// ```
 pub struct SelectWidget {
     parameter: SelectParameter,
     selected: Option<String>,
-    search_filter: String,
 }
 
 impl ParameterWidget for SelectWidget {
@@ -30,7 +20,6 @@ impl ParameterWidget for SelectWidget {
         Self {
             parameter,
             selected,
-            search_filter: String::new(),
         }
     }
 
@@ -65,25 +54,21 @@ impl ParameterWidget for SelectWidget {
             .as_ref()
             .and_then(|v| {
                 self.parameter
-                    .get_option_by_value(v)
+                    .options
+                    .iter()
+                    .find(|o| &o.value == v)
                     .map(|o| o.name.clone())
             })
             .unwrap_or_else(|| placeholder.clone());
 
         let options = self.parameter.options.clone();
-        let is_searchable = self
-            .parameter
-            .select_options
-            .as_ref()
-            .is_some_and(|o| o.searchable);
 
-        // Outer Flex: vertical container (left-aligned)
         Flex::vertical()
             .w_full()
             .align_items(FlexAlign::Start)
             .gap(egui::vec2(0.0, theme.spacing_sm))
             .show(ui, |flex| {
-                // Row 1: Label (left-aligned, bold)
+                // Row 1: Label
                 flex.add_ui(item(), |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -102,68 +87,21 @@ impl ParameterWidget for SelectWidget {
                     });
                 });
 
-                // Row 2: ComboBox (full width) with consistent styling
+                // Row 2: ComboBox
                 flex.add_ui(item().grow(1.0), |ui| {
                     let width = ui.available_width();
                     let combo_id = ui.make_persistent_id(&key);
 
-                    // Apply consistent styling to ComboBox
                     ui.style_mut().visuals.widgets.inactive.bg_fill = theme.input_bg;
                     ui.style_mut().visuals.widgets.inactive.bg_stroke =
                         egui::Stroke::new(1.0, theme.input_border);
-                    ui.style_mut().visuals.widgets.hovered.bg_fill = theme.input_bg;
-                    ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::new(
-                        theme.input_border_width_focused,
-                        theme.input_border_focused,
-                    );
-                    ui.style_mut().visuals.widgets.active.bg_fill = theme.input_bg;
-                    ui.style_mut().visuals.widgets.active.bg_stroke = egui::Stroke::new(
-                        theme.input_border_width_focused,
-                        theme.input_border_focused,
-                    );
-                    ui.style_mut().visuals.widgets.open.bg_fill = theme.input_bg;
-                    ui.style_mut().visuals.widgets.open.bg_stroke = egui::Stroke::new(
-                        theme.input_border_width_focused,
-                        theme.input_border_focused,
-                    );
-
-                    // Set corner radius
-                    ui.style_mut().visuals.widgets.inactive.corner_radius =
-                        egui::CornerRadius::same(theme.border_radius as u8);
-                    ui.style_mut().visuals.widgets.hovered.corner_radius =
-                        egui::CornerRadius::same(theme.border_radius as u8);
-                    ui.style_mut().visuals.widgets.active.corner_radius =
-                        egui::CornerRadius::same(theme.border_radius as u8);
-                    ui.style_mut().visuals.widgets.open.corner_radius =
-                        egui::CornerRadius::same(theme.border_radius as u8);
-
-                    // Set minimum height via spacing
                     ui.style_mut().spacing.combo_height = theme.control_height;
-                    ui.style_mut().spacing.button_padding = egui::vec2(theme.input_padding, 6.0);
 
                     ComboBox::from_id_salt(combo_id)
                         .selected_text(&display_text)
                         .width(width)
                         .show_ui(ui, |ui| {
-                            // Style popup
-                            ui.style_mut().visuals.widgets.inactive.bg_fill = theme.surface;
-
-                            if is_searchable {
-                                ui.text_edit_singleline(&mut self.search_filter);
-                                ui.add_space(4.0);
-                            }
-
                             for option in &options {
-                                if is_searchable
-                                    && !self.search_filter.is_empty()
-                                    && !option
-                                        .name
-                                        .to_lowercase()
-                                        .contains(&self.search_filter.to_lowercase())
-                                {
-                                    continue;
-                                }
-
                                 let is_selected = self.selected.as_ref() == Some(&option.value);
                                 if ui.selectable_label(is_selected, &option.name).clicked() {
                                     self.selected = Some(option.value.clone());
@@ -173,10 +111,10 @@ impl ParameterWidget for SelectWidget {
                         });
                 });
 
-                // Row 3: Hint
+                // Hint
                 if let Some(hint_text) = &hint {
                     if !hint_text.is_empty() {
-                        flex.add_ui(item().grow(1.0), |ui| {
+                        flex.add_ui(item(), |ui| {
                             ui.label(
                                 RichText::new(hint_text)
                                     .size(theme.hint_font_size)
@@ -188,7 +126,7 @@ impl ParameterWidget for SelectWidget {
 
                 // Error
                 if let Some(ref error) = response.error {
-                    flex.add_ui(item().grow(1.0), |ui| {
+                    flex.add_ui(item(), |ui| {
                         ui.label(
                             RichText::new(error)
                                 .size(theme.hint_font_size)
@@ -229,10 +167,5 @@ impl SelectWidget {
     pub fn clear_selection(&mut self) {
         self.selected = None;
         self.parameter.clear();
-    }
-
-    #[must_use]
-    pub fn selected_display_name(&self) -> Option<String> {
-        self.parameter.get_display_name()
     }
 }

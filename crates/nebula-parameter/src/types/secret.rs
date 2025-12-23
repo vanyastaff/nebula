@@ -161,6 +161,6 @@ impl SecretParameter {
     pub fn masked_value(&self) -> Option<String> {
         self.value
             .as_ref()
-            .map(|v| "*".repeat(v.len().min(8).max(3)))
+            .map(|v| "*".repeat(v.len().clamp(3, 8)))
     }
 }

@@ -544,10 +544,11 @@ where
         Fut: Future<Output = ResourceResult<TypedResourceInstance<T>>> + Send + 'static,
     {
         Self {
-            config,
+            config: config.clone(),
             strategy,
-            available: Arc::new(Mutex::new(Vec::new())),
-            acquired: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            // Pre-allocate for max pool size to avoid reallocations
+            available: Arc::new(Mutex::new(Vec::with_capacity(config.max_size))),
+            acquired: Arc::new(Mutex::new(std::collections::HashMap::with_capacity(config.max_size))),
             stats: Arc::new(RwLock::new(PoolStats::default())),
             factory: Arc::new(move || Box::pin(factory())),
             health_checker: None,
@@ -1108,10 +1109,11 @@ where
     }
 
     async fn health_check_all(&self) -> ResourceResult<Vec<HealthStatus>> {
-        let mut statuses = Vec::new();
-
         // Check all available resources
         let available = self.available.lock();
+
+        // Pre-allocate for number of available resources
+        let mut statuses = Vec::with_capacity(available.len());
         for entry in available.iter() {
             if let Some((_, status)) = &entry.last_health_check {
                 statuses.push(status.clone());

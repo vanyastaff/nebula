@@ -34,36 +34,46 @@ documentation = "https://docs.rs/nebula"
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1.47.1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs"] }
+tokio = { version = "1.48.0", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs"] }
 rayon = { version = "1.11.0" }
 async-trait = "0.1.89"
 
 # Serialization
-serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = "1.0.143"
-serde_with = "3.14.0"
+serde_with = "3.16.1"
 
 # Logging and tracing
-thiserror = {version = "2.0.16" }
+thiserror = { version = "2.0.17" }
 anyhow = "1.0.99"
 tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20",default-features = false }
-
+tracing-subscriber = { version = "0.3.22", default-features = false }
 
 # Data structures
 domain-key = { version = "0.1.1", features = ["serde"] }
-bon = {version = "3.7.2"}
-uuid = { version = "1.18.1", features = ["v4", "serde"] }
-chrono = { version = "0.4.41", features = ["serde"] }
+bon = { version = "3.8.1" }
+uuid = { version = "1.19.0", features = ["v4", "serde"] }
+chrono = { version = "0.4.42", features = ["serde"] }
 
 # Utility
 futures = "0.3.31"
-bytes = "1.10"
+bytes = "1.11.0"
 
 # Testing
 pretty_assertions = "1.4"
-mockall = "0.13.0"
-tempfile = "3.21"
+mockall = "0.14.0"
+tempfile = "3.24.0"
+
+[profile.dev]
+# Standard dev mode (dependency optimization disabled due to Windows compiler ICE)
+opt-level = 0
+incremental = true
+debug = 2
 
 [profile.release]
-lto = true
+# Optimized release builds (tuned for Windows stability)
+lto = "thin"        # Link-time optimization without ICE issues
+codegen-units = 16  # Parallel compilation, more stable than 1
+opt-level = 3       # Maximum optimization level
+strip = "symbols"   # Remove symbols for smaller binary
+panic = 'abort'     # Smaller binary, faster unwinding

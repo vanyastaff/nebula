@@ -39,7 +39,7 @@ chrono = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
 
 # Builder patterns
-bon = "3.2"
+bon = { workspace = true }
 
 # Email validation - using regex for now
 # email-validator = "0.2"
@@ -70,7 +70,7 @@ tokio = { workspace = true, features = ["full"] }
 tokio-test = "0.4"
 
 # Benchmarking
-criterion = { version = "0.7", features = ["html_reports"] }
+criterion = "0.8.1"
 
 [[bench]]
 name = "string_validators"

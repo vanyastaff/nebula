@@ -39,6 +39,7 @@ mod sealed {
 /// This trait is sealed and cannot be implemented outside this crate.
 pub trait FlowControlPattern: sealed::Sealed {
     /// Returns the category name for this pattern type.
+    #[must_use] 
     fn category() -> &'static str {
         "flow_control"
     }
@@ -64,6 +65,7 @@ pub trait FlowControlPattern: sealed::Sealed {
 /// This trait is sealed and cannot be implemented outside this crate.
 pub trait ProtectionPattern: sealed::Sealed {
     /// Returns the category name for this pattern type.
+    #[must_use] 
     fn category() -> &'static str {
         "protection"
     }
@@ -92,6 +94,7 @@ pub trait ProtectionPattern: sealed::Sealed {
 /// This trait is sealed and cannot be implemented outside this crate.
 pub trait RateLimitingPattern: sealed::Sealed {
     /// Returns the category name for this pattern type.
+    #[must_use] 
     fn category() -> &'static str {
         "rate_limiting"
     }
@@ -115,6 +118,7 @@ pub trait RateLimitingPattern: sealed::Sealed {
 /// This trait is sealed and cannot be implemented outside this crate.
 pub trait FallbackPattern: sealed::Sealed {
     /// Returns the category name for this pattern type.
+    #[must_use] 
     fn category() -> &'static str {
         "fallback"
     }
@@ -131,7 +135,7 @@ pub trait FallbackPattern: sealed::Sealed {
 impl sealed::Sealed for CircuitBreaker {}
 
 impl ProtectionPattern for CircuitBreaker {
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Circuit breaker prevents cascade failures by stopping operations when failure threshold is exceeded"
     }
 
@@ -146,7 +150,7 @@ impl ProtectionPattern for CircuitBreaker {
 impl sealed::Sealed for Bulkhead {}
 
 impl ProtectionPattern for Bulkhead {
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Bulkhead limits concurrent operations to prevent resource exhaustion"
     }
 
@@ -164,7 +168,7 @@ impl ProtectionPattern for Bulkhead {
 impl<T: Clone + Send + Sync> sealed::Sealed for crate::patterns::fallback::ValueFallback<T> {}
 
 impl<T: Clone + Send + Sync> FallbackPattern for crate::patterns::fallback::ValueFallback<T> {
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Value fallback provides a default value when operation fails"
     }
 }

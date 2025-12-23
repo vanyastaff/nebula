@@ -104,7 +104,10 @@ impl ParameterWidget for TextWidget {
                     }
 
                     if edit_response.changed() {
-                        if let Err(e) = self.parameter.set_str(&self.buffer) {
+                        if let Err(e) = self
+                            .parameter
+                            .set(nebula_value::Text::from(self.buffer.as_str()))
+                        {
                             response.error = Some(e.to_string());
                         } else {
                             response.changed = true;
@@ -149,6 +152,6 @@ impl TextWidget {
 
     pub fn set_value(&mut self, value: &str) {
         self.buffer = value.to_string();
-        let _ = self.parameter.set_str(value);
+        let _ = self.parameter.set(nebula_value::Text::from(value));
     }
 }

@@ -45,6 +45,7 @@ pub trait BackoffPolicy:
     fn max_delay(&self) -> Duration;
 
     /// Check if policy parameters are valid at compile time
+    #[must_use] 
     fn is_valid() -> bool {
         true
     }
@@ -87,7 +88,7 @@ impl<const DELAY_MS: u64> BackoffPolicy for FixedDelay<DELAY_MS> {
     }
 }
 
-/// Linear backoff policy: delay = base_delay * (attempt + 1)
+/// Linear backoff policy: delay = `base_delay` * (attempt + 1)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinearBackoff<const BASE_DELAY_MS: u64, const MAX_DELAY_MS: u64 = 30_000> {
     _marker: PhantomData<()>,
@@ -129,8 +130,8 @@ impl<const BASE_DELAY_MS: u64, const MAX_DELAY_MS: u64> BackoffPolicy
     }
 }
 
-/// Exponential backoff policy: delay = base_delay * multiplier^attempt
-/// Multiplier is encoded as MULTIPLIER_X10 to avoid floating point in const generics
+/// Exponential backoff policy: delay = `base_delay` * multiplier^attempt
+/// Multiplier is encoded as `MULTIPLIER_X10` to avoid floating point in const generics
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExponentialBackoff<
     const BASE_DELAY_MS: u64,
@@ -191,6 +192,7 @@ pub struct CustomBackoff {
 
 impl CustomBackoff {
     /// Create new custom backoff with delays
+    #[must_use] 
     pub fn new(delays: Vec<Duration>, default_delay: Duration) -> Self {
         Self {
             delays,
@@ -199,6 +201,7 @@ impl CustomBackoff {
     }
 
     /// Create from millisecond values
+    #[must_use] 
     pub fn from_millis(delays: &[u64], default_ms: u64) -> Self {
         let delays = delays.iter().map(|&ms| Duration::from_millis(ms)).collect();
         Self::new(delays, Duration::from_millis(default_ms))
@@ -234,9 +237,9 @@ impl BackoffPolicy for CustomBackoff {
 pub enum JitterPolicy {
     /// No jitter - use calculated delay exactly
     None,
-    /// Full jitter: random(0, calculated_delay)
+    /// Full jitter: random(0, `calculated_delay`)
     Full,
-    /// Equal jitter: calculated_delay/2 + random(0, calculated_delay/2)
+    /// Equal jitter: `calculated_delay/2` + random(0, `calculated_delay/2`)
     Equal,
     /// Decorrelated jitter: more sophisticated algorithm
     Decorrelated,
@@ -244,6 +247,7 @@ pub enum JitterPolicy {
 
 impl JitterPolicy {
     /// Apply jitter to a delay using fast RNG
+    #[must_use] 
     pub fn apply(self, delay: Duration, previous_delay: Option<Duration>) -> Duration {
         match self {
             Self::None => delay,
@@ -303,6 +307,7 @@ pub struct ConservativeCondition<const MAX_ATTEMPTS: usize = 3> {
 
 impl<const MAX_ATTEMPTS: usize> ConservativeCondition<MAX_ATTEMPTS> {
     /// Create a new conservative retry condition.
+    #[must_use] 
     pub const fn new() -> Self {
         assert!(MAX_ATTEMPTS > 0, "Max attempts must be positive");
         Self {
@@ -352,6 +357,7 @@ pub struct AggressiveCondition<const MAX_ATTEMPTS: usize = 5> {
 
 impl<const MAX_ATTEMPTS: usize> AggressiveCondition<MAX_ATTEMPTS> {
     /// Create a new aggressive retry condition.
+    #[must_use] 
     pub const fn new() -> Self {
         assert!(MAX_ATTEMPTS > 0, "Max attempts must be positive");
         Self {
@@ -372,7 +378,7 @@ where
     }
 
     fn is_terminal(&self, error: &E) -> bool {
-        let error_str = format!("{:?}", error);
+        let error_str = format!("{error:?}");
         error_str.contains("NotFound")
             || error_str.contains("Unauthorized")
             || error_str.contains("InvalidInput")
@@ -394,6 +400,7 @@ pub struct TimeBasedCondition<const MAX_DURATION_MS: u64 = 30_000> {
 
 impl<const MAX_DURATION_MS: u64> TimeBasedCondition<MAX_DURATION_MS> {
     /// Create a new time-based condition with the given maximum attempts.
+    #[must_use] 
     pub const fn new(max_attempts: usize) -> Self {
         assert!(max_attempts > 0, "Max attempts must be positive");
         assert!(MAX_DURATION_MS > 0, "Max duration must be positive");
@@ -427,7 +434,7 @@ where
     }
 
     fn is_terminal(&self, error: &E) -> bool {
-        let error_str = format!("{:?}", error);
+        let error_str = format!("{error:?}");
         error_str.contains("NotFound")
             || error_str.contains("Unauthorized")
             || error_str.contains("InvalidInput")
@@ -553,13 +560,12 @@ impl<B: BackoffPolicy, C> RetryConfig<B, C> {
             ));
         }
 
-        if let Some(max_duration) = self.max_total_duration {
-            if max_duration.is_zero() {
+        if let Some(max_duration) = self.max_total_duration
+            && max_duration.is_zero() {
                 return Err(ConfigError::validation(
                     "max_total_duration must be positive",
                 ));
             }
-        }
 
         Ok(())
     }
@@ -639,8 +645,8 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
                         && !self.config.condition.is_terminal(&error);
 
                     // Check total duration limit
-                    if let Some(max_duration) = self.config.max_total_duration {
-                        if elapsed >= max_duration {
+                    if let Some(max_duration) = self.config.max_total_duration
+                        && elapsed >= max_duration {
                             warn!(
                                 attempts = attempt + 1,
                                 elapsed_ms = elapsed.as_millis(),
@@ -659,7 +665,6 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
                             };
                             return Err(error);
                         }
-                    }
 
                     if !should_retry {
                         warn!(
@@ -708,7 +713,7 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
         }
     }
 
-    /// Execute with ResilienceError handling
+    /// Execute with `ResilienceError` handling
     pub async fn execute_resilient<T, F, Fut>(
         &self,
         operation: F,
@@ -888,6 +893,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_strategy_success() {
+        use crate::core::ResilienceError;
+
         let strategy = RetryStrategy::with_policy(
             FixedDelay::<10>::default(),
             ConservativeCondition::<3>::new(),
@@ -900,7 +907,7 @@ mod tests {
         let (result, stats) = strategy
             .execute(|| async {
                 counter_clone.fetch_add(1, Ordering::Relaxed);
-                Ok::<_, &'static str>("success")
+                Ok::<_, ResilienceError>("success")
             })
             .await
             .unwrap();
@@ -946,6 +953,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_terminal_error() {
+        use crate::core::ResilienceError;
+
         let strategy = RetryStrategy::with_policy(
             FixedDelay::<10>::default(),
             ConservativeCondition::<3>::new(),
@@ -958,7 +967,9 @@ mod tests {
         let result = strategy
             .execute(|| async {
                 counter_clone.fetch_add(1, Ordering::Relaxed);
-                Err::<(), _>("NotFound") // Terminal error
+                Err::<(), _>(ResilienceError::InvalidConfig {
+                    message: "NotFound".into(),
+                }) // Terminal error
             })
             .await;
 

@@ -3,8 +3,8 @@
 //! This module provides layer composition for building resilience pipelines:
 //!
 //! - **Layer traits** for composable middleware
-//! - **LayerBuilder** for fluent API construction
-//! - **Timeout, Retry, CircuitBreaker, Bulkhead** layers
+//! - **`LayerBuilder`** for fluent API construction
+//! - **Timeout, Retry, `CircuitBreaker`, Bulkhead** layers
 //!
 //! # Layer Composition
 //!
@@ -149,7 +149,7 @@ impl<T: Send + 'static> ResilienceLayer<T> for TimeoutLayer {
     }
 }
 
-/// Retry layer using RetryPolicyConfig
+/// Retry layer using `RetryPolicyConfig`
 pub(crate) struct RetryLayer {
     config: RetryPolicyConfig,
 }

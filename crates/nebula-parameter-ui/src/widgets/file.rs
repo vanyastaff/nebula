@@ -151,9 +151,8 @@ impl FileWidget {
         //     response.changed = true;
         // }
 
-        tracing::info!(
-            "File dialog would open here - integrate with rfd crate for real functionality"
-        );
+        // File dialog would open here - integrate with rfd crate for real functionality
+        let _ = response;
     }
 
     /// Get the currently selected file reference.

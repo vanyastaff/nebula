@@ -8,9 +8,7 @@ use nebula_parameter::types::{GroupFieldType, GroupParameter, GroupValue};
 /// Widget for grouped parameter fields.
 pub struct GroupWidget {
     parameter: GroupParameter,
-    /// Current field values (string representations for editing)
     field_buffers: std::collections::HashMap<String, String>,
-    /// Whether the group is collapsed
     collapsed: bool,
 }
 
@@ -18,7 +16,6 @@ impl ParameterWidget for GroupWidget {
     type Parameter = GroupParameter;
 
     fn new(parameter: Self::Parameter) -> Self {
-        // Initialize buffers from current value or defaults
         let mut field_buffers = std::collections::HashMap::new();
 
         if let Some(value) = parameter.get() {
@@ -29,7 +26,6 @@ impl ParameterWidget for GroupWidget {
             }
         }
 
-        // Fill in missing fields with defaults
         for field in &parameter.fields {
             if !field_buffers.contains_key(&field.key) {
                 let default_str = field
@@ -41,15 +37,10 @@ impl ParameterWidget for GroupWidget {
             }
         }
 
-        let collapsed = parameter
-            .options
-            .as_ref()
-            .is_some_and(|o| o.start_collapsed);
-
         Self {
             parameter,
             field_buffers,
-            collapsed,
+            collapsed: false,
         }
     }
 
@@ -64,42 +55,26 @@ impl ParameterWidget for GroupWidget {
     fn show(&mut self, ui: &mut Ui, theme: &ParameterTheme) -> WidgetResponse {
         let mut response = WidgetResponse::default();
 
-        // Clone metadata fields to avoid borrow conflicts
         let metadata = self.parameter.metadata();
         let name = metadata.name.clone();
         let description = metadata.description.clone();
-        let is_collapsible = self
-            .parameter
-            .options
-            .as_ref()
-            .is_some_and(|o| o.collapsible);
 
-        if is_collapsible {
-            let header_response = ui.collapsing(&name, |ui| {
-                self.show_fields(ui, theme, &mut response);
-            });
-            self.collapsed = !header_response.fully_open();
-        } else {
-            ui.themed_label(theme, &name);
+        ui.themed_label(theme, &name);
 
-            // Description
-            if !description.is_empty() {
-                ui.themed_hint(theme, &description);
-            }
-
-            ui.add_space(4.0);
-
-            // Group frame
-            egui::Frame::none()
-                .stroke(egui::Stroke::new(1.0, theme.input_border))
-                .rounding(theme.border_radius)
-                .inner_margin(12.0)
-                .show(ui, |ui| {
-                    self.show_fields(ui, theme, &mut response);
-                });
+        if !description.is_empty() {
+            ui.themed_hint(theme, &description);
         }
 
-        // Show validation error
+        ui.add_space(4.0);
+
+        egui::Frame::none()
+            .stroke(egui::Stroke::new(1.0, theme.input_border))
+            .corner_radius(theme.border_radius)
+            .inner_margin(12.0)
+            .show(ui, |ui| {
+                self.show_fields(ui, theme, &mut response);
+            });
+
         if let Some(ref error) = response.error {
             ui.themed_error(theme, error);
         }
@@ -114,7 +89,6 @@ impl GroupWidget {
 
         for field in &fields {
             ui.horizontal(|ui| {
-                // Field label
                 let label = if field.required {
                     format!("{}*", field.name)
                 } else {
@@ -122,7 +96,6 @@ impl GroupWidget {
                 };
                 ui.label(&label);
 
-                // Field input based on type
                 let buffer = self.field_buffers.entry(field.key.clone()).or_default();
 
                 let changed = match &field.field_type {
@@ -172,7 +145,6 @@ impl GroupWidget {
                 }
             });
 
-            // Field description
             if let Some(desc) = &field.description {
                 ui.themed_hint(theme, desc);
             }
@@ -198,32 +170,27 @@ impl GroupWidget {
         }
     }
 
-    /// Get the current group value.
     #[must_use]
     pub fn value(&self) -> Option<&GroupValue> {
         self.parameter.get()
     }
 
-    /// Get a field value by key.
     #[must_use]
     pub fn get_field(&self, key: &str) -> Option<&String> {
         self.field_buffers.get(key)
     }
 
-    /// Set a field value by key.
     pub fn set_field(&mut self, key: &str, value: &str) {
         self.field_buffers
             .insert(key.to_string(), value.to_string());
     }
 
-    /// Check if the group is collapsed.
     #[must_use]
     pub fn is_collapsed(&self) -> bool {
         self.collapsed
     }
 }
 
-/// Convert a nebula_value::Value to string for editing.
 fn value_to_string(value: &nebula_value::Value) -> String {
     match value {
         nebula_value::Value::Text(t) => t.to_string(),
@@ -235,7 +202,6 @@ fn value_to_string(value: &nebula_value::Value) -> String {
     }
 }
 
-/// Convert a string back to nebula_value::Value based on field type.
 fn string_to_value(s: &str, field_type: &GroupFieldType) -> nebula_value::Value {
     match field_type {
         GroupFieldType::Text

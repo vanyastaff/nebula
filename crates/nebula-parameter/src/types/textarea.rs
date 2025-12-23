@@ -180,7 +180,10 @@ impl TextareaParameter {
             && let Some(max_len) = options.max_length
         {
             let current = self.character_count();
-            return Some(max_len as i32 - current as i32);
+            // Use try_from to safely convert usize to i32, saturating at i32::MAX if too large
+            let max = i32::try_from(max_len).unwrap_or(i32::MAX);
+            let curr = i32::try_from(current).unwrap_or(i32::MAX);
+            return Some(max.saturating_sub(curr));
         }
         None
     }

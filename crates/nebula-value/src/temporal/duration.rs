@@ -475,8 +475,9 @@ impl serde::Serialize for Duration {
     where
         S: serde::Serializer,
     {
-        // Serialize as milliseconds
-        serializer.serialize_u64(self.as_millis() as u64)
+        // Serialize as milliseconds, clamping unrealistically large durations
+        let millis = self.as_millis().min(u64::MAX as u128) as u64;
+        serializer.serialize_u64(millis)
     }
 }
 

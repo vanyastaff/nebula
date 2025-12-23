@@ -4,7 +4,15 @@
       "Bash(cargo check:*)",
       "Bash(cargo test:*)",
       "Bash(cargo run:*)",
-      "Bash(cargo build:*)"
+      "Bash(cargo build:*)",
+      "Skill(superpowers:brainstorming)",
+      "Bash(cargo clean:*)",
+      "Bash(cargo update:*)",
+      "Skill(superpowers:writing-plans)",
+      "Bash(cargo audit:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(cargo clippy:*)"
     ]
   }
 }

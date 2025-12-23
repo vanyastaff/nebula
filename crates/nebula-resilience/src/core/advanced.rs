@@ -236,6 +236,7 @@ pub trait Strategy: Send + Sync + 'static {
     fn name() -> &'static str;
 
     /// Whether to retry immediately without delay on first failure.
+    #[must_use] 
     fn immediate_first_retry() -> bool {
         false
     }
@@ -293,6 +294,7 @@ pub struct StrategyConfig<S: Strategy> {
 
 impl<S: Strategy> StrategyConfig<S> {
     /// Create new strategy configuration.
+    #[must_use] 
     pub const fn new(max_attempts: usize, base_delay: Duration) -> Self {
         Self {
             max_attempts,
@@ -302,11 +304,13 @@ impl<S: Strategy> StrategyConfig<S> {
     }
 
     /// Get strategy name.
+    #[must_use] 
     pub fn strategy_name(&self) -> &'static str {
         S::name()
     }
 
     /// Check if immediate first retry is enabled.
+    #[must_use] 
     pub fn immediate_first_retry(&self) -> bool {
         S::immediate_first_retry()
     }
@@ -365,6 +369,7 @@ impl<O: OperationOutcome> OperationHandle<O> {
     }
 
     /// Get operation ID.
+    #[must_use] 
     pub const fn id(&self) -> u64 {
         self.id
     }
@@ -372,6 +377,7 @@ impl<O: OperationOutcome> OperationHandle<O> {
 
 impl OperationHandle<Pending> {
     /// Create a pending operation handle.
+    #[must_use] 
     pub fn pending(id: u64) -> Self {
         Self::new(id)
     }
@@ -397,14 +403,15 @@ impl OperationHandle<Pending> {
 #[derive(Debug, Clone, Copy)]
 pub struct Covariant<'a>(PhantomData<&'a ()>);
 
-impl<'a> Covariant<'a> {
+impl Covariant<'_> {
     /// Create a new conservative strategy marker
+    #[must_use] 
     pub const fn new() -> Self {
         Self(PhantomData)
     }
 }
 
-impl<'a> Default for Covariant<'a> {
+impl Default for Covariant<'_> {
     fn default() -> Self {
         Self::new()
     }
@@ -416,14 +423,15 @@ impl<'a> Default for Covariant<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct Contravariant<'a>(PhantomData<fn(&'a ()) -> ()>);
 
-impl<'a> Contravariant<'a> {
+impl Contravariant<'_> {
     /// Create a new balanced strategy marker
+    #[must_use] 
     pub const fn new() -> Self {
         Self(PhantomData)
     }
 }
 
-impl<'a> Default for Contravariant<'a> {
+impl Default for Contravariant<'_> {
     fn default() -> Self {
         Self::new()
     }
@@ -435,14 +443,15 @@ impl<'a> Default for Contravariant<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct Invariant<'a>(PhantomData<fn(&'a ()) -> &'a ()>);
 
-impl<'a> Invariant<'a> {
+impl Invariant<'_> {
     /// Create a new aggressive strategy marker
+    #[must_use] 
     pub const fn new() -> Self {
         Self(PhantomData)
     }
 }
 
-impl<'a> Default for Invariant<'a> {
+impl Default for Invariant<'_> {
     fn default() -> Self {
         Self::new()
     }

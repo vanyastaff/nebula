@@ -52,17 +52,17 @@ full = ["std", "pool", "arena", "cache", "stats", "budget", "streaming", "monito
 [dependencies]
 # Collections
 crossbeam-queue = { version = "0.3", optional = true, default-features = false }
-hashbrown = { version = "0.15", optional = true, default-features = false }
+hashbrown = { version = "0.16.1", optional = true, default-features = false }
 dashmap = { version = "6.1.0", optional = true, default-features = false }
 
 # Core dependencies
 cfg-if = "1.0"
 dyn-clone = "1.0"
-spin = "0.9"
+spin = "0.10.0"
 chrono = { version = "0.4", optional = true, default-features = false, features = ["clock"] }
 
 # No-std collections
-heapless = "0.8"
+heapless = "0.9.2"
 
 # Platform-specific
 libc = { version = "0.2", optional = true }
@@ -82,11 +82,11 @@ futures-core = { version = "0.3", optional = true, default-features = false }
 futures = { version = "0.3", optional = true, default-features = false, features = ["alloc"] }
 
 # Compression (optional)
-lz4_flex = { version = "0.11", optional = true, default-features = false }
+lz4_flex = { version = "0.12.0", optional = true, default-features = false }
 
 # Debug tools (optional)
 backtrace = { version = "0.3", optional = true }
-rand = { version = "0.8", optional = true }
+rand = { version = "0.9.2", optional = true }
 
 # Errors
 thiserror = { workspace = true }
@@ -97,9 +97,9 @@ nebula-log = { path = "..\\nebula-log", optional = true }
 nebula-system = { path = "..\\nebula-system" }
 
 [dev-dependencies]
-criterion = { version = "0.7", features = ["html_reports"] }
-proptest = "1.6"
-rand = "0.8"
+criterion = "0.8.1"
+proptest = "1.9"
+rand = "0.9.2"
 
 
 [package.metadata.docs.rs]

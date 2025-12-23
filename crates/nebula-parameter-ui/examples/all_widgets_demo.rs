@@ -33,6 +33,27 @@ fn main() -> eframe::Result<()> {
     )
 }
 
+/// Helper function to create ParameterMetadata using builder pattern
+fn create_metadata(key: &str, name: &str, description: &str) -> ParameterMetadata {
+    ParameterMetadata::builder()
+        .key(key)
+        .name(name)
+        .description(description)
+        .build()
+        .unwrap()
+}
+
+/// Helper function to create required ParameterMetadata
+fn create_required_metadata(key: &str, name: &str, description: &str) -> ParameterMetadata {
+    ParameterMetadata::builder()
+        .key(key)
+        .name(name)
+        .description(description)
+        .required(true)
+        .build()
+        .unwrap()
+}
+
 struct DemoApp {
     theme: ParameterTheme,
     // Basic widgets
@@ -40,11 +61,11 @@ struct DemoApp {
     textarea_widget: TextareaWidget,
     checkbox_widget: CheckboxWidget,
     secret_widget: SecretWidget,
-    // Number widgets - all display modes
-    number_text: NumberWidget,
-    number_drag: NumberWidget,
-    number_slider: NumberWidget,
-    number_slider_text: NumberWidget,
+    // Number widgets
+    number_basic: NumberWidget,
+    number_range: NumberWidget,
+    number_step: NumberWidget,
+    number_precision: NumberWidget,
     // Selection widgets
     select_widget: SelectWidget,
     radio_widget: RadioWidget,
@@ -65,6 +86,8 @@ struct DemoApp {
     object_widget: ObjectWidget,
     // Mode widget
     mode_widget: ModeWidget,
+    // Panel widget
+    panel_widget: PanelWidget,
 }
 
 impl DemoApp {
@@ -75,11 +98,11 @@ impl DemoApp {
             textarea_widget: TextareaWidget::new(create_textarea_parameter()),
             checkbox_widget: CheckboxWidget::new(create_checkbox_parameter()),
             secret_widget: SecretWidget::new(create_secret_parameter()),
-            // Number widgets - all display modes
-            number_text: NumberWidget::new(create_number_text()),
-            number_drag: NumberWidget::new(create_number_drag()),
-            number_slider: NumberWidget::new(create_number_slider()),
-            number_slider_text: NumberWidget::new(create_number_slider_text()),
+            // Number widgets with different configurations
+            number_basic: NumberWidget::new(create_number_basic()),
+            number_range: NumberWidget::new(create_number_range()),
+            number_step: NumberWidget::new(create_number_step()),
+            number_precision: NumberWidget::new(create_number_precision()),
             select_widget: SelectWidget::new(create_select_parameter()),
             radio_widget: RadioWidget::new(create_radio_parameter()),
             multi_select_widget: MultiSelectWidget::new(create_multi_select_parameter()),
@@ -107,6 +130,7 @@ impl DemoApp {
             list_widget: ListWidget::new(create_list_parameter()),
             object_widget: ObjectWidget::new(create_object_parameter()),
             mode_widget: ModeWidget::new(create_mode_parameter()),
+            panel_widget: PanelWidget::new(create_panel_parameter()),
         }
     }
 }
@@ -134,7 +158,7 @@ impl eframe::App for DemoApp {
                 ui.small("  Color, Code, Notice");
                 ui.separator();
                 ui.label("Container:");
-                ui.small("  List");
+                ui.small("  List, Object, Mode, Panel");
 
                 ui.separator();
                 ui.heading("Theme");
@@ -171,25 +195,25 @@ impl eframe::App for DemoApp {
                     show_response(ui, &response);
                 });
 
-                // Number - All Display Modes
-                widget_section(ui, "NumberWidget - All Display Modes", |ui| {
-                    ui.label("Text mode (input type=number style):");
-                    let response = self.number_text.show(ui, &self.theme);
+                // Number - Different configurations
+                widget_section(ui, "NumberWidget - Various Configurations", |ui| {
+                    ui.label("Basic number input:");
+                    let response = self.number_basic.show(ui, &self.theme);
                     show_response(ui, &response);
 
                     ui.add_space(12.0);
-                    ui.label("Drag mode (click and drag):");
-                    let response = self.number_drag.show(ui, &self.theme);
+                    ui.label("With range (0-1000):");
+                    let response = self.number_range.show(ui, &self.theme);
                     show_response(ui, &response);
 
                     ui.add_space(12.0);
-                    ui.label("Slider mode:");
-                    let response = self.number_slider.show(ui, &self.theme);
+                    ui.label("With step (increment by 5):");
+                    let response = self.number_step.show(ui, &self.theme);
                     show_response(ui, &response);
 
                     ui.add_space(12.0);
-                    ui.label("SliderText mode (slider + text input):");
-                    let response = self.number_slider_text.show(ui, &self.theme);
+                    ui.label("With precision (2 decimal places):");
+                    let response = self.number_precision.show(ui, &self.theme);
                     show_response(ui, &response);
                 });
 
@@ -298,6 +322,12 @@ impl eframe::App for DemoApp {
                     show_response(ui, &response);
                 });
 
+                // Panel
+                widget_section(ui, "PanelWidget", |ui| {
+                    let response = self.panel_widget.show(ui, &self.theme);
+                    show_response(ui, &response);
+                });
+
                 ui.add_space(50.0);
             });
         });
@@ -305,9 +335,9 @@ impl eframe::App for DemoApp {
 }
 
 fn widget_section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::none()
+    egui::Frame::new()
         .fill(ui.visuals().faint_bg_color)
-        .rounding(8.0)
+        .corner_radius(8.0)
         .inner_margin(16.0)
         .outer_margin(egui::Margin::symmetric(0, 4))
         .show(ui, |ui| {
@@ -335,174 +365,192 @@ fn show_response(ui: &mut egui::Ui, response: &WidgetResponse) {
 
 fn create_text_parameter() -> TextParameter {
     TextParameter::builder()
-        .metadata(ParameterMetadata::new("username", "Username", "Enter your username").unwrap())
+        .metadata(create_metadata(
+            "username",
+            "Username",
+            "Enter your username",
+        ))
         .build()
 }
 
 fn create_textarea_parameter() -> TextareaParameter {
     TextareaParameter::builder()
-        .metadata(ParameterMetadata::new("bio", "Biography", "Tell us about yourself").unwrap())
+        .metadata(create_metadata(
+            "bio",
+            "Biography",
+            "Tell us about yourself",
+        ))
         .build()
 }
 
-fn create_number_text() -> NumberParameter {
+fn create_number_basic() -> NumberParameter {
     NumberParameter::builder()
-        .metadata(
-            ParameterMetadata::new("price", "Price", "Only numbers allowed, try typing letters")
-                .unwrap(),
-        )
-        .options(
-            NumberParameterOptions::new()
-                .with_display_mode(NumberDisplayMode::Text)
-                .with_range(0.0, 1000.0)
-                .with_precision(2)
-                .with_prefix("$"),
-        )
+        .metadata(create_metadata("quantity", "Quantity", "Enter a number"))
         .build()
 }
 
-fn create_number_drag() -> NumberParameter {
+fn create_number_range() -> NumberParameter {
     NumberParameter::builder()
-        .metadata(
-            ParameterMetadata::new("quantity", "Quantity", "Click and drag to change value")
-                .unwrap(),
-        )
+        .metadata(create_metadata(
+            "price",
+            "Price",
+            "Value between 0 and 1000",
+        ))
         .options(
-            NumberParameterOptions::new()
-                .with_display_mode(NumberDisplayMode::Drag)
-                .with_range(0.0, 100.0)
-                .with_step(1.0)
-                .with_precision(0)
-                .with_suffix(" pcs"),
+            NumberParameterOptions::builder()
+                .min(0.0)
+                .max(1000.0)
+                .build(),
         )
         .build()
 }
 
-fn create_number_slider() -> NumberParameter {
+fn create_number_step() -> NumberParameter {
     NumberParameter::builder()
-        .metadata(ParameterMetadata::new("volume", "Volume", "Drag the slider").unwrap())
+        .metadata(create_metadata("count", "Count", "Increment by 5"))
         .options(
-            NumberParameterOptions::new()
-                .with_display_mode(NumberDisplayMode::Slider)
-                .with_range(0.0, 100.0)
-                .with_suffix("%"),
+            NumberParameterOptions::builder()
+                .min(0.0)
+                .max(100.0)
+                .step(5.0)
+                .build(),
         )
         .build()
 }
 
-fn create_number_slider_text() -> NumberParameter {
+fn create_number_precision() -> NumberParameter {
     NumberParameter::builder()
-        .metadata(
-            ParameterMetadata::new("opacity", "Opacity", "Use slider or type exact value").unwrap(),
-        )
+        .metadata(create_metadata(
+            "amount",
+            "Amount",
+            "2 decimal places allowed",
+        ))
         .options(
-            NumberParameterOptions::new()
-                .with_display_mode(NumberDisplayMode::SliderText)
-                .with_range(0.0, 100.0)
-                .with_precision(1)
-                .with_suffix("%"),
+            NumberParameterOptions::builder()
+                .min(0.0)
+                .max(100.0)
+                .precision(2)
+                .build(),
         )
         .build()
 }
 
 fn create_checkbox_parameter() -> CheckboxParameter {
     CheckboxParameter::builder()
-        .metadata(
-            ParameterMetadata::new("agree", "I agree to terms", "You must agree to continue")
-                .unwrap(),
-        )
+        .metadata(create_metadata(
+            "agree",
+            "I agree to terms",
+            "You must agree to continue",
+        ))
         .build()
 }
 
 fn create_secret_parameter() -> SecretParameter {
     SecretParameter::builder()
-        .metadata(
-            ParameterMetadata::new("password", "Password", "Enter a secure password").unwrap(),
-        )
+        .metadata(create_metadata(
+            "password",
+            "Password",
+            "Enter a secure password",
+        ))
         .build()
 }
 
 fn create_select_parameter() -> SelectParameter {
     SelectParameter::builder()
-        .metadata(ParameterMetadata::new("country", "Country", "Select your country").unwrap())
+        .metadata(create_metadata("country", "Country", "Select your country"))
         .options(vec![
-            SelectOption::simple("us", "United States"),
-            SelectOption::simple("uk", "United Kingdom"),
-            SelectOption::simple("de", "Germany"),
-            SelectOption::simple("fr", "France"),
-            SelectOption::simple("jp", "Japan"),
+            SelectOption::new("us", "United States", "us"),
+            SelectOption::new("uk", "United Kingdom", "uk"),
+            SelectOption::new("de", "Germany", "de"),
+            SelectOption::new("fr", "France", "fr"),
+            SelectOption::new("jp", "Japan", "jp"),
         ])
         .build()
 }
 
 fn create_radio_parameter() -> RadioParameter {
     RadioParameter::builder()
-        .metadata(ParameterMetadata::new("plan", "Subscription Plan", "Choose your plan").unwrap())
+        .metadata(create_metadata(
+            "plan",
+            "Subscription Plan",
+            "Choose your plan",
+        ))
         .options(vec![
-            SelectOption::simple("free", "Free"),
-            SelectOption::simple("basic", "Basic - $9/mo"),
-            SelectOption::simple("pro", "Pro - $29/mo"),
+            SelectOption::new("free", "Free", "free"),
+            SelectOption::new("basic", "Basic - $9/mo", "basic"),
+            SelectOption::new("pro", "Pro - $29/mo", "pro"),
         ])
         .build()
 }
 
 fn create_multi_select_parameter() -> MultiSelectParameter {
     MultiSelectParameter::builder()
-        .metadata(
-            ParameterMetadata::new("interests", "Interests", "Select your interests").unwrap(),
-        )
+        .metadata(create_metadata(
+            "interests",
+            "Interests",
+            "Select your interests",
+        ))
         .options(vec![
-            SelectOption::simple("tech", "Technology"),
-            SelectOption::simple("music", "Music"),
-            SelectOption::simple("sports", "Sports"),
-            SelectOption::simple("travel", "Travel"),
-            SelectOption::simple("food", "Food & Cooking"),
+            SelectOption::new("tech", "Technology", "tech"),
+            SelectOption::new("music", "Music", "music"),
+            SelectOption::new("sports", "Sports", "sports"),
+            SelectOption::new("travel", "Travel", "travel"),
+            SelectOption::new("food", "Food & Cooking", "food"),
         ])
         .build()
 }
 
 fn create_date_parameter() -> DateParameter {
     DateParameter::builder()
-        .metadata(
-            ParameterMetadata::new("birthday", "Birthday", "Enter your date of birth").unwrap(),
-        )
+        .metadata(create_metadata(
+            "birthday",
+            "Birthday",
+            "Enter your date of birth",
+        ))
         .build()
 }
 
 fn create_time_parameter() -> TimeParameter {
     TimeParameter::builder()
-        .metadata(ParameterMetadata::new("alarm", "Alarm Time", "Set your alarm").unwrap())
+        .metadata(create_metadata("alarm", "Alarm Time", "Set your alarm"))
         .build()
 }
 
 fn create_datetime_parameter() -> DateTimeParameter {
     DateTimeParameter::builder()
-        .metadata(
-            ParameterMetadata::new("meeting", "Meeting Time", "Schedule your meeting").unwrap(),
-        )
+        .metadata(create_metadata(
+            "meeting",
+            "Meeting Time",
+            "Schedule your meeting",
+        ))
         .build()
 }
 
 fn create_color_parameter() -> ColorParameter {
     ColorParameter::builder()
-        .metadata(
-            ParameterMetadata::new("theme_color", "Theme Color", "Choose your theme color")
-                .unwrap(),
-        )
+        .metadata(create_metadata(
+            "theme_color",
+            "Theme Color",
+            "Choose your theme color",
+        ))
         .build()
 }
 
 fn create_code_parameter() -> CodeParameter {
     CodeParameter::builder()
-        .metadata(ParameterMetadata::new("script", "Script", "Enter your code").unwrap())
+        .metadata(create_metadata("script", "Script", "Enter your code"))
         .build()
 }
 
 fn create_notice_parameter(notice_type: NoticeType, message: &str) -> NoticeParameter {
     NoticeParameter::builder()
-        .metadata(ParameterMetadata::new("notice", "Notice", "").unwrap())
+        .metadata(create_metadata("notice", "Notice", ""))
         .content(message.to_string())
-        .options(NoticeParameterOptions::new().with_notice_type(notice_type))
+        .options(
+            NoticeParameterOptions::builder()
+                .notice_type(notice_type)
+                .build(),
+        )
         .build()
 }
 
@@ -516,42 +564,63 @@ fn create_object_parameter() -> ObjectParameter {
 
     // Required parameters (always shown)
     let name_param = TextParameter::builder()
-        .metadata(ParameterMetadata::required("name", "Full Name", "Enter your full name").unwrap())
+        .metadata(create_required_metadata(
+            "name",
+            "Full Name",
+            "Enter your full name",
+        ))
         .build();
 
     let email_param = TextParameter::builder()
-        .metadata(
-            ParameterMetadata::required("email", "Email", "Enter your email address").unwrap(),
-        )
+        .metadata(create_required_metadata(
+            "email",
+            "Email",
+            "Enter your email address",
+        ))
         .build();
 
     // Optional parameters (can be added via "Add Parameter" button)
     let age_param = NumberParameter::builder()
-        .metadata(ParameterMetadata::new("age", "Age", "Enter your age").unwrap())
+        .metadata(create_metadata("age", "Age", "Enter your age"))
         .options(
-            NumberParameterOptions::new()
-                .with_display_mode(NumberDisplayMode::Text)
-                .with_range(0.0, 150.0)
-                .with_precision(0),
+            NumberParameterOptions::builder()
+                .min(0.0)
+                .max(150.0)
+                .precision(0)
+                .build(),
         )
         .build();
 
     let phone_param = TextParameter::builder()
-        .metadata(ParameterMetadata::new("phone", "Phone Number", "Enter phone number").unwrap())
+        .metadata(create_metadata(
+            "phone",
+            "Phone Number",
+            "Enter phone number",
+        ))
         .build();
 
     let website_param = TextParameter::builder()
-        .metadata(ParameterMetadata::new("website", "Website", "Your personal website").unwrap())
+        .metadata(create_metadata(
+            "website",
+            "Website",
+            "Your personal website",
+        ))
         .build();
 
     let newsletter_param = CheckboxParameter::builder()
-        .metadata(
-            ParameterMetadata::new("newsletter", "Subscribe to Newsletter", "Get updates").unwrap(),
-        )
+        .metadata(create_metadata(
+            "newsletter",
+            "Subscribe to Newsletter",
+            "Get updates",
+        ))
         .build();
 
     let bio_param = TextParameter::builder()
-        .metadata(ParameterMetadata::new("bio", "Biography", "Tell us about yourself").unwrap())
+        .metadata(create_metadata(
+            "bio",
+            "Biography",
+            "Tell us about yourself",
+        ))
         .build();
 
     // Add required first
@@ -571,35 +640,131 @@ fn create_object_parameter() -> ObjectParameter {
 fn create_mode_parameter() -> ModeParameter {
     // Create child parameters for each mode
     let email_param = TextParameter::builder()
-        .metadata(
-            ParameterMetadata::new("email", "Email Address", "Enter recipient email").unwrap(),
-        )
+        .metadata(create_metadata(
+            "email",
+            "Email Address",
+            "Enter recipient email",
+        ))
         .build();
 
     let sms_param = TextParameter::builder()
-        .metadata(ParameterMetadata::new("phone", "Phone Number", "Enter phone number").unwrap())
+        .metadata(create_metadata(
+            "phone",
+            "Phone Number",
+            "Enter phone number",
+        ))
         .build();
 
     let webhook_param = TextParameter::builder()
-        .metadata(ParameterMetadata::new("url", "Webhook URL", "Enter webhook endpoint").unwrap())
+        .metadata(create_metadata(
+            "url",
+            "Webhook URL",
+            "Enter webhook endpoint",
+        ))
         .build();
 
-    ModeParameter::builder()
-        .metadata(
-            ParameterMetadata::new(
-                "notification_mode",
-                "Notification Method",
-                "Choose how to send notifications",
-            )
-            .unwrap(),
-        )
-        .modes(vec![
-            ModeItem::new("email", "Email", email_param)
-                .with_description("Send notifications via email")
-                .as_default(),
-            ModeItem::new("sms", "SMS", sms_param).with_description("Send notifications via SMS"),
-            ModeItem::new("webhook", "Webhook", webhook_param)
-                .with_description("Send notifications to a webhook endpoint"),
-        ])
-        .build()
+    let mut mode_param = ModeParameter::new(
+        "notification_mode",
+        "Notification Method",
+        "Choose how to send notifications",
+    )
+    .unwrap();
+
+    mode_param.add_mode(ModeItem {
+        key: "email".to_string(),
+        name: "Email".to_string(),
+        description: Some("Send notifications via email".to_string()),
+        children: Box::new(email_param),
+        default: true,
+    });
+
+    mode_param.add_mode(ModeItem {
+        key: "sms".to_string(),
+        name: "SMS".to_string(),
+        description: Some("Send notifications via SMS".to_string()),
+        children: Box::new(sms_param),
+        default: false,
+    });
+
+    mode_param.add_mode(ModeItem {
+        key: "webhook".to_string(),
+        name: "Webhook".to_string(),
+        description: Some("Send notifications to a webhook endpoint".to_string()),
+        children: Box::new(webhook_param),
+        default: false,
+    });
+
+    mode_param
+}
+
+fn create_panel_parameter() -> PanelParameter {
+    use nebula_parameter::types::Panel;
+
+    // Create child parameters for panels
+    let general_name = TextParameter::builder()
+        .metadata(create_metadata("name", "Name", "Enter your name"))
+        .build();
+
+    let general_email = TextParameter::builder()
+        .metadata(create_metadata("email", "Email", "Enter your email"))
+        .build();
+
+    let security_password = SecretParameter::builder()
+        .metadata(create_metadata("password", "Password", "Enter password"))
+        .build();
+
+    let security_2fa = CheckboxParameter::builder()
+        .metadata(create_metadata(
+            "two_factor",
+            "Enable 2FA",
+            "Enable two-factor authentication",
+        ))
+        .build();
+
+    let notifications_email = CheckboxParameter::builder()
+        .metadata(create_metadata(
+            "notify_email",
+            "Email Notifications",
+            "Receive email alerts",
+        ))
+        .build();
+
+    let notifications_sms = CheckboxParameter::builder()
+        .metadata(create_metadata(
+            "notify_sms",
+            "SMS Notifications",
+            "Receive SMS alerts",
+        ))
+        .build();
+
+    // Create panels
+    let general_panel = Panel::new("general", "General")
+        .with_description("Basic account settings")
+        .with_icon("G")
+        .with_child(Box::new(general_name))
+        .with_child(Box::new(general_email));
+
+    let security_panel = Panel::new("security", "Security")
+        .with_description("Security and authentication settings")
+        .with_icon("S")
+        .with_child(Box::new(security_password))
+        .with_child(Box::new(security_2fa));
+
+    let notifications_panel = Panel::new("notifications", "Notifications")
+        .with_description("Notification preferences")
+        .with_icon("N")
+        .with_child(Box::new(notifications_email))
+        .with_child(Box::new(notifications_sms));
+
+    let mut panel_param = PanelParameter::new(create_metadata(
+        "settings_panel",
+        "Account Settings",
+        "Configure your account settings using tabs",
+    ));
+
+    panel_param.add_panel(general_panel);
+    panel_param.add_panel(security_panel);
+    panel_param.add_panel(notifications_panel);
+
+    panel_param
 }

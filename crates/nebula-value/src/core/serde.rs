@@ -84,8 +84,9 @@ impl Serialize for Value {
 
             #[cfg(feature = "temporal")]
             Value::Duration(dur) => {
-                // Serialize as milliseconds
-                serializer.serialize_u64(dur.as_millis() as u64)
+                // Serialize as milliseconds, clamping unrealistically large durations
+                let millis = dur.as_millis().min(u64::MAX as u128) as u64;
+                serializer.serialize_u64(millis)
             }
         }
     }
@@ -258,7 +259,11 @@ impl From<Value> for serde_json::Value {
             #[cfg(feature = "temporal")]
             Value::DateTime(dt) => serde_json::Value::String(dt.to_iso_string().to_string()),
             #[cfg(feature = "temporal")]
-            Value::Duration(dur) => serde_json::Value::Number((dur.as_millis() as u64).into()),
+            Value::Duration(dur) => {
+                // Clamp to u64::MAX for unrealistically large durations
+                let millis = dur.as_millis().min(u64::MAX as u128) as u64;
+                serde_json::Value::Number(millis.into())
+            }
         }
     }
 }
