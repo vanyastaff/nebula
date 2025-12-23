@@ -311,29 +311,32 @@ impl<const MAX_ATTEMPTS: usize> ConservativeCondition<MAX_ATTEMPTS> {
     }
 }
 
-impl<E, const MAX_ATTEMPTS: usize> RetryCondition<E> for ConservativeCondition<MAX_ATTEMPTS>
-where
-    E: fmt::Debug,
+// Implementation for ResilienceError using pattern matching instead of string formatting
+impl<const MAX_ATTEMPTS: usize> RetryCondition<crate::core::ResilienceError>
+    for ConservativeCondition<MAX_ATTEMPTS>
 {
-    fn should_retry(&self, error: &E, attempt: usize, _elapsed: Duration) -> bool {
+    fn should_retry(
+        &self,
+        error: &crate::core::ResilienceError,
+        attempt: usize,
+        _elapsed: Duration,
+    ) -> bool {
         if attempt >= MAX_ATTEMPTS {
             return false;
         }
 
-        // Conservative: only retry specific known transient errors
-        let error_str = format!("{:?}", error);
-        error_str.contains("Timeout")
-            || error_str.contains("ConnectionReset")
-            || error_str.contains("TemporarilyUnavailable")
-            || error_str.contains("TooManyRequests")
+        // Use ResilienceError's built-in retryability check
+        error.is_retryable()
     }
 
-    fn is_terminal(&self, error: &E) -> bool {
-        let error_str = format!("{:?}", error);
-        error_str.contains("NotFound")
-            || error_str.contains("Unauthorized")
-            || error_str.contains("InvalidInput")
-            || error_str.contains("PermissionDenied")
+    fn is_terminal(&self, error: &crate::core::ResilienceError) -> bool {
+        // Use ResilienceError's built-in terminal check
+        error.is_terminal()
+    }
+
+    fn custom_delay(&self, error: &crate::core::ResilienceError, _attempt: usize) -> Option<Duration> {
+        // Use ResilienceError's retry_after hint
+        error.retry_after()
     }
 
     fn condition_name(&self) -> &'static str {
@@ -826,6 +829,26 @@ mod tests {
         assert!(!FixedDelay::<0>::is_valid());
         assert!(!LinearBackoff::<0, 1000>::is_valid());
         assert!(!ExponentialBackoff::<100, 5, 5000>::is_valid()); // Multiplier too low
+    }
+
+    #[test]
+    fn test_retry_condition_with_typed_errors() {
+        use crate::core::ResilienceError;
+
+        let condition = ConservativeCondition::<3>::new();
+
+        // Should retry on Timeout
+        let timeout_err = ResilienceError::timeout(Duration::from_secs(1));
+        assert!(condition.should_retry(&timeout_err, 0, Duration::ZERO));
+
+        // Should NOT retry on InvalidConfig
+        let config_err = ResilienceError::InvalidConfig {
+            message: "bad".into(),
+        };
+        assert!(!condition.should_retry(&config_err, 0, Duration::ZERO));
+
+        // Terminal errors should return true for is_terminal
+        assert!(condition.is_terminal(&config_err));
     }
 
     #[test]
