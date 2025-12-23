@@ -98,6 +98,14 @@ impl Bulkhead {
     #[must_use]
     pub fn try_acquire(&self) -> Option<BulkheadPermit> {
         let permit = Arc::clone(&self.semaphore).try_acquire_owned().ok()?;
+
+        // Note: try_acquire is synchronous so we can't await here.
+        // The counter will be incremented on first access or in Drop.
+        // For now, we'll increment synchronously using try_write.
+        if let Ok(mut active) = self.active_operations.try_write() {
+            *active += 1;
+        }
+
         Some(BulkheadPermit {
             permit,
             active_operations: Arc::clone(&self.active_operations),
@@ -112,6 +120,12 @@ impl Bulkhead {
             .acquire_owned()
             .await
             .map_err(|_| ResilienceError::bulkhead_full(self.config.max_concurrency))?;
+
+        // Increment active operations counter
+        {
+            let mut active = self.active_operations.write().await;
+            *active += 1;
+        }
 
         Ok(BulkheadPermit {
             permit,
@@ -198,6 +212,17 @@ impl BulkheadPermit {
     /// Get the number of active operations
     pub async fn active_operations(&self) -> usize {
         *self.active_operations.read().await
+    }
+}
+
+impl Drop for BulkheadPermit {
+    fn drop(&mut self) {
+        // Use tokio::spawn to handle async decrement
+        let active_ops = Arc::clone(&self.active_operations);
+        tokio::spawn(async move {
+            let mut active = active_ops.write().await;
+            *active = active.saturating_sub(1);
+        });
     }
 }
 
@@ -301,6 +326,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_bulkhead_active_operations_tracking() {
+        let bulkhead = Bulkhead::new(3);
+
+        assert_eq!(bulkhead.active_operations().await, 0);
+
+        let permit1 = bulkhead.acquire().await.unwrap();
+        assert_eq!(bulkhead.active_operations().await, 1);
+
+        let permit2 = bulkhead.acquire().await.unwrap();
+        assert_eq!(bulkhead.active_operations().await, 2);
+
+        drop(permit1);
+        // Give time for async drop
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert_eq!(bulkhead.active_operations().await, 1);
+
+        drop(permit2);
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert_eq!(bulkhead.active_operations().await, 0);
+    }
+
+    #[tokio::test]
     async fn test_bulkhead_execute() {
         let bulkhead = Bulkhead::new(2);
 
@@ -313,27 +360,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_bulkhead_concurrency_limit() {
-        let bulkhead = Bulkhead::new(2);
-        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+        use tokio::task::JoinSet;
 
+        let bulkhead = Bulkhead::new(2);
+
+        // Use JoinSet for scoped task management
+        let mut tasks = JoinSet::new();
         for i in 0..3 {
             let bulkhead = bulkhead.clone();
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let result = bulkhead
+            tasks.spawn(async move {
+                bulkhead
                     .execute(|| async {
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         Ok::<usize, ResilienceError>(i)
                     })
-                    .await;
-                let _ = tx.send(result).await;
+                    .await
             });
         }
 
-        drop(tx);
-        let mut results = Vec::new();
-        while let Some(result) = rx.recv().await {
-            results.push(result);
+        // Collect results as tasks complete
+        let mut results = Vec::with_capacity(3);
+        while let Some(result) = tasks.join_next().await {
+            results.push(result.unwrap());
         }
 
         assert_eq!(results.len(), 3);
