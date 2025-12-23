@@ -441,6 +441,28 @@ impl TryFrom<Value> for Object {
     }
 }
 
+impl TryFrom<Value> for Vec<Value> {
+    type Error = ConversionError;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Array(a) => Ok(a.to_vec()),
+            _ => Err(ConversionError::incompatible(value.kind().name(), "Vec<Value>")),
+        }
+    }
+}
+
+impl TryFrom<&Value> for Vec<Value> {
+    type Error = ConversionError;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Array(a) => Ok(a.to_vec()),
+            _ => Err(ConversionError::incompatible(value.kind().name(), "Vec<Value>")),
+        }
+    }
+}
+
 // ==================== Helper trait for convenient conversions ====================
 
 /// Extension trait for Value conversions

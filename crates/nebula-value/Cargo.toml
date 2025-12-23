@@ -56,6 +56,9 @@ static_assertions = "1.1"
 base64 = "0.22.1"
 rand = "0.9"
 
+# Optional: colored error output
+colored = { version = "2.1", optional = true }
+
 [features]
 default = ["std", "temporal"]
 std = []
@@ -64,7 +67,8 @@ temporal = ["dep:chrono"]
 # memory-pooling = ["dep:nebula-memory"]  # Disabled - pending docs
 # validation = ["dep:nebula-validator"]  # Disabled - cyclic dependency resolution needed
 serde = ["dep:serde", "im/serde"]
-full = ["std", "serde", "temporal"]
+colored-errors = ["dep:colored"]  # Enhanced colored error output
+full = ["std", "serde", "temporal", "colored-errors"]
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["html_reports"] }

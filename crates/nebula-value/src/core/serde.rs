@@ -390,14 +390,14 @@ mod tests {
     fn test_deserialize_integer() {
         let json = "42";
         let val: Value = serde_json::from_str(json).unwrap();
-        assert_eq!(val.as_integer(), Some(42));
+        assert_eq!(val.as_integer(), Some(Integer::new(42)));
     }
 
     #[test]
     fn test_deserialize_float() {
         let json = "3.14";
         let val: Value = serde_json::from_str(json).unwrap();
-        assert_eq!(val.as_float(), Some(3.14));
+        assert_eq!(val.as_float().map(|f| f.value()), Some(3.14));
     }
 
     #[test]

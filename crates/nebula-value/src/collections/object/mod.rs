@@ -258,6 +258,26 @@ impl FromIterator<(String, ValueItem)> for Object {
     }
 }
 
+// ==================== IntoIterator ====================
+
+impl IntoIterator for Object {
+    type Item = (String, Value);
+    type IntoIter = im::hashmap::ConsumingIter<(String, Value)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Object {
+    type Item = (&'a String, &'a Value);
+    type IntoIter = im::hashmap::Iter<'a, String, Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.iter()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

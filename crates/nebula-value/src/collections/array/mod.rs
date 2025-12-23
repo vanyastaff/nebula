@@ -289,6 +289,26 @@ impl FromIterator<ValueItem> for Array {
     }
 }
 
+// ==================== IntoIterator ====================
+
+impl IntoIterator for Array {
+    type Item = Value;
+    type IntoIter = im::vector::ConsumingIter<Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Array {
+    type Item = &'a Value;
+    type IntoIter = im::vector::Iter<'a, Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.iter()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

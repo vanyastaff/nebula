@@ -272,7 +272,8 @@ impl Value {
             Self::Integer(i) => Some(*i),
             Self::Float(f) => {
                 let v = f.value();
-                if v.is_finite() && v.fract() == 0.0 {
+                if v.is_finite() && v.fract() == 0.0
+                    && v >= i64::MIN as f64 && v <= i64::MAX as f64 {
                     Some(Integer::new(v as i64))
                 } else {
                     None
@@ -282,17 +283,86 @@ impl Value {
         }
     }
 
-    /// Try to get as float
+    /// Try to get as float reference
     ///
-    /// Returns `Some(Float)` if the value is a Float, or can be converted from Integer.
+    /// Returns `Some(&Float)` if the value is a Float.
     ///
-    /// Returns `None` for Text, Null, and other types. Use `to_float()` for parsing text.
+    /// Returns `None` for all other types. Use `to_float()` for conversion from other numeric types.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_value::Value;
+    ///
+    /// let val = Value::float(3.14);
+    /// assert!(val.as_float().is_some());
+    ///
+    /// let val = Value::integer(42);
+    /// assert!(val.as_float().is_none()); // No automatic conversion
+    /// ```
     #[inline]
     #[must_use]
     pub fn as_float(&self) -> Option<&Float> {
         match self {
             Self::Float(f) => Some(f),
             // Cannot return owned Float as reference - caller should use to_float() for conversion
+            _ => None,
+        }
+    }
+
+    /// Try to get as float with automatic conversion (may lose precision)
+    ///
+    /// Returns `Some(Float)` if the value is a Float, or can be converted from Integer or Decimal.
+    ///
+    /// Returns `None` for Text, Null, and other types. Use `to_float()` for parsing text.
+    ///
+    /// Note: Converting large integers to float may lose precision.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_value::Value;
+    ///
+    /// let val = Value::float(3.14);
+    /// assert!(val.as_float_lossy().is_some());
+    ///
+    /// let val = Value::integer(42);
+    /// assert_eq!(val.as_float_lossy().map(|f| f.value()), Some(42.0));
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn as_float_lossy(&self) -> Option<Float> {
+        match self {
+            Self::Float(f) => Some(*f),
+            Self::Integer(i) => Some(Float::new(i.value() as f64)),
+            Self::Decimal(d) => d.to_f64().map(Float::new),
+            _ => None,
+        }
+    }
+
+    /// Try to get as decimal value
+    ///
+    /// Returns `Some(Decimal)` if the value is a Decimal, or can be converted from Integer or Float.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_value::Value;
+    /// use rust_decimal::Decimal;
+    ///
+    /// let val = Value::decimal(Decimal::new(314, 2));
+    /// assert!(val.as_decimal().is_some());
+    ///
+    /// let val = Value::integer(42);
+    /// assert_eq!(val.as_decimal(), Some(Decimal::from(42)));
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn as_decimal(&self) -> Option<Decimal> {
+        match self {
+            Self::Decimal(d) => Some(*d),
+            Self::Integer(i) => Some(Decimal::from(i.value())),
+            Self::Float(f) => Decimal::from_f64_retain(f.value()),
             _ => None,
         }
     }
@@ -545,7 +615,8 @@ mod tests {
         let val = Value::float(3.14);
         assert!(val.is_float());
         assert!(val.is_numeric());
-        assert_eq!(val.as_float(), Some(Float::new(3.14)));
+        assert_eq!(val.as_float().map(|f| f.value()), Some(3.14));
+        assert_eq!(val.as_float_lossy().map(|f| f.value()), Some(3.14));
         assert_eq!(val.kind(), ValueKind::Float);
     }
 
@@ -614,65 +685,61 @@ mod tests {
         assert_eq!(Value::text("hello").to_string(), "hello");
     }
 
-    // TODO: Re-enable once From<serde_json::Value> is implemented
-    // #[test]
-    // fn test_value_from_str() {
-    //     use std::str::FromStr;
-    //
-    //     // Parse primitives
-    //     assert_eq!(Value::from_str("null").unwrap(), Value::Null);
-    //     assert_eq!(Value::from_str("true").unwrap(), Value::boolean(true));
-    //     assert_eq!(Value::from_str("false").unwrap(), Value::boolean(false));
-    //     assert_eq!(Value::from_str("42").unwrap(), Value::integer(42));
-    //     assert_eq!(Value::from_str("3.14").unwrap(), Value::float(3.14));
-    //     assert_eq!(Value::from_str("\"hello\"").unwrap(), Value::text("hello"));
-    //
-    //     // Parse arrays
-    //     let arr: Value = "[1, 2, 3]".parse().unwrap();
-    //     assert!(matches!(arr, Value::Array(_)));
-    //
-    //     // Parse objects
-    //     let obj: Value = r#"{"key": "value"}"#.parse().unwrap();
-    //     assert!(matches!(obj, Value::Object(_)));
-    //
-    //     // Invalid JSON should error
-    //     assert!(Value::from_str("invalid").is_err());
-    // }
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_value_from_str() {
+        use std::str::FromStr;
+
+        // Parse primitives
+        assert_eq!(Value::from_str("null").unwrap(), Value::Null);
+        assert_eq!(Value::from_str("true").unwrap(), Value::boolean(true));
+        assert_eq!(Value::from_str("false").unwrap(), Value::boolean(false));
+        assert_eq!(Value::from_str("42").unwrap().as_integer(), Some(Integer::new(42)));
+        assert!(Value::from_str("3.14").unwrap().is_float());
+        assert_eq!(Value::from_str("\"hello\"").unwrap().as_str(), Some("hello"));
+
+        // Parse arrays
+        let arr: Value = "[1, 2, 3]".parse().unwrap();
+        assert!(matches!(arr, Value::Array(_)));
+
+        // Parse objects
+        let obj: Value = r#"{"key": "value"}"#.parse().unwrap();
+        assert!(matches!(obj, Value::Object(_)));
+
+        // Invalid JSON should error
+        assert!(Value::from_str("invalid").is_err());
+    }
 }
 
 // ==================== FromStr Implementation ====================
-// TODO: Re-enable once From<serde_json::Value> trait is implemented
-// The conversion is mentioned in core/serde.rs line 266 but not yet available
 
-// impl std::str::FromStr for Value {
-//     type Err = ValueError;
-//
-//     /// Parse a Value from a JSON string
-//     ///
-//     /// This uses `serde_json` to parse the string and then converts it to a Value.
-//     ///
-//     /// # Examples
-//     ///
-//     /// ```
-//     /// use nebula_value::Value;
-//     /// use std::str::FromStr;
-//     ///
-//     /// let value = Value::from_str("42").unwrap();
-//     /// assert_eq!(value, Value::integer(42));
-//     ///
-//     /// let value: Value = r#"{"name": "Alice"}"#.parse().unwrap();
-//     /// assert!(matches!(value, Value::Object(_)));
-//     /// ```
-//     ///
-//     /// # Errors
-//     ///
-//     /// Returns an error if the string is not valid JSON.
-//     fn from_str(s: &str) -> Result<Self, Self::Err> {
-//         serde_json::from_str::<serde_json::Value>(s)
-//             .map(Value::from)
-//             .map_err(|e| ValueError::conversion_error(
-//                 "JSON string",
-//                 format!("Value: {}", e)
-//             ))
-//     }
-// }
+#[cfg(feature = "serde")]
+impl std::str::FromStr for Value {
+    type Err = ValueError;
+
+    /// Parse a Value from a JSON string
+    ///
+    /// This uses `serde_json` to parse the string and then converts it to a Value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_value::{Value, Integer};
+    /// use std::str::FromStr;
+    ///
+    /// let value = Value::from_str("42").unwrap();
+    /// assert_eq!(value.as_integer(), Some(Integer::new(42)));
+    ///
+    /// let value: Value = r#"{"name": "Alice"}"#.parse().unwrap();
+    /// assert!(matches!(value, Value::Object(_)));
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueError::ParseError`] if the string is not valid JSON.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str::<serde_json::Value>(s)
+            .map(Value::from)
+            .map_err(|e| ValueError::parse_error("JSON", format!("{}", e)))
+    }
+}
