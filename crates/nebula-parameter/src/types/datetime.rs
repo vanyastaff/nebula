@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
@@ -10,7 +9,7 @@ use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for date and time selection
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct DateTimeParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
@@ -37,7 +36,7 @@ pub struct DateTimeParameter {
     pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct DateTimeParameterOptions {
     /// `DateTime` format string (e.g., "YYYY-MM-DD HH:mm:ss", "DD/MM/YYYY HH:mm")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,6 +51,7 @@ pub struct DateTimeParameterOptions {
     pub max_datetime: Option<String>,
 
     /// Use 12-hour format (AM/PM)
+    #[builder(default)]
     #[serde(default)]
     pub use_12_hour: bool,
 
@@ -60,6 +60,7 @@ pub struct DateTimeParameterOptions {
     pub timezone: Option<String>,
 
     /// Default to current date/time
+    #[builder(default)]
     #[serde(default)]
     pub default_to_now: bool,
 }

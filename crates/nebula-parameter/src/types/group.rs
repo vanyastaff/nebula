@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
@@ -10,7 +9,36 @@ use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for grouping related data into a structured object
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_parameter::prelude::*;
+///
+/// let param = GroupParameter::builder()
+///     .metadata(ParameterMetadata::new()
+///         .key("address")
+///         .name("Address")
+///         .description("Shipping address")
+///         .call()?)
+///     .fields([
+///         GroupField::builder()
+///             .key("street")
+///             .name("Street")
+///             .field_type(GroupFieldType::Text)
+///             .required(true)
+///             .build(),
+///         GroupField::builder()
+///             .key("city")
+///             .name("City")
+///             .field_type(GroupFieldType::Text)
+///             .required(true)
+///             .build(),
+///     ])
+///     .build();
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
+#[builder(on(String, into))]
 pub struct GroupParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
@@ -25,6 +53,7 @@ pub struct GroupParameter {
     pub default: Option<GroupValue>,
 
     /// Field definitions for this group
+    #[builder(with = FromIterator::from_iter)]
     pub fields: Vec<GroupField>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -41,7 +70,22 @@ pub struct GroupParameter {
 }
 
 /// Field definition for a group parameter
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_parameter::{GroupField, GroupFieldType};
+///
+/// let field = GroupField::builder()
+///     .key("email")  // &str -> String via Into
+///     .name("Email Address")
+///     .description("Your contact email")
+///     .field_type(GroupFieldType::Email)
+///     .required(true)
+///     .build();
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
+#[builder(on(String, into))]
 pub struct GroupField {
     /// Field key/name
     pub key: String,
@@ -58,6 +102,7 @@ pub struct GroupField {
 
     /// Whether this field is required
     #[serde(default)]
+    #[builder(default)]
     pub required: bool,
 
     /// Default value for this field
@@ -79,7 +124,7 @@ pub enum GroupFieldType {
 }
 
 /// Configuration options for a group parameter
-#[derive(Debug, Clone, Builder, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, bon::Builder)]
 pub struct GroupParameterOptions {}
 
 /// Value container for group parameter

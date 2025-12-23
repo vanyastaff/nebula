@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -37,9 +36,10 @@ pub struct ObjectParameter {
 }
 
 /// Configuration options for object parameters
-#[derive(Debug, Clone, Builder, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize, Default)]
 pub struct ObjectParameterOptions {
     /// Whether to allow additional properties beyond defined children
+    #[builder(default)]
     #[serde(default)]
     pub allow_additional_properties: bool,
 }

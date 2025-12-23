@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 #[allow(unused_imports)]
@@ -6,7 +5,7 @@ use crate::core::traits::Expressible;
 use crate::core::{Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata};
 
 /// Parameter for displaying a notice or information to the user
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct NoticeParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
@@ -24,13 +23,14 @@ pub struct NoticeParameter {
     pub display: Option<ParameterDisplay>,
 }
 
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct NoticeParameterOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Type of notice (info, warning, error, success)
     pub notice_type: Option<NoticeType>,
 
     /// Whether the notice can be dismissed by the user
+    #[builder(default)]
     #[serde(default)]
     pub dismissible: bool,
 }

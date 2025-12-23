@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
@@ -10,17 +9,41 @@ use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for single-line text input
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_parameter::prelude::*;
+///
+/// // Using builder with Into conversions
+/// let param = TextParameter::builder()
+///     .metadata(ParameterMetadata::new()
+///         .key("username")
+///         .name("Username")
+///         .description("Enter your username")
+///         .call()?)
+///     .default("guest")  // &str -> Text via Into
+///     .options(TextParameterOptions::builder()
+///         .min_length(3)
+///         .max_length(20)
+///         .pattern(r"^[a-zA-Z0-9_]+$")
+///         .build())
+///     .build();
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
+#[builder(on(String, into))]
 pub struct TextParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[builder(into)]
     /// Current value of the parameter
     pub value: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[builder(into)]
     /// Default value if parameter is not set
     pub default: Option<nebula_value::Text>,
 
@@ -37,7 +60,21 @@ pub struct TextParameter {
     pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Configuration options for text parameters
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_parameter::TextParameterOptions;
+///
+/// let options = TextParameterOptions::builder()
+///     .min_length(3)
+///     .max_length(100)
+///     .pattern(r"^[a-zA-Z]+$")  // &str -> String via Into
+///     .build();
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
+#[builder(on(String, into))]
 pub struct TextParameterOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Regex pattern for validation

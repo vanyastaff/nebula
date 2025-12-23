@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
@@ -10,7 +9,28 @@ use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for numeric input
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_parameter::prelude::*;
+///
+/// let param = NumberParameter::builder()
+///     .metadata(ParameterMetadata::new()
+///         .key("age")
+///         .name("Age")
+///         .description("Your age in years")
+///         .call()?)
+///     .default(18.0)
+///     .options(NumberParameterOptions::builder()
+///         .min(0.0)
+///         .max(150.0)
+///         .step(1.0)
+///         .precision(0)
+///         .build())
+///     .build();
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
 pub struct NumberParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
@@ -37,7 +57,27 @@ pub struct NumberParameter {
     pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+/// Configuration options for number parameters
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_parameter::NumberParameterOptions;
+///
+/// // All fields are optional
+/// let options = NumberParameterOptions::builder()
+///     .min(0.0)
+///     .max(100.0)
+///     .step(0.5)
+///     .precision(2)
+///     .build();
+///
+/// // Or just set what you need
+/// let options = NumberParameterOptions::builder()
+///     .min(0.0)
+///     .build();
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
 pub struct NumberParameterOptions {
     /// Minimum allowed value
     #[serde(skip_serializing_if = "Option::is_none")]

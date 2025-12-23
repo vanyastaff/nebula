@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
@@ -10,7 +9,7 @@ use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for code input with syntax highlighting and validation
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct CodeParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
@@ -37,13 +36,14 @@ pub struct CodeParameter {
     pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct CodeParameterOptions {
     /// Programming language for syntax highlighting
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<CodeLanguage>,
 
     /// Read-only mode
+    #[builder(default)]
     #[serde(default)]
     pub readonly: bool,
 }

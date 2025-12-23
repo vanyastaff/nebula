@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
@@ -10,7 +9,7 @@ use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for multi-line text input
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct TextareaParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
@@ -37,7 +36,7 @@ pub struct TextareaParameter {
     pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct TextareaParameterOptions {
     /// Minimum number of characters
     #[serde(skip_serializing_if = "Option::is_none")]

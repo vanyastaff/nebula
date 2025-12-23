@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
@@ -48,7 +47,7 @@ impl ListValue {
 }
 
 /// Parameter for lists - acts as a container with child parameters
-#[derive(Serialize)]
+#[derive(Serialize, bon::Builder)]
 pub struct ListParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
@@ -84,7 +83,7 @@ pub struct ListParameter {
 }
 
 /// Configuration options for list parameters
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct ListParameterOptions {
     /// Minimum number of items
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -99,6 +98,7 @@ pub struct ListParameterOptions {
     pub allow_reorder: bool,
 
     /// Whether items can be duplicated
+    #[builder(default)]
     #[serde(default)]
     pub allow_duplicates: bool,
 }

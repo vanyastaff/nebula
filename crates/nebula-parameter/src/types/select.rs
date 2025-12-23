@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
@@ -10,21 +9,48 @@ use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for single-choice selection from a dropdown
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_parameter::prelude::*;
+///
+/// let param = SelectParameter::builder()
+///     .metadata(ParameterMetadata::new()
+///         .key("auth_type")
+///         .name("Authentication Type")
+///         .description("Choose authentication method")
+///         .call()?)
+///     .options(vec![
+///         SelectOption::new("api_key", "API Key", "api_key"),
+///         SelectOption::new("oauth", "OAuth 2.0", "oauth"),
+///         SelectOption::new("basic", "Basic Auth", "basic"),
+///     ])
+///     .default("api_key")  // &str -> Text via Into
+///     .select_options(SelectParameterOptions::builder()
+///         .placeholder("Select authentication...")
+///         .build())
+///     .build();
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
+#[builder(on(String, into))]
 pub struct SelectParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[builder(into)]
     /// Current value of the parameter
     pub value: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[builder(into)]
     /// Default value if parameter is not set
     pub default: Option<nebula_value::Text>,
 
     /// Available options for selection
+    #[builder(with = FromIterator::from_iter)]
     pub options: Vec<SelectOption>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -40,10 +66,24 @@ pub struct SelectParameter {
     pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+/// Configuration options for select parameters
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_parameter::SelectParameterOptions;
+///
+/// let options = SelectParameterOptions::builder()
+///     .multiple(true)
+///     .placeholder("Choose an option...")  // &str -> String via Into
+///     .build();
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
+#[builder(on(String, into))]
 pub struct SelectParameterOptions {
     /// Allow multiple selections
     #[serde(default)]
+    #[builder(default)]
     pub multiple: bool,
 
     /// Placeholder text when no selection

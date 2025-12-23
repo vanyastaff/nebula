@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -96,7 +95,7 @@ impl FileReference {
 }
 
 /// Parameter for file uploads
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct FileParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
@@ -123,7 +122,7 @@ pub struct FileParameter {
     pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct FileParameterOptions {
     /// Accepted file formats (MIME types or extensions like ".pdf", "image/*")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -138,6 +137,7 @@ pub struct FileParameterOptions {
     pub min_size: Option<u64>,
 
     /// Allow multiple file selection (creates array of `FileReference`)
+    #[builder(default)]
     #[serde(default)]
     pub multiple: bool,
 
@@ -146,6 +146,7 @@ pub struct FileParameterOptions {
     pub upload_directory: Option<String>,
 
     /// Whether to validate file content (not just extension)
+    #[builder(default)]
     #[serde(default)]
     pub validate_content: bool,
 }

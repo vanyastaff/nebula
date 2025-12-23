@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
@@ -10,7 +9,7 @@ use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for selecting a single option from radio buttons
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct RadioParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
@@ -40,9 +39,10 @@ pub struct RadioParameter {
     pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct RadioParameterOptions {
     /// Show "other" option with text input
+    #[builder(default)]
     #[serde(default)]
     pub allow_other: bool,
 

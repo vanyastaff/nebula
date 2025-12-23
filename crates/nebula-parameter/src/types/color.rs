@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
@@ -10,7 +9,7 @@ use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for color selection
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct ColorParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
@@ -37,13 +36,14 @@ pub struct ColorParameter {
     pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct ColorParameterOptions {
     /// Color format: "hex", "rgb", "hsl", "hsv"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<ColorFormat>,
 
     /// Whether to show an alpha/opacity channel
+    #[builder(default)]
     #[serde(default)]
     pub allow_alpha: bool,
 

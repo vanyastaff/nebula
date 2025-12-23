@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 #[allow(unused_imports)]
@@ -9,7 +8,7 @@ use crate::core::{
 };
 
 /// Parameter for date selection
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct DateParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
@@ -36,7 +35,7 @@ pub struct DateParameter {
     pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct DateParameterOptions {
     /// Date format string (e.g., "YYYY-MM-DD", "DD/MM/YYYY")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,10 +50,12 @@ pub struct DateParameterOptions {
     pub max_date: Option<String>,
 
     /// Show time picker alongside date
+    #[builder(default)]
     #[serde(default)]
     pub include_time: bool,
 
     /// Default to today's date
+    #[builder(default)]
     #[serde(default)]
     pub default_to_today: bool,
 }

@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
@@ -10,7 +9,7 @@ use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for password or sensitive inputs
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct SecretParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
@@ -37,7 +36,7 @@ pub struct SecretParameter {
     pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct SecretParameterOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Minimum number of characters
@@ -48,6 +47,7 @@ pub struct SecretParameterOptions {
     pub max_length: Option<usize>,
 
     /// Whether the value should be masked even in API responses (for extra security)
+    #[builder(default)]
     #[serde(default)]
     pub always_masked: bool,
 }

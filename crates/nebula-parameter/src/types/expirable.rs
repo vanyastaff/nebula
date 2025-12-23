@@ -1,4 +1,3 @@
-use bon::Builder;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +14,7 @@ const DEFAULT_TTL: u64 = 3600;
 
 /// Parameter with expirable values that automatically expire after a TTL
 /// Acts as a container that wraps another parameter with expiration logic
-#[derive(Serialize)]
+#[derive(Serialize, bon::Builder)]
 pub struct ExpirableParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,
@@ -41,13 +40,14 @@ pub struct ExpirableParameter {
 }
 
 /// Configuration options for expirable parameters
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct ExpirableParameterOptions {
     /// Time-To-Live in seconds before values expire
     #[serde(default = "default_ttl")]
     pub ttl: u64,
 
     /// Whether to auto-refresh values on access
+    #[builder(default)]
     #[serde(default)]
     pub auto_refresh: bool,
 

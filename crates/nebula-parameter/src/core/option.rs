@@ -3,7 +3,6 @@
 //! This module provides types for handling static and dynamic options
 //! for select, multi-select, and radio button parameters.
 
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -204,7 +203,27 @@ impl DynamicOptions {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Builder)]
+/// A single option for select-based parameters
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_parameter::SelectOption;
+///
+/// // Simple creation
+/// let option = SelectOption::new("key1", "Display Name", "value1");
+///
+/// // Using builder with Into conversions
+/// let option = SelectOption::builder()
+///     .key("api_key")
+///     .name("API Key Authentication")
+///     .value("api_key")
+///     .description("Use API key for authentication")
+///     .icon("key")
+///     .build();
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, bon::Builder)]
+#[builder(on(String, into), on(Cow<'_, str>, into))]
 pub struct SelectOption {
     /// Unique key for the option
     pub key: Cow<'static, str>,
@@ -241,7 +260,29 @@ pub struct SelectOption {
 }
 
 impl SelectOption {
-    /// Create a simple option with key, name, and value
+    /// Creates a new option with required fields.
+    ///
+    /// This is a convenience constructor for simple cases. For advanced
+    /// configuration (description, icon, color, etc.), use [`SelectOption::builder()`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nebula_parameter::SelectOption;
+    ///
+    /// // Simple option
+    /// let option = SelectOption::new("key", "Display Name", "value");
+    ///
+    /// // For additional fields, use the builder:
+    /// let option = SelectOption::builder()
+    ///     .key("key")
+    ///     .name("Name")
+    ///     .value("value")
+    ///     .description("Description")
+    ///     .icon("icon-name")
+    ///     .build();
+    /// ```
+    #[inline]
     pub fn new(
         key: impl Into<Cow<'static, str>>,
         name: impl Into<String>,
@@ -252,32 +293,6 @@ impl SelectOption {
             name: name.into(),
             value: value.into(),
             description: None,
-            icon: None,
-            disabled: None,
-            group: None,
-            color: None,
-            subtitle: None,
-        }
-    }
-
-    /// Create a simple option where key and value are the same
-    pub fn simple(key_value: impl Into<String>, name: impl Into<String>) -> Self {
-        let key_value = key_value.into();
-        Self::new(key_value.clone(), name, key_value)
-    }
-
-    /// Create an option with a description
-    pub fn with_description(
-        key: impl Into<Cow<'static, str>>,
-        name: impl Into<String>,
-        value: impl Into<String>,
-        description: impl Into<Cow<'static, str>>,
-    ) -> Self {
-        Self {
-            key: key.into(),
-            name: name.into(),
-            value: value.into(),
-            description: Some(description.into()),
             icon: None,
             disabled: None,
             group: None,

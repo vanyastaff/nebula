@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 #[allow(unused_imports)]
@@ -51,13 +50,14 @@ pub struct Panel {
 }
 
 /// Configuration options for panel parameter
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct PanelParameterOptions {
     /// Key of the default active panel
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_panel: Option<String>,
 
     /// Whether multiple panels can be open at once (accordion mode)
+    #[builder(default)]
     #[serde(default)]
     pub allow_multiple_open: bool,
 }

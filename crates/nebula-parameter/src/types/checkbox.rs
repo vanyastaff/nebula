@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 #[allow(unused_imports)]
@@ -11,7 +10,7 @@ use crate::core::{
 use nebula_value::Boolean;
 
 /// Parameter for boolean checkbox
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct CheckboxParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
@@ -38,7 +37,7 @@ pub struct CheckboxParameter {
     pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct CheckboxParameterOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Custom label text for the checkbox

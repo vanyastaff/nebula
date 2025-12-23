@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
@@ -7,7 +6,7 @@ use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter that is hidden from the user interface but can store values
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct HiddenParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description

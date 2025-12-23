@@ -1,4 +1,3 @@
-use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
@@ -10,7 +9,7 @@ use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for selecting multiple options from a dropdown
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct MultiSelectParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
@@ -40,7 +39,7 @@ pub struct MultiSelectParameter {
     pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct MultiSelectParameterOptions {
     /// Minimum number of selections required
     #[serde(skip_serializing_if = "Option::is_none")]
