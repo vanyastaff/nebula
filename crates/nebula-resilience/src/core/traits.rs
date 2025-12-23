@@ -262,6 +262,8 @@ pub mod circuit_states {
         pub failure_count: usize,
         /// Success count in current state
         pub success_count: usize,
+        /// Timestamp of the last failure
+        pub last_failure_time: Option<std::time::Instant>,
     }
 
     impl<S> TypestateCircuitState<S> {
@@ -273,6 +275,7 @@ pub mod circuit_states {
                     entered_at: std::time::Instant::now(),
                     failure_count,
                     success_count,
+                    last_failure_time: None,
                 },
             }
         }
@@ -283,6 +286,24 @@ pub mod circuit_states {
                 .split("::")
                 .last()
                 .unwrap_or("Unknown")
+        }
+
+        /// Record a failure in this state
+        pub fn with_failure(mut self) -> Self {
+            self.metadata.failure_count += 1;
+            self.metadata.last_failure_time = Some(std::time::Instant::now());
+            self
+        }
+
+        /// Record a success in this state
+        pub fn with_success(mut self) -> Self {
+            self.metadata.success_count += 1;
+            self
+        }
+
+        /// Get the name of the current state type (alias for type_name for compatibility)
+        pub fn state_name(&self) -> &'static str {
+            self.type_name()
         }
     }
 

@@ -24,114 +24,11 @@ use crate::core::{
     traits::PatternMetrics,
 };
 
-/// Circuit breaker states using phantom types for compile-time safety
-pub mod states {
-    use std::marker::PhantomData;
-    use std::time::Instant;
-
-    /// Closed state - operations are allowed
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct Closed;
-
-    /// Open state - operations are blocked
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct Open;
-
-    /// Half-open state - limited operations allowed
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct HalfOpen;
-
-    /// Type-safe circuit state with phantom type
-    #[derive(Debug, Clone)]
-    pub struct CircuitState<S> {
-        /// Phantom marker for type safety
-        _marker: PhantomData<S>,
-        /// State metadata tracking transitions and counts
-        pub metadata: StateMetadata,
-    }
-
-    /// Metadata about the current state
-    #[derive(Debug, Clone)]
-    pub struct StateMetadata {
-        /// When this state was entered
-        pub entered_at: Instant,
-        /// Number of failures in this state
-        pub failure_count: usize,
-        /// Number of successes in this state
-        pub success_count: usize,
-        /// Timestamp of the last failure
-        pub last_failure_time: Option<Instant>,
-    }
-
-    impl<S> CircuitState<S> {
-        /// Create a new circuit state with the given counts
-        pub fn new(failure_count: usize, success_count: usize) -> Self {
-            Self {
-                _marker: PhantomData,
-                metadata: StateMetadata {
-                    entered_at: Instant::now(),
-                    failure_count,
-                    success_count,
-                    last_failure_time: None,
-                },
-            }
-        }
-
-        /// Get the name of the current state type
-        pub fn state_name(&self) -> &'static str {
-            std::any::type_name::<S>()
-                .split("::")
-                .last()
-                .unwrap_or("Unknown")
-        }
-
-        /// Record a failure in this state
-        pub fn with_failure(mut self) -> Self {
-            self.metadata.failure_count += 1;
-            self.metadata.last_failure_time = Some(Instant::now());
-            self
-        }
-
-        /// Record a success in this state
-        pub fn with_success(mut self) -> Self {
-            self.metadata.success_count += 1;
-            self
-        }
-    }
-
-    /// State transition trait for type-safe transitions
-    pub trait StateTransition<From, To> {
-        /// Transition from one state to another
-        fn transition(from: CircuitState<From>) -> CircuitState<To>;
-    }
-
-    // Implement valid state transitions
-    impl StateTransition<Closed, Open> for CircuitState<Open> {
-        fn transition(from: CircuitState<Closed>) -> CircuitState<Open> {
-            CircuitState::new(from.metadata.failure_count, 0)
-        }
-    }
-
-    impl StateTransition<Open, HalfOpen> for CircuitState<HalfOpen> {
-        fn transition(from: CircuitState<Open>) -> CircuitState<HalfOpen> {
-            CircuitState::new(from.metadata.failure_count, 0)
-        }
-    }
-
-    impl StateTransition<HalfOpen, Closed> for CircuitState<Closed> {
-        fn transition(from: CircuitState<HalfOpen>) -> CircuitState<Closed> {
-            CircuitState::new(0, from.metadata.success_count)
-        }
-    }
-
-    impl StateTransition<HalfOpen, Open> for CircuitState<Open> {
-        fn transition(from: CircuitState<HalfOpen>) -> CircuitState<Open> {
-            CircuitState::new(from.metadata.failure_count + 1, 0)
-        }
-    }
-}
-
-pub use states::*;
+// Re-export circuit states from core traits
+pub use crate::core::traits::circuit_states::{
+    Closed, HalfOpen, Open, StateMetadata, StateTransition,
+    TypestateCircuitState as CircuitState,
+};
 
 /// Circuit breaker state for runtime representation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -334,12 +231,12 @@ impl<const WINDOW_SIZE: usize> SlidingWindow<WINDOW_SIZE> {
 
 /// Main circuit breaker implementation
 pub struct StatefulCircuitBreaker<
-    S = states::Closed,
+    S = Closed,
     const FAILURE_THRESHOLD: usize = 5,
     const RESET_TIMEOUT_MS: u64 = 30_000,
 > {
     config: CircuitBreakerConfig<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>,
-    state: states::CircuitState<S>,
+    state: CircuitState<S>,
     sliding_window: SlidingWindow<1000>,
     total_operations: AtomicU64,
     #[allow(dead_code)]
@@ -347,7 +244,7 @@ pub struct StatefulCircuitBreaker<
 }
 
 impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
-    StatefulCircuitBreaker<states::Closed, FAILURE_THRESHOLD, RESET_TIMEOUT_MS>
+    StatefulCircuitBreaker<Closed, FAILURE_THRESHOLD, RESET_TIMEOUT_MS>
 {
     /// Create new circuit breaker in closed state
     pub fn new(
@@ -358,7 +255,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
         let sliding_window_ms = config.sliding_window_ms;
         Ok(Self {
             config,
-            state: states::CircuitState::new(0, 0),
+            state: CircuitState::new(0, 0),
             sliding_window: SlidingWindow::new(Duration::from_millis(sliding_window_ms)),
             total_operations: AtomicU64::new(0),
             half_open_operations: AtomicUsize::new(0),
@@ -856,6 +753,16 @@ mod tests {
         let _fast = fast_config();
         let _standard = standard_config();
         let _slow = slow_config();
+    }
+
+    #[test]
+    fn test_state_types_are_consistent() {
+        use crate::core::traits::circuit_states::{Closed, Open, HalfOpen};
+
+        // Verify the phantom type states exist and work
+        let _closed: std::marker::PhantomData<Closed> = std::marker::PhantomData;
+        let _open: std::marker::PhantomData<Open> = std::marker::PhantomData;
+        let _half_open: std::marker::PhantomData<HalfOpen> = std::marker::PhantomData;
     }
 
     #[tokio::test]
