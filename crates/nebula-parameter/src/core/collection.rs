@@ -313,7 +313,13 @@ impl Default for Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::traits::HasValue;
     use crate::types::TextParameter;
+
+    /// Helper to create a ParameterKey for tests
+    fn key(s: &str) -> ParameterKey {
+        ParameterKey::new(s).expect("invalid test key")
+    }
 
     #[test]
     fn test_collection_new() {
@@ -327,13 +333,20 @@ mod tests {
         let mut collection = ParameterCollection::new();
 
         let param = TextParameter::builder()
-            .metadata(crate::core::ParameterMetadata::new("test", "Test"))
+            .metadata(
+                crate::core::ParameterMetadata::builder()
+                    .key("test")
+                    .name("Test")
+                    .description("")
+                    .build()
+                    .unwrap(),
+            )
             .build();
 
         collection.add(param);
 
         assert_eq!(collection.len(), 1);
-        assert!(collection.contains("test"));
+        assert!(collection.contains(key("test")));
     }
 
     #[test]
@@ -341,12 +354,26 @@ mod tests {
         let collection = ParameterCollection::new()
             .with(
                 TextParameter::builder()
-                    .metadata(crate::core::ParameterMetadata::new("test1", "Test 1"))
+                    .metadata(
+                        crate::core::ParameterMetadata::builder()
+                            .key("test1")
+                            .name("Test 1")
+                            .description("")
+                            .build()
+                            .unwrap(),
+                    )
                     .build(),
             )
             .with(
                 TextParameter::builder()
-                    .metadata(crate::core::ParameterMetadata::new("test2", "Test 2"))
+                    .metadata(
+                        crate::core::ParameterMetadata::builder()
+                            .key("test2")
+                            .name("Test 2")
+                            .description("")
+                            .build()
+                            .unwrap(),
+                    )
                     .build(),
             );
 
@@ -359,12 +386,19 @@ mod tests {
 
         collection.add(
             TextParameter::builder()
-                .metadata(crate::core::ParameterMetadata::new("test", "Test"))
-                .value(Some(nebula_value::Text::from("hello")))
+                .metadata(
+                    crate::core::ParameterMetadata::builder()
+                        .key("test")
+                        .name("Test")
+                        .description("")
+                        .build()
+                        .unwrap(),
+                )
+                .value(nebula_value::Text::from("hello"))
                 .build(),
         );
 
-        let param: Option<&TextParameter> = collection.get("test");
+        let param: Option<&TextParameter> = collection.get(key("test"));
         assert!(param.is_some());
     }
 
@@ -372,9 +406,16 @@ mod tests {
     fn test_snapshot_restore() {
         let mut collection = ParameterCollection::new();
 
-        let mut param = TextParameter::builder()
-            .metadata(crate::core::ParameterMetadata::new("test", "Test"))
-            .value(Some(nebula_value::Text::from("initial")))
+        let param = TextParameter::builder()
+            .metadata(
+                crate::core::ParameterMetadata::builder()
+                    .key("test")
+                    .name("Test")
+                    .description("")
+                    .build()
+                    .unwrap(),
+            )
+            .value(nebula_value::Text::from("initial"))
             .build();
 
         collection.add(param);
@@ -383,14 +424,14 @@ mod tests {
         let snapshot = collection.snapshot();
 
         // Modify value
-        if let Some(p) = collection.get_mut::<TextParameter>("test") {
+        if let Some(p) = collection.get_mut::<TextParameter>(key("test")) {
             let _ = p.set(nebula_value::Text::from("modified"));
         }
 
         // Restore
         collection.restore(&snapshot).unwrap();
 
-        let value = collection.value("test").unwrap();
+        let value = collection.value(key("test")).unwrap();
         assert_eq!(value.as_text().unwrap().as_str(), "initial");
     }
 }

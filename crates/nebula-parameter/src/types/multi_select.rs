@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::traits::Expressible;
 use crate::core::{
     Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, ParameterValue, SelectOption, Validatable,
+    ParameterMetadata, ParameterValidation, SelectOption, Validatable,
 };
 use nebula_expression::MaybeExpression;
 use nebula_value::Value;

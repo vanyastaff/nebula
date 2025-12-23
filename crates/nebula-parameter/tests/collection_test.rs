@@ -1,8 +1,14 @@
 //! Tests for ParameterCollection
 
+use nebula_core::ParameterKey;
 use nebula_parameter::prelude::*;
 use nebula_parameter::types::TextParameter;
 use nebula_value::Text;
+
+/// Helper to create a ParameterKey for tests
+fn key(s: &str) -> ParameterKey {
+    ParameterKey::new(s).expect("invalid test key")
+}
 
 #[test]
 fn test_collection_new() {
@@ -16,13 +22,20 @@ fn test_collection_add_single() {
     let mut collection = ParameterCollection::new();
 
     let param = TextParameter::builder()
-        .metadata(ParameterMetadata::new("username", "Username"))
+        .metadata(
+            ParameterMetadata::builder()
+                .key("username")
+                .name("Username")
+                .description("")
+                .build()
+                .unwrap(),
+        )
         .build();
 
     collection.add(param);
 
     assert_eq!(collection.len(), 1);
-    assert!(collection.contains("username"));
+    assert!(collection.contains(key("username")));
 }
 
 #[test]
@@ -30,18 +43,32 @@ fn test_collection_with_builder_pattern() {
     let collection = ParameterCollection::new()
         .with(
             TextParameter::builder()
-                .metadata(ParameterMetadata::new("username", "Username"))
+                .metadata(
+                    ParameterMetadata::builder()
+                        .key("username")
+                        .name("Username")
+                        .description("")
+                        .build()
+                        .unwrap(),
+                )
                 .build(),
         )
         .with(
             TextParameter::builder()
-                .metadata(ParameterMetadata::new("email", "Email"))
+                .metadata(
+                    ParameterMetadata::builder()
+                        .key("email")
+                        .name("Email")
+                        .description("")
+                        .build()
+                        .unwrap(),
+                )
                 .build(),
         );
 
     assert_eq!(collection.len(), 2);
-    assert!(collection.contains("username"));
-    assert!(collection.contains("email"));
+    assert!(collection.contains(key("username")));
+    assert!(collection.contains(key("email")));
 }
 
 #[test]
@@ -50,13 +77,20 @@ fn test_collection_get_typed() {
 
     collection.add(
         TextParameter::builder()
-            .metadata(ParameterMetadata::new("test", "Test"))
-            .value(Some(Text::from("hello")))
+            .metadata(
+                ParameterMetadata::builder()
+                    .key("test")
+                    .name("Test")
+                    .description("")
+                    .build()
+                    .unwrap(),
+            )
+            .value(Text::from("hello"))
             .build(),
     );
 
     // Type-safe access
-    let param: Option<&TextParameter> = collection.get("test");
+    let param: Option<&TextParameter> = collection.get(key("test"));
     assert!(param.is_some());
 
     let param = param.unwrap();
@@ -69,13 +103,20 @@ fn test_collection_value_access() {
 
     collection.add(
         TextParameter::builder()
-            .metadata(ParameterMetadata::new("test", "Test"))
-            .value(Some(Text::from("hello")))
+            .metadata(
+                ParameterMetadata::builder()
+                    .key("test")
+                    .name("Test")
+                    .description("")
+                    .build()
+                    .unwrap(),
+            )
+            .value(Text::from("hello"))
             .build(),
     );
 
     // Type-erased value access
-    let value = collection.value("test");
+    let value = collection.value(key("test"));
     assert!(value.is_some());
 
     let value = value.unwrap();
@@ -88,8 +129,15 @@ fn test_collection_snapshot_restore() {
 
     collection.add(
         TextParameter::builder()
-            .metadata(ParameterMetadata::new("test", "Test"))
-            .value(Some(Text::from("initial")))
+            .metadata(
+                ParameterMetadata::builder()
+                    .key("test")
+                    .name("Test")
+                    .description("")
+                    .build()
+                    .unwrap(),
+            )
+            .value(Text::from("initial"))
             .build(),
     );
 
@@ -98,14 +146,14 @@ fn test_collection_snapshot_restore() {
     assert_eq!(snapshot.len(), 1);
 
     // Modify value
-    if let Some(p) = collection.get_mut::<TextParameter>("test") {
+    if let Some(p) = collection.get_mut::<TextParameter>(key("test")) {
         let _ = p.set(Text::from("modified"));
     }
 
     // Verify modification
     assert_eq!(
         collection
-            .value("test")
+            .value(key("test"))
             .unwrap()
             .as_text()
             .unwrap()
@@ -119,7 +167,7 @@ fn test_collection_snapshot_restore() {
     // Verify restoration
     assert_eq!(
         collection
-            .value("test")
+            .value(key("test"))
             .unwrap()
             .as_text()
             .unwrap()
@@ -134,16 +182,23 @@ fn test_collection_remove() {
 
     collection.add(
         TextParameter::builder()
-            .metadata(ParameterMetadata::new("test", "Test"))
+            .metadata(
+                ParameterMetadata::builder()
+                    .key("test")
+                    .name("Test")
+                    .description("")
+                    .build()
+                    .unwrap(),
+            )
             .build(),
     );
 
     assert_eq!(collection.len(), 1);
 
-    let removed = collection.remove("test");
+    let removed = collection.remove(key("test"));
     assert!(removed.is_some());
     assert_eq!(collection.len(), 0);
-    assert!(!collection.contains("test"));
+    assert!(!collection.contains(key("test")));
 }
 
 #[test]
@@ -151,17 +206,38 @@ fn test_collection_keys() {
     let collection = ParameterCollection::new()
         .with(
             TextParameter::builder()
-                .metadata(ParameterMetadata::new("key1", "Key 1"))
+                .metadata(
+                    ParameterMetadata::builder()
+                        .key("key1")
+                        .name("Key 1")
+                        .description("")
+                        .build()
+                        .unwrap(),
+                )
                 .build(),
         )
         .with(
             TextParameter::builder()
-                .metadata(ParameterMetadata::new("key2", "Key 2"))
+                .metadata(
+                    ParameterMetadata::builder()
+                        .key("key2")
+                        .name("Key 2")
+                        .description("")
+                        .build()
+                        .unwrap(),
+                )
                 .build(),
         )
         .with(
             TextParameter::builder()
-                .metadata(ParameterMetadata::new("key3", "Key 3"))
+                .metadata(
+                    ParameterMetadata::builder()
+                        .key("key3")
+                        .name("Key 3")
+                        .description("")
+                        .build()
+                        .unwrap(),
+                )
                 .build(),
         );
 
@@ -177,12 +253,26 @@ fn test_collection_clear() {
     let mut collection = ParameterCollection::new()
         .with(
             TextParameter::builder()
-                .metadata(ParameterMetadata::new("key1", "Key 1"))
+                .metadata(
+                    ParameterMetadata::builder()
+                        .key("key1")
+                        .name("Key 1")
+                        .description("")
+                        .build()
+                        .unwrap(),
+                )
                 .build(),
         )
         .with(
             TextParameter::builder()
-                .metadata(ParameterMetadata::new("key2", "Key 2"))
+                .metadata(
+                    ParameterMetadata::builder()
+                        .key("key2")
+                        .name("Key 2")
+                        .description("")
+                        .build()
+                        .unwrap(),
+                )
                 .build(),
         );
 

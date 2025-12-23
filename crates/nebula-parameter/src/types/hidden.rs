@@ -2,9 +2,7 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::core::traits::Expressible;
-use crate::core::{
-    HasValue, Parameter, ParameterError, ParameterKind, ParameterMetadata, ParameterValue,
-};
+use crate::core::{HasValue, Parameter, ParameterError, ParameterKind, ParameterMetadata};
 use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 

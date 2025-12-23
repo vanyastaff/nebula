@@ -1,6 +1,7 @@
 use bon::Builder;
 use serde::{Deserialize, Serialize};
 
+#[allow(unused_imports)]
 use crate::core::traits::Expressible;
 use crate::core::{
     Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,

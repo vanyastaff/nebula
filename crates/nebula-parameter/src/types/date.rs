@@ -1,6 +1,7 @@
 use bon::Builder;
 use serde::{Deserialize, Serialize};
 
+#[allow(unused_imports)]
 use crate::core::traits::Expressible;
 use crate::core::{
     Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
@@ -120,6 +121,7 @@ impl Displayable for DateParameter {
 
 impl DateParameter {
     /// Validate if a string represents a valid date
+    #[allow(dead_code)]
     fn is_valid_date(&self, date: &str) -> bool {
         if date.is_empty() {
             return false;
