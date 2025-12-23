@@ -87,7 +87,7 @@ fn type_conversions() -> ValueResult<()> {
     println!("  From bool: {}", val4);
 
     // From Value to primitives
-    let num: i64 = val1.as_integer().unwrap();
+    let num: i64 = val1.as_integer().unwrap().value();
     let text: &str = val3.as_str().unwrap();
     let flag: bool = val4.as_boolean().unwrap();
 
