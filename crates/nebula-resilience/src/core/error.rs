@@ -1,17 +1,17 @@
 //! Error types for resilience operations
 
-use std::error::Error as StdError;
-use std::fmt;
 use std::time::Duration;
+use thiserror::Error;
 
 // ResilienceError can be converted to other error types as needed
 // by implementing From traits in consuming crates
 
 /// Core resilience errors
-#[derive(Debug)]
+#[derive(Debug, Error)]
 #[must_use = "ResilienceError should be returned or handled"]
 pub enum ResilienceError {
     /// Operation timed out
+    #[error("Operation timed out after {duration:?}{}", context.as_ref().map(|c| format!(" - {}", c)).unwrap_or_default())]
     Timeout {
         /// Duration that was exceeded
         duration: Duration,
@@ -20,6 +20,7 @@ pub enum ResilienceError {
     },
 
     /// Circuit breaker is open
+    #[error("Circuit breaker is {state}{}", retry_after.map(|d| format!(" (retry after {:?})", d)).unwrap_or_default())]
     CircuitBreakerOpen {
         /// Current circuit breaker state
         state: String,
@@ -28,6 +29,7 @@ pub enum ResilienceError {
     },
 
     /// Bulkhead is full
+    #[error("Bulkhead full: max={max_concurrency}, queued={queued}")]
     BulkheadFull {
         /// Maximum concurrency limit
         max_concurrency: usize,
@@ -36,6 +38,7 @@ pub enum ResilienceError {
     },
 
     /// Rate limit exceeded
+    #[error("Rate limit exceeded: limit={limit}/s, current={current}/s{}", retry_after.map(|d| format!(" (retry after {:?})", d)).unwrap_or_default())]
     RateLimitExceeded {
         /// Time to wait before retry
         retry_after: Option<Duration>,
@@ -46,6 +49,7 @@ pub enum ResilienceError {
     },
 
     /// Retry limit exceeded
+    #[error("Retry limit exceeded after {attempts} attempts{}", last_error.as_ref().map(|e| format!(" - last error: {}", e)).unwrap_or_default())]
     RetryLimitExceeded {
         /// Number of attempts made
         attempts: usize,
@@ -54,6 +58,7 @@ pub enum ResilienceError {
     },
 
     /// Fallback operation failed
+    #[error("Fallback failed: {reason}")]
     FallbackFailed {
         /// Reason for fallback failure
         reason: String,
@@ -62,25 +67,29 @@ pub enum ResilienceError {
     },
 
     /// Operation was cancelled
+    #[error("Operation cancelled{}", reason.as_ref().map(|r| format!(": {}", r)).unwrap_or_default())]
     Cancelled {
         /// Cancellation reason
         reason: Option<String>,
     },
 
     /// Invalid configuration
+    #[error("Invalid configuration: {message}")]
     InvalidConfig {
         /// Configuration error details
         message: String,
     },
 
     /// Custom error for extensions
+    #[error("{message}")]
     Custom {
         /// Error message
         message: String,
         /// Whether this error is retryable
         retryable: bool,
         /// Error source
-        source: Option<Box<dyn StdError + Send + Sync>>,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
 }
 
@@ -140,84 +149,6 @@ impl Clone for ResilienceError {
                 retryable: *retryable,
                 source: None, // Can't clone trait objects, so we lose the source
             },
-        }
-    }
-}
-
-impl fmt::Display for ResilienceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Timeout { duration, context } => {
-                write!(f, "Operation timed out after {duration:?}")?;
-                if let Some(ctx) = context {
-                    write!(f, " - {ctx}")?;
-                }
-                Ok(())
-            }
-            Self::CircuitBreakerOpen { state, retry_after } => {
-                write!(f, "Circuit breaker is {state} ")?;
-                if let Some(duration) = retry_after {
-                    write!(f, "(retry after {duration:?})")?;
-                }
-                Ok(())
-            }
-            Self::BulkheadFull {
-                max_concurrency,
-                queued,
-            } => {
-                write!(f, "Bulkhead full: max={max_concurrency}, queued={queued}")
-            }
-            Self::RateLimitExceeded {
-                limit,
-                current,
-                retry_after,
-            } => {
-                write!(
-                    f,
-                    "Rate limit exceeded: limit={limit}/s, current={current}/s"
-                )?;
-                if let Some(duration) = retry_after {
-                    write!(f, " (retry after {duration:?})")?;
-                }
-                Ok(())
-            }
-            Self::RetryLimitExceeded {
-                attempts,
-                last_error,
-            } => {
-                write!(f, "Retry limit exceeded after {attempts} attempts")?;
-                if let Some(err) = last_error {
-                    write!(f, " - last error: {err}")?;
-                }
-                Ok(())
-            }
-            Self::FallbackFailed { reason, .. } => {
-                write!(f, "Fallback failed: {reason}")
-            }
-            Self::Cancelled { reason } => {
-                write!(f, "Operation cancelled")?;
-                if let Some(r) = reason {
-                    write!(f, ": {r}")?;
-                }
-                Ok(())
-            }
-            Self::InvalidConfig { message } => {
-                write!(f, "Invalid configuration: {message}")
-            }
-            Self::Custom { message, .. } => {
-                write!(f, "{message}")
-            }
-        }
-    }
-}
-
-impl StdError for ResilienceError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Self::Custom {
-                source: Some(src), ..
-            } => Some(src.as_ref() as &(dyn StdError + 'static)),
-            _ => None,
         }
     }
 }
@@ -369,3 +300,34 @@ impl ErrorContext {
 
 // ResilienceError can be converted to other error types as needed
 // by implementing From traits in consuming crates
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_display() {
+        let error = ResilienceError::timeout(Duration::from_secs(5));
+        let display = error.to_string();
+        assert!(display.contains("5s"), "Expected duration in display: {}", display);
+    }
+
+    #[test]
+    fn test_error_source_chain() {
+        let inner = ResilienceError::timeout(Duration::from_millis(100));
+        let outer = ResilienceError::RetryLimitExceeded {
+            attempts: 3,
+            last_error: Some(Box::new(inner)),
+        };
+
+        // Verify error chain works
+        assert!(outer.to_string().contains("3 attempts"));
+    }
+
+    #[test]
+    fn test_error_classification() {
+        assert_eq!(ResilienceError::timeout(Duration::from_secs(1)).classify(), ErrorClass::Transient);
+        assert_eq!(ResilienceError::circuit_breaker_open("open").classify(), ErrorClass::ResourceExhaustion);
+        assert_eq!(ResilienceError::InvalidConfig { message: "bad".into() }.classify(), ErrorClass::Configuration);
+    }
+}
