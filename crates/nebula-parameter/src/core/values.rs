@@ -52,7 +52,7 @@ use std::ops::{Index, IndexMut};
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ParameterValues {
     /// Internal storage for values
     values: HashMap<ParameterKey, Value>,

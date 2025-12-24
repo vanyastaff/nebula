@@ -36,6 +36,7 @@
 //! assert!(!condition.evaluate(&Value::integer(150)));
 //! ```
 
+use crate::core::values::ParameterValues;
 use nebula_core::ParameterKey;
 use nebula_value::Value;
 use serde::{Deserialize, Serialize};
@@ -467,7 +468,8 @@ impl DisplayCondition {
 /// Context containing resolved parameter values and validation state for display evaluation
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DisplayContext {
-    values: HashMap<ParameterKey, Value>,
+    /// Parameter values using the standard ParameterValues storage
+    values: ParameterValues,
     /// Validation state for each parameter (true = valid, false = invalid)
     validation: HashMap<ParameterKey, bool>,
 }
@@ -479,11 +481,18 @@ impl DisplayContext {
         Self::default()
     }
 
+    /// Create from existing ParameterValues
+    #[must_use]
+    pub fn from_values(values: ParameterValues) -> Self {
+        Self {
+            values,
+            validation: HashMap::new(),
+        }
+    }
+
     /// Get a parameter value by key
     pub fn get(&self, key: &str) -> Option<&Value> {
-        ParameterKey::new(key)
-            .ok()
-            .and_then(|k| self.values.get(&k))
+        ParameterKey::new(key).ok().and_then(|k| self.values.get(k))
     }
 
     /// Get validation state for a parameter
@@ -515,7 +524,7 @@ impl DisplayContext {
     /// Builder pattern: add a value and return self
     #[must_use]
     pub fn with_value(mut self, key: impl Into<ParameterKey>, value: Value) -> Self {
-        self.values.insert(key.into(), value);
+        self.values.set(key, value);
         self
     }
 
@@ -526,9 +535,16 @@ impl DisplayContext {
         self
     }
 
+    /// Builder pattern: set all values from ParameterValues
+    #[must_use]
+    pub fn with_values(mut self, values: ParameterValues) -> Self {
+        self.values = values;
+        self
+    }
+
     /// Insert a value
     pub fn insert(&mut self, key: impl Into<ParameterKey>, value: Value) {
-        self.values.insert(key.into(), value);
+        self.values.set(key, value);
     }
 
     /// Set validation state for a parameter
@@ -557,13 +573,18 @@ impl DisplayContext {
     pub fn contains(&self, key: &str) -> bool {
         ParameterKey::new(key)
             .ok()
-            .map(|k| self.values.contains_key(&k))
+            .map(|k| self.values.contains(k))
             .unwrap_or(false)
     }
 
-    /// Get all values as HashMap reference
-    pub fn values(&self) -> &HashMap<ParameterKey, Value> {
+    /// Get all values as ParameterValues reference
+    pub fn values(&self) -> &ParameterValues {
         &self.values
+    }
+
+    /// Get mutable access to values
+    pub fn values_mut(&mut self) -> &mut ParameterValues {
+        &mut self.values
     }
 
     /// Get all validation states as HashMap reference
