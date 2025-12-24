@@ -85,22 +85,29 @@
 // Module declarations
 pub mod and;
 pub mod cached;
+pub mod each;
 pub mod error;
 pub mod field;
+pub mod lazy;
 pub mod map;
+pub mod message;
 pub mod nested;
 pub mod not;
 pub mod optimizer;
 pub mod optional;
 pub mod or;
+pub mod unless;
 pub mod when;
 
 // Re-export all combinator types
 pub use and::{And, AndAll, and, and_all};
 pub use cached::{CacheStats, Cached, cached};
+pub use each::{Each, each, each_fail_fast};
 pub use error::CombinatorError;
 pub use field::{Field, FieldError, FieldValidatorExt, MultiField, field, named_field};
+pub use lazy::{Lazy, lazy};
 pub use map::{Map, map, map_to, map_unit};
+pub use message::{WithCode, WithMessage, with_code, with_message};
 pub use nested::{
     CollectionNested, NestedValidator, OptionalNested, Validatable, collection_nested,
     custom_nested, nested_validator, optional_nested,
@@ -112,6 +119,7 @@ pub use optimizer::{
 };
 pub use optional::{Optional, optional};
 pub use or::{Or, OrAny, or, or_any};
+pub use unless::{Unless, unless};
 pub use when::{When, when};
 
 // TODO: Re-enable when lru crate is added as dependency
@@ -135,8 +143,10 @@ pub use when::{When, when};
 /// ```
 pub mod prelude {
     pub use super::{
-        And, AndAll, Cached, Field, FieldValidatorExt, Map, Not, Optional, Or, OrAny, When, and,
-        and_all, cached, field, map, map_to, named_field, not, optional, or, or_any, when,
+        And, AndAll, Cached, Each, Field, FieldValidatorExt, Lazy, Map, Not, Optional, Or, OrAny,
+        Unless, When, WithCode, WithMessage, and, and_all, cached, each, each_fail_fast, field,
+        lazy, map, map_to, named_field, not, optional, or, or_any, unless, when, with_code,
+        with_message,
     };
 }
 
