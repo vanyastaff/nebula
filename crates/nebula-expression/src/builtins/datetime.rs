@@ -304,23 +304,87 @@ fn parse_datetime(value: &Value) -> ExpressionResult<DateTime<Utc>> {
 /// - ss: 2-digit second
 /// - s: second
 fn format_datetime(dt: &DateTime<Utc>, format: &str) -> ExpressionResult<String> {
-    let mut result = format.to_string();
+    use std::borrow::Cow;
+    use std::fmt::Write;
+
+    // Pre-compute all formatted values once to avoid repeated formatting
+    let year = dt.year();
+    let month = dt.month();
+    let day = dt.day();
+    let hour = dt.hour();
+    let minute = dt.minute();
+    let second = dt.second();
+
+    // Use Cow to avoid allocation if no replacements are needed
+    let mut result: Cow<'_, str> = Cow::Borrowed(format);
+
+    // Pre-format numeric values with stack-allocated buffers
+    let mut buf = String::with_capacity(4);
 
     // Replace in order from longest to shortest to avoid partial replacements
-    result = result.replace("YYYY", &format!("{:04}", dt.year()));
-    result = result.replace("YY", &format!("{:02}", dt.year() % 100));
-    result = result.replace("MM", &format!("{:02}", dt.month()));
-    result = result.replace("DD", &format!("{:02}", dt.day()));
-    result = result.replace("HH", &format!("{:02}", dt.hour()));
-    result = result.replace("mm", &format!("{:02}", dt.minute()));
-    result = result.replace("ss", &format!("{:02}", dt.second()));
+    if result.contains("YYYY") {
+        buf.clear();
+        let _ = write!(buf, "{:04}", year);
+        result = Cow::Owned(result.replace("YYYY", &buf));
+    }
+    if result.contains("YY") {
+        buf.clear();
+        let _ = write!(buf, "{:02}", year % 100);
+        result = Cow::Owned(result.replace("YY", &buf));
+    }
+    if result.contains("MM") {
+        buf.clear();
+        let _ = write!(buf, "{:02}", month);
+        result = Cow::Owned(result.replace("MM", &buf));
+    }
+    if result.contains("DD") {
+        buf.clear();
+        let _ = write!(buf, "{:02}", day);
+        result = Cow::Owned(result.replace("DD", &buf));
+    }
+    if result.contains("HH") {
+        buf.clear();
+        let _ = write!(buf, "{:02}", hour);
+        result = Cow::Owned(result.replace("HH", &buf));
+    }
+    if result.contains("mm") {
+        buf.clear();
+        let _ = write!(buf, "{:02}", minute);
+        result = Cow::Owned(result.replace("mm", &buf));
+    }
+    if result.contains("ss") {
+        buf.clear();
+        let _ = write!(buf, "{:02}", second);
+        result = Cow::Owned(result.replace("ss", &buf));
+    }
 
     // Single letter variants (after double-letter to avoid conflicts)
-    result = result.replace("M", &format!("{}", dt.month()));
-    result = result.replace("D", &format!("{}", dt.day()));
-    result = result.replace("H", &format!("{}", dt.hour()));
-    result = result.replace("m", &format!("{}", dt.minute()));
-    result = result.replace("s", &format!("{}", dt.second()));
+    // These use itoa-style formatting for efficiency
+    if result.contains('M') {
+        buf.clear();
+        let _ = write!(buf, "{}", month);
+        result = Cow::Owned(result.replace('M', &buf));
+    }
+    if result.contains('D') {
+        buf.clear();
+        let _ = write!(buf, "{}", day);
+        result = Cow::Owned(result.replace('D', &buf));
+    }
+    if result.contains('H') {
+        buf.clear();
+        let _ = write!(buf, "{}", hour);
+        result = Cow::Owned(result.replace('H', &buf));
+    }
+    if result.contains('m') {
+        buf.clear();
+        let _ = write!(buf, "{}", minute);
+        result = Cow::Owned(result.replace('m', &buf));
+    }
+    if result.contains('s') {
+        buf.clear();
+        let _ = write!(buf, "{}", second);
+        result = Cow::Owned(result.replace('s', &buf));
+    }
 
-    Ok(result)
+    Ok(result.into_owned())
 }

@@ -237,7 +237,13 @@ impl Evaluator {
             (Value::Integer(l), Value::Float(r)) => Ok(Value::float(l.value() as f64 + r.value())),
             (Value::Float(l), Value::Integer(r)) => Ok(Value::float(l.value() + r.value() as f64)),
             (Value::Text(l), Value::Text(r)) => {
-                Ok(Value::text(format!("{}{}", l.as_str(), r.as_str())))
+                // Pre-allocate exact capacity to avoid reallocations
+                let left_str = l.as_str();
+                let right_str = r.as_str();
+                let mut result = String::with_capacity(left_str.len() + right_str.len());
+                result.push_str(left_str);
+                result.push_str(right_str);
+                Ok(Value::text(result))
             }
             _ => Err(ExpressionError::expression_type_error(
                 "number or string",
