@@ -553,14 +553,15 @@ impl From<DisplayRule> for DisplayRuleSet {
     }
 }
 
-/// Parameter display configuration
-///
-/// Controls when a parameter should be shown based on display rules.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Configuration determining when a parameter should be displayed
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ParameterDisplay {
-    /// Optional display ruleset
+    /// Conditions that must be met to show the parameter
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub rules: Option<DisplayRuleSet>,
+    show_when: Option<DisplayRuleSet>,
+    /// Conditions that cause the parameter to be hidden (takes priority)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hide_when: Option<DisplayRuleSet>,
 }
 
 impl ParameterDisplay {
@@ -570,39 +571,109 @@ impl ParameterDisplay {
         Self::default()
     }
 
-    /// Create from a ruleset
+    /// Add a show condition
     #[must_use]
-    pub fn from_rules(rules: DisplayRuleSet) -> Self {
-        Self { rules: Some(rules) }
+    pub fn show_when(mut self, rule: impl Into<DisplayRuleSet>) -> Self {
+        let ruleset = rule.into();
+        self.show_when = Some(match self.show_when.take() {
+            Some(existing) => DisplayRuleSet::All(vec![existing, ruleset]),
+            None => ruleset,
+        });
+        self
     }
 
-    /// Check if parameter should be displayed given the context
+    /// Add a hide condition
     #[must_use]
-    pub fn should_display(&self, context: &HashMap<ParameterKey, Value>) -> bool {
-        match &self.rules {
-            Some(rules) => {
-                let ctx = DisplayContext {
-                    values: context.clone(),
-                };
-                rules.evaluate(&ctx)
+    pub fn hide_when(mut self, rule: impl Into<DisplayRuleSet>) -> Self {
+        let ruleset = rule.into();
+        self.hide_when = Some(match self.hide_when.take() {
+            Some(existing) => DisplayRuleSet::Any(vec![existing, ruleset]),
+            None => ruleset,
+        });
+        self
+    }
+
+    /// Check if parameter should be displayed
+    pub fn should_display(&self, ctx: &DisplayContext) -> bool {
+        // Priority: hide_when is checked first
+        if let Some(hide_rules) = &self.hide_when {
+            if hide_rules.evaluate(ctx) {
+                return false;
             }
-            None => true, // No rules = always display
         }
+
+        // Then check show_when
+        if let Some(show_rules) = &self.show_when {
+            return show_rules.evaluate(ctx);
+        }
+
+        // Default: show
+        true
+    }
+
+    /// Check if this display has no conditions
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.show_when.is_none() && self.hide_when.is_none()
     }
 
     /// Get all parameter dependencies
     #[must_use]
-    pub fn get_dependencies(&self) -> Vec<ParameterKey> {
-        match &self.rules {
-            Some(rules) => rules.dependencies(),
-            None => Vec::new(),
+    pub fn dependencies(&self) -> Vec<ParameterKey> {
+        let mut deps = Vec::new();
+
+        if let Some(show) = &self.show_when {
+            deps.extend(show.dependencies());
         }
+
+        if let Some(hide) = &self.hide_when {
+            deps.extend(hide.dependencies());
+        }
+
+        deps.sort();
+        deps.dedup();
+        deps
     }
 
-    /// Check if display configuration is empty (no rules)
+    /// Convenience: show when field equals value
     #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.rules.is_none()
+    pub fn show_when_equals(self, field: impl Into<ParameterKey>, value: Value) -> Self {
+        self.show_when(DisplayRule::when(field, DisplayCondition::Equals(value)))
+    }
+
+    /// Convenience: show when field is true
+    #[must_use]
+    pub fn show_when_true(self, field: impl Into<ParameterKey>) -> Self {
+        self.show_when(DisplayRule::when(field, DisplayCondition::IsTrue))
+    }
+
+    /// Convenience: hide when field equals value
+    #[must_use]
+    pub fn hide_when_equals(self, field: impl Into<ParameterKey>, value: Value) -> Self {
+        self.hide_when(DisplayRule::when(field, DisplayCondition::Equals(value)))
+    }
+
+    /// Convenience: hide when field is true
+    #[must_use]
+    pub fn hide_when_true(self, field: impl Into<ParameterKey>) -> Self {
+        self.hide_when(DisplayRule::when(field, DisplayCondition::IsTrue))
+    }
+}
+
+/// Error type for display validation
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Display condition not met: {message}")]
+pub struct ParameterDisplayError {
+    /// Error message
+    pub message: String,
+}
+
+impl ParameterDisplayError {
+    /// Create a new error
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
     }
 }
 
@@ -841,8 +912,10 @@ mod tests {
             DisplayCondition::Equals(Value::text("api_key")),
         );
 
-        let ctx = DisplayContext::new()
-            .with_value(ParameterKey::new("auth_type").unwrap(), Value::text("api_key"));
+        let ctx = DisplayContext::new().with_value(
+            ParameterKey::new("auth_type").unwrap(),
+            Value::text("api_key"),
+        );
 
         assert!(rule.evaluate(&ctx));
     }
@@ -873,7 +946,10 @@ mod tests {
     #[test]
     fn test_ruleset_and() {
         let ruleset = DisplayRuleSet::all([
-            DisplayRule::when(ParameterKey::new("enabled").unwrap(), DisplayCondition::IsTrue),
+            DisplayRule::when(
+                ParameterKey::new("enabled").unwrap(),
+                DisplayCondition::IsTrue,
+            ),
             DisplayRule::when(
                 ParameterKey::new("level").unwrap(),
                 DisplayCondition::GreaterThan(10.0),
@@ -899,17 +975,22 @@ mod tests {
                 ParameterKey::new("role").unwrap(),
                 DisplayCondition::Equals(Value::text("admin")),
             ),
-            DisplayRule::when(ParameterKey::new("superuser").unwrap(), DisplayCondition::IsTrue),
+            DisplayRule::when(
+                ParameterKey::new("superuser").unwrap(),
+                DisplayCondition::IsTrue,
+            ),
         ]);
 
-        let ctx_admin =
-            DisplayContext::new().with_value(ParameterKey::new("role").unwrap(), Value::text("admin"));
+        let ctx_admin = DisplayContext::new()
+            .with_value(ParameterKey::new("role").unwrap(), Value::text("admin"));
 
-        let ctx_superuser =
-            DisplayContext::new().with_value(ParameterKey::new("superuser").unwrap(), Value::boolean(true));
+        let ctx_superuser = DisplayContext::new().with_value(
+            ParameterKey::new("superuser").unwrap(),
+            Value::boolean(true),
+        );
 
-        let ctx_neither =
-            DisplayContext::new().with_value(ParameterKey::new("role").unwrap(), Value::text("user"));
+        let ctx_neither = DisplayContext::new()
+            .with_value(ParameterKey::new("role").unwrap(), Value::text("user"));
 
         assert!(ruleset.evaluate(&ctx_admin));
         assert!(ruleset.evaluate(&ctx_superuser));
@@ -923,11 +1004,13 @@ mod tests {
             DisplayCondition::IsTrue,
         ));
 
-        let ctx_enabled =
-            DisplayContext::new().with_value(ParameterKey::new("disabled").unwrap(), Value::boolean(false));
+        let ctx_enabled = DisplayContext::new().with_value(
+            ParameterKey::new("disabled").unwrap(),
+            Value::boolean(false),
+        );
 
-        let ctx_disabled =
-            DisplayContext::new().with_value(ParameterKey::new("disabled").unwrap(), Value::boolean(true));
+        let ctx_disabled = DisplayContext::new()
+            .with_value(ParameterKey::new("disabled").unwrap(), Value::boolean(true));
 
         assert!(ruleset.evaluate(&ctx_enabled));
         assert!(!ruleset.evaluate(&ctx_disabled));
@@ -943,5 +1026,240 @@ mod tests {
         let deps = ruleset.dependencies();
         assert!(deps.contains(&ParameterKey::new("a").unwrap()));
         assert!(deps.contains(&ParameterKey::new("b").unwrap()));
+    }
+
+    #[test]
+    fn test_parameter_display_show_when() {
+        let display = ParameterDisplay::new().show_when(DisplayRule::when(
+            ParameterKey::new("auth_type").unwrap(),
+            DisplayCondition::Equals(Value::text("api_key")),
+        ));
+
+        let ctx_show = DisplayContext::new().with_value(
+            ParameterKey::new("auth_type").unwrap(),
+            Value::text("api_key"),
+        );
+
+        let ctx_hide = DisplayContext::new().with_value(
+            ParameterKey::new("auth_type").unwrap(),
+            Value::text("oauth"),
+        );
+
+        assert!(display.should_display(&ctx_show));
+        assert!(!display.should_display(&ctx_hide));
+    }
+
+    #[test]
+    fn test_parameter_display_hide_when() {
+        let display = ParameterDisplay::new().hide_when(DisplayRule::when(
+            ParameterKey::new("disabled").unwrap(),
+            DisplayCondition::IsTrue,
+        ));
+
+        let ctx_show = DisplayContext::new().with_value(
+            ParameterKey::new("disabled").unwrap(),
+            Value::boolean(false),
+        );
+
+        let ctx_hide = DisplayContext::new()
+            .with_value(ParameterKey::new("disabled").unwrap(), Value::boolean(true));
+
+        assert!(display.should_display(&ctx_show));
+        assert!(!display.should_display(&ctx_hide));
+    }
+
+    #[test]
+    fn test_parameter_display_hide_takes_priority() {
+        // hide_when is checked first
+        let display = ParameterDisplay::new()
+            .show_when(DisplayRule::when(
+                ParameterKey::new("enabled").unwrap(),
+                DisplayCondition::IsTrue,
+            ))
+            .hide_when(DisplayRule::when(
+                ParameterKey::new("maintenance").unwrap(),
+                DisplayCondition::IsTrue,
+            ));
+
+        let ctx = DisplayContext::new()
+            .with_value(ParameterKey::new("enabled").unwrap(), Value::boolean(true))
+            .with_value(
+                ParameterKey::new("maintenance").unwrap(),
+                Value::boolean(true),
+            );
+
+        // Even though show condition is met, hide takes priority
+        assert!(!display.should_display(&ctx));
+    }
+
+    #[test]
+    fn test_parameter_display_default_show() {
+        let display = ParameterDisplay::new();
+        let ctx = DisplayContext::new();
+
+        // No conditions = always show
+        assert!(display.should_display(&ctx));
+    }
+
+    #[test]
+    fn test_parameter_display_show_when_equals() {
+        let display = ParameterDisplay::new()
+            .show_when_equals(ParameterKey::new("mode").unwrap(), Value::text("advanced"));
+
+        let ctx_show = DisplayContext::new()
+            .with_value(ParameterKey::new("mode").unwrap(), Value::text("advanced"));
+
+        let ctx_hide = DisplayContext::new()
+            .with_value(ParameterKey::new("mode").unwrap(), Value::text("basic"));
+
+        assert!(display.should_display(&ctx_show));
+        assert!(!display.should_display(&ctx_hide));
+    }
+
+    #[test]
+    fn test_parameter_display_show_when_true() {
+        let display =
+            ParameterDisplay::new().show_when_true(ParameterKey::new("advanced_mode").unwrap());
+
+        let ctx_show = DisplayContext::new().with_value(
+            ParameterKey::new("advanced_mode").unwrap(),
+            Value::boolean(true),
+        );
+
+        let ctx_hide = DisplayContext::new().with_value(
+            ParameterKey::new("advanced_mode").unwrap(),
+            Value::boolean(false),
+        );
+
+        assert!(display.should_display(&ctx_show));
+        assert!(!display.should_display(&ctx_hide));
+    }
+
+    #[test]
+    fn test_parameter_display_hide_when_equals() {
+        let display = ParameterDisplay::new().hide_when_equals(
+            ParameterKey::new("status").unwrap(),
+            Value::text("disabled"),
+        );
+
+        let ctx_show = DisplayContext::new()
+            .with_value(ParameterKey::new("status").unwrap(), Value::text("enabled"));
+
+        let ctx_hide = DisplayContext::new().with_value(
+            ParameterKey::new("status").unwrap(),
+            Value::text("disabled"),
+        );
+
+        assert!(display.should_display(&ctx_show));
+        assert!(!display.should_display(&ctx_hide));
+    }
+
+    #[test]
+    fn test_parameter_display_hide_when_true() {
+        let display = ParameterDisplay::new().hide_when_true(ParameterKey::new("hidden").unwrap());
+
+        let ctx_show = DisplayContext::new()
+            .with_value(ParameterKey::new("hidden").unwrap(), Value::boolean(false));
+
+        let ctx_hide = DisplayContext::new()
+            .with_value(ParameterKey::new("hidden").unwrap(), Value::boolean(true));
+
+        assert!(display.should_display(&ctx_show));
+        assert!(!display.should_display(&ctx_hide));
+    }
+
+    #[test]
+    fn test_parameter_display_dependencies() {
+        let display = ParameterDisplay::new()
+            .show_when(DisplayRule::when(
+                ParameterKey::new("auth_type").unwrap(),
+                DisplayCondition::Equals(Value::text("api_key")),
+            ))
+            .hide_when(DisplayRule::when(
+                ParameterKey::new("disabled").unwrap(),
+                DisplayCondition::IsTrue,
+            ));
+
+        let deps = display.dependencies();
+        assert!(deps.contains(&ParameterKey::new("auth_type").unwrap()));
+        assert!(deps.contains(&ParameterKey::new("disabled").unwrap()));
+        assert_eq!(deps.len(), 2);
+    }
+
+    #[test]
+    fn test_parameter_display_is_empty() {
+        let empty = ParameterDisplay::new();
+        assert!(empty.is_empty());
+
+        let not_empty =
+            ParameterDisplay::new().show_when_true(ParameterKey::new("enabled").unwrap());
+        assert!(!not_empty.is_empty());
+    }
+
+    #[test]
+    fn test_parameter_display_multiple_show_conditions() {
+        // Multiple show_when calls should be AND-ed
+        let display = ParameterDisplay::new()
+            .show_when(DisplayRule::when(
+                ParameterKey::new("enabled").unwrap(),
+                DisplayCondition::IsTrue,
+            ))
+            .show_when(DisplayRule::when(
+                ParameterKey::new("level").unwrap(),
+                DisplayCondition::GreaterThan(10.0),
+            ));
+
+        let ctx_both = DisplayContext::new()
+            .with_value(ParameterKey::new("enabled").unwrap(), Value::boolean(true))
+            .with_value(ParameterKey::new("level").unwrap(), Value::integer(15));
+
+        let ctx_one = DisplayContext::new()
+            .with_value(ParameterKey::new("enabled").unwrap(), Value::boolean(true))
+            .with_value(ParameterKey::new("level").unwrap(), Value::integer(5));
+
+        assert!(display.should_display(&ctx_both));
+        assert!(!display.should_display(&ctx_one));
+    }
+
+    #[test]
+    fn test_parameter_display_multiple_hide_conditions() {
+        // Multiple hide_when calls should be OR-ed
+        let display = ParameterDisplay::new()
+            .hide_when(DisplayRule::when(
+                ParameterKey::new("disabled").unwrap(),
+                DisplayCondition::IsTrue,
+            ))
+            .hide_when(DisplayRule::when(
+                ParameterKey::new("maintenance").unwrap(),
+                DisplayCondition::IsTrue,
+            ));
+
+        let ctx_neither = DisplayContext::new()
+            .with_value(
+                ParameterKey::new("disabled").unwrap(),
+                Value::boolean(false),
+            )
+            .with_value(
+                ParameterKey::new("maintenance").unwrap(),
+                Value::boolean(false),
+            );
+
+        let ctx_one = DisplayContext::new()
+            .with_value(ParameterKey::new("disabled").unwrap(), Value::boolean(true))
+            .with_value(
+                ParameterKey::new("maintenance").unwrap(),
+                Value::boolean(false),
+            );
+
+        let ctx_both = DisplayContext::new()
+            .with_value(ParameterKey::new("disabled").unwrap(), Value::boolean(true))
+            .with_value(
+                ParameterKey::new("maintenance").unwrap(),
+                Value::boolean(true),
+            );
+
+        assert!(display.should_display(&ctx_neither));
+        assert!(!display.should_display(&ctx_one));
+        assert!(!display.should_display(&ctx_both));
     }
 }

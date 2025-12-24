@@ -437,7 +437,7 @@ pub trait Displayable: Parameter {
     /// Check if the parameter should be displayed given the current context
     fn should_display(&self, context: &DisplayContext) -> bool {
         match self.display() {
-            Some(display_config) => display_config.should_display(context.values()),
+            Some(display_config) => display_config.should_display(context),
             None => true,
         }
     }
@@ -468,7 +468,7 @@ pub trait Displayable: Parameter {
     /// which parameters need to be re-evaluated when values change.
     fn dependencies(&self) -> Vec<Key> {
         match self.display() {
-            Some(display_config) => display_config.get_dependencies(),
+            Some(display_config) => display_config.dependencies(),
             None => Vec::new(),
         }
     }

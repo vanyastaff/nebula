@@ -1,6 +1,5 @@
 pub mod collection;
 pub mod display;
-// pub mod display_stub;
 mod error;
 mod kind;
 mod metadata;

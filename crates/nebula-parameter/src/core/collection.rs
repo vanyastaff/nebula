@@ -32,7 +32,7 @@ impl ParameterCollection {
 
         // Extract dependencies from display rules if present
         if let Some(display) = param.display() {
-            let deps = display.get_dependencies();
+            let deps = display.dependencies();
             if !deps.is_empty() {
                 self.dependencies.insert(key.clone(), deps);
             }
