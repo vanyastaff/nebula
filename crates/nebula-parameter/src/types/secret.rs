@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::pin::Pin;
 
-use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, ParameterValue, Validatable,
 };
-use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for password or sensitive inputs
@@ -14,10 +14,6 @@ pub struct SecretParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Current value of the parameter
-    pub value: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -68,59 +64,29 @@ impl std::fmt::Display for SecretParameter {
     }
 }
 
-impl HasValue for SecretParameter {
-    type Value = nebula_value::Text;
-
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
+impl ParameterValue for SecretParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
     }
 
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
+    fn accepts_value(&self, value: &Value) -> bool {
+        matches!(value, Value::Text(_))
     }
 
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
-        Ok(())
+    fn expected_type(&self) -> &'static str {
+        "secret"
     }
 
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-#[async_trait::async_trait]
-impl Expressible for SecretParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value
-            .as_ref()
-            .map(|s| MaybeExpression::Value(nebula_value::Value::Text(s.clone())))
-    }
-
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            MaybeExpression::Value(nebula_value::Value::Text(s)) => {
-                self.value = Some(s);
-                Ok(())
-            }
-            MaybeExpression::Expression(expr) => {
-                // Expressions are allowed for secrets (e.g., from environment variables)
-                self.value = Some(nebula_value::Text::from(expr.source.as_str()));
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected string value for secret".to_string(),
-            }),
-        }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -128,8 +94,57 @@ impl Validatable for SecretParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, value: &Self::Value) -> bool {
-        value.is_empty()
+
+    fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
+        // Type check
+        let text = match value {
+            Value::Text(t) => t,
+            _ => {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Expected text value for secret, got {}", value.kind()),
+                });
+            }
+        };
+
+        // Required check
+        if self.is_empty(value) && self.is_required() {
+            return Err(ParameterError::MissingValue {
+                key: self.metadata.key.clone(),
+            });
+        }
+
+        // Length validation
+        if let Some(options) = &self.options {
+            let len = text.len();
+
+            if let Some(min_length) = options.min_length
+                && len < min_length
+            {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Secret must be at least {min_length} characters, got {len}"),
+                });
+            }
+
+            if let Some(max_length) = options.max_length
+                && len > max_length
+            {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Secret must be at most {max_length} characters, got {len}"),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    fn is_empty(&self, value: &Value) -> bool {
+        match value {
+            Value::Text(t) => t.is_empty(),
+            _ => true,
+        }
     }
 }
 
@@ -146,19 +161,28 @@ impl Displayable for SecretParameter {
 impl SecretParameter {
     /// Get the value length without exposing the actual value
     #[must_use]
-    pub fn value_length(&self) -> Option<usize> {
-        self.value.as_ref().map(nebula_value::Text::len)
+    pub fn value_length(value: &Value) -> Option<usize> {
+        match value {
+            Value::Text(t) => Some(t.len()),
+            _ => None,
+        }
     }
 
     /// Check if the secret value is set (without exposing it)
     #[must_use]
-    pub fn has_value(&self) -> bool {
-        self.value.is_some() && !self.value.as_ref().unwrap().is_empty()
+    pub fn has_value(value: &Value) -> bool {
+        match value {
+            Value::Text(t) => !t.is_empty(),
+            _ => false,
+        }
     }
 
     /// Create a masked representation of the value for display
     #[must_use]
-    pub fn masked_value(&self) -> Option<String> {
-        self.value.as_ref().map(|v| "*".repeat(v.len().clamp(3, 8)))
+    pub fn masked_value(value: &Value) -> Option<String> {
+        match value {
+            Value::Text(t) => Some("*".repeat(t.len().clamp(3, 8))),
+            _ => None,
+        }
     }
 }

@@ -1,11 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-#[allow(unused_imports)]
-use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, ParameterValue, Validatable,
 };
+use nebula_value::Value;
 
 /// Parameter for date selection
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
@@ -13,10 +12,6 @@ pub struct DateParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Current value of the parameter
-    pub value: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -76,37 +71,12 @@ impl std::fmt::Display for DateParameter {
     }
 }
 
-impl HasValue for DateParameter {
-    type Value = String;
-
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
-    }
-
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
-    }
-
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
-        Ok(())
-    }
-
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
-    }
-
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
 impl Validatable for DateParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, value: &Self::Value) -> bool {
-        value.is_empty()
+    fn is_empty(&self, value: &Value) -> bool {
+        value.as_text().is_none_or(|s| s.is_empty())
     }
 }
 
@@ -117,6 +87,33 @@ impl Displayable for DateParameter {
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
         self.display = display;
+    }
+}
+
+impl ParameterValue for DateParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
+    {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
+    }
+
+    fn accepts_value(&self, value: &Value) -> bool {
+        value.is_null() || value.as_text().is_some()
+    }
+
+    fn expected_type(&self) -> &'static str {
+        "date"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 

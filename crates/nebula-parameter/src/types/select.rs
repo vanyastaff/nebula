@@ -1,18 +1,17 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::traits::Expressible;
+use crate::core::traits::ParameterValue;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, SelectOption, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, SelectOption, Validatable,
 };
-use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for single-choice selection from a dropdown
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_parameter::prelude::*;
 ///
 /// let param = SelectParameter::builder()
@@ -41,11 +40,6 @@ pub struct SelectParameter {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     #[builder(into)]
-    /// Current value of the parameter
-    pub value: Option<nebula_value::Text>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[builder(into)]
     /// Default value if parameter is not set
     pub default: Option<nebula_value::Text>,
 
@@ -70,7 +64,7 @@ pub struct SelectParameter {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_parameter::SelectParameterOptions;
 ///
 /// let options = SelectParameterOptions::builder()
@@ -107,77 +101,41 @@ impl std::fmt::Display for SelectParameter {
     }
 }
 
-impl HasValue for SelectParameter {
-    type Value = nebula_value::Text;
+impl Validatable for SelectParameter {
+    fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
+        // Check required
+        if self.is_required() && self.is_empty(value) {
+            return Err(ParameterError::MissingValue {
+                key: self.metadata.key.clone(),
+            });
+        }
 
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
-    }
+        // Type check - allow null or text
+        if !value.is_null() && value.as_text().is_none() {
+            return Err(ParameterError::InvalidValue {
+                key: self.metadata.key.clone(),
+                reason: "Expected text value".to_string(),
+            });
+        }
 
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
-    }
+        // Validate that the value is one of the available options
+        if let Some(text) = value.as_text()
+            && !self.is_valid_option(text.as_str()) {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Value '{}' is not a valid option", text.as_str()),
+                });
+            }
 
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
         Ok(())
     }
 
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
-    }
-
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-#[async_trait::async_trait]
-impl Expressible for SelectParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value
-            .as_ref()
-            .map(|s| MaybeExpression::Value(nebula_value::Value::Text(s.clone())))
-    }
-
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            MaybeExpression::Value(nebula_value::Value::Text(s)) => {
-                // Use Text directly
-                // Validate that the value is one of the available options
-                if self.is_valid_option(s.as_str()) {
-                    self.value = Some(s);
-                    Ok(())
-                } else {
-                    Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("Value '{}' is not a valid option", s.as_str()),
-                    })
-                }
-            }
-            MaybeExpression::Expression(expr) => {
-                // Allow expressions for dynamic selection
-                self.value = Some(nebula_value::Text::from(expr.source.as_str()));
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected string value for select parameter".to_string(),
-            }),
-        }
-    }
-}
-
-impl Validatable for SelectParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, value: &Self::Value) -> bool {
-        value.is_empty()
+
+    fn is_empty(&self, value: &Value) -> bool {
+        value.is_null() || value.as_text().map(|s| s.is_empty()).unwrap_or(false)
     }
 }
 
@@ -221,14 +179,37 @@ impl SelectParameter {
         self.options.iter().find(|option| option.key == key)
     }
 
-    /// Get the display name for the current value
+    /// Get the display name for a value
     #[must_use]
-    pub fn get_display_name(&self) -> Option<String> {
-        if let Some(value) = &self.value
-            && let Some(option) = self.get_option_by_value(value)
-        {
-            return Some(option.name.clone());
-        }
-        None
+    pub fn get_display_name(&self, value: &nebula_value::Text) -> Option<String> {
+        self.get_option_by_value(value)
+            .map(|option| option.name.clone())
+    }
+}
+
+impl ParameterValue for SelectParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
+    {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
+    }
+
+    fn accepts_value(&self, value: &Value) -> bool {
+        value.is_null() || value.as_text().is_some()
+    }
+
+    fn expected_type(&self) -> &'static str {
+        "text"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }

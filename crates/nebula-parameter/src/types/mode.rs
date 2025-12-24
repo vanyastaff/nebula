@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 
-use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, ParameterValue, Validatable,
 };
 use nebula_core::ParameterKey;
 use nebula_expression::MaybeExpression;
@@ -16,10 +17,6 @@ pub struct ModeParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Current value of the parameter
-    pub value: Option<ModeValue>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -161,81 +158,56 @@ impl std::fmt::Display for ModeParameter {
     }
 }
 
-impl HasValue for ModeParameter {
-    type Value = ModeValue;
-
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
-    }
-
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
-    }
-
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
-        Ok(())
-    }
-
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
-    }
-
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-#[async_trait::async_trait]
-impl Expressible for ModeParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        // Convert ModeValue to MaybeExpression<Value>
-        self.value
-            .as_ref()
-            .map(|mode_val| MaybeExpression::Value(mode_val.value.clone()))
-    }
-
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            MaybeExpression::Value(v) => {
-                let mode_value = ModeValue {
-                    key: self.metadata.key.clone().to_string(),
-                    value: v,
-                };
-                self.value = Some(mode_value);
-                Ok(())
-            }
-            MaybeExpression::Expression(expr) => {
-                // Convert expression source to text value
-                let mode_value = ModeValue {
-                    key: self.metadata.key.clone().to_string(),
-                    value: nebula_value::Value::Text(nebula_value::Text::from(
-                        expr.source.as_str(),
-                    )),
-                };
-                self.value = Some(mode_value);
-                Ok(())
-            }
-        }
-    }
-}
-
 impl Validatable for ModeParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, value: &Self::Value) -> bool {
-        match &value.value {
-            nebula_value::Value::Text(s) => s.as_str().trim().is_empty(),
-            nebula_value::Value::Null => true,
-            nebula_value::Value::Array(a) => a.is_empty(),
-            nebula_value::Value::Object(o) => o.is_empty(),
-            _ => false,
+    fn is_empty(&self, value: &Value) -> bool {
+        // Mode parameter can accept text (mode key) or object (ModeValue)
+        if let Some(obj) = value.as_object() {
+            // Check if the inner value is empty
+            if let Some(inner_value) = obj.get("value") {
+                match inner_value {
+                    nebula_value::Value::Text(s) => s.as_str().trim().is_empty(),
+                    nebula_value::Value::Null => true,
+                    nebula_value::Value::Array(a) => a.is_empty(),
+                    nebula_value::Value::Object(o) => o.is_empty(),
+                    _ => false,
+                }
+            } else {
+                true
+            }
+        } else if let Some(text) = value.as_text() {
+            text.as_str().trim().is_empty()
+        } else {
+            value.is_null()
         }
+    }
+}
+
+impl ParameterValue for ModeParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
+    }
+
+    fn accepts_value(&self, value: &Value) -> bool {
+        value.is_null() || value.as_text().is_some() || value.as_object().is_some()
+    }
+
+    fn expected_type(&self) -> &'static str {
+        "mode"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -265,7 +237,6 @@ impl ModeParameter {
                 placeholder: Some("Select mode...".to_string()),
                 hint: Some("Choose mode and configure parameters".to_string()),
             },
-            value: None,
             default: None,
             modes: Vec::new(),
             display: None,
@@ -278,35 +249,6 @@ impl ModeParameter {
         self.modes.push(mode);
     }
 
-    /// Switch to a different mode by key
-    #[must_use = "operation result must be checked"]
-    pub fn switch_mode(&mut self, mode_key: &str) -> Result<(), ParameterError> {
-        if !self.modes.iter().any(|m| m.key == mode_key) {
-            return Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: format!("Mode '{mode_key}' is not available for this parameter"),
-            });
-        }
-
-        // Clear current value when switching modes
-        self.value = None;
-
-        Ok(())
-    }
-
-    /// Get the currently selected mode
-    pub fn current_mode(&self) -> Option<&ModeItem> {
-        if let Some(value) = &self.value {
-            self.modes.iter().find(|m| m.key == value.key)
-        } else {
-            // Return default mode or first mode
-            self.modes
-                .iter()
-                .find(|m| m.default)
-                .or_else(|| self.modes.first())
-        }
-    }
-
     /// Get available modes
     pub fn available_modes(&self) -> &[ModeItem] {
         &self.modes
@@ -317,8 +259,19 @@ impl ModeParameter {
         self.modes.iter().any(|m| m.key == mode_key)
     }
 
-    /// Get the child parameter for current mode
-    pub fn current_child(&self) -> Option<&Box<dyn Parameter>> {
-        self.current_mode().map(|mode| &mode.children)
+    /// Get the child parameter for a specific mode key
+    pub fn get_mode_child(&self, mode_key: &str) -> Option<&Box<dyn Parameter>> {
+        self.modes
+            .iter()
+            .find(|m| m.key == mode_key)
+            .map(|mode| &mode.children)
+    }
+
+    /// Get the default mode
+    pub fn default_mode(&self) -> Option<&ModeItem> {
+        self.modes
+            .iter()
+            .find(|m| m.default)
+            .or_else(|| self.modes.first())
     }
 }

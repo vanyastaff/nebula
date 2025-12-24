@@ -1,10 +1,11 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::pin::Pin;
 
-use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, ParameterValue, Validatable,
 };
 use nebula_expression::MaybeExpression;
 use nebula_value::Value;
@@ -18,9 +19,6 @@ const DEFAULT_TTL: u64 = 3600;
 pub struct ExpirableParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<ExpirableValue>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<ExpirableValue>,
@@ -193,7 +191,6 @@ impl std::fmt::Debug for ExpirableParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExpirableParameter")
             .field("metadata", &self.metadata)
-            .field("value", &self.value)
             .field("default", &self.default)
             .field("options", &self.options)
             .field("display", &self.display)
@@ -219,95 +216,61 @@ impl std::fmt::Display for ExpirableParameter {
     }
 }
 
-impl HasValue for ExpirableParameter {
-    type Value = ExpirableValue;
-
-    fn get(&self) -> Option<&Self::Value> {
-        // Check if value is expired and handle auto-clear
-        if let Some(value) = &self.value
-            && value.is_expired()
-            && let Some(options) = &self.options
-            && options.auto_clear_expired
-        {
-            return None; // Act as if no value exists
-        }
-        self.value.as_ref()
-    }
-
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        // Check if value is expired and handle auto-clear
-        if let Some(value) = &self.value
-            && value.is_expired()
-            && let Some(options) = &self.options
-            && options.auto_clear_expired
-        {
-            self.value = None;
-            return None;
-        }
-        self.value.as_mut()
-    }
-
-    fn set(&mut self, mut value: Self::Value) -> Result<(), ParameterError> {
-        // Auto-refresh if enabled
-        if let Some(options) = &self.options
-            && options.auto_refresh
-        {
-            value.refresh(options.ttl);
-        }
-        self.value = Some(value);
-        Ok(())
-    }
-
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
-    }
-
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-#[async_trait::async_trait]
-impl Expressible for ExpirableParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        // Convert ExpirableValue to MaybeExpression<Value>
-        // Return the inner value if not expired, otherwise None
-        self.value.as_ref().and_then(|exp_val| {
-            if exp_val.is_expired() {
-                None
-            } else {
-                Some(MaybeExpression::Value(exp_val.value.clone()))
-            }
-        })
-    }
-
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError> {
-        let value = value.into();
-        // Get TTL from options or use default
-        let ttl = self.options.as_ref().map_or(3600, |opts| opts.ttl); // Default 1 hour
-
-        let exp_val = ExpirableValue::from_parameter_value(&value, ttl);
-        self.value = Some(exp_val);
-        Ok(())
-    }
-}
-
 impl Validatable for ExpirableParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, value: &Self::Value) -> bool {
-        value.is_expired()
-            || match &value.value {
-                nebula_value::Value::Text(s) => s.as_str().trim().is_empty(),
-                nebula_value::Value::Null => true,
-                nebula_value::Value::Array(a) => a.is_empty(),
-                nebula_value::Value::Object(o) => o.is_empty(),
-                _ => false,
+    fn is_empty(&self, value: &Value) -> bool {
+        // Check if value is an expirable object
+        if let Some(obj) = value.as_object() {
+            // Check if expired
+            if let Some(expires_at) = obj.get("expires_at")
+                && let Some(timestamp_str) = expires_at.as_text()
+                    && let Ok(timestamp) = DateTime::parse_from_rfc3339(timestamp_str.as_str())
+                        && timestamp.with_timezone(&Utc) <= Utc::now() {
+                            return true;
+                        }
+            // Check if inner value is empty
+            if let Some(inner_value) = obj.get("value") {
+                match inner_value {
+                    nebula_value::Value::Text(s) => s.as_str().trim().is_empty(),
+                    nebula_value::Value::Null => true,
+                    nebula_value::Value::Array(a) => a.is_empty(),
+                    nebula_value::Value::Object(o) => o.is_empty(),
+                    _ => false,
+                }
+            } else {
+                true
             }
+        } else {
+            value.is_null()
+        }
+    }
+}
+
+impl ParameterValue for ExpirableParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
+    }
+
+    fn accepts_value(&self, value: &Value) -> bool {
+        value.is_null() || value.as_object().is_some()
+    }
+
+    fn expected_type(&self) -> &'static str {
+        "expirable"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -338,7 +301,6 @@ impl ExpirableParameter {
                 placeholder: Some("Expirable value...".to_string()),
                 hint: Some("Value will expire after TTL".to_string()),
             },
-            value: None,
             default: None,
             options: Some(ExpirableParameterOptions::default()),
             display: None,
@@ -355,62 +317,6 @@ impl ExpirableParameter {
     /// Set the child parameter
     pub fn set_child(&mut self, child: Option<Box<dyn Parameter>>) {
         self.children = child;
-    }
-
-    /// Check if the current value has expired
-    pub fn is_expired(&self) -> bool {
-        self.value.as_ref().is_none_or(ExpirableValue::is_expired)
-    }
-
-    /// Get the remaining TTL in seconds
-    pub fn ttl(&self) -> Option<u64> {
-        self.value
-            .as_ref()
-            .and_then(|v| if v.is_expired() { None } else { Some(v.ttl()) })
-    }
-
-    /// Get the age of the current value in seconds
-    pub fn age(&self) -> Option<u64> {
-        self.value.as_ref().map(ExpirableValue::age)
-    }
-
-    /// Check if the value is expiring soon
-    pub fn is_expiring_soon(&self) -> bool {
-        if let Some(value) = &self.value
-            && let Some(options) = &self.options
-            && let Some(threshold) = options.warning_threshold
-        {
-            return value.is_expiring_soon(threshold);
-        }
-        false
-    }
-
-    /// Refresh the current value's expiration time
-    #[must_use = "operation result must be checked"]
-    pub fn refresh_ttl(&mut self) -> Result<(), ParameterError> {
-        if let Some(value) = &mut self.value {
-            let ttl = self.options.as_ref().map_or(DEFAULT_TTL, |o| o.ttl);
-            value.refresh(ttl);
-            Ok(())
-        } else {
-            Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "No value to refresh".to_string(),
-            })
-        }
-    }
-
-    /// Get the actual value if not expired
-    pub fn get_actual_value(&self) -> Option<&nebula_value::Value> {
-        if let Some(value) = self.get() {
-            if value.is_expired() {
-                None
-            } else {
-                Some(&value.value)
-            }
-        } else {
-            None
-        }
     }
 
     /// Get the TTL configuration

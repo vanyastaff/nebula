@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Display};
+use std::future::Future;
+use std::pin::Pin;
 
-use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, ParameterValue, Validatable,
 };
 use nebula_core::ParameterKey;
-use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Routing parameter - container with connection point functionality
@@ -16,9 +16,6 @@ use nebula_value::Value;
 pub struct RoutingParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<RoutingValue>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<RoutingValue>,
@@ -190,7 +187,6 @@ impl fmt::Debug for RoutingParameter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RoutingParameter")
             .field("metadata", &self.metadata)
-            .field("value", &self.value)
             .field("default", &self.default)
             .field("children", &"Option<Box<dyn ParameterType>>")
             .field("options", &self.options)
@@ -216,63 +212,44 @@ impl Display for RoutingParameter {
     }
 }
 
-impl HasValue for RoutingParameter {
-    type Value = RoutingValue;
-
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
-    }
-
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
-    }
-
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
-        Ok(())
-    }
-
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
-    }
-
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-#[async_trait::async_trait]
-impl Expressible for RoutingParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        // Routing parameter cannot be serialized as MaybeExpression
-        // Return None or convert to a descriptive value
-        self.value.as_ref().map(|_| {
-            MaybeExpression::Value(nebula_value::Value::Text(nebula_value::Text::from(
-                "routing_parameter",
-            )))
-        })
-    }
-
-    fn from_expression(
-        &mut self,
-        _value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError> {
-        // Routing parameters cannot be set via generic ParameterValue
-        // They must be set directly using set_value_unchecked
-        Err(ParameterError::InvalidValue {
-            key: self.metadata.key.clone(),
-            reason: "Routing parameters must be set directly, not via ParameterValue".to_string(),
-        })
-    }
-}
-
 impl Validatable for RoutingParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
 
-    fn is_empty(&self, value: &Self::Value) -> bool {
-        !value.is_connected()
+    fn is_empty(&self, value: &Value) -> bool {
+        // Check if value is an object with a connected_node_id field
+        if let Some(obj) = value.as_object() {
+            obj.get("connected_node_id").is_none()
+        } else {
+            true
+        }
+    }
+}
+
+impl ParameterValue for RoutingParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
+    }
+
+    fn accepts_value(&self, value: &Value) -> bool {
+        value.is_null() || value.as_object().is_some()
+    }
+
+    fn expected_type(&self) -> &'static str {
+        "routing"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -303,7 +280,6 @@ impl RoutingParameter {
                 placeholder: Some("Configure routing connection...".to_string()),
                 hint: Some("Routing container with connection point".to_string()),
             },
-            value: None,
             default: None,
             children: child,
             options: Some(RoutingParameterOptions::default()),
@@ -321,61 +297,6 @@ impl RoutingParameter {
     /// Set the child parameter
     pub fn set_child(&mut self, child: Option<Box<dyn Parameter>>) {
         self.children = child;
-    }
-
-    /// Connect this parameter to another node
-    pub fn connect_to(&mut self, node_id: impl Into<String>) {
-        let routing_value = RoutingValue::with_connection(node_id);
-        self.value = Some(routing_value);
-    }
-
-    /// Connect this parameter to another node with a name
-    pub fn connect_to_named(&mut self, node_id: impl Into<String>, name: impl Into<String>) {
-        let routing_value = RoutingValue::with_named_connection(node_id, name);
-        self.value = Some(routing_value);
-    }
-
-    /// Disconnect this parameter
-    pub fn disconnect(&mut self) {
-        if let Some(value) = &mut self.value {
-            value.connected_node_id = None;
-            value.connection_name = None;
-            value.connected_at = None;
-        }
-    }
-
-    /// Check if this parameter has a connection
-    #[must_use]
-    pub fn is_connected(&self) -> bool {
-        self.value.as_ref().is_some_and(RoutingValue::is_connected)
-    }
-
-    /// Get the connected node ID
-    #[must_use]
-    pub fn connected_node_id(&self) -> Option<&String> {
-        self.value.as_ref()?.connection_id()
-    }
-
-    /// Get the connection name
-    #[must_use]
-    pub fn connection_name(&self) -> Option<&String> {
-        self.value.as_ref()?.connection_name.as_ref()
-    }
-
-    /// Set connection metadata
-    pub fn set_connection_metadata(&mut self, key: impl Into<String>, value: nebula_value::Value) {
-        if self.value.is_none() {
-            self.value = Some(RoutingValue::new());
-        }
-        if let Some(routing_value) = &mut self.value {
-            routing_value.set_metadata(key, value);
-        }
-    }
-
-    /// Get connection metadata
-    #[must_use]
-    pub fn get_connection_metadata(&self, key: &str) -> Option<nebula_value::Value> {
-        self.value.as_ref()?.get_metadata(key)
     }
 
     /// Set connection label
@@ -410,11 +331,18 @@ impl RoutingParameter {
         self.options.as_ref().is_some_and(|o| o.connection_required)
     }
 
-    /// Validate the routing parameter
+    /// Validate a routing value
     #[must_use = "validation result must be checked"]
-    pub fn validate_routing(&self) -> Result<(), ParameterError> {
+    pub fn validate_routing(&self, value: &Value) -> Result<(), ParameterError> {
+        // Check if value is a valid routing object
+        let is_connected = if let Some(obj) = value.as_object() {
+            obj.get("connected_node_id").is_some()
+        } else {
+            false
+        };
+
         // Check if connection is required but missing
-        if self.is_connection_required() && !self.is_connected() {
+        if self.is_connection_required() && !is_connected {
             return Err(ParameterError::InvalidValue {
                 key: self.metadata.key.clone(),
                 reason: "Connection is required but not configured".to_string(),

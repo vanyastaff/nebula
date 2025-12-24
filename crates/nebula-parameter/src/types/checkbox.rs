@@ -1,13 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-#[allow(unused_imports)]
-use crate::core::traits::Expressible;
+use crate::core::traits::ParameterValue;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, Validatable,
 };
 
-use nebula_value::Boolean;
+use nebula_value::{Boolean, Value};
 
 /// Parameter for boolean checkbox
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
@@ -15,10 +14,6 @@ pub struct CheckboxParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Current value of the parameter
-    pub value: Option<Boolean>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -64,38 +59,32 @@ impl std::fmt::Display for CheckboxParameter {
     }
 }
 
-impl HasValue for CheckboxParameter {
-    type Value = Boolean;
+impl Validatable for CheckboxParameter {
+    fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
+        // Check required
+        if self.is_required() && self.is_empty(value) {
+            return Err(ParameterError::MissingValue {
+                key: self.metadata.key.clone(),
+            });
+        }
 
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
-    }
+        // Type check - allow null or boolean
+        if !value.is_null() && value.as_boolean().is_none() {
+            return Err(ParameterError::InvalidValue {
+                key: self.metadata.key.clone(),
+                reason: "Expected boolean value".to_string(),
+            });
+        }
 
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
-    }
-
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
         Ok(())
     }
 
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
-    }
-
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-impl Validatable for CheckboxParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
 
-    fn is_empty(&self, _value: &Self::Value) -> bool {
-        false // Booleans are never considered empty
+    fn is_empty(&self, value: &Value) -> bool {
+        value.is_null()
     }
 }
 
@@ -106,5 +95,32 @@ impl Displayable for CheckboxParameter {
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
         self.display = display;
+    }
+}
+
+impl ParameterValue for CheckboxParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
+    {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
+    }
+
+    fn accepts_value(&self, value: &Value) -> bool {
+        value.is_null() || value.as_boolean().is_some()
+    }
+
+    fn expected_type(&self) -> &'static str {
+        "boolean"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }

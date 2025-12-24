@@ -1,10 +1,11 @@
 use serde::Serialize;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 
-use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, ParameterValue, Validatable,
     option::{OptionsResponse, Pagination, SelectOption},
 };
 use nebula_expression::MaybeExpression;
@@ -94,9 +95,6 @@ pub struct ResourceParameter {
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<ResourceValue>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<ResourceValue>,
 
     /// Resource loader for fetching options dynamically
@@ -117,7 +115,6 @@ impl std::fmt::Debug for ResourceParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResourceParameter")
             .field("metadata", &self.metadata)
-            .field("value", &self.value)
             .field("default", &self.default)
             .field("loader", &self.loader.as_ref().map(|_| "<loader>"))
             .field("options", &self.options)
@@ -133,7 +130,6 @@ impl ResourceParameter {
     pub fn new(metadata: ParameterMetadata) -> Self {
         Self {
             metadata,
-            value: None,
             default: None,
             loader: None,
             options: None,
@@ -232,69 +228,41 @@ impl std::fmt::Display for ResourceParameter {
     }
 }
 
-impl HasValue for ResourceParameter {
-    type Value = ResourceValue;
-
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
-    }
-
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
-    }
-
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
-        Ok(())
-    }
-
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
-    }
-
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-#[async_trait::async_trait]
-impl Expressible for ResourceParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value.as_ref().map(|v| {
-            MaybeExpression::Value(nebula_value::Value::Text(nebula_value::Text::from(
-                v.clone(),
-            )))
-        })
-    }
-
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            MaybeExpression::Value(nebula_value::Value::Text(s)) => {
-                self.value = Some(s.to_string());
-                Ok(())
-            }
-            MaybeExpression::Expression(expr) => {
-                self.value = Some(expr.source);
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected string value for resource".to_string(),
-            }),
-        }
-    }
-}
-
 impl Validatable for ResourceParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, value: &Self::Value) -> bool {
-        value.is_empty()
+    fn is_empty(&self, value: &Value) -> bool {
+        value
+            .as_text()
+            .is_some_and(|s| s.as_str().trim().is_empty())
+            || value.is_null()
+    }
+}
+
+impl ParameterValue for ResourceParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
+    }
+
+    fn accepts_value(&self, value: &Value) -> bool {
+        value.is_null() || value.as_text().is_some()
+    }
+
+    fn expected_type(&self) -> &'static str {
+        "resource"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 

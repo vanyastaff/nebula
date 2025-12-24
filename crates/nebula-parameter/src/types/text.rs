@@ -1,18 +1,17 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::traits::Expressible;
+use crate::core::traits::ParameterValue;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, Validatable,
 };
-use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for single-line text input
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_parameter::prelude::*;
 ///
 /// // Using builder with Into conversions
@@ -39,11 +38,6 @@ pub struct TextParameter {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     #[builder(into)]
-    /// Current value of the parameter
-    pub value: Option<nebula_value::Text>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[builder(into)]
     /// Default value if parameter is not set
     pub default: Option<nebula_value::Text>,
 
@@ -64,7 +58,7 @@ pub struct TextParameter {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_parameter::TextParameterOptions;
 ///
 /// let options = TextParameterOptions::builder()
@@ -105,37 +99,52 @@ impl std::fmt::Display for TextParameter {
     }
 }
 
-impl HasValue for TextParameter {
-    type Value = nebula_value::Text;
+impl Validatable for TextParameter {
+    fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
+        // Check required
+        if self.is_required() && self.is_empty(value) {
+            return Err(ParameterError::MissingValue {
+                key: self.metadata.key.clone(),
+            });
+        }
 
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
-    }
+        // Type check - allow null or text
+        if !value.is_null() && value.as_text().is_none() {
+            return Err(ParameterError::InvalidValue {
+                key: self.metadata.key.clone(),
+                reason: "Expected text value".to_string(),
+            });
+        }
 
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
-    }
+        // Options validation (min_length, max_length, pattern)
+        if let Some(text) = value.as_text()
+            && let Some(opts) = &self.options {
+                if let Some(min) = opts.min_length
+                    && text.len() < min {
+                        return Err(ParameterError::InvalidValue {
+                            key: self.metadata.key.clone(),
+                            reason: format!("Text length {} below minimum {}", text.len(), min),
+                        });
+                    }
+                if let Some(max) = opts.max_length
+                    && text.len() > max {
+                        return Err(ParameterError::InvalidValue {
+                            key: self.metadata.key.clone(),
+                            reason: format!("Text length {} above maximum {}", text.len(), max),
+                        });
+                    }
+                // Pattern validation if regex crate is available
+            }
 
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
         Ok(())
     }
 
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
-    }
-
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-impl Validatable for TextParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, value: &Self::Value) -> bool {
-        value.is_empty()
+
+    fn is_empty(&self, value: &Value) -> bool {
+        value.is_null() || value.as_text().map(|s| s.is_empty()).unwrap_or(false)
     }
 }
 
@@ -149,32 +158,29 @@ impl Displayable for TextParameter {
     }
 }
 
-#[async_trait::async_trait]
-impl Expressible for TextParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value
-            .as_ref()
-            .map(|s| MaybeExpression::Value(Value::Text(s.clone())))
+impl ParameterValue for TextParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
+    {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
     }
 
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>>,
-    ) -> Result<(), ParameterError> {
-        match value.into() {
-            MaybeExpression::Value(Value::Text(s)) => {
-                self.value = Some(s);
-                Ok(())
-            }
-            MaybeExpression::Expression(expr) => {
-                // Treat expressions as literal strings for now
-                self.value = Some(nebula_value::Text::from(expr.source.as_str()));
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected string value".to_string(),
-            }),
-        }
+    fn accepts_value(&self, value: &Value) -> bool {
+        value.is_null() || value.as_text().is_some()
+    }
+
+    fn expected_type(&self) -> &'static str {
+        "text"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }

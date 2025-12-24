@@ -1,11 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::traits::Expressible;
+use crate::core::traits::ParameterValue;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, Validatable,
 };
-use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for multi-line text input
@@ -14,10 +13,6 @@ pub struct TextareaParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Current value of the parameter
-    pub value: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -63,96 +58,63 @@ impl std::fmt::Display for TextareaParameter {
     }
 }
 
-impl HasValue for TextareaParameter {
-    type Value = nebula_value::Text;
+impl Validatable for TextareaParameter {
+    fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
+        // Check required
+        if self.is_required() && self.is_empty(value) {
+            return Err(ParameterError::MissingValue {
+                key: self.metadata.key.clone(),
+            });
+        }
 
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
-    }
+        // Type check - allow null or text
+        if !value.is_null() && value.as_text().is_none() {
+            return Err(ParameterError::InvalidValue {
+                key: self.metadata.key.clone(),
+                reason: "Expected text value".to_string(),
+            });
+        }
 
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
-    }
-
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
-        Ok(())
-    }
-
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
-    }
-
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-#[async_trait::async_trait]
-impl Expressible for TextareaParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value
-            .as_ref()
-            .map(|s| MaybeExpression::Value(nebula_value::Value::Text(s.clone())))
-    }
-
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            MaybeExpression::Value(nebula_value::Value::Text(s)) => {
-                // Use Text directly
-                // Validate length constraints from options
-                if let Some(options) = &self.options {
-                    if let Some(min_len) = options.min_length
-                        && s.len() < min_len
-                    {
+        // Validate length constraints from options
+        if let Some(text) = value.as_text()
+            && let Some(opts) = &self.options {
+                if let Some(min_len) = opts.min_length
+                    && text.len() < min_len {
                         return Err(ParameterError::InvalidValue {
                             key: self.metadata.key.clone(),
                             reason: format!(
                                 "Text too short: {} chars, minimum {}",
-                                s.len(),
+                                text.len(),
                                 min_len
                             ),
                         });
                     }
-                    if let Some(max_len) = options.max_length
-                        && s.len() > max_len
-                    {
+                if let Some(max_len) = opts.max_length
+                    && text.len() > max_len {
                         return Err(ParameterError::InvalidValue {
                             key: self.metadata.key.clone(),
                             reason: format!(
                                 "Text too long: {} chars, maximum {}",
-                                s.len(),
+                                text.len(),
                                 max_len
                             ),
                         });
                     }
-                }
-                self.value = Some(s);
-                Ok(())
             }
-            MaybeExpression::Expression(expr) => {
-                // Allow expressions for dynamic text
-                self.value = Some(nebula_value::Text::from(expr.source.as_str()));
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected string value for textarea parameter".to_string(),
-            }),
-        }
-    }
-}
 
-impl Validatable for TextareaParameter {
+        Ok(())
+    }
+
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, value: &Self::Value) -> bool {
-        value.trim().is_empty()
+
+    fn is_empty(&self, value: &Value) -> bool {
+        value.is_null()
+            || value
+                .as_text()
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(false)
     }
 }
 
@@ -167,24 +129,51 @@ impl Displayable for TextareaParameter {
 }
 
 impl TextareaParameter {
-    /// Get character count for current value
+    /// Get character count for a value
     #[must_use]
-    pub fn character_count(&self) -> usize {
-        self.value.as_ref().map_or(0, nebula_value::Text::len)
+    pub fn character_count(&self, value: &nebula_value::Text) -> usize {
+        value.len()
     }
 
     /// Get remaining characters if `max_length` is set
     #[must_use]
-    pub fn remaining_characters(&self) -> Option<i32> {
+    pub fn remaining_characters(&self, value: &nebula_value::Text) -> Option<i32> {
         if let Some(options) = &self.options
             && let Some(max_len) = options.max_length
         {
-            let current = self.character_count();
+            let current = self.character_count(value);
             // Use try_from to safely convert usize to i32, saturating at i32::MAX if too large
             let max = i32::try_from(max_len).unwrap_or(i32::MAX);
             let curr = i32::try_from(current).unwrap_or(i32::MAX);
             return Some(max.saturating_sub(curr));
         }
         None
+    }
+}
+
+impl ParameterValue for TextareaParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
+    {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
+    }
+
+    fn accepts_value(&self, value: &Value) -> bool {
+        value.is_null() || value.as_text().is_some()
+    }
+
+    fn expected_type(&self) -> &'static str {
+        "text"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }

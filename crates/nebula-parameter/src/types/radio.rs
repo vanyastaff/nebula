@@ -1,11 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, SelectOption, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, ParameterValue, SelectOption, Validatable,
 };
-use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for selecting a single option from radio buttons
@@ -14,10 +12,6 @@ pub struct RadioParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Current value of the parameter
-    pub value: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -67,77 +61,12 @@ impl std::fmt::Display for RadioParameter {
     }
 }
 
-impl HasValue for RadioParameter {
-    type Value = nebula_value::Text;
-
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
-    }
-
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
-    }
-
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
-        Ok(())
-    }
-
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
-    }
-
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-#[async_trait::async_trait]
-impl Expressible for RadioParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value
-            .as_ref()
-            .map(|s| MaybeExpression::Value(nebula_value::Value::Text(s.clone())))
-    }
-
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            MaybeExpression::Value(nebula_value::Value::Text(s)) => {
-                // Use Text directly
-                // Validate that the value is one of the available options or "other"
-                if self.is_valid_option(s.as_str()) {
-                    self.value = Some(s);
-                    Ok(())
-                } else {
-                    Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("Value '{}' is not a valid radio option", s.as_str()),
-                    })
-                }
-            }
-            MaybeExpression::Expression(expr) => {
-                // Allow expressions for dynamic selection
-                self.value = Some(nebula_value::Text::from(expr.source.as_str()));
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected string value for radio parameter".to_string(),
-            }),
-        }
-    }
-}
-
 impl Validatable for RadioParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, value: &Self::Value) -> bool {
-        value.is_empty()
+    fn is_empty(&self, value: &Value) -> bool {
+        value.as_text().is_none_or(|s| s.is_empty())
     }
 }
 
@@ -148,6 +77,33 @@ impl Displayable for RadioParameter {
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
         self.display = display;
+    }
+}
+
+impl ParameterValue for RadioParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
+    {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
+    }
+
+    fn accepts_value(&self, value: &Value) -> bool {
+        value.is_null() || value.as_text().is_some()
+    }
+
+    fn expected_type(&self) -> &'static str {
+        "text"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -196,19 +152,17 @@ impl RadioParameter {
         self.options.iter().find(|option| option.key == key)
     }
 
-    /// Get the display name for the current value
+    /// Get the display name for a given value
     #[must_use]
-    pub fn get_display_name(&self) -> Option<String> {
-        if let Some(value) = &self.value {
-            if let Some(option) = self.get_option_by_value(value) {
-                return Some(option.name.clone());
-            }
-            // If not found in options and "other" is allowed, return as-is
-            if let Some(radio_options) = &self.radio_options
-                && radio_options.allow_other
-            {
-                return Some(value.to_string());
-            }
+    pub fn get_display_name(&self, value: &str) -> Option<String> {
+        if let Some(option) = self.get_option_by_value(value) {
+            return Some(option.name.clone());
+        }
+        // If not found in options and "other" is allowed, return as-is
+        if let Some(radio_options) = &self.radio_options
+            && radio_options.allow_other
+        {
+            return Some(value.to_string());
         }
         None
     }

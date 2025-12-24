@@ -1,11 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, SelectOption, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, ParameterValue, SelectOption, Validatable,
 };
-use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for selecting multiple options from a dropdown
@@ -14,10 +12,6 @@ pub struct MultiSelectParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Current value of the parameter
-    pub value: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -66,101 +60,12 @@ impl std::fmt::Display for MultiSelectParameter {
     }
 }
 
-impl HasValue for MultiSelectParameter {
-    type Value = Vec<String>;
-
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
-    }
-
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
-    }
-
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
-        Ok(())
-    }
-
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
-    }
-
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-#[async_trait::async_trait]
-impl Expressible for MultiSelectParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value.as_ref().map(|vec| {
-            let values: Vec<nebula_value::Value> = vec
-                .iter()
-                .map(|s| nebula_value::Value::Text(nebula_value::Text::from(s.clone())))
-                .collect();
-            MaybeExpression::Value(nebula_value::Value::Array(
-                nebula_value::Array::from_nebula_values(values),
-            ))
-        })
-    }
-
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            MaybeExpression::Value(nebula_value::Value::Array(arr)) => {
-                let mut string_values = Vec::new();
-
-                // arr.iter() returns &nebula_value::Value
-                for item in arr.iter() {
-                    match item {
-                        nebula_value::Value::Text(s) => {
-                            string_values.push(s.to_string());
-                        }
-                        _ => {
-                            return Err(ParameterError::InvalidValue {
-                                key: self.metadata.key.clone(),
-                                reason:
-                                    "All array items must be strings for multi-select parameter"
-                                        .to_string(),
-                            });
-                        }
-                    }
-                }
-
-                // Validate all selected options exist and constraints are met
-                if self.are_valid_selections(&string_values)? {
-                    self.value = Some(string_values);
-                    Ok(())
-                } else {
-                    Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: "One or more selected values are not valid options".to_string(),
-                    })
-                }
-            }
-            MaybeExpression::Expression(expr) => {
-                // For expressions, store expression source as single-item array
-                self.value = Some(vec![expr.source]);
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected array value for multi-select parameter".to_string(),
-            }),
-        }
-    }
-}
-
 impl Validatable for MultiSelectParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, value: &Self::Value) -> bool {
-        value.is_empty()
+    fn is_empty(&self, value: &Value) -> bool {
+        value.as_array().is_none_or(|arr| arr.is_empty())
     }
 }
 
@@ -171,6 +76,33 @@ impl Displayable for MultiSelectParameter {
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
         self.display = display;
+    }
+}
+
+impl ParameterValue for MultiSelectParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
+    {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
+    }
+
+    fn accepts_value(&self, value: &Value) -> bool {
+        value.is_null() || value.as_array().is_some()
+    }
+
+    fn expected_type(&self) -> &'static str {
+        "array"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -245,121 +177,16 @@ impl MultiSelectParameter {
         self.options.iter().find(|option| option.key == key)
     }
 
-    /// Get display names for current selections
+    /// Get display names for given selections
     #[must_use]
-    pub fn get_display_names(&self) -> Vec<String> {
-        if let Some(selections) = &self.value {
-            selections
-                .iter()
-                .filter_map(|value| {
-                    self.get_option_by_value(value)
-                        .map(|option| option.name.clone())
-                        .or_else(|| Some(value.clone())) // Fallback to raw value
-                })
-                .collect()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Add a selection if it's valid and not already selected
-    #[must_use = "operation result must be checked"]
-    pub fn add_selection(&mut self, value: String) -> Result<(), ParameterError> {
-        if !self.is_valid_option(&value) {
-            return Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: format!("Value '{value}' is not a valid option"),
-            });
-        }
-
-        let mut current = self.value.clone().unwrap_or_default();
-
-        // Don't add if already selected
-        if current.contains(&value) {
-            return Ok(());
-        }
-
-        current.push(value);
-
-        // Validate constraints
-        self.are_valid_selections(&current)?;
-        self.value = Some(current);
-        Ok(())
-    }
-
-    /// Remove a selection
-    #[must_use = "operation result must be checked"]
-    pub fn remove_selection(&mut self, value: &str) -> Result<(), ParameterError> {
-        if let Some(current) = &mut self.value {
-            current.retain(|v| v != value);
-        }
-
-        // Validate constraints after removal
-        if let Some(current) = &self.value {
-            self.are_valid_selections(current)?;
-        }
-        Ok(())
-    }
-
-    /// Toggle a selection (add if not present, remove if present)
-    #[must_use = "operation result must be checked"]
-    pub fn toggle_selection(&mut self, value: String) -> Result<(), ParameterError> {
-        if let Some(current) = &self.value {
-            if current.contains(&value) {
-                self.remove_selection(&value)
-            } else {
-                self.add_selection(value)
-            }
-        } else {
-            self.add_selection(value)
-        }
-    }
-
-    /// Check if a value is currently selected
-    #[must_use]
-    pub fn is_selected(&self, value: &str) -> bool {
-        self.value
-            .as_ref()
-            .is_some_and(|selections| selections.contains(&value.to_string()))
-    }
-
-    /// Get the number of current selections
-    #[must_use]
-    pub fn selection_count(&self) -> usize {
-        self.value.as_ref().map_or(0, std::vec::Vec::len)
-    }
-
-    /// Check if minimum selections requirement is met
-    #[must_use]
-    pub fn meets_minimum(&self) -> bool {
-        if let Some(options) = &self.multi_select_options
-            && let Some(min) = options.min_selections
-        {
-            return self.selection_count() >= min;
-        }
-        true // No minimum requirement
-    }
-
-    /// Check if maximum selections limit is exceeded
-    #[must_use]
-    pub fn exceeds_maximum(&self) -> bool {
-        if let Some(options) = &self.multi_select_options
-            && let Some(max) = options.max_selections
-        {
-            return self.selection_count() > max;
-        }
-        false // No maximum limit
-    }
-
-    /// Get available slots for more selections
-    #[must_use]
-    pub fn remaining_slots(&self) -> Option<usize> {
-        if let Some(options) = &self.multi_select_options
-            && let Some(max) = options.max_selections
-        {
-            let current = self.selection_count();
-            return Some(max.saturating_sub(current));
-        }
-        None // No limit
+    pub fn get_display_names(&self, selections: &[String]) -> Vec<String> {
+        selections
+            .iter()
+            .filter_map(|value| {
+                self.get_option_by_value(value)
+                    .map(|option| option.name.clone())
+                    .or_else(|| Some(value.clone())) // Fallback to raw value
+            })
+            .collect()
     }
 }

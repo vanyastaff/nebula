@@ -20,9 +20,9 @@ pub use nebula_expression::MaybeExpression;
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::core::{
-        DisplayContext, Displayable, HasValue, Parameter, ParameterCollection, ParameterDisplay,
-        ParameterError, ParameterKind, ParameterMetadata, ParameterValidation, ParameterValue,
-        Snapshot, Validatable, ValidationResult,
+        DisplayContext, Displayable, Parameter, ParameterCollection, ParameterDisplay,
+        ParameterError, ParameterKind, ParameterMetadata, ParameterSnapshot, ParameterValidation,
+        ParameterValue, ParameterValues, Validatable, ValidationResult,
     };
 
     pub use crate::types::{

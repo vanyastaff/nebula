@@ -6,6 +6,7 @@ mod metadata;
 pub mod option;
 pub mod traits;
 pub mod validation;
+pub mod values;
 // mod display;  // TODO: Temporarily disabled, needs rewrite
 
 pub use collection::*;
@@ -16,3 +17,4 @@ pub use metadata::*;
 pub use option::SelectOption;
 pub use traits::*;
 pub use validation::*;
+pub use values::*;

@@ -1,18 +1,18 @@
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::pin::Pin;
 
-use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, ParameterValue, Validatable,
 };
-use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for grouping related data into a structured object
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_parameter::prelude::*;
 ///
 /// let param = GroupParameter::builder()
@@ -45,10 +45,6 @@ pub struct GroupParameter {
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// Current value of the parameter
-    pub value: Option<GroupValue>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
     pub default: Option<GroupValue>,
 
@@ -73,7 +69,7 @@ pub struct GroupParameter {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_parameter::{GroupField, GroupFieldType};
 ///
 /// let field = GroupField::builder()
@@ -194,75 +190,29 @@ impl std::fmt::Display for GroupParameter {
     }
 }
 
-impl HasValue for GroupParameter {
-    type Value = GroupValue;
-
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
+impl ParameterValue for GroupParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
     }
 
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
+    fn accepts_value(&self, value: &Value) -> bool {
+        matches!(value, Value::Object(_))
     }
 
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
-        Ok(())
+    fn expected_type(&self) -> &'static str {
+        "object"
     }
 
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-#[async_trait::async_trait]
-impl Expressible for GroupParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value.as_ref().map(|group_val| {
-            MaybeExpression::Value(nebula_value::Value::Object(group_val.values.clone()))
-        })
-    }
-
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            MaybeExpression::Value(nebula_value::Value::Object(obj)) => {
-                let mut group_value = GroupValue::new();
-
-                for (key, val) in obj.entries() {
-                    // val is already nebula_value::Value
-                    group_value.set_field(key.clone(), val.clone());
-                }
-
-                if self.is_valid_group_value(&group_value)? {
-                    self.value = Some(group_value);
-                    Ok(())
-                } else {
-                    Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: "Group value validation failed".to_string(),
-                    })
-                }
-            }
-            MaybeExpression::Expression(expr) => {
-                // For expressions, create a group with a single expression field
-                let mut group_value = GroupValue::new();
-                group_value.set_field("_expression", nebula_value::Value::text(&expr.source));
-                self.value = Some(group_value);
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected object value for group parameter".to_string(),
-            }),
-        }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -270,8 +220,61 @@ impl Validatable for GroupParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, value: &Self::Value) -> bool {
-        value.is_empty()
+
+    fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
+        // Type check
+        let obj = match value {
+            Value::Object(o) => o,
+            _ => {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Expected object value for group, got {}", value.kind()),
+                });
+            }
+        };
+
+        // Required check
+        if self.is_empty(value) && self.is_required() {
+            return Err(ParameterError::MissingValue {
+                key: self.metadata.key.clone(),
+            });
+        }
+
+        // Check for expression values
+        if let Some(Value::Text(expr)) = obj.get("_expression")
+            && expr.as_str().starts_with("{{")
+            && expr.as_str().ends_with("}}")
+        {
+            return Ok(());
+        }
+
+        // Validate each field
+        for field in &self.fields {
+            if field.required && !obj.contains_key(&field.key) {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Required field '{}' is missing", field.key),
+                });
+            }
+
+            // Validate field type if value exists
+            if let Some(field_value) = obj.get(&field.key)
+                && !self.is_valid_field_value(field, field_value) {
+                    return Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!("Invalid value for field '{}'", field.key),
+                    });
+                }
+        }
+
+        Ok(())
+    }
+
+    fn is_empty(&self, value: &Value) -> bool {
+        match value {
+            Value::Object(o) => o.is_empty(),
+            _ => true,
+        }
     }
 }
 
@@ -286,50 +289,14 @@ impl Displayable for GroupParameter {
 }
 
 impl GroupParameter {
-    /// Validate if a group value is valid for this parameter
-    fn is_valid_group_value(&self, group_value: &GroupValue) -> Result<bool, ParameterError> {
-        // Check for expression values
-        if let Some(nebula_value::Value::Text(expr)) = group_value.get_field("_expression")
-            && expr.as_str().starts_with("{{")
-            && expr.as_str().ends_with("}}")
-        {
-            return Ok(true); // Allow expressions
-        }
-
-        // Validate each field
-        for field in &self.fields {
-            if field.required && !group_value.values.contains_key(&field.key) {
-                return Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
-                    reason: format!("Required field '{}' is missing", field.key),
-                });
-            }
-
-            // Validate field type if value exists
-            if let Some(value) = group_value.get_field(&field.key) {
-                // Convert nebula_value::Value to serde_json::Value for validation
-                use crate::ValueRefExt;
-                let json_value = value.to_json();
-                if !self.is_valid_field_value(field, &json_value) {
-                    return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("Invalid value for field '{}'", field.key),
-                    });
-                }
-            }
-        }
-
-        Ok(true)
-    }
-
     /// Validate a single field value against its type
-    fn is_valid_field_value(&self, field: &GroupField, value: &serde_json::Value) -> bool {
+    fn is_valid_field_value(&self, field: &GroupField, value: &Value) -> bool {
         match &field.field_type {
-            GroupFieldType::Text => value.is_string(),
-            GroupFieldType::Number => value.is_number(),
-            GroupFieldType::Boolean => value.is_boolean(),
+            GroupFieldType::Text => matches!(value, Value::Text(_)),
+            GroupFieldType::Number => matches!(value, Value::Float(_) | Value::Integer(_)),
+            GroupFieldType::Boolean => matches!(value, Value::Boolean(_)),
             GroupFieldType::Select { options } => {
-                if let Some(s) = value.as_str() {
+                if let Value::Text(s) = value {
                     options.contains(&s.to_string())
                 } else {
                     false
@@ -337,7 +304,7 @@ impl GroupParameter {
             }
             GroupFieldType::Date | GroupFieldType::Email | GroupFieldType::Url => {
                 // Basic string validation - more specific validation could be added
-                value.is_string()
+                matches!(value, Value::Text(_))
             }
         }
     }

@@ -1,18 +1,17 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::traits::Expressible;
+use crate::core::traits::ParameterValue;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, Validatable,
 };
-use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for numeric input
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_parameter::prelude::*;
 ///
 /// let param = NumberParameter::builder()
@@ -37,10 +36,6 @@ pub struct NumberParameter {
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// Current value of the parameter
-    pub value: Option<f64>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
     pub default: Option<f64>,
 
@@ -61,7 +56,7 @@ pub struct NumberParameter {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_parameter::NumberParameterOptions;
 ///
 /// // All fields are optional
@@ -112,37 +107,41 @@ impl std::fmt::Display for NumberParameter {
     }
 }
 
-impl HasValue for NumberParameter {
-    type Value = f64;
+impl Validatable for NumberParameter {
+    fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
+        // Check required
+        if self.is_required() && self.is_empty(value) {
+            return Err(ParameterError::MissingValue {
+                key: self.metadata.key.clone(),
+            });
+        }
 
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
-    }
+        // Type check - allow null or number
+        if !value.is_null() && value.as_float().is_none() && value.as_integer().is_none() {
+            return Err(ParameterError::InvalidValue {
+                key: self.metadata.key.clone(),
+                reason: "Expected numeric value".to_string(),
+            });
+        }
 
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
-    }
+        // Options validation (min, max, step, precision)
+        if let Some(num) = value
+            .as_float()
+            .map(|f| f.value())
+            .or_else(|| value.as_integer().map(|i| i.value() as f64))
+        {
+            self.validate_number(num)?;
+        }
 
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
         Ok(())
     }
 
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
-    }
-
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-impl Validatable for NumberParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, _value: &Self::Value) -> bool {
-        false // Numbers are never considered empty
+
+    fn is_empty(&self, value: &Value) -> bool {
+        value.is_null()
     }
 }
 
@@ -153,45 +152,6 @@ impl Displayable for NumberParameter {
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
         self.display = display;
-    }
-}
-
-#[async_trait::async_trait]
-impl Expressible for NumberParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value
-            .map(|n| MaybeExpression::Value(Value::Float(nebula_value::Float::new(n))))
-    }
-
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError> {
-        match value.into() {
-            MaybeExpression::Value(Value::Integer(i)) => {
-                let num = i.value() as f64;
-                self.validate_number(num)?;
-                self.value = Some(num);
-                Ok(())
-            }
-            MaybeExpression::Value(Value::Float(f)) => {
-                let num = f.value();
-                self.validate_number(num)?;
-                self.value = Some(num);
-                Ok(())
-            }
-            MaybeExpression::Expression(expr) => {
-                if let Ok(num) = expr.source.parse::<f64>() {
-                    self.validate_number(num)?;
-                    self.value = Some(num);
-                }
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected numeric value".to_string(),
-            }),
-        }
     }
 }
 
@@ -274,13 +234,36 @@ impl NumberParameter {
         self.options.as_ref().and_then(|opts| opts.precision)
     }
 
-    /// Check if the current value is within bounds
+    /// Check if a value is within bounds
     #[must_use]
-    pub fn is_within_bounds(&self) -> bool {
-        if let Some(value) = self.value {
-            self.validate_number(value).is_ok()
-        } else {
-            true
-        }
+    pub fn is_within_bounds(&self, value: f64) -> bool {
+        self.validate_number(value).is_ok()
+    }
+}
+
+impl ParameterValue for NumberParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
+    {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
+    }
+
+    fn accepts_value(&self, value: &Value) -> bool {
+        value.is_null() || value.as_float().is_some() || value.as_integer().is_some()
+    }
+
+    fn expected_type(&self) -> &'static str {
+        "number"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }

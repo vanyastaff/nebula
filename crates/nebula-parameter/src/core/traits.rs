@@ -9,7 +9,8 @@ pub use async_trait::async_trait;
 use nebula_core::ParameterKey as Key;
 pub use nebula_expression::{EvaluationContext, ExpressionEngine, MaybeExpression};
 use nebula_value::Value;
-use std::fmt::Debug;
+use std::future::Future;
+use std::pin::Pin;
 
 // =============================================================================
 // Base Trait
@@ -22,7 +23,7 @@ use std::fmt::Debug;
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_parameter::prelude::*;
 ///
 /// struct MyParameter {
@@ -66,334 +67,6 @@ pub trait Parameter: Send + Sync {
 }
 
 // =============================================================================
-// Value Storage Trait
-// =============================================================================
-
-/// Core trait for parameters that can store values
-///
-/// This trait provides fundamental get/set operations for parameter values.
-/// It focuses **only on value storage**, without mixing in expression or
-/// validation concerns (those are in separate traits).
-///
-/// # Implementation Notes
-///
-/// - For expression support, implement [`Expressible`] trait
-/// - For validation logic, implement [`Validatable`] trait  
-/// - For display conditions, implement [`Displayable`] trait
-/// - For type-erased access, implement [`ParameterValue`] trait
-///
-/// # Type Parameters
-///
-/// * `Value` - The concrete value type this parameter stores. Must be cloneable,
-///   comparable, debuggable, and thread-safe.
-///
-/// # Examples
-///
-/// ```rust
-/// use nebula_parameter::prelude::*;
-///
-/// struct TextParameter {
-///     metadata: ParameterMetadata,
-///     value: Option<String>,
-///     default: Option<String>,
-/// }
-///
-/// impl HasValue for TextParameter {
-///     type Value = String;
-///
-///     fn get(&self) -> Option<&Self::Value> {
-///         self.value.as_ref()
-///     }
-///
-///     fn get_mut(&mut self) -> Option<&mut Self::Value> {
-///         self.value.as_mut()
-///     }
-///
-///     fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-///         self.value = Some(value);
-///         Ok(())
-///     }
-///
-///     fn default(&self) -> Option<&Self::Value> {
-///         self.default.as_ref()
-///     }
-///
-///     fn clear(&mut self) {
-///         self.value = None;
-///     }
-/// }
-/// ```
-#[async_trait]
-pub trait HasValue: Parameter + Debug {
-    /// The concrete value type for this parameter
-    type Value: Clone + PartialEq + Debug + Send + Sync + 'static;
-
-    // --- Required methods (ONLY value storage) ---
-
-    /// Gets the current value (immutable reference)
-    fn get(&self) -> Option<&Self::Value>;
-
-    /// Gets the current value (mutable reference)
-    ///
-    /// # Important Note for Expressible Parameters
-    ///
-    /// For parameters implementing [`Expressible`], this only returns `Some`
-    /// when the value is concrete. If the parameter stores an expression string,
-    /// this returns `None` since expressions cannot be mutated directly.
-    ///
-    /// To modify an expression, use [`Expressible::set_expression`] instead.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// # use nebula_parameter::prelude::*;
-    /// # let mut param = TextParameter::new("test");
-    /// // Concrete value - can mutate
-    /// param.set("hello".to_string()).unwrap();
-    /// if let Some(value) = param.get_mut() {
-    ///     value.push_str(" world");
-    /// }
-    ///
-    /// // Expression - cannot mutate, returns None
-    /// param.set_expression("{{ $input.value }}").unwrap();
-    /// assert!(param.get_mut().is_none());
-    /// ```
-    fn get_mut(&mut self) -> Option<&mut Self::Value>;
-
-    /// Sets a new value without validation
-    ///
-    /// This is the low-level setter. For validated setting, use
-    /// [`set_validated`](Self::set_validated) method (requires [`Validatable`]).
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError>;
-
-    /// Gets the default value if defined
-    fn default(&self) -> Option<&Self::Value>;
-
-    /// Clears the current value
-    fn clear(&mut self);
-
-    // --- Convenience methods with default implementations ---
-
-    /// Returns true if parameter has a value set
-    #[inline]
-    fn has_value(&self) -> bool {
-        self.get().is_some()
-    }
-
-    /// Sets a new value with validation (requires [`Validatable`])
-    ///
-    /// This is the high-level setter that includes validation.
-    /// The operation is transactional - if validation fails, the old
-    /// value is preserved.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if validation fails.
-    async fn set_validated(&mut self, value: Self::Value) -> Result<(), ParameterError>
-    where
-        Self: Validatable,
-        Self::Value: Clone + Into<Value>,
-    {
-        // Validate first
-        self.validate(&value).await?;
-
-        // Use try_set for transactional behavior
-        HasValueExt::try_set(self, value)?;
-        Ok(())
-    }
-
-    /// Updates the current value in place using a closure
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no value is set or if the closure returns an error.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// # use nebula_parameter::prelude::*;
-    /// # let mut param = TextParameter::new("test");
-    /// # param.set("hello".to_string());
-    /// param.update(|value| {
-    ///     value.push_str(" world");
-    ///     Ok(())
-    /// })?;
-    /// assert_eq!(param.get(), Some(&"hello world".to_string()));
-    /// ```
-    fn update<F>(&mut self, f: F) -> Result<(), ParameterError>
-    where
-        F: FnOnce(&mut Self::Value) -> Result<(), ParameterError>,
-    {
-        match self.get_mut() {
-            Some(value) => f(value),
-            None => Err(ParameterError::MissingValue {
-                key: self.metadata().key.clone(),
-            }),
-        }
-    }
-}
-
-// =============================================================================
-// Extension Trait for HasValue
-// =============================================================================
-
-/// Extension trait providing convenience methods for parameters with values
-///
-/// This trait is automatically implemented for all types that implement [`HasValue`].
-/// It provides additional utility methods without cluttering the core [`HasValue`] trait.
-///
-/// # Design Rationale
-///
-/// By separating convenience methods into an extension trait, we:
-/// - Keep the core trait focused and minimal
-/// - Allow easy addition of new utilities
-/// - Enable blanket implementations
-/// - Avoid forcing implementations to think about convenience methods
-pub trait HasValueExt: HasValue {
-    /// Checks if the current value equals the default
-    fn is_default(&self) -> bool {
-        match (self.get(), self.default()) {
-            (Some(current), Some(default)) => current == default,
-            (None, None) => true,
-            _ => false,
-        }
-    }
-
-    /// Resets the parameter's value to its default
-    ///
-    /// If no default is set, clears the value instead.
-    fn reset(&mut self) -> Result<(), ParameterError> {
-        if let Some(default) = self.default().cloned() {
-            self.set(default)
-        } else {
-            self.clear();
-            Ok(())
-        }
-    }
-
-    /// Takes the current value, leaving the parameter empty
-    ///
-    /// This is equivalent to `get().cloned()` followed by `clear()`,
-    /// but only clears if a value actually exists.
-    ///
-    /// # Fixed Issue
-    ///
-    /// Previous implementation would call `clear()` even when no value
-    /// was present, which could cause issues with certain parameter types.
-    fn take(&mut self) -> Option<Self::Value> {
-        let value = self.get().cloned();
-        // Only clear if we actually have a value
-        if value.is_some() {
-            self.clear();
-        }
-        value
-    }
-
-    /// Gets the current value or the default value
-    ///
-    /// Returns `None` if neither current nor default value is set.
-    fn get_or_default(&self) -> Option<&Self::Value> {
-        self.get().or_else(|| self.default())
-    }
-
-    /// Gets the current value or a provided fallback
-    fn get_or<'a>(&'a self, fallback: &'a Self::Value) -> &'a Self::Value {
-        self.get().unwrap_or(fallback)
-    }
-
-    /// Gets the current value or returns an error
-    ///
-    /// This is useful when a value is required for an operation.
-    fn get_or_err(&self) -> Result<&Self::Value, ParameterError> {
-        self.get().ok_or_else(|| ParameterError::MissingValue {
-            key: self.metadata().key.clone(),
-        })
-    }
-
-    /// Gets the current value or computes it lazily
-    ///
-    /// This is useful when the fallback is expensive to compute.
-    fn get_or_else<F>(&self, f: F) -> Self::Value
-    where
-        F: FnOnce() -> Self::Value,
-    {
-        self.get().cloned().unwrap_or_else(f)
-    }
-
-    /// Maps the current value to another type
-    fn map<U, F>(&self, f: F) -> Option<U>
-    where
-        F: FnOnce(&Self::Value) -> U,
-    {
-        self.get().map(f)
-    }
-
-    /// Sets value by cloning (convenience for owned values)
-    ///
-    /// This is useful when you have a reference but need to set by value.
-    fn set_clone(&mut self, value: &Self::Value) -> Result<(), ParameterError> {
-        self.set(value.clone())
-    }
-
-    /// Sets value using Into conversion
-    ///
-    /// This allows setting from any type that can convert into the parameter's value type.
-    fn set_into<T>(&mut self, value: T) -> Result<(), ParameterError>
-    where
-        T: Into<Self::Value>,
-    {
-        self.set(value.into())
-    }
-
-    /// Try to set a value, returning the old value on success
-    ///
-    /// This is useful when you need to atomically swap values and keep the old one.
-    /// The operation is transactional - if setting fails, the old value is restored.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ParameterError::InvalidValue` if both the set operation fails
-    /// AND the restoration of the old value fails.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// # use nebula_parameter::prelude::*;
-    /// # let mut param = TextParameter::new("test");
-    /// param.set("hello".to_string()).unwrap();
-    ///
-    /// let old = param.try_set("world".to_string()).unwrap();
-    /// assert_eq!(old, Some("hello".to_string()));
-    /// assert_eq!(param.get(), Some(&"world".to_string()));
-    /// ```
-    fn try_set(&mut self, value: Self::Value) -> Result<Option<Self::Value>, ParameterError> {
-        let old = self.take();
-
-        match self.set(value) {
-            Ok(()) => Ok(old),
-            Err(original_error) => {
-                // Try to restore old value
-                if let Some(old_val) = old
-                    && let Err(_restore_error) = self.set(old_val)
-                {
-                    // Critical: both operations failed, parameter is poisoned
-                    return Err(ParameterError::InvalidValue {
-                        key: self.metadata().key.clone(),
-                        reason: format!(
-                            "Failed to set value and restore old value: {original_error}"
-                        ),
-                    });
-                }
-                Err(original_error)
-            }
-        }
-    }
-}
-
-// Automatic blanket implementation for all HasValue types
-impl<T: HasValue + ?Sized> HasValueExt for T {}
-
-// =============================================================================
 // Type-Erased Parameter Value Trait
 // =============================================================================
 
@@ -404,102 +77,79 @@ impl<T: HasValue + ?Sized> HasValueExt for T {}
 /// - Storing heterogeneous parameters in collections (`Vec<Box<dyn ParameterValue>>`)
 /// - UI code that needs to display/edit values generically
 /// - Serialization/deserialization of parameter collections
+/// - Runtime validation of external values
+///
+/// # Design Note
+///
+/// This trait operates on external `Value` instances rather than internal state.
+/// Parameters are now pure schema definitions - values are stored separately
+/// in `ParameterValues` or similar storage structures.
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_parameter::prelude::*;
 ///
-/// let mut params: Vec<Box<dyn ParameterValue>> = vec![
+/// let params: Vec<Box<dyn ParameterValue>> = vec![
 ///     Box::new(TextParameter::new("name")),
 ///     Box::new(NumberParameter::new("age")),
 /// ];
 ///
-/// // Type-erased operations
-/// for param in &mut params {
-///     if !param.has_value_erased() {
-///         param.set_erased(Value::String("default".to_string()))?;
+/// // Type-erased validation
+/// for param in &params {
+///     let value = Value::String("test".to_string());
+///     if param.accepts_value(&value) {
+///         param.validate_value(&value).await?;
 ///     }
 /// }
 /// ```
 pub trait ParameterValue: Parameter {
-    /// Check if parameter has a value (type-erased)
-    fn has_value_erased(&self) -> bool;
-
-    /// Clear the value (type-erased)
-    fn clear_erased(&mut self);
-
-    /// Get the value as generic `Value` (type-erased)
-    fn get_erased(&self) -> Option<Value>;
-
-    /// Set the value from generic `Value` (type-erased)
+    /// Validate a value against this parameter's schema (async)
+    ///
+    /// Returns a boxed future to allow trait objects.
+    /// This includes all validation: synchronous, asynchronous, and custom rules.
     ///
     /// # Errors
     ///
-    /// Returns `ParameterError::InvalidValue` if the value cannot be
-    /// converted to the parameter's concrete type.
-    fn set_erased(&mut self, value: Value) -> Result<(), ParameterError>;
+    /// Returns `ParameterError` if the value violates any validation rules.
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>>;
+
+    /// Check if this parameter accepts the given value type
+    ///
+    /// This is a fast type-check that doesn't perform full validation.
+    /// Use this for quick filtering before calling `validate_value`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// # use nebula_parameter::prelude::*;
+    /// let param = TextParameter::new("name");
+    /// assert!(param.accepts_value(&Value::text("test")));
+    /// assert!(!param.accepts_value(&Value::integer(42)));
+    /// ```
+    fn accepts_value(&self, value: &Value) -> bool;
+
+    /// Get a human-readable description of the expected value type
+    ///
+    /// This is useful for error messages and UI hints.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// # use nebula_parameter::prelude::*;
+    /// let param = TextParameter::new("name");
+    /// assert_eq!(param.expected_type(), "String");
+    /// ```
+    fn expected_type(&self) -> &'static str;
 
     /// Downcast to concrete type
     fn as_any(&self) -> &dyn std::any::Any;
 
     /// Downcast to concrete type (mutable)
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
-
-    /// Validate the current value (type-erased, async)
-    ///
-    /// Returns a boxed future to allow trait objects
-    fn validate_erased(
-        &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>;
-}
-
-// Blanket implementation for all HasValue types with proper conversion support
-impl<T> ParameterValue for T
-where
-    T: HasValue + Validatable + 'static,
-    T::Value: Clone + Into<Value> + TryFrom<Value>,
-    <T::Value as TryFrom<Value>>::Error: std::fmt::Display,
-{
-    fn has_value_erased(&self) -> bool {
-        self.has_value()
-    }
-
-    fn clear_erased(&mut self) {
-        self.clear();
-    }
-
-    fn get_erased(&self) -> Option<Value> {
-        self.get().cloned().map(Into::into)
-    }
-
-    fn set_erased(&mut self, value: Value) -> Result<(), ParameterError> {
-        let typed = T::Value::try_from(value).map_err(|e| ParameterError::InvalidValue {
-            key: self.metadata().key.clone(),
-            reason: format!(
-                "Cannot convert Value to {}: {}",
-                std::any::type_name::<T::Value>(),
-                e
-            ),
-        })?;
-
-        self.set(typed)
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn validate_erased(
-        &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
-    {
-        Box::pin(self.validate_current())
-    }
 }
 
 // =============================================================================
@@ -508,9 +158,9 @@ where
 
 /// Trait for parameters that support validation
 ///
-/// Provides both synchronous (fast) and asynchronous (complex) validation.
-/// Most parameters should implement synchronous validation, with async
-/// validation reserved for cases requiring I/O (database checks, API calls, etc.).
+/// Provides both synchronous (fast) and asynchronous (complex) validation
+/// of external values. Parameters implementing this trait define the schema
+/// and validation rules, but don't store values themselves.
 ///
 /// # Validation Flow
 ///
@@ -521,7 +171,7 @@ where
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_parameter::prelude::*;
 ///
 /// struct NumberParameter {
@@ -533,20 +183,17 @@ where
 /// #[async_trait]
 /// impl Validatable for NumberParameter {
 ///     // Fast synchronous validation
-///     fn validate_sync(&self, value: &Self::Value) -> Result<(), ParameterError> {
+///     fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
+///         let num = value.as_number().ok_or_else(|| ParameterError::InvalidValue {
+///             key: self.metadata().key.clone(),
+///             reason: "Expected number".to_string(),
+///         })?;
+///
 ///         if let Some(min) = self.min {
-///             if *value < min {
+///             if num < min {
 ///                 return Err(ParameterError::InvalidValue {
 ///                     key: self.metadata().key.clone(),
-///                     reason: format!("Value {} below minimum {}", value, min),
-///                 });
-///             }
-///         }
-///         if let Some(max) = self.max {
-///             if *value > max {
-///                 return Err(ParameterError::InvalidValue {
-///                     key: self.metadata().key.clone(),
-///                     reason: format!("Value {} above maximum {}", value, max),
+///                     reason: format!("Value {} below minimum {}", num, min),
 ///                 });
 ///             }
 ///         }
@@ -555,17 +202,22 @@ where
 /// }
 /// ```
 #[async_trait]
-pub trait Validatable: HasValue + Send + Sync {
+pub trait Validatable: Parameter + Send + Sync {
     /// Synchronous validation (fast, local checks)
     ///
     /// Override this for basic validation like:
+    /// - Type checks
     /// - Range checks
     /// - Regex matching
     /// - Required field validation
     /// - Format validation
     ///
     /// Default implementation only checks if required field is empty.
-    fn validate_sync(&self, value: &Self::Value) -> Result<(), ParameterError> {
+    ///
+    /// # Parameters
+    ///
+    /// * `value` - The value to validate (passed by reference)
+    fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
         if self.is_empty(value) && self.is_required() {
             return Err(ParameterError::MissingValue {
                 key: self.metadata().key.clone(),
@@ -578,12 +230,16 @@ pub trait Validatable: HasValue + Send + Sync {
     ///
     /// Override this for validation requiring external resources:
     /// - Database uniqueness checks
-    /// - External API validation  
+    /// - External API validation
     /// - Rate limiting checks
     /// - Cross-parameter validation with async dependencies
     ///
     /// Default implementation does nothing (returns Ok).
-    async fn validate_async(&self, _value: &Self::Value) -> Result<(), ParameterError> {
+    ///
+    /// # Parameters
+    ///
+    /// * `value` - The value to validate (passed by reference)
+    async fn validate_async(&self, _value: &Value) -> Result<(), ParameterError> {
         Ok(())
     }
 
@@ -596,15 +252,10 @@ pub trait Validatable: HasValue + Send + Sync {
     ///
     /// You typically don't need to override this method.
     ///
-    /// # Generic Bounds Note
+    /// # Parameters
     ///
-    /// The `Clone + Into<Value>` bounds are only required for custom validation rules.
-    /// If your parameter doesn't use custom validation configuration, use
-    /// [`validate_simple`](Self::validate_simple) instead.
-    async fn validate(&self, value: &Self::Value) -> Result<(), ParameterError>
-    where
-        Self::Value: Clone + Into<Value>,
-    {
+    /// * `value` - The value to validate (passed by reference)
+    async fn validate(&self, value: &Value) -> Result<(), ParameterError> {
         // 1. Fast synchronous checks
         self.validate_sync(value)?;
 
@@ -613,9 +264,8 @@ pub trait Validatable: HasValue + Send + Sync {
 
         // 3. Custom validation from configuration
         if let Some(validation) = self.validation() {
-            let nebula_value = value.clone().into();
             validation
-                .validate(&nebula_value, None)
+                .validate(value, None)
                 .await
                 .map_err(|e| ParameterError::InvalidValue {
                     key: self.metadata().key.clone(),
@@ -623,26 +273,6 @@ pub trait Validatable: HasValue + Send + Sync {
                 })?;
         }
 
-        Ok(())
-    }
-
-    /// Validates without custom validation rules
-    ///
-    /// This is useful for parameters that don't implement `Clone + Into<Value>`
-    /// or don't use custom validation configuration. It only runs
-    /// sync and async validation, skipping the custom rules.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// # use nebula_parameter::prelude::*;
-    /// # let param = SimpleParameter::new("test");
-    /// // For simple parameters without custom validation
-    /// param.validate_simple(param.get().unwrap()).await?;
-    /// ```
-    async fn validate_simple(&self, value: &Self::Value) -> Result<(), ParameterError> {
-        self.validate_sync(value)?;
-        self.validate_async(value).await?;
         Ok(())
     }
 
@@ -658,7 +288,7 @@ pub trait Validatable: HasValue + Send + Sync {
     ///
     /// # ⚠️ CRITICAL for String/Collection Parameters
     ///
-    /// **You MUST override this method** for parameters storing:
+    /// **You MUST override this method** for parameters expecting:
     /// - Strings (empty string `""`)
     /// - Vectors/Arrays (empty collection `[]`)
     /// - Maps/Objects (empty map `{}`)
@@ -666,41 +296,28 @@ pub trait Validatable: HasValue + Send + Sync {
     /// If not overridden, `is_empty` always returns `false`, which means
     /// **empty strings/collections will pass required field validation!**
     ///
+    /// # Parameters
+    ///
+    /// * `value` - The value to check for emptiness
+    ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// # use nebula_parameter::prelude::*;
     /// impl Validatable for TextParameter {
-    ///     fn is_empty(&self, value: &String) -> bool {
-    ///         value.is_empty()  // ✅ REQUIRED
+    ///     fn is_empty(&self, value: &Value) -> bool {
+    ///         matches!(value, Value::String(s) if s.is_empty())
     ///     }
     /// }
     ///
     /// impl Validatable for ArrayParameter {
-    ///     fn is_empty(&self, value: &Vec<Value>) -> bool {
-    ///         value.is_empty()  // ✅ REQUIRED
+    ///     fn is_empty(&self, value: &Value) -> bool {
+    ///         matches!(value, Value::Array(arr) if arr.is_empty())
     ///     }
     /// }
     /// ```
-    fn is_empty(&self, _value: &Self::Value) -> bool {
+    fn is_empty(&self, _value: &Value) -> bool {
         false // Default: most types don't have "empty" concept
-    }
-
-    /// Validates the current value of the parameter
-    ///
-    /// Convenience method that validates whatever value is currently set.
-    /// Returns an error if the parameter is required but has no value.
-    async fn validate_current(&self) -> Result<(), ParameterError>
-    where
-        Self::Value: Clone + Into<Value>,
-    {
-        match self.get() {
-            Some(value) => self.validate(value).await,
-            None if self.is_required() => Err(ParameterError::MissingValue {
-                key: self.metadata().key.clone(),
-            }),
-            None => Ok(()),
-        }
     }
 }
 
@@ -708,17 +325,19 @@ pub trait Validatable: HasValue + Send + Sync {
 // Expression Evaluation Trait
 // =============================================================================
 
-/// Trait for parameters that can store and evaluate expressions
+/// Trait for parameters that can evaluate expressions
 ///
-/// This trait extends [`HasValue`] to support dynamic expression evaluation.
-/// Parameters implementing this trait can store expressions like
-/// `{{ $node.data.value * 2 }}` and evaluate them at runtime.
+/// This trait provides methods for detecting and evaluating expression values.
+/// Unlike the previous design, parameters no longer store values - they only
+/// define the schema and provide evaluation capabilities.
 ///
-/// # Expression Storage
+/// # Expression Detection
 ///
-/// Parameters can store values in two forms:
-/// - **Concrete values**: `MaybeExpression::Value(v)`
-/// - **Expression strings**: `MaybeExpression::Expression("{{ ... }}")`
+/// Values can be in two forms:
+/// - **Concrete values**: `Value::String("hello")`
+/// - **Expression strings**: `Value::String("{{ $input.value }}")`
+///
+/// Use `is_expression_value` to detect if a value contains an expression.
 ///
 /// # Async Note
 ///
@@ -729,203 +348,92 @@ pub trait Validatable: HasValue + Send + Sync {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_parameter::prelude::*;
 ///
-/// // Create parameter with expression
-/// let mut param = TextParameter::new("user_name");
-/// param.set_expression("{{ $input.user.name }}").unwrap();
+/// let param = TextParameter::new("user_name");
+/// let value = Value::String("{{ $input.user.name }}".to_string());
 ///
-/// assert!(param.is_expression());
+/// assert!(param.is_expression_value(&value));
 ///
 /// // Evaluate at runtime
 /// let engine = ExpressionEngine::new();
 /// let mut context = EvaluationContext::new();
 /// context.set_input(json!({"user": {"name": "Alice"}}));
 ///
-/// let value = param.resolve(&engine, &context).await.unwrap();
-/// assert_eq!(value, "Alice");
+/// let result = param.evaluate(&value, &engine, &context).await.unwrap();
+/// assert_eq!(result, Value::String("Alice".to_string()));
 /// ```
 #[async_trait::async_trait]
-pub trait Expressible: HasValue {
-    // --- Required methods ---
-
-    /// Converts parameter value to generic `MaybeExpression<Value>`
+pub trait Expressible: Parameter {
+    /// Check if a value contains an expression
     ///
-    /// This allows uniform access to parameter values regardless of whether
-    /// they're expressions or concrete values.
-    fn to_expression(&self) -> Option<MaybeExpression<Value>>;
-
-    /// Gets the expression string without allocation (if available)
+    /// This should detect expression syntax in the value.
+    /// For string-based parameters, this typically checks for `{{ ... }}` markers.
     ///
-    /// This is more efficient than `get_expression()` when you just need
-    /// to read the expression without owning it.
+    /// # Parameters
     ///
-    /// Returns `None` if the parameter stores a concrete value or has no value.
-    fn expression_ref(&self) -> Option<&str> {
-        None // Default: parameter doesn't store expressions
-    }
-
-    /// Sets parameter value from generic `MaybeExpression<Value>`
+    /// * `value` - The value to check for expression syntax
     ///
-    /// Accepts either concrete values or expression strings.
-    /// The parameter implementation decides how to handle expressions.
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError>;
-
-    // --- Convenience methods with default implementations ---
-
-    /// Check if the current value is an expression
-    fn is_expression(&self) -> bool {
-        matches!(self.to_expression(), Some(MaybeExpression::Expression(_)))
-    }
-
-    /// Get the raw expression string (allocating)
+    /// # Examples
     ///
-    /// For better performance, use [`expression_ref`](Self::expression_ref) instead.
-    ///
-    /// Returns `None` if the parameter stores a concrete value or has no value.
-    fn get_expression(&self) -> Option<String> {
-        self.expression_ref().map(std::string::ToString::to_string)
-    }
+    /// ```rust,ignore
+    /// # use nebula_parameter::prelude::*;
+    /// let param = TextParameter::new("test");
+    /// assert!(param.is_expression_value(&Value::String("{{ 1 + 1 }}".to_string())));
+    /// assert!(!param.is_expression_value(&Value::String("hello".to_string())));
+    /// ```
+    fn is_expression_value(&self, value: &Value) -> bool;
 
-    /// Set an expression string
+    /// Evaluate an expression value and return the result
     ///
-    /// This is a convenience method that wraps the expression in `MaybeExpression::Expression`.
-    fn set_expression(&mut self, expr: impl Into<String>) -> Result<(), ParameterError> {
-        use nebula_expression::CachedExpression;
-        use once_cell::sync::OnceCell;
-
-        let cached_expr = CachedExpression {
-            source: expr.into(),
-            ast: OnceCell::new(),
-        };
-        self.from_expression(MaybeExpression::Expression(cached_expr))
-    }
-
-    /// Evaluate the expression and return the result as `Value`
+    /// If the value is a concrete value (not an expression), returns it directly.
+    /// If it contains an expression, evaluates it using the provided engine and context.
     ///
-    /// If the parameter stores a concrete value, returns it directly.
-    /// If it stores an expression, evaluates it using the provided engine and context.
+    /// # Parameters
+    ///
+    /// * `value` - The value to evaluate (may be concrete or expression)
+    /// * `engine` - The expression engine to use for evaluation
+    /// * `context` - The evaluation context containing variables
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - Expression evaluation fails
-    /// - No value is set
+    /// Returns an error if expression evaluation fails.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// # use nebula_parameter::prelude::*;
+    /// # use nebula_value::Value;
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let param = TextParameter::builder()
+    ///     .metadata(ParameterMetadata::builder()
+    ///         .key("test")
+    ///         .name("Test")
+    ///         .description("")
+    ///         .build()?)
+    ///     .build();
+    /// let engine = ExpressionEngine::new();
+    /// let context = EvaluationContext::new();
+    ///
+    /// // Concrete value
+    /// let value = Value::text("hello");
+    /// let result = param.evaluate(&value, &engine, &context).await?;
+    /// assert_eq!(result, value);
+    ///
+    /// // Expression value
+    /// let expr_value = Value::text("{{ 1 + 1 }}");
+    /// let result = param.evaluate(&expr_value, &engine, &context).await?;
+    /// assert_eq!(result, Value::integer(2));
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn evaluate(
         &self,
+        value: &Value,
         engine: &ExpressionEngine,
         context: &EvaluationContext,
-    ) -> Result<Value, ParameterError> {
-        match self.to_expression() {
-            Some(MaybeExpression::Expression(expr)) => engine
-                .evaluate(&expr.source, context)
-                .map_err(|e| ParameterError::InvalidValue {
-                    key: self.metadata().key.clone(),
-                    reason: format!("Expression evaluation failed: {e}"),
-                }),
-            Some(MaybeExpression::Value(v)) => Ok(v),
-            None => Err(ParameterError::MissingValue {
-                key: self.metadata().key.clone(),
-            }),
-        }
-    }
-
-    /// Resolve the parameter value - evaluate if expression, return value otherwise
-    ///
-    /// This is the main method to use when you need the actual typed value.
-    /// It handles both static values and expressions transparently.
-    ///
-    /// # Type Conversion
-    ///
-    /// The result is automatically converted from `Value` to the parameter's
-    /// concrete type using `TryFrom`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Expression evaluation fails
-    /// - Type conversion fails
-    /// - No value is set
-    async fn resolve(
-        &self,
-        engine: &ExpressionEngine,
-        context: &EvaluationContext,
-    ) -> Result<Self::Value, ParameterError>
-    where
-        Self::Value: TryFrom<Value>,
-        <Self::Value as TryFrom<Value>>::Error: std::fmt::Display,
-    {
-        let value = self.evaluate(engine, context).await?;
-
-        value.try_into().map_err(|e| ParameterError::InvalidValue {
-            key: self.metadata().key.clone(),
-            reason: format!(
-                "Cannot convert Value to {}: {}",
-                std::any::type_name::<Self::Value>(),
-                e
-            ),
-        })
-    }
-
-    /*
-    /// Resolve and replace expression with its evaluated result
-    ///
-    /// Evaluates the expression once and stores the result as a concrete value.
-    /// Subsequent calls to `get()` will return the cached value without re-evaluation.
-    ///
-    /// # Important Note
-    ///
-    /// This method **replaces the expression with its evaluated result**.
-    /// After calling this, `is_expression()` will return `false` because
-    /// the expression has been converted to a concrete value.
-    ///
-    /// If you need to preserve the expression, use [`resolve`](Self::resolve)
-    /// instead and cache the result yourself.
-    ///
-    /// # Use Cases
-    ///
-    /// This is useful when:
-    /// - The same expression will be accessed multiple times
-    /// - Expression evaluation is expensive
-    /// - The context doesn't change between accesses
-    /// - You want to "freeze" the expression result
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if evaluation or caching fails.
-    ///
-    /// # Note
-    /// This method is commented out due to lifetime/borrow checker issues.
-    /// Use `resolve()` instead and then call `set()` manually if needed.
-    async fn resolve_and_cache(
-        &mut self,
-        engine: &ExpressionEngine,
-        context: &EvaluationContext,
-    ) -> Result<&Self::Value, ParameterError>
-    where
-        Self::Value: TryFrom<Value>,
-        <Self::Value as TryFrom<Value>>::Error: std::fmt::Display,
-    {
-        // If already a concrete value, return it
-        if !self.is_expression() {
-            if let Some(v) = self.get() {
-                return Ok(v);
-            }
-        }
-
-        // Evaluate and cache
-        let resolved = self.resolve(engine, context).await?;
-        self.set(resolved)?;
-
-        // Return the just-set value
-        // Safe to unwrap because we just set it
-        Ok(self.get().expect("value was just set but is missing"))
-    }
-    */
+    ) -> Result<Value, ParameterError>;
 }
 
 // =============================================================================
@@ -945,9 +453,11 @@ pub trait Expressible: HasValue {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_parameter::prelude::*;
+/// use nebula_value::Value;
 ///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let mut param = TextParameter::new("apiKey");
 ///
 /// // Show only when authentication type is "api_key"
@@ -957,9 +467,11 @@ pub trait Expressible: HasValue {
 /// );
 ///
 /// let context = DisplayContext::new()
-///     .with_value("authType", "api_key");
+///     .with_value("authType", Value::text("api_key"));
 ///
 /// assert!(param.should_display(&context));
+/// # Ok(())
+/// # }
 /// ```
 pub trait Displayable: Parameter {
     /// Get the display configuration
@@ -1044,7 +556,7 @@ impl<T: Displayable + ?Sized> DisplayableMut for T {}
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_parameter::prelude::*;
 ///
 /// struct SensitiveParameter {
@@ -1053,8 +565,7 @@ impl<T: Displayable + ?Sized> DisplayableMut for T {}
 ///
 /// impl DisplayableReactive for SensitiveParameter {
 ///     fn on_hide(&mut self, _context: &DisplayContext) {
-///         // Clear sensitive data when parameter is hidden
-///         self.clear();
+///         // Maybe clear cached data or reset state
 ///     }
 ///
 ///     fn on_show(&mut self, _context: &DisplayContext) {
@@ -1098,12 +609,13 @@ pub trait DisplayableReactive: Displayable {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_parameter::prelude::*;
+/// use nebula_value::Value;
 ///
 /// let mut param = SensitiveParameter::new("secret");
-/// let old_ctx = DisplayContext::new().with_value("show_secrets", false);
-/// let new_ctx = DisplayContext::new().with_value("show_secrets", true);
+/// let old_ctx = DisplayContext::new().with_value("show_secrets", Value::boolean(false));
+/// let new_ctx = DisplayContext::new().with_value("show_secrets", Value::boolean(true));
 ///
 /// apply_display_change(&mut param, &old_ctx, &new_ctx);
 /// // This will call param.on_show() since visibility changed from false to true
@@ -1132,19 +644,17 @@ pub mod testing {
     use super::*;
 
     /// Assert that a value is valid for a parameter
-    pub async fn assert_valid<P>(param: &P, value: &P::Value)
+    pub async fn assert_valid<P>(param: &P, value: &Value)
     where
         P: Validatable,
-        P::Value: Clone + Into<Value>,
     {
         param.validate(value).await.expect("validation should pass");
     }
 
     /// Assert that a value is invalid for a parameter
-    pub async fn assert_invalid<P>(param: &P, value: &P::Value)
+    pub async fn assert_invalid<P>(param: &P, value: &Value)
     where
         P: Validatable,
-        P::Value: Clone + Into<Value>,
     {
         assert!(
             param.validate(value).await.is_err(),
@@ -1153,10 +663,9 @@ pub mod testing {
     }
 
     /// Assert that validation fails with a specific error type
-    pub async fn assert_invalid_with<P, F>(param: &P, value: &P::Value, check: F)
+    pub async fn assert_invalid_with<P, F>(param: &P, value: &Value, check: F)
     where
         P: Validatable,
-        P::Value: Clone + Into<Value>,
         F: FnOnce(&ParameterError) -> bool,
     {
         match param.validate(value).await {

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use nebula_core::ParameterKey;
 use nebula_value::Value;
 
+use crate::core::values::ParameterValues;
 use crate::core::{Displayable, ParameterError, ParameterValue};
 
 /// A type-safe collection of parameters with dependency tracking
@@ -75,28 +76,6 @@ impl ParameterCollection {
             .downcast_mut::<P>()
     }
 
-    /// Get a parameter's value (type-erased)
-    pub fn value(&self, key: impl Into<ParameterKey>) -> Option<Value> {
-        self.parameters.get(&key.into())?.get_erased()
-    }
-
-    /// Get a typed value from a parameter
-    #[must_use = "typed value must be used"]
-    pub fn typed_value<T>(&self, key: impl Into<ParameterKey>) -> Result<T, ParameterError>
-    where
-        T: TryFrom<Value>,
-        T::Error: std::fmt::Display,
-    {
-        let key_obj = key.into();
-        let value = self
-            .value(key_obj.clone())
-            .ok_or_else(|| ParameterError::not_found(key_obj.clone()))?;
-
-        value.try_into().map_err(|e: <T as TryFrom<Value>>::Error| {
-            ParameterError::type_error(key_obj, std::any::type_name::<T>(), e.to_string())
-        })
-    }
-
     /// Check if a parameter exists
     pub fn contains(&self, key: impl Into<ParameterKey>) -> bool {
         self.parameters.contains_key(&key.into())
@@ -155,16 +134,17 @@ impl ParameterCollection {
             .collect()
     }
 
-    /// Validate all parameters in the collection
-    pub async fn validate_all(&self) -> ValidationResult {
+    /// Validate all values against parameter schemas
+    pub async fn validate_all(&self, values: &ParameterValues) -> ValidationResult {
         let mut errors = Vec::new();
 
         // Validate in topological order (dependencies first)
         for key in self.topological_sort() {
-            if let Some(param) = self.parameters.get(&key)
-                && let Err(e) = param.validate_erased().await
-            {
-                errors.push((key.clone(), e));
+            if let Some(param) = self.parameters.get(&key) {
+                let value = values.get(key.clone()).cloned().unwrap_or(Value::Null);
+                if let Err(e) = param.validate_value(&value).await {
+                    errors.push((key.clone(), e));
+                }
             }
         }
 
@@ -221,33 +201,6 @@ impl ParameterCollection {
         visited.insert(key.clone());
         result.push(key.clone());
     }
-
-    /// Create a snapshot of all parameter values
-    #[must_use]
-    pub fn snapshot(&self) -> Snapshot {
-        Snapshot {
-            values: self
-                .parameters
-                .iter()
-                .map(|(k, v)| (k.clone(), v.get_erased()))
-                .collect(),
-        }
-    }
-
-    /// Restore parameter values from a snapshot
-    #[must_use = "operation result must be checked"]
-    pub fn restore(&mut self, snapshot: &Snapshot) -> Result<(), ParameterError> {
-        for (key, value) in &snapshot.values {
-            if let Some(param) = self.parameters.get_mut(key) {
-                if let Some(v) = value {
-                    param.set_erased(v.clone())?;
-                } else {
-                    param.clear_erased();
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 /// Result of validating all parameters
@@ -276,44 +229,9 @@ impl ValidationResult {
     }
 }
 
-/// Snapshot of parameter values for undo/redo
-#[derive(Debug, Clone)]
-pub struct Snapshot {
-    values: HashMap<ParameterKey, Option<Value>>,
-}
-
-impl Snapshot {
-    /// Create an empty snapshot
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            values: HashMap::new(),
-        }
-    }
-
-    /// Get the number of captured values
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    /// Check if snapshot is empty
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-}
-
-impl Default for Snapshot {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::traits::HasValue;
     use crate::types::TextParameter;
 
     /// Helper to create a ParameterKey for tests
@@ -394,7 +312,6 @@ mod tests {
                         .build()
                         .unwrap(),
                 )
-                .value(nebula_value::Text::from("hello"))
                 .build(),
         );
 
@@ -402,36 +319,52 @@ mod tests {
         assert!(param.is_some());
     }
 
-    #[test]
-    fn test_snapshot_restore() {
+    #[tokio::test]
+    async fn test_validate_all() {
         let mut collection = ParameterCollection::new();
 
-        let param = TextParameter::builder()
-            .metadata(
-                crate::core::ParameterMetadata::builder()
-                    .key("test")
-                    .name("Test")
-                    .description("")
-                    .build()
-                    .unwrap(),
-            )
-            .value(nebula_value::Text::from("initial"))
-            .build();
+        collection.add(
+            TextParameter::builder()
+                .metadata(
+                    crate::core::ParameterMetadata::builder()
+                        .key("test")
+                        .name("Test")
+                        .description("")
+                        .build()
+                        .unwrap(),
+                )
+                .build(),
+        );
 
-        collection.add(param);
+        let mut values = ParameterValues::new();
+        values.set(key("test"), Value::text("hello"));
+
+        let result = collection.validate_all(&values).await;
+        assert!(result.is_valid());
+    }
+
+    #[test]
+    fn test_snapshot_restore_with_parameter_values() {
+        let collection = ParameterCollection::new();
+
+        let mut values = ParameterValues::new();
+        values.set(key("test"), Value::text("initial"));
 
         // Take snapshot
-        let snapshot = collection.snapshot();
+        let snapshot = values.snapshot();
 
         // Modify value
-        if let Some(p) = collection.get_mut::<TextParameter>(key("test")) {
-            let _ = p.set(nebula_value::Text::from("modified"));
-        }
+        values.set(key("test"), Value::text("modified"));
+        assert_eq!(
+            values.get(key("test")).unwrap().as_text().unwrap().as_str(),
+            "modified"
+        );
 
         // Restore
-        collection.restore(&snapshot).unwrap();
-
-        let value = collection.value(key("test")).unwrap();
-        assert_eq!(value.as_text().unwrap().as_str(), "initial");
+        values.restore(&snapshot);
+        assert_eq!(
+            values.get(key("test")).unwrap().as_text().unwrap().as_str(),
+            "initial"
+        );
     }
 }

@@ -1,11 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::traits::Expressible;
+use crate::core::traits::ParameterValue;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, Validatable,
 };
-use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for color selection
@@ -14,10 +13,6 @@ pub struct ColorParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Current value of the parameter
-    pub value: Option<nebula_value::Text>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -81,76 +76,41 @@ impl std::fmt::Display for ColorParameter {
     }
 }
 
-impl HasValue for ColorParameter {
-    type Value = nebula_value::Text;
+impl Validatable for ColorParameter {
+    fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
+        // Check required
+        if self.is_required() && self.is_empty(value) {
+            return Err(ParameterError::MissingValue {
+                key: self.metadata.key.clone(),
+            });
+        }
 
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
-    }
+        // Type check - allow null or text
+        if !value.is_null() && value.as_text().is_none() {
+            return Err(ParameterError::InvalidValue {
+                key: self.metadata.key.clone(),
+                reason: "Expected text value".to_string(),
+            });
+        }
 
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
-    }
+        // Validate color format
+        if let Some(text) = value.as_text()
+            && !self.is_valid_color(text.as_str()) {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Invalid color format: {}", text.as_str()),
+                });
+            }
 
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
         Ok(())
     }
 
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
-    }
-
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-#[async_trait::async_trait]
-impl Expressible for ColorParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value
-            .as_ref()
-            .map(|s| MaybeExpression::Value(nebula_value::Value::Text(s.clone())))
-    }
-
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            MaybeExpression::Value(nebula_value::Value::Text(s)) => {
-                // Validate color format
-                if self.is_valid_color(s.as_str()) {
-                    self.value = Some(s);
-                    Ok(())
-                } else {
-                    Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("Invalid color format: {s}"),
-                    })
-                }
-            }
-            MaybeExpression::Expression(expr) => {
-                // Allow expressions for dynamic colors - store the expression source
-                self.value = Some(nebula_value::Text::from(expr.source.as_str()));
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected string value for color".to_string(),
-            }),
-        }
-    }
-}
-
-impl Validatable for ColorParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, value: &Self::Value) -> bool {
-        value.is_empty()
+
+    fn is_empty(&self, value: &Value) -> bool {
+        value.is_null() || value.as_text().map(|s| s.is_empty()).unwrap_or(false)
     }
 }
 
@@ -223,16 +183,43 @@ impl ColorParameter {
 
     /// Convert color to specified format (basic implementation)
     #[must_use]
-    pub fn convert_to_format(&self, format: ColorFormat) -> Option<String> {
-        let current_value = self.value.as_ref()?;
-
+    pub fn convert_to_format(
+        &self,
+        color: &nebula_value::Text,
+        format: ColorFormat,
+    ) -> Option<String> {
         // This is a simplified implementation
         // In a real application, you'd use a proper color conversion library
         match format {
-            ColorFormat::Hex if !current_value.starts_with("#") => {
-                Some(format!("#{current_value}"))
-            }
-            _ => Some(current_value.to_string()),
+            ColorFormat::Hex if !color.starts_with("#") => Some(format!("#{color}")),
+            _ => Some(color.to_string()),
         }
+    }
+}
+
+impl ParameterValue for ColorParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
+    {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
+    }
+
+    fn accepts_value(&self, value: &Value) -> bool {
+        value.is_null() || value.as_text().is_some()
+    }
+
+    fn expected_type(&self) -> &'static str {
+        "text"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }

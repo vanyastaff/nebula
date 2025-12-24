@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 
-use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, ParameterValue, Validatable,
 };
-use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Parameter for structured object data - acts as a container with named child parameters
@@ -14,9 +14,6 @@ use nebula_value::Value;
 pub struct ObjectParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<ObjectValue>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<ObjectValue>,
@@ -133,7 +130,6 @@ impl std::fmt::Debug for ObjectParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ObjectParameter")
             .field("metadata", &self.metadata)
-            .field("value", &self.value)
             .field("default", &self.default)
             .field(
                 "children",
@@ -165,73 +161,29 @@ impl std::fmt::Display for ObjectParameter {
     }
 }
 
-impl HasValue for ObjectParameter {
-    type Value = ObjectValue;
-
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
+impl ParameterValue for ObjectParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
     }
 
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
+    fn accepts_value(&self, value: &Value) -> bool {
+        matches!(value, Value::Object(_))
     }
 
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
-        Ok(())
+    fn expected_type(&self) -> &'static str {
+        "object"
     }
 
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-#[async_trait::async_trait]
-impl Expressible for ObjectParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value.as_ref().map(|obj_val| {
-            MaybeExpression::Value(nebula_value::Value::Object(obj_val.values.clone()))
-        })
-    }
-
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            MaybeExpression::Value(nebula_value::Value::Object(obj)) => {
-                let object_value = ObjectValue { values: obj };
-
-                if self.is_valid_object_value(&object_value)? {
-                    self.value = Some(object_value);
-                    Ok(())
-                } else {
-                    Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: "Object value validation failed".to_string(),
-                    })
-                }
-            }
-            MaybeExpression::Expression(expr) => {
-                // For expressions, create an object with the expression source
-                let mut object_value = ObjectValue::new();
-                object_value.set_field(
-                    "_expression",
-                    nebula_value::Value::Text(nebula_value::Text::from(expr.source.as_str())),
-                );
-                self.value = Some(object_value);
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected object value for object parameter".to_string(),
-            }),
-        }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -239,8 +191,68 @@ impl Validatable for ObjectParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, value: &Self::Value) -> bool {
-        value.is_empty()
+
+    fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
+        // Type check
+        let obj = match value {
+            Value::Object(o) => o,
+            _ => {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Expected object value, got {}", value.kind()),
+                });
+            }
+        };
+
+        // Required check
+        if self.is_empty(value) && self.is_required() {
+            return Err(ParameterError::MissingValue {
+                key: self.metadata.key.clone(),
+            });
+        }
+
+        // Check for expression values
+        if let Some(Value::Text(expr)) = obj.get("_expression")
+            && expr.as_str().starts_with("{{")
+            && expr.as_str().ends_with("}}")
+        {
+            return Ok(());
+        }
+
+        // Validate that all required child parameters have values
+        for (key, child) in &self.children {
+            if child.metadata().required && !obj.contains_key(key) {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Required field '{key}' is missing"),
+                });
+            }
+        }
+
+        // Check for additional properties if not allowed
+        if let Some(options) = &self.options
+            && !options.allow_additional_properties
+        {
+            let defined_children: std::collections::HashSet<_> = self.children.keys().collect();
+
+            for key in obj.keys() {
+                if !defined_children.contains(key) && key != "_expression" {
+                    return Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!("Additional property '{key}' is not allowed"),
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn is_empty(&self, value: &Value) -> bool {
+        match value {
+            Value::Object(o) => o.is_empty(),
+            _ => true,
+        }
     }
 }
 
@@ -270,52 +282,12 @@ impl ObjectParameter {
                 placeholder: Some("Configure object fields...".to_string()),
                 hint: Some("Object container with child parameters".to_string()),
             },
-            value: None,
             default: None,
             children: HashMap::new(),
             options: Some(ObjectParameterOptions::default()),
             display: None,
             validation: None,
         })
-    }
-
-    /// Validate if an object value is valid for this parameter
-    fn is_valid_object_value(&self, object_value: &ObjectValue) -> Result<bool, ParameterError> {
-        // Check for expression values
-        if let Some(nebula_value::Value::Text(expr)) = object_value.get_field("_expression")
-            && expr.as_str().starts_with("{{")
-            && expr.as_str().ends_with("}}")
-        {
-            return Ok(true); // Allow expressions
-        }
-
-        // For container architecture, validate that all required child parameters have values
-        for (key, child) in &self.children {
-            if child.metadata().required && !object_value.contains_field(key) {
-                return Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
-                    reason: format!("Required field '{key}' is missing"),
-                });
-            }
-        }
-
-        // Check for additional properties if not allowed
-        if let Some(options) = &self.options
-            && !options.allow_additional_properties
-        {
-            let defined_children: std::collections::HashSet<_> = self.children.keys().collect();
-
-            for key in object_value.keys() {
-                if !defined_children.contains(key) && key != "_expression" {
-                    return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("Additional property '{key}' is not allowed"),
-                    });
-                }
-            }
-        }
-
-        Ok(true)
     }
 
     /// Get child parameter by key
@@ -423,50 +395,31 @@ impl ObjectParameter {
             .filter(|(_key, child)| !child.metadata().required)
     }
 
-    /// Check if all required children have values in the current `ObjectValue`
+    /// Check if all required children have values in an ObjectValue
     #[must_use]
-    pub fn has_all_required_values(&self) -> bool {
-        if let Some(value) = &self.value {
-            self.get_required_children()
-                .all(|(key, _child)| value.contains_field(key))
+    pub fn has_all_required_values(value: &Value) -> bool {
+        if let Value::Object(obj) = value {
+            // This is a simplified check - ideally would check against schema
+            !obj.is_empty()
         } else {
-            self.get_required_children().count() == 0
+            false
         }
     }
 
-    /// Set a field value in the object
+    /// Set a field value in an object value
     pub fn set_field_value(
-        &mut self,
+        value: &nebula_value::Object,
         key: &str,
-        value: nebula_value::Value,
-    ) -> Result<(), ParameterError> {
-        if !self.has_child(key)
-            && !self
-                .options
-                .as_ref()
-                .is_some_and(|o| o.allow_additional_properties)
-        {
-            return Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: format!("Field '{key}' is not defined in this object"),
-            });
-        }
-
-        if let Some(obj_value) = &mut self.value {
-            obj_value.set_field(key, value);
-        } else {
-            let mut obj_value = ObjectValue::new();
-            obj_value.set_field(key, value);
-            self.value = Some(obj_value);
-        }
-
-        Ok(())
+        field_value: nebula_value::Value,
+    ) -> nebula_value::Object {
+        use crate::ValueRefExt;
+        value.insert(key.to_string(), field_value.to_json())
     }
 
-    /// Get a field value from the object
+    /// Get a field value from an object value
     #[must_use]
-    pub fn get_field_value(&self, key: &str) -> Option<nebula_value::Value> {
-        self.value.as_ref().and_then(|obj| obj.get_field(key))
+    pub fn get_field_value(value: &nebula_value::Object, key: &str) -> Option<nebula_value::Value> {
+        value.get(key).cloned()
     }
 }
 

@@ -1,9 +1,10 @@
 //! Tests for ParameterCollection
 
 use nebula_core::ParameterKey;
+use nebula_parameter::core::values::ParameterValues;
 use nebula_parameter::prelude::*;
 use nebula_parameter::types::TextParameter;
-use nebula_value::Text;
+use nebula_value::Value;
 
 /// Helper to create a ParameterKey for tests
 fn key(s: &str) -> ParameterKey {
@@ -85,16 +86,24 @@ fn test_collection_get_typed() {
                     .build()
                     .unwrap(),
             )
-            .value(Text::from("hello"))
             .build(),
     );
 
-    // Type-safe access
+    // Type-safe access to parameter definition
     let param: Option<&TextParameter> = collection.get(key("test"));
     assert!(param.is_some());
 
-    let param = param.unwrap();
-    assert_eq!(param.get().map(|t| t.as_str()), Some("hello"));
+    // Use ParameterValues to store and access actual values
+    let mut values = ParameterValues::new();
+    values.set(key("test"), Value::text("hello"));
+
+    assert_eq!(
+        values
+            .get(key("test"))
+            .and_then(|v| v.as_text())
+            .map(|t| t.as_str()),
+        Some("hello")
+    );
 }
 
 #[test]
@@ -111,12 +120,14 @@ fn test_collection_value_access() {
                     .build()
                     .unwrap(),
             )
-            .value(Text::from("hello"))
             .build(),
     );
 
-    // Type-erased value access
-    let value = collection.value(key("test"));
+    // Use ParameterValues for value storage
+    let mut values = ParameterValues::new();
+    values.set(key("test"), Value::text("hello"));
+
+    let value = values.get(key("test"));
     assert!(value.is_some());
 
     let value = value.unwrap();
@@ -137,41 +148,32 @@ fn test_collection_snapshot_restore() {
                     .build()
                     .unwrap(),
             )
-            .value(Text::from("initial"))
             .build(),
     );
 
+    // Use ParameterValues for value storage and snapshot/restore
+    let mut values = ParameterValues::new();
+    values.set(key("test"), Value::text("initial"));
+
     // Take snapshot
-    let snapshot = collection.snapshot();
+    let snapshot = values.snapshot();
     assert_eq!(snapshot.len(), 1);
 
     // Modify value
-    if let Some(p) = collection.get_mut::<TextParameter>(key("test")) {
-        let _ = p.set(Text::from("modified"));
-    }
+    values.set(key("test"), Value::text("modified"));
 
     // Verify modification
     assert_eq!(
-        collection
-            .value(key("test"))
-            .unwrap()
-            .as_text()
-            .unwrap()
-            .as_str(),
+        values.get(key("test")).unwrap().as_text().unwrap().as_str(),
         "modified"
     );
 
     // Restore
-    collection.restore(&snapshot).unwrap();
+    values.restore(&snapshot);
 
     // Verify restoration
     assert_eq!(
-        collection
-            .value(key("test"))
-            .unwrap()
-            .as_text()
-            .unwrap()
-            .as_str(),
+        values.get(key("test")).unwrap().as_text().unwrap().as_str(),
         "initial"
     );
 }

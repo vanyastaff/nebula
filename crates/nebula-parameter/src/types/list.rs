@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::pin::Pin;
 
-use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, ParameterValue, Validatable,
 };
-use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Value for list parameters containing array of child parameter values
@@ -52,10 +52,6 @@ pub struct ListParameter {
     #[serde(flatten)]
     /// Parameter metadata including key, name, description
     pub metadata: ParameterMetadata,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Current value of the parameter
-    pub value: Option<nebula_value::Array>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -123,7 +119,6 @@ impl std::fmt::Debug for ListParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ListParameter")
             .field("metadata", &self.metadata)
-            .field("value", &self.value)
             .field("default", &self.default)
             .field(
                 "children",
@@ -153,54 +148,29 @@ impl std::fmt::Display for ListParameter {
     }
 }
 
-impl HasValue for ListParameter {
-    type Value = nebula_value::Array;
-
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
+impl ParameterValue for ListParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
     }
 
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
+    fn accepts_value(&self, value: &Value) -> bool {
+        matches!(value, Value::Array(_))
     }
 
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
-        Ok(())
+    fn expected_type(&self) -> &'static str {
+        "array"
     }
 
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-#[async_trait::async_trait]
-impl Expressible for ListParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value
-            .as_ref()
-            .map(|arr| MaybeExpression::Value(nebula_value::Value::Array(arr.clone())))
-    }
-
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            MaybeExpression::Value(nebula_value::Value::Array(arr)) => {
-                self.value = Some(arr);
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected array value for list parameter".to_string(),
-            }),
-        }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -208,8 +178,57 @@ impl Validatable for ListParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, value: &Self::Value) -> bool {
-        value.is_empty()
+
+    fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
+        // Type check
+        let arr = match value {
+            Value::Array(a) => a,
+            _ => {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Expected array value for list, got {}", value.kind()),
+                });
+            }
+        };
+
+        // Required check
+        if self.is_empty(value) && self.is_required() {
+            return Err(ParameterError::MissingValue {
+                key: self.metadata.key.clone(),
+            });
+        }
+
+        // Item count validation
+        if let Some(options) = &self.options {
+            let item_count = arr.len();
+
+            if let Some(min_items) = options.min_items
+                && item_count < min_items
+            {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("List must have at least {min_items} items, got {item_count}"),
+                });
+            }
+
+            if let Some(max_items) = options.max_items
+                && item_count > max_items
+            {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("List must have at most {max_items} items, got {item_count}"),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    fn is_empty(&self, value: &Value) -> bool {
+        match value {
+            Value::Array(a) => a.is_empty(),
+            _ => true,
+        }
     }
 }
 
@@ -239,7 +258,6 @@ impl ListParameter {
                 placeholder: Some("Add list items...".to_string()),
                 hint: Some("List container with child parameters".to_string()),
             },
-            value: None,
             default: None,
             children: Vec::new(),
             item_template: None,
@@ -302,73 +320,42 @@ impl ListParameter {
         self.children.len()
     }
 
-    /// Add an item to the list value
+    /// Add an item to a list value
     #[must_use = "operation result must be checked"]
-    pub fn add_item(&mut self, item: nebula_value::Value) -> Result<(), ParameterError> {
-        if let Some(items) = &self.value {
-            self.value = Some(items.push(item));
-        } else {
-            self.value = Some(nebula_value::Array::from_vec(vec![item]));
-        }
-        Ok(())
+    pub fn add_item(value: &nebula_value::Array, item: nebula_value::Value) -> nebula_value::Array {
+        value.push(item)
     }
 
-    /// Remove an item from the list value by index
+    /// Remove an item from a list value by index
     #[must_use = "operation result must be checked"]
-    pub fn remove_item(&mut self, index: usize) -> Result<bool, ParameterError> {
-        if let Some(items) = &self.value {
-            if index < items.len() {
-                match items.remove(index) {
-                    Ok((new_array, _)) => {
-                        self.value = Some(new_array);
-                        Ok(true)
-                    }
-                    Err(_) => Ok(false),
-                }
-            } else {
-                Ok(false)
-            }
+    pub fn remove_item(
+        value: &nebula_value::Array,
+        index: usize,
+    ) -> Result<(nebula_value::Array, nebula_value::Value), String> {
+        if index < value.len() {
+            value.remove(index).map_err(|e| e.to_string())
         } else {
-            Ok(false)
+            Err("Index out of bounds".to_string())
         }
     }
 
-    /// Move an item to a different position
+    /// Move an item to a different position in a list value
     #[must_use = "operation result must be checked"]
-    pub fn move_item(&mut self, old_index: usize, new_index: usize) -> Result<(), ParameterError> {
-        if let Some(items) = &self.value {
-            if old_index < items.len() && new_index < items.len() && old_index != new_index {
-                // Remove from old position
-                let (items_after_remove, item) =
-                    items
-                        .remove(old_index)
-                        .map_err(|e| ParameterError::InvalidValue {
-                            key: self.metadata.key.clone(),
-                            reason: format!("Failed to remove item: {e}"),
-                        })?;
+    pub fn move_item(
+        value: &nebula_value::Array,
+        old_index: usize,
+        new_index: usize,
+    ) -> Result<nebula_value::Array, String> {
+        if old_index < value.len() && new_index < value.len() && old_index != new_index {
+            // Remove from old position
+            let (value_after_remove, item) = value.remove(old_index).map_err(|e| e.to_string())?;
 
-                // Insert at new position
-                let items_after_insert =
-                    items_after_remove.insert(new_index, item).map_err(|e| {
-                        ParameterError::InvalidValue {
-                            key: self.metadata.key.clone(),
-                            reason: format!("Failed to insert item: {e}"),
-                        }
-                    })?;
-
-                self.value = Some(items_after_insert);
-                Ok(())
-            } else {
-                Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
-                    reason: "Invalid indices for item move".to_string(),
-                })
-            }
+            // Insert at new position
+            value_after_remove
+                .insert(new_index, item)
+                .map_err(|e| e.to_string())
         } else {
-            Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "No items in list".to_string(),
-            })
+            Err("Invalid indices for item move".to_string())
         }
     }
 

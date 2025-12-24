@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 
-use crate::core::traits::Expressible;
 use crate::core::{
-    Displayable, HasValue, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, ParameterValue, Validatable,
 };
-use nebula_expression::MaybeExpression;
 use nebula_value::Value;
 
 /// Represents a file reference with metadata
@@ -102,10 +102,6 @@ pub struct FileParameter {
     pub metadata: ParameterMetadata,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// Current value of the parameter
-    pub value: Option<FileReference>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
     pub default: Option<FileReference>,
 
@@ -167,72 +163,29 @@ impl std::fmt::Display for FileParameter {
     }
 }
 
-impl HasValue for FileParameter {
-    type Value = FileReference;
-
-    fn get(&self) -> Option<&Self::Value> {
-        self.value.as_ref()
+impl ParameterValue for FileParameter {
+    fn validate_value(
+        &self,
+        value: &Value,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
+        let value = value.clone();
+        Box::pin(async move { self.validate(&value).await })
     }
 
-    fn get_mut(&mut self) -> Option<&mut Self::Value> {
-        self.value.as_mut()
+    fn accepts_value(&self, value: &Value) -> bool {
+        matches!(value, Value::Object(_))
     }
 
-    fn set(&mut self, value: Self::Value) -> Result<(), ParameterError> {
-        self.value = Some(value);
-        Ok(())
+    fn expected_type(&self) -> &'static str {
+        "file"
     }
 
-    fn default(&self) -> Option<&Self::Value> {
-        self.default.as_ref()
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 
-    fn clear(&mut self) {
-        self.value = None;
-    }
-}
-
-#[async_trait::async_trait]
-impl Expressible for FileParameter {
-    fn to_expression(&self) -> Option<MaybeExpression<Value>> {
-        self.value.as_ref().map(|file_ref| {
-            // Convert FileReference to a simple string representation (path)
-            MaybeExpression::Value(nebula_value::Value::Text(nebula_value::Text::from(
-                file_ref.path.to_string_lossy().to_string(),
-            )))
-        })
-    }
-
-    fn from_expression(
-        &mut self,
-        value: impl Into<MaybeExpression<Value>> + Send,
-    ) -> Result<(), ParameterError> {
-        let value = value.into();
-        match value {
-            MaybeExpression::Value(nebula_value::Value::Text(s)) => {
-                // Simple path-based file reference
-                let file_ref = FileReference::new(s.as_str(), s.to_string());
-                if self.is_valid_file(&file_ref)? {
-                    self.value = Some(file_ref);
-                    Ok(())
-                } else {
-                    Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: "File path is not valid".to_string(),
-                    })
-                }
-            }
-            MaybeExpression::Expression(expr) => {
-                // Create a file reference with the expression source as path
-                let file_ref = FileReference::new(&expr.source, expr.source.clone());
-                self.value = Some(file_ref);
-                Ok(())
-            }
-            _ => Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected string value for file parameter".to_string(),
-            }),
-        }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -240,9 +193,113 @@ impl Validatable for FileParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
-    fn is_empty(&self, _value: &Self::Value) -> bool {
-        // Files are never considered "empty" since they represent a file reference
-        false
+
+    fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
+        // Type check - expect an object representing FileReference
+        let obj = match value {
+            Value::Object(o) => o,
+            _ => {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Expected object value for file, got {}", value.kind()),
+                });
+            }
+        };
+
+        // Required check
+        if self.is_empty(value) && self.is_required() {
+            return Err(ParameterError::MissingValue {
+                key: self.metadata.key.clone(),
+            });
+        }
+
+        // Extract file reference data from object
+        let path_value = obj
+            .get("path")
+            .ok_or_else(|| ParameterError::InvalidValue {
+                key: self.metadata.key.clone(),
+                reason: "File object missing 'path' field".to_string(),
+            })?;
+
+        let path_str = match path_value {
+            Value::Text(t) => t.as_str(),
+            _ => {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: "File 'path' field must be text".to_string(),
+                });
+            }
+        };
+
+        // Check if path contains expression (allow expressions)
+        if path_str.starts_with("{{") && path_str.ends_with("}}") {
+            return Ok(());
+        }
+
+        // Validate file constraints
+        if let Some(options) = &self.options {
+            // Check file size constraints
+            if let Some(size_value) = obj.get("size")
+                && let Value::Integer(num) = size_value
+                    && let Ok(size) = u64::try_from(num.value()) {
+                        if let Some(max_size) = options.max_size
+                            && size > max_size
+                        {
+                            return Err(ParameterError::InvalidValue {
+                                key: self.metadata.key.clone(),
+                                reason: format!(
+                                    "File size {size} bytes exceeds maximum {max_size} bytes"
+                                ),
+                            });
+                        }
+                        if let Some(min_size) = options.min_size
+                            && size < min_size
+                        {
+                            return Err(ParameterError::InvalidValue {
+                                key: self.metadata.key.clone(),
+                                reason: format!(
+                                    "File size {size} bytes is below minimum {min_size} bytes"
+                                ),
+                            });
+                        }
+                    }
+
+            // Check accepted formats
+            if let Some(accepted_formats) = &options.accepted_formats
+                && !accepted_formats.is_empty()
+            {
+                let mime_type = obj.get("mime_type").and_then(|v| {
+                    if let Value::Text(t) = v {
+                        Some(t.as_str())
+                    } else {
+                        None
+                    }
+                });
+
+                let path = PathBuf::from(path_str);
+                let extension = path.extension().and_then(|e| e.to_str());
+
+                let is_format_accepted =
+                    self.check_file_format(mime_type, extension, accepted_formats);
+
+                if !is_format_accepted {
+                    return Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!(
+                            "File format not accepted. Accepted formats: {}",
+                            accepted_formats.join(", ")
+                        ),
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn is_empty(&self, value: &Value) -> bool {
+        // Files are never considered "empty" if they have a valid object structure
+        !matches!(value, Value::Object(_))
     }
 }
 
@@ -257,69 +314,25 @@ impl Displayable for FileParameter {
 }
 
 impl FileParameter {
-    /// Validate if a file reference meets the parameter constraints
-    fn is_valid_file(&self, file_ref: &FileReference) -> Result<bool, ParameterError> {
-        // Check if path contains expression
-        let path_str = file_ref.path.to_string_lossy();
-        if path_str.starts_with("{{") && path_str.ends_with("}}") {
-            return Ok(true); // Allow expressions
-        }
-
-        if let Some(options) = &self.options {
-            // Check file size constraints
-            if let Some(size) = file_ref.size {
-                if let Some(max_size) = options.max_size
-                    && size > max_size
-                {
-                    return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("File size {size} bytes exceeds maximum {max_size} bytes"),
-                    });
-                }
-                if let Some(min_size) = options.min_size
-                    && size < min_size
-                {
-                    return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("File size {size} bytes is below minimum {min_size} bytes"),
-                    });
-                }
-            }
-
-            // Check accepted formats
-            if let Some(accepted_formats) = &options.accepted_formats
-                && !accepted_formats.is_empty()
-            {
-                let is_format_accepted = self.check_file_format(file_ref, accepted_formats);
-                if !is_format_accepted {
-                    return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!(
-                            "File format not accepted. Accepted formats: {}",
-                            accepted_formats.join(", ")
-                        ),
-                    });
-                }
-            }
-        }
-
-        Ok(true)
-    }
-
     /// Check if file format matches accepted formats
-    fn check_file_format(&self, file_ref: &FileReference, accepted_formats: &[String]) -> bool {
+    fn check_file_format(
+        &self,
+        mime_type: Option<&str>,
+        extension: Option<&str>,
+        accepted_formats: &[String],
+    ) -> bool {
         for format in accepted_formats {
             // Check MIME type match
-            if let Some(mime_type) = &file_ref.mime_type
-                && self.mime_type_matches(mime_type, format)
+            if let Some(mime) = mime_type
+                && self.mime_type_matches(mime, format)
             {
                 return true;
             }
 
             // Check extension match
             if format.starts_with('.')
-                && let Some(extension) = file_ref.path.extension()
-                && format[1..].eq_ignore_ascii_case(&extension.to_string_lossy())
+                && let Some(ext) = extension
+                && format[1..].eq_ignore_ascii_case(ext)
             {
                 return true;
             }
@@ -341,28 +354,68 @@ impl FileParameter {
         false
     }
 
-    /// Get the file name from current value
+    /// Get the file name from a value
     #[must_use]
-    pub fn get_file_name(&self) -> Option<&String> {
-        self.value.as_ref().map(|f| &f.name)
+    pub fn get_file_name(value: &Value) -> Option<String> {
+        if let Value::Object(obj) = value {
+            obj.get("name").and_then(|v| {
+                if let Value::Text(t) = v {
+                    Some(t.to_string())
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        }
     }
 
-    /// Get the file path from current value
+    /// Get the file path from a value
     #[must_use]
-    pub fn get_file_path(&self) -> Option<&PathBuf> {
-        self.value.as_ref().map(|f| &f.path)
+    pub fn get_file_path(value: &Value) -> Option<PathBuf> {
+        if let Value::Object(obj) = value {
+            obj.get("path").and_then(|v| {
+                if let Value::Text(t) = v {
+                    Some(PathBuf::from(t.as_str()))
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        }
     }
 
-    /// Get the file size from current value
+    /// Get the file size from a value
     #[must_use]
-    pub fn get_file_size(&self) -> Option<u64> {
-        self.value.as_ref().and_then(|f| f.size)
+    pub fn get_file_size(value: &Value) -> Option<u64> {
+        if let Value::Object(obj) = value {
+            obj.get("size").and_then(|v| {
+                if let Value::Integer(n) = v {
+                    u64::try_from(n.value()).ok()
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        }
     }
 
-    /// Get the MIME type from current value
+    /// Get the MIME type from a value
     #[must_use]
-    pub fn get_mime_type(&self) -> Option<&String> {
-        self.value.as_ref().and_then(|f| f.mime_type.as_ref())
+    pub fn get_mime_type(value: &Value) -> Option<String> {
+        if let Value::Object(obj) = value {
+            obj.get("mime_type").and_then(|v| {
+                if let Value::Text(t) = v {
+                    Some(t.to_string())
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        }
     }
 
     /// Check if multiple files are allowed
