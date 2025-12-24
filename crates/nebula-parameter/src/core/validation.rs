@@ -167,6 +167,22 @@ pub enum ValueCondition {
 
     /// Current value must not equal the referenced field's value.
     NotEqualsField(ParameterKey),
+
+    // === Form-level rules ===
+    /// At least one of the specified fields must be set.
+    AtLeastOneOf(Vec<ParameterKey>),
+
+    /// Exactly one of the specified fields must be set.
+    ExactlyOneOf(Vec<ParameterKey>),
+
+    /// All specified fields must be set, or none of them.
+    AllOrNone(Vec<ParameterKey>),
+
+    /// If this field is set, then required fields must also be set.
+    RequiresWith(Vec<ParameterKey>),
+
+    /// If this field is set, then forbidden fields must not be set.
+    ConflictsWith(Vec<ParameterKey>),
 }
 
 impl ValueCondition {
@@ -226,8 +242,15 @@ impl ValueCondition {
             Self::Or(conditions) => conditions.iter().any(|c| c.evaluate(value)),
             Self::Not(condition) => !condition.evaluate(value),
 
-            // Cross-field requires context, return false here
-            Self::Field(_, _) | Self::EqualsField(_) | Self::NotEqualsField(_) => false,
+            // Cross-field and form-level require context, return false here
+            Self::Field(_, _)
+            | Self::EqualsField(_)
+            | Self::NotEqualsField(_)
+            | Self::AtLeastOneOf(_)
+            | Self::ExactlyOneOf(_)
+            | Self::AllOrNone(_)
+            | Self::RequiresWith(_)
+            | Self::ConflictsWith(_) => false,
         }
     }
 
@@ -236,7 +259,14 @@ impl ValueCondition {
     pub fn requires_context(&self) -> bool {
         match self {
             Self::IsValid | Self::IsInvalid => true,
-            Self::Field(_, _) | Self::EqualsField(_) | Self::NotEqualsField(_) => true,
+            Self::Field(_, _)
+            | Self::EqualsField(_)
+            | Self::NotEqualsField(_)
+            | Self::AtLeastOneOf(_)
+            | Self::ExactlyOneOf(_)
+            | Self::AllOrNone(_)
+            | Self::RequiresWith(_)
+            | Self::ConflictsWith(_) => true,
             Self::And(conditions) | Self::Or(conditions) => {
                 conditions.iter().any(|c| c.requires_context())
             }
@@ -254,6 +284,13 @@ impl ValueCondition {
             }
             Self::EqualsField(key) | Self::NotEqualsField(key) => {
                 fields.push(key.clone());
+            }
+            Self::AtLeastOneOf(keys)
+            | Self::ExactlyOneOf(keys)
+            | Self::AllOrNone(keys)
+            | Self::RequiresWith(keys)
+            | Self::ConflictsWith(keys) => {
+                fields.extend(keys.iter().cloned());
             }
             Self::And(conditions) | Self::Or(conditions) => {
                 for c in conditions {
@@ -319,6 +356,33 @@ impl ValueCondition {
     /// Create cross-field not-equals: current value must not equal other field's value.
     pub fn not_equals_field(key: impl Into<ParameterKey>) -> Self {
         Self::NotEqualsField(key.into())
+    }
+
+    // === Form-level constructors ===
+
+    /// At least one of the specified fields must be set.
+    pub fn at_least_one_of(keys: impl IntoIterator<Item = impl Into<ParameterKey>>) -> Self {
+        Self::AtLeastOneOf(keys.into_iter().map(Into::into).collect())
+    }
+
+    /// Exactly one of the specified fields must be set.
+    pub fn exactly_one_of(keys: impl IntoIterator<Item = impl Into<ParameterKey>>) -> Self {
+        Self::ExactlyOneOf(keys.into_iter().map(Into::into).collect())
+    }
+
+    /// All specified fields must be set, or none of them.
+    pub fn all_or_none(keys: impl IntoIterator<Item = impl Into<ParameterKey>>) -> Self {
+        Self::AllOrNone(keys.into_iter().map(Into::into).collect())
+    }
+
+    /// If this field is set, then required fields must also be set.
+    pub fn requires_with(keys: impl IntoIterator<Item = impl Into<ParameterKey>>) -> Self {
+        Self::RequiresWith(keys.into_iter().map(Into::into).collect())
+    }
+
+    /// If this field is set, then forbidden fields must not be set.
+    pub fn conflicts_with(keys: impl IntoIterator<Item = impl Into<ParameterKey>>) -> Self {
+        Self::ConflictsWith(keys.into_iter().map(Into::into).collect())
     }
 }
 
