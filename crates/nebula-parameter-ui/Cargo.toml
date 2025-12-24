@@ -24,6 +24,5 @@ egui_extras = { version = "0.33.3", features = ["chrono"] }
 egui_flex = "0.5.0"
 egui_dock = "0.18.0"
 egui_file = "0.24"
-egui-dropdown = "0.13.0"  # TODO: Outdated, uses egui 0.31.1 - consider alternative
 egui-phosphor = { version = "0.11.0", features = ["regular"] }
 eframe = { version = "0.33.3", features = ["glow"] }
