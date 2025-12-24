@@ -7,37 +7,36 @@
 //!
 //! - `ValueCondition` - Core condition type for evaluating field values
 //! - `ParameterValidation` - Configuration holding validators
-//! - Fluent builder API for common validation patterns
-//! - Integration with nebula-validator's `TypedValidator` trait
+//! - Universal `from()` method to wrap any validator from `nebula-validator`
 //!
 //! # Examples
 //!
-//! ```rust
+//! ```ignore
 //! use nebula_parameter::prelude::*;
+//! use nebula_validator::validators::string::{min_length, max_length, email};
+//! use nebula_validator::validators::numeric::{min, max, positive};
+//! use nebula_validator::combinators::and;
 //!
-//! // Simple validators
-//! let validation = ParameterValidation::string()
-//!     .min_length(3)
-//!     .max_length(50)
-//!     .build();
+//! // String validation
+//! let validation = ParameterValidation::from(and(min_length(3), max_length(50)));
 //!
 //! // Email validation
 //! let email_validation = ParameterValidation::email();
 //!
 //! // Number range
-//! let age_validation = ParameterValidation::number()
-//!     .min(18.0)
-//!     .max(120.0)
-//!     .build();
+//! let age_validation = ParameterValidation::from(and(min(18.0), max(120.0)));
 //! ```
 
 use nebula_core::ParameterKey;
-use nebula_validator::core::{AsyncValidator, ValidationContext, ValidationError, Validator};
-use nebula_validator::validators::prelude::*;
+use nebula_validator::core::{
+    AsValidatable, AsyncValidator, ValidationContext, ValidationError, Validator,
+};
+use nebula_validator::validators::string::{email, url};
 use nebula_value::Value;
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
+use std::borrow::Borrow;
+use std::marker::PhantomData;
+use std::sync::Arc;
 
 // =============================================================================
 // ValueCondition - Core condition type
@@ -534,300 +533,8 @@ impl ParameterValidation {
 }
 
 // =============================================================================
-// Fluent Builder API
-// =============================================================================
-
-/// Builder for string validation
-pub struct StringValidationBuilder {
-    min_len: Option<usize>,
-    max_len: Option<usize>,
-    pattern: Option<String>,
-    contains_str: Option<String>,
-    starts_with_str: Option<String>,
-    ends_with_str: Option<String>,
-    is_email: bool,
-    is_url: bool,
-    required: bool,
-    message: Option<String>,
-}
-
-impl StringValidationBuilder {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            min_len: None,
-            max_len: None,
-            pattern: None,
-            contains_str: None,
-            starts_with_str: None,
-            ends_with_str: None,
-            is_email: false,
-            is_url: false,
-            required: false,
-            message: None,
-        }
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn min_length(mut self, min: usize) -> Self {
-        self.min_len = Some(min);
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn max_length(mut self, max: usize) -> Self {
-        self.max_len = Some(max);
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn pattern(mut self, pattern: impl Into<String>) -> Self {
-        self.pattern = Some(pattern.into());
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn contains(mut self, s: impl Into<String>) -> Self {
-        self.contains_str = Some(s.into());
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn starts_with(mut self, s: impl Into<String>) -> Self {
-        self.starts_with_str = Some(s.into());
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn ends_with(mut self, s: impl Into<String>) -> Self {
-        self.ends_with_str = Some(s.into());
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn email(mut self) -> Self {
-        self.is_email = true;
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn url(mut self) -> Self {
-        self.is_url = true;
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn required(mut self) -> Self {
-        self.required = true;
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn message(mut self, msg: impl Into<String>) -> Self {
-        self.message = Some(msg.into());
-        self
-    }
-
-    #[must_use]
-    pub fn build(self) -> ParameterValidation {
-        // Build composite validator
-        let mut validators: Vec<Box<dyn Validator<Input = str> + Send + Sync>> = Vec::new();
-
-        if let Some(min) = self.min_len {
-            validators.push(Box::new(min_length(min)));
-        }
-
-        if let Some(max) = self.max_len {
-            validators.push(Box::new(max_length(max)));
-        }
-
-        if self.is_email {
-            validators.push(Box::new(email()));
-        }
-
-        if self.is_url {
-            validators.push(Box::new(url()));
-        }
-
-        if let Some(pattern) = self.pattern {
-            // matches_regex returns Result, need to unwrap or handle
-            if let Ok(validator) = matches_regex(&pattern) {
-                validators.push(Box::new(validator));
-            }
-        }
-
-        if let Some(s) = self.contains_str {
-            validators.push(Box::new(contains(s)));
-        }
-
-        if let Some(s) = self.starts_with_str {
-            validators.push(Box::new(starts_with(s)));
-        }
-
-        if let Some(s) = self.ends_with_str {
-            validators.push(Box::new(ends_with(s)));
-        }
-
-        // Combine all validators with AND logic
-        let validator = if validators.is_empty() {
-            None
-        } else {
-            // Create a composite validator that checks all conditions
-            Some(Arc::new(StringCompositeValidator { validators })
-                as Arc<dyn AsyncValidator<Input = Value> + Send + Sync>)
-        };
-
-        ParameterValidation {
-            validator,
-            required: self.required,
-            message: self.message,
-            key: None,
-        }
-    }
-}
-
-impl Default for StringValidationBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Builder for number validation
-pub struct NumberValidationBuilder {
-    min_val: Option<f64>,
-    max_val: Option<f64>,
-    must_be_positive: bool,
-    must_be_negative: bool,
-    must_be_even: bool,
-    must_be_odd: bool,
-    required: bool,
-    message: Option<String>,
-}
-
-impl NumberValidationBuilder {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            min_val: None,
-            max_val: None,
-            must_be_positive: false,
-            must_be_negative: false,
-            must_be_even: false,
-            must_be_odd: false,
-            required: false,
-            message: None,
-        }
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn min(mut self, min: f64) -> Self {
-        self.min_val = Some(min);
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn max(mut self, max: f64) -> Self {
-        self.max_val = Some(max);
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn positive(mut self) -> Self {
-        self.must_be_positive = true;
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn negative(mut self) -> Self {
-        self.must_be_negative = true;
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn even(mut self) -> Self {
-        self.must_be_even = true;
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn odd(mut self) -> Self {
-        self.must_be_odd = true;
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn required(mut self) -> Self {
-        self.required = true;
-        self
-    }
-
-    #[must_use = "builder methods must be chained or built"]
-    pub fn message(mut self, msg: impl Into<String>) -> Self {
-        self.message = Some(msg.into());
-        self
-    }
-
-    #[must_use]
-    pub fn build(self) -> ParameterValidation {
-        let mut validators: Vec<Box<dyn Validator<Input = f64> + Send + Sync>> = Vec::new();
-
-        if let Some(min_value) = self.min_val {
-            validators.push(Box::new(nebula_validator::validators::numeric::min(
-                min_value,
-            )));
-        }
-
-        if let Some(max_value) = self.max_val {
-            validators.push(Box::new(nebula_validator::validators::numeric::max(
-                max_value,
-            )));
-        }
-
-        if self.must_be_positive {
-            validators.push(Box::new(positive()));
-        }
-
-        if self.must_be_negative {
-            validators.push(Box::new(negative()));
-        }
-
-        if self.must_be_even {
-            validators.push(Box::new(even()));
-        }
-
-        if self.must_be_odd {
-            validators.push(Box::new(odd()));
-        }
-
-        let validator = if validators.is_empty() {
-            None
-        } else {
-            Some(Arc::new(NumberCompositeValidator { validators })
-                as Arc<dyn AsyncValidator<Input = Value> + Send + Sync>)
-        };
-
-        ParameterValidation {
-            validator,
-            required: self.required,
-            message: self.message,
-            key: None,
-        }
-    }
-}
-
-impl Default for NumberValidationBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// =============================================================================
 // Universal Value Validator Adapter
 // =============================================================================
-
-use nebula_validator::core::AsValidatable;
-use std::borrow::Borrow;
-use std::marker::PhantomData;
 
 /// Universal adapter that converts any `Validator<Input=T>` to work with `Value`.
 ///
@@ -877,62 +584,10 @@ where
 }
 
 // =============================================================================
-// Composite Validators (for builder pattern with multiple validators)
-// =============================================================================
-
-/// Composite validator for strings (used by StringValidationBuilder)
-struct StringCompositeValidator {
-    validators: Vec<Box<dyn Validator<Input = str> + Send + Sync>>,
-}
-
-#[async_trait::async_trait]
-impl AsyncValidator for StringCompositeValidator {
-    type Input = Value;
-
-    async fn validate_async(&self, value: &Value) -> Result<(), ValidationError> {
-        let s: &str = AsValidatable::<str>::as_validatable(value)?.borrow();
-        for validator in &self.validators {
-            validator.validate(s)?;
-        }
-        Ok(())
-    }
-}
-
-/// Composite validator for numbers (used by NumberValidationBuilder)
-struct NumberCompositeValidator {
-    validators: Vec<Box<dyn Validator<Input = f64> + Send + Sync>>,
-}
-
-#[async_trait::async_trait]
-impl AsyncValidator for NumberCompositeValidator {
-    type Input = Value;
-
-    async fn validate_async(&self, value: &Value) -> Result<(), ValidationError> {
-        let num: f64 = AsValidatable::<f64>::as_validatable(value)?;
-        for validator in &self.validators {
-            validator.validate(&num)?;
-        }
-        Ok(())
-    }
-}
-
-// =============================================================================
 // Convenience constructors
 // =============================================================================
 
 impl ParameterValidation {
-    /// Start building string validation (builder pattern)
-    #[must_use]
-    pub fn string() -> StringValidationBuilder {
-        StringValidationBuilder::new()
-    }
-
-    /// Start building number validation (builder pattern)
-    #[must_use]
-    pub fn number() -> NumberValidationBuilder {
-        NumberValidationBuilder::new()
-    }
-
     /// Create validation from any validator.
     ///
     /// This is the universal way to use validators from `nebula-validator`.
@@ -997,13 +652,12 @@ impl ParameterValidation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nebula_validator::combinators::and;
+    use nebula_validator::validators::string::{max_length, min_length};
 
     #[tokio::test]
     async fn test_string_validation() {
-        let validation = ParameterValidation::string()
-            .min_length(3)
-            .max_length(10)
-            .build();
+        let validation = ParameterValidation::from(and(min_length(3), max_length(10)));
 
         // Valid
         assert!(
@@ -1048,7 +702,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_number_validation() {
-        let validation = ParameterValidation::number().min(0.0).max(100.0).build();
+        use nebula_validator::validators::numeric::{max, min};
+        let validation = ParameterValidation::from(and(min(0.0), max(100.0)));
 
         // Valid
         assert!(validation.validate(&Value::float(50.0), None).await.is_ok());
@@ -1084,5 +739,23 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn test_type_mismatch() {
+        let validation = ParameterValidation::from(min_length(3));
+
+        // String works
+        assert!(
+            validation
+                .validate(&Value::text("hello"), None)
+                .await
+                .is_ok()
+        );
+
+        // Number fails with type mismatch
+        let err = validation.validate(&Value::integer(42), None).await;
+        assert!(err.is_err());
+        assert_eq!(err.unwrap_err().code, "type_mismatch");
     }
 }
