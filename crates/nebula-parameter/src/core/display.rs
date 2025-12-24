@@ -36,7 +36,7 @@
 //! assert!(!condition.evaluate(&Value::integer(150)));
 //! ```
 
-use crate::core::ParameterKey;
+use nebula_core::ParameterKey;
 use nebula_value::Value;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -414,7 +414,9 @@ impl DisplayContext {
 
     /// Get a parameter value by key
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.values.get(&ParameterKey::from(key))
+        ParameterKey::new(key)
+            .ok()
+            .and_then(|k| self.values.get(&k))
     }
 
     /// Builder pattern: add a value and return self
@@ -431,7 +433,10 @@ impl DisplayContext {
 
     /// Check if context contains a key
     pub fn contains(&self, key: &str) -> bool {
-        self.values.contains_key(&ParameterKey::from(key))
+        ParameterKey::new(key)
+            .ok()
+            .map(|k| self.values.contains_key(&k))
+            .unwrap_or(false)
     }
 
     /// Get all values as HashMap reference
@@ -469,6 +474,135 @@ impl DisplayRule {
     /// Get the field this rule depends on
     pub fn dependency(&self) -> &ParameterKey {
         &self.field
+    }
+}
+
+/// A set of display rules combined with logical operators
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum DisplayRuleSet {
+    /// A single rule
+    Single(DisplayRule),
+    /// All rules must pass (AND)
+    All(Vec<DisplayRuleSet>),
+    /// Any rule must pass (OR)
+    Any(Vec<DisplayRuleSet>),
+    /// Rule must not pass (NOT)
+    Not(Box<DisplayRuleSet>),
+}
+
+impl DisplayRuleSet {
+    /// Create from a single rule
+    pub fn single(rule: DisplayRule) -> Self {
+        DisplayRuleSet::Single(rule)
+    }
+
+    /// Create an ALL ruleset (AND)
+    pub fn all(rules: impl IntoIterator<Item = impl Into<DisplayRuleSet>>) -> Self {
+        DisplayRuleSet::All(rules.into_iter().map(Into::into).collect())
+    }
+
+    /// Create an ANY ruleset (OR)
+    pub fn any(rules: impl IntoIterator<Item = impl Into<DisplayRuleSet>>) -> Self {
+        DisplayRuleSet::Any(rules.into_iter().map(Into::into).collect())
+    }
+
+    /// Create a NOT ruleset
+    pub fn not(rule: impl Into<DisplayRuleSet>) -> Self {
+        DisplayRuleSet::Not(Box::new(rule.into()))
+    }
+
+    /// Evaluate this ruleset against a context
+    pub fn evaluate(&self, ctx: &DisplayContext) -> bool {
+        match self {
+            DisplayRuleSet::Single(rule) => rule.evaluate(ctx),
+            DisplayRuleSet::All(rules) => rules.iter().all(|r| r.evaluate(ctx)),
+            DisplayRuleSet::Any(rules) => rules.iter().any(|r| r.evaluate(ctx)),
+            DisplayRuleSet::Not(rule) => !rule.evaluate(ctx),
+        }
+    }
+
+    /// Get all parameter dependencies from this ruleset
+    pub fn dependencies(&self) -> Vec<ParameterKey> {
+        let mut deps = Vec::new();
+        self.collect_dependencies(&mut deps);
+        deps.sort();
+        deps.dedup();
+        deps
+    }
+
+    fn collect_dependencies(&self, deps: &mut Vec<ParameterKey>) {
+        match self {
+            DisplayRuleSet::Single(rule) => {
+                deps.push(rule.field.clone());
+            }
+            DisplayRuleSet::All(rules) | DisplayRuleSet::Any(rules) => {
+                for rule in rules {
+                    rule.collect_dependencies(deps);
+                }
+            }
+            DisplayRuleSet::Not(rule) => {
+                rule.collect_dependencies(deps);
+            }
+        }
+    }
+}
+
+impl From<DisplayRule> for DisplayRuleSet {
+    fn from(rule: DisplayRule) -> Self {
+        DisplayRuleSet::Single(rule)
+    }
+}
+
+/// Parameter display configuration
+///
+/// Controls when a parameter should be shown based on display rules.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ParameterDisplay {
+    /// Optional display ruleset
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rules: Option<DisplayRuleSet>,
+}
+
+impl ParameterDisplay {
+    /// Create a new empty display configuration
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create from a ruleset
+    #[must_use]
+    pub fn from_rules(rules: DisplayRuleSet) -> Self {
+        Self { rules: Some(rules) }
+    }
+
+    /// Check if parameter should be displayed given the context
+    #[must_use]
+    pub fn should_display(&self, context: &HashMap<ParameterKey, Value>) -> bool {
+        match &self.rules {
+            Some(rules) => {
+                let ctx = DisplayContext {
+                    values: context.clone(),
+                };
+                rules.evaluate(&ctx)
+            }
+            None => true, // No rules = always display
+        }
+    }
+
+    /// Get all parameter dependencies
+    #[must_use]
+    pub fn get_dependencies(&self) -> Vec<ParameterKey> {
+        match &self.rules {
+            Some(rules) => rules.dependencies(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Check if display configuration is empty (no rules)
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_none()
     }
 }
 
@@ -703,11 +837,12 @@ mod tests {
     #[test]
     fn test_display_rule_single() {
         let rule = DisplayRule::when(
-            "auth_type",
+            ParameterKey::new("auth_type").unwrap(),
             DisplayCondition::Equals(Value::text("api_key")),
         );
 
-        let ctx = DisplayContext::new().with_value("auth_type", Value::text("api_key"));
+        let ctx = DisplayContext::new()
+            .with_value(ParameterKey::new("auth_type").unwrap(), Value::text("api_key"));
 
         assert!(rule.evaluate(&ctx));
     }
@@ -715,7 +850,7 @@ mod tests {
     #[test]
     fn test_display_rule_missing_field() {
         let rule = DisplayRule::when(
-            "auth_type",
+            ParameterKey::new("auth_type").unwrap(),
             DisplayCondition::Equals(Value::text("api_key")),
         );
 
@@ -727,11 +862,86 @@ mod tests {
     #[test]
     fn test_display_context_builder() {
         let ctx = DisplayContext::new()
-            .with_value("a", Value::integer(1))
-            .with_value("b", Value::text("hello"));
+            .with_value(ParameterKey::new("a").unwrap(), Value::integer(1))
+            .with_value(ParameterKey::new("b").unwrap(), Value::text("hello"));
 
         assert_eq!(ctx.get("a"), Some(&Value::integer(1)));
         assert_eq!(ctx.get("b"), Some(&Value::text("hello")));
         assert_eq!(ctx.get("c"), None);
+    }
+
+    #[test]
+    fn test_ruleset_and() {
+        let ruleset = DisplayRuleSet::all([
+            DisplayRule::when(ParameterKey::new("enabled").unwrap(), DisplayCondition::IsTrue),
+            DisplayRule::when(
+                ParameterKey::new("level").unwrap(),
+                DisplayCondition::GreaterThan(10.0),
+            ),
+        ]);
+
+        let ctx_pass = DisplayContext::new()
+            .with_value(ParameterKey::new("enabled").unwrap(), Value::boolean(true))
+            .with_value(ParameterKey::new("level").unwrap(), Value::integer(15));
+
+        let ctx_fail = DisplayContext::new()
+            .with_value(ParameterKey::new("enabled").unwrap(), Value::boolean(true))
+            .with_value(ParameterKey::new("level").unwrap(), Value::integer(5));
+
+        assert!(ruleset.evaluate(&ctx_pass));
+        assert!(!ruleset.evaluate(&ctx_fail));
+    }
+
+    #[test]
+    fn test_ruleset_or() {
+        let ruleset = DisplayRuleSet::any([
+            DisplayRule::when(
+                ParameterKey::new("role").unwrap(),
+                DisplayCondition::Equals(Value::text("admin")),
+            ),
+            DisplayRule::when(ParameterKey::new("superuser").unwrap(), DisplayCondition::IsTrue),
+        ]);
+
+        let ctx_admin =
+            DisplayContext::new().with_value(ParameterKey::new("role").unwrap(), Value::text("admin"));
+
+        let ctx_superuser =
+            DisplayContext::new().with_value(ParameterKey::new("superuser").unwrap(), Value::boolean(true));
+
+        let ctx_neither =
+            DisplayContext::new().with_value(ParameterKey::new("role").unwrap(), Value::text("user"));
+
+        assert!(ruleset.evaluate(&ctx_admin));
+        assert!(ruleset.evaluate(&ctx_superuser));
+        assert!(!ruleset.evaluate(&ctx_neither));
+    }
+
+    #[test]
+    fn test_ruleset_not() {
+        let ruleset = DisplayRuleSet::not(DisplayRule::when(
+            ParameterKey::new("disabled").unwrap(),
+            DisplayCondition::IsTrue,
+        ));
+
+        let ctx_enabled =
+            DisplayContext::new().with_value(ParameterKey::new("disabled").unwrap(), Value::boolean(false));
+
+        let ctx_disabled =
+            DisplayContext::new().with_value(ParameterKey::new("disabled").unwrap(), Value::boolean(true));
+
+        assert!(ruleset.evaluate(&ctx_enabled));
+        assert!(!ruleset.evaluate(&ctx_disabled));
+    }
+
+    #[test]
+    fn test_ruleset_dependencies() {
+        let ruleset = DisplayRuleSet::all([
+            DisplayRule::when(ParameterKey::new("a").unwrap(), DisplayCondition::IsTrue),
+            DisplayRule::when(ParameterKey::new("b").unwrap(), DisplayCondition::IsTrue),
+        ]);
+
+        let deps = ruleset.dependencies();
+        assert!(deps.contains(&ParameterKey::new("a").unwrap()));
+        assert!(deps.contains(&ParameterKey::new("b").unwrap()));
     }
 }

@@ -1,8 +1,6 @@
 //! Core parameter traits
 
-use crate::core::display_stub::{
-    DisplayContext, ParameterCondition, ParameterDisplay, ParameterDisplayError,
-};
+use crate::core::display::{DisplayContext, ParameterDisplay};
 use crate::core::validation::ParameterValidation;
 use crate::core::{ParameterError, ParameterKind, ParameterMetadata};
 pub use async_trait::async_trait;
@@ -439,21 +437,22 @@ pub trait Displayable: Parameter {
     /// Check if the parameter should be displayed given the current context
     fn should_display(&self, context: &DisplayContext) -> bool {
         match self.display() {
-            Some(display_config) => display_config.should_display(&context.values),
+            Some(display_config) => display_config.should_display(context.values()),
             None => true,
         }
     }
 
-    /// Validate display conditions and return detailed error if hidden
-    ///
-    /// This is useful for providing user-friendly error messages when
-    /// trying to access a hidden parameter.
-    fn validate_display(&self, context: &DisplayContext) -> Result<(), ParameterDisplayError> {
-        match self.display() {
-            Some(display_config) => display_config.validate_display(context),
-            None => Ok(()),
-        }
-    }
+    // TODO: Re-enable once ParameterDisplayError is implemented
+    // /// Validate display conditions and return detailed error if hidden
+    // ///
+    // /// This is useful for providing user-friendly error messages when
+    // /// trying to access a hidden parameter.
+    // fn validate_display(&self, context: &DisplayContext) -> Result<(), ParameterDisplayError> {
+    //     match self.display() {
+    //         Some(display_config) => display_config.validate_display(context),
+    //         None => Ok(()),
+    //     }
+    // }
 
     /// Check if this parameter has any display conditions
     fn has_conditions(&self) -> bool {
@@ -480,15 +479,16 @@ pub trait Displayable: Parameter {
 /// Separated from [`Displayable`] to keep the core trait immutable-friendly.
 /// This is automatically implemented for all `Displayable` types.
 pub trait DisplayableMut: Displayable {
-    /// Add a display condition
-    ///
-    /// Multiple conditions can be added for the same or different properties.
-    /// All conditions must be satisfied for the parameter to be displayed.
-    fn add_condition(&mut self, property: Key, condition: ParameterCondition) {
-        let mut display = self.display().cloned().unwrap_or_default();
-        display.add_show_condition(property, condition);
-        self.set_display(Some(display));
-    }
+    // TODO: Re-enable once ParameterCondition is implemented
+    // /// Add a display condition
+    // ///
+    // /// Multiple conditions can be added for the same or different properties.
+    // /// All conditions must be satisfied for the parameter to be displayed.
+    // fn add_condition(&mut self, property: Key, condition: ParameterCondition) {
+    //     let mut display = self.display().cloned().unwrap_or_default();
+    //     display.add_show_condition(property, condition);
+    //     self.set_display(Some(display));
+    // }
 
     /// Clear all display conditions
     ///
