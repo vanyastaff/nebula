@@ -53,7 +53,10 @@ Date: 2025-12-23
 
 **Clippy Configuration:**
 - Enabled lints: `clippy::all`, `clippy::pedantic`, `clippy::nursery`
-- Command: `cargo clippy --workspace -- -W clippy::all -W clippy::pedantic -W clippy::nursery`
+- Command: `cargo clippy --workspace --all-targets -- -W clippy::all -W clippy::pedantic -W clippy::nursery`
+- Note: `--all-features` flag omitted due to optional dependencies requiring external build tools (cmake, NASM)
+- Note: `-D warnings` flag omitted for audit phase; will be enabled in CI after addressing P0-P2 issues
+- Total warnings: 2,301 (includes duplicates from multiple targets)
 
 **Cargo Audit Configuration:**
 - Config location: `.cargo/audit.toml`
