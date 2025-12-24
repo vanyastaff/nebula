@@ -36,8 +36,10 @@
 //! assert!(!condition.evaluate(&Value::integer(150)));
 //! ```
 
+use crate::core::ParameterKey;
 use nebula_value::Value;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// A condition that determines whether a parameter should be displayed.
 ///
@@ -397,6 +399,79 @@ impl DisplayCondition {
     }
 }
 
+/// Context containing resolved parameter values for display evaluation
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DisplayContext {
+    values: HashMap<ParameterKey, Value>,
+}
+
+impl DisplayContext {
+    /// Create a new empty context
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Get a parameter value by key
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        self.values.get(&ParameterKey::from(key))
+    }
+
+    /// Builder pattern: add a value and return self
+    #[must_use]
+    pub fn with_value(mut self, key: impl Into<ParameterKey>, value: Value) -> Self {
+        self.values.insert(key.into(), value);
+        self
+    }
+
+    /// Insert a value
+    pub fn insert(&mut self, key: impl Into<ParameterKey>, value: Value) {
+        self.values.insert(key.into(), value);
+    }
+
+    /// Check if context contains a key
+    pub fn contains(&self, key: &str) -> bool {
+        self.values.contains_key(&ParameterKey::from(key))
+    }
+
+    /// Get all values as HashMap reference
+    pub fn values(&self) -> &HashMap<ParameterKey, Value> {
+        &self.values
+    }
+}
+
+/// A display rule that checks a specific field against a condition
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DisplayRule {
+    /// The parameter key to check
+    pub field: ParameterKey,
+    /// The condition to evaluate
+    pub condition: DisplayCondition,
+}
+
+impl DisplayRule {
+    /// Create a new display rule
+    pub fn when(field: impl Into<ParameterKey>, condition: DisplayCondition) -> Self {
+        Self {
+            field: field.into(),
+            condition,
+        }
+    }
+
+    /// Evaluate this rule against a context
+    pub fn evaluate(&self, ctx: &DisplayContext) -> bool {
+        match ctx.get(self.field.as_str()) {
+            Some(value) => self.condition.evaluate(value),
+            None => false, // Missing field = condition not met
+        }
+    }
+
+    /// Get the field this rule depends on
+    pub fn dependency(&self) -> &ParameterKey {
+        &self.field
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,5 +698,40 @@ mod tests {
         let condition = DisplayCondition::Equals(Value::text("test"));
         let cloned = condition.clone();
         assert_eq!(condition, cloned);
+    }
+
+    #[test]
+    fn test_display_rule_single() {
+        let rule = DisplayRule::when(
+            "auth_type",
+            DisplayCondition::Equals(Value::text("api_key")),
+        );
+
+        let ctx = DisplayContext::new().with_value("auth_type", Value::text("api_key"));
+
+        assert!(rule.evaluate(&ctx));
+    }
+
+    #[test]
+    fn test_display_rule_missing_field() {
+        let rule = DisplayRule::when(
+            "auth_type",
+            DisplayCondition::Equals(Value::text("api_key")),
+        );
+
+        let ctx = DisplayContext::new(); // No auth_type
+
+        assert!(!rule.evaluate(&ctx)); // Missing field = condition not met
+    }
+
+    #[test]
+    fn test_display_context_builder() {
+        let ctx = DisplayContext::new()
+            .with_value("a", Value::integer(1))
+            .with_value("b", Value::text("hello"));
+
+        assert_eq!(ctx.get("a"), Some(&Value::integer(1)));
+        assert_eq!(ctx.get("b"), Some(&Value::text("hello")));
+        assert_eq!(ctx.get("c"), None);
     }
 }
