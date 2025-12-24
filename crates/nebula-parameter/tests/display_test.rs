@@ -1,7 +1,8 @@
 //! Integration tests for the display condition system
 
+use nebula_parameter::DisplayableMut;
 use nebula_parameter::prelude::*;
-use nebula_value::Value;
+use nebula_value::{Array, Value};
 
 #[test]
 fn test_complex_display_conditions() {
@@ -517,4 +518,811 @@ fn test_hide_when_takes_precedence() {
         );
 
     assert!(!param.should_display(&ctx));
+}
+
+// =============================================================================
+// Additional coverage tests
+// =============================================================================
+
+#[test]
+fn test_textarea_parameter_with_display() {
+    let param = TextareaParameter::builder()
+        .metadata(
+            ParameterMetadata::builder()
+                .key("notes")
+                .name("Notes")
+                .description("Additional notes")
+                .build()
+                .unwrap(),
+        )
+        .display(ParameterDisplay::new().show_when_true(ParameterKey::new("show_notes").unwrap()))
+        .build();
+
+    let ctx_show = DisplayContext::new().with_value(
+        ParameterKey::new("show_notes").unwrap(),
+        Value::boolean(true),
+    );
+    let ctx_hide = DisplayContext::new().with_value(
+        ParameterKey::new("show_notes").unwrap(),
+        Value::boolean(false),
+    );
+
+    assert!(param.should_display(&ctx_show));
+    assert!(!param.should_display(&ctx_hide));
+}
+
+#[test]
+fn test_secret_parameter_with_display() {
+    let param = SecretParameter::builder()
+        .metadata(
+            ParameterMetadata::builder()
+                .key("password")
+                .name("Password")
+                .description("Enter password")
+                .build()
+                .unwrap(),
+        )
+        .display(ParameterDisplay::new().show_when_equals(
+            ParameterKey::new("auth_method").unwrap(),
+            Value::text("password"),
+        ))
+        .build();
+
+    let ctx_show = DisplayContext::new().with_value(
+        ParameterKey::new("auth_method").unwrap(),
+        Value::text("password"),
+    );
+    let ctx_hide = DisplayContext::new().with_value(
+        ParameterKey::new("auth_method").unwrap(),
+        Value::text("token"),
+    );
+
+    assert!(param.should_display(&ctx_show));
+    assert!(!param.should_display(&ctx_hide));
+}
+
+#[test]
+fn test_color_parameter_with_display() {
+    let param = ColorParameter::builder()
+        .metadata(
+            ParameterMetadata::builder()
+                .key("theme_color")
+                .name("Theme Color")
+                .description("Custom theme color")
+                .build()
+                .unwrap(),
+        )
+        .display(
+            ParameterDisplay::new()
+                .show_when_equals(ParameterKey::new("theme").unwrap(), Value::text("custom")),
+        )
+        .build();
+
+    let ctx_show = DisplayContext::new()
+        .with_value(ParameterKey::new("theme").unwrap(), Value::text("custom"));
+    let ctx_hide =
+        DisplayContext::new().with_value(ParameterKey::new("theme").unwrap(), Value::text("dark"));
+
+    assert!(param.should_display(&ctx_show));
+    assert!(!param.should_display(&ctx_hide));
+}
+
+#[test]
+fn test_code_parameter_with_display() {
+    let param = CodeParameter::builder()
+        .metadata(
+            ParameterMetadata::builder()
+                .key("custom_code")
+                .name("Custom Code")
+                .description("Enter custom code")
+                .build()
+                .unwrap(),
+        )
+        .display(
+            ParameterDisplay::new()
+                .show_when_true(ParameterKey::new("enable_custom_code").unwrap()),
+        )
+        .build();
+
+    let ctx_show = DisplayContext::new().with_value(
+        ParameterKey::new("enable_custom_code").unwrap(),
+        Value::boolean(true),
+    );
+
+    assert!(param.should_display(&ctx_show));
+}
+
+#[test]
+fn test_date_parameter_with_display() {
+    let param = DateParameter::builder()
+        .metadata(
+            ParameterMetadata::builder()
+                .key("start_date")
+                .name("Start Date")
+                .description("Select start date")
+                .build()
+                .unwrap(),
+        )
+        .display(
+            ParameterDisplay::new().show_when_true(ParameterKey::new("use_date_range").unwrap()),
+        )
+        .build();
+
+    let ctx_show = DisplayContext::new().with_value(
+        ParameterKey::new("use_date_range").unwrap(),
+        Value::boolean(true),
+    );
+
+    assert!(param.should_display(&ctx_show));
+}
+
+#[test]
+fn test_time_parameter_with_display() {
+    let param = TimeParameter::builder()
+        .metadata(
+            ParameterMetadata::builder()
+                .key("start_time")
+                .name("Start Time")
+                .description("Select start time")
+                .build()
+                .unwrap(),
+        )
+        .display(
+            ParameterDisplay::new().show_when_true(ParameterKey::new("schedule_enabled").unwrap()),
+        )
+        .build();
+
+    let ctx_show = DisplayContext::new().with_value(
+        ParameterKey::new("schedule_enabled").unwrap(),
+        Value::boolean(true),
+    );
+
+    assert!(param.should_display(&ctx_show));
+}
+
+#[test]
+fn test_datetime_parameter_with_display() {
+    let param = DateTimeParameter::builder()
+        .metadata(
+            ParameterMetadata::builder()
+                .key("expires_at")
+                .name("Expires At")
+                .description("Expiration datetime")
+                .build()
+                .unwrap(),
+        )
+        .display(
+            ParameterDisplay::new().show_when_true(ParameterKey::new("set_expiration").unwrap()),
+        )
+        .build();
+
+    let ctx_show = DisplayContext::new().with_value(
+        ParameterKey::new("set_expiration").unwrap(),
+        Value::boolean(true),
+    );
+    let ctx_hide = DisplayContext::new().with_value(
+        ParameterKey::new("set_expiration").unwrap(),
+        Value::boolean(false),
+    );
+
+    assert!(param.should_display(&ctx_show));
+    assert!(!param.should_display(&ctx_hide));
+}
+
+#[test]
+fn test_radio_parameter_with_display() {
+    let param = RadioParameter::builder()
+        .metadata(
+            ParameterMetadata::builder()
+                .key("priority")
+                .name("Priority")
+                .description("Select priority")
+                .build()
+                .unwrap(),
+        )
+        .options(vec![])
+        .display(
+            ParameterDisplay::new().show_when_true(ParameterKey::new("advanced_settings").unwrap()),
+        )
+        .build();
+
+    let ctx_show = DisplayContext::new().with_value(
+        ParameterKey::new("advanced_settings").unwrap(),
+        Value::boolean(true),
+    );
+
+    assert!(param.should_display(&ctx_show));
+}
+
+#[test]
+fn test_multi_select_parameter_with_display() {
+    let param = MultiSelectParameter::builder()
+        .metadata(
+            ParameterMetadata::builder()
+                .key("tags")
+                .name("Tags")
+                .description("Select tags")
+                .build()
+                .unwrap(),
+        )
+        .options(vec![])
+        .display(
+            ParameterDisplay::new().show_when_true(ParameterKey::new("enable_tagging").unwrap()),
+        )
+        .build();
+
+    let ctx_show = DisplayContext::new().with_value(
+        ParameterKey::new("enable_tagging").unwrap(),
+        Value::boolean(true),
+    );
+
+    assert!(param.should_display(&ctx_show));
+}
+
+#[test]
+fn test_file_parameter_with_display() {
+    let param = FileParameter::builder()
+        .metadata(
+            ParameterMetadata::builder()
+                .key("upload_file")
+                .name("Upload File")
+                .description("Select file to upload")
+                .build()
+                .unwrap(),
+        )
+        .display(ParameterDisplay::new().show_when_equals(
+            ParameterKey::new("input_type").unwrap(),
+            Value::text("file"),
+        ))
+        .build();
+
+    let ctx_show = DisplayContext::new().with_value(
+        ParameterKey::new("input_type").unwrap(),
+        Value::text("file"),
+    );
+    let ctx_hide = DisplayContext::new().with_value(
+        ParameterKey::new("input_type").unwrap(),
+        Value::text("text"),
+    );
+
+    assert!(param.should_display(&ctx_show));
+    assert!(!param.should_display(&ctx_hide));
+}
+
+#[test]
+fn test_list_parameter_with_display() {
+    let param = ListParameter::builder()
+        .metadata(
+            ParameterMetadata::builder()
+                .key("items")
+                .name("Items")
+                .description("Enter items")
+                .build()
+                .unwrap(),
+        )
+        .children(vec![])
+        .display(ParameterDisplay::new().show_when_true(ParameterKey::new("enable_list").unwrap()))
+        .build();
+
+    let ctx_show = DisplayContext::new().with_value(
+        ParameterKey::new("enable_list").unwrap(),
+        Value::boolean(true),
+    );
+
+    assert!(param.should_display(&ctx_show));
+}
+
+#[test]
+fn test_object_parameter_with_display() {
+    let mut param = ObjectParameter::new("config", "Configuration", "Custom configuration object")
+        .expect("should create parameter");
+    param.display = Some(
+        ParameterDisplay::new().show_when_true(ParameterKey::new("use_custom_config").unwrap()),
+    );
+
+    let ctx_show = DisplayContext::new().with_value(
+        ParameterKey::new("use_custom_config").unwrap(),
+        Value::boolean(true),
+    );
+
+    assert!(param.should_display(&ctx_show));
+}
+
+#[test]
+fn test_group_parameter_with_display() {
+    let param = GroupParameter::builder()
+        .metadata(
+            ParameterMetadata::builder()
+                .key("advanced_group")
+                .name("Advanced Settings")
+                .description("Advanced configuration group")
+                .build()
+                .unwrap(),
+        )
+        .fields(vec![])
+        .display(
+            ParameterDisplay::new().show_when_true(ParameterKey::new("show_advanced").unwrap()),
+        )
+        .build();
+
+    let ctx_show = DisplayContext::new().with_value(
+        ParameterKey::new("show_advanced").unwrap(),
+        Value::boolean(true),
+    );
+    let ctx_hide = DisplayContext::new().with_value(
+        ParameterKey::new("show_advanced").unwrap(),
+        Value::boolean(false),
+    );
+
+    assert!(param.should_display(&ctx_show));
+    assert!(!param.should_display(&ctx_hide));
+}
+
+#[test]
+fn test_resource_parameter_with_display() {
+    let metadata = ParameterMetadata::builder()
+        .key("database")
+        .name("Database")
+        .description("Select database resource")
+        .build()
+        .unwrap();
+
+    let mut param = ResourceParameter::new(metadata);
+    param.display = Some(ParameterDisplay::new().show_when_equals(
+        ParameterKey::new("storage_type").unwrap(),
+        Value::text("database"),
+    ));
+
+    let ctx_show = DisplayContext::new().with_value(
+        ParameterKey::new("storage_type").unwrap(),
+        Value::text("database"),
+    );
+
+    assert!(param.should_display(&ctx_show));
+}
+
+// =============================================================================
+// Edge cases and advanced scenarios
+// =============================================================================
+
+#[test]
+fn test_display_with_null_value() {
+    let display = ParameterDisplay::new().show_when(DisplayRule::when(
+        ParameterKey::new("field").unwrap(),
+        DisplayCondition::IsNull,
+    ));
+
+    let ctx_null =
+        DisplayContext::new().with_value(ParameterKey::new("field").unwrap(), Value::Null);
+    let ctx_set =
+        DisplayContext::new().with_value(ParameterKey::new("field").unwrap(), Value::text("value"));
+
+    assert!(display.should_display(&ctx_null));
+    assert!(!display.should_display(&ctx_set));
+}
+
+#[test]
+fn test_display_with_is_set() {
+    let display = ParameterDisplay::new().show_when(DisplayRule::when(
+        ParameterKey::new("field").unwrap(),
+        DisplayCondition::IsSet,
+    ));
+
+    let ctx_set =
+        DisplayContext::new().with_value(ParameterKey::new("field").unwrap(), Value::text("value"));
+    let ctx_null =
+        DisplayContext::new().with_value(ParameterKey::new("field").unwrap(), Value::Null);
+    let ctx_missing = DisplayContext::new();
+
+    assert!(display.should_display(&ctx_set));
+    assert!(!display.should_display(&ctx_null));
+    assert!(!display.should_display(&ctx_missing)); // Missing field = not set
+}
+
+#[test]
+fn test_display_with_is_false() {
+    let display = ParameterDisplay::new().show_when(DisplayRule::when(
+        ParameterKey::new("disabled").unwrap(),
+        DisplayCondition::IsFalse,
+    ));
+
+    let ctx_false = DisplayContext::new().with_value(
+        ParameterKey::new("disabled").unwrap(),
+        Value::boolean(false),
+    );
+    let ctx_true = DisplayContext::new()
+        .with_value(ParameterKey::new("disabled").unwrap(), Value::boolean(true));
+
+    assert!(display.should_display(&ctx_false));
+    assert!(!display.should_display(&ctx_true));
+}
+
+#[test]
+fn test_display_with_not_equals() {
+    let display = ParameterDisplay::new().show_when(DisplayRule::when(
+        ParameterKey::new("status").unwrap(),
+        DisplayCondition::NotEquals(Value::text("disabled")),
+    ));
+
+    let ctx_active = DisplayContext::new()
+        .with_value(ParameterKey::new("status").unwrap(), Value::text("active"));
+    let ctx_disabled = DisplayContext::new().with_value(
+        ParameterKey::new("status").unwrap(),
+        Value::text("disabled"),
+    );
+
+    assert!(display.should_display(&ctx_active));
+    assert!(!display.should_display(&ctx_disabled));
+}
+
+#[test]
+fn test_display_empty_ruleset() {
+    let display = ParameterDisplay::new();
+
+    // Empty display should always show
+    let ctx = DisplayContext::new();
+    assert!(display.should_display(&ctx));
+    assert!(display.is_empty());
+}
+
+#[test]
+fn test_display_multiple_show_conditions_combined() {
+    // Multiple show_when calls should be AND-ed together
+    let display = ParameterDisplay::new()
+        .show_when(DisplayRule::when(
+            ParameterKey::new("a").unwrap(),
+            DisplayCondition::IsTrue,
+        ))
+        .show_when(DisplayRule::when(
+            ParameterKey::new("b").unwrap(),
+            DisplayCondition::IsTrue,
+        ));
+
+    let ctx_both = DisplayContext::new()
+        .with_value(ParameterKey::new("a").unwrap(), Value::boolean(true))
+        .with_value(ParameterKey::new("b").unwrap(), Value::boolean(true));
+
+    let ctx_only_a = DisplayContext::new()
+        .with_value(ParameterKey::new("a").unwrap(), Value::boolean(true))
+        .with_value(ParameterKey::new("b").unwrap(), Value::boolean(false));
+
+    assert!(display.should_display(&ctx_both));
+    assert!(!display.should_display(&ctx_only_a));
+}
+
+#[test]
+fn test_display_multiple_hide_conditions_combined() {
+    // Multiple hide_when calls should be OR-ed together
+    let display = ParameterDisplay::new()
+        .hide_when(DisplayRule::when(
+            ParameterKey::new("maintenance").unwrap(),
+            DisplayCondition::IsTrue,
+        ))
+        .hide_when(DisplayRule::when(
+            ParameterKey::new("deprecated").unwrap(),
+            DisplayCondition::IsTrue,
+        ));
+
+    let ctx_maintenance = DisplayContext::new()
+        .with_value(
+            ParameterKey::new("maintenance").unwrap(),
+            Value::boolean(true),
+        )
+        .with_value(
+            ParameterKey::new("deprecated").unwrap(),
+            Value::boolean(false),
+        );
+
+    let ctx_deprecated = DisplayContext::new()
+        .with_value(
+            ParameterKey::new("maintenance").unwrap(),
+            Value::boolean(false),
+        )
+        .with_value(
+            ParameterKey::new("deprecated").unwrap(),
+            Value::boolean(true),
+        );
+
+    let ctx_neither = DisplayContext::new()
+        .with_value(
+            ParameterKey::new("maintenance").unwrap(),
+            Value::boolean(false),
+        )
+        .with_value(
+            ParameterKey::new("deprecated").unwrap(),
+            Value::boolean(false),
+        );
+
+    assert!(!display.should_display(&ctx_maintenance));
+    assert!(!display.should_display(&ctx_deprecated));
+    assert!(display.should_display(&ctx_neither));
+}
+
+#[test]
+fn test_display_with_float_values() {
+    let display = ParameterDisplay::new().show_when(DisplayRule::when(
+        ParameterKey::new("ratio").unwrap(),
+        DisplayCondition::InRange { min: 0.0, max: 1.0 },
+    ));
+
+    let ctx_valid =
+        DisplayContext::new().with_value(ParameterKey::new("ratio").unwrap(), Value::float(0.5));
+    let ctx_invalid =
+        DisplayContext::new().with_value(ParameterKey::new("ratio").unwrap(), Value::float(1.5));
+
+    assert!(display.should_display(&ctx_valid));
+    assert!(!display.should_display(&ctx_invalid));
+}
+
+#[test]
+fn test_display_with_empty_array() {
+    let display = ParameterDisplay::new().show_when(DisplayRule::when(
+        ParameterKey::new("items").unwrap(),
+        DisplayCondition::IsEmpty,
+    ));
+
+    let ctx_empty =
+        DisplayContext::new().with_value(ParameterKey::new("items").unwrap(), Value::array_empty());
+    let ctx_with_items = DisplayContext::new().with_value(
+        ParameterKey::new("items").unwrap(),
+        Value::Array(Array::from_vec(vec![Value::integer(1).into()])),
+    );
+
+    assert!(display.should_display(&ctx_empty));
+    assert!(!display.should_display(&ctx_with_items));
+}
+
+#[test]
+fn test_display_with_empty_object() {
+    let display = ParameterDisplay::new().show_when(DisplayRule::when(
+        ParameterKey::new("config").unwrap(),
+        DisplayCondition::IsEmpty,
+    ));
+
+    let ctx_empty = DisplayContext::new()
+        .with_value(ParameterKey::new("config").unwrap(), Value::object_empty());
+
+    assert!(display.should_display(&ctx_empty));
+}
+
+#[test]
+fn test_deeply_nested_ruleset() {
+    // ((A AND B) OR (C AND D)) AND NOT E
+    let ruleset = DisplayRuleSet::all([
+        DisplayRuleSet::any([
+            DisplayRuleSet::all([
+                DisplayRule::when(ParameterKey::new("a").unwrap(), DisplayCondition::IsTrue),
+                DisplayRule::when(ParameterKey::new("b").unwrap(), DisplayCondition::IsTrue),
+            ]),
+            DisplayRuleSet::all([
+                DisplayRule::when(ParameterKey::new("c").unwrap(), DisplayCondition::IsTrue),
+                DisplayRule::when(ParameterKey::new("d").unwrap(), DisplayCondition::IsTrue),
+            ]),
+        ]),
+        DisplayRuleSet::not(DisplayRule::when(
+            ParameterKey::new("e").unwrap(),
+            DisplayCondition::IsTrue,
+        )),
+    ]);
+
+    let display = ParameterDisplay::new().show_when(ruleset);
+
+    // A=true, B=true, E=false -> should show
+    let ctx1 = DisplayContext::new()
+        .with_value(ParameterKey::new("a").unwrap(), Value::boolean(true))
+        .with_value(ParameterKey::new("b").unwrap(), Value::boolean(true))
+        .with_value(ParameterKey::new("e").unwrap(), Value::boolean(false));
+
+    // C=true, D=true, E=false -> should show
+    let ctx2 = DisplayContext::new()
+        .with_value(ParameterKey::new("c").unwrap(), Value::boolean(true))
+        .with_value(ParameterKey::new("d").unwrap(), Value::boolean(true))
+        .with_value(ParameterKey::new("e").unwrap(), Value::boolean(false));
+
+    // A=true, B=true, E=true -> should NOT show (E blocks it)
+    let ctx3 = DisplayContext::new()
+        .with_value(ParameterKey::new("a").unwrap(), Value::boolean(true))
+        .with_value(ParameterKey::new("b").unwrap(), Value::boolean(true))
+        .with_value(ParameterKey::new("e").unwrap(), Value::boolean(true));
+
+    assert!(display.should_display(&ctx1));
+    assert!(display.should_display(&ctx2));
+    assert!(!display.should_display(&ctx3));
+}
+
+#[test]
+fn test_display_context_insert_and_contains() {
+    let mut ctx = DisplayContext::new();
+
+    assert!(!ctx.contains("key"));
+
+    ctx.insert(ParameterKey::new("key").unwrap(), Value::text("value"));
+
+    assert!(ctx.contains("key"));
+    assert_eq!(ctx.get("key"), Some(&Value::text("value")));
+}
+
+#[test]
+fn test_display_context_values() {
+    let ctx = DisplayContext::new()
+        .with_value(ParameterKey::new("a").unwrap(), Value::integer(1))
+        .with_value(ParameterKey::new("b").unwrap(), Value::integer(2));
+
+    let values = ctx.values();
+    assert_eq!(values.len(), 2);
+}
+
+#[test]
+fn test_displayable_trait_methods() {
+    let mut param = TextParameter::builder()
+        .metadata(
+            ParameterMetadata::builder()
+                .key("test")
+                .name("Test")
+                .description("Test parameter")
+                .build()
+                .unwrap(),
+        )
+        .build();
+
+    // Initially no conditions
+    assert!(!param.has_conditions());
+    assert!(param.dependencies().is_empty());
+
+    // Add a show condition via set_display
+    param.set_display(Some(ParameterDisplay::new().show_when(DisplayRule::when(
+        ParameterKey::new("trigger").unwrap(),
+        DisplayCondition::IsTrue,
+    ))));
+
+    assert!(param.has_conditions());
+    assert!(
+        param
+            .dependencies()
+            .contains(&ParameterKey::new("trigger").unwrap())
+    );
+
+    // Clear conditions
+    param.clear_conditions();
+    assert!(!param.has_conditions());
+}
+
+#[test]
+fn test_displayable_mut_hide_condition() {
+    let mut param = TextParameter::builder()
+        .metadata(
+            ParameterMetadata::builder()
+                .key("test")
+                .name("Test")
+                .description("Test parameter")
+                .build()
+                .unwrap(),
+        )
+        .build();
+
+    // Add hide condition via set_display
+    param.set_display(Some(
+        ParameterDisplay::new().hide_when_true(ParameterKey::new("hidden").unwrap()),
+    ));
+
+    let ctx_hidden = DisplayContext::new()
+        .with_value(ParameterKey::new("hidden").unwrap(), Value::boolean(true));
+    let ctx_visible = DisplayContext::new()
+        .with_value(ParameterKey::new("hidden").unwrap(), Value::boolean(false));
+
+    assert!(!param.should_display(&ctx_hidden));
+    assert!(param.should_display(&ctx_visible));
+}
+
+#[test]
+fn test_display_rule_dependency() {
+    let rule = DisplayRule::when(
+        ParameterKey::new("my_field").unwrap(),
+        DisplayCondition::IsTrue,
+    );
+
+    assert_eq!(rule.dependency(), &ParameterKey::new("my_field").unwrap());
+}
+
+#[test]
+fn test_display_ruleset_single() {
+    let rule = DisplayRule::when(
+        ParameterKey::new("field").unwrap(),
+        DisplayCondition::IsTrue,
+    );
+    let ruleset = DisplayRuleSet::single(rule);
+
+    let ctx =
+        DisplayContext::new().with_value(ParameterKey::new("field").unwrap(), Value::boolean(true));
+
+    assert!(ruleset.evaluate(&ctx));
+}
+
+#[test]
+fn test_display_serialization_complex() {
+    let display = ParameterDisplay::new()
+        .show_when(DisplayRuleSet::all([
+            DisplayRule::when(
+                ParameterKey::new("enabled").unwrap(),
+                DisplayCondition::IsTrue,
+            ),
+            DisplayRule::when(
+                ParameterKey::new("level").unwrap(),
+                DisplayCondition::GreaterThan(5.0),
+            ),
+        ]))
+        .hide_when(DisplayRule::when(
+            ParameterKey::new("maintenance").unwrap(),
+            DisplayCondition::IsTrue,
+        ));
+
+    let json = serde_json::to_string(&display).unwrap();
+    let restored: ParameterDisplay = serde_json::from_str(&json).unwrap();
+
+    // Test that restored display behaves the same
+    let ctx = DisplayContext::new()
+        .with_value(ParameterKey::new("enabled").unwrap(), Value::boolean(true))
+        .with_value(ParameterKey::new("level").unwrap(), Value::integer(10))
+        .with_value(
+            ParameterKey::new("maintenance").unwrap(),
+            Value::boolean(false),
+        );
+
+    assert_eq!(display.should_display(&ctx), restored.should_display(&ctx));
+}
+
+#[test]
+fn test_one_of_with_integers() {
+    let display = ParameterDisplay::new().show_when(DisplayRule::when(
+        ParameterKey::new("status_code").unwrap(),
+        DisplayCondition::OneOf(vec![
+            Value::integer(200),
+            Value::integer(201),
+            Value::integer(204),
+        ]),
+    ));
+
+    let ctx_200 = DisplayContext::new().with_value(
+        ParameterKey::new("status_code").unwrap(),
+        Value::integer(200),
+    );
+    let ctx_404 = DisplayContext::new().with_value(
+        ParameterKey::new("status_code").unwrap(),
+        Value::integer(404),
+    );
+
+    assert!(display.should_display(&ctx_200));
+    assert!(!display.should_display(&ctx_404));
+}
+
+#[test]
+fn test_condition_with_wrong_type() {
+    // GreaterThan with string value should return false (not panic)
+    let display = ParameterDisplay::new().show_when(DisplayRule::when(
+        ParameterKey::new("value").unwrap(),
+        DisplayCondition::GreaterThan(10.0),
+    ));
+
+    let ctx_string = DisplayContext::new().with_value(
+        ParameterKey::new("value").unwrap(),
+        Value::text("not a number"),
+    );
+
+    // Should not panic, just return false
+    assert!(!display.should_display(&ctx_string));
+}
+
+#[test]
+fn test_string_condition_with_wrong_type() {
+    // Contains with integer value should return false (not panic)
+    let display = ParameterDisplay::new().show_when(DisplayRule::when(
+        ParameterKey::new("value").unwrap(),
+        DisplayCondition::Contains("test".to_string()),
+    ));
+
+    let ctx_int =
+        DisplayContext::new().with_value(ParameterKey::new("value").unwrap(), Value::integer(42));
+
+    // Should not panic, just return false
+    assert!(!display.should_display(&ctx_int));
 }
