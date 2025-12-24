@@ -1,4 +1,5 @@
 pub mod collection;
+mod cross_field;
 pub mod display;
 mod error;
 mod kind;
@@ -9,6 +10,7 @@ pub mod validation;
 pub mod values;
 
 pub use collection::*;
+pub use cross_field::*;
 pub use display::*;
 pub use error::*;
 pub use kind::*;
