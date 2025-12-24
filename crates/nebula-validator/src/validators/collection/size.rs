@@ -249,6 +249,75 @@ where
 }
 
 // ============================================================================
+// SIZE RANGE
+// ============================================================================
+
+/// Validates that a collection size is within a range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SizeRange<T> {
+    min: usize,
+    max: usize,
+    _phantom: PhantomData<T>,
+}
+
+impl<T> Validator for SizeRange<T>
+where
+    T: Clone,
+{
+    type Input = Vec<T>;
+
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+        let size = input.len();
+        if size >= self.min && size <= self.max {
+            Ok(())
+        } else {
+            Err(ValidationError::new(
+                "size_range",
+                format!(
+                    "Collection must have between {} and {} elements, got {}",
+                    self.min, self.max, size
+                ),
+            )
+            .with_param("min", self.min.to_string())
+            .with_param("max", self.max.to_string())
+            .with_param("actual", size.to_string()))
+        }
+    }
+
+    fn metadata(&self) -> ValidatorMetadata {
+        ValidatorMetadata::simple("SizeRange")
+            .with_tag("collection")
+            .with_tag("size")
+    }
+}
+
+/// Creates a validator that checks if a collection size is within a range.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_validator::validators::collection::size_range;
+/// use nebula_validator::core::Validator;
+///
+/// let validator = size_range::<i32>(2, 4);
+/// assert!(validator.validate(&vec![1, 2]).is_ok());
+/// assert!(validator.validate(&vec![1, 2, 3, 4]).is_ok());
+/// assert!(validator.validate(&vec![1]).is_err());
+/// assert!(validator.validate(&vec![1, 2, 3, 4, 5]).is_err());
+/// ```
+#[must_use]
+pub fn size_range<T>(min: usize, max: usize) -> SizeRange<T>
+where
+    T: Clone,
+{
+    SizeRange {
+        min,
+        max,
+        _phantom: PhantomData,
+    }
+}
+
+// ============================================================================
 // TESTS
 // ============================================================================
 
@@ -299,5 +368,15 @@ mod tests {
                 .is_ok()
         );
         assert!(validator.validate(&vec!["a".to_string()]).is_err());
+    }
+
+    #[test]
+    fn test_size_range() {
+        let validator = size_range::<i32>(2, 4);
+        assert!(validator.validate(&vec![1, 2]).is_ok());
+        assert!(validator.validate(&vec![1, 2, 3]).is_ok());
+        assert!(validator.validate(&vec![1, 2, 3, 4]).is_ok());
+        assert!(validator.validate(&vec![1]).is_err());
+        assert!(validator.validate(&vec![1, 2, 3, 4, 5]).is_err());
     }
 }
