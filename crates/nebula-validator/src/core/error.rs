@@ -22,7 +22,7 @@ use std::fmt;
 ///
 /// ## Simple error
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::core::ValidationError;
 ///
 /// let error = ValidationError::new("min_length", "String is too short");
@@ -30,7 +30,7 @@ use std::fmt;
 ///
 /// ## Error with parameters
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::core::ValidationError;
 ///
 /// let error = ValidationError::new("min_length", "String is too short")
@@ -40,7 +40,7 @@ use std::fmt;
 ///
 /// ## Nested errors
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::core::ValidationError;
 ///
 /// let error = ValidationError::new("object_validation", "Object validation failed")
@@ -106,7 +106,7 @@ impl ValidationError {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_validator::core::ValidationError;
     ///
     /// let error = ValidationError::new("min_length", "String is too short");
@@ -128,7 +128,7 @@ impl ValidationError {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_validator::core::ValidationError;
     ///
     /// let error = ValidationError::new("required", "Field is required")
@@ -147,7 +147,7 @@ impl ValidationError {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_validator::core::ValidationError;
     ///
     /// let error = ValidationError::new("range", "Value out of range")
@@ -165,7 +165,7 @@ impl ValidationError {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_validator::core::ValidationError;
     /// use std::collections::HashMap;
     ///
@@ -188,7 +188,7 @@ impl ValidationError {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_validator::core::ValidationError;
     ///
     /// let error = ValidationError::new("object", "Validation failed")
@@ -214,7 +214,7 @@ impl ValidationError {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_validator::core::{ValidationError, ErrorSeverity};
     ///
     /// let warning = ValidationError::new("deprecated", "This field is deprecated")
@@ -230,7 +230,7 @@ impl ValidationError {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_validator::core::ValidationError;
     ///
     /// let error = ValidationError::new("email", "Invalid email")

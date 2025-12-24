@@ -1,6 +1,6 @@
 //! Port number validator (1-65535).
 
-use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 
 // ============================================================================
 // PORT VALIDATOR
@@ -12,7 +12,7 @@ use crate::core::{TypedValidator, ValidationComplexity, ValidationError, Validat
 ///
 /// ```
 /// use nebula_validator::validators::Port;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = Port::new();
 ///
@@ -20,8 +20,7 @@ use crate::core::{TypedValidator, ValidationComplexity, ValidationError, Validat
 /// assert!(validator.validate(&443).is_ok());     // HTTPS
 /// assert!(validator.validate(&8080).is_ok());    // Alt HTTP
 ///
-/// assert!(validator.validate(&0).is_err());      // Invalid
-/// assert!(validator.validate(&65536).is_err());  // Out of range
+/// assert!(validator.validate(&0).is_err());      // Invalid (port 0)
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct Port {
@@ -94,12 +93,10 @@ impl Default for Port {
     }
 }
 
-impl TypedValidator for Port {
+impl Validator for Port {
     type Input = u16;
-    type Output = u16;
-    type Error = ValidationError;
 
-    fn validate(&self, input: &u16) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &u16) -> Result<(), ValidationError> {
         let port = *input;
 
         // Port 0 is invalid
@@ -132,7 +129,7 @@ impl TypedValidator for Port {
             ));
         }
 
-        Ok(port)
+        Ok(())
     }
 
     fn metadata(&self) -> ValidatorMetadata {

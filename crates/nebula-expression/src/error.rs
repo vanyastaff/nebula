@@ -199,6 +199,16 @@ impl From<nebula_value::ValueError> for ExpressionError {
     }
 }
 
+/// Convert from nebula_value::ConversionError
+impl From<nebula_value::ConversionError> for ExpressionError {
+    fn from(error: nebula_value::ConversionError) -> Self {
+        ExpressionError::TypeError {
+            expected: "compatible type".to_string(),
+            actual: error.to_string(),
+        }
+    }
+}
+
 /// Convert from nebula_memory::MemoryError
 impl From<nebula_memory::MemoryError> for ExpressionError {
     fn from(error: nebula_memory::MemoryError) -> Self {

@@ -2,7 +2,7 @@
 //!
 //! This module provides validators for checking string patterns and formats.
 
-use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 
 // ============================================================================
 // CONTAINS
@@ -12,7 +12,7 @@ use crate::core::{TypedValidator, ValidationComplexity, ValidationError, Validat
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::validators::string::Contains;
 ///
 /// let validator = Contains { substring: "test".to_string() };
@@ -34,12 +34,10 @@ impl Contains {
     }
 }
 
-impl TypedValidator for Contains {
+impl Validator for Contains {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if input.contains(&self.substring) {
             Ok(())
         } else {
@@ -89,12 +87,10 @@ impl StartsWith {
     }
 }
 
-impl TypedValidator for StartsWith {
+impl Validator for StartsWith {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if input.starts_with(&self.prefix) {
             Ok(())
         } else {
@@ -143,12 +139,10 @@ impl EndsWith {
     }
 }
 
-impl TypedValidator for EndsWith {
+impl Validator for EndsWith {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if input.ends_with(&self.suffix) {
             Ok(())
         } else {
@@ -210,12 +204,10 @@ impl Default for Alphanumeric {
     }
 }
 
-impl TypedValidator for Alphanumeric {
+impl Validator for Alphanumeric {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         let is_valid = input
             .chars()
             .all(|c| c.is_alphanumeric() || (self.allow_spaces && c.is_whitespace()));
@@ -283,12 +275,10 @@ impl Default for Alphabetic {
     }
 }
 
-impl TypedValidator for Alphabetic {
+impl Validator for Alphabetic {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         let is_valid = input
             .chars()
             .all(|c| c.is_alphabetic() || (self.allow_spaces && c.is_whitespace()));
@@ -330,12 +320,10 @@ pub fn alphabetic() -> Alphabetic {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Numeric;
 
-impl TypedValidator for Numeric {
+impl Validator for Numeric {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if input.chars().all(char::is_numeric) {
             Ok(())
         } else {
@@ -373,12 +361,10 @@ pub const fn numeric() -> Numeric {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Lowercase;
 
-impl TypedValidator for Lowercase {
+impl Validator for Lowercase {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if input
             .chars()
             .all(|c| !c.is_alphabetic() || c.is_lowercase())
@@ -408,12 +394,10 @@ pub const fn lowercase() -> Lowercase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Uppercase;
 
-impl TypedValidator for Uppercase {
+impl Validator for Uppercase {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if input
             .chars()
             .all(|c| !c.is_alphabetic() || c.is_uppercase())

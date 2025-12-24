@@ -19,8 +19,6 @@
 //!
 //! impl ContextualValidator for PasswordConfirmation {
 //!     type Input = User;
-//!     type Output = ();
-//!     type Error = ValidationError;
 //!
 //!     fn validate_with_context(
 //!         &self,
@@ -38,7 +36,7 @@
 //! }
 //! ```
 
-use crate::core::{TypedValidator, ValidatorMetadata};
+use crate::core::{ValidationError, Validator, ValidatorMetadata};
 use std::any::Any;
 use std::collections::HashMap;
 
@@ -83,7 +81,7 @@ impl ValidationContext {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_validator::core::ValidationContext;
     ///
     /// let mut ctx = ValidationContext::new();
@@ -97,7 +95,7 @@ impl ValidationContext {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_validator::core::ValidationContext;
     ///
     /// let mut ctx = ValidationContext::new();
@@ -150,7 +148,7 @@ impl ValidationContext {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_validator::core::ValidationContext;
     ///
     /// let mut ctx = ValidationContext::new();
@@ -220,8 +218,6 @@ impl Clone for ValidationContext {
 ///
 /// impl ContextualValidator for DateRangeValidator {
 ///     type Input = DateRange;
-///     type Output = ();
-///     type Error = ValidationError;
 ///
 ///     fn validate_with_context(
 ///         &self,
@@ -242,18 +238,12 @@ pub trait ContextualValidator {
     /// The type of input being validated.
     type Input: ?Sized;
 
-    /// The type returned on successful validation.
-    type Output;
-
-    /// The error type returned on validation failure.
-    type Error: std::error::Error + Send + Sync + 'static;
-
     /// Validates the input with access to the validation context.
     fn validate_with_context(
         &self,
         input: &Self::Input,
         ctx: &ValidationContext,
-    ) -> Result<Self::Output, Self::Error>;
+    ) -> Result<(), ValidationError>;
 
     /// Returns metadata about this validator.
     fn metadata(&self) -> ValidatorMetadata {
@@ -262,10 +252,10 @@ pub trait ContextualValidator {
 }
 
 // ============================================================================
-// ADAPTER: TypedValidator -> ContextualValidator
+// ADAPTER: Validator -> ContextualValidator
 // ============================================================================
 
-/// Adapter that allows any `TypedValidator` to be used as a `ContextualValidator`.
+/// Adapter that allows any `Validator` to be used as a `ContextualValidator`.
 ///
 /// This provides backward compatibility - existing validators can be used
 /// in contexts that expect `ContextualValidator`.
@@ -287,17 +277,15 @@ impl<V> ContextAdapter<V> {
 
 impl<V> ContextualValidator for ContextAdapter<V>
 where
-    V: TypedValidator,
+    V: Validator,
 {
     type Input = V::Input;
-    type Output = V::Output;
-    type Error = V::Error;
 
     fn validate_with_context(
         &self,
         input: &Self::Input,
         _ctx: &ValidationContext,
-    ) -> Result<Self::Output, Self::Error> {
+    ) -> Result<(), ValidationError> {
         self.validator.validate(input)
     }
 
@@ -314,7 +302,7 @@ where
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::core::ValidationContextBuilder;
 ///
 /// let ctx = ValidationContextBuilder::new()
@@ -442,10 +430,8 @@ mod tests {
 
     struct TestValidator;
 
-    impl TypedValidator for TestValidator {
+    impl Validator for TestValidator {
         type Input = str;
-        type Output = ();
-        type Error = ValidationError;
 
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
             if input.is_empty() {

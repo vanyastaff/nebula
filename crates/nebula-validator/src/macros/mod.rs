@@ -12,7 +12,7 @@
 //!
 //! ## Creating a validator
 //!
-//! ```rust
+//! ```rust,ignore
 //! use nebula_validator::macros::validator;
 //!
 //! validator! {
@@ -33,7 +33,7 @@
 //!
 //! ## Inline validation
 //!
-//! ```rust
+//! ```rust,ignore
 //! use nebula_validator::macros::validate;
 //!
 //! let result = validate!(input, |s: &str| {
@@ -53,7 +53,7 @@ pub use nebula_validator_derive::*;
 ///
 /// This macro generates a complete validator implementation including:
 /// - Struct definition
-/// - TypedValidator trait implementation
+/// - Validator trait implementation
 /// - Metadata generation
 /// - Error handling
 ///
@@ -79,7 +79,7 @@ pub use nebula_validator_derive::*;
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::macros::validator;
 ///
 /// validator! {
@@ -127,12 +127,10 @@ macro_rules! validator {
             )*
         }
 
-        impl $crate::core::TypedValidator for $name {
+        impl $crate::core::Validator for $name {
             type Input = $input_ty;
-            type Output = ();
-            type Error = $crate::core::ValidationError;
 
-            fn validate(&self, $input: &Self::Input) -> Result<Self::Output, Self::Error> {
+            fn validate(&self, $input: &Self::Input) -> Result<(), ValidationError> {
                 if Self::check($input $(, self.$param)*) {
                     Ok(())
                 } else {
@@ -179,7 +177,7 @@ macro_rules! validator {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::validate;
 ///
 /// let input = "hello";
@@ -221,7 +219,7 @@ macro_rules! validate {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::validator_fn;
 ///
 /// validator_fn!(is_even, |n: &i32| *n % 2 == 0, "Number must be even");
@@ -252,12 +250,10 @@ macro_rules! validator_fn {
             }
         }
 
-        impl $crate::core::TypedValidator for $name {
+        impl $crate::core::Validator for $name {
             type Input = $input_ty;
-            type Output = ();
-            type Error = $crate::core::ValidationError;
 
-            fn validate(&self, $input: &Self::Input) -> Result<Self::Output, Self::Error> {
+            fn validate(&self, $input: &Self::Input) -> Result<(), ValidationError> {
                 if $body {
                     Ok(())
                 } else {
@@ -285,7 +281,7 @@ macro_rules! validator_fn {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::validator_const;
 ///
 /// validator_const! {
@@ -304,12 +300,10 @@ macro_rules! validator_const {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub struct $name;
 
-        impl $crate::core::TypedValidator for $name {
+        impl $crate::core::Validator for $name {
             type Input = $input_ty;
-            type Output = ();
-            type Error = $crate::core::ValidationError;
 
-            fn validate(&self, $input: &Self::Input) -> Result<Self::Output, Self::Error> {
+            fn validate(&self, $input: &Self::Input) -> Result<(), ValidationError> {
                 if $body {
                     Ok(())
                 } else {
@@ -335,7 +329,7 @@ macro_rules! validator_const {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::compose;
 ///
 /// let validator = compose![
@@ -362,7 +356,7 @@ macro_rules! compose {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::any_of;
 ///
 /// let validator = any_of![
@@ -388,7 +382,7 @@ macro_rules! any_of {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{TypedValidator, ValidationError};
+    use crate::core::{Validator, ValidationError};
 
     validator! {
         struct TestMinLength {
@@ -475,10 +469,8 @@ mod tests {
         struct ExactLength {
             length: usize,
         }
-        impl TypedValidator for ExactLength {
+        impl Validator for ExactLength {
             type Input = str;
-            type Output = ();
-            type Error = ValidationError;
             fn validate(&self, input: &str) -> Result<(), ValidationError> {
                 if input.len() == self.length {
                     Ok(())

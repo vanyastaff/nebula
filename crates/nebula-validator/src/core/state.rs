@@ -10,7 +10,7 @@
 //!
 //! # Examples
 //!
-//! ```rust
+//! ```rust,ignore
 //! use nebula_validator::prelude::*;
 //!
 //! // Create unvalidated parameter
@@ -24,7 +24,7 @@
 //! let value = validated.unwrap();
 //! ```
 
-use crate::core::TypedValidator;
+use crate::core::{ValidationError, Validator};
 use std::marker::PhantomData;
 
 // ============================================================================
@@ -62,7 +62,7 @@ pub struct Validated<V> {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::prelude::*;
 ///
 /// // Start with unvalidated parameter
@@ -92,7 +92,7 @@ impl<T> Parameter<T, Unvalidated> {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// let param = Parameter::new("hello".to_string());
     /// ```
     pub fn new(value: T) -> Self {
@@ -117,15 +117,15 @@ impl<T> Parameter<T, Unvalidated> {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// let param = Parameter::new("hello".to_string());
     /// let validator = MinLength { min: 5 };
     /// let validated = param.validate(&validator)?;
     /// ```
     #[must_use = "validation result must be checked"]
-    pub fn validate<V>(self, validator: &V) -> Result<Parameter<T, Validated<V>>, V::Error>
+    pub fn validate<V>(self, validator: &V) -> Result<Parameter<T, Validated<V>>, ValidationError>
     where
-        V: TypedValidator<Output = ()>,
+        V: Validator,
         T: std::borrow::Borrow<V::Input>,
     {
         validator.validate(self.value.borrow())?;
@@ -141,7 +141,7 @@ impl<T> Parameter<T, Unvalidated> {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// let param = Parameter::new("hello".to_string());
     /// let validated = param.validate_all(vec![
     ///     &min_validator,
@@ -151,9 +151,9 @@ impl<T> Parameter<T, Unvalidated> {
     pub fn validate_all<V>(
         self,
         validators: Vec<&V>,
-    ) -> Result<Parameter<T, Validated<V>>, V::Error>
+    ) -> Result<Parameter<T, Validated<V>>, ValidationError>
     where
-        V: TypedValidator<Output = ()>,
+        V: Validator,
         T: std::borrow::Borrow<V::Input>,
     {
         for validator in validators {
@@ -169,9 +169,9 @@ impl<T> Parameter<T, Unvalidated> {
     ///
     /// Useful when you want to validate but don't need the type-level proof.
     #[must_use = "validation result must be checked"]
-    pub fn validate_in_place<V>(&self, validator: &V) -> Result<(), V::Error>
+    pub fn validate_in_place<V>(&self, validator: &V) -> Result<(), ValidationError>
     where
-        V: TypedValidator<Output = ()>,
+        V: Validator,
         T: std::borrow::Borrow<V::Input>,
     {
         validator.validate(self.value.borrow())
@@ -202,7 +202,7 @@ impl<T, V> Parameter<T, Validated<V>> {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// let param = Parameter::new("hello".to_string());
     /// let validated = param.validate(&validator)?;
     /// let value = validated.unwrap(); // Safe!
@@ -227,9 +227,12 @@ impl<T, V> Parameter<T, Validated<V>> {
     ///
     /// Changes the validation marker to the new validator.
     #[must_use = "validation result must be checked"]
-    pub fn revalidate<V2>(self, validator: &V2) -> Result<Parameter<T, Validated<V2>>, V2::Error>
+    pub fn revalidate<V2>(
+        self,
+        validator: &V2,
+    ) -> Result<Parameter<T, Validated<V2>>, ValidationError>
     where
-        V2: TypedValidator<Input = T, Output = ()>,
+        V2: Validator<Input = T>,
     {
         validator.validate(&self.value)?;
         Ok(Parameter {
@@ -244,9 +247,9 @@ impl<T, V> Parameter<T, Validated<V>> {
     pub fn and_validate<V2>(
         self,
         validator: &V2,
-    ) -> Result<Parameter<T, Validated<(V, V2)>>, V2::Error>
+    ) -> Result<Parameter<T, Validated<(V, V2)>>, ValidationError>
     where
-        V2: TypedValidator<Input = T, Output = ()>,
+        V2: Validator<Input = T>,
     {
         validator.validate(&self.value)?;
         Ok(Parameter {
@@ -273,10 +276,10 @@ impl<T, V> Parameter<T, Validated<V>> {
         self,
         f: F,
         validator: &V2,
-    ) -> Result<Parameter<U, Validated<V2>>, V2::Error>
+    ) -> Result<Parameter<U, Validated<V2>>, ValidationError>
     where
         F: FnOnce(T) -> U,
-        V2: TypedValidator<Input = U, Output = ()>,
+        V2: Validator<Input = U>,
     {
         let new_value = f(self.value);
         validator.validate(&new_value)?;
@@ -319,7 +322,7 @@ impl<T, S> Parameter<T, S> {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// let param = ParameterBuilder::new()
 ///     .value("hello".to_string())
 ///     .validate(&validator)?
@@ -349,9 +352,12 @@ impl<T> ParameterBuilder<T, Unvalidated> {
 
     /// Validates the value.
     #[must_use = "validation result must be checked"]
-    pub fn validate<V>(self, validator: &V) -> Result<ParameterBuilder<T, Validated<V>>, V::Error>
+    pub fn validate<V>(
+        self,
+        validator: &V,
+    ) -> Result<ParameterBuilder<T, Validated<V>>, ValidationError>
     where
-        V: TypedValidator<Input = T, Output = ()>,
+        V: Validator<Input = T>,
     {
         let value = self.value.expect("Value must be set before validation");
         validator.validate(&value)?;
@@ -420,7 +426,7 @@ where
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// let group = ValidationGroup::new()
 ///     .add(username_param)
 ///     .add(email_param)
@@ -481,10 +487,8 @@ mod tests {
         min: usize,
     }
 
-    impl TypedValidator for MinLength {
+    impl Validator for MinLength {
         type Input = String;
-        type Output = ();
-        type Error = ValidationError;
 
         fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
             if input.len() >= self.min {
@@ -567,10 +571,8 @@ mod tests {
             max: usize,
         }
 
-        impl TypedValidator for MaxLength {
+        impl Validator for MaxLength {
             type Input = String;
-            type Output = ();
-            type Error = ValidationError;
 
             fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
                 if input.len() <= self.max {

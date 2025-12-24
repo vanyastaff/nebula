@@ -60,10 +60,10 @@ impl PartialEq for CachedExpression {
 /// use nebula_expression::MaybeExpression;
 ///
 /// // Concrete value
-/// let value: MaybeExpression<String> = MaybeExpression::Value("hello".to_string());
+/// let value: MaybeExpression<String> = MaybeExpression::value("hello".to_string());
 ///
-/// // Expression
-/// let expr: MaybeExpression<String> = MaybeExpression::Expression("{{ $input.name }}".to_string());
+/// // Expression (using the expression() constructor)
+/// let expr: MaybeExpression<String> = MaybeExpression::expression("{{ $input.name }}");
 /// ```
 ///
 /// When serialized as JSON:

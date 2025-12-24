@@ -2,7 +2,7 @@
 //!
 //! Validates that a string contains only valid hexadecimal characters.
 
-use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 
 // ============================================================================
 // HEX VALIDATOR
@@ -19,7 +19,7 @@ use crate::core::{TypedValidator, ValidationComplexity, ValidationError, Validat
 ///
 /// ```
 /// use nebula_validator::validators::Hex;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = Hex::new();
 ///
@@ -132,12 +132,10 @@ impl Default for Hex {
     }
 }
 
-impl TypedValidator for Hex {
+impl Validator for Hex {
     type Input = str;
-    type Output = Vec<u8>;
-    type Error = ValidationError;
 
-    fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         if input.is_empty() {
             return Err(ValidationError::new(
                 "empty_hex",
@@ -200,25 +198,24 @@ impl TypedValidator for Hex {
             }
         }
 
-        // Parse to bytes
-        let bytes = (0..hex_str.len())
-            .step_by(2)
-            .map(|i| {
-                let byte_str = if i + 1 < hex_str.len() {
-                    &hex_str[i..i + 2]
-                } else {
-                    // Odd length - pad with 0
-                    return u8::from_str_radix(&format!("0{}", &hex_str[i..=i]), 16).map_err(
-                        |_| ValidationError::new("hex_parse_error", "Failed to parse hex string"),
-                    );
-                };
-                u8::from_str_radix(byte_str, 16).map_err(|_| {
+        // Validate that hex string can be parsed (check each byte pair)
+        for i in (0..hex_str.len()).step_by(2) {
+            let byte_str = if i + 1 < hex_str.len() {
+                &hex_str[i..i + 2]
+            } else {
+                // Odd length - pad with 0
+                let padded = format!("0{}", &hex_str[i..=i]);
+                u8::from_str_radix(&padded, 16).map_err(|_| {
                     ValidationError::new("hex_parse_error", "Failed to parse hex string")
-                })
-            })
-            .collect::<Result<Vec<u8>, ValidationError>>()?;
+                })?;
+                continue;
+            };
+            u8::from_str_radix(byte_str, 16).map_err(|_| {
+                ValidationError::new("hex_parse_error", "Failed to parse hex string")
+            })?;
+        }
 
-        Ok(bytes)
+        Ok(())
     }
 
     fn metadata(&self) -> ValidatorMetadata {
@@ -289,12 +286,10 @@ impl RequirePrefixHex {
     }
 }
 
-impl TypedValidator for RequirePrefixHex {
+impl Validator for RequirePrefixHex {
     type Input = str;
-    type Output = Vec<u8>;
-    type Error = ValidationError;
 
-    fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         if !input.starts_with("0x") && !input.starts_with("0X") {
             return Err(ValidationError::new(
                 "hex_prefix_required",
@@ -400,27 +395,26 @@ mod tests {
     }
 
     #[test]
-    fn test_output_bytes() {
+    fn test_output_unit() {
         let validator = Hex::new();
         let result = validator.validate("deadbeef").unwrap();
-        assert_eq!(result, vec![0xde, 0xad, 0xbe, 0xef]);
+        assert_eq!(result, ());
 
         let result = validator.validate("0x1234").unwrap();
-        assert_eq!(result, vec![0x12, 0x34]);
+        assert_eq!(result, ());
     }
 
     #[test]
     fn test_odd_length() {
         let validator = Hex::new();
-        let result = validator.validate("abc").unwrap();
-        // "abc" -> "ab" (0xab), then "c" padded to "0c" (0x0c)
-        assert_eq!(result, vec![0xab, 0x0c]);
+        // "abc" -> "ab" (0xab), then "c" padded to "0c" (0x0c) - should validate OK
+        assert!(validator.validate("abc").is_ok());
     }
 
     #[test]
     fn test_single_char() {
         let validator = Hex::new();
-        let result = validator.validate("f").unwrap();
-        assert_eq!(result, vec![0x0f]);
+        // Single char "f" padded to "0f" - should validate OK
+        assert!(validator.validate("f").is_ok());
     }
 }

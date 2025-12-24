@@ -66,7 +66,7 @@ Line 3"#,
 
     match template.render(&engine, &context) {
         Ok(result) => println!("Result: {}", result),
-        Err(e) => println!("Error: {}\n", e.message),
+        Err(e) => println!("Error: {}\n", e),
     }
 
     // Example 4: MaybeTemplate auto-detection
@@ -132,7 +132,7 @@ Line 3"#,
     println!("=== Example 7: Parse Error with Position ===");
     match Template::new("Hello {{ $input") {
         Ok(_) => println!("Parsed successfully"),
-        Err(e) => println!("Parse error: {}", e.message),
+        Err(e) => println!("Parse error: {}", e),
     }
     println!();
 

@@ -2,32 +2,14 @@
 //!
 //! This module provides optimization for validator chains to improve
 //! performance by reordering validators and applying fusion rules.
-//!
-//! # Optimization Strategies
-//!
-//! 1. **Complexity-based reordering**: Run cheap validators before expensive ones
-//! 2. **Short-circuit optimization**: Fail fast with high-selectivity validators
-//! 3. **Metadata-driven decisions**: Use validator metadata for smart ordering
-//!
-//! # Examples
-//!
-//! ```rust,ignore
-//! use nebula_validator::combinators::optimizer::ValidatorChainOptimizer;
-//!
-//! let optimizer = ValidatorChainOptimizer::new();
-//! let optimized = optimizer.optimize(validator_chain);
-//! ```
 
-use crate::core::{TypedValidator, ValidationComplexity, ValidatorMetadata};
+use crate::core::{ValidationComplexity, Validator, ValidatorMetadata};
 
 // ============================================================================
 // VALIDATOR CHAIN OPTIMIZER
 // ============================================================================
 
 /// Optimizer for validator chains.
-///
-/// Analyzes validator metadata and reorders/optimizes the validation chain
-/// for better performance.
 #[derive(Debug, Clone)]
 pub struct ValidatorChainOptimizer {
     /// Enable complexity-based reordering.
@@ -73,28 +55,24 @@ impl ValidatorChainOptimizer {
     }
 
     /// Checks if one validator should run before another.
-    ///
-    /// Returns true if `a` should run before `b`.
     #[must_use]
     pub fn should_run_first(&self, meta_a: &ValidatorMetadata, meta_b: &ValidatorMetadata) -> bool {
         if !self.reorder_by_complexity {
-            return false; // No reordering
+            return false;
         }
 
         let complexity_diff =
             i32::from(meta_b.complexity.score()) - i32::from(meta_a.complexity.score());
 
-        // Only reorder if difference is significant
         if complexity_diff.unsigned_abs() < self.min_complexity_diff {
             return false;
         }
 
-        // Run cheaper validators first
         meta_a.complexity < meta_b.complexity
     }
 
     /// Analyzes a validator chain and suggests optimizations.
-    pub fn analyze<V: TypedValidator>(&self, validator: &V) -> OptimizationReport {
+    pub fn analyze<V: Validator>(&self, validator: &V) -> OptimizationReport {
         let metadata = validator.metadata();
 
         OptimizationReport {
@@ -138,10 +116,7 @@ impl ValidatorChainOptimizer {
     }
 
     /// Analyzes a validator with runtime statistics.
-    ///
-    /// Uses both static metadata and runtime statistics to provide
-    /// more accurate recommendations.
-    pub fn analyze_with_stats<V: TypedValidator>(
+    pub fn analyze_with_stats<V: Validator>(
         &self,
         validator: &V,
         stats: &ValidatorStats,
@@ -149,7 +124,6 @@ impl ValidatorChainOptimizer {
         let metadata = validator.metadata();
         let mut recommendations = self.generate_recommendations(&metadata);
 
-        // Add stats-based recommendations
         if stats.failure_rate() > 0.7 {
             recommendations.push(
                 "High failure rate detected. Consider running this validator early in the chain"
@@ -158,7 +132,6 @@ impl ValidatorChainOptimizer {
         }
 
         if stats.average_time_ns() > 1_000_000.0 {
-            // > 1ms
             recommendations.push(
                 "Slow validator detected (avg > 1ms). Consider caching or optimization".to_string(),
             );
@@ -186,29 +159,15 @@ impl ValidatorChainOptimizer {
         stats: &ValidatorStats,
     ) -> f64 {
         let base_speedup = self.estimate_speedup(metadata);
-
-        // Boost for high failure rate (early rejection is better)
         let failure_boost = if stats.failure_rate() > 0.5 { 1.5 } else { 1.0 };
-
         base_speedup * failure_boost
     }
 
     /// Optimizes a chain of validators by reordering them.
-    ///
-    /// Returns a new vector with validators in optimal order.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// let optimizer = ValidatorChainOptimizer::new();
-    /// let validators = vec![expensive_validator, cheap_validator, medium_validator];
-    /// let optimized = optimizer.optimize_chain(validators);
-    /// // Result: [cheap_validator, medium_validator, expensive_validator]
-    /// ```
     #[must_use]
     pub fn optimize_chain<V>(&self, validators: Vec<V>) -> Vec<V>
     where
-        V: TypedValidator,
+        V: Validator,
     {
         if !self.reorder_by_complexity || validators.is_empty() {
             return validators;
@@ -222,19 +181,16 @@ impl ValidatorChainOptimizer {
             })
             .collect();
 
-        // Sort by complexity (cheap first)
         with_meta.sort_by(|(_, meta_a), (_, meta_b)| meta_a.complexity.cmp(&meta_b.complexity));
 
         with_meta.into_iter().map(|(v, _)| v).collect()
     }
 
     /// Optimizes a chain using runtime statistics.
-    ///
-    /// Considers both complexity and selectivity scores from stats.
     #[must_use]
     pub fn optimize_chain_with_stats<V>(&self, validators: Vec<(V, ValidatorStats)>) -> Vec<V>
     where
-        V: TypedValidator,
+        V: Validator,
     {
         if validators.is_empty() {
             return Vec::new();
@@ -244,17 +200,13 @@ impl ValidatorChainOptimizer {
             .into_iter()
             .map(|(v, stats)| {
                 let meta = v.metadata();
-                // Combined score: lower complexity + higher selectivity = run first
                 let complexity_score = f64::from(meta.complexity.score());
                 let selectivity_score = stats.selectivity_score();
-
-                // Lower score = run first
                 let combined_score = complexity_score - (selectivity_score * 50.0);
                 (v, combined_score)
             })
             .collect();
 
-        // Sort by combined score
         with_scores.sort_by(|(_, score_a), (_, score_b)| {
             score_a
                 .partial_cmp(score_b)
@@ -323,7 +275,7 @@ impl OptimizationReport {
 // ============================================================================
 
 /// Helper trait for comparing validators based on optimization criteria.
-pub trait ValidatorOrdering: TypedValidator {
+pub trait ValidatorOrdering: Validator {
     /// Returns the optimization priority score (lower = run earlier).
     fn optimization_priority(&self) -> i32 {
         let metadata = self.metadata();
@@ -331,13 +283,12 @@ pub trait ValidatorOrdering: TypedValidator {
     }
 
     /// Checks if this validator should run before another.
-    fn should_run_before<V: TypedValidator>(&self, other: &V) -> bool {
+    fn should_run_before<V: Validator>(&self, other: &V) -> bool {
         self.optimization_priority() < other.optimization_priority()
     }
 }
 
-// Blanket implementation for all TypedValidators
-impl<T: TypedValidator> ValidatorOrdering for T {}
+impl<T: Validator> ValidatorOrdering for T {}
 
 // ============================================================================
 // OPTIMIZATION STRATEGIES
@@ -386,8 +337,6 @@ impl OptimizationStrategy {
             Self::ComplexityBased => meta_a.complexity.cmp(&meta_b.complexity),
 
             Self::FailFast => {
-                // Prefer validators that are likely to fail
-                // Use selectivity_score from custom metadata if available
                 let selectivity_a = meta_a
                     .custom
                     .get("selectivity_score")
@@ -400,8 +349,6 @@ impl OptimizationStrategy {
                     .and_then(|v| v.parse::<f64>().ok())
                     .unwrap_or(0.0);
 
-                // Higher selectivity = more likely to fail = run first
-                // If no stats, fall back to complexity
                 if selectivity_a == selectivity_b {
                     meta_a.complexity.cmp(&meta_b.complexity)
                 } else {
@@ -411,20 +358,14 @@ impl OptimizationStrategy {
                 }
             }
 
-            Self::Balanced => {
-                // First compare complexity
-                match meta_a.complexity.cmp(&meta_b.complexity) {
-                    Ordering::Equal => {
-                        // If same complexity, prefer cacheable ones
-                        match (meta_a.cacheable, meta_b.cacheable) {
-                            (true, false) => Ordering::Less,
-                            (false, true) => Ordering::Greater,
-                            _ => Ordering::Equal,
-                        }
-                    }
-                    other => other,
-                }
-            }
+            Self::Balanced => match meta_a.complexity.cmp(&meta_b.complexity) {
+                Ordering::Equal => match (meta_a.cacheable, meta_b.cacheable) {
+                    (true, false) => Ordering::Less,
+                    (false, true) => Ordering::Greater,
+                    _ => Ordering::Equal,
+                },
+                other => other,
+            },
         }
     }
 }

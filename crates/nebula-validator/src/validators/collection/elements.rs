@@ -1,6 +1,6 @@
 //! Collection element validators
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationError, Validator, ValidatorMetadata};
 use std::collections::HashSet;
 use std::hash::Hash;
 
@@ -21,20 +21,17 @@ impl<V> All<V> {
     }
 }
 
-impl<V, T> TypedValidator for All<V>
+impl<V, T> Validator for All<V>
 where
-    V: TypedValidator<Input = T>,
-    V::Error: Into<ValidationError>,
+    V: Validator<Input = T>,
 {
     type Input = [T];
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         for (i, item) in input.iter().enumerate() {
             self.validator.validate(item).map_err(|e| {
                 ValidationError::new("all", format!("Element at index {i} failed validation"))
-                    .with_nested_error(e.into())
+                    .with_nested_error(e)
             })?;
         }
         Ok(())
@@ -68,15 +65,13 @@ impl<V> Any<V> {
     }
 }
 
-impl<V, T> TypedValidator for Any<V>
+impl<V, T> Validator for Any<V>
 where
-    V: TypedValidator<Input = T>,
+    V: Validator<Input = T>,
 {
     type Input = [T];
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         for item in input {
             if self.validator.validate(item).is_ok() {
                 return Ok(());
@@ -116,15 +111,13 @@ impl<T> ContainsElement<T> {
     }
 }
 
-impl<T> TypedValidator for ContainsElement<T>
+impl<T> Validator for ContainsElement<T>
 where
     T: PartialEq,
 {
     type Input = [T];
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if input.contains(&self.element) {
             Ok(())
         } else {
@@ -156,15 +149,13 @@ pub struct Unique<T> {
     _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T> TypedValidator for Unique<T>
+impl<T> Validator for Unique<T>
 where
     T: Hash + Eq,
 {
     type Input = Vec<T>;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         let mut seen = HashSet::new();
         for item in input {
             if !seen.insert(item) {

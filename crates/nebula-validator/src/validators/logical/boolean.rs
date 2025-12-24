@@ -1,6 +1,6 @@
 //! Boolean validators
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationError, Validator, ValidatorMetadata};
 
 // ============================================================================
 // IS TRUE
@@ -10,12 +10,10 @@ use crate::core::{TypedValidator, ValidationError, ValidatorMetadata};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IsTrue;
 
-impl TypedValidator for IsTrue {
+impl Validator for IsTrue {
     type Input = bool;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if *input {
             Ok(())
         } else {
@@ -43,12 +41,10 @@ pub const fn is_true() -> IsTrue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IsFalse;
 
-impl TypedValidator for IsFalse {
+impl Validator for IsFalse {
     type Input = bool;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if *input {
             Err(ValidationError::new("is_false", "Value must be false"))
         } else {

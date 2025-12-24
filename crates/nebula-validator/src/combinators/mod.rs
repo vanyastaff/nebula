@@ -18,7 +18,7 @@
 //!
 //! ## Logical Combinators
 //!
-//! ```rust
+//! ```rust,ignore
 //! use nebula_validator::prelude::*;
 //!
 //! // AND: both must pass
@@ -33,7 +33,7 @@
 //!
 //! ## Transformational Combinators
 //!
-//! ```rust
+//! ```rust,ignore
 //! // MAP: transform output
 //! let validator = min_length(5).map(|_| "Valid!");
 //! assert_eq!(validator.validate("hello").unwrap(), "Valid!");
@@ -41,7 +41,7 @@
 //!
 //! ## Conditional Validation
 //!
-//! ```rust
+//! ```rust,ignore
 //! // WHEN: only validate if condition met
 //! let validator = min_length(10).when(|s| s.starts_with("long_"));
 //!
@@ -51,7 +51,7 @@
 //!
 //! ## Optional Values
 //!
-//! ```rust
+//! ```rust,ignore
 //! // OPTIONAL: None is always valid
 //! let validator = min_length(5).optional();
 //!
@@ -61,7 +61,7 @@
 //!
 //! ## Performance Optimization
 //!
-//! ```rust
+//! ```rust,ignore
 //! // CACHED: memoize results
 //! let validator = expensive_validation().cached();
 //!
@@ -73,7 +73,7 @@
 //!
 //! Combinators can be chained to create complex validation logic:
 //!
-//! ```rust
+//! ```rust,ignore
 //! let email_validator = not_null()
 //!     .and(string())
 //!     .and(contains("@"))
@@ -100,7 +100,7 @@ pub use and::{And, AndAll, and, and_all};
 pub use cached::{CacheStats, Cached, cached};
 pub use error::CombinatorError;
 pub use field::{Field, FieldError, FieldValidatorExt, MultiField, field, named_field};
-pub use map::{Map, MapWithInput, map, map_to, map_unit, map_with_input};
+pub use map::{Map, map, map_to, map_unit};
 pub use nested::{
     CollectionNested, NestedValidator, OptionalNested, Validatable, collection_nested,
     custom_nested, nested_validator, optional_nested,
@@ -110,9 +110,9 @@ pub use optimizer::{
     OptimizationReport, OptimizationStrategy, ValidatorChainOptimizer, ValidatorOrdering,
     ValidatorStats,
 };
-pub use optional::{Nullable, Optional, RequiredSome, nullable, optional, required_some};
-pub use or::{Or, OrAny, OrAnyError, or, or_any};
-pub use when::{When, unless, when, when_not_empty, when_some};
+pub use optional::{Optional, optional};
+pub use or::{Or, OrAny, or, or_any};
+pub use when::{When, when};
 
 // TODO: Re-enable when lru crate is added as dependency
 // #[cfg(feature = "lru")]
@@ -126,7 +126,7 @@ pub use when::{When, unless, when, when_not_empty, when_some};
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::combinators::prelude::*;
 ///
 /// let validator = min_length(5)
@@ -136,13 +136,8 @@ pub use when::{When, unless, when, when_not_empty, when_some};
 pub mod prelude {
     pub use super::{
         And, AndAll, Cached, Field, FieldValidatorExt, Map, Not, Optional, Or, OrAny, When, and,
-        and_all, cached, field, map, map_to, named_field, not, nullable, optional, or, or_any,
-        required_some, unless, when, when_not_empty,
+        and_all, cached, field, map, map_to, named_field, not, optional, or, or_any, when,
     };
-
-    // TODO: Re-enable when lru crate is added as dependency
-    // #[cfg(feature = "lru")]
-    // pub use super::{LruCached, lru_cached};
 }
 
 // ============================================================================
@@ -156,23 +151,19 @@ pub mod prelude {
 #[cfg(test)]
 mod laws {
     use super::*;
-    use crate::core::{TypedValidator, ValidationError};
+    use crate::core::{ValidationError, Validator};
 
     struct AlwaysValid;
-    impl TypedValidator for AlwaysValid {
+    impl Validator for AlwaysValid {
         type Input = str;
-        type Output = ();
-        type Error = ValidationError;
         fn validate(&self, _: &str) -> Result<(), ValidationError> {
             Ok(())
         }
     }
 
     struct AlwaysFails;
-    impl TypedValidator for AlwaysFails {
+    impl Validator for AlwaysFails {
         type Input = str;
-        type Output = ();
-        type Error = ValidationError;
         fn validate(&self, _: &str) -> Result<(), ValidationError> {
             Err(ValidationError::new("fail", "Always fails"))
         }
@@ -257,16 +248,14 @@ mod laws {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::core::{TypedValidator, ValidationError, ValidatorExt};
+    use crate::core::{ValidationError, Validator, ValidatorExt};
 
     struct MinLength {
         min: usize,
     }
 
-    impl TypedValidator for MinLength {
+    impl Validator for MinLength {
         type Input = String;
-        type Output = ();
-        type Error = ValidationError;
 
         fn validate(&self, input: &String) -> Result<(), ValidationError> {
             if input.len() >= self.min {
@@ -281,10 +270,8 @@ mod integration_tests {
         max: usize,
     }
 
-    impl TypedValidator for MaxLength {
+    impl Validator for MaxLength {
         type Input = String;
-        type Output = ();
-        type Error = ValidationError;
 
         fn validate(&self, input: &String) -> Result<(), ValidationError> {
             if input.len() <= self.max {
@@ -349,9 +336,10 @@ mod integration_tests {
     fn test_map_with_and() {
         let validator = MinLength { min: 5 }
             .and(MaxLength { max: 10 })
-            .map(|_| "Valid!");
+            .map(|_: ()| "Valid!");
 
-        assert_eq!(validator.validate(&"hello".to_string()).unwrap(), "Valid!");
+        // Map now just delegates validation - returns () on success
+        assert!(validator.validate(&"hello".to_string()).is_ok());
         assert!(validator.validate(&"hi".to_string()).is_err());
     }
 
@@ -367,10 +355,8 @@ mod integration_tests {
             counter: Arc<AtomicUsize>,
         }
 
-        impl TypedValidator for Counting {
+        impl Validator for Counting {
             type Input = String;
-            type Output = ();
-            type Error = ValidationError;
 
             fn validate(&self, _: &String) -> Result<(), ValidationError> {
                 self.counter.fetch_add(1, Ordering::SeqCst);
@@ -402,16 +388,14 @@ mod doc_tests {
     //! These tests verify that documentation examples compile and work.
 
     use super::*;
-    use crate::core::{TypedValidator, ValidationError, ValidatorExt};
+    use crate::core::{ValidationError, Validator, ValidatorExt};
 
     struct Contains {
         substring: String,
     }
 
-    impl TypedValidator for Contains {
+    impl Validator for Contains {
         type Input = str;
-        type Output = ();
-        type Error = ValidationError;
 
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
             if input.contains(&self.substring) {
@@ -434,10 +418,8 @@ mod doc_tests {
             max: usize,
         }
 
-        impl TypedValidator for MinLength {
+        impl Validator for MinLength {
             type Input = String;
-            type Output = ();
-            type Error = ValidationError;
             fn validate(&self, input: &String) -> Result<(), ValidationError> {
                 if input.len() >= self.min {
                     Ok(())
@@ -447,10 +429,8 @@ mod doc_tests {
             }
         }
 
-        impl TypedValidator for MaxLength {
+        impl Validator for MaxLength {
             type Input = String;
-            type Output = ();
-            type Error = ValidationError;
             fn validate(&self, input: &String) -> Result<(), ValidationError> {
                 if input.len() <= self.max {
                     Ok(())

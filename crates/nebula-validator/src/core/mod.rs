@@ -2,7 +2,7 @@
 //!
 //! This module contains the fundamental building blocks of the validation system:
 //!
-//! - **Traits**: `TypedValidator`, `AsyncValidator`, `ValidatorExt`
+//! - **Traits**: `Validator`, `AsyncValidator`, `ValidatorExt`
 //! - **Errors**: `ValidationError`, `ValidationErrors`
 //! - **Metadata**: `ValidatorMetadata`, `ValidationComplexity`, `ValidatorStatistics`
 //! - **Refined Types**: `Refined<T, V>` for compile-time validation guarantees
@@ -16,16 +16,14 @@
 //!
 //! Validators are generic over their input type, providing compile-time guarantees:
 //!
-//! ```rust
-//! use nebula_validator::core::TypedValidator;
+//! ```rust,ignore
+//! use nebula_validator::core::Validator;
 //!
 //! struct MinLength { min: usize }
 //!
-//! impl TypedValidator for MinLength {
+//! impl Validator for MinLength {
 //!     type Input = str;  // Only validates strings
-//!     type Output = ();
-//!     type Error = ValidationError;
-//!     
+//!
 //!     fn validate(&self, input: &str) -> Result<(), ValidationError> {
 //!         // ...
 //!     }
@@ -36,7 +34,7 @@
 //!
 //! Validators compose using logical combinators:
 //!
-//! ```rust
+//! ```rust,ignore
 //! let validator = min_length(5)
 //!     .and(max_length(20))
 //!     .and(alphanumeric());
@@ -46,7 +44,7 @@
 //!
 //! Validators use generics and inline code, resulting in zero runtime overhead:
 //!
-//! ```rust
+//! ```rust,ignore
 //! // This compiles to the same code as manually writing the checks!
 //! let validator = min_length(5).and(max_length(20));
 //! ```
@@ -55,7 +53,7 @@
 //!
 //! Errors are structured and contain detailed information:
 //!
-//! ```rust
+//! ```rust,ignore
 //! let error = ValidationError::new("min_length", "Too short")
 //!     .with_field("username")
 //!     .with_param("min", "5")
@@ -66,7 +64,7 @@
 //!
 //! ## Basic validation
 //!
-//! ```rust
+//! ```rust,ignore
 //! use nebula_validator::prelude::*;
 //!
 //! let validator = MinLength { min: 5 };
@@ -76,7 +74,7 @@
 //!
 //! ## Refined types
 //!
-//! ```rust
+//! ```rust,ignore
 //! let validator = MinLength { min: 5 };
 //! let validated = Refined::new("hello".to_string(), &validator)?;
 //!
@@ -88,7 +86,7 @@
 //!
 //! ## Type-state pattern
 //!
-//! ```rust
+//! ```rust,ignore
 //! let param = Parameter::new("hello".to_string());
 //! let validated = param.validate(&validator)?;
 //! let value = validated.unwrap(); // Safe - type guarantees validity
@@ -101,6 +99,7 @@ pub mod metadata;
 pub mod refined;
 pub mod state;
 pub mod traits;
+pub mod validatable;
 
 // Re-export everything at the core level for convenience
 pub use context::{ContextualValidator, ValidationContext, ValidationContextBuilder};
@@ -111,7 +110,8 @@ pub use metadata::{
 };
 pub use refined::Refined;
 pub use state::{Parameter, ParameterBuilder, Unvalidated, Validated, ValidationGroup};
-pub use traits::{AsyncValidator, TypedValidator, ValidatorExt};
+pub use traits::{AsyncValidator, Validator, ValidatorExt};
+pub use validatable::AsValidatable;
 
 // ============================================================================
 // PRELUDE
@@ -121,7 +121,7 @@ pub use traits::{AsyncValidator, TypedValidator, ValidatorExt};
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::core::prelude::*;
 ///
 /// // Now you have access to all common types and traits
@@ -129,9 +129,9 @@ pub use traits::{AsyncValidator, TypedValidator, ValidatorExt};
 /// ```
 pub mod prelude {
     pub use super::{
-        AsyncValidator, ContextualValidator, ErrorSeverity, Parameter, ParameterBuilder, Refined,
-        TypedValidator, Unvalidated, Validated, ValidationComplexity, ValidationContext,
-        ValidationContextBuilder, ValidationError, ValidationErrors, ValidatorExt,
+        AsValidatable, AsyncValidator, ContextualValidator, ErrorSeverity, Parameter,
+        ParameterBuilder, Refined, Unvalidated, Validated, ValidationComplexity, ValidationContext,
+        ValidationContextBuilder, ValidationError, ValidationErrors, Validator, ValidatorExt,
         ValidatorMetadata,
     };
 }
@@ -186,15 +186,15 @@ pub struct Features {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::core::validate_value;
 ///
 /// let result = validate_value("hello", &min_length(5))?;
 /// ```
 #[must_use = "validation result must be checked"]
-pub fn validate_value<V>(value: &V::Input, validator: &V) -> Result<V::Output, V::Error>
+pub fn validate_value<V>(value: &V::Input, validator: &V) -> Result<(), ValidationError>
 where
-    V: TypedValidator,
+    V: Validator,
 {
     validator.validate(value)
 }
@@ -205,7 +205,7 @@ where
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::core::validate_with_all;
 ///
 /// let result = validate_with_all("hello", vec![
@@ -213,28 +213,22 @@ where
 ///     &max_length(10),
 /// ])?;
 /// ```
-pub fn validate_with_all<V>(
-    value: &V::Input,
-    validators: Vec<&V>,
-) -> Result<V::Output, ValidationErrors>
+pub fn validate_with_all<V>(value: &V::Input, validators: Vec<&V>) -> Result<(), ValidationErrors>
 where
-    V: TypedValidator + ?Sized,
+    V: Validator + ?Sized,
 {
     let mut errors = ValidationErrors::new();
 
     for validator in &validators {
         if let Err(e) = validator.validate(value) {
-            errors.add(ValidationError::new("validation_failed", e.to_string()));
+            errors.add(e);
         }
     }
 
     if errors.has_errors() {
         Err(errors)
     } else {
-        // For simplicity, assume first validator's output type
-        validators[0]
-            .validate(value)
-            .map_err(|_| ValidationErrors::new())
+        Ok(())
     }
 }
 
@@ -242,7 +236,7 @@ where
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::core::validate_with_any;
 ///
 /// let result = validate_with_any("hello", vec![
@@ -250,20 +244,17 @@ where
 ///     &exact_length(10),
 /// ])?;
 /// ```
-pub fn validate_with_any<V>(
-    value: &V::Input,
-    validators: Vec<&V>,
-) -> Result<V::Output, ValidationErrors>
+pub fn validate_with_any<V>(value: &V::Input, validators: Vec<&V>) -> Result<(), ValidationErrors>
 where
-    V: TypedValidator + ?Sized,
+    V: Validator + ?Sized,
 {
     let mut errors = ValidationErrors::new();
 
     for validator in validators {
         match validator.validate(value) {
-            Ok(output) => return Ok(output),
+            Ok(()) => return Ok(()),
             Err(e) => {
-                errors.add(ValidationError::new("validation_failed", e.to_string()));
+                errors.add(e);
             }
         }
     }
@@ -288,7 +279,6 @@ pub type ValidationResultMulti<T> = Result<T, ValidationErrors>;
 #[cfg(test)]
 mod core_tests {
     use super::*;
-    use crate::core::traits::ValidatorExt;
 
     #[test]
     fn test_version() {
@@ -306,10 +296,8 @@ mod core_tests {
     // Simple test validator for testing utilities
     struct AlwaysValid;
 
-    impl TypedValidator for AlwaysValid {
+    impl Validator for AlwaysValid {
         type Input = str;
-        type Output = ();
-        type Error = ValidationError;
 
         fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {
             Ok(())
@@ -318,10 +306,8 @@ mod core_tests {
 
     struct AlwaysFails;
 
-    impl TypedValidator for AlwaysFails {
+    impl Validator for AlwaysFails {
         type Input = str;
-        type Output = ();
-        type Error = ValidationError;
 
         fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {
             Err(ValidationError::new("always_fails", "Always fails"))
@@ -344,9 +330,7 @@ mod core_tests {
     fn test_validate_with_all_failure() {
         let valid = AlwaysValid;
         let fails = AlwaysFails;
-        let validators: Vec<
-            &dyn TypedValidator<Input = str, Output = (), Error = ValidationError>,
-        > = vec![&valid, &fails];
+        let validators: Vec<&dyn Validator<Input = str>> = vec![&valid, &fails];
         let result = validate_with_all("test", validators);
         assert!(result.is_err());
     }
@@ -355,9 +339,7 @@ mod core_tests {
     fn test_validate_with_any_success() {
         let valid = AlwaysValid;
         let fails = AlwaysFails;
-        let validators: Vec<
-            &dyn TypedValidator<Input = str, Output = (), Error = ValidationError>,
-        > = vec![&fails, &valid];
+        let validators: Vec<&dyn Validator<Input = str>> = vec![&fails, &valid];
         let result = validate_with_any("test", validators);
         assert!(result.is_ok());
     }

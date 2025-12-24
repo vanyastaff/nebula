@@ -32,7 +32,7 @@
 //! ```
 
 use nebula_core::ParameterKey;
-use nebula_validator::core::{AsyncValidator, TypedValidator, ValidationContext, ValidationError};
+use nebula_validator::core::{AsyncValidator, ValidationContext, ValidationError, Validator};
 use nebula_validator::validators::prelude::*;
 use nebula_value::Value;
 use std::sync::Arc;
@@ -404,9 +404,7 @@ pub struct ParameterValidation {
     /// The underlying validator (type-erased for storage)
     /// Not serialized - validators must be reconstructed when deserializing
     #[serde(skip)]
-    validator: Option<
-        Arc<dyn AsyncValidator<Input = Value, Output = (), Error = ValidationError> + Send + Sync>,
-    >,
+    validator: Option<Arc<dyn AsyncValidator<Input = Value> + Send + Sync>>,
 
     /// Whether the parameter is required (checked before validator)
     required: bool,
@@ -439,10 +437,7 @@ impl ParameterValidation {
     /// Create validation with a typed validator
     pub fn with_validator<V>(validator: V) -> Self
     where
-        V: AsyncValidator<Input = Value, Output = (), Error = ValidationError>
-            + Send
-            + Sync
-            + 'static,
+        V: AsyncValidator<Input = Value> + Send + Sync + 'static,
     {
         Self {
             validator: Some(Arc::new(validator)),
@@ -636,11 +631,7 @@ impl StringValidationBuilder {
     #[must_use]
     pub fn build(self) -> ParameterValidation {
         // Build composite validator
-        let mut validators: Vec<
-            Box<
-                dyn TypedValidator<Input = str, Output = (), Error = ValidationError> + Send + Sync,
-            >,
-        > = Vec::new();
+        let mut validators: Vec<Box<dyn Validator<Input = str> + Send + Sync>> = Vec::new();
 
         if let Some(min) = self.min_len {
             validators.push(Box::new(min_length(min)));
@@ -683,11 +674,7 @@ impl StringValidationBuilder {
         } else {
             // Create a composite validator that checks all conditions
             Some(Arc::new(StringCompositeValidator { validators })
-                as Arc<
-                    dyn AsyncValidator<Input = Value, Output = (), Error = ValidationError>
-                        + Send
-                        + Sync,
-                >)
+                as Arc<dyn AsyncValidator<Input = Value> + Send + Sync>)
         };
 
         ParameterValidation {
@@ -782,11 +769,7 @@ impl NumberValidationBuilder {
 
     #[must_use]
     pub fn build(self) -> ParameterValidation {
-        let mut validators: Vec<
-            Box<
-                dyn TypedValidator<Input = f64, Output = (), Error = ValidationError> + Send + Sync,
-            >,
-        > = Vec::new();
+        let mut validators: Vec<Box<dyn Validator<Input = f64> + Send + Sync>> = Vec::new();
 
         if let Some(min_value) = self.min_val {
             validators.push(Box::new(nebula_validator::validators::numeric::min(
@@ -820,11 +803,7 @@ impl NumberValidationBuilder {
             None
         } else {
             Some(Arc::new(NumberCompositeValidator { validators })
-                as Arc<
-                    dyn AsyncValidator<Input = Value, Output = (), Error = ValidationError>
-                        + Send
-                        + Sync,
-                >)
+                as Arc<dyn AsyncValidator<Input = Value> + Send + Sync>)
         };
 
         ParameterValidation {
@@ -848,16 +827,12 @@ impl Default for NumberValidationBuilder {
 
 /// Composite validator for strings
 struct StringCompositeValidator {
-    validators: Vec<
-        Box<dyn TypedValidator<Input = str, Output = (), Error = ValidationError> + Send + Sync>,
-    >,
+    validators: Vec<Box<dyn Validator<Input = str> + Send + Sync>>,
 }
 
 #[async_trait::async_trait]
 impl AsyncValidator for StringCompositeValidator {
     type Input = Value;
-    type Output = ();
-    type Error = ValidationError;
 
     async fn validate_async(&self, value: &Value) -> Result<(), ValidationError> {
         // Extract string from Value
@@ -876,16 +851,12 @@ impl AsyncValidator for StringCompositeValidator {
 
 /// Composite validator for numbers
 struct NumberCompositeValidator {
-    validators: Vec<
-        Box<dyn TypedValidator<Input = f64, Output = (), Error = ValidationError> + Send + Sync>,
-    >,
+    validators: Vec<Box<dyn Validator<Input = f64> + Send + Sync>>,
 }
 
 #[async_trait::async_trait]
 impl AsyncValidator for NumberCompositeValidator {
     type Input = Value;
-    type Output = ();
-    type Error = ValidationError;
 
     async fn validate_async(&self, value: &Value) -> Result<(), ValidationError> {
         // Extract number from Value

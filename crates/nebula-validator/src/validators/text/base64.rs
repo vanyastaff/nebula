@@ -2,7 +2,7 @@
 //!
 //! Validates that a string is properly encoded in Base64 format.
 
-use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 
 // ============================================================================
 // BASE64 VALIDATOR
@@ -20,7 +20,7 @@ use crate::core::{TypedValidator, ValidationComplexity, ValidationError, Validat
 ///
 /// ```
 /// use nebula_validator::validators::Base64;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = Base64::new();
 ///
@@ -119,12 +119,10 @@ impl Default for Base64 {
     }
 }
 
-impl TypedValidator for Base64 {
+impl Validator for Base64 {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         if input.is_empty() {
             return Err(ValidationError::new(
                 "empty_base64",

@@ -2,7 +2,7 @@
 //!
 //! Validates that a string is a valid slug (lowercase letters, numbers, hyphens).
 
-use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 
 // ============================================================================
 // SLUG VALIDATOR
@@ -25,7 +25,7 @@ use crate::core::{TypedValidator, ValidationComplexity, ValidationError, Validat
 ///
 /// ```
 /// use nebula_validator::validators::Slug;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = Slug::new();
 ///
@@ -97,12 +97,10 @@ impl Default for Slug {
     }
 }
 
-impl TypedValidator for Slug {
+impl Validator for Slug {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         // Check length
         if input.len() < self.min_length {
             return Err(ValidationError::new(

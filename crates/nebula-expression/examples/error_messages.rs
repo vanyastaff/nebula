@@ -25,10 +25,10 @@ fn main() {
         Ok(tmpl) => match tmpl.render(&engine, &context) {
             Ok(_) => println!("Success!"),
             Err(e) => {
-                println!("{}\n", e.message);
+                println!("{}\n", e);
             }
         },
-        Err(e) => println!("Parse error: {}\n", e.message),
+        Err(e) => println!("Parse error: {}\n", e),
     }
 
     println!("=== Example 2: Invalid Function ===\n");
@@ -42,10 +42,10 @@ fn main() {
         Ok(tmpl) => match tmpl.render(&engine, &context) {
             Ok(_) => println!("Success!"),
             Err(e) => {
-                println!("{}\n", e.message);
+                println!("{}\n", e);
             }
         },
-        Err(e) => println!("Parse error: {}\n", e.message),
+        Err(e) => println!("Parse error: {}\n", e),
     }
 
     println!("=== Example 3: Unclosed Expression ===\n");
@@ -58,7 +58,7 @@ Line 5"#;
     match Template::new(template3) {
         Ok(_) => println!("Parsed successfully"),
         Err(e) => {
-            println!("{}\n", e.message);
+            println!("{}\n", e);
         }
     }
 
@@ -73,10 +73,10 @@ Line 5"#;
         Ok(tmpl) => match tmpl.render(&engine, &context) {
             Ok(_) => println!("Success!"),
             Err(e) => {
-                println!("{}\n", e.message);
+                println!("{}\n", e);
             }
         },
-        Err(e) => println!("Parse error: {}\n", e.message),
+        Err(e) => println!("Parse error: {}\n", e),
     }
 
     println!("=== Example 5: Multiline with Good Error ===\n");
@@ -99,9 +99,9 @@ Line 5"#;
         Ok(tmpl) => match tmpl.render(&engine, &context) {
             Ok(_) => println!("Success!"),
             Err(e) => {
-                println!("{}\n", e.message);
+                println!("{}\n", e);
             }
         },
-        Err(e) => println!("Parse error: {}\n", e.message),
+        Err(e) => println!("Parse error: {}\n", e),
     }
 }

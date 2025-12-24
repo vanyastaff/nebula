@@ -1,6 +1,6 @@
 //! Basic usage example for nebula-validator
 
-use nebula_validator::core::TypedValidator;
+use nebula_validator::core::Validator;
 use nebula_validator::validators::string::min_length;
 
 fn main() {

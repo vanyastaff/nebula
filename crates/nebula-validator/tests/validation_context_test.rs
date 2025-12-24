@@ -1,6 +1,5 @@
 use nebula_validator::core::{
-    ContextualValidator, TypedValidator, ValidationContext, ValidationContextBuilder,
-    ValidationError,
+    ContextualValidator, ValidationContext, ValidationContextBuilder, ValidationError,
 };
 
 #[test]
@@ -77,8 +76,6 @@ struct PasswordMatch;
 
 impl ContextualValidator for PasswordMatch {
     type Input = User;
-    type Output = ();
-    type Error = ValidationError;
 
     fn validate_with_context(
         &self,
@@ -133,8 +130,6 @@ struct DateRangeValidator;
 
 impl ContextualValidator for DateRangeValidator {
     type Input = DateRange;
-    type Output = ();
-    type Error = ValidationError;
 
     fn validate_with_context(
         &self,
@@ -179,8 +174,6 @@ struct ConditionalRequired;
 
 impl ContextualValidator for ConditionalRequired {
     type Input = Form;
-    type Output = ();
-    type Error = ValidationError;
 
     fn validate_with_context(
         &self,

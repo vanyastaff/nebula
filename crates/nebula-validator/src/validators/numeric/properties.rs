@@ -1,6 +1,6 @@
 //! Numeric property validators
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationError, Validator, ValidatorMetadata};
 use std::fmt::Display;
 use std::marker::PhantomData;
 
@@ -14,15 +14,13 @@ pub struct Positive<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> TypedValidator for Positive<T>
+impl<T> Validator for Positive<T>
 where
     T: PartialOrd + Default + Display,
 {
     type Input = T;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if *input > T::default() {
             Ok(())
         } else {
@@ -46,7 +44,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::numeric::positive;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = positive();
 /// assert!(validator.validate(&5).is_ok());
@@ -73,15 +71,13 @@ pub struct Negative<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> TypedValidator for Negative<T>
+impl<T> Validator for Negative<T>
 where
     T: PartialOrd + Default + Display,
 {
     type Input = T;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if *input < T::default() {
             Ok(())
         } else {
@@ -105,7 +101,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::numeric::negative;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = negative();
 /// assert!(validator.validate(&-5).is_ok());
@@ -132,15 +128,13 @@ pub struct Even<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> TypedValidator for Even<T>
+impl<T> Validator for Even<T>
 where
     T: Copy + std::ops::Rem<Output = T> + PartialEq + From<u8>,
 {
     type Input = T;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if *input % T::from(2) == T::from(0) {
             Ok(())
         } else {
@@ -161,7 +155,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::numeric::even;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = even();
 /// assert!(validator.validate(&4).is_ok());
@@ -188,15 +182,13 @@ pub struct Odd<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> TypedValidator for Odd<T>
+impl<T> Validator for Odd<T>
 where
     T: Copy + std::ops::Rem<Output = T> + PartialEq + From<u8>,
 {
     type Input = T;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if *input % T::from(2) == T::from(0) {
             Err(ValidationError::new("odd", "Number must be odd"))
         } else {
@@ -217,7 +209,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::numeric::odd;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = odd();
 /// assert!(validator.validate(&3).is_ok());

@@ -2,34 +2,9 @@
 //!
 //! The FIELD combinator allows validating individual fields of a struct
 //! without requiring derive macros.
-//!
-//! # Examples
-//!
-//! ```rust
-//! use nebula_validator::combinators::field::*;
-//! use nebula_validator::core::TypedValidator;
-//!
-//! struct User {
-//!     name: String,
-//!     age: u32,
-//! }
-//!
-//! // Define accessor functions
-//! fn get_name(user: &User) -> &str {
-//!     &user.name
-//! }
-//!
-//! fn get_age(user: &User) -> &u32 {
-//!     &user.age
-//! }
-//!
-//! // Validate fields
-//! let name_validator = named_field("name", min_length(3), get_name);
-//! let age_validator = named_field("age", min_value(18), get_age);
-//! ```
 
 use crate::combinators::error::CombinatorError;
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 use std::marker::PhantomData;
 
 // ============================================================================
@@ -44,16 +19,6 @@ use std::marker::PhantomData;
 /// * `U` - The field type (can be `?Sized`)
 /// * `V` - The validator type
 /// * `F` - The accessor function type
-///
-/// # Examples
-///
-/// ```rust
-/// # struct User { age: u32 }
-/// # fn get_age(u: &User) -> &u32 { &u.age }
-/// use nebula_validator::combinators::field::named_field;
-///
-/// let validator = named_field("age", min_value(18), get_age);
-/// ```
 pub struct Field<T, U, V, F>
 where
     U: ?Sized,
@@ -146,19 +111,17 @@ where
 // ============================================================================
 
 /// Error wrapper that includes field name context.
-///
-/// This error type wraps the inner validator's error and adds field context.
 #[derive(Debug, Clone)]
-pub struct FieldError<E> {
+pub struct FieldError {
     /// Name of the field that failed validation
     pub field_name: Option<String>,
     /// The underlying validation error
-    pub inner: E,
+    pub inner: ValidationError,
 }
 
-impl<E> FieldError<E> {
+impl FieldError {
     /// Creates a new field error.
-    pub fn new(field_name: Option<String>, inner: E) -> Self {
+    pub fn new(field_name: Option<String>, inner: ValidationError) -> Self {
         Self { field_name, inner }
     }
 
@@ -168,24 +131,13 @@ impl<E> FieldError<E> {
     }
 
     /// Returns a reference to the inner error.
-    pub fn inner(&self) -> &E {
+    pub fn inner(&self) -> &ValidationError {
         &self.inner
     }
 
     /// Consumes the error and returns the inner error.
-    pub fn into_inner(self) -> E {
+    pub fn into_inner(self) -> ValidationError {
         self.inner
-    }
-
-    /// Maps the inner error using a function.
-    pub fn map_inner<F, E2>(self, f: F) -> FieldError<E2>
-    where
-        F: FnOnce(E) -> E2,
-    {
-        FieldError {
-            field_name: self.field_name,
-            inner: f(self.inner),
-        }
     }
 
     /// Adds a field name to an unnamed error.
@@ -196,7 +148,7 @@ impl<E> FieldError<E> {
     }
 }
 
-impl<E: std::fmt::Display> std::fmt::Display for FieldError<E> {
+impl std::fmt::Display for FieldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(name) = &self.field_name {
             write!(f, "Field '{}': {}", name, self.inner)
@@ -206,7 +158,7 @@ impl<E: std::fmt::Display> std::fmt::Display for FieldError<E> {
     }
 }
 
-impl<E: std::error::Error + 'static> std::error::Error for FieldError<E> {
+impl std::error::Error for FieldError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.inner)
     }
@@ -217,8 +169,8 @@ impl<E: std::error::Error + 'static> std::error::Error for FieldError<E> {
 // ============================================================================
 
 /// Convert `FieldError` to `CombinatorError`
-impl<E> From<FieldError<E>> for CombinatorError<E> {
-    fn from(error: FieldError<E>) -> Self {
+impl From<FieldError> for CombinatorError<ValidationError> {
+    fn from(error: FieldError) -> Self {
         CombinatorError::FieldFailed {
             field_name: error.field_name,
             error: Box::new(error.inner),
@@ -227,8 +179,8 @@ impl<E> From<FieldError<E>> for CombinatorError<E> {
 }
 
 /// Convert `FieldError` to `ValidationError`
-impl<E: std::fmt::Display> From<FieldError<E>> for ValidationError {
-    fn from(error: FieldError<E>) -> Self {
+impl From<FieldError> for ValidationError {
+    fn from(error: FieldError) -> Self {
         let mut validation_error =
             ValidationError::new("field_validation", format!("{}", error.inner));
 
@@ -241,25 +193,23 @@ impl<E: std::fmt::Display> From<FieldError<E>> for ValidationError {
 }
 
 // ============================================================================
-// TYPED VALIDATOR IMPLEMENTATION
+// VALIDATOR IMPLEMENTATION
 // ============================================================================
 
-impl<T, U, V, F> TypedValidator for Field<T, U, V, F>
+impl<T, U, V, F> Validator for Field<T, U, V, F>
 where
-    V: TypedValidator<Input = U>,
+    V: Validator<Input = U>,
     F: Fn(&T) -> &U,
     U: ?Sized,
 {
     type Input = T;
-    type Output = ();
-    type Error = FieldError<V::Error>;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         let field_value = (self.accessor)(input);
-        self.validator
-            .validate(field_value)
-            .map(|_| ())
-            .map_err(|err| FieldError::new(self.name.clone(), err))
+        self.validator.validate(field_value).map_err(|err| {
+            let field_error = FieldError::new(self.name.clone(), err);
+            ValidationError::from(field_error)
+        })
     }
 
     fn metadata(&self) -> ValidatorMetadata {
@@ -295,43 +245,6 @@ where
 }
 
 // ============================================================================
-// ASYNC VALIDATOR IMPLEMENTATION
-// ============================================================================
-
-#[cfg(feature = "async")]
-#[async_trait::async_trait]
-impl<T, U, V, F> crate::core::AsyncValidator for Field<T, U, V, F>
-where
-    T: Sync,
-    U: ?Sized + Sync,
-    V: TypedValidator<Input = U>
-        + crate::core::AsyncValidator<
-            Input = U,
-            Output = <V as TypedValidator>::Output,
-            Error = <V as TypedValidator>::Error,
-        > + Send
-        + Sync,
-    F: Fn(&T) -> &U + Send + Sync,
-{
-    type Input = T;
-    type Output = ();
-    type Error = FieldError<<V as TypedValidator>::Error>;
-
-    async fn validate_async(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
-        let field_value = (self.accessor)(input);
-        self.validator
-            .validate_async(field_value)
-            .await
-            .map(|_| ())
-            .map_err(|err| FieldError::new(self.name.clone(), err))
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        <Self as TypedValidator>::metadata(self)
-    }
-}
-
-// ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 
@@ -360,7 +273,7 @@ where
 // ============================================================================
 
 /// Extension trait for creating field validators.
-pub trait FieldValidatorExt: TypedValidator + Sized {
+pub trait FieldValidatorExt: Validator + Sized {
     /// Creates a field validator for this validator.
     fn for_field<T, F>(self, name: impl Into<String>, accessor: F) -> Field<T, Self::Input, Self, F>
     where
@@ -378,26 +291,13 @@ pub trait FieldValidatorExt: TypedValidator + Sized {
     }
 }
 
-impl<V: TypedValidator> FieldValidatorExt for V {}
+impl<V: Validator> FieldValidatorExt for V {}
 
 // ============================================================================
 // MULTI-FIELD VALIDATOR
 // ============================================================================
 
 /// Validates multiple fields of a struct.
-///
-/// # Examples
-///
-/// ```rust
-/// # struct User { name: String, age: u32 }
-/// # fn get_name(u: &User) -> &str { &u.name }
-/// # fn get_age(u: &User) -> &u32 { &u.age }
-/// use nebula_validator::combinators::field::MultiField;
-///
-/// let validator = MultiField::new()
-///     .add_field("name", min_length(3), get_name)
-///     .add_field("age", min_value(18), get_age);
-/// ```
 pub struct MultiField<T> {
     validators: Vec<Box<dyn Fn(&T) -> Result<(), ValidationError> + Send + Sync>>,
 }
@@ -416,14 +316,13 @@ impl<T> MultiField<T> {
     pub fn add_field<U, V, F>(mut self, name: impl Into<String>, validator: V, accessor: F) -> Self
     where
         U: ?Sized,
-        V: TypedValidator<Input = U> + Send + Sync + 'static,
-        V::Error: std::fmt::Display,
+        V: Validator<Input = U> + Send + Sync + 'static,
         F: Fn(&T) -> &U + Send + Sync + 'static,
     {
         let name = name.into();
         self.validators.push(Box::new(move |input: &T| {
             let field_value = accessor(input);
-            validator.validate(field_value).map(|_| ()).map_err(|err| {
+            validator.validate(field_value).map_err(|err| {
                 ValidationError::new("field_validation", format!("{err}")).with_field(name.clone())
             })
         }));
@@ -437,12 +336,10 @@ impl<T> Default for MultiField<T> {
     }
 }
 
-impl<T> TypedValidator for MultiField<T> {
+impl<T> Validator for MultiField<T> {
     type Input = T;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         let mut errors = Vec::new();
 
         for validator in &self.validators {
@@ -470,7 +367,7 @@ impl<T> TypedValidator for MultiField<T> {
         ValidatorMetadata {
             name: format!("MultiField(fields={})", self.validators.len()),
             description: Some(format!("Validates {} fields", self.validators.len())),
-            complexity: crate::core::ValidationComplexity::Linear,
+            complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: None,
             tags: vec![
@@ -502,10 +399,8 @@ mod tests {
         min: u32,
     }
 
-    impl TypedValidator for MinValue {
+    impl Validator for MinValue {
         type Input = u32;
-        type Output = ();
-        type Error = ValidationError;
 
         fn validate(&self, input: &u32) -> Result<(), ValidationError> {
             if *input >= self.min {
@@ -524,10 +419,8 @@ mod tests {
         min: usize,
     }
 
-    impl TypedValidator for MinLength {
+    impl Validator for MinLength {
         type Input = str;
-        type Output = ();
-        type Error = ValidationError;
 
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
             if input.len() >= self.min {
@@ -568,7 +461,6 @@ mod tests {
         let age_validator = named_field("age", MinValue { min: 18 }, get_age);
 
         let err = age_validator.validate(&user).unwrap_err();
-        assert_eq!(err.field_name(), Some("age"));
         assert!(err.to_string().contains("age"));
     }
 
@@ -640,44 +532,12 @@ mod tests {
     }
 
     #[test]
-    fn test_field_error_conversion_to_combinator() {
-        let field_error = FieldError::new(
-            Some("age".to_string()),
-            ValidationError::new("min_value", "Too small"),
-        );
-
-        let combinator_error: CombinatorError<ValidationError> = field_error.into();
-        assert!(combinator_error.is_field_error());
-        assert_eq!(combinator_error.field_name(), Some("age"));
-    }
-
-    #[test]
-    fn test_field_error_conversion_to_validation() {
-        let field_error = FieldError::new(
-            Some("age".to_string()),
-            ValidationError::new("min_value", "Too small"),
-        );
-
-        let validation_error: ValidationError = field_error.into();
-        assert_eq!(validation_error.field, Some("age".to_string()));
-    }
-
-    #[test]
     fn test_field_into_parts() {
         let validator: Field<TestUser, u32, _, _> =
             named_field("age", MinValue { min: 18 }, get_age);
         let (name, min_value, _accessor) = validator.into_parts();
         assert_eq!(name, Some("age".to_string()));
         assert_eq!(min_value.min, 18);
-    }
-
-    #[test]
-    fn test_field_map_inner() {
-        let error = FieldError::new(Some("age".to_string()), "original error".to_string());
-
-        let mapped = error.map_inner(|s| format!("mapped: {}", s));
-        assert_eq!(mapped.inner(), "mapped: original error");
-        assert_eq!(mapped.field_name(), Some("age"));
     }
 
     #[test]

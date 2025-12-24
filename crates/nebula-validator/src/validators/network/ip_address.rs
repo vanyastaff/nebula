@@ -2,7 +2,7 @@
 //!
 //! Validates IP addresses using Rust's standard library `std::net`.
 
-use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
@@ -16,7 +16,7 @@ use std::str::FromStr;
 ///
 /// ```
 /// use nebula_validator::validators::IpAddress;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = IpAddress::new();
 ///
@@ -96,12 +96,10 @@ impl Default for IpAddress {
     }
 }
 
-impl TypedValidator for IpAddress {
+impl Validator for IpAddress {
     type Input = str;
-    type Output = IpAddr;
-    type Error = ValidationError;
 
-    fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         let addr = IpAddr::from_str(input).map_err(|_| {
             ValidationError::new(
                 "invalid_ip_address",
@@ -118,7 +116,7 @@ impl TypedValidator for IpAddress {
                 "ipv6_not_allowed",
                 "IPv6 addresses are not allowed",
             )),
-            _ => Ok(addr),
+            _ => Ok(()),
         }
     }
 
@@ -147,18 +145,17 @@ impl TypedValidator for IpAddress {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Ipv4;
 
-impl TypedValidator for Ipv4 {
+impl Validator for Ipv4 {
     type Input = str;
-    type Output = Ipv4Addr;
-    type Error = ValidationError;
 
-    fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         Ipv4Addr::from_str(input).map_err(|_| {
             ValidationError::new(
                 "invalid_ipv4",
                 format!("'{input}' is not a valid IPv4 address"),
             )
-        })
+        })?;
+        Ok(())
     }
 
     fn metadata(&self) -> ValidatorMetadata {
@@ -183,18 +180,17 @@ impl TypedValidator for Ipv4 {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Ipv6;
 
-impl TypedValidator for Ipv6 {
+impl Validator for Ipv6 {
     type Input = str;
-    type Output = Ipv6Addr;
-    type Error = ValidationError;
 
-    fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         Ipv6Addr::from_str(input).map_err(|_| {
             ValidationError::new(
                 "invalid_ipv6",
                 format!("'{input}' is not a valid IPv6 address"),
             )
-        })
+        })?;
+        Ok(())
     }
 
     fn metadata(&self) -> ValidatorMetadata {
@@ -269,17 +265,17 @@ mod tests {
         let validator = IpAddress::new();
 
         // Private IPv4
-        let addr = validator.validate("192.168.1.1").unwrap();
+        let addr: IpAddr = "192.168.1.1".parse().unwrap();
         assert!(validator.is_private(&addr));
 
-        let addr = validator.validate("10.0.0.1").unwrap();
+        let addr: IpAddr = "10.0.0.1".parse().unwrap();
         assert!(validator.is_private(&addr));
 
-        let addr = validator.validate("172.16.0.1").unwrap();
+        let addr: IpAddr = "172.16.0.1".parse().unwrap();
         assert!(validator.is_private(&addr));
 
         // Public IPv4
-        let addr = validator.validate("8.8.8.8").unwrap();
+        let addr: IpAddr = "8.8.8.8".parse().unwrap();
         assert!(!validator.is_private(&addr));
     }
 
@@ -287,13 +283,13 @@ mod tests {
     fn test_is_loopback() {
         let validator = IpAddress::new();
 
-        let addr = validator.validate("127.0.0.1").unwrap();
+        let addr: IpAddr = "127.0.0.1".parse().unwrap();
         assert!(validator.is_loopback(&addr));
 
-        let addr = validator.validate("::1").unwrap();
+        let addr: IpAddr = "::1".parse().unwrap();
         assert!(validator.is_loopback(&addr));
 
-        let addr = validator.validate("8.8.8.8").unwrap();
+        let addr: IpAddr = "8.8.8.8".parse().unwrap();
         assert!(!validator.is_loopback(&addr));
     }
 

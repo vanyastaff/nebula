@@ -2,7 +2,7 @@
 //!
 //! Validates Universally Unique Identifiers (UUIDs) in standard format.
 
-use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 
 // ============================================================================
 // UUID VALIDATOR
@@ -23,8 +23,8 @@ use crate::core::{TypedValidator, ValidationComplexity, ValidationError, Validat
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::Uuid;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::validators::text::Uuid;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = Uuid::new();
 ///
@@ -132,12 +132,10 @@ impl Default for Uuid {
     }
 }
 
-impl TypedValidator for Uuid {
+impl Validator for Uuid {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         if input.is_empty() {
             return Err(ValidationError::new(
                 "empty_uuid",

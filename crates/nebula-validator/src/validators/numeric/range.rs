@@ -1,6 +1,6 @@
 //! Numeric range validators
 
-use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 use std::fmt::Display;
 
 // ============================================================================
@@ -20,15 +20,13 @@ impl<T> Min<T> {
     }
 }
 
-impl<T> TypedValidator for Min<T>
+impl<T> Validator for Min<T>
 where
     T: PartialOrd + Display + Copy,
 {
     type Input = T;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if *input >= self.min {
             Ok(())
         } else {
@@ -75,15 +73,13 @@ impl<T> Max<T> {
     }
 }
 
-impl<T> TypedValidator for Max<T>
+impl<T> Validator for Max<T>
 where
     T: PartialOrd + Display + Copy,
 {
     type Input = T;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if *input <= self.max {
             Ok(())
         } else {
@@ -132,15 +128,13 @@ impl<T> InRange<T> {
     }
 }
 
-impl<T> TypedValidator for InRange<T>
+impl<T> Validator for InRange<T>
 where
     T: PartialOrd + Display + Copy,
 {
     type Input = T;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if *input >= self.min && *input <= self.max {
             Ok(())
         } else {

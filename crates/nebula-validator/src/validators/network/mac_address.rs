@@ -2,7 +2,7 @@
 //!
 //! Validates MAC addresses in various formats (colon, hyphen, dot notation).
 
-use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 
 // ============================================================================
 // MAC ADDRESS VALIDATOR
@@ -20,7 +20,7 @@ use crate::core::{TypedValidator, ValidationComplexity, ValidationError, Validat
 ///
 /// ```
 /// use nebula_validator::validators::MacAddress;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = MacAddress::new();
 ///
@@ -95,7 +95,7 @@ impl MacAddress {
         self
     }
 
-    fn validate_colon_format(&self, input: &str) -> Result<[u8; 6], ValidationError> {
+    fn validate_colon_format(&self, input: &str) -> Result<(), ValidationError> {
         let parts: Vec<&str> = input.split(':').collect();
         if parts.len() != 6 {
             return Err(ValidationError::new(
@@ -106,7 +106,7 @@ impl MacAddress {
         self.parse_hex_parts(&parts)
     }
 
-    fn validate_hyphen_format(&self, input: &str) -> Result<[u8; 6], ValidationError> {
+    fn validate_hyphen_format(&self, input: &str) -> Result<(), ValidationError> {
         let parts: Vec<&str> = input.split('-').collect();
         if parts.len() != 6 {
             return Err(ValidationError::new(
@@ -117,7 +117,7 @@ impl MacAddress {
         self.parse_hex_parts(&parts)
     }
 
-    fn validate_dot_format(&self, input: &str) -> Result<[u8; 6], ValidationError> {
+    fn validate_dot_format(&self, input: &str) -> Result<(), ValidationError> {
         let parts: Vec<&str> = input.split('.').collect();
         if parts.len() != 3 {
             return Err(ValidationError::new(
@@ -126,8 +126,7 @@ impl MacAddress {
             ));
         }
 
-        let mut bytes = [0u8; 6];
-        for (i, part) in parts.iter().enumerate() {
+        for part in parts.iter() {
             if part.len() != 4 {
                 return Err(ValidationError::new(
                     "invalid_mac_format",
@@ -135,19 +134,19 @@ impl MacAddress {
                 ));
             }
 
-            bytes[i * 2] = u8::from_str_radix(&part[0..2], 16).map_err(|_| {
+            u8::from_str_radix(&part[0..2], 16).map_err(|_| {
                 ValidationError::new("invalid_hex", format!("Invalid hex digits: {part}"))
             })?;
 
-            bytes[i * 2 + 1] = u8::from_str_radix(&part[2..4], 16).map_err(|_| {
+            u8::from_str_radix(&part[2..4], 16).map_err(|_| {
                 ValidationError::new("invalid_hex", format!("Invalid hex digits: {part}"))
             })?;
         }
 
-        Ok(bytes)
+        Ok(())
     }
 
-    fn validate_no_separator_format(&self, input: &str) -> Result<[u8; 6], ValidationError> {
+    fn validate_no_separator_format(&self, input: &str) -> Result<(), ValidationError> {
         if input.len() != 12 {
             return Err(ValidationError::new(
                 "invalid_mac_format",
@@ -155,9 +154,8 @@ impl MacAddress {
             ));
         }
 
-        let mut bytes = [0u8; 6];
         for i in 0..6 {
-            bytes[i] = u8::from_str_radix(&input[i * 2..i * 2 + 2], 16).map_err(|_| {
+            u8::from_str_radix(&input[i * 2..i * 2 + 2], 16).map_err(|_| {
                 ValidationError::new(
                     "invalid_hex",
                     format!("Invalid hex digits at position {}", i * 2),
@@ -165,12 +163,11 @@ impl MacAddress {
             })?;
         }
 
-        Ok(bytes)
+        Ok(())
     }
 
-    fn parse_hex_parts(&self, parts: &[&str]) -> Result<[u8; 6], ValidationError> {
-        let mut bytes = [0u8; 6];
-        for (i, part) in parts.iter().enumerate() {
+    fn parse_hex_parts(&self, parts: &[&str]) -> Result<(), ValidationError> {
+        for part in parts.iter() {
             if part.len() != 2 {
                 return Err(ValidationError::new(
                     "invalid_mac_format",
@@ -178,11 +175,11 @@ impl MacAddress {
                 ));
             }
 
-            bytes[i] = u8::from_str_radix(part, 16).map_err(|_| {
+            u8::from_str_radix(part, 16).map_err(|_| {
                 ValidationError::new("invalid_hex", format!("Invalid hex digits: {part}"))
             })?;
         }
-        Ok(bytes)
+        Ok(())
     }
 }
 
@@ -192,12 +189,10 @@ impl Default for MacAddress {
     }
 }
 
-impl TypedValidator for MacAddress {
+impl Validator for MacAddress {
     type Input = str;
-    type Output = [u8; 6];
-    type Error = ValidationError;
 
-    fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         if input.is_empty() {
             return Err(ValidationError::new(
                 "empty_input",
@@ -359,9 +354,9 @@ mod tests {
     }
 
     #[test]
-    fn test_output_bytes() {
+    fn test_output_unit() {
         let validator = MacAddress::new();
         let result = validator.validate("01:23:45:67:89:AB").unwrap();
-        assert_eq!(result, [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB]);
+        assert_eq!(result, ());
     }
 }

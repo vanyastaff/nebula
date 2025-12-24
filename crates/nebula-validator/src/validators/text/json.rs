@@ -2,7 +2,7 @@
 //!
 //! Validates that a string contains well-formed JSON.
 
-use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 
 // ============================================================================
 // JSON VALIDATOR
@@ -27,7 +27,7 @@ const DEFAULT_MAX_DEPTH: usize = 128;
 ///
 /// ```
 /// use nebula_validator::validators::Json;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = Json::new();
 ///
@@ -507,12 +507,10 @@ impl Default for Json {
     }
 }
 
-impl TypedValidator for Json {
+impl Validator for Json {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         self.validate_json(input)
     }
 

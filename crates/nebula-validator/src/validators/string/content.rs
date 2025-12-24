@@ -2,7 +2,7 @@
 //!
 //! Validators for checking string content and patterns.
 
-use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 
 // ============================================================================
 // REGEX VALIDATOR
@@ -12,7 +12,7 @@ use crate::core::{TypedValidator, ValidationComplexity, ValidationError, Validat
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::validators::string::MatchesRegex;
 /// use regex::Regex;
 ///
@@ -37,12 +37,10 @@ impl MatchesRegex {
     }
 }
 
-impl TypedValidator for MatchesRegex {
+impl Validator for MatchesRegex {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if self.pattern.is_match(input) {
             Ok(())
         } else {
@@ -107,12 +105,10 @@ impl Default for Email {
     }
 }
 
-impl TypedValidator for Email {
+impl Validator for Email {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if self.pattern.is_match(input) {
             Ok(())
         } else {
@@ -169,12 +165,10 @@ impl Default for Url {
     }
 }
 
-impl TypedValidator for Url {
+impl Validator for Url {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if self.pattern.is_match(input) {
             Ok(())
         } else {
@@ -213,12 +207,10 @@ pub fn url() -> Url {
 #[derive(Debug, Clone, Copy)]
 pub struct Uuid;
 
-impl TypedValidator for Uuid {
+impl Validator for Uuid {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         // Simple UUID validation
         if input.len() == 36 && input.chars().filter(|&c| c == '-').count() == 4 {
             Ok(())

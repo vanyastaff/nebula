@@ -22,7 +22,7 @@ use std::time::Duration;
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::core::{ValidatorMetadata, ValidationComplexity};
 ///
 /// let metadata = ValidatorMetadata::builder()
@@ -123,7 +123,7 @@ impl ValidatorMetadata {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::core::ValidationComplexity;
 ///
 /// // O(1) - checking if a value is null

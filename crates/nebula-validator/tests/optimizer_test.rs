@@ -6,9 +6,7 @@ use nebula_validator::combinators::{
     OptimizationReport, OptimizationStrategy, ValidatorChainOptimizer, ValidatorOrdering,
     ValidatorStats,
 };
-use nebula_validator::core::{
-    TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata,
-};
+use nebula_validator::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 use std::time::Duration;
 
 // ============================================================================
@@ -16,12 +14,10 @@ use std::time::Duration;
 // ============================================================================
 
 struct CheapValidator;
-impl TypedValidator for CheapValidator {
+impl Validator for CheapValidator {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, _input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {
         Ok(())
     }
 
@@ -40,12 +36,10 @@ impl TypedValidator for CheapValidator {
 }
 
 struct ExpensiveValidator;
-impl TypedValidator for ExpensiveValidator {
+impl Validator for ExpensiveValidator {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, _input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {
         Ok(())
     }
 
@@ -64,12 +58,10 @@ impl TypedValidator for ExpensiveValidator {
 }
 
 struct LinearValidator;
-impl TypedValidator for LinearValidator {
+impl Validator for LinearValidator {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, _input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {
         Ok(())
     }
 
@@ -88,12 +80,10 @@ impl TypedValidator for LinearValidator {
 }
 
 struct AsyncValidator;
-impl TypedValidator for AsyncValidator {
+impl Validator for AsyncValidator {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, _input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {
         Ok(())
     }
 

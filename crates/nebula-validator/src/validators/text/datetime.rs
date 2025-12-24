@@ -2,7 +2,7 @@
 //!
 //! Validates date and time strings in ISO 8601 format.
 
-use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 
 // ============================================================================
 // DATETIME VALIDATOR
@@ -20,7 +20,7 @@ use crate::core::{TypedValidator, ValidationComplexity, ValidationError, Validat
 ///
 /// ```
 /// use nebula_validator::validators::DateTime;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = DateTime::new();
 ///
@@ -287,12 +287,10 @@ impl Default for DateTime {
     }
 }
 
-impl TypedValidator for DateTime {
+impl Validator for DateTime {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &str) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         if input.is_empty() {
             return Err(ValidationError::new(
                 "empty_datetime",

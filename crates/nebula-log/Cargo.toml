@@ -70,6 +70,7 @@ sentry = ["dep:sentry", "sentry-tracing"]
 full = ["ansi", "async", "file", "log-compat", "telemetry", "sentry", "observability"]
 
 [dev-dependencies]
+anyhow = "1.0"
 criterion = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }

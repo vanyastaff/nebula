@@ -2,47 +2,8 @@
 //!
 //! This module provides the `Refined<T, V>` type, which wraps a value
 //! and guarantees at compile-time that it has been validated.
-//!
-//! # Benefits
-//!
-//! - **Type Safety**: Once created, a refined type is guaranteed to be valid
-//! - **Zero-Cost**: No runtime overhead for accessing the value
-//! - **Self-Documenting**: Function signatures clearly show validation requirements
-//! - **Impossible States**: Invalid states are unrepresentable
-//!
-//! # Examples
-//!
-//! ```rust
-//! use nebula_validator::prelude::*;
-//!
-//! // Define a validator
-//! struct MinLength { min: usize }
-//!
-//! impl TypedValidator for MinLength {
-//!     type Input = str;
-//!     type Output = ();
-//!     type Error = ValidationError;
-//!     
-//!     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-//!         if input.len() >= self.min {
-//!             Ok(())
-//!         } else {
-//!             Err(ValidationError::new("min_length", "Too short"))
-//!         }
-//!     }
-//! }
-//!
-//! // Create a refined type
-//! let validator = MinLength { min: 5 };
-//! let validated = Refined::new("hello".to_string(), &validator)?;
-//!
-//! // Now the type system knows this string is at least 5 chars!
-//! fn process_long_string(s: Refined<String, MinLength>) {
-//!     // We can safely assume s.len() >= 5
-//! }
-//! ```
 
-use crate::core::TypedValidator;
+use crate::core::{ValidationError, Validator};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
@@ -60,23 +21,6 @@ use std::ops::{Deref, DerefMut};
 ///
 /// * `T` - The underlying value type
 /// * `V` - The validator type (used as a type-level marker)
-///
-/// # Examples
-///
-/// ```rust
-/// use nebula_validator::prelude::*;
-///
-/// // Create a refined string that's guaranteed to be at least 5 chars
-/// let validator = MinLength { min: 5 };
-/// let refined = Refined::new("hello".to_string(), &validator)?;
-///
-/// // Access the value
-/// assert_eq!(refined.as_ref(), "hello");
-/// assert_eq!(refined.len(), 5);
-///
-/// // Consume the refined type
-/// let inner: String = refined.into_inner();
-/// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Refined<T, V> {
     value: T,
@@ -85,7 +29,7 @@ pub struct Refined<T, V> {
 
 impl<T, V> Refined<T, V>
 where
-    V: TypedValidator<Output = ()>,
+    V: Validator,
     T: std::borrow::Borrow<V::Input>,
 {
     /// Creates a new refined type by validating the value.
@@ -97,20 +41,9 @@ where
     ///
     /// # Errors
     ///
-    /// Returns the validator's error if validation fails.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// let validator = MinLength { min: 5 };
-    /// let valid = Refined::new("hello".to_string(), &validator);
-    /// assert!(valid.is_ok());
-    ///
-    /// let invalid = Refined::new("hi".to_string(), &validator);
-    /// assert!(invalid.is_err());
-    /// ```
+    /// Returns a `ValidationError` if validation fails.
     #[must_use = "validation result must be checked"]
-    pub fn new(value: T, validator: &V) -> Result<Self, V::Error> {
+    pub fn new(value: T, validator: &V) -> Result<Self, ValidationError> {
         validator.validate(value.borrow())?;
         Ok(Self {
             value,
@@ -124,16 +57,7 @@ where
     ///
     /// The caller must ensure that the value satisfies the validator's
     /// constraints. Using this with an invalid value will violate the
-    /// type system's guarantees and may lead to undefined behavior.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// // SAFE: We know "hello" is at least 5 characters
-    /// let refined = unsafe {
-    ///     Refined::<String, MinLength>::new_unchecked("hello".to_string())
-    /// };
-    /// ```
+    /// type system's guarantees.
     pub unsafe fn new_unchecked(value: T) -> Self {
         Self {
             value,
@@ -144,36 +68,19 @@ where
 
 impl<T, V> Refined<T, V> {
     /// Extracts the inner value, consuming the refined type.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// let refined = Refined::new("hello".to_string(), &validator)?;
-    /// let string: String = refined.into_inner();
-    /// ```
     pub fn into_inner(self) -> T {
         self.value
     }
 
     /// Returns a reference to the inner value.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// let refined = Refined::new("hello".to_string(), &validator)?;
-    /// let s: &str = refined.as_ref();
-    /// ```
     pub fn get(&self) -> &T {
         &self.value
     }
 
     /// Returns a mutable reference to the inner value.
     ///
-    /// # Safety
-    ///
-    /// This is safe because the refined type can only be created through
-    /// validation. However, be careful not to modify the value in a way
-    /// that would violate the validator's constraints.
+    /// Be careful not to modify the value in a way that would violate
+    /// the validator's constraints.
     pub fn get_mut(&mut self) -> &mut T {
         &mut self.value
     }
@@ -181,13 +88,6 @@ impl<T, V> Refined<T, V> {
     /// Maps the refined value to a different type.
     ///
     /// The mapping function preserves the validation guarantee.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// let refined = Refined::new("hello".to_string(), &validator)?;
-    /// let length: Refined<usize, MinLength> = refined.map(|s| s.len());
-    /// ```
     pub fn map<U, F>(self, f: F) -> Refined<U, V>
     where
         F: FnOnce(T) -> U,
@@ -199,21 +99,11 @@ impl<T, V> Refined<T, V> {
     }
 
     /// Attempts to map the refined value, re-validating the result.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// let refined = Refined::new("hello".to_string(), &validator)?;
-    /// let uppercase = refined.try_map(
-    ///     |s| s.to_uppercase(),
-    ///     &validator
-    /// )?;
-    /// ```
     #[must_use = "mapped value must be used"]
-    pub fn try_map<U, F>(self, f: F, validator: &V) -> Result<Refined<U, V>, V::Error>
+    pub fn try_map<U, F>(self, f: F, validator: &V) -> Result<Refined<U, V>, ValidationError>
     where
         F: FnOnce(T) -> U,
-        V: TypedValidator<Input = U, Output = ()>,
+        V: Validator<Input = U>,
     {
         let new_value = f(self.value);
         Refined::new(new_value, validator)
@@ -223,20 +113,29 @@ impl<T, V> Refined<T, V> {
     ///
     /// This is useful when you want to "refine further" with additional
     /// constraints.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// let min_validated = Refined::new("hello".to_string(), &min_validator)?;
-    /// let fully_validated = min_validated.refine(&max_validator)?;
-    /// ```
     #[must_use = "refined value must be used"]
-    pub fn refine<V2>(self, validator: &V2) -> Result<Refined<T, V2>, V2::Error>
+    pub fn refine<V2>(self, validator: &V2) -> Result<Refined<T, V2>, ValidationError>
     where
-        V2: TypedValidator<Output = ()>,
+        V2: Validator,
         T: std::borrow::Borrow<V2::Input>,
     {
         Refined::new(self.value, validator)
+    }
+
+    /// Attempts to create a refined type from a reference.
+    ///
+    /// This clones the value if validation succeeds.
+    #[must_use = "validation result must be checked"]
+    pub fn try_from_ref(value: &T, validator: &V) -> Result<Self, ValidationError>
+    where
+        T: Clone,
+        V: Validator<Input = T>,
+    {
+        validator.validate(value)?;
+        Ok(Self {
+            value: value.clone(),
+            _validator: PhantomData,
+        })
     }
 }
 
@@ -270,7 +169,6 @@ impl<T, V> AsMut<T> for Refined<T, V> {
     }
 }
 
-// Display forwards to inner value
 impl<T, V> std::fmt::Display for Refined<T, V>
 where
     T: std::fmt::Display,
@@ -298,7 +196,7 @@ where
 impl<'de, T, V> serde::Deserialize<'de> for Refined<T, V>
 where
     T: serde::Deserialize<'de>,
-    V: TypedValidator<Input = T, Output = ()> + Default,
+    V: Validator<Input = T> + Default,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -311,7 +209,7 @@ where
 }
 
 // ============================================================================
-// COMMON REFINED TYPES
+// COMMON REFINED TYPE ALIASES
 // ============================================================================
 
 /// A non-empty string.
@@ -330,48 +228,19 @@ pub type Url<V> = Refined<String, V>;
 pub type NonEmptyVec<T, V> = Refined<Vec<T>, V>;
 
 // ============================================================================
-// CONVENIENCE CONSTRUCTORS
-// ============================================================================
-
-impl<T, V> Refined<T, V> {
-    /// Attempts to create a refined type from a reference.
-    ///
-    /// This clones the value if validation succeeds.
-    #[must_use = "validation result must be checked"]
-    pub fn try_from_ref(value: &T, validator: &V) -> Result<Self, V::Error>
-    where
-        T: Clone,
-        V: TypedValidator<Input = T, Output = ()>,
-    {
-        validator.validate(value)?;
-        Ok(Self {
-            value: value.clone(),
-            _validator: PhantomData,
-        })
-    }
-}
-
-// Note: TryFrom implementation conflicts with std blanket implementation
-// Use Refined::new_with_default() or Refined::new() instead
-
-// ============================================================================
 // TESTS
 // ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::ValidationError;
 
-    // Test validator
     struct MinLength {
         min: usize,
     }
 
-    impl TypedValidator for MinLength {
+    impl Validator for MinLength {
         type Input = str;
-        type Output = ();
-        type Error = ValidationError;
 
         fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
             if input.len() >= self.min {
@@ -401,7 +270,7 @@ mod tests {
         let validator = MinLength { min: 5 };
         let refined = Refined::new("hello".to_string(), &validator).unwrap();
         assert_eq!(&*refined, "hello");
-        assert_eq!(refined.len(), 5); // String method works via Deref
+        assert_eq!(refined.len(), 5);
     }
 
     #[test]
@@ -425,9 +294,8 @@ mod tests {
         let validator = MinLength { min: 5 };
         let refined = Refined::new("hello".to_string(), &validator).unwrap();
 
-        // This function only accepts validated strings
         fn process_validated(s: Refined<String, MinLength>) -> usize {
-            s.len() // We know it's at least 5 characters
+            s.len()
         }
 
         assert_eq!(process_validated(refined), 5);
@@ -439,10 +307,8 @@ mod tests {
             max: usize,
         }
 
-        impl TypedValidator for MaxLength {
+        impl Validator for MaxLength {
             type Input = str;
-            type Output = ();
-            type Error = ValidationError;
 
             fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
                 if input.len() <= self.max {

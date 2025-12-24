@@ -2,7 +2,7 @@
 //!
 //! These wrappers extract typed values from `Value` and delegate to typed validators.
 
-use crate::core::{TypedValidator, ValidationError};
+use crate::core::{ValidationError, Validator};
 use nebula_value::Value;
 
 /// Wrapper that extracts `&str` from `Value::Text` and validates it
@@ -22,13 +22,11 @@ impl<V> ValueString<V> {
     }
 }
 
-impl<V> TypedValidator for ValueString<V>
+impl<V> Validator for ValueString<V>
 where
-    V: TypedValidator<Input = str, Output = (), Error = ValidationError>,
+    V: Validator<Input = str>,
 {
     type Input = Value;
-    type Output = ();
-    type Error = ValidationError;
 
     fn validate(&self, input: &Value) -> Result<(), ValidationError> {
         let s = input
@@ -41,7 +39,7 @@ where
 /// Convenience function to create a ValueString validator
 pub fn value_string<V>(validator: V) -> ValueString<V>
 where
-    V: TypedValidator<Input = str, Output = (), Error = ValidationError>,
+    V: Validator<Input = str>,
 {
     ValueString::new(validator)
 }
@@ -63,13 +61,11 @@ impl<V> ValueInteger<V> {
     }
 }
 
-impl<V> TypedValidator for ValueInteger<V>
+impl<V> Validator for ValueInteger<V>
 where
-    V: TypedValidator<Input = i64, Output = (), Error = ValidationError>,
+    V: Validator<Input = i64>,
 {
     type Input = Value;
-    type Output = ();
-    type Error = ValidationError;
 
     fn validate(&self, input: &Value) -> Result<(), ValidationError> {
         let n = input
@@ -82,7 +78,7 @@ where
 /// Convenience function to create a ValueInteger validator
 pub fn value_integer<V>(validator: V) -> ValueInteger<V>
 where
-    V: TypedValidator<Input = i64, Output = (), Error = ValidationError>,
+    V: Validator<Input = i64>,
 {
     ValueInteger::new(validator)
 }
@@ -104,13 +100,11 @@ impl<V> ValueFloat<V> {
     }
 }
 
-impl<V> TypedValidator for ValueFloat<V>
+impl<V> Validator for ValueFloat<V>
 where
-    V: TypedValidator<Input = f64, Output = (), Error = ValidationError>,
+    V: Validator<Input = f64>,
 {
     type Input = Value;
-    type Output = ();
-    type Error = ValidationError;
 
     fn validate(&self, input: &Value) -> Result<(), ValidationError> {
         let n = input
@@ -123,7 +117,7 @@ where
 /// Convenience function to create a ValueFloat validator
 pub fn value_float<V>(validator: V) -> ValueFloat<V>
 where
-    V: TypedValidator<Input = f64, Output = (), Error = ValidationError>,
+    V: Validator<Input = f64>,
 {
     ValueFloat::new(validator)
 }
@@ -145,13 +139,11 @@ impl<V> ValueBoolean<V> {
     }
 }
 
-impl<V> TypedValidator for ValueBoolean<V>
+impl<V> Validator for ValueBoolean<V>
 where
-    V: TypedValidator<Input = bool, Output = (), Error = ValidationError>,
+    V: Validator<Input = bool>,
 {
     type Input = Value;
-    type Output = ();
-    type Error = ValidationError;
 
     fn validate(&self, input: &Value) -> Result<(), ValidationError> {
         let b = input
@@ -164,7 +156,7 @@ where
 /// Convenience function to create a ValueBoolean validator
 pub fn value_boolean<V>(validator: V) -> ValueBoolean<V>
 where
-    V: TypedValidator<Input = bool, Output = (), Error = ValidationError>,
+    V: Validator<Input = bool>,
 {
     ValueBoolean::new(validator)
 }
@@ -186,13 +178,11 @@ impl<V> ValueArray<V> {
     }
 }
 
-impl<V> TypedValidator for ValueArray<V>
+impl<V> Validator for ValueArray<V>
 where
-    V: TypedValidator<Input = nebula_value::Array, Output = (), Error = ValidationError>,
+    V: Validator<Input = nebula_value::Array>,
 {
     type Input = Value;
-    type Output = ();
-    type Error = ValidationError;
 
     fn validate(&self, input: &Value) -> Result<(), ValidationError> {
         let arr = input
@@ -205,7 +195,7 @@ where
 /// Convenience function to create a ValueArray validator
 pub fn value_array<V>(validator: V) -> ValueArray<V>
 where
-    V: TypedValidator<Input = nebula_value::Array, Output = (), Error = ValidationError>,
+    V: Validator<Input = nebula_value::Array>,
 {
     ValueArray::new(validator)
 }
@@ -227,13 +217,11 @@ impl<V> ValueObject<V> {
     }
 }
 
-impl<V> TypedValidator for ValueObject<V>
+impl<V> Validator for ValueObject<V>
 where
-    V: TypedValidator<Input = nebula_value::Object, Output = (), Error = ValidationError>,
+    V: Validator<Input = nebula_value::Object>,
 {
     type Input = Value;
-    type Output = ();
-    type Error = ValidationError;
 
     fn validate(&self, input: &Value) -> Result<(), ValidationError> {
         let obj = input
@@ -246,7 +234,7 @@ where
 /// Convenience function to create a ValueObject validator
 pub fn value_object<V>(validator: V) -> ValueObject<V>
 where
-    V: TypedValidator<Input = nebula_value::Object, Output = (), Error = ValidationError>,
+    V: Validator<Input = nebula_value::Object>,
 {
     ValueObject::new(validator)
 }
@@ -331,10 +319,8 @@ mod tests {
     // Simple test validator for booleans - validates that value is true
     struct MustBeTrue;
 
-    impl TypedValidator for MustBeTrue {
+    impl Validator for MustBeTrue {
         type Input = bool;
-        type Output = ();
-        type Error = ValidationError;
 
         fn validate(&self, input: &bool) -> Result<(), ValidationError> {
             if *input {
@@ -368,10 +354,8 @@ mod tests {
         min: usize,
     }
 
-    impl TypedValidator for MinArrayLen {
+    impl Validator for MinArrayLen {
         type Input = nebula_value::Array;
-        type Output = ();
-        type Error = ValidationError;
 
         fn validate(&self, input: &nebula_value::Array) -> Result<(), ValidationError> {
             if input.len() >= self.min {
@@ -410,10 +394,8 @@ mod tests {
         key: &'static str,
     }
 
-    impl TypedValidator for RequiredKey {
+    impl Validator for RequiredKey {
         type Input = nebula_value::Object;
-        type Output = ();
-        type Error = ValidationError;
 
         fn validate(&self, input: &nebula_value::Object) -> Result<(), ValidationError> {
             if input.contains_key(self.key) {

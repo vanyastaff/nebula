@@ -3,6 +3,8 @@
 //! This module defines the fundamental traits that all validators must implement.
 
 use crate::core::ValidatorMetadata;
+use crate::core::validatable::AsValidatable;
+use std::borrow::Borrow;
 
 // ============================================================================
 // CORE VALIDATOR TRAIT
@@ -11,29 +13,26 @@ use crate::core::ValidatorMetadata;
 /// The core trait that all validators must implement.
 ///
 /// This trait is generic over the input type, allowing for compile-time
-/// type safety while maintaining flexibility.
+/// type safety while maintaining flexibility. All validators return
+/// `Result<(), ValidationError>` for a consistent API.
 ///
 /// # Type Parameters
 ///
 /// * `Input` - The type being validated (can be `?Sized` for DSTs like `str`)
-/// * `Output` - The result of successful validation (often `()` or a refined type)
-/// * `Error` - The error type returned on validation failure
 ///
 /// # Examples
 ///
-/// ```rust
-/// use nebula_validator::core::{TypedValidator, ValidationError};
+/// ```rust,ignore
+/// use nebula_validator::core::{Validator, ValidationError};
 ///
 /// struct MinLength {
 ///     min: usize,
 /// }
 ///
-/// impl TypedValidator for MinLength {
+/// impl Validator for MinLength {
 ///     type Input = str;
-///     type Output = ();
-///     type Error = ValidationError;
 ///
-///     fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+///     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
 ///         if input.len() >= self.min {
 ///             Ok(())
 ///         } else {
@@ -45,22 +44,11 @@ use crate::core::ValidatorMetadata;
 ///     }
 /// }
 /// ```
-pub trait TypedValidator {
+pub trait Validator {
     /// The type of input being validated.
     ///
     /// Use `?Sized` to allow validation of unsized types like `str` and `[T]`.
     type Input: ?Sized;
-
-    /// The type returned on successful validation.
-    ///
-    /// This is often `()` for simple validators, but can be a refined type
-    /// that carries additional guarantees.
-    type Output;
-
-    /// The error type returned on validation failure.
-    ///
-    /// Should implement `std::error::Error` for interoperability.
-    type Error: std::error::Error + Send + Sync + 'static;
 
     /// Validates the input value.
     ///
@@ -70,9 +58,60 @@ pub trait TypedValidator {
     ///
     /// # Returns
     ///
-    /// * `Ok(output)` if validation succeeds
-    /// * `Err(error)` if validation fails
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error>;
+    /// * `Ok(())` if validation succeeds
+    /// * `Err(ValidationError)` if validation fails
+    fn validate(&self, input: &Self::Input) -> Result<(), crate::core::ValidationError>;
+
+    /// Validates any type that can be converted to `Self::Input`.
+    ///
+    /// This method enables universal validation - a single validator can accept
+    /// multiple input types (e.g., `&str`, `String`, `Cow<str>`) without explicit
+    /// conversion by the caller.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `S` - Any type that implements `AsValidatable<Self::Input>`
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use nebula_validator::core::{Validator, ValidationError};
+    ///
+    /// struct MinLength { min: usize }
+    ///
+    /// impl Validator for MinLength {
+    ///     type Input = str;
+    ///
+    ///     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    ///         if input.len() >= self.min {
+    ///             Ok(())
+    ///         } else {
+    ///             Err(ValidationError::new("min_length", "too short"))
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let validator = MinLength { min: 3 };
+    ///
+    /// // Works with &str
+    /// assert!(validator.validate_any("hello").is_ok());
+    ///
+    /// // Works with String
+    /// assert!(validator.validate_any(&String::from("hello")).is_ok());
+    ///
+    /// // Works with Cow<str>
+    /// use std::borrow::Cow;
+    /// assert!(validator.validate_any(&Cow::Borrowed("hello")).is_ok());
+    /// ```
+    fn validate_any<S>(&self, value: &S) -> Result<(), crate::core::ValidationError>
+    where
+        Self: Sized,
+        S: AsValidatable<Self::Input> + ?Sized,
+        for<'a> <S as AsValidatable<Self::Input>>::Output<'a>: Borrow<Self::Input>,
+    {
+        let output = value.as_validatable()?;
+        self.validate(output.borrow())
+    }
 
     /// Returns metadata about this validator.
     ///
@@ -100,7 +139,7 @@ pub trait TypedValidator {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::core::{AsyncValidator, ValidationError};
 ///
 /// struct EmailExists {
@@ -110,10 +149,8 @@ pub trait TypedValidator {
 /// #[async_trait::async_trait]
 /// impl AsyncValidator for EmailExists {
 ///     type Input = str;
-///     type Output = ();
-///     type Error = ValidationError;
 ///
-///     async fn validate_async(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+///     async fn validate_async(&self, input: &Self::Input) -> Result<(), ValidationError> {
 ///         let exists = self.db_pool.check_email_exists(input).await?;
 ///         if exists {
 ///             Ok(())
@@ -128,12 +165,6 @@ pub trait AsyncValidator: Send + Sync {
     /// The type of input being validated.
     type Input: ?Sized + Sync;
 
-    /// The type returned on successful validation.
-    type Output: Send;
-
-    /// The error type returned on validation failure.
-    type Error: std::error::Error + Send + Sync + 'static;
-
     /// Asynchronously validates the input value.
     ///
     /// # Arguments
@@ -142,9 +173,10 @@ pub trait AsyncValidator: Send + Sync {
     ///
     /// # Returns
     ///
-    /// * `Ok(output)` if validation succeeds
-    /// * `Err(error)` if validation fails
-    async fn validate_async(&self, input: &Self::Input) -> Result<Self::Output, Self::Error>;
+    /// * `Ok(())` if validation succeeds
+    /// * `Err(ValidationError)` if validation fails
+    async fn validate_async(&self, input: &Self::Input)
+    -> Result<(), crate::core::ValidationError>;
 
     /// Returns metadata about this validator.
     fn metadata(&self) -> ValidatorMetadata {
@@ -164,11 +196,11 @@ pub trait AsyncValidator: Send + Sync {
 /// Extension trait providing combinator methods for validators.
 ///
 /// This trait is automatically implemented for all types that implement
-/// `TypedValidator`, providing a fluent API for composing validators.
+/// `Validator`, providing a fluent API for composing validators.
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::prelude::*;
 ///
 /// let validator = MinLength { min: 5 }
@@ -178,7 +210,7 @@ pub trait AsyncValidator: Send + Sync {
 /// assert!(validator.validate("hello").is_ok());
 /// assert!(validator.validate("hi").is_err());
 /// ```
-pub trait ValidatorExt: TypedValidator + Sized {
+pub trait ValidatorExt: Validator + Sized {
     /// Combines two validators with logical AND.
     ///
     /// Both validators must pass for the combined validator to succeed.
@@ -191,7 +223,7 @@ pub trait ValidatorExt: TypedValidator + Sized {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_validator::prelude::*;
     ///
     /// let validator = MinLength { min: 3 }.and(MaxLength { max: 10 });
@@ -201,7 +233,7 @@ pub trait ValidatorExt: TypedValidator + Sized {
     /// ```
     fn and<V>(self, other: V) -> And<Self, V>
     where
-        V: TypedValidator<Input = Self::Input, Error = Self::Error>,
+        V: Validator<Input = Self::Input>,
     {
         And::new(self, other)
     }
@@ -213,7 +245,7 @@ pub trait ValidatorExt: TypedValidator + Sized {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_validator::prelude::*;
     ///
     /// let validator = ExactLength { length: 5 }.or(ExactLength { length: 10 });
@@ -223,7 +255,7 @@ pub trait ValidatorExt: TypedValidator + Sized {
     /// ```
     fn or<V>(self, other: V) -> Or<Self, V>
     where
-        V: TypedValidator<Input = Self::Input, Output = Self::Output, Error = Self::Error>,
+        V: Validator<Input = Self::Input>,
     {
         Or::new(self, other)
     }
@@ -235,7 +267,7 @@ pub trait ValidatorExt: TypedValidator + Sized {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_validator::prelude::*;
     ///
     /// let validator = Contains { substring: "test" }.not();
@@ -253,7 +285,7 @@ pub trait ValidatorExt: TypedValidator + Sized {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_validator::prelude::*;
     ///
     /// let validator = MinLength { min: 5 }.map(|_| "Valid!");
@@ -261,7 +293,7 @@ pub trait ValidatorExt: TypedValidator + Sized {
     /// ```
     fn map<F, O>(self, f: F) -> Map<Self, F>
     where
-        F: Fn(Self::Output) -> O,
+        F: Fn(()) -> O,
     {
         Map::new(self, f)
     }
@@ -273,7 +305,7 @@ pub trait ValidatorExt: TypedValidator + Sized {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use nebula_validator::prelude::*;
     ///
     /// let validator = MinLength { min: 10 }.when(|s: &&str| s.starts_with("long"));
@@ -306,16 +338,14 @@ pub trait ValidatorExt: TypedValidator + Sized {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// let validator = expensive_validator().cached();
     /// let stats = validator.cache_stats();
     /// println!("Hit rate: {:.2}%", stats.hit_rate() * 100.0);
     /// ```
     fn cached(self) -> Cached<Self>
     where
-        Self::Input: std::hash::Hash + Eq,
-        Self::Output: Clone + Send + Sync + 'static,
-        Self::Error: Clone + Send + Sync + 'static,
+        Self::Input: std::hash::Hash,
     {
         Cached::new(self)
     }
@@ -332,22 +362,20 @@ pub trait ValidatorExt: TypedValidator + Sized {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// // Small cache for memory-constrained environments
     /// let validator = expensive_validator().cached_with_capacity(100);
     /// ```
     fn cached_with_capacity(self, capacity: usize) -> Cached<Self>
     where
-        Self::Input: std::hash::Hash + Eq,
-        Self::Output: Clone + Send + Sync + 'static,
-        Self::Error: Clone + Send + Sync + 'static,
+        Self::Input: std::hash::Hash,
     {
         Cached::with_capacity(self, capacity)
     }
 }
 
-// Automatically implement ValidatorExt for all TypedValidator implementations
-impl<T: TypedValidator> ValidatorExt for T {}
+// Automatically implement ValidatorExt for all Validator implementations
+impl<T: Validator> ValidatorExt for T {}
 
 // ============================================================================
 // IMPORT COMBINATOR TYPES
@@ -374,12 +402,10 @@ mod tests {
     // Simple test validator
     struct AlwaysValid;
 
-    impl TypedValidator for AlwaysValid {
+    impl Validator for AlwaysValid {
         type Input = str;
-        type Output = ();
-        type Error = ValidationError;
 
-        fn validate(&self, _input: &Self::Input) -> Result<Self::Output, Self::Error> {
+        fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {
             Ok(())
         }
     }

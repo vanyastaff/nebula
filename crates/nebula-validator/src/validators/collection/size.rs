@@ -2,7 +2,7 @@
 //!
 //! This module provides validators for checking the size of collections.
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationError, Validator, ValidatorMetadata};
 use std::marker::PhantomData;
 
 // ============================================================================
@@ -16,15 +16,13 @@ pub struct MinSize<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> TypedValidator for MinSize<T>
+impl<T> Validator for MinSize<T>
 where
     T: Clone,
 {
     type Input = Vec<T>;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         let size = input.len();
         if size >= self.min {
             Ok(())
@@ -52,7 +50,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::collection::min_size;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = min_size::<i32>(3);
 /// assert!(validator.validate(&vec![1, 2, 3]).is_ok());
@@ -80,15 +78,13 @@ pub struct MaxSize<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> TypedValidator for MaxSize<T>
+impl<T> Validator for MaxSize<T>
 where
     T: Clone,
 {
     type Input = Vec<T>;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         let size = input.len();
         if size <= self.max {
             Ok(())
@@ -116,7 +112,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::collection::max_size;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = max_size::<i32>(3);
 /// assert!(validator.validate(&vec![1, 2, 3]).is_ok());
@@ -144,15 +140,13 @@ pub struct ExactSize<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> TypedValidator for ExactSize<T>
+impl<T> Validator for ExactSize<T>
 where
     T: Clone,
 {
     type Input = Vec<T>;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         let actual_size = input.len();
         if actual_size == self.size {
             Ok(())
@@ -180,7 +174,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::collection::exact_size;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = exact_size::<i32>(3);
 /// assert!(validator.validate(&vec![1, 2, 3]).is_ok());
@@ -208,15 +202,13 @@ pub struct NotEmptyCollection<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> TypedValidator for NotEmptyCollection<T>
+impl<T> Validator for NotEmptyCollection<T>
 where
     T: Clone,
 {
     type Input = Vec<T>;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if input.is_empty() {
             Err(ValidationError::new(
                 "not_empty",
@@ -240,7 +232,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::collection::not_empty_collection;
-/// use nebula_validator::core::TypedValidator;
+/// use nebula_validator::core::Validator;
 ///
 /// let validator = not_empty_collection::<i32>();
 /// assert!(validator.validate(&vec![1]).is_ok());

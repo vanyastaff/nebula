@@ -1,6 +1,6 @@
 //! Collection structure validators (for maps)
 
-use crate::core::{TypedValidator, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationError, Validator, ValidatorMetadata};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -26,15 +26,13 @@ impl<K, V> HasKey<K, V> {
     }
 }
 
-impl<K, V> TypedValidator for HasKey<K, V>
+impl<K, V> Validator for HasKey<K, V>
 where
     K: Hash + Eq,
 {
     type Input = HashMap<K, V>;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if input.contains_key(&self.key) {
             Ok(())
         } else {

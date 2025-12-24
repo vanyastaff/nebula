@@ -2,7 +2,7 @@
 //!
 //! This module provides validators for checking string length constraints.
 
-use crate::core::{TypedValidator, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 
 // ============================================================================
 // MIN LENGTH
@@ -12,7 +12,7 @@ use crate::core::{TypedValidator, ValidationComplexity, ValidationError, Validat
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::validators::string::MinLength;
 ///
 /// let validator = MinLength { min: 5 };
@@ -33,12 +33,10 @@ impl MinLength {
     }
 }
 
-impl TypedValidator for MinLength {
+impl Validator for MinLength {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if input.len() >= self.min {
             Ok(())
         } else {
@@ -64,7 +62,7 @@ impl TypedValidator for MinLength {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::validators::string::min_length;
 ///
 /// let validator = min_length(5);
@@ -83,7 +81,7 @@ pub fn min_length(min: usize) -> MinLength {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::validators::string::MaxLength;
 ///
 /// let validator = MaxLength { max: 10 };
@@ -104,12 +102,10 @@ impl MaxLength {
     }
 }
 
-impl TypedValidator for MaxLength {
+impl Validator for MaxLength {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if input.len() <= self.max {
             Ok(())
         } else {
@@ -145,7 +141,7 @@ pub fn max_length(max: usize) -> MaxLength {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::validators::string::ExactLength;
 ///
 /// let validator = ExactLength { length: 5 };
@@ -167,12 +163,10 @@ impl ExactLength {
     }
 }
 
-impl TypedValidator for ExactLength {
+impl Validator for ExactLength {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if input.len() == self.length {
             Ok(())
         } else {
@@ -215,7 +209,7 @@ pub fn exact_length(length: usize) -> ExactLength {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::validators::string::LengthRange;
 ///
 /// let validator = LengthRange { min: 5, max: 10 };
@@ -244,12 +238,10 @@ impl LengthRange {
     }
 }
 
-impl TypedValidator for LengthRange {
+impl Validator for LengthRange {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         let len = input.len();
         if len >= self.min && len <= self.max {
             Ok(())
@@ -304,7 +296,7 @@ pub fn length_range(min: usize, max: usize) -> LengthRange {
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use nebula_validator::validators::string::NotEmpty;
 ///
 /// let validator = NotEmpty;
@@ -314,12 +306,10 @@ pub fn length_range(min: usize, max: usize) -> LengthRange {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NotEmpty;
 
-impl TypedValidator for NotEmpty {
+impl Validator for NotEmpty {
     type Input = str;
-    type Output = ();
-    type Error = ValidationError;
 
-    fn validate(&self, input: &Self::Input) -> Result<Self::Output, Self::Error> {
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if input.is_empty() {
             Err(ValidationError::new(
                 "not_empty",

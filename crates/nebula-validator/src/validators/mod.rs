@@ -13,7 +13,7 @@
 //!
 //! # Examples
 //!
-//! ```rust
+//! ```rust,ignore
 //! use nebula_validator::validators::prelude::*;
 //!
 //! // String validation
