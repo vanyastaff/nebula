@@ -31,25 +31,25 @@ pub trait Category: sealed::SealedCategory + Send + Sync + 'static {
 /// Service category for grouping related services
 pub trait ServiceCategory: Category + sealed::SealedServiceCategory {
     /// Default timeout for this service category
-    #[must_use] 
+    #[must_use]
     fn default_timeout() -> Duration {
         Duration::from_secs(30)
     }
 
     /// Default retry attempts for this service category
-    #[must_use] 
+    #[must_use]
     fn default_retry_attempts() -> usize {
         3
     }
 
     /// Default circuit breaker threshold for this service category
-    #[must_use] 
+    #[must_use]
     fn default_failure_threshold() -> usize {
         5
     }
 
     /// Whether services in this category are critical
-    #[must_use] 
+    #[must_use]
     fn is_critical() -> bool {
         false
     }

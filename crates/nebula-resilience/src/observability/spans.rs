@@ -38,13 +38,13 @@ pub trait PatternCategory: sealed::SealedPatternCategory + Send + Sync + 'static
     fn description() -> &'static str;
 
     /// Whether to log start events.
-    #[must_use] 
+    #[must_use]
     fn log_start() -> bool {
         true
     }
 
     /// Whether to log success events.
-    #[must_use] 
+    #[must_use]
     fn log_success() -> bool {
         true
     }
@@ -188,19 +188,19 @@ impl<P: PatternCategory> PatternSpanGuard<P> {
     }
 
     /// Get the pattern name.
-    #[must_use] 
+    #[must_use]
     pub fn pattern(&self) -> &'static str {
         P::name()
     }
 
     /// Get the operation name.
-    #[must_use] 
+    #[must_use]
     pub fn operation(&self) -> &str {
         &self.operation
     }
 
     /// Get elapsed time.
-    #[must_use] 
+    #[must_use]
     pub fn elapsed(&self) -> Duration {
         self.start.elapsed()
     }

@@ -10,7 +10,7 @@
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -26,8 +26,7 @@ use crate::core::{
 
 // Re-export circuit states from core traits
 pub use crate::core::traits::circuit_states::{
-    Closed, HalfOpen, Open, StateMetadata, StateTransition,
-    TypestateCircuitState as CircuitState,
+    Closed, HalfOpen, Open, StateMetadata, StateTransition, TypestateCircuitState as CircuitState,
 };
 
 /// Circuit breaker state for runtime representation
@@ -90,7 +89,10 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
     const VALID: () = {
         assert!(FAILURE_THRESHOLD > 0, "FAILURE_THRESHOLD must be positive");
         assert!(RESET_TIMEOUT_MS > 0, "RESET_TIMEOUT_MS must be positive");
-        assert!(RESET_TIMEOUT_MS <= 300_000, "RESET_TIMEOUT_MS must be <= 5 minutes");
+        assert!(
+            RESET_TIMEOUT_MS <= 300_000,
+            "RESET_TIMEOUT_MS must be <= 5 minutes"
+        );
     };
 
     /// Create new configuration with validation
@@ -109,26 +111,26 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
     }
 
     /// Get failure threshold (compile-time constant)
-    #[must_use] 
+    #[must_use]
     pub fn failure_threshold(&self) -> usize {
         FAILURE_THRESHOLD
     }
 
     /// Get reset timeout (compile-time constant)
-    #[must_use] 
+    #[must_use]
     pub fn reset_timeout(&self) -> Duration {
         Duration::from_millis(RESET_TIMEOUT_MS)
     }
 
     /// Builder methods
-    #[must_use] 
+    #[must_use]
     pub fn with_half_open_limit(mut self, limit: usize) -> Self {
         self.half_open_max_operations = limit;
         self
     }
 
     /// Set the minimum number of operations required before circuit can open
-    #[must_use] 
+    #[must_use]
     pub fn with_min_operations(mut self, min_operations: usize) -> Self {
         self.min_operations = min_operations;
         self
@@ -369,7 +371,8 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
     /// Set state and update atomic cache
     fn set_state(&mut self, new_state: State) {
         self.state = new_state;
-        self.atomic_state.store(new_state.to_atomic(), Ordering::Release);
+        self.atomic_state
+            .store(new_state.to_atomic(), Ordering::Release);
         self.last_state_change = Instant::now();
     }
 
@@ -791,19 +794,19 @@ pub type FastCircuitBreaker = CircuitBreaker<3, 10_000>;
 pub type SlowCircuitBreaker = CircuitBreaker<10, 60_000>;
 
 /// Helper functions for creating common configurations
-#[must_use] 
+#[must_use]
 pub fn fast_config() -> CircuitBreakerConfig<3, 10_000> {
     CircuitBreakerConfig::new().with_half_open_limit(2)
 }
 
 /// Create a standard circuit breaker configuration
-#[must_use] 
+#[must_use]
 pub fn standard_config() -> CircuitBreakerConfig<5, 30_000> {
     CircuitBreakerConfig::new()
 }
 
 /// Create a slow/conservative circuit breaker configuration
-#[must_use] 
+#[must_use]
 pub fn slow_config() -> CircuitBreakerConfig<10, 60_000> {
     CircuitBreakerConfig::new().with_min_operations(20)
 }
@@ -823,7 +826,7 @@ mod tests {
 
     #[test]
     fn test_state_types_are_consistent() {
-        use crate::core::traits::circuit_states::{Closed, Open, HalfOpen};
+        use crate::core::traits::circuit_states::{Closed, HalfOpen, Open};
 
         // Verify the phantom type states exist and work
         let _closed: std::marker::PhantomData<Closed> = std::marker::PhantomData;

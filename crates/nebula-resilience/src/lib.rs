@@ -409,7 +409,10 @@ pub mod prelude {
 ///     });
 /// ```
 pub mod builder {
-    use crate::prelude::{CircuitBreakerConfig, StandardRetry, ExponentialBackoff, FixedDelay, BackoffPolicy, RetryConfig, ConservativeCondition, AggressiveCondition};
+    use crate::prelude::{
+        AggressiveCondition, BackoffPolicy, CircuitBreakerConfig, ConservativeCondition,
+        ExponentialBackoff, FixedDelay, RetryConfig, StandardRetry,
+    };
     use std::marker::PhantomData;
 
     /// Type-safe resilience builder
@@ -421,7 +424,7 @@ pub mod builder {
 
     impl ResilienceBuilder<(), ()> {
         /// Create a new resilience builder
-        #[must_use] 
+        #[must_use]
         pub const fn new() -> Self {
             Self {
                 circuit_breaker: (),
@@ -470,7 +473,7 @@ pub mod builder {
 
     impl<const MAX_ATTEMPTS: usize> RetryBuilder<MAX_ATTEMPTS> {
         /// Create new retry builder
-        #[must_use] 
+        #[must_use]
         pub const fn new() -> Self {
             Self {
                 _marker: PhantomData,
@@ -478,7 +481,7 @@ pub mod builder {
         }
 
         /// Configure exponential backoff
-        #[must_use] 
+        #[must_use]
         pub fn exponential_backoff<const BASE_DELAY_MS: u64, const MULTIPLIER_X10: u64>(
             self,
         ) -> PartialRetryConfig<ExponentialBackoff<BASE_DELAY_MS, MULTIPLIER_X10>, MAX_ATTEMPTS>
@@ -490,7 +493,7 @@ pub mod builder {
         }
 
         /// Configure fixed delay
-        #[must_use] 
+        #[must_use]
         pub fn fixed_delay<const DELAY_MS: u64>(
             self,
         ) -> PartialRetryConfig<FixedDelay<DELAY_MS>, MAX_ATTEMPTS> {
@@ -548,7 +551,10 @@ pub mod constants {
 
 /// Utility functions for type-safe resilience patterns
 pub mod utils {
-    use crate::prelude::{ConfigResult, StandardCircuitBreaker, StandardRetry, exponential_retry, FastCircuitBreaker, QuickRetry, fixed_retry, SlowCircuitBreaker, AggressiveRetry, aggressive_retry};
+    use crate::prelude::{
+        AggressiveRetry, ConfigResult, FastCircuitBreaker, QuickRetry, SlowCircuitBreaker,
+        StandardCircuitBreaker, StandardRetry, aggressive_retry, exponential_retry, fixed_retry,
+    };
 
     /// Create a standard resilience setup for HTTP clients
     pub fn http_resilience() -> ConfigResult<(StandardCircuitBreaker, StandardRetry)> {

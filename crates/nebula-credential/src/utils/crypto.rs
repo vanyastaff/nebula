@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 #[must_use]
 pub fn generate_random_state() -> String {
     use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let random_bytes: [u8; 32] = rng.r#gen();
+    let mut rng = rand::rng();
+    let random_bytes: [u8; 32] = rng.random();
     base64_url_encode(&random_bytes)
 }
 
@@ -15,8 +15,8 @@ pub fn generate_random_state() -> String {
 #[must_use]
 pub fn generate_pkce_verifier() -> String {
     use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let random_bytes: [u8; 32] = rng.r#gen();
+    let mut rng = rand::rng();
+    let random_bytes: [u8; 32] = rng.random();
     base64_url_encode(&random_bytes)
 }
 

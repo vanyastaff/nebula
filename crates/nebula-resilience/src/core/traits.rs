@@ -268,7 +268,7 @@ pub mod circuit_states {
 
     impl<S> TypestateCircuitState<S> {
         /// Create a new state with metadata
-        #[must_use] 
+        #[must_use]
         pub fn new(failure_count: usize, success_count: usize) -> Self {
             Self {
                 _marker: PhantomData,
@@ -282,7 +282,7 @@ pub mod circuit_states {
         }
 
         /// Get state type name
-        #[must_use] 
+        #[must_use]
         pub fn type_name(&self) -> &'static str {
             std::any::type_name::<S>()
                 .split("::")
@@ -291,7 +291,7 @@ pub mod circuit_states {
         }
 
         /// Record a failure in this state
-        #[must_use] 
+        #[must_use]
         pub fn with_failure(mut self) -> Self {
             self.metadata.failure_count += 1;
             self.metadata.last_failure_time = Some(std::time::Instant::now());
@@ -299,14 +299,14 @@ pub mod circuit_states {
         }
 
         /// Record a success in this state
-        #[must_use] 
+        #[must_use]
         pub fn with_success(mut self) -> Self {
             self.metadata.success_count += 1;
             self
         }
 
         /// Get the name of the current state type (alias for `type_name` for compatibility)
-        #[must_use] 
+        #[must_use]
         pub fn state_name(&self) -> &'static str {
             self.type_name()
         }
@@ -460,19 +460,19 @@ impl<const DEFAULT_MS: u64> Default for TimeoutConfig<DEFAULT_MS> {
 
 impl<const DEFAULT_MS: u64> TimeoutConfig<DEFAULT_MS> {
     /// Create new timeout configuration
-    #[must_use] 
+    #[must_use]
     pub fn new(timeout_ms: u64) -> Self {
         Self { timeout_ms }
     }
 
     /// Get timeout as Duration
-    #[must_use] 
+    #[must_use]
     pub fn as_duration(&self) -> Duration {
         Duration::from_millis(self.timeout_ms)
     }
 
     /// Check if timeout is reasonable
-    #[must_use] 
+    #[must_use]
     pub fn is_reasonable(&self) -> bool {
         self.timeout_ms > 0 && self.timeout_ms < 300_000 // Max 5 minutes
     }
@@ -517,9 +517,8 @@ impl fmt::Display for TimeoutValidationError {
 impl std::error::Error for TimeoutValidationError {}
 
 /// Function for creating validated timeouts
-#[must_use] 
+#[must_use]
 pub fn timeout<const MS: u64>() -> TimeoutConfig<MS> {
-    
     TimeoutConfig::new(MS)
 }
 

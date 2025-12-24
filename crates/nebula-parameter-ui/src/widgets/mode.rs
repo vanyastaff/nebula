@@ -3,7 +3,7 @@
 //! Dropdown for mode selection with inline input field.
 
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
-use egui::{ComboBox, Frame, Rounding, Stroke, Ui};
+use egui::{ComboBox, Frame, CornerRadius, Stroke, Ui};
 use nebula_parameter::core::{HasValue, Parameter};
 use nebula_parameter::types::{ModeParameter, ModeValue};
 
@@ -91,7 +91,7 @@ impl ParameterWidget for ModeWidget {
         let frame_response = Frame::none()
             .fill(theme.input_bg)
             .stroke(Stroke::new(1.0, theme.input_border))
-            .rounding(Rounding::same(theme.border_radius as u8))
+            .rounding(CornerRadius::same(theme.border_radius as u8))
             .inner_margin(egui::Margin::symmetric(4, 4))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -155,7 +155,7 @@ impl ParameterWidget for ModeWidget {
         if frame_response.response.hovered() {
             ui.painter().rect_stroke(
                 frame_response.response.rect,
-                Rounding::same(theme.border_radius as u8),
+                CornerRadius::same(theme.border_radius as u8),
                 Stroke::new(1.5, theme.input_border_focused),
                 egui::StrokeKind::Outside,
             );

@@ -1,7 +1,7 @@
 //! Notice display widget for NoticeParameter.
 
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
-use egui::{Frame, Rounding, Stroke, Ui};
+use egui::{Frame, CornerRadius, Stroke, Ui};
 use nebula_parameter::core::Parameter;
 use nebula_parameter::types::{NoticeParameter, NoticeType};
 
@@ -62,7 +62,7 @@ impl ParameterWidget for NoticeWidget {
         Frame::none()
             .fill(theme.surface)
             .stroke(Stroke::new(1.0, theme.input_border))
-            .rounding(Rounding::same(theme.border_radius as u8))
+            .rounding(CornerRadius::same(theme.border_radius as u8))
             .inner_margin(egui::Margin::same(0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -74,7 +74,7 @@ impl ParameterWidget for NoticeWidget {
                     );
                     ui.painter().rect_filled(
                         accent_rect,
-                        Rounding {
+                        CornerRadius {
                             nw: theme.border_radius as u8,
                             sw: theme.border_radius as u8,
                             ne: 0,

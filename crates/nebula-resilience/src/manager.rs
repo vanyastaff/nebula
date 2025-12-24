@@ -707,7 +707,7 @@ impl ResilienceManager {
     }
 
     /// Check if a service is registered.
-    #[must_use] 
+    #[must_use]
     pub fn is_service_registered<S: Service>(&self) -> bool {
         self.policies.contains_key(S::NAME)
     }

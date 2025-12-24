@@ -26,7 +26,7 @@ pub struct CancellationContext {
 
 impl CancellationContext {
     /// Create a new cancellation context
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             token: CancellationToken::new(),
@@ -43,7 +43,7 @@ impl CancellationContext {
     }
 
     /// Create a child context that will be cancelled when parent is cancelled
-    #[must_use] 
+    #[must_use]
     pub fn child(&self) -> Self {
         Self {
             token: self.token.child_token(),
@@ -57,19 +57,19 @@ impl CancellationContext {
     }
 
     /// Check if cancellation has been requested
-    #[must_use] 
+    #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.token.is_cancelled()
     }
 
     /// Get the cancellation token
-    #[must_use] 
+    #[must_use]
     pub fn token(&self) -> &CancellationToken {
         &self.token
     }
 
     /// Get the cancellation reason if available
-    #[must_use] 
+    #[must_use]
     pub fn reason(&self) -> Option<&str> {
         self.reason.as_deref()
     }
@@ -223,7 +223,7 @@ pub struct ShutdownCoordinator {
 
 impl ShutdownCoordinator {
     /// Create a new shutdown coordinator
-    #[must_use] 
+    #[must_use]
     pub fn new(graceful_timeout: std::time::Duration) -> Self {
         Self {
             master_token: CancellationToken::new(),
@@ -232,7 +232,7 @@ impl ShutdownCoordinator {
     }
 
     /// Create a cancellation context for operations
-    #[must_use] 
+    #[must_use]
     pub fn create_context(&self, reason: Option<String>) -> CancellationContext {
         CancellationContext {
             token: self.master_token.child_token(),
@@ -252,13 +252,13 @@ impl ShutdownCoordinator {
     }
 
     /// Check if shutdown has been initiated
-    #[must_use] 
+    #[must_use]
     pub fn is_shutdown_requested(&self) -> bool {
         self.master_token.is_cancelled()
     }
 
     /// Get the master cancellation token
-    #[must_use] 
+    #[must_use]
     pub fn token(&self) -> &CancellationToken {
         &self.master_token
     }

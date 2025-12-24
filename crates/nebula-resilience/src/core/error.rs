@@ -309,7 +309,11 @@ mod tests {
     fn test_error_display() {
         let error = ResilienceError::timeout(Duration::from_secs(5));
         let display = error.to_string();
-        assert!(display.contains("5s"), "Expected duration in display: {}", display);
+        assert!(
+            display.contains("5s"),
+            "Expected duration in display: {}",
+            display
+        );
     }
 
     #[test]
@@ -326,8 +330,20 @@ mod tests {
 
     #[test]
     fn test_error_classification() {
-        assert_eq!(ResilienceError::timeout(Duration::from_secs(1)).classify(), ErrorClass::Transient);
-        assert_eq!(ResilienceError::circuit_breaker_open("open").classify(), ErrorClass::ResourceExhaustion);
-        assert_eq!(ResilienceError::InvalidConfig { message: "bad".into() }.classify(), ErrorClass::Configuration);
+        assert_eq!(
+            ResilienceError::timeout(Duration::from_secs(1)).classify(),
+            ErrorClass::Transient
+        );
+        assert_eq!(
+            ResilienceError::circuit_breaker_open("open").classify(),
+            ErrorClass::ResourceExhaustion
+        );
+        assert_eq!(
+            ResilienceError::InvalidConfig {
+                message: "bad".into()
+            }
+            .classify(),
+            ErrorClass::Configuration
+        );
     }
 }

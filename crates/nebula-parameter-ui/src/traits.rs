@@ -1,7 +1,7 @@
 //! Common traits for parameter widgets.
 
 use crate::ParameterTheme;
-use egui::{Frame, Rounding, Stroke, Ui};
+use egui::{Frame, CornerRadius, Stroke, Ui};
 
 /// Response from a parameter widget.
 #[derive(Debug, Clone, Default)]
@@ -135,7 +135,7 @@ impl UiExt for Ui {
         let frame_response = Frame::none()
             .fill(theme.input_bg)
             .stroke(Stroke::new(1.0, theme.input_border))
-            .rounding(Rounding::same(theme.border_radius as u8))
+            .rounding(CornerRadius::same(theme.border_radius as u8))
             .inner_margin(egui::Margin::symmetric(8, 4))
             .show(self, |ui| {
                 ui.horizontal(|ui| {
@@ -163,7 +163,7 @@ impl UiExt for Ui {
         if is_hovered {
             self.painter().rect_stroke(
                 frame_response.response.rect,
-                Rounding::same(theme.border_radius as u8),
+                CornerRadius::same(theme.border_radius as u8),
                 Stroke::new(1.5, theme.input_border_focused),
                 egui::StrokeKind::Outside,
             );
@@ -180,7 +180,7 @@ impl UiExt for Ui {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     Frame::none()
                         .fill(theme.primary.gamma_multiply(0.15))
-                        .rounding(Rounding::same(8))
+                        .rounding(CornerRadius::same(8))
                         .inner_margin(egui::Margin::symmetric(6, 1))
                         .show(ui, |ui| {
                             ui.label(egui::RichText::new(badge_text).small().color(theme.primary));
@@ -204,7 +204,7 @@ impl UiExt for Ui {
         self.add_space(4.0);
         Frame::none()
             .fill(theme.error.gamma_multiply(0.1))
-            .rounding(Rounding::same(4))
+            .rounding(CornerRadius::same(4))
             .inner_margin(egui::Margin::symmetric(8, 4))
             .show(self, |ui| {
                 ui.horizontal(|ui| {
@@ -217,7 +217,7 @@ impl UiExt for Ui {
     fn success_indicator(&mut self, theme: &ParameterTheme, text: &str) {
         Frame::none()
             .fill(theme.success.gamma_multiply(0.1))
-            .rounding(Rounding::same(4))
+            .rounding(CornerRadius::same(4))
             .inner_margin(egui::Margin::symmetric(6, 2))
             .show(self, |ui| {
                 ui.horizontal(|ui| {

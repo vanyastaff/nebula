@@ -67,14 +67,14 @@ impl FailureThreshold {
 
     /// Returns the threshold value.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn get(self) -> usize {
         self.0
     }
 
     /// Checks if the threshold is valid (> 0 and <= MAX).
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn is_valid(self) -> bool {
         self.0 > 0 && self.0 <= Self::MAX.0
     }
@@ -124,14 +124,14 @@ impl MaxConcurrency {
 
     /// Returns the concurrency limit value.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn get(self) -> usize {
         self.0
     }
 
     /// Checks if the limit is valid (> 0).
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn is_valid(self) -> bool {
         self.0 > 0
     }
@@ -184,14 +184,14 @@ impl RetryCount {
 
     /// Returns the retry count value.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn get(self) -> usize {
         self.0
     }
 
     /// Checks if any retries are configured.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn has_retries(self) -> bool {
         self.0 > 0
     }
@@ -253,14 +253,14 @@ impl Timeout {
 
     /// Returns the duration.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn duration(self) -> Duration {
         self.0
     }
 
     /// Checks if this represents no timeout.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn is_infinite(self) -> bool {
         self.0.as_secs() == Duration::MAX.as_secs()
     }
@@ -311,14 +311,14 @@ impl RateLimit {
 
     /// Returns the rate limit in operations per second.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn ops_per_sec(self) -> f64 {
         self.0
     }
 
     /// Checks if the rate limit is valid (> 0).
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn is_valid(self) -> bool {
         self.0 > 0.0 && self.0.is_finite()
     }

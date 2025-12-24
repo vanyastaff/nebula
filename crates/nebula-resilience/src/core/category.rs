@@ -39,7 +39,7 @@ mod sealed {
 /// This trait is sealed and cannot be implemented outside this crate.
 pub trait FlowControlPattern: sealed::Sealed {
     /// Returns the category name for this pattern type.
-    #[must_use] 
+    #[must_use]
     fn category() -> &'static str {
         "flow_control"
     }
@@ -65,7 +65,7 @@ pub trait FlowControlPattern: sealed::Sealed {
 /// This trait is sealed and cannot be implemented outside this crate.
 pub trait ProtectionPattern: sealed::Sealed {
     /// Returns the category name for this pattern type.
-    #[must_use] 
+    #[must_use]
     fn category() -> &'static str {
         "protection"
     }
@@ -94,7 +94,7 @@ pub trait ProtectionPattern: sealed::Sealed {
 /// This trait is sealed and cannot be implemented outside this crate.
 pub trait RateLimitingPattern: sealed::Sealed {
     /// Returns the category name for this pattern type.
-    #[must_use] 
+    #[must_use]
     fn category() -> &'static str {
         "rate_limiting"
     }
@@ -118,7 +118,7 @@ pub trait RateLimitingPattern: sealed::Sealed {
 /// This trait is sealed and cannot be implemented outside this crate.
 pub trait FallbackPattern: sealed::Sealed {
     /// Returns the category name for this pattern type.
-    #[must_use] 
+    #[must_use]
     fn category() -> &'static str {
         "fallback"
     }

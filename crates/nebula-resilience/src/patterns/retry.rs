@@ -45,7 +45,7 @@ pub trait BackoffPolicy:
     fn max_delay(&self) -> Duration;
 
     /// Check if policy parameters are valid at compile time
-    #[must_use] 
+    #[must_use]
     fn is_valid() -> bool {
         true
     }
@@ -109,13 +109,14 @@ pub struct LinearBackoff<const BASE_DELAY_MS: u64, const MAX_DELAY_MS: u64 = 30_
     _marker: PhantomData<()>,
 }
 
-impl<const BASE_DELAY_MS: u64, const MAX_DELAY_MS: u64>
-    LinearBackoff<BASE_DELAY_MS, MAX_DELAY_MS>
-{
+impl<const BASE_DELAY_MS: u64, const MAX_DELAY_MS: u64> LinearBackoff<BASE_DELAY_MS, MAX_DELAY_MS> {
     /// Compile-time validation of const generic parameters
     const VALID: () = {
         assert!(BASE_DELAY_MS > 0, "BASE_DELAY_MS must be positive");
-        assert!(MAX_DELAY_MS >= BASE_DELAY_MS, "MAX_DELAY_MS must be >= BASE_DELAY_MS");
+        assert!(
+            MAX_DELAY_MS >= BASE_DELAY_MS,
+            "MAX_DELAY_MS must be >= BASE_DELAY_MS"
+        );
         assert!(MAX_DELAY_MS <= 300_000, "MAX_DELAY_MS must be <= 5 minutes");
     };
 
@@ -180,8 +181,14 @@ impl<const BASE_DELAY_MS: u64, const MULTIPLIER_X10: u64, const MAX_DELAY_MS: u6
     /// Compile-time validation of const generic parameters
     const VALID: () = {
         assert!(BASE_DELAY_MS > 0, "BASE_DELAY_MS must be positive");
-        assert!(MULTIPLIER_X10 >= 10, "MULTIPLIER_X10 must be >= 10 (multiplier >= 1.0)");
-        assert!(MAX_DELAY_MS >= BASE_DELAY_MS, "MAX_DELAY_MS must be >= BASE_DELAY_MS");
+        assert!(
+            MULTIPLIER_X10 >= 10,
+            "MULTIPLIER_X10 must be >= 10 (multiplier >= 1.0)"
+        );
+        assert!(
+            MAX_DELAY_MS >= BASE_DELAY_MS,
+            "MAX_DELAY_MS must be >= BASE_DELAY_MS"
+        );
         assert!(MAX_DELAY_MS <= 300_000, "MAX_DELAY_MS must be <= 5 minutes");
     };
 
@@ -244,7 +251,7 @@ pub struct CustomBackoff {
 
 impl CustomBackoff {
     /// Create new custom backoff with delays
-    #[must_use] 
+    #[must_use]
     pub fn new(delays: Vec<Duration>, default_delay: Duration) -> Self {
         Self {
             delays,
@@ -253,7 +260,7 @@ impl CustomBackoff {
     }
 
     /// Create from millisecond values
-    #[must_use] 
+    #[must_use]
     pub fn from_millis(delays: &[u64], default_ms: u64) -> Self {
         let delays = delays.iter().map(|&ms| Duration::from_millis(ms)).collect();
         Self::new(delays, Duration::from_millis(default_ms))
@@ -299,7 +306,7 @@ pub enum JitterPolicy {
 
 impl JitterPolicy {
     /// Apply jitter to a delay using fast RNG
-    #[must_use] 
+    #[must_use]
     pub fn apply(self, delay: Duration, previous_delay: Option<Duration>) -> Duration {
         match self {
             Self::None => delay,
@@ -359,7 +366,7 @@ pub struct ConservativeCondition<const MAX_ATTEMPTS: usize = 3> {
 
 impl<const MAX_ATTEMPTS: usize> ConservativeCondition<MAX_ATTEMPTS> {
     /// Create a new conservative retry condition.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         assert!(MAX_ATTEMPTS > 0, "Max attempts must be positive");
         Self {
@@ -391,7 +398,11 @@ impl<const MAX_ATTEMPTS: usize> RetryCondition<crate::core::ResilienceError>
         error.is_terminal()
     }
 
-    fn custom_delay(&self, error: &crate::core::ResilienceError, _attempt: usize) -> Option<Duration> {
+    fn custom_delay(
+        &self,
+        error: &crate::core::ResilienceError,
+        _attempt: usize,
+    ) -> Option<Duration> {
         // Use ResilienceError's retry_after hint
         error.retry_after()
     }
@@ -409,7 +420,7 @@ pub struct AggressiveCondition<const MAX_ATTEMPTS: usize = 5> {
 
 impl<const MAX_ATTEMPTS: usize> AggressiveCondition<MAX_ATTEMPTS> {
     /// Create a new aggressive retry condition.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         assert!(MAX_ATTEMPTS > 0, "Max attempts must be positive");
         Self {
@@ -452,7 +463,7 @@ pub struct TimeBasedCondition<const MAX_DURATION_MS: u64 = 30_000> {
 
 impl<const MAX_DURATION_MS: u64> TimeBasedCondition<MAX_DURATION_MS> {
     /// Create a new time-based condition with the given maximum attempts.
-    #[must_use] 
+    #[must_use]
     pub const fn new(max_attempts: usize) -> Self {
         assert!(max_attempts > 0, "Max attempts must be positive");
         assert!(MAX_DURATION_MS > 0, "Max duration must be positive");
@@ -613,11 +624,12 @@ impl<B: BackoffPolicy, C> RetryConfig<B, C> {
         }
 
         if let Some(max_duration) = self.max_total_duration
-            && max_duration.is_zero() {
-                return Err(ConfigError::validation(
-                    "max_total_duration must be positive",
-                ));
-            }
+            && max_duration.is_zero()
+        {
+            return Err(ConfigError::validation(
+                "max_total_duration must be positive",
+            ));
+        }
 
         Ok(())
     }
@@ -698,25 +710,26 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
 
                     // Check total duration limit
                     if let Some(max_duration) = self.config.max_total_duration
-                        && elapsed >= max_duration {
-                            warn!(
-                                attempts = attempt + 1,
-                                elapsed_ms = elapsed.as_millis(),
-                                max_ms = max_duration.as_millis(),
-                                "Retry failed: maximum duration exceeded"
-                            );
+                        && elapsed >= max_duration
+                    {
+                        warn!(
+                            attempts = attempt + 1,
+                            elapsed_ms = elapsed.as_millis(),
+                            max_ms = max_duration.as_millis(),
+                            "Retry failed: maximum duration exceeded"
+                        );
 
-                            let _stats = RetryStats {
-                                total_attempts: attempt + 1,
-                                total_duration: elapsed,
-                                succeeded: false,
-                                attempt_delays,
-                                attempt_durations,
-                                policy_name: self.config.backoff.policy_name().to_string(),
-                                condition_name: self.config.condition.condition_name().to_string(),
-                            };
-                            return Err(error);
-                        }
+                        let _stats = RetryStats {
+                            total_attempts: attempt + 1,
+                            total_duration: elapsed,
+                            succeeded: false,
+                            attempt_delays,
+                            attempt_durations,
+                            policy_name: self.config.backoff.policy_name().to_string(),
+                            condition_name: self.config.condition.condition_name().to_string(),
+                        };
+                        return Err(error);
+                    }
 
                     if !should_retry {
                         warn!(

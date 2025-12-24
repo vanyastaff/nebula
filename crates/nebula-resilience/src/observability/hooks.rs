@@ -39,13 +39,13 @@ pub trait EventCategory: sealed::SealedEventCategory + Send + Sync + 'static {
     fn description() -> &'static str;
 
     /// Default log level for this category.
-    #[must_use] 
+    #[must_use]
     fn default_log_level() -> LogLevel {
         LogLevel::Info
     }
 
     /// Whether events in this category should be sampled.
-    #[must_use] 
+    #[must_use]
     fn is_sampled() -> bool {
         false
     }
@@ -202,25 +202,25 @@ impl<C: EventCategory> Event<C> {
     }
 
     /// Get category name.
-    #[must_use] 
+    #[must_use]
     pub fn category(&self) -> &'static str {
         C::name()
     }
 
     /// Get default log level.
-    #[must_use] 
+    #[must_use]
     pub fn log_level(&self) -> LogLevel {
         C::default_log_level()
     }
 
     /// Check if event should be sampled.
-    #[must_use] 
+    #[must_use]
     pub fn is_sampled(&self) -> bool {
         C::is_sampled()
     }
 
     /// Check if this is an error event.
-    #[must_use] 
+    #[must_use]
     pub fn is_error(&self) -> bool {
         self.error.is_some()
     }
@@ -270,13 +270,13 @@ pub mod metrics {
     pub type OperationHistogram = Metric<3>;
 
     /// Create a counter increment.
-    #[must_use] 
+    #[must_use]
     pub fn counter(name: &str) -> Counter {
         Metric::new(name, 1.0, [("name", name.to_string())])
     }
 
     /// Create a service gauge.
-    #[must_use] 
+    #[must_use]
     pub fn service_gauge(name: &str, service: &str, value: f64) -> ServiceGauge {
         Metric::new(
             name,
@@ -286,7 +286,7 @@ pub mod metrics {
     }
 
     /// Create an operation histogram entry.
-    #[must_use] 
+    #[must_use]
     pub fn operation_histogram(
         name: &str,
         service: &str,
