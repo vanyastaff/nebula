@@ -87,6 +87,47 @@ where
     ValueInteger::new(validator)
 }
 
+/// Wrapper that extracts `f64` from `Value::Float` (with lossy conversion) and validates it
+pub struct ValueFloat<V> {
+    validator: V,
+}
+
+impl<V> ValueFloat<V> {
+    /// Create a new ValueFloat wrapper
+    pub fn new(validator: V) -> Self {
+        Self { validator }
+    }
+
+    /// Get reference to inner validator
+    pub fn inner(&self) -> &V {
+        &self.validator
+    }
+}
+
+impl<V> TypedValidator for ValueFloat<V>
+where
+    V: TypedValidator<Input = f64, Output = (), Error = ValidationError>,
+{
+    type Input = Value;
+    type Output = ();
+    type Error = ValidationError;
+
+    fn validate(&self, input: &Value) -> Result<(), ValidationError> {
+        let n = input
+            .as_float_lossy()
+            .ok_or_else(|| ValidationError::new("type_error", "Expected numeric value"))?;
+        self.validator.validate(&n.value())
+    }
+}
+
+/// Convenience function to create a ValueFloat validator
+pub fn value_float<V>(validator: V) -> ValueFloat<V>
+where
+    V: TypedValidator<Input = f64, Output = (), Error = ValidationError>,
+{
+    ValueFloat::new(validator)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +173,35 @@ mod tests {
     fn test_value_integer_wrong_type() {
         use crate::validators::numeric::min;
         let validator = value_integer(min(18i64));
+        assert!(validator.validate(&Value::text("hello")).is_err());
+    }
+
+    #[test]
+    fn test_value_float_valid() {
+        use crate::validators::numeric::min;
+        let validator = value_float(min(0.0f64));
+        assert!(validator.validate(&Value::float(3.14)).is_ok());
+    }
+
+    #[test]
+    fn test_value_float_invalid() {
+        use crate::validators::numeric::min;
+        let validator = value_float(min(10.0f64));
+        assert!(validator.validate(&Value::float(5.0)).is_err());
+    }
+
+    #[test]
+    fn test_value_float_from_integer() {
+        // ValueFloat accepts integers with lossy conversion
+        use crate::validators::numeric::min;
+        let validator = value_float(min(0.0f64));
+        assert!(validator.validate(&Value::integer(42)).is_ok());
+    }
+
+    #[test]
+    fn test_value_float_wrong_type() {
+        use crate::validators::numeric::min;
+        let validator = value_float(min(0.0f64));
         assert!(validator.validate(&Value::text("hello")).is_err());
     }
 }

@@ -4179,6 +4179,7 @@ dependencies = [
  "futures",
  "moka",
  "nebula-log",
+ "nebula-value",
  "pretty_assertions",
  "rand 0.9.2",
  "regex",

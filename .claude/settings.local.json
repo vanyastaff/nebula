@@ -20,7 +20,8 @@
       "Bash(cargo bloat:*)",
       "Bash(cargo deny:*)",
       "Bash(cat:*)",
-      "Bash(tee:*)"
+      "Bash(tee:*)",
+      "Skill(superpowers:using-superpowers)"
     ]
   }
 }
