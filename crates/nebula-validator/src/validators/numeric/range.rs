@@ -166,6 +166,231 @@ pub fn in_range<T>(min: T, max: T) -> InRange<T> {
 }
 
 // ============================================================================
+// GREATER THAN (exclusive)
+// ============================================================================
+
+/// Validates that a number is strictly greater than a given value.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_validator::validators::numeric::greater_than;
+/// use nebula_validator::core::Validator;
+///
+/// let validator = greater_than(5);
+/// assert!(validator.validate(&6).is_ok());
+/// assert!(validator.validate(&5).is_err()); // Not strictly greater
+/// assert!(validator.validate(&4).is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GreaterThan<T> {
+    /// The exclusive lower bound.
+    pub bound: T,
+}
+
+impl<T> GreaterThan<T> {
+    /// Creates a new greater-than validator.
+    #[must_use]
+    pub fn new(bound: T) -> Self {
+        Self { bound }
+    }
+}
+
+impl<T> Validator for GreaterThan<T>
+where
+    T: PartialOrd + Display + Copy,
+{
+    type Input = T;
+
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+        if *input > self.bound {
+            Ok(())
+        } else {
+            Err(ValidationError::new(
+                "greater_than",
+                format!("Value must be greater than {}", self.bound),
+            )
+            .with_param("bound", self.bound.to_string())
+            .with_param("actual", input.to_string()))
+        }
+    }
+
+    fn metadata(&self) -> ValidatorMetadata {
+        ValidatorMetadata {
+            name: "GreaterThan".to_string(),
+            description: Some(format!("Value must be > {}", self.bound)),
+            complexity: ValidationComplexity::Constant,
+            cacheable: true,
+            estimated_time: None,
+            tags: vec!["numeric".to_string(), "range".to_string()],
+            version: None,
+            custom: std::collections::HashMap::new(),
+        }
+    }
+}
+
+/// Creates a validator that checks if a number is strictly greater than the given value.
+#[must_use]
+pub fn greater_than<T>(bound: T) -> GreaterThan<T>
+where
+    T: PartialOrd + Display + Copy,
+{
+    GreaterThan::new(bound)
+}
+
+// ============================================================================
+// LESS THAN (exclusive)
+// ============================================================================
+
+/// Validates that a number is strictly less than a given value.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_validator::validators::numeric::less_than;
+/// use nebula_validator::core::Validator;
+///
+/// let validator = less_than(10);
+/// assert!(validator.validate(&9).is_ok());
+/// assert!(validator.validate(&10).is_err()); // Not strictly less
+/// assert!(validator.validate(&11).is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LessThan<T> {
+    /// The exclusive upper bound.
+    pub bound: T,
+}
+
+impl<T> LessThan<T> {
+    /// Creates a new less-than validator.
+    #[must_use]
+    pub fn new(bound: T) -> Self {
+        Self { bound }
+    }
+}
+
+impl<T> Validator for LessThan<T>
+where
+    T: PartialOrd + Display + Copy,
+{
+    type Input = T;
+
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+        if *input < self.bound {
+            Ok(())
+        } else {
+            Err(ValidationError::new(
+                "less_than",
+                format!("Value must be less than {}", self.bound),
+            )
+            .with_param("bound", self.bound.to_string())
+            .with_param("actual", input.to_string()))
+        }
+    }
+
+    fn metadata(&self) -> ValidatorMetadata {
+        ValidatorMetadata {
+            name: "LessThan".to_string(),
+            description: Some(format!("Value must be < {}", self.bound)),
+            complexity: ValidationComplexity::Constant,
+            cacheable: true,
+            estimated_time: None,
+            tags: vec!["numeric".to_string(), "range".to_string()],
+            version: None,
+            custom: std::collections::HashMap::new(),
+        }
+    }
+}
+
+/// Creates a validator that checks if a number is strictly less than the given value.
+#[must_use]
+pub fn less_than<T>(bound: T) -> LessThan<T>
+where
+    T: PartialOrd + Display + Copy,
+{
+    LessThan::new(bound)
+}
+
+// ============================================================================
+// EXCLUSIVE RANGE
+// ============================================================================
+
+/// Validates that a number is within an exclusive range (min < value < max).
+///
+/// # Examples
+///
+/// ```
+/// use nebula_validator::validators::numeric::exclusive_range;
+/// use nebula_validator::core::Validator;
+///
+/// let validator = exclusive_range(0, 10);
+/// assert!(validator.validate(&5).is_ok());
+/// assert!(validator.validate(&0).is_err()); // Boundary not included
+/// assert!(validator.validate(&10).is_err()); // Boundary not included
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExclusiveRange<T> {
+    /// The exclusive minimum bound.
+    pub min: T,
+    /// The exclusive maximum bound.
+    pub max: T,
+}
+
+impl<T> ExclusiveRange<T> {
+    /// Creates a new exclusive range validator.
+    #[must_use]
+    pub fn new(min: T, max: T) -> Self {
+        Self { min, max }
+    }
+}
+
+impl<T> Validator for ExclusiveRange<T>
+where
+    T: PartialOrd + Display + Copy,
+{
+    type Input = T;
+
+    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+        if *input > self.min && *input < self.max {
+            Ok(())
+        } else {
+            Err(ValidationError::new(
+                "exclusive_range",
+                format!(
+                    "Value must be between {} and {} (exclusive)",
+                    self.min, self.max
+                ),
+            )
+            .with_param("min", self.min.to_string())
+            .with_param("max", self.max.to_string())
+            .with_param("actual", input.to_string()))
+        }
+    }
+
+    fn metadata(&self) -> ValidatorMetadata {
+        ValidatorMetadata {
+            name: "ExclusiveRange".to_string(),
+            description: Some(format!("Value must be in ({}, {})", self.min, self.max)),
+            complexity: ValidationComplexity::Constant,
+            cacheable: true,
+            estimated_time: None,
+            tags: vec!["numeric".to_string(), "range".to_string()],
+            version: None,
+            custom: std::collections::HashMap::new(),
+        }
+    }
+}
+
+/// Creates a validator that checks if a number is within an exclusive range.
+#[must_use]
+pub fn exclusive_range<T>(min: T, max: T) -> ExclusiveRange<T>
+where
+    T: PartialOrd + Display + Copy,
+{
+    ExclusiveRange::new(min, max)
+}
+
+// ============================================================================
 // TESTS
 // ============================================================================
 
@@ -197,5 +422,51 @@ mod tests {
         assert!(validator.validate(&10).is_ok());
         assert!(validator.validate(&3).is_err());
         assert!(validator.validate(&12).is_err());
+    }
+
+    #[test]
+    fn test_greater_than() {
+        let validator = greater_than(5);
+        assert!(validator.validate(&6).is_ok());
+        assert!(validator.validate(&100).is_ok());
+        assert!(validator.validate(&5).is_err());
+        assert!(validator.validate(&4).is_err());
+    }
+
+    #[test]
+    fn test_less_than() {
+        let validator = less_than(10);
+        assert!(validator.validate(&9).is_ok());
+        assert!(validator.validate(&0).is_ok());
+        assert!(validator.validate(&10).is_err());
+        assert!(validator.validate(&11).is_err());
+    }
+
+    #[test]
+    fn test_exclusive_range() {
+        let validator = exclusive_range(0, 10);
+        assert!(validator.validate(&1).is_ok());
+        assert!(validator.validate(&5).is_ok());
+        assert!(validator.validate(&9).is_ok());
+        assert!(validator.validate(&0).is_err());
+        assert!(validator.validate(&10).is_err());
+        assert!(validator.validate(&-1).is_err());
+        assert!(validator.validate(&11).is_err());
+    }
+
+    #[test]
+    fn test_greater_than_float() {
+        let validator = greater_than(0.0_f64);
+        assert!(validator.validate(&0.001).is_ok());
+        assert!(validator.validate(&0.0).is_err());
+        assert!(validator.validate(&-0.001).is_err());
+    }
+
+    #[test]
+    fn test_less_than_float() {
+        let validator = less_than(1.0_f64);
+        assert!(validator.validate(&0.999).is_ok());
+        assert!(validator.validate(&1.0).is_err());
+        assert!(validator.validate(&1.001).is_err());
     }
 }
