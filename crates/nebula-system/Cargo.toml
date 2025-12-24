@@ -39,13 +39,13 @@ minimal = ["memory"]
 # Internal dependencies
 
 # Core dependencies
-once_cell = "1.21"
-parking_lot = "0.12"
-thiserror = "2.0"
+once_cell = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
 winapi = "0.3.9"
 
 # Memory management
-libc = { version = "0.2", optional = true }
+libc = { workspace = true, optional = true }
 region = { version = "3.0", optional = true }
 
 # Optional dependencies
@@ -57,8 +57,8 @@ tokio = { version = "1", optional = true, features = ["time", "sync"] }
 sysinfo = { version = "0.37", optional = true, default-features = false, features = ["system", "multithread"] }
 
 [dev-dependencies]
-criterion = "0.8.1"
-proptest = "1.9"
+criterion = { workspace = true }
+proptest = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 

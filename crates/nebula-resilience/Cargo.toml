@@ -23,15 +23,15 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 # Utilities
-parking_lot = { version = "0.12.5", features = ["arc_lock", "serde"] }
-dashmap = "6.1"
+parking_lot = { workspace = true, features = ["arc_lock", "serde"] }
+dashmap = { workspace = true }
 humantime-serde = "1.1.1"
-rand = "0.9"
+rand = { workspace = true }
 governor = "0.10"
 tokio-util = { version = "0.7", features = ["rt"] }
 
 # Advanced type system features
-heapless = "0.9.2"
+heapless = { workspace = true }
 fastrand = "2.1"
 tracing = { workspace = true }
 
@@ -42,7 +42,7 @@ nebula-log = { path = "../nebula-log" }
 nebula-value = { path = "../nebula-value", features = ["serde"] }
 
 [dev-dependencies]
-criterion = { version = "0.8.1", features = ["async_tokio", "html_reports"] }
+criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 

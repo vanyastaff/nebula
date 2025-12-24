@@ -10,13 +10,13 @@ repository.workspace = true
 
 [dependencies]
 # Async
-async-trait = "0.1"
-tokio = { version = "1.0", features = ["time", "sync", "macros", "rt"] }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["time", "sync", "macros", "rt"] }
 
 # Crypto and security
-base64 = "0.22.1"
-domain-key = "0.1.1"
-rand = "0.8"
+base64 = { workspace = true }
+domain-key = { workspace = true }
+rand = { workspace = true }
 sha2 = "0.10"
 zeroize = { version = "1.8.1", features = ["zeroize_derive"] }
 
@@ -29,11 +29,11 @@ thiserror = { workspace = true }
 
 # HTTP client (for flows)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-url = "2.5"
+url = { workspace = true }
 
 # Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 # Optional storage backends
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls"], optional = true }

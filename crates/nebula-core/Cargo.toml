@@ -13,10 +13,10 @@ documentation.workspace = true
 
 [dependencies]
 # Async traits
-async-trait = "0.1"
+async-trait = { workspace = true }
 
 # Collections
-dashmap = "6.1.0"
+dashmap = { workspace = true }
 
 # Errors
 thiserror = { workspace = true }

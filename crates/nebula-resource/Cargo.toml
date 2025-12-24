@@ -67,27 +67,27 @@ tokio = { version = "1.0", features = ["rt-multi-thread", "time", "sync", "macro
 futures = "0.3"
 
 # Core utilities
-async-trait = "0.1"
+async-trait = { workspace = true }
 pin-project-lite = "0.2"
 thiserror = { workspace = true }
 uuid = { workspace = true }
 
 # Serialization
-serde = { version = "1.0", features = ["derive"], optional = true }
-serde_json = { version = "1.0", optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
 serde_yaml = { version = "0.9", optional = true }
 
 # Collections and data structures
-dashmap = "6.1.0"
-parking_lot = "0.12"
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
 crossbeam = "0.8"
 
 # Observability
-tracing = { version = "0.1", optional = true }
-tracing-opentelemetry = { version = "0.32.0", optional = true }
-opentelemetry = { version = "0.31.0", optional = true }
-metrics = { version = "0.24.3", optional = true }
-metrics-exporter-prometheus = { version = "0.18.1", optional = true }
+tracing = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+metrics = { workspace = true, optional = true }
+metrics-exporter-prometheus = { workspace = true, optional = true }
 
 # Time and scheduling
 chrono = { workspace = true }
@@ -108,7 +108,7 @@ rdkafka = { version = "0.38", features = ["tokio"], optional = true }
 
 # Configuration and validation
 validator = { version = "0.20.0", features = ["derive"] }
-base64 = "0.22.1"
+base64 = { workspace = true }
 
 # Development and testing
 mockall = { workspace = true, optional = true }
@@ -116,8 +116,8 @@ test-case = { version = "3.3.1", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
-criterion = "0.8.1"
-proptest = "1.9"
+criterion = { workspace = true }
+proptest = { workspace = true }
 test-case = "3.3.1"
 mockall = { workspace = true }
 tempfile = { workspace = true }

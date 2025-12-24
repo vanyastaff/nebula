@@ -35,9 +35,9 @@ serde_json = { workspace = true }
 
 # Time and utilities
 chrono = { workspace = true }
-regex = "1.11.1"
-uuid = "1.18.1"
-dashmap = "6.1.0"
+regex = { workspace = true }
+uuid = { workspace = true }
+dashmap = { workspace = true }
 
 # Internal crates
 nebula-derive = { path = "../nebula-derive" }

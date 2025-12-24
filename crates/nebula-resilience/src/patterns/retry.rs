@@ -60,11 +60,26 @@ pub struct FixedDelay<const DELAY_MS: u64> {
     _marker: PhantomData<()>,
 }
 
-impl<const DELAY_MS: u64> Default for FixedDelay<DELAY_MS> {
-    fn default() -> Self {
+impl<const DELAY_MS: u64> FixedDelay<DELAY_MS> {
+    /// Compile-time validation of const generic parameters
+    const VALID: () = {
+        assert!(DELAY_MS > 0, "DELAY_MS must be positive");
+        assert!(DELAY_MS <= 300_000, "DELAY_MS must be <= 5 minutes");
+    };
+
+    /// Create new fixed delay backoff with validation
+    #[must_use]
+    pub const fn new() -> Self {
+        let _ = Self::VALID;
         Self {
             _marker: PhantomData,
         }
+    }
+}
+
+impl<const DELAY_MS: u64> Default for FixedDelay<DELAY_MS> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -94,13 +109,31 @@ pub struct LinearBackoff<const BASE_DELAY_MS: u64, const MAX_DELAY_MS: u64 = 30_
     _marker: PhantomData<()>,
 }
 
+impl<const BASE_DELAY_MS: u64, const MAX_DELAY_MS: u64>
+    LinearBackoff<BASE_DELAY_MS, MAX_DELAY_MS>
+{
+    /// Compile-time validation of const generic parameters
+    const VALID: () = {
+        assert!(BASE_DELAY_MS > 0, "BASE_DELAY_MS must be positive");
+        assert!(MAX_DELAY_MS >= BASE_DELAY_MS, "MAX_DELAY_MS must be >= BASE_DELAY_MS");
+        assert!(MAX_DELAY_MS <= 300_000, "MAX_DELAY_MS must be <= 5 minutes");
+    };
+
+    /// Create new linear backoff with validation
+    #[must_use]
+    pub const fn new() -> Self {
+        let _ = Self::VALID;
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
 impl<const BASE_DELAY_MS: u64, const MAX_DELAY_MS: u64> Default
     for LinearBackoff<BASE_DELAY_MS, MAX_DELAY_MS>
 {
     fn default() -> Self {
-        Self {
-            _marker: PhantomData,
-        }
+        Self::new()
     }
 }
 
@@ -141,13 +174,32 @@ pub struct ExponentialBackoff<
     _marker: PhantomData<()>,
 }
 
+impl<const BASE_DELAY_MS: u64, const MULTIPLIER_X10: u64, const MAX_DELAY_MS: u64>
+    ExponentialBackoff<BASE_DELAY_MS, MULTIPLIER_X10, MAX_DELAY_MS>
+{
+    /// Compile-time validation of const generic parameters
+    const VALID: () = {
+        assert!(BASE_DELAY_MS > 0, "BASE_DELAY_MS must be positive");
+        assert!(MULTIPLIER_X10 >= 10, "MULTIPLIER_X10 must be >= 10 (multiplier >= 1.0)");
+        assert!(MAX_DELAY_MS >= BASE_DELAY_MS, "MAX_DELAY_MS must be >= BASE_DELAY_MS");
+        assert!(MAX_DELAY_MS <= 300_000, "MAX_DELAY_MS must be <= 5 minutes");
+    };
+
+    /// Create new exponential backoff with validation
+    #[must_use]
+    pub const fn new() -> Self {
+        let _ = Self::VALID;
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
 impl<const BASE_DELAY_MS: u64, const MULTIPLIER_X10: u64, const MAX_DELAY_MS: u64> Default
     for ExponentialBackoff<BASE_DELAY_MS, MULTIPLIER_X10, MAX_DELAY_MS>
 {
     fn default() -> Self {
-        Self {
-            _marker: PhantomData,
-        }
+        Self::new()
     }
 }
 

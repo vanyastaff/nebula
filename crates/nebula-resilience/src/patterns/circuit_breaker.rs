@@ -86,9 +86,19 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64> Default
 impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
     CircuitBreakerConfig<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>
 {
+    /// Compile-time validation of const generic parameters
+    const VALID: () = {
+        assert!(FAILURE_THRESHOLD > 0, "FAILURE_THRESHOLD must be positive");
+        assert!(RESET_TIMEOUT_MS > 0, "RESET_TIMEOUT_MS must be positive");
+        assert!(RESET_TIMEOUT_MS <= 300_000, "RESET_TIMEOUT_MS must be <= 5 minutes");
+    };
+
     /// Create new configuration with validation
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
+        // Trigger compile-time validation
+        let _ = Self::VALID;
+
         Self {
             half_open_max_operations: 3,
             count_timeouts: true,

@@ -53,19 +53,19 @@ full = ["std", "pool", "arena", "cache", "stats", "budget", "streaming", "monito
 # Collections
 crossbeam-queue = { version = "0.3", optional = true, default-features = false }
 hashbrown = { version = "0.16.1", optional = true, default-features = false }
-dashmap = { version = "6.1.0", optional = true, default-features = false }
+dashmap = { workspace = true, optional = true }
 
 # Core dependencies
 cfg-if = "1.0"
 dyn-clone = "1.0"
-spin = "0.10.0"
-chrono = { version = "0.4", optional = true, default-features = false, features = ["clock"] }
+spin = { workspace = true }
+chrono = { workspace = true, optional = true, features = ["clock"] }
 
 # No-std collections
-heapless = "0.9.2"
+heapless = { workspace = true }
 
 # Platform-specific
-libc = { version = "0.2", optional = true }
+libc = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["memoryapi", "sysinfoapi", "libloaderapi"] }
@@ -73,8 +73,8 @@ winapi = { version = "0.3", features = ["memoryapi", "sysinfoapi", "libloaderapi
 # Linux NUMA support is available through libc
 
 # Synchronization
-once_cell = { version = "1.21", optional = true }
-parking_lot = { version = "0.12", optional = true }
+once_cell = { workspace = true, optional = true }
+parking_lot = { workspace = true, optional = true }
 
 # Async runtime (optional)
 tokio = { version = "1.0", optional = true, default-features = false, features = ["sync", "time"] }
@@ -86,7 +86,7 @@ lz4_flex = { version = "0.12.0", optional = true, default-features = false }
 
 # Debug tools (optional)
 backtrace = { version = "0.3", optional = true }
-rand = { version = "0.9.2", optional = true }
+rand = { workspace = true, optional = true }
 
 # Errors
 thiserror = { workspace = true }
@@ -97,9 +97,9 @@ nebula-log = { path = "..\\nebula-log", optional = true }
 nebula-system = { path = "..\\nebula-system" }
 
 [dev-dependencies]
-criterion = "0.8.1"
-proptest = "1.9"
-rand = "0.9.2"
+criterion = { workspace = true }
+proptest = { workspace = true }
+rand = { workspace = true }
 
 
 [package.metadata.docs.rs]
