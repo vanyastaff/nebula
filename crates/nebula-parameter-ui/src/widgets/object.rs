@@ -426,7 +426,7 @@ impl ObjectWidget {
         response: &mut WidgetResponse,
     ) {
         let mut checked = *self.checkbox_states.get(key).unwrap_or(&false);
-        let old_checked = checked;
+        let _old_checked = checked;
 
         if ui.checkbox(&mut checked, "").changed() {
             self.checkbox_states.insert(key.to_string(), checked);

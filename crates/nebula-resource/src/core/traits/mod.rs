@@ -129,7 +129,7 @@ pub trait HealthCheckable: Send + Sync {
     /// Perform a detailed health check with additional context
     async fn detailed_health_check(
         &self,
-        context: &ResourceContext,
+        _context: &ResourceContext,
     ) -> ResourceResult<HealthStatus> {
         // Default implementation just calls the basic health check
         self.health_check().await
@@ -300,7 +300,7 @@ pub trait Configurable: Send + Sync {
     fn current_config(&self) -> Self::Config;
 
     /// Validate a configuration without applying it
-    fn validate_config(&self, config: &Self::Config) -> ResourceResult<()> {
+    fn validate_config(&self, _config: &Self::Config) -> ResourceResult<()> {
         Ok(())
     }
 }

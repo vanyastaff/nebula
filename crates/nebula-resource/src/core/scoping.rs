@@ -118,7 +118,7 @@ impl ResourceScope {
 
             // Tenant contains workflow, execution, and action in same tenant
             (
-                Self::Tenant { tenant_id: t1 },
+                Self::Tenant { tenant_id: _t1 },
                 Self::Workflow { .. } | Self::Execution { .. } | Self::Action { .. },
             ) => {
                 // Note: This is simplified - in reality we'd need context to check tenant ownership
@@ -127,14 +127,14 @@ impl ResourceScope {
             (Self::Tenant { tenant_id: t1 }, Self::Tenant { tenant_id: t2 }) => t1 == t2,
 
             // Workflow contains execution and action in same workflow
-            (Self::Workflow { workflow_id: w1 }, Self::Execution { .. } | Self::Action { .. }) => {
+            (Self::Workflow { workflow_id: _w1 }, Self::Execution { .. } | Self::Action { .. }) => {
                 // Note: This is simplified - in reality we'd need context to check workflow ownership
                 true
             }
             (Self::Workflow { workflow_id: w1 }, Self::Workflow { workflow_id: w2 }) => w1 == w2,
 
             // Execution contains action in same execution
-            (Self::Execution { execution_id: e1 }, Self::Action { .. }) => {
+            (Self::Execution { execution_id: _e1 }, Self::Action { .. }) => {
                 // Note: This is simplified - in reality we'd need context to check execution ownership
                 true
             }

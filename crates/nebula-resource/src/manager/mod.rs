@@ -401,7 +401,7 @@ impl ResourceManager {
     where
         T: 'static,
     {
-        let type_id = TypeId::of::<T>();
+        let _type_id = TypeId::of::<T>();
 
         // For now, we'll use a simple approach
         // In a real implementation, we'd maintain a TypeId -> ResourceId mapping
@@ -441,7 +441,7 @@ impl ResourceManager {
     fn create_guard_with_pool<T>(
         &self,
         instance: TypedResourceInstance<T>,
-        pool: Arc<dyn PoolTrait + Send + Sync>,
+        _pool: Arc<dyn PoolTrait + Send + Sync>,
     ) -> ResourceGuard<T>
     where
         T: Send + Sync + 'static,
@@ -470,7 +470,7 @@ impl ResourceManager {
     async fn ensure_dependencies_initialized(
         &self,
         resource_id: &ResourceId,
-        context: &ResourceContext,
+        _context: &ResourceContext,
     ) -> ResourceResult<()> {
         // Get initialization order (dependencies come first)
         let init_order = {
@@ -490,7 +490,7 @@ impl ResourceManager {
             // So we'll use the factory to create the pool if it doesn't exist
 
             // Get metadata to find the TypeId
-            let metadata = self.metadata_cache.get(dep_id).ok_or_else(|| {
+            let _metadata = self.metadata_cache.get(dep_id).ok_or_else(|| {
                 ResourceError::unavailable(dep_id.unique_key(), "Dependency not registered", false)
             })?;
 
@@ -713,7 +713,7 @@ impl ResourceManager {
             // Workflow resources can be accessed from narrower scopes within the same workflow
             (
                 ResourceScope::Workflow {
-                    workflow_id: res_wf,
+                    workflow_id: _res_wf,
                 },
                 ResourceScope::Execution { .. } | ResourceScope::Action { .. },
             ) => {
@@ -745,7 +745,7 @@ impl ResourceManager {
             // Execution resources can be accessed from actions in the same execution
             (
                 ResourceScope::Execution {
-                    execution_id: res_exec,
+                    execution_id: _res_exec,
                 },
                 ResourceScope::Action { .. },
             ) => {

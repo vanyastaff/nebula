@@ -84,7 +84,7 @@ impl ResourceMetrics {
     }
 
     /// Record a resource acquisition
-    pub fn record_acquisition(&self, duration: Duration) {
+    pub fn record_acquisition(&self, _duration: Duration) {
         #[cfg(feature = "metrics")]
         {
             self.acquisitions.increment(1);
@@ -101,7 +101,7 @@ impl ResourceMetrics {
     }
 
     /// Update active instances count
-    pub fn set_active_instances(&self, count: u64) {
+    pub fn set_active_instances(&self, _count: u64) {
         #[cfg(feature = "metrics")]
         {
             self.active_instances.set(count as f64);
@@ -125,7 +125,7 @@ impl ResourceMetrics {
     }
 
     /// Record health check
-    pub fn record_health_check(&self, success: bool) {
+    pub fn record_health_check(&self, _success: bool) {
         #[cfg(feature = "metrics")]
         {
             let mut labels = self.labels.clone();
@@ -135,7 +135,7 @@ impl ResourceMetrics {
     }
 
     /// Record an error
-    pub fn record_error(&self, error_type: &str) {
+    pub fn record_error(&self, _error_type: &str) {
         #[cfg(feature = "metrics")]
         {
             let mut labels = self.labels.clone();

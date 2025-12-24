@@ -776,7 +776,7 @@ where
     pub async fn maintain(&self) -> ResourceResult<MaintenanceStats> {
         let start_time = Instant::now();
 
-        let (initial_count, removed_count, current_len) = {
+        let (_initial_count, removed_count, current_len) = {
             let mut available = self.available.lock();
             let initial_count = available.len();
 
@@ -1231,7 +1231,7 @@ impl PoolManager {
         T: Send + Sync + 'static,
     {
         let pools = self.pools.read();
-        let pool_trait = pools.get(pool_id)?;
+        let _pool_trait = pools.get(pool_id)?;
 
         // We need to downcast through Any since Arc<dyn PoolTrait> doesn't directly support downcast
         // This is a limitation of trait objects

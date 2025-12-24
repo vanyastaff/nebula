@@ -808,4 +808,127 @@ mod tests {
         let result = evaluator.eval(&expr, &context).unwrap();
         assert_eq!(result.as_boolean(), Some(false));
     }
+
+    // ReDoS protection tests
+
+    #[test]
+    #[cfg(feature = "regex")]
+    fn test_redos_pattern_length_limit() {
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+
+        // Create a pattern that exceeds the maximum length
+        let long_pattern = "a".repeat(MAX_REGEX_PATTERN_LEN + 1);
+
+        let expr = Expr::Binary {
+            left: Box::new(Expr::Literal(Value::text("test"))),
+            op: BinaryOp::RegexMatch,
+            right: Box::new(Expr::Literal(Value::text(&long_pattern))),
+        };
+
+        let result = evaluator.eval(&expr, &context);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("too long"));
+    }
+
+    #[test]
+    #[cfg(feature = "regex")]
+    fn test_redos_nested_quantifiers_plus_plus() {
+        // Test pattern like (a+)+ which can cause catastrophic backtracking
+        assert!(Evaluator::is_potentially_dangerous_regex("(a+)+"));
+        assert!(Evaluator::is_potentially_dangerous_regex("(a+)+b"));
+        assert!(Evaluator::is_potentially_dangerous_regex("^(a+)+$"));
+    }
+
+    #[test]
+    #[cfg(feature = "regex")]
+    fn test_redos_nested_quantifiers_star_star() {
+        // Test pattern like (a*)* which can cause catastrophic backtracking
+        assert!(Evaluator::is_potentially_dangerous_regex("(a*)*"));
+        assert!(Evaluator::is_potentially_dangerous_regex("(.*)*"));
+    }
+
+    #[test]
+    #[cfg(feature = "regex")]
+    fn test_redos_nested_quantifiers_mixed() {
+        // Test mixed quantifier patterns
+        assert!(Evaluator::is_potentially_dangerous_regex("(a+)*"));
+        assert!(Evaluator::is_potentially_dangerous_regex("(a*)+"));
+        assert!(Evaluator::is_potentially_dangerous_regex("([a-z]+)*"));
+    }
+
+    #[test]
+    #[cfg(feature = "regex")]
+    fn test_redos_nested_quantifiers_with_braces() {
+        // Test patterns with curly brace quantifiers
+        assert!(Evaluator::is_potentially_dangerous_regex("(a{2,})+"));
+        assert!(Evaluator::is_potentially_dangerous_regex("(a{1,5})*"));
+    }
+
+    #[test]
+    #[cfg(feature = "regex")]
+    fn test_redos_safe_patterns() {
+        // These patterns should NOT be flagged as dangerous
+        assert!(!Evaluator::is_potentially_dangerous_regex("hello.*"));
+        assert!(!Evaluator::is_potentially_dangerous_regex("^[a-z]+$"));
+        assert!(!Evaluator::is_potentially_dangerous_regex("\\d{3}-\\d{4}"));
+        assert!(!Evaluator::is_potentially_dangerous_regex("(abc)+"));
+        assert!(!Evaluator::is_potentially_dangerous_regex("a+b+c+"));
+        assert!(!Evaluator::is_potentially_dangerous_regex("(foo|bar)+"));
+    }
+
+    #[test]
+    #[cfg(feature = "regex")]
+    fn test_redos_rejection_in_eval() {
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+
+        // This dangerous pattern should be rejected
+        let expr = Expr::Binary {
+            left: Box::new(Expr::Literal(Value::text("aaaaaaaaaaaaaaaaaaaaaaaaaaa!"))),
+            op: BinaryOp::RegexMatch,
+            right: Box::new(Expr::Literal(Value::text("(a+)+$"))),
+        };
+
+        let result = evaluator.eval(&expr, &context);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("nested quantifiers"));
+    }
+
+    #[test]
+    #[cfg(feature = "regex")]
+    fn test_regex_cache_size_limit() {
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+
+        // Fill the cache with many patterns
+        for i in 0..MAX_REGEX_CACHE_SIZE + 10 {
+            let pattern = format!("pattern_{}", i);
+            let expr = Expr::Binary {
+                left: Box::new(Expr::Literal(Value::text("test"))),
+                op: BinaryOp::RegexMatch,
+                right: Box::new(Expr::Literal(Value::text(&pattern))),
+            };
+            let _ = evaluator.eval(&expr, &context);
+        }
+
+        // Cache should not exceed MAX_REGEX_CACHE_SIZE
+        let cache_size = evaluator.regex_cache.lock().len();
+        assert!(
+            cache_size <= MAX_REGEX_CACHE_SIZE,
+            "Cache size {} exceeds limit {}",
+            cache_size,
+            MAX_REGEX_CACHE_SIZE
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "regex")]
+    fn test_redos_escaped_characters() {
+        // Escaped parentheses and quantifiers should not trigger false positives
+        assert!(!Evaluator::is_potentially_dangerous_regex(r"\(a+\)+"));
+        assert!(!Evaluator::is_potentially_dangerous_regex(r"\+\*"));
+    }
 }

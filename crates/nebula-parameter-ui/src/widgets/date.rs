@@ -280,7 +280,7 @@ impl DateWidget {
         response: &mut WidgetResponse,
     ) {
         let today = Local::now().date_naive();
-        let popup_id = self.popup_id;
+        let _popup_id = self.popup_id;
 
         // Compact calendar layout
         let cell_size = 32.0;

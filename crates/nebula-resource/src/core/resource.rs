@@ -285,19 +285,19 @@ pub trait Resource: Send + Sync + 'static {
     ) -> ResourceResult<Self::Instance>;
 
     /// Initialize a created instance
-    async fn initialize(&self, instance: &mut Self::Instance) -> ResourceResult<()> {
+    async fn initialize(&self, _instance: &mut Self::Instance) -> ResourceResult<()> {
         // Default implementation does nothing
         Ok(())
     }
 
     /// Cleanup an instance when it's no longer needed
-    async fn cleanup(&self, instance: Self::Instance) -> ResourceResult<()> {
+    async fn cleanup(&self, _instance: Self::Instance) -> ResourceResult<()> {
         // Default implementation does nothing
         Ok(())
     }
 
     /// Validate that an instance is still healthy and usable
-    async fn validate_instance(&self, instance: &Self::Instance) -> ResourceResult<bool> {
+    async fn validate_instance(&self, _instance: &Self::Instance) -> ResourceResult<bool> {
         // Default implementation always returns true
         Ok(true)
     }
