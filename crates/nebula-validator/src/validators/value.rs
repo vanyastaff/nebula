@@ -46,6 +46,47 @@ where
     ValueString::new(validator)
 }
 
+/// Wrapper that extracts `i64` from `Value::Integer` and validates it
+pub struct ValueInteger<V> {
+    validator: V,
+}
+
+impl<V> ValueInteger<V> {
+    /// Create a new ValueInteger wrapper
+    pub fn new(validator: V) -> Self {
+        Self { validator }
+    }
+
+    /// Get reference to inner validator
+    pub fn inner(&self) -> &V {
+        &self.validator
+    }
+}
+
+impl<V> TypedValidator for ValueInteger<V>
+where
+    V: TypedValidator<Input = i64, Output = (), Error = ValidationError>,
+{
+    type Input = Value;
+    type Output = ();
+    type Error = ValidationError;
+
+    fn validate(&self, input: &Value) -> Result<(), ValidationError> {
+        let n = input
+            .as_integer()
+            .ok_or_else(|| ValidationError::new("type_error", "Expected integer value"))?;
+        self.validator.validate(&n.value())
+    }
+}
+
+/// Convenience function to create a ValueInteger validator
+pub fn value_integer<V>(validator: V) -> ValueInteger<V>
+where
+    V: TypedValidator<Input = i64, Output = (), Error = ValidationError>,
+{
+    ValueInteger::new(validator)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,5 +112,26 @@ mod tests {
                 .validate(&Value::Integer(nebula_value::Integer::new(42)))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn test_value_integer_valid() {
+        use crate::validators::numeric::min;
+        let validator = value_integer(min(18i64));
+        assert!(validator.validate(&Value::integer(25)).is_ok());
+    }
+
+    #[test]
+    fn test_value_integer_invalid() {
+        use crate::validators::numeric::min;
+        let validator = value_integer(min(18i64));
+        assert!(validator.validate(&Value::integer(15)).is_err());
+    }
+
+    #[test]
+    fn test_value_integer_wrong_type() {
+        use crate::validators::numeric::min;
+        let validator = value_integer(min(18i64));
+        assert!(validator.validate(&Value::text("hello")).is_err());
     }
 }
