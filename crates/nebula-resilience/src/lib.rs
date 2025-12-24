@@ -65,7 +65,7 @@
 //! ```rust,no_run
 //! use nebula_resilience::{
 //!     RetryStrategy, ExponentialBackoff, ConservativeCondition,
-//!     RetryConfig, JitterPolicy
+//!     RetryConfig, JitterPolicy, ResilienceError
 //! };
 //!
 //! #[tokio::main]
@@ -79,11 +79,63 @@
 //!     let strategy = RetryStrategy::new(config)?;
 //!
 //!     let (result, stats) = strategy.execute(|| async {
-//!         Ok::<_, &str>("success")
+//!         Ok::<_, ResilienceError>("success")
 //!     }).await?;
 //!     Ok(())
 //! }
 //! ```
+//!
+//! # Typestate Pattern Example
+//!
+//! The circuit breaker uses typestate pattern for compile-time state safety:
+//!
+//! ```rust
+//! use nebula_resilience::patterns::circuit_breaker::{
+//!     CircuitBreaker, CircuitBreakerConfig, Closed, Open, HalfOpen
+//! };
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! // Type-safe builder that tracks configuration state
+//! let config = CircuitBreakerConfig::<5, 30_000>::new()
+//!     .with_half_open_limit(3);
+//!
+//! let breaker = CircuitBreaker::new(config)?;
+//! // Circuit breaker starts in Closed state (type: CircuitBreaker<5, 30_000>)
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Const Generic Validation
+//!
+//! Configuration is validated at compile time using const generics:
+//!
+//! ```rust
+//! use nebula_resilience::patterns::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! // Compile-time validated circuit breaker
+//! // FAILURE_THRESHOLD=5, RESET_TIMEOUT_MS=30000
+//! let breaker = CircuitBreaker::<5, 30_000>::new(
+//!     CircuitBreakerConfig::new()
+//! )?;
+//!
+//! // The const generics ensure configuration validity at compile time
+//! // This prevents runtime configuration errors
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Advanced Type Features
+//!
+//! This crate demonstrates several advanced Rust type system features:
+//!
+//! - **Const Generics**: Compile-time configuration validation
+//! - **Phantom Types**: Zero-cost state tracking without runtime overhead
+//! - **GATs**: Flexible async operation handling
+//! - **Sealed Traits**: Controlled API extensibility
+//! - **Typestate Pattern**: Compile-time state machine correctness
 
 #![allow(clippy::module_name_repetitions)]
 #![warn(missing_docs)]
