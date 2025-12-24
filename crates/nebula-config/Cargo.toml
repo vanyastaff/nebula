@@ -18,9 +18,8 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }
 
-# Errors and logging
+# Errors
 thiserror = { workspace = true }
-tracing = { workspace = true }
 
 # Format parsers
 toml = { version = "0.9.7" }
@@ -40,7 +39,6 @@ uuid = { workspace = true }
 dashmap = { workspace = true }
 
 # Internal crates
-nebula-derive = { path = "../nebula-derive" }
 nebula-log = { path = "../nebula-log" }
 nebula-value = { path = "../nebula-value" }
 

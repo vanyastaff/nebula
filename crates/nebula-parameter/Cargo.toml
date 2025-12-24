@@ -27,15 +27,11 @@ chrono = { workspace = true, features = ["serde"] }
 # Errors
 thiserror = { workspace = true }
 
-# Validation
-regex = { workspace = true }
-
 # Lazy initialization (for CachedExpression construction)
 once_cell = { workspace = true }
 
 # Internal crates
 nebula-core = { path = "../nebula-core" }
-nebula-derive = { path = "../nebula-derive" }
 nebula-value = { path = "../nebula-value", features = ["serde"] }
 nebula-validator = { path = "../nebula-validator" }
 nebula-expression = { path = "../nebula-expression" }
