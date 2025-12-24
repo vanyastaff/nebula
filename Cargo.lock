@@ -4053,6 +4053,7 @@ dependencies = [
  "nebula-validator",
  "nebula-value",
  "once_cell",
+ "regex",
  "serde",
  "serde_json",
  "serde_with 3.16.1",

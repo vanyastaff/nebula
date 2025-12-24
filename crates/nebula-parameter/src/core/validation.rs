@@ -5,6 +5,7 @@
 //!
 //! # Architecture
 //!
+//! - `ValueCondition` - Core condition type for evaluating field values
 //! - `ParameterValidation` - Configuration holding validators
 //! - Fluent builder API for common validation patterns
 //! - Integration with nebula-validator's `TypedValidator` trait
@@ -37,6 +38,204 @@ use nebula_value::Value;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+
+// =============================================================================
+// ValueCondition - Core condition type
+// =============================================================================
+
+/// Condition to evaluate against a field value.
+///
+/// `ValueCondition` is the core building block for conditional logic in
+/// validation rules and display visibility. It evaluates a single value
+/// and returns `true` if the condition is met.
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_parameter::core::ValueCondition;
+/// use nebula_value::Value;
+///
+/// // Value equality
+/// let cond = ValueCondition::Equals(Value::text("api_key"));
+/// assert!(cond.evaluate(&Value::text("api_key")));
+/// assert!(!cond.evaluate(&Value::text("oauth")));
+///
+/// // Presence check
+/// let cond = ValueCondition::IsSet;
+/// assert!(cond.evaluate(&Value::integer(42)));
+/// assert!(!cond.evaluate(&Value::Null));
+///
+/// // Numeric comparison
+/// let cond = ValueCondition::GreaterThan(18.0);
+/// assert!(cond.evaluate(&Value::integer(21)));
+/// assert!(!cond.evaluate(&Value::integer(15)));
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ValueCondition {
+    // === Value comparisons ===
+    /// Value equals the specified value.
+    Equals(Value),
+
+    /// Value does not equal the specified value.
+    NotEquals(Value),
+
+    /// Value is one of the specified values.
+    OneOf(Vec<Value>),
+
+    // === Presence checks ===
+    /// Value is not null (is set).
+    IsSet,
+
+    /// Value is null.
+    IsNull,
+
+    /// Value is empty (null, empty string, empty array/object).
+    IsEmpty,
+
+    /// Value is not empty.
+    IsNotEmpty,
+
+    // === Validation state ===
+    /// Field has passed validation.
+    IsValid,
+
+    /// Field has failed validation.
+    IsInvalid,
+
+    // === Numeric comparisons ===
+    /// Numeric value is greater than threshold.
+    GreaterThan(f64),
+
+    /// Numeric value is greater than or equal to threshold.
+    GreaterOrEqual(f64),
+
+    /// Numeric value is less than threshold.
+    LessThan(f64),
+
+    /// Numeric value is less than or equal to threshold.
+    LessOrEqual(f64),
+
+    /// Numeric value is within range (inclusive).
+    InRange {
+        /// Minimum value (inclusive).
+        min: f64,
+        /// Maximum value (inclusive).
+        max: f64,
+    },
+
+    // === String operations ===
+    /// String contains substring.
+    Contains(String),
+
+    /// String starts with prefix.
+    StartsWith(String),
+
+    /// String ends with suffix.
+    EndsWith(String),
+
+    /// String matches regex pattern.
+    Matches(String),
+
+    // === Boolean ===
+    /// Boolean value is true.
+    IsTrue,
+
+    /// Boolean value is false.
+    IsFalse,
+}
+
+impl ValueCondition {
+    /// Evaluate the condition against a value.
+    ///
+    /// Returns `true` if the condition is met, `false` otherwise.
+    ///
+    /// Note: `IsValid` and `IsInvalid` require validation context and
+    /// always return `false` when evaluated directly against a value.
+    #[must_use]
+    pub fn evaluate(&self, value: &Value) -> bool {
+        match self {
+            Self::Equals(expected) => value == expected,
+            Self::NotEquals(expected) => value != expected,
+            Self::OneOf(values) => values.iter().any(|v| value == v),
+
+            Self::IsSet => !value.is_null(),
+            Self::IsNull => value.is_null(),
+            Self::IsEmpty => Self::is_value_empty(value),
+            Self::IsNotEmpty => !Self::is_value_empty(value),
+
+            // Validation state requires context
+            Self::IsValid | Self::IsInvalid => false,
+
+            Self::GreaterThan(threshold) => {
+                Self::get_numeric(value).is_some_and(|n| n > *threshold)
+            }
+            Self::GreaterOrEqual(threshold) => {
+                Self::get_numeric(value).is_some_and(|n| n >= *threshold)
+            }
+            Self::LessThan(threshold) => Self::get_numeric(value).is_some_and(|n| n < *threshold),
+            Self::LessOrEqual(threshold) => {
+                Self::get_numeric(value).is_some_and(|n| n <= *threshold)
+            }
+            Self::InRange { min, max } => {
+                Self::get_numeric(value).is_some_and(|n| n >= *min && n <= *max)
+            }
+
+            Self::Contains(substring) => {
+                Self::get_string(value).is_some_and(|s| s.contains(substring))
+            }
+            Self::StartsWith(prefix) => {
+                Self::get_string(value).is_some_and(|s| s.starts_with(prefix))
+            }
+            Self::EndsWith(suffix) => Self::get_string(value).is_some_and(|s| s.ends_with(suffix)),
+            Self::Matches(pattern) => Self::get_string(value).is_some_and(|s| {
+                regex::Regex::new(pattern)
+                    .map(|re| re.is_match(s))
+                    .unwrap_or(false)
+            }),
+
+            Self::IsTrue => value.as_boolean() == Some(true),
+            Self::IsFalse => value.as_boolean() == Some(false),
+        }
+    }
+
+    /// Check if this condition requires validation state.
+    #[must_use]
+    pub fn requires_validation_state(&self) -> bool {
+        matches!(self, Self::IsValid | Self::IsInvalid)
+    }
+
+    /// Check if a value is empty.
+    #[must_use]
+    pub fn is_value_empty(value: &Value) -> bool {
+        match value {
+            Value::Null => true,
+            Value::Text(t) => t.as_str().is_empty(),
+            Value::Array(arr) => arr.is_empty(),
+            Value::Object(obj) => obj.is_empty(),
+            _ => false,
+        }
+    }
+
+    /// Extract a numeric value as f64.
+    #[must_use]
+    pub fn get_numeric(value: &Value) -> Option<f64> {
+        value.as_float_lossy().map(|f| f.value())
+    }
+
+    /// Extract a string value.
+    #[must_use]
+    pub fn get_string(value: &Value) -> Option<&str> {
+        value.as_str()
+    }
+}
+
+/// Alias for validation context usage.
+pub type FieldCondition = ValueCondition;
+
+// =============================================================================
+// ParameterValidation
+// =============================================================================
 
 /// Validation configuration for parameters
 ///

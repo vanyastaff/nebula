@@ -1,5 +1,4 @@
 pub mod collection;
-mod condition;
 pub mod display;
 mod error;
 mod kind;
@@ -10,7 +9,6 @@ pub mod validation;
 pub mod values;
 
 pub use collection::*;
-pub use condition::*;
 pub use display::*;
 pub use error::*;
 pub use kind::*;

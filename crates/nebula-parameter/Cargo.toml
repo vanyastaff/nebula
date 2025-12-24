@@ -30,6 +30,9 @@ chrono = { workspace = true, features = ["serde"] }
 # Errors
 thiserror = { workspace = true }
 
+# Regex for pattern matching
+regex = { workspace = true }
+
 # Lazy initialization (for CachedExpression construction)
 once_cell = { workspace = true }
 
