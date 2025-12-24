@@ -26,6 +26,7 @@ url = { workspace = true }
 
 # Internal crates
 nebula-log = { path = "../nebula-log" }
+nebula-value = { path = "../nebula-value" }
 
 # Randomness
 rand = { workspace = true }
@@ -79,5 +80,3 @@ harness = false
 [[bench]]
 name = "combinators"
 harness = false
-
-

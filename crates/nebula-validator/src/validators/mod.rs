@@ -35,6 +35,7 @@ pub mod network;
 pub mod numeric;
 pub mod string;
 pub mod text;
+pub mod value;
 
 // Re-export all validators
 #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
@@ -49,6 +50,8 @@ pub use numeric::*;
 pub use string::*;
 #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
 pub use text::*;
+#[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
+pub use value::*;
 
 /// Prelude with all validators.
 pub mod prelude {
