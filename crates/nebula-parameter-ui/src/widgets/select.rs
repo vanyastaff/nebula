@@ -3,7 +3,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{ComboBox, RichText, Ui};
 use egui_flex::{Flex, FlexAlign, item};
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::SelectParameter;
 
 /// Widget for single-choice dropdown selection.
@@ -16,7 +16,8 @@ impl ParameterWidget for SelectWidget {
     type Parameter = SelectParameter;
 
     fn new(parameter: Self::Parameter) -> Self {
-        let selected = parameter.get().map(|t| t.to_string());
+        // Use default value from parameter schema if available
+        let selected = parameter.default.as_ref().map(|t| t.to_string());
         Self {
             parameter,
             selected,
@@ -136,19 +137,6 @@ impl ParameterWidget for SelectWidget {
                 }
             });
 
-        // Update parameter
-        if response.changed {
-            if let Some(ref selected) = self.selected {
-                if let Err(e) = self
-                    .parameter
-                    .set(nebula_value::Text::from(selected.as_str()))
-                {
-                    response.error = Some(e.to_string());
-                    response.changed = false;
-                }
-            }
-        }
-
         response
     }
 }
@@ -161,11 +149,9 @@ impl SelectWidget {
 
     pub fn set_selected(&mut self, value: &str) {
         self.selected = Some(value.to_string());
-        let _ = self.parameter.set(nebula_value::Text::from(value));
     }
 
     pub fn clear_selection(&mut self) {
         self.selected = None;
-        self.parameter.clear();
     }
 }

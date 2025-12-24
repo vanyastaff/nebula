@@ -5,7 +5,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{RichText, TextEdit, Ui};
 use egui_flex::{Flex, FlexAlign, item};
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::TextParameter;
 
 /// Widget for single-line text input.
@@ -20,7 +20,12 @@ impl ParameterWidget for TextWidget {
     type Parameter = TextParameter;
 
     fn new(parameter: Self::Parameter) -> Self {
-        let buffer = parameter.get().map(|t| t.to_string()).unwrap_or_default();
+        // Use default value from parameter schema if available
+        let buffer = parameter
+            .default
+            .as_ref()
+            .map(|t| t.to_string())
+            .unwrap_or_default();
         Self {
             parameter,
             buffer,
@@ -104,14 +109,9 @@ impl ParameterWidget for TextWidget {
                     }
 
                     if edit_response.changed() {
-                        if let Err(e) = self
-                            .parameter
-                            .set(nebula_value::Text::from(self.buffer.as_str()))
-                        {
-                            response.error = Some(e.to_string());
-                        } else {
-                            response.changed = true;
-                        }
+                        // Value is stored in the widget's buffer, not in the parameter
+                        // The parameter is a stateless schema definition
+                        response.changed = true;
                     }
                 });
 
@@ -152,6 +152,5 @@ impl TextWidget {
 
     pub fn set_value(&mut self, value: &str) {
         self.buffer = value.to_string();
-        let _ = self.parameter.set(nebula_value::Text::from(value));
     }
 }

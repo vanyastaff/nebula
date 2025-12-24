@@ -5,7 +5,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{DragValue, RichText, Ui};
 use egui_flex::{Flex, FlexAlign, item};
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::TimeParameter;
 
 /// Widget for time selection.
@@ -28,8 +28,10 @@ impl ParameterWidget for TimeWidget {
     type Parameter = TimeParameter;
 
     fn new(parameter: Self::Parameter) -> Self {
+        // Use default value from parameter schema if available
         let (hours, minutes, seconds) = parameter
-            .get()
+            .default
+            .as_ref()
             .map(|t| parse_time(t.as_str()))
             .unwrap_or((0, 0, 0));
 
@@ -240,20 +242,8 @@ impl ParameterWidget for TimeWidget {
 
 impl TimeWidget {
     fn update_parameter(&mut self, response: &mut WidgetResponse) {
-        let time_str = if self.parameter.includes_seconds() {
-            format!("{:02}:{:02}:{:02}", self.hours, self.minutes, self.seconds)
-        } else {
-            format!("{:02}:{:02}", self.hours, self.minutes)
-        };
-
-        if let Err(e) = self
-            .parameter
-            .set(nebula_value::Text::from(time_str.as_str()))
-        {
-            response.error = Some(e.to_string());
-        } else {
-            response.changed = true;
-        }
+        // Value is stored in the widget, not in the parameter
+        response.changed = true;
     }
 
     #[must_use]
@@ -270,11 +260,6 @@ impl TimeWidget {
         self.minutes = minutes.min(59);
         self.seconds = seconds.min(59);
         self.is_pm = self.hours >= 12;
-
-        let time_str = format!("{:02}:{:02}:{:02}", self.hours, self.minutes, self.seconds);
-        let _ = self
-            .parameter
-            .set(nebula_value::Text::from(time_str.as_str()));
     }
 
     pub fn set_now(&mut self) {

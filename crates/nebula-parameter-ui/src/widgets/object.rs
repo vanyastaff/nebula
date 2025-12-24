@@ -6,7 +6,7 @@ use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{RichText, Ui};
 use egui_flex::{Flex, FlexAlign, item};
 use egui_phosphor::regular::{CARET_DOWN, CARET_RIGHT, PLUS, TRASH};
-use nebula_parameter::core::{HasValue, Parameter, ParameterKind};
+use nebula_parameter::core::{Parameter, ParameterKind};
 use nebula_parameter::types::{ObjectParameter, ObjectValue};
 use std::collections::HashSet;
 
@@ -30,6 +30,8 @@ pub struct ObjectWidget {
     field_focus: std::collections::HashMap<String, bool>,
     /// Whether the "Add Parameter" popup is open
     add_popup_open: bool,
+    /// The object value stored in the widget
+    object_value: ObjectValue,
 }
 
 impl ParameterWidget for ObjectWidget {
@@ -38,10 +40,11 @@ impl ParameterWidget for ObjectWidget {
     fn new(parameter: Self::Parameter) -> Self {
         let mut field_buffers = std::collections::HashMap::new();
         let mut checkbox_states = std::collections::HashMap::new();
+        let mut object_value = ObjectValue::new();
 
-        // Initialize buffers from current value
-        if let Some(value) = parameter.get() {
-            for (key, val) in value.entries() {
+        // Initialize buffers from default value
+        if let Some(default) = &parameter.default {
+            for (key, val) in default.entries() {
                 match val {
                     nebula_value::Value::Boolean(b) => {
                         checkbox_states.insert(key.clone(), *b);
@@ -50,6 +53,7 @@ impl ParameterWidget for ObjectWidget {
                         field_buffers.insert(key.clone(), value_to_string(val));
                     }
                 }
+                object_value.set_field(key, val.clone());
             }
         }
 
@@ -73,6 +77,7 @@ impl ParameterWidget for ObjectWidget {
             checkbox_states,
             field_focus: std::collections::HashMap::new(),
             add_popup_open: false,
+            object_value,
         }
     }
 
@@ -310,10 +315,7 @@ impl ObjectWidget {
                         self.added_optional.remove(key);
                         self.field_buffers.remove(key);
                         self.checkbox_states.remove(key);
-                        // Clear value from parameter
-                        if let Some(value) = self.parameter.get_mut() {
-                            value.remove_field(key);
-                        }
+                        self.object_value.remove_field(key);
                         response.changed = true;
                     }
                 });
@@ -426,7 +428,6 @@ impl ObjectWidget {
         response: &mut WidgetResponse,
     ) {
         let mut checked = *self.checkbox_states.get(key).unwrap_or(&false);
-        let _old_checked = checked;
 
         if ui.checkbox(&mut checked, "").changed() {
             self.checkbox_states.insert(key.to_string(), checked);
@@ -508,20 +509,16 @@ impl ObjectWidget {
         }
     }
 
-    /// Update a text field value in the parameter.
+    /// Update a text field value in the object value.
     fn update_text_field_value(&mut self, key: &str, response: &mut WidgetResponse) {
         if let Some(buffer) = self.field_buffers.get(key) {
             let value = nebula_value::Value::text(buffer);
-
-            if let Err(e) = self.parameter.set_field_value(key, value) {
-                response.error = Some(e.to_string());
-            } else {
-                response.changed = true;
-            }
+            self.object_value.set_field(key, value);
+            response.changed = true;
         }
     }
 
-    /// Update a number field value in the parameter.
+    /// Update a number field value in the object value.
     fn update_number_field_value(&mut self, key: &str, response: &mut WidgetResponse) {
         if let Some(buffer) = self.field_buffers.get(key) {
             let value = if let Ok(num) = buffer.parse::<f64>() {
@@ -533,15 +530,12 @@ impl ObjectWidget {
                 nebula_value::Value::text(buffer)
             };
 
-            if let Err(e) = self.parameter.set_field_value(key, value) {
-                response.error = Some(e.to_string());
-            } else {
-                response.changed = true;
-            }
+            self.object_value.set_field(key, value);
+            response.changed = true;
         }
     }
 
-    /// Update a checkbox field value in the parameter.
+    /// Update a checkbox field value in the object value.
     fn update_checkbox_field_value(
         &mut self,
         key: &str,
@@ -549,18 +543,14 @@ impl ObjectWidget {
         response: &mut WidgetResponse,
     ) {
         let value = nebula_value::Value::boolean(checked);
-
-        if let Err(e) = self.parameter.set_field_value(key, value) {
-            response.error = Some(e.to_string());
-        } else {
-            response.changed = true;
-        }
+        self.object_value.set_field(key, value);
+        response.changed = true;
     }
 
     /// Get the current object value.
     #[must_use]
-    pub fn value(&self) -> Option<&ObjectValue> {
-        self.parameter.get()
+    pub fn value(&self) -> &ObjectValue {
+        &self.object_value
     }
 
     /// Check if expanded.

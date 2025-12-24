@@ -5,7 +5,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{RichText, Ui};
 use egui_flex::{Flex, FlexAlign, item};
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::CheckboxParameter;
 
 /// Widget for boolean checkbox input.
@@ -18,7 +18,12 @@ impl ParameterWidget for CheckboxWidget {
     type Parameter = CheckboxParameter;
 
     fn new(parameter: Self::Parameter) -> Self {
-        let checked = parameter.get().map(|b| b.value()).unwrap_or(false);
+        // Use default value from parameter schema if available
+        let checked = parameter
+            .default
+            .as_ref()
+            .map(|b| b.value())
+            .unwrap_or(false);
         Self { parameter, checked }
     }
 
@@ -66,13 +71,8 @@ impl ParameterWidget for CheckboxWidget {
                                 let checkbox_response = ui.checkbox(&mut self.checked, "");
 
                                 if checkbox_response.changed() {
-                                    if let Err(e) =
-                                        self.parameter.set(nebula_value::Boolean::new(self.checked))
-                                    {
-                                        response.error = Some(e.to_string());
-                                    } else {
-                                        response.changed = true;
-                                    }
+                                    // Value is stored in the widget, not in the parameter
+                                    response.changed = true;
                                 }
                             });
 
@@ -160,7 +160,6 @@ impl CheckboxWidget {
 
     pub fn set_checked(&mut self, checked: bool) {
         self.checked = checked;
-        let _ = self.parameter.set(nebula_value::Boolean::new(checked));
     }
 
     pub fn toggle(&mut self) {

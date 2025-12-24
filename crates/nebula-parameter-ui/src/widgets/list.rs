@@ -2,7 +2,7 @@
 
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::Ui;
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::ListParameter;
 
 /// Widget for dynamic list of values.
@@ -17,7 +17,8 @@ impl ParameterWidget for ListWidget {
 
     fn new(parameter: Self::Parameter) -> Self {
         let item_buffers = parameter
-            .get()
+            .default
+            .as_ref()
             .map(|arr| arr.iter().map(|v| value_to_string(v)).collect())
             .unwrap_or_default();
 
@@ -141,24 +142,24 @@ impl ParameterWidget for ListWidget {
         // Handle item removal
         if let Some(index) = to_remove {
             self.item_buffers.remove(index);
-            self.update_parameter_value(&mut response);
+            response.changed = true;
         }
 
         // Handle item movement
         if let Some((from, to)) = to_move {
             self.item_buffers.swap(from, to);
-            self.update_parameter_value(&mut response);
+            response.changed = true;
         }
 
         // Handle add item
         if add_item {
             self.item_buffers.push(String::new());
-            self.update_parameter_value(&mut response);
+            response.changed = true;
         }
 
         // Handle any content changes
         if any_changed {
-            self.update_parameter_value(&mut response);
+            response.changed = true;
         }
 
         // Constraints info
@@ -201,20 +202,16 @@ impl ParameterWidget for ListWidget {
 }
 
 impl ListWidget {
-    fn update_parameter_value(&mut self, response: &mut WidgetResponse) {
+    /// Get the current list as an array of values.
+    #[must_use]
+    pub fn to_array(&self) -> nebula_value::Array {
         let values: Vec<nebula_value::Value> = self
             .item_buffers
             .iter()
             .map(|s| nebula_value::Value::text(s))
             .collect();
 
-        let array = nebula_value::Array::from_nebula_values(values);
-
-        if let Err(e) = self.parameter.set(array) {
-            response.error = Some(e.to_string());
-        } else {
-            response.changed = true;
-        }
+        nebula_value::Array::from_nebula_values(values)
     }
 
     /// Get the current list values.
@@ -252,7 +249,6 @@ impl ListWidget {
     /// Clear all items.
     pub fn clear(&mut self) {
         self.item_buffers.clear();
-        self.parameter.clear();
     }
 }
 

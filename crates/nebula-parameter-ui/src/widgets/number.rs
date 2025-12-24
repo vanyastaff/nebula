@@ -3,7 +3,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{DragValue, RichText, Ui};
 use egui_flex::{Flex, FlexAlign, item};
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::NumberParameter;
 
 /// Widget for numeric input.
@@ -16,7 +16,8 @@ impl ParameterWidget for NumberWidget {
     type Parameter = NumberParameter;
 
     fn new(parameter: Self::Parameter) -> Self {
-        let value = parameter.get().copied().unwrap_or(0.0);
+        // Use default value from parameter schema if available
+        let value = parameter.default.unwrap_or(0.0);
         Self { parameter, value }
     }
 
@@ -123,14 +124,6 @@ impl ParameterWidget for NumberWidget {
                 }
             });
 
-        // Update parameter on change
-        if response.changed {
-            if let Err(e) = self.parameter.set(self.value) {
-                response.error = Some(e.to_string());
-                response.changed = false;
-            }
-        }
-
         response
     }
 }
@@ -143,6 +136,5 @@ impl NumberWidget {
 
     pub fn set_value(&mut self, value: f64) {
         self.value = value;
-        let _ = self.parameter.set(value);
     }
 }

@@ -2,13 +2,14 @@
 
 use crate::{ParameterTheme, ParameterWidget, UiExt, WidgetResponse};
 use egui::Ui;
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::{GroupFieldType, GroupParameter, GroupValue};
 
 /// Widget for grouped parameter fields.
 pub struct GroupWidget {
     parameter: GroupParameter,
     field_buffers: std::collections::HashMap<String, String>,
+    group_value: GroupValue,
     collapsed: bool,
 }
 
@@ -17,15 +18,19 @@ impl ParameterWidget for GroupWidget {
 
     fn new(parameter: Self::Parameter) -> Self {
         let mut field_buffers = std::collections::HashMap::new();
+        let mut group_value = GroupValue::new();
 
-        if let Some(value) = parameter.get() {
+        // Initialize from default value if present
+        if let Some(default) = &parameter.default {
             for field in &parameter.fields {
-                if let Some(val) = value.get_field(&field.key) {
+                if let Some(val) = default.get_field(&field.key) {
                     field_buffers.insert(field.key.clone(), value_to_string(&val));
+                    group_value.set_field(&field.key, val);
                 }
             }
         }
 
+        // Fill in missing fields with their defaults
         for field in &parameter.fields {
             if !field_buffers.contains_key(&field.key) {
                 let default_str = field
@@ -34,12 +39,17 @@ impl ParameterWidget for GroupWidget {
                     .map(value_to_string)
                     .unwrap_or_default();
                 field_buffers.insert(field.key.clone(), default_str);
+
+                if let Some(default_val) = &field.default_value {
+                    group_value.set_field(&field.key, default_val.clone());
+                }
             }
         }
 
         Self {
             parameter,
             field_buffers,
+            group_value,
             collapsed: false,
         }
     }
@@ -141,7 +151,8 @@ impl GroupWidget {
                 };
 
                 if changed {
-                    self.update_parameter_value(response);
+                    self.update_group_value(&field.key, &field.field_type);
+                    response.changed = true;
                 }
             });
 
@@ -153,26 +164,17 @@ impl GroupWidget {
         }
     }
 
-    fn update_parameter_value(&mut self, response: &mut WidgetResponse) {
-        let mut group_value = GroupValue::new();
-
-        for field in &self.parameter.fields {
-            if let Some(buffer) = self.field_buffers.get(&field.key) {
-                let value = string_to_value(buffer, &field.field_type);
-                group_value.set_field(&field.key, value);
-            }
-        }
-
-        if let Err(e) = self.parameter.set(group_value) {
-            response.error = Some(e.to_string());
-        } else {
-            response.changed = true;
+    fn update_group_value(&mut self, key: &str, field_type: &GroupFieldType) {
+        if let Some(buffer) = self.field_buffers.get(key) {
+            let value = string_to_value(buffer, field_type);
+            self.group_value.set_field(key, value);
         }
     }
 
+    /// Get the current group value.
     #[must_use]
-    pub fn value(&self) -> Option<&GroupValue> {
-        self.parameter.get()
+    pub fn value(&self) -> &GroupValue {
+        &self.group_value
     }
 
     #[must_use]

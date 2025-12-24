@@ -3,7 +3,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{RichText, TextEdit, Ui, Widget};
 use egui_flex::{Flex, FlexAlign, item};
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::TextareaParameter;
 
 /// Widget for multi-line text input.
@@ -17,7 +17,12 @@ impl ParameterWidget for TextareaWidget {
     type Parameter = TextareaParameter;
 
     fn new(parameter: Self::Parameter) -> Self {
-        let buffer = parameter.get().map(|t| t.to_string()).unwrap_or_default();
+        // Use default value from parameter schema if available
+        let buffer = parameter
+            .default
+            .as_ref()
+            .map(|t| t.to_string())
+            .unwrap_or_default();
         Self {
             parameter,
             buffer,
@@ -99,14 +104,7 @@ impl ParameterWidget for TextareaWidget {
                     }
 
                     if edit_response.changed() {
-                        if let Err(e) = self
-                            .parameter
-                            .set(nebula_value::Text::from(self.buffer.as_str()))
-                        {
-                            response.error = Some(e.to_string());
-                        } else {
-                            response.changed = true;
-                        }
+                        response.changed = true;
                     }
                 });
 
@@ -134,7 +132,10 @@ impl ParameterWidget for TextareaWidget {
 
                             // Character count
                             row.add_ui(item(), |ui| {
-                                if let Some(remaining) = self.parameter.remaining_characters() {
+                                let current_value = nebula_value::Text::new(self.buffer.clone());
+                                if let Some(remaining) =
+                                    self.parameter.remaining_characters(&current_value)
+                                {
                                     let color = if remaining < 0 {
                                         theme.error
                                     } else if remaining < 20 {
@@ -183,6 +184,5 @@ impl TextareaWidget {
 
     pub fn set_value(&mut self, value: &str) {
         self.buffer = value.to_string();
-        let _ = self.parameter.set(nebula_value::Text::from(value));
     }
 }

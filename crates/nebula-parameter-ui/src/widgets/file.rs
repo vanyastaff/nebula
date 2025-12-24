@@ -2,15 +2,15 @@
 
 use crate::{ParameterTheme, ParameterWidget, UiExt, WidgetResponse};
 use egui::Ui;
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::{FileParameter, FileReference};
 use std::path::PathBuf;
 
 /// Widget for file selection/upload.
 pub struct FileWidget {
     parameter: FileParameter,
-    /// Currently selected file path (display only)
-    selected_path: Option<String>,
+    /// Currently selected file
+    file_ref: Option<FileReference>,
     /// Drag-drop highlight state
     drag_hover: bool,
 }
@@ -19,12 +19,9 @@ impl ParameterWidget for FileWidget {
     type Parameter = FileParameter;
 
     fn new(parameter: Self::Parameter) -> Self {
-        let selected_path = parameter
-            .get_file_path()
-            .map(|p| p.to_string_lossy().to_string());
         Self {
             parameter,
-            selected_path,
+            file_ref: None,
             drag_hover: false,
         }
     }
@@ -64,12 +61,12 @@ impl ParameterWidget for FileWidget {
             .inner_margin(16.0)
             .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
-                    if let Some(file_ref) = self.parameter.get() {
+                    if let Some(file_ref) = &self.file_ref {
                         // Show selected file
                         ui.label(&file_ref.name);
 
                         if let Some(size) = file_ref.size {
-                            ui.themed_hint(theme, &FileParameter::format_file_size(size));
+                            ui.themed_hint(theme, &format_file_size(size));
                         }
 
                         if let Some(mime) = &file_ref.mime_type {
@@ -79,8 +76,7 @@ impl ParameterWidget for FileWidget {
                         ui.horizontal(|ui| {
                             // Clear button
                             if ui.button("Clear").clicked() {
-                                self.parameter.clear();
-                                self.selected_path = None;
+                                self.file_ref = None;
                                 response.changed = true;
                             }
 
@@ -103,7 +99,7 @@ impl ParameterWidget for FileWidget {
                         if let Some(max_size) = self.parameter.get_max_size() {
                             ui.themed_hint(
                                 theme,
-                                &format!("Max size: {}", FileParameter::format_file_size(max_size)),
+                                &format!("Max size: {}", format_file_size(max_size)),
                             );
                         }
 
@@ -158,19 +154,19 @@ impl FileWidget {
     /// Get the currently selected file reference.
     #[must_use]
     pub fn file(&self) -> Option<&FileReference> {
-        self.parameter.get()
+        self.file_ref.as_ref()
     }
 
     /// Get the file name.
     #[must_use]
-    pub fn file_name(&self) -> Option<&String> {
-        self.parameter.get_file_name()
+    pub fn file_name(&self) -> Option<&str> {
+        self.file_ref.as_ref().map(|f| f.name.as_str())
     }
 
     /// Get the file path.
     #[must_use]
     pub fn file_path(&self) -> Option<&PathBuf> {
-        self.parameter.get_file_path()
+        self.file_ref.as_ref().map(|f| &f.path)
     }
 
     /// Set a file from a path.
@@ -180,10 +176,7 @@ impl FileWidget {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".to_string());
 
-        let file_ref = FileReference::new(path.clone(), name);
-        self.selected_path = Some(path.to_string_lossy().to_string());
-
-        let _ = self.parameter.set(file_ref);
+        self.file_ref = Some(FileReference::new(path, name));
     }
 
     /// Set a file with full metadata.
@@ -194,7 +187,7 @@ impl FileWidget {
         size: Option<u64>,
         mime_type: Option<String>,
     ) {
-        let mut file_ref = FileReference::new(path.clone(), name);
+        let mut file_ref = FileReference::new(path, name);
 
         if let Some(size) = size {
             file_ref = file_ref.with_size(size);
@@ -204,13 +197,27 @@ impl FileWidget {
             file_ref = file_ref.with_mime_type(mime);
         }
 
-        self.selected_path = Some(path.to_string_lossy().to_string());
-        let _ = self.parameter.set(file_ref);
+        self.file_ref = Some(file_ref);
     }
 
     /// Clear the selected file.
     pub fn clear(&mut self) {
-        self.parameter.clear();
-        self.selected_path = None;
+        self.file_ref = None;
+    }
+}
+
+fn format_file_size(size: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if size >= GB {
+        format!("{:.2} GB", size as f64 / GB as f64)
+    } else if size >= MB {
+        format!("{:.2} MB", size as f64 / MB as f64)
+    } else if size >= KB {
+        format!("{:.2} KB", size as f64 / KB as f64)
+    } else {
+        format!("{} bytes", size)
     }
 }

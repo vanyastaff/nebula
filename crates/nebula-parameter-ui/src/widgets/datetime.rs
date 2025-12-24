@@ -3,7 +3,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::Ui;
 use egui_extras::DatePickerButton;
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::DateTimeParameter;
 
 /// Widget for combined date and time selection.
@@ -23,8 +23,10 @@ impl ParameterWidget for DateTimeWidget {
     type Parameter = DateTimeParameter;
 
     fn new(parameter: Self::Parameter) -> Self {
+        // Use default value from parameter schema if available
         let (date, hours, minutes, seconds) = parameter
-            .get()
+            .default
+            .as_ref()
             .map(|t| parse_datetime(t.as_str()))
             .unwrap_or_else(|| {
                 let now = chrono::Local::now();
@@ -210,22 +212,8 @@ impl ParameterWidget for DateTimeWidget {
 
 impl DateTimeWidget {
     fn update_parameter(&mut self, response: &mut WidgetResponse) {
-        let datetime_str = format!(
-            "{} {:02}:{:02}:{:02}",
-            self.date.format("%Y-%m-%d"),
-            self.hours,
-            self.minutes,
-            self.seconds
-        );
-
-        if let Err(e) = self
-            .parameter
-            .set(nebula_value::Text::from(datetime_str.as_str()))
-        {
-            response.error = Some(e.to_string());
-        } else {
-            response.changed = true;
-        }
+        // Value is stored in the widget, not in the parameter
+        response.changed = true;
     }
 
     /// Get the current datetime as a formatted string.
@@ -247,11 +235,6 @@ impl DateTimeWidget {
         self.hours = now.format("%H").to_string().parse().unwrap_or(0);
         self.minutes = now.format("%M").to_string().parse().unwrap_or(0);
         self.seconds = now.format("%S").to_string().parse().unwrap_or(0);
-
-        let datetime_str = self.value();
-        let _ = self
-            .parameter
-            .set(nebula_value::Text::from(datetime_str.as_str()));
     }
 }
 

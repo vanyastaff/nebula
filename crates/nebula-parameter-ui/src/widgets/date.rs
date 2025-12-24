@@ -7,7 +7,7 @@ use chrono::{Datelike, Local, NaiveDate};
 use egui::{RichText, Ui};
 use egui_flex::{Flex, FlexAlign, item};
 use egui_phosphor::regular::{CALENDAR, CARET_LEFT, CARET_RIGHT};
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::DateParameter;
 
 /// Widget for date selection with custom calendar.
@@ -25,9 +25,11 @@ impl ParameterWidget for DateWidget {
     type Parameter = DateParameter;
 
     fn new(parameter: Self::Parameter) -> Self {
+        // Use default value from parameter schema if available
         let date = parameter
-            .get()
-            .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+            .default
+            .as_ref()
+            .and_then(|s| NaiveDate::parse_from_str(s.as_str(), "%Y-%m-%d").ok())
             .unwrap_or_else(|| Local::now().date_naive());
 
         let popup_id = egui::Id::new("date_popup").with(parameter.metadata().key.as_str());
@@ -144,13 +146,7 @@ impl ParameterWidget for DateWidget {
                                                     self.date = parsed_date;
                                                     self.view_year = parsed_date.year();
                                                     self.view_month = parsed_date.month();
-                                                    let date_str =
-                                                        self.date.format("%Y-%m-%d").to_string();
-                                                    if let Err(e) = self.parameter.set(date_str) {
-                                                        response.error = Some(e.to_string());
-                                                    } else {
-                                                        response.changed = true;
-                                                    }
+                                                    response.changed = true;
                                                 }
                                             }
 
@@ -452,12 +448,8 @@ impl DateWidget {
                                 if let Some(date) = date_opt {
                                     self.date = date;
                                     let date_str = self.date.format("%Y-%m-%d").to_string();
-                                    self.text_input = date_str.clone();
-                                    if let Err(e) = self.parameter.set(date_str) {
-                                        response.error = Some(e.to_string());
-                                    } else {
-                                        response.changed = true;
-                                    }
+                                    self.text_input = date_str;
+                                    response.changed = true;
                                     self.popup_open = false;
                                 }
                             }
@@ -485,7 +477,6 @@ impl DateWidget {
             self.view_year = date.year();
             self.view_month = date.month();
             self.text_input = value.to_string();
-            let _ = self.parameter.set(value.to_string());
         }
     }
 
@@ -494,8 +485,7 @@ impl DateWidget {
         self.view_year = self.date.year();
         self.view_month = self.date.month();
         let date_str = self.date.format("%Y-%m-%d").to_string();
-        self.text_input = date_str.clone();
-        let _ = self.parameter.set(date_str);
+        self.text_input = date_str;
     }
 }
 

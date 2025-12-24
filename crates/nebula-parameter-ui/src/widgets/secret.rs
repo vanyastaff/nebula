@@ -4,7 +4,7 @@ use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{RichText, TextEdit, Ui};
 use egui_flex::{Flex, FlexAlign, item};
 use egui_phosphor::regular::{EYE, EYE_SLASH};
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::SecretParameter;
 
 /// Widget for password/secret input.
@@ -100,14 +100,7 @@ impl ParameterWidget for SecretWidget {
                             }
 
                             if edit_response.changed() {
-                                if let Err(e) = self
-                                    .parameter
-                                    .set(nebula_value::Text::from(self.buffer.as_str()))
-                                {
-                                    response.error = Some(e.to_string());
-                                } else {
-                                    response.changed = true;
-                                }
+                                response.changed = true;
                             }
 
                             // Eye icon button
@@ -120,17 +113,16 @@ impl ParameterWidget for SecretWidget {
                     });
                 });
 
-                // Row 3: Masked value indicator
-                if self.parameter.has_value() && self.buffer.is_empty() {
-                    if let Some(masked) = self.parameter.masked_value() {
-                        flex.add_ui(item(), |ui| {
-                            ui.label(
-                                RichText::new(format!("Current: {}", masked))
-                                    .size(theme.hint_font_size)
-                                    .color(theme.hint_color),
-                            );
-                        });
-                    }
+                // Row 3: Show if value is set
+                if !self.buffer.is_empty() {
+                    flex.add_ui(item(), |ui| {
+                        let masked = "••••••••";
+                        ui.label(
+                            RichText::new(format!("Current: {}", masked))
+                                .size(theme.hint_font_size)
+                                .color(theme.hint_color),
+                        );
+                    });
                 }
 
                 // Hint
@@ -165,12 +157,11 @@ impl ParameterWidget for SecretWidget {
 impl SecretWidget {
     #[must_use]
     pub fn has_value(&self) -> bool {
-        self.parameter.has_value()
+        !self.buffer.is_empty()
     }
 
     pub fn clear(&mut self) {
         self.buffer.clear();
-        self.parameter.clear();
     }
 
     pub fn toggle_visibility(&mut self) {

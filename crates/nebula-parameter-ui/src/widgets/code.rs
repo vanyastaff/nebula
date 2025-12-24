@@ -2,7 +2,7 @@
 
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{FontFamily, FontId, TextEdit, Ui};
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::{CodeLanguage, CodeParameter};
 
 /// Widget for code input with syntax highlighting info.
@@ -15,7 +15,12 @@ impl ParameterWidget for CodeWidget {
     type Parameter = CodeParameter;
 
     fn new(parameter: Self::Parameter) -> Self {
-        let buffer = parameter.get().map(|t| t.to_string()).unwrap_or_default();
+        // Use default value from parameter schema if available
+        let buffer = parameter
+            .default
+            .as_ref()
+            .map(|t| t.to_string())
+            .unwrap_or_default();
         Self { parameter, buffer }
     }
 
@@ -80,14 +85,7 @@ impl ParameterWidget for CodeWidget {
         };
 
         if edit_response.changed() {
-            if let Err(e) = self
-                .parameter
-                .set(nebula_value::Text::from(self.buffer.as_str()))
-            {
-                response.error = Some(e.to_string());
-            } else {
-                response.changed = true;
-            }
+            response.changed = true;
         }
 
         if edit_response.lost_focus() {
@@ -144,7 +142,6 @@ impl CodeWidget {
 
     pub fn set_value(&mut self, value: &str) {
         self.buffer = value.to_string();
-        let _ = self.parameter.set(nebula_value::Text::from(value));
     }
 
     #[must_use]

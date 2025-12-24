@@ -49,7 +49,6 @@ impl DemoApp {
                 .hint("This field is required for authentication".to_string())
                 .build()
                 .expect("valid metadata"),
-            value: None,
             default: Some(nebula_value::Text::from("Default text")),
             options: None,
             display: None,
@@ -67,7 +66,6 @@ impl DemoApp {
                 .hint("Use ports 1024-65535 for non-privileged services".to_string())
                 .build()
                 .expect("valid metadata"),
-            value: Some(8080.0),
             default: Some(8080.0),
             options: None,
             display: None,
@@ -82,7 +80,6 @@ impl DemoApp {
                 .description("Example checkbox parameter")
                 .build()
                 .expect("valid metadata"),
-            value: Some(Boolean::new(true)),
             default: Some(Boolean::new(false)),
             options: None,
             display: None,
@@ -99,7 +96,6 @@ impl DemoApp {
                 .hint("Different environments have different configurations".to_string())
                 .build()
                 .expect("valid metadata"),
-            value: None,
             default: None,
             options: vec![
                 SelectOption::simple("dev", "Development"),
@@ -121,7 +117,6 @@ impl DemoApp {
                 .hint("Markdown formatting is supported".to_string())
                 .build()
                 .expect("valid metadata"),
-            value: None,
             default: None,
             options: None,
             display: None,
@@ -136,7 +131,6 @@ impl DemoApp {
                 .description("Example date parameter")
                 .build()
                 .expect("valid metadata"),
-            value: None,
             default: None,
             options: None,
             display: None,
@@ -151,7 +145,6 @@ impl DemoApp {
                 .description("Example time parameter")
                 .build()
                 .expect("valid metadata"),
-            value: None,
             default: None,
             options: None,
             display: None,

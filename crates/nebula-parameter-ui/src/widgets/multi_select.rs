@@ -6,7 +6,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{ComboBox, RichText, Ui};
 use egui_flex::{Flex, FlexAlign, FlexAlignContent, item};
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::MultiSelectParameter;
 
 /// Widget for multiple selection with dropdown containing checkboxes.
@@ -27,7 +27,7 @@ impl ParameterWidget for MultiSelectWidget {
     type Parameter = MultiSelectParameter;
 
     fn new(parameter: Self::Parameter) -> Self {
-        let selected = parameter.get().cloned().unwrap_or_default();
+        let selected = parameter.default.clone().unwrap_or_default();
         Self {
             parameter,
             selected,
@@ -151,21 +151,7 @@ impl ParameterWidget for MultiSelectWidget {
                                                 } else if !is_selected && old_selected {
                                                     self.selected.retain(|v| v != &option.value);
                                                 }
-
-                                                if let Err(e) =
-                                                    self.parameter.set(self.selected.clone())
-                                                {
-                                                    response.error = Some(e.to_string());
-                                                    // Rollback
-                                                    if is_selected {
-                                                        self.selected
-                                                            .retain(|v| v != &option.value);
-                                                    } else {
-                                                        self.selected.push(option.value.clone());
-                                                    }
-                                                } else {
-                                                    response.changed = true;
-                                                }
+                                                response.changed = true;
                                             }
                                         }
                                     });
@@ -233,34 +219,26 @@ impl MultiSelectWidget {
         self.selected.contains(&value.to_string())
     }
 
-    pub fn add_selection(&mut self, value: &str) -> Result<(), String> {
+    pub fn add_selection(&mut self, value: &str) {
         if !self.selected.contains(&value.to_string()) {
             self.selected.push(value.to_string());
-            self.parameter
-                .set(self.selected.clone())
-                .map_err(|e| e.to_string())?;
         }
-        Ok(())
     }
 
-    pub fn remove_selection(&mut self, value: &str) -> Result<(), String> {
+    pub fn remove_selection(&mut self, value: &str) {
         self.selected.retain(|v| v != value);
-        self.parameter
-            .set(self.selected.clone())
-            .map_err(|e| e.to_string())
     }
 
-    pub fn toggle_selection(&mut self, value: &str) -> Result<(), String> {
+    pub fn toggle_selection(&mut self, value: &str) {
         if self.is_selected(value) {
-            self.remove_selection(value)
+            self.remove_selection(value);
         } else {
-            self.add_selection(value)
+            self.add_selection(value);
         }
     }
 
     pub fn clear_selections(&mut self) {
         self.selected.clear();
-        self.parameter.clear();
     }
 
     #[must_use]

@@ -5,7 +5,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{RichText, TextEdit, Ui};
 use egui_flex::{Flex, FlexAlign, item};
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::RadioParameter;
 
 /// Widget for radio button selection.
@@ -20,7 +20,8 @@ impl ParameterWidget for RadioWidget {
     type Parameter = RadioParameter;
 
     fn new(parameter: Self::Parameter) -> Self {
-        let selected = parameter.get().map(|t| t.to_string());
+        // Use default value from parameter schema if available
+        let selected = parameter.default.as_ref().map(|t| t.to_string());
         let other_selected = selected
             .as_ref()
             .is_some_and(|v| !parameter.options.iter().any(|o| &o.value == v));
@@ -100,14 +101,7 @@ impl ParameterWidget for RadioWidget {
                                     if ui.radio(is_selected, &option.name).clicked() {
                                         self.selected = Some(option.value.clone());
                                         self.other_selected = false;
-                                        if let Err(e) = self
-                                            .parameter
-                                            .set(nebula_value::Text::from(option.value.as_str()))
-                                        {
-                                            response.error = Some(e.to_string());
-                                        } else {
-                                            response.changed = true;
-                                        }
+                                        response.changed = true;
                                     }
                                 });
                                 row.add_ui(item().grow(1.0), |_ui| {});
@@ -130,13 +124,7 @@ impl ParameterWidget for RadioWidget {
                                         self.other_selected = true;
                                         if !self.other_value.is_empty() {
                                             self.selected = Some(self.other_value.clone());
-                                            if let Err(e) = self.parameter.set(
-                                                nebula_value::Text::from(self.other_value.as_str()),
-                                            ) {
-                                                response.error = Some(e.to_string());
-                                            } else {
-                                                response.changed = true;
-                                            }
+                                            response.changed = true;
                                         }
                                     }
                                 });
@@ -152,13 +140,7 @@ impl ParameterWidget for RadioWidget {
 
                                         if edit_response.changed() && !self.other_value.is_empty() {
                                             self.selected = Some(self.other_value.clone());
-                                            if let Err(e) = self.parameter.set(
-                                                nebula_value::Text::from(self.other_value.as_str()),
-                                            ) {
-                                                response.error = Some(e.to_string());
-                                            } else {
-                                                response.changed = true;
-                                            }
+                                            response.changed = true;
                                         }
                                     });
                                 } else {
@@ -226,13 +208,11 @@ impl RadioWidget {
             self.other_value = value.to_string();
         }
         self.selected = Some(value.to_string());
-        let _ = self.parameter.set(nebula_value::Text::from(value));
     }
 
     pub fn clear_selection(&mut self) {
         self.selected = None;
         self.other_selected = false;
         self.other_value.clear();
-        self.parameter.clear();
     }
 }

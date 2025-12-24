@@ -5,7 +5,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{Color32, CornerRadius, RichText, Stroke, TextEdit, Ui};
 use egui_flex::{Flex, FlexAlign, item};
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::ColorParameter;
 
 /// Widget for color selection.
@@ -28,8 +28,10 @@ impl ParameterWidget for ColorWidget {
     type Parameter = ColorParameter;
 
     fn new(parameter: Self::Parameter) -> Self {
+        // Use default value from parameter schema if available
         let buffer = parameter
-            .get()
+            .default
+            .as_ref()
             .map(|t| t.to_string())
             .unwrap_or_else(|| "#000000".to_string());
         let color = parse_hex_color(&buffer).unwrap_or(Color32::BLACK);
@@ -165,14 +167,7 @@ impl ParameterWidget for ColorWidget {
                                 if ui.add(text_edit).changed() {
                                     if let Some(color) = parse_hex_color(&self.buffer) {
                                         self.color = color;
-                                        if let Err(e) = self
-                                            .parameter
-                                            .set(nebula_value::Text::from(self.buffer.as_str()))
-                                        {
-                                            response.error = Some(e.to_string());
-                                        } else {
-                                            response.changed = true;
-                                        }
+                                        response.changed = true;
                                     }
                                 }
                             });
@@ -237,14 +232,7 @@ impl ParameterWidget for ColorWidget {
 
                                     if color_changed {
                                         self.buffer = color_to_hex(self.color, allow_alpha);
-                                        if let Err(e) = self
-                                            .parameter
-                                            .set(nebula_value::Text::from(self.buffer.as_str()))
-                                        {
-                                            response.error = Some(e.to_string());
-                                        } else {
-                                            response.changed = true;
-                                        }
+                                        response.changed = true;
                                     }
                                 });
 
@@ -306,18 +294,7 @@ impl ParameterWidget for ColorWidget {
                                                                 if btn_response.clicked() {
                                                                     self.color = color;
                                                                     self.buffer = color_str.clone();
-                                                                    if let Err(e) = self
-                                                                        .parameter
-                                                                        .set(
-                                                                        nebula_value::Text::from(
-                                                                            self.buffer.as_str(),
-                                                                        ),
-                                                                    ) {
-                                                                        response.error =
-                                                                            Some(e.to_string());
-                                                                    } else {
-                                                                        response.changed = true;
-                                                                    }
+                                                                    response.changed = true;
                                                                 }
                                                             },
                                                         );
@@ -374,16 +351,12 @@ impl ColorWidget {
         if let Some(color) = parse_hex_color(hex) {
             self.color = color;
             self.buffer = hex.to_string();
-            let _ = self.parameter.set(nebula_value::Text::from(hex));
         }
     }
 
     pub fn set_rgb(&mut self, r: u8, g: u8, b: u8) {
         self.color = Color32::from_rgb(r, g, b);
         self.buffer = format!("#{:02X}{:02X}{:02X}", r, g, b);
-        let _ = self
-            .parameter
-            .set(nebula_value::Text::from(self.buffer.as_str()));
     }
 }
 

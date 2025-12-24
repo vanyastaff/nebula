@@ -4,7 +4,7 @@
 
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{ComboBox, CornerRadius, Frame, Stroke, Ui};
-use nebula_parameter::core::{HasValue, Parameter};
+use nebula_parameter::core::Parameter;
 use nebula_parameter::types::{ModeParameter, ModeValue};
 
 /// Widget for mode selection with inline child input.
@@ -12,30 +12,32 @@ pub struct ModeWidget {
     parameter: ModeParameter,
     selected_mode: Option<String>,
     child_value: String,
+    mode_value: Option<ModeValue>,
 }
 
 impl ParameterWidget for ModeWidget {
     type Parameter = ModeParameter;
 
     fn new(parameter: Self::Parameter) -> Self {
-        let selected_mode = parameter
-            .get()
-            .map(|v| v.key.clone())
-            .or_else(|| parameter.current_mode().map(|m| m.key.clone()));
-
-        let child_value = parameter
-            .get()
-            .map(|v| match &v.value {
+        // Initialize from default value or default mode
+        let (selected_mode, child_value, mode_value) = if let Some(default) = &parameter.default {
+            let child_str = match &default.value {
                 nebula_value::Value::Text(t) => t.to_string(),
                 nebula_value::Value::Null => String::new(),
                 other => format!("{:?}", other),
-            })
-            .unwrap_or_default();
+            };
+            (Some(default.key.clone()), child_str, Some(default.clone()))
+        } else if let Some(default_mode) = parameter.default_mode() {
+            (Some(default_mode.key.clone()), String::new(), None)
+        } else {
+            (None, String::new(), None)
+        };
 
         Self {
             parameter,
             selected_mode,
             child_value,
+            mode_value,
         }
     }
 
@@ -110,11 +112,8 @@ impl ParameterWidget for ModeWidget {
                                 {
                                     self.selected_mode = Some(mode_key.clone());
                                     self.child_value.clear();
-                                    if let Err(e) = self.parameter.switch_mode(mode_key) {
-                                        response.error = Some(e.to_string());
-                                    } else {
-                                        response.changed = true;
-                                    }
+                                    self.mode_value = Some(ModeValue::text(mode_key.clone(), ""));
+                                    response.changed = true;
                                 }
                             }
                         });
@@ -132,13 +131,9 @@ impl ParameterWidget for ModeWidget {
 
                         if text_response.changed() {
                             if let Some(ref selected_key) = self.selected_mode {
-                                let mode_value =
-                                    ModeValue::text(selected_key.clone(), &self.child_value);
-                                if let Err(e) = self.parameter.set(mode_value) {
-                                    response.error = Some(e.to_string());
-                                } else {
-                                    response.changed = true;
-                                }
+                                self.mode_value =
+                                    Some(ModeValue::text(selected_key.clone(), &self.child_value));
+                                response.changed = true;
                             }
                         }
 
@@ -191,9 +186,8 @@ impl ModeWidget {
         if self.parameter.has_mode(mode_key) {
             self.selected_mode = Some(mode_key.to_string());
             self.child_value.clear();
-            self.parameter
-                .switch_mode(mode_key)
-                .map_err(|e| e.to_string())
+            self.mode_value = Some(ModeValue::text(mode_key, ""));
+            Ok(())
         } else {
             Err(format!("Mode '{}' not found", mode_key))
         }
@@ -201,7 +195,7 @@ impl ModeWidget {
 
     #[must_use]
     pub fn value(&self) -> Option<&ModeValue> {
-        self.parameter.get()
+        self.mode_value.as_ref()
     }
 
     #[must_use]
@@ -212,8 +206,7 @@ impl ModeWidget {
     pub fn set_child_value(&mut self, value: impl Into<String>) {
         self.child_value = value.into();
         if let Some(ref mode_key) = self.selected_mode {
-            let mode_value = ModeValue::text(mode_key.clone(), &self.child_value);
-            let _ = self.parameter.set(mode_value);
+            self.mode_value = Some(ModeValue::text(mode_key.clone(), &self.child_value));
         }
     }
 
