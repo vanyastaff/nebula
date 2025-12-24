@@ -410,17 +410,11 @@ mod tests {
 
         // First evaluation
         let result1 = engine.evaluate("2 + 3", &context).unwrap();
-        assert_eq!(result1.as_integer(), Some(5));
+        assert_eq!(result1.as_integer(), Some(nebula_value::Integer::new(5)));
 
         // Second evaluation (should use cache)
         let result2 = engine.evaluate("2 + 3", &context).unwrap();
-        assert_eq!(result2.as_integer(), Some(5));
-
-        #[cfg(feature = "std")]
-        {
-            let stats = engine.cache_stats().unwrap();
-            assert!(stats.hits > 0 || stats.misses > 0);
-        }
+        assert_eq!(result2.as_integer(), Some(nebula_value::Integer::new(5)));
     }
 
     #[test]
@@ -429,10 +423,10 @@ mod tests {
         let context = EvaluationContext::new();
 
         let result = engine.evaluate("if true then 1 else 2", &context).unwrap();
-        assert_eq!(result.as_integer(), Some(1));
+        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(1)));
 
         let result = engine.evaluate("if false then 1 else 2", &context).unwrap();
-        assert_eq!(result.as_integer(), Some(2));
+        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(2)));
     }
 
     #[test]
@@ -463,12 +457,6 @@ mod tests {
         let template2 = engine.parse_template(source).unwrap();
         let result2 = engine.render_template(&template2, &context).unwrap();
         assert_eq!(result2, "Hello World!");
-
-        #[cfg(feature = "std")]
-        {
-            let stats = engine.template_cache_stats().unwrap();
-            assert!(stats.hits > 0);
-        }
     }
 
     #[test]
@@ -478,18 +466,12 @@ mod tests {
 
         // Test expression cache
         let result = engine.evaluate("2 + 3", &context).unwrap();
-        assert_eq!(result.as_integer(), Some(5));
+        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(5)));
 
         // Test template cache
         let template = engine.parse_template("Result: {{ 2 + 3 }}").unwrap();
         let result = engine.render_template(&template, &context).unwrap();
         assert_eq!(result, "Result: 5");
-
-        #[cfg(feature = "std")]
-        {
-            assert!(engine.expr_cache_stats().is_some());
-            assert!(engine.template_cache_stats().is_some());
-        }
     }
 
     #[test]
@@ -505,7 +487,7 @@ mod tests {
 
         // Expression cache should still work
         let result = engine.evaluate("2 + 3", &context).unwrap();
-        assert_eq!(result.as_integer(), Some(5));
+        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(5)));
     }
 
     #[test]

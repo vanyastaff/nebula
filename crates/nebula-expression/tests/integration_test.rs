@@ -1,7 +1,7 @@
 //! Integration tests for nebula-expression
 
 use nebula_expression::{EvaluationContext, ExpressionEngine};
-use nebula_value::Value;
+use nebula_value::{Float, Integer, Value};
 use serde_json::json;
 
 #[test]
@@ -112,7 +112,7 @@ fn test_conditionals() {
     let result = engine
         .evaluate("{{ if 5 > 3 then 100 else 200 }}", &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(100));
+    assert_eq!(result.as_integer(), Some(Integer::new(100)));
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn test_input_variable() {
     assert_eq!(result.as_str(), Some("Alice"));
 
     let result = engine.evaluate("{{ $input.age }}", &context).unwrap();
-    assert_eq!(result.as_integer(), Some(30));
+    assert_eq!(result.as_integer(), Some(Integer::new(30)));
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn test_node_data() {
     let result = engine
         .evaluate("{{ $node.http.response.statusCode }}", &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(200));
+    assert_eq!(result.as_integer(), Some(Integer::new(200)));
 
     let result = engine
         .evaluate("{{ $node.http.response.body }}", &context)
@@ -166,16 +166,16 @@ fn test_math_functions() {
     let context = EvaluationContext::new();
 
     let result = engine.evaluate("{{ -5 | abs() }}", &context).unwrap();
-    assert_eq!(result.as_integer(), Some(5));
+    assert_eq!(result.as_integer(), Some(Integer::new(5)));
 
     let result = engine.evaluate("{{ 3.7 | floor() }}", &context).unwrap();
-    assert_eq!(result.as_float(), Some(3.0));
+    assert_eq!(result.as_float(), Some(&Float::new(3.0)));
 
     let result = engine.evaluate("{{ 3.2 | ceil() }}", &context).unwrap();
-    assert_eq!(result.as_float(), Some(4.0));
+    assert_eq!(result.as_float(), Some(&Float::new(4.0)));
 
     let result = engine.evaluate("{{ 16 | sqrt() }}", &context).unwrap();
-    assert_eq!(result.as_float(), Some(4.0));
+    assert_eq!(result.as_float(), Some(&Float::new(4.0)));
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn test_string_functions() {
     let result = engine
         .evaluate("{{ \"hello\" | length() }}", &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(5));
+    assert_eq!(result.as_integer(), Some(Integer::new(5)));
 
     let result = engine
         .evaluate("{{ \"  hi  \" | trim() }}", &context)
@@ -207,7 +207,7 @@ fn test_pipeline_operations() {
     let result = engine
         .evaluate("{{ \"HELLO WORLD\" | lowercase() | length() }}", &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(11));
+    assert_eq!(result.as_integer(), Some(Integer::new(11)));
 
     let result = engine
         .evaluate("{{ 3.14159 | round(2) | to_string() }}", &context)
@@ -228,7 +228,7 @@ fn test_type_conversion() {
     let result = engine
         .evaluate("{{ \"456\" | to_number() }}", &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(456));
+    assert_eq!(result.as_integer(), Some(Integer::new(456)));
 
     let result = engine
         .evaluate("{{ \"true\" | to_boolean() }}", &context)
@@ -245,10 +245,10 @@ fn test_caching() {
     // With caching, this should be faster than without
     for _ in 0..5 {
         let result = engine.evaluate("{{ 2 + 2 }}", &context).unwrap();
-        assert_eq!(result.as_integer(), Some(4));
+        assert_eq!(result.as_integer(), Some(Integer::new(4)));
     }
 
     // Just verify that caching doesn't break functionality
     let result = engine.evaluate("{{ 3 + 3 }}", &context).unwrap();
-    assert_eq!(result.as_integer(), Some(6));
+    assert_eq!(result.as_integer(), Some(Integer::new(6)));
 }

@@ -1,7 +1,7 @@
 //! Tests for date/time functions
 
 use nebula_expression::{EvaluationContext, ExpressionEngine};
-use nebula_value::Value;
+use nebula_value::{Integer, Value};
 
 #[test]
 fn test_now() {
@@ -11,7 +11,7 @@ fn test_now() {
     let result = engine.evaluate("{{ now() }}", &context).unwrap();
     // Should be a timestamp (integer)
     assert!(result.is_integer());
-    let timestamp = result.as_integer().unwrap();
+    let timestamp = result.as_integer().unwrap().value();
     // Should be a reasonable timestamp (after 2020)
     assert!(timestamp > 1577836800); // 2020-01-01
 }
@@ -61,12 +61,12 @@ fn test_parse_date() {
     let result = engine
         .evaluate(r#"{{ parse_date("2024-01-01 00:00:00") }}"#, &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(1704067200));
+    assert_eq!(result.as_integer(), Some(Integer::new(1704067200)));
 
     let result = engine
         .evaluate(r#"{{ parse_date("2024-01-01") }}"#, &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(1704067200)); // Midnight UTC
+    assert_eq!(result.as_integer(), Some(Integer::new(1704067200))); // Midnight UTC
 }
 
 #[test]
@@ -80,13 +80,13 @@ fn test_date_add() {
     let result = engine
         .evaluate(r#"{{ $input | date_add(7, "days") }}"#, &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(1704672000)); // 2024-01-08
+    assert_eq!(result.as_integer(), Some(Integer::new(1704672000))); // 2024-01-08
 
     // Add 2 hours
     let result = engine
         .evaluate(r#"{{ $input | date_add(2, "hours") }}"#, &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(1704074400));
+    assert_eq!(result.as_integer(), Some(Integer::new(1704074400)));
 }
 
 #[test]
@@ -100,7 +100,7 @@ fn test_date_subtract() {
     let result = engine
         .evaluate(r#"{{ $input | date_subtract(7, "days") }}"#, &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(1704067200)); // 2024-01-01
+    assert_eq!(result.as_integer(), Some(Integer::new(1704067200))); // 2024-01-01
 }
 
 #[test]
@@ -120,7 +120,7 @@ fn test_date_diff() {
             &context,
         )
         .unwrap();
-    assert_eq!(result.as_integer(), Some(7));
+    assert_eq!(result.as_integer(), Some(Integer::new(7)));
 
     let result = engine
         .evaluate(
@@ -128,7 +128,7 @@ fn test_date_diff() {
             &context,
         )
         .unwrap();
-    assert_eq!(result.as_integer(), Some(168)); // 7 * 24
+    assert_eq!(result.as_integer(), Some(Integer::new(168))); // 7 * 24
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn test_date_year() {
     let result = engine
         .evaluate("{{ $input | date_year() }}", &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(2024));
+    assert_eq!(result.as_integer(), Some(Integer::new(2024)));
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn test_date_month() {
     let result = engine
         .evaluate("{{ $input | date_month() }}", &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(1));
+    assert_eq!(result.as_integer(), Some(Integer::new(1)));
 }
 
 #[test]
@@ -164,7 +164,7 @@ fn test_date_day() {
     let result = engine
         .evaluate("{{ $input | date_day() }}", &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(1));
+    assert_eq!(result.as_integer(), Some(Integer::new(1)));
 }
 
 #[test]
@@ -176,7 +176,7 @@ fn test_date_hour() {
     let result = engine
         .evaluate("{{ $input | date_hour() }}", &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(0));
+    assert_eq!(result.as_integer(), Some(Integer::new(0)));
 }
 
 #[test]
@@ -188,7 +188,7 @@ fn test_date_minute() {
     let result = engine
         .evaluate("{{ $input | date_minute() }}", &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(0));
+    assert_eq!(result.as_integer(), Some(Integer::new(0)));
 }
 
 #[test]
@@ -200,7 +200,7 @@ fn test_date_second() {
     let result = engine
         .evaluate("{{ $input | date_second() }}", &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(0));
+    assert_eq!(result.as_integer(), Some(Integer::new(0)));
 }
 
 #[test]
@@ -213,7 +213,7 @@ fn test_date_day_of_week() {
     let result = engine
         .evaluate("{{ $input | date_day_of_week() }}", &context)
         .unwrap();
-    assert_eq!(result.as_integer(), Some(1)); // Monday
+    assert_eq!(result.as_integer(), Some(Integer::new(1))); // Monday
 }
 
 #[test]

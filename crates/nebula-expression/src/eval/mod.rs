@@ -551,7 +551,7 @@ mod tests {
         let context = EvaluationContext::new();
         let expr = Expr::Literal(Value::integer(42));
         let result = evaluator.eval(&expr, &context).unwrap();
-        assert_eq!(result.as_integer(), Some(42));
+        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(42)));
     }
 
     #[test]
@@ -564,7 +564,7 @@ mod tests {
             right: Box::new(Expr::Literal(Value::integer(5))),
         };
         let result = evaluator.eval(&expr, &context).unwrap();
-        assert_eq!(result.as_integer(), Some(15));
+        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(15)));
     }
 
     #[test]
@@ -586,7 +586,10 @@ mod tests {
         // Should succeed (50 << 256)
         let result = evaluator.eval(&expr, &context);
         assert!(result.is_ok(), "50-level deep expression should succeed");
-        assert_eq!(result.unwrap().as_integer(), Some(51));
+        assert_eq!(
+            result.unwrap().as_integer(),
+            Some(nebula_value::Integer::new(51))
+        );
     }
 
     #[test]
