@@ -47,11 +47,13 @@ impl Evaluator {
     }
 
     /// Evaluate an expression in the given context
+    #[inline]
     pub fn eval(&self, expr: &Expr, context: &EvaluationContext) -> ExpressionResult<Value> {
         self.eval_with_depth(expr, context, 0)
     }
 
     /// Evaluate an expression with recursion depth tracking
+    #[inline]
     fn eval_with_depth(
         &self,
         expr: &Expr,
@@ -176,6 +178,7 @@ impl Evaluator {
     }
 
     /// Evaluate a binary operation
+    #[inline]
     fn eval_binary_op(
         &self,
         op: BinaryOp,
@@ -230,6 +233,7 @@ impl Evaluator {
     }
 
     /// Addition
+    #[inline]
     fn add(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
             (Value::Integer(l), Value::Integer(r)) => Ok(Value::integer(l.value() + r.value())),
@@ -253,6 +257,7 @@ impl Evaluator {
     }
 
     /// Subtraction
+    #[inline]
     fn subtract(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
             (Value::Integer(l), Value::Integer(r)) => Ok(Value::integer(l.value() - r.value())),
@@ -267,6 +272,7 @@ impl Evaluator {
     }
 
     /// Multiplication
+    #[inline]
     fn multiply(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
             (Value::Integer(l), Value::Integer(r)) => Ok(Value::integer(l.value() * r.value())),
@@ -281,6 +287,7 @@ impl Evaluator {
     }
 
     /// Division
+    #[inline]
     fn divide(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
             (Value::Integer(l), Value::Integer(r)) => {
@@ -315,6 +322,7 @@ impl Evaluator {
     }
 
     /// Modulo
+    #[inline]
     fn modulo(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
             (Value::Integer(l), Value::Integer(r)) => {
@@ -331,6 +339,7 @@ impl Evaluator {
     }
 
     /// Power
+    #[inline]
     fn power(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
             (Value::Integer(l), Value::Integer(r)) => {
@@ -355,6 +364,7 @@ impl Evaluator {
     }
 
     /// Less than comparison
+    #[inline]
     fn less_than(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
             (Value::Integer(l), Value::Integer(r)) => Ok(Value::boolean(l.value() < r.value())),
@@ -374,6 +384,7 @@ impl Evaluator {
     }
 
     /// Greater than comparison
+    #[inline]
     fn greater_than(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
             (Value::Integer(l), Value::Integer(r)) => Ok(Value::boolean(l.value() > r.value())),
