@@ -933,92 +933,37 @@ impl ParameterValidation {
         NumberValidationBuilder::new()
     }
 
-    /// Create validation from any string validator.
+    /// Create validation from any validator.
     ///
-    /// This is the recommended way to use validators from `nebula-validator`.
-    /// Any `Validator<Input = str>` works automatically.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use nebula_validator::validators::string::{min_length, max_length};
-    /// use nebula_validator::combinators::and;
-    ///
-    /// let validation = ParameterValidation::for_string(
-    ///     and(min_length(3), max_length(20))
-    /// );
-    /// ```
-    pub fn for_string<V>(validator: V) -> Self
-    where
-        V: Validator<Input = str> + Send + Sync + 'static,
-    {
-        Self {
-            validator: Some(Arc::new(ValueValidatorAdapter::<V, str>::new(validator))),
-            required: false,
-            message: None,
-            key: None,
-        }
-    }
-
-    /// Create validation from any f64 validator.
-    ///
-    /// Works with float values and integers (converted to f64).
+    /// This is the universal way to use validators from `nebula-validator`.
+    /// The type is automatically extracted from `Value` using `AsValidatable`.
+    /// If the value type doesn't match, validation returns a type mismatch error.
     ///
     /// # Example
     ///
     /// ```ignore
-    /// use nebula_validator::validators::numeric::{min, max, positive};
+    /// use nebula_validator::validators::string::{min_length, email};
+    /// use nebula_validator::validators::numeric::{min, positive};
     /// use nebula_validator::combinators::and;
     ///
-    /// let validation = ParameterValidation::for_float(
-    ///     and(positive(), and(min(0.0), max(100.0)))
-    /// );
+    /// // String validators
+    /// let validation = ParameterValidation::from(and(min_length(3), email()));
+    ///
+    /// // Number validators
+    /// let validation = ParameterValidation::from(and(positive(), min(0.0)));
+    ///
+    /// // If value type doesn't match validator's expected type,
+    /// // validation fails with "type_mismatch" error
     /// ```
-    pub fn for_float<V>(validator: V) -> Self
+    pub fn from<V, T>(validator: V) -> Self
     where
-        V: Validator<Input = f64> + Send + Sync + 'static,
+        V: Validator<Input = T> + Send + Sync + 'static,
+        T: ?Sized + 'static,
+        Value: AsValidatable<T>,
+        for<'a> <Value as AsValidatable<T>>::Output<'a>: Borrow<T>,
     {
         Self {
-            validator: Some(Arc::new(ValueValidatorAdapter::<V, f64>::new(validator))),
-            required: false,
-            message: None,
-            key: None,
-        }
-    }
-
-    /// Create validation from any i64 validator.
-    ///
-    /// Works with integer values only.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use nebula_validator::validators::numeric::{min, max, even};
-    /// use nebula_validator::combinators::and;
-    ///
-    /// let validation = ParameterValidation::for_integer(
-    ///     and(min(0i64), and(max(100i64), even()))
-    /// );
-    /// ```
-    pub fn for_integer<V>(validator: V) -> Self
-    where
-        V: Validator<Input = i64> + Send + Sync + 'static,
-    {
-        Self {
-            validator: Some(Arc::new(ValueValidatorAdapter::<V, i64>::new(validator))),
-            required: false,
-            message: None,
-            key: None,
-        }
-    }
-
-    /// Create validation from any bool validator.
-    pub fn for_bool<V>(validator: V) -> Self
-    where
-        V: Validator<Input = bool> + Send + Sync + 'static,
-    {
-        Self {
-            validator: Some(Arc::new(ValueValidatorAdapter::<V, bool>::new(validator))),
+            validator: Some(Arc::new(ValueValidatorAdapter::<V, T>::new(validator))),
             required: false,
             message: None,
             key: None,
@@ -1028,13 +973,13 @@ impl ParameterValidation {
     /// Quick email validation
     #[must_use]
     pub fn email() -> Self {
-        Self::for_string(email())
+        Self::from(email())
     }
 
     /// Quick URL validation
     #[must_use]
     pub fn url() -> Self {
-        Self::for_string(url())
+        Self::from(url())
     }
 
     /// Quick required validation
