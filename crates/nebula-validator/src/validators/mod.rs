@@ -5,11 +5,12 @@
 //!
 //! # Categories
 //!
-//! - **String**: Length, patterns, case, formats (email, URL, UUID)
+//! - **String**: Length, patterns, formats (email, URL, UUID, phone, IBAN, etc.)
 //! - **Numeric**: Range, properties (even, odd, positive)
 //! - **Collection**: Size, elements, structure
 //! - **Logical**: Boolean, nullable
-//! - **Bridge**: Legacy support for `nebula-value::Value`
+//! - **Network**: IP address, MAC address, port
+//! - **Value**: Bridge for `nebula-value::Value`
 //!
 //! # Examples
 //!
@@ -34,7 +35,6 @@ pub mod logical;
 pub mod network;
 pub mod numeric;
 pub mod string;
-pub mod text;
 pub mod value;
 
 // Re-export all validators
@@ -48,8 +48,6 @@ pub use network::*;
 pub use numeric::*;
 #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
 pub use string::*;
-#[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
-pub use text::*;
 #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
 pub use value::*;
 
@@ -65,6 +63,4 @@ pub mod prelude {
     pub use super::numeric::prelude::*;
     #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
     pub use super::string::prelude::*;
-    #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
-    pub use super::text::*;
 }

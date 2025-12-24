@@ -20,7 +20,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::text::Semver;
+/// use nebula_validator::validators::string::Semver;
 /// use nebula_validator::core::Validator;
 ///
 /// let validator = Semver::new();

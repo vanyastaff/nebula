@@ -18,7 +18,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::text::Iban;
+/// use nebula_validator::validators::string::Iban;
 /// use nebula_validator::core::Validator;
 ///
 /// let validator = Iban::new();

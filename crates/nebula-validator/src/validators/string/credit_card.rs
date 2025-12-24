@@ -19,7 +19,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::text::CreditCard;
+/// use nebula_validator::validators::string::CreditCard;
 /// use nebula_validator::core::Validator;
 ///
 /// let validator = CreditCard::new();

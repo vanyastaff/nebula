@@ -18,7 +18,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::text::Phone;
+/// use nebula_validator::validators::string::Phone;
 /// use nebula_validator::core::Validator;
 ///
 /// // E.164 format (strict)

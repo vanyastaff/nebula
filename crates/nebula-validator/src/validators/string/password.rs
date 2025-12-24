@@ -22,7 +22,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::text::Password;
+/// use nebula_validator::validators::string::Password;
 /// use nebula_validator::core::Validator;
 ///
 /// // Basic validation
