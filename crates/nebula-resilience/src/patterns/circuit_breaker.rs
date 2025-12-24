@@ -10,7 +10,7 @@
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -331,12 +331,53 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64> std::fmt::Debu
 struct CircuitBreakerInner<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64> {
     config: CircuitBreakerConfig<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>,
     state: State,
+    /// Atomic state cache for fast-path checking in closed state
+    /// 0 = Closed, 1 = Open, 2 = HalfOpen
+    atomic_state: AtomicU8,
     failure_count: usize,
     last_failure_time: Option<Instant>,
     half_open_operations: usize,
     sliding_window: SlidingWindow<1000>,
     total_operations: u64,
     last_state_change: Instant,
+}
+
+impl State {
+    /// Convert state to atomic representation
+    const fn to_atomic(&self) -> u8 {
+        match self {
+            State::Closed => 0,
+            State::Open => 1,
+            State::HalfOpen => 2,
+        }
+    }
+
+    /// Convert atomic representation to state
+    const fn from_atomic(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(State::Closed),
+            1 => Some(State::Open),
+            2 => Some(State::HalfOpen),
+            _ => None,
+        }
+    }
+}
+
+impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
+    CircuitBreakerInner<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>
+{
+    /// Set state and update atomic cache
+    fn set_state(&mut self, new_state: State) {
+        self.state = new_state;
+        self.atomic_state.store(new_state.to_atomic(), Ordering::Release);
+        self.last_state_change = Instant::now();
+    }
+
+    /// Get cached atomic state for fast-path checking
+    fn get_atomic_state(&self) -> State {
+        let atomic_value = self.atomic_state.load(Ordering::Acquire);
+        State::from_atomic(atomic_value).unwrap_or(State::Closed)
+    }
 }
 
 impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
@@ -352,6 +393,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
             sliding_window: SlidingWindow::new(Duration::from_millis(config.sliding_window_ms)),
             config,
             state: State::Closed,
+            atomic_state: AtomicU8::new(State::Closed.to_atomic()),
             failure_count: 0,
             last_failure_time: None,
             half_open_operations: 0,
@@ -410,29 +452,41 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
         F: FnOnce() -> Fut,
         Fut: Future<Output = ResilienceResult<T>>,
     {
-        // Check current state and decide if we can execute
-        // If transitioning from Open to HalfOpen, do so with a write lock
-        let can_execute = {
-            let mut inner = self.inner.write().await;
-            tracing::Span::current().record("circuit_state", format!("{:?}", inner.state));
-            match inner.state {
-                State::Closed => true,
-                State::Open => {
-                    // Check if we should transition to half-open
-                    let elapsed = Instant::now().duration_since(inner.last_state_change);
-                    if elapsed >= Duration::from_millis(RESET_TIMEOUT_MS) {
-                        // Transition to HalfOpen state
-                        tracing::info!("Circuit breaker transitioning from open to half-open");
-                        inner.state = State::HalfOpen;
-                        inner.half_open_operations = 0;
-                        inner.last_state_change = Instant::now();
-                        true
-                    } else {
-                        false
+        // Fast path: Check atomic state first (most operations happen in Closed state)
+        // This avoids expensive lock acquisition for the common case
+        let atomic_state = {
+            let inner = self.inner.read().await;
+            inner.get_atomic_state()
+        };
+
+        // For Closed state, we can proceed immediately without state transitions
+        let can_execute = match atomic_state {
+            State::Closed => {
+                tracing::Span::current().record("circuit_state", "Closed");
+                true
+            }
+            State::Open | State::HalfOpen => {
+                // Need write lock for potential state transitions
+                let mut inner = self.inner.write().await;
+                tracing::Span::current().record("circuit_state", format!("{:?}", inner.state));
+                match inner.state {
+                    State::Closed => true,
+                    State::Open => {
+                        // Check if we should transition to half-open
+                        let elapsed = Instant::now().duration_since(inner.last_state_change);
+                        if elapsed >= Duration::from_millis(RESET_TIMEOUT_MS) {
+                            // Transition to HalfOpen state
+                            tracing::info!("Circuit breaker transitioning from open to half-open");
+                            inner.set_state(State::HalfOpen);
+                            inner.half_open_operations = 0;
+                            true
+                        } else {
+                            false
+                        }
                     }
-                }
-                State::HalfOpen => {
-                    inner.half_open_operations < inner.config.half_open_max_operations
+                    State::HalfOpen => {
+                        inner.half_open_operations < inner.config.half_open_max_operations
+                    }
                 }
             }
         };
@@ -519,10 +573,9 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
                 // Check if we should transition back to closed
                 if inner.half_open_operations >= inner.config.half_open_max_operations {
                     info!("Circuit breaker transitioning from half-open to closed");
-                    inner.state = State::Closed;
+                    inner.set_state(State::Closed);
                     inner.failure_count = 0;
                     inner.half_open_operations = 0;
-                    inner.last_state_change = Instant::now();
                 }
             }
             State::Open => {
@@ -555,16 +608,14 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
                         "Circuit breaker opening"
                     );
 
-                    inner.state = State::Open;
-                    inner.last_state_change = Instant::now();
+                    inner.set_state(State::Open);
                 }
             }
             State::HalfOpen => {
                 // Transition back to open on any failure in half-open
                 warn!("Circuit breaker transitioning from half-open back to open");
-                inner.state = State::Open;
+                inner.set_state(State::Open);
                 inner.half_open_operations = 0;
-                inner.last_state_change = Instant::now();
             }
             State::Open => {
                 // Already open, just update metrics
@@ -581,9 +632,8 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
             let elapsed = Instant::now().duration_since(inner.last_state_change);
             if elapsed >= Duration::from_millis(RESET_TIMEOUT_MS) {
                 info!("Circuit breaker transitioning from open to half-open");
-                inner.state = State::HalfOpen;
+                inner.set_state(State::HalfOpen);
                 inner.half_open_operations = 0;
-                inner.last_state_change = Instant::now();
             }
         }
 
@@ -612,11 +662,10 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
         let mut inner = self.inner.write().await;
         info!("Manually resetting circuit breaker");
 
-        inner.state = State::Closed;
+        inner.set_state(State::Closed);
         inner.failure_count = 0;
         inner.last_failure_time = None;
         inner.half_open_operations = 0;
-        inner.last_state_change = Instant::now();
     }
 
     /// Check if circuit breaker is in closed state

@@ -60,7 +60,7 @@ spin = "0.10.0"
 domain-key = { version = "0.1.1", features = ["serde"] }
 bon = { version = "3.8.1" }
 uuid = { version = "1.19.0", features = ["v4", "serde"] }
-chrono = { version = "0.4.42", default-features = false }
+chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 im = { version = "15.1", features = ["serde"] }
 smallvec = { version = "1.15", features = ["union", "const_generics"] }
 heapless = "0.9.2"
