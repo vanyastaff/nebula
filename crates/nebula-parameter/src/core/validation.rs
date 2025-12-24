@@ -822,10 +822,65 @@ impl Default for NumberValidationBuilder {
 }
 
 // =============================================================================
-// Composite Validators (bridge TypedValidator to AsyncValidator on Value)
+// Universal Value Validator Adapter
 // =============================================================================
 
-/// Composite validator for strings
+use nebula_validator::core::AsValidatable;
+use std::borrow::Borrow;
+use std::marker::PhantomData;
+
+/// Universal adapter that converts any `Validator<Input=T>` to work with `Value`.
+///
+/// Uses `AsValidatable` trait to automatically extract the correct type from Value.
+/// This enables any validator from `nebula-validator` to work with parameter values
+/// without manual bridging code.
+///
+/// # Example
+///
+/// ```ignore
+/// use nebula_validator::validators::string::min_length;
+/// use nebula_validator::combinators::and;
+///
+/// // Any string validator works automatically
+/// let validator = ValueValidatorAdapter::new(and(min_length(3), max_length(20)));
+/// validator.validate_async(&Value::text("hello")).await; // Ok
+/// ```
+pub struct ValueValidatorAdapter<V, T: ?Sized> {
+    validator: V,
+    _phantom: PhantomData<fn() -> T>,
+}
+
+impl<V, T: ?Sized> ValueValidatorAdapter<V, T> {
+    /// Create a new adapter wrapping a validator.
+    pub fn new(validator: V) -> Self {
+        Self {
+            validator,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<V, T> AsyncValidator for ValueValidatorAdapter<V, T>
+where
+    V: Validator<Input = T> + Send + Sync,
+    T: ?Sized + 'static,
+    Value: AsValidatable<T>,
+    for<'a> <Value as AsValidatable<T>>::Output<'a>: Borrow<T>,
+{
+    type Input = Value;
+
+    async fn validate_async(&self, value: &Value) -> Result<(), ValidationError> {
+        let extracted = AsValidatable::<T>::as_validatable(value)?;
+        self.validator.validate(extracted.borrow())
+    }
+}
+
+// =============================================================================
+// Composite Validators (for builder pattern with multiple validators)
+// =============================================================================
+
+/// Composite validator for strings (used by StringValidationBuilder)
 struct StringCompositeValidator {
     validators: Vec<Box<dyn Validator<Input = str> + Send + Sync>>,
 }
@@ -835,21 +890,15 @@ impl AsyncValidator for StringCompositeValidator {
     type Input = Value;
 
     async fn validate_async(&self, value: &Value) -> Result<(), ValidationError> {
-        // Extract string from Value
-        let s = value
-            .as_text()
-            .ok_or_else(|| ValidationError::new("type_error", "Expected text value"))?;
-
-        // Run all validators
+        let s: &str = AsValidatable::<str>::as_validatable(value)?.borrow();
         for validator in &self.validators {
-            validator.validate(s.as_str())?;
+            validator.validate(s)?;
         }
-
         Ok(())
     }
 }
 
-/// Composite validator for numbers
+/// Composite validator for numbers (used by NumberValidationBuilder)
 struct NumberCompositeValidator {
     validators: Vec<Box<dyn Validator<Input = f64> + Send + Sync>>,
 }
@@ -859,26 +908,10 @@ impl AsyncValidator for NumberCompositeValidator {
     type Input = Value;
 
     async fn validate_async(&self, value: &Value) -> Result<(), ValidationError> {
-        // Extract number from Value
-        let num = match value {
-            Value::Integer(i) => {
-                // Convert Integer to i64 then to f64
-                let i64_val: i64 = i.value();
-                i64_val as f64
-            }
-            Value::Float(f) => {
-                // Convert Float to f64
-                let f64_val: f64 = f.value();
-                f64_val
-            }
-            _ => return Err(ValidationError::new("type_error", "Expected numeric value")),
-        };
-
-        // Run all validators
+        let num: f64 = AsValidatable::<f64>::as_validatable(value)?;
         for validator in &self.validators {
             validator.validate(&num)?;
         }
-
         Ok(())
     }
 }
@@ -888,28 +921,120 @@ impl AsyncValidator for NumberCompositeValidator {
 // =============================================================================
 
 impl ParameterValidation {
-    /// Start building string validation
+    /// Start building string validation (builder pattern)
     #[must_use]
     pub fn string() -> StringValidationBuilder {
         StringValidationBuilder::new()
     }
 
-    /// Start building number validation
+    /// Start building number validation (builder pattern)
     #[must_use]
     pub fn number() -> NumberValidationBuilder {
         NumberValidationBuilder::new()
     }
 
+    /// Create validation from any string validator.
+    ///
+    /// This is the recommended way to use validators from `nebula-validator`.
+    /// Any `Validator<Input = str>` works automatically.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use nebula_validator::validators::string::{min_length, max_length};
+    /// use nebula_validator::combinators::and;
+    ///
+    /// let validation = ParameterValidation::for_string(
+    ///     and(min_length(3), max_length(20))
+    /// );
+    /// ```
+    pub fn for_string<V>(validator: V) -> Self
+    where
+        V: Validator<Input = str> + Send + Sync + 'static,
+    {
+        Self {
+            validator: Some(Arc::new(ValueValidatorAdapter::<V, str>::new(validator))),
+            required: false,
+            message: None,
+            key: None,
+        }
+    }
+
+    /// Create validation from any f64 validator.
+    ///
+    /// Works with float values and integers (converted to f64).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use nebula_validator::validators::numeric::{min, max, positive};
+    /// use nebula_validator::combinators::and;
+    ///
+    /// let validation = ParameterValidation::for_float(
+    ///     and(positive(), and(min(0.0), max(100.0)))
+    /// );
+    /// ```
+    pub fn for_float<V>(validator: V) -> Self
+    where
+        V: Validator<Input = f64> + Send + Sync + 'static,
+    {
+        Self {
+            validator: Some(Arc::new(ValueValidatorAdapter::<V, f64>::new(validator))),
+            required: false,
+            message: None,
+            key: None,
+        }
+    }
+
+    /// Create validation from any i64 validator.
+    ///
+    /// Works with integer values only.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use nebula_validator::validators::numeric::{min, max, even};
+    /// use nebula_validator::combinators::and;
+    ///
+    /// let validation = ParameterValidation::for_integer(
+    ///     and(min(0i64), and(max(100i64), even()))
+    /// );
+    /// ```
+    pub fn for_integer<V>(validator: V) -> Self
+    where
+        V: Validator<Input = i64> + Send + Sync + 'static,
+    {
+        Self {
+            validator: Some(Arc::new(ValueValidatorAdapter::<V, i64>::new(validator))),
+            required: false,
+            message: None,
+            key: None,
+        }
+    }
+
+    /// Create validation from any bool validator.
+    pub fn for_bool<V>(validator: V) -> Self
+    where
+        V: Validator<Input = bool> + Send + Sync + 'static,
+    {
+        Self {
+            validator: Some(Arc::new(ValueValidatorAdapter::<V, bool>::new(validator))),
+            required: false,
+            message: None,
+            key: None,
+        }
+    }
+
     /// Quick email validation
     #[must_use]
     pub fn email() -> Self {
-        Self::string().email().build()
+        Self::for_string(email())
     }
 
     /// Quick URL validation
     #[must_use]
     pub fn url() -> Self {
-        Self::string().url().build()
+        Self::for_string(url())
     }
 
     /// Quick required validation
