@@ -31,8 +31,11 @@ impl Value {
                 Ok(Value::Float(*a + Float::new(b.value() as f64)))
             }
 
-            // Decimal operations
-            (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(*a + *b)),
+            // Decimal operations (with overflow check)
+            (Value::Decimal(a), Value::Decimal(b)) => a
+                .checked_add(*b)
+                .map(Value::Decimal)
+                .ok_or_else(|| ValueError::overflow("addition", format!("{} + {}", a, b))),
 
             // Text concatenation
             (Value::Text(a), Value::Text(b)) => Ok(Value::Text(a.concat(b))),
@@ -69,8 +72,11 @@ impl Value {
                 Ok(Value::Float(*a - Float::new(b.value() as f64)))
             }
 
-            // Decimal
-            (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(*a - *b)),
+            // Decimal (with overflow check)
+            (Value::Decimal(a), Value::Decimal(b)) => a
+                .checked_sub(*b)
+                .map(Value::Decimal)
+                .ok_or_else(|| ValueError::overflow("subtraction", format!("{} - {}", a, b))),
 
             _ => Err(ValueError::operation_not_supported(
                 "subtract",
@@ -101,8 +107,11 @@ impl Value {
                 Ok(Value::Float(*a * Float::new(b.value() as f64)))
             }
 
-            // Decimal
-            (Value::Decimal(a), Value::Decimal(b)) => Ok(Value::Decimal(*a * *b)),
+            // Decimal (with overflow check)
+            (Value::Decimal(a), Value::Decimal(b)) => a
+                .checked_mul(*b)
+                .map(Value::Decimal)
+                .ok_or_else(|| ValueError::overflow("multiplication", format!("{} * {}", a, b))),
 
             _ => Err(ValueError::operation_not_supported(
                 "multiply",
@@ -141,12 +150,14 @@ impl Value {
                 Ok(Value::Float(*a / Float::new(b.value() as f64)))
             }
 
-            // Decimal
+            // Decimal (with overflow check)
             (Value::Decimal(a), Value::Decimal(b)) => {
                 if b.is_zero() {
                     return Err(ValueError::validation("Division by zero"));
                 }
-                Ok(Value::Decimal(*a / *b))
+                a.checked_div(*b)
+                    .map(Value::Decimal)
+                    .ok_or_else(|| ValueError::overflow("division", format!("{} / {}", a, b)))
             }
 
             _ => Err(ValueError::operation_not_supported(
@@ -262,6 +273,9 @@ impl Value {
 
     // ==================== Merge Operations ====================
 
+    /// Maximum recursion depth for merge operations (stack overflow protection)
+    const MAX_MERGE_DEPTH: usize = 100;
+
     /// Deep merge two objects
     ///
     /// For overlapping keys:
@@ -276,10 +290,61 @@ impl Value {
     /// let merged = a.merge(&b)?;
     /// // Result: { "x": 1, "y": 2, "nested": { "a": 1, "b": 2 } }
     /// ```
+    ///
+    /// # Stack Overflow Protection
+    ///
+    /// This method limits recursion depth to 100 levels to prevent stack overflow
+    /// from deeply nested structures. Use `merge_deep_with_limit` for custom limits.
     pub fn merge(&self, other: &Value) -> ValueResult<Value> {
+        self.merge_deep_with_limit(other, Self::MAX_MERGE_DEPTH)
+    }
+
+    /// Deep merge with configurable depth limit
+    ///
+    /// Use this method when you need custom depth limits for untrusted input
+    /// or very deep structures.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValueError::LimitExceeded` if nesting depth exceeds the limit.
+    pub fn merge_deep_with_limit(&self, other: &Value, max_depth: usize) -> ValueResult<Value> {
+        self.merge_recursive(other, 0, max_depth)
+    }
+
+    /// Internal recursive merge with depth tracking
+    fn merge_recursive(
+        &self,
+        other: &Value,
+        current_depth: usize,
+        max_depth: usize,
+    ) -> ValueResult<Value> {
+        // Check depth limit to prevent stack overflow
+        if current_depth > max_depth {
+            return Err(ValueError::limit_exceeded(
+                "merge nesting depth",
+                max_depth,
+                current_depth,
+            ));
+        }
+
         match (self, other) {
-            // Deep merge for objects
-            (Value::Object(a), Value::Object(b)) => Ok(Value::Object(a.merge(b))),
+            // Deep merge for objects - recursively merge nested objects
+            (Value::Object(left), Value::Object(right)) => {
+                let mut result = left.clone();
+
+                for (key, right_val) in right.entries() {
+                    let merged_val = if let Some(left_val) = left.get(key) {
+                        // Both have this key - recursively merge
+                        left_val.merge_recursive(right_val, current_depth + 1, max_depth)?
+                    } else {
+                        // Only in right - use right value
+                        right_val.clone()
+                    };
+                    result = result.insert(key.clone(), merged_val);
+                }
+
+                Ok(Value::Object(result))
+            }
 
             // Arrays: concatenation (alternative: union/dedup available as separate method)
             (Value::Array(a), Value::Array(b)) => Ok(Value::Array(a.concat(b))),

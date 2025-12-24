@@ -7,6 +7,9 @@ use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
 use nebula_value::{JsonValueExt, Value};
 
+/// Maximum JSON string length to parse (1MB) - DoS protection
+const MAX_JSON_PARSE_LENGTH: usize = 1024 * 1024;
+
 /// Convert value to string
 pub fn to_string(
     args: &[Value],
@@ -75,6 +78,15 @@ pub fn parse_json(
     let json_str = args[0]
         .as_str()
         .ok_or_else(|| ExpressionError::expression_type_error("string", args[0].kind().name()))?;
+
+    // DoS protection: limit JSON string size
+    if json_str.len() > MAX_JSON_PARSE_LENGTH {
+        return Err(ExpressionError::expression_eval_error(format!(
+            "JSON string too large: {} bytes (max {} bytes)",
+            json_str.len(),
+            MAX_JSON_PARSE_LENGTH
+        )));
+    }
 
     let json: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         ExpressionError::expression_eval_error(format!("Failed to parse JSON: {}", e))

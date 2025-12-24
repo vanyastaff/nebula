@@ -797,6 +797,11 @@ impl SubAssign<StdDuration> for DateTime {
 
 // ==================== Send + Sync ====================
 
+// Static assertions to ensure inner types are Send + Sync
+// This catches issues at compile time if inner types change
+static_assertions::assert_impl_all!(DateTimeInner: Send, Sync);
+static_assertions::assert_impl_all!(std::sync::Arc<DateTimeInner>: Send, Sync);
+
 unsafe impl Send for DateTime {}
 unsafe impl Sync for DateTime {}
 

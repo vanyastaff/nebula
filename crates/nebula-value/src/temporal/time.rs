@@ -85,6 +85,15 @@ impl TimeInner {
     /// - `nanos < 1_000_000_000`
     #[inline]
     pub const unsafe fn new_unchecked(hour: u32, minute: u32, second: u32, nanos: u32) -> Self {
+        // Debug assertions to catch invalid usage during development
+        debug_assert!(hour < 24, "hour must be < 24");
+        debug_assert!(minute < 60, "minute must be < 60");
+        debug_assert!(second < 60, "second must be < 60");
+        debug_assert!(
+            nanos < Self::NANOS_PER_SECOND as u32,
+            "nanos must be < 1_000_000_000"
+        );
+
         let total_nanos = hour as u64 * Self::NANOS_PER_HOUR
             + minute as u64 * Self::NANOS_PER_MINUTE
             + second as u64 * Self::NANOS_PER_SECOND
@@ -112,6 +121,7 @@ impl TimeInner {
     /// Caller must guarantee that `nanos <= 86_399_999_999_999`
     #[inline]
     pub const unsafe fn from_nanos_unchecked(nanos: u64) -> Self {
+        debug_assert!(nanos <= Self::MAX_NANOS, "nanos must be <= MAX_NANOS");
         Self { nanos }
     }
 
@@ -1079,6 +1089,11 @@ impl SubAssign<StdDuration> for Time {
 }
 
 // ==================== Send + Sync ====================
+
+// Static assertions to ensure inner types are Send + Sync
+// This catches issues at compile time if inner types change
+static_assertions::assert_impl_all!(TimeInner: Send, Sync);
+static_assertions::assert_impl_all!(alloc::sync::Arc<TimeInner>: Send, Sync);
 
 unsafe impl Send for Time {}
 unsafe impl Sync for Time {}

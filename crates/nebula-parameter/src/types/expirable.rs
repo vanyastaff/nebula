@@ -113,11 +113,16 @@ impl From<ExpirableValue> for nebula_value::Value {
     }
 }
 
+/// Maximum TTL value to prevent overflow (about 292 billion years, but we cap at i64::MAX seconds)
+const MAX_TTL_SECONDS: u64 = i64::MAX as u64;
+
 impl ExpirableValue {
     /// Creates a new `ExpirableValue` with the specified TTL in seconds
     pub fn new(value: nebula_value::Value, ttl: u64) -> Self {
         let now = Utc::now();
-        let expires_at = now + Duration::seconds(ttl as i64);
+        // Saturate TTL to prevent i64 overflow
+        let safe_ttl = ttl.min(MAX_TTL_SECONDS) as i64;
+        let expires_at = now + Duration::seconds(safe_ttl);
         Self {
             value,
             expires_at,
@@ -151,7 +156,9 @@ impl ExpirableValue {
 
     /// Refreshes the expiration time with new TTL
     pub fn refresh(&mut self, ttl: u64) {
-        self.expires_at = Utc::now() + Duration::seconds(ttl as i64);
+        // Saturate TTL to prevent i64 overflow
+        let safe_ttl = ttl.min(MAX_TTL_SECONDS) as i64;
+        self.expires_at = Utc::now() + Duration::seconds(safe_ttl);
     }
 
     /// Create a new `ExpirableValue` with a string value

@@ -629,13 +629,15 @@ mod tests {
 
     #[test]
     fn test_error_conversion() {
+        // I/O errors convert to Internal (server error)
         let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "File not found");
         let core_error: CoreError = io_error.into();
         assert!(core_error.is_server_error());
 
+        // JSON errors convert to Serialization
         let json_error = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
         let core_error: CoreError = json_error.into();
-        assert!(core_error.is_server_error());
+        assert!(matches!(core_error, CoreError::Serialization { .. }));
     }
 
     #[test]

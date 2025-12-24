@@ -234,13 +234,16 @@ impl Eq for Object {}
 
 impl Hash for Object {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        // Hash length first for better distribution
+        self.inner.len().hash(state);
         // Hash keys in sorted order for deterministic hashing
         let mut keys: Vec<_> = self.inner.keys().collect();
         keys.sort();
         for key in keys {
             key.hash(state);
             if let Some(value) = self.inner.get(key) {
-                format!("{:?}", value).hash(state);
+                // Use Value's hash implementation recursively
+                crate::core::hash::HashableValue::new(value.clone()).hash(state);
             }
         }
     }

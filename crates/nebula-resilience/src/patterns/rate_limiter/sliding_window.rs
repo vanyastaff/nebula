@@ -36,9 +36,10 @@ impl SlidingWindow {
     /// Clean old requests outside the window
     async fn clean_old_requests(&self) {
         let mut requests = self.requests.lock().await;
-        let cutoff = Instant::now()
-            .checked_sub(self.window_duration)
-            .expect("Window duration exceeds Instant range");
+        // Use saturating subtraction to handle edge case where window_duration
+        // might exceed time since process start (e.g., very long windows on fresh start)
+        let now = Instant::now();
+        let cutoff = now.checked_sub(self.window_duration).unwrap_or(now);
 
         while let Some(&front) = requests.front() {
             if front < cutoff {

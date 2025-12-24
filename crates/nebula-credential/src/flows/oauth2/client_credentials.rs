@@ -11,6 +11,40 @@ use crate::core::{
 
 use super::common::{OAuth2State, TokenResponse};
 
+/// Maximum length for error response body to log (prevents log flooding)
+const MAX_ERROR_BODY_LOG_LENGTH: usize = 500;
+
+/// Sanitize response body for logging - truncate and remove potential secrets
+fn sanitize_response_for_logging(body: &str) -> String {
+    let truncated = if body.len() > MAX_ERROR_BODY_LOG_LENGTH {
+        format!(
+            "{}... [truncated, {} total bytes]",
+            &body[..MAX_ERROR_BODY_LOG_LENGTH],
+            body.len()
+        )
+    } else {
+        body.to_string()
+    };
+
+    if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&truncated) {
+        for field in [
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "token",
+            "secret",
+            "password",
+        ] {
+            if json.get(field).is_some() {
+                json[field] = serde_json::json!("[REDACTED]");
+            }
+        }
+        json.to_string()
+    } else {
+        truncated
+    }
+}
+
 /// Input for `OAuth2` Client Credentials flow
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ClientCredentialsInput {
@@ -65,16 +99,32 @@ impl CredentialFlow for ClientCredentialsFlow {
                 CredentialError::NetworkFailed(e.to_string())
             })?;
 
-        if !response.status().is_success() {
-            error!(status = %response.status(), "Token request failed");
+        let status = response.status();
+        let body = response.text().await.map_err(|e| {
+            error!(error = %e, "Failed to read token response body");
+            CredentialError::NetworkFailed(e.to_string())
+        })?;
+
+        if !status.is_success() {
+            let sanitized_body = sanitize_response_for_logging(&body);
+            error!(
+                status = %status,
+                body = %sanitized_body,
+                "Token request failed"
+            );
             return Err(CredentialError::AuthenticationFailed {
-                reason: format!("HTTP {}", response.status()),
+                reason: format!("HTTP {status}"),
             });
         }
 
-        let token: TokenResponse = response.json().await.map_err(|e| {
-            error!(error = %e, "Failed to parse token response");
-            CredentialError::NetworkFailed(e.to_string())
+        let token: TokenResponse = serde_json::from_str(&body).map_err(|e| {
+            let sanitized_body = sanitize_response_for_logging(&body);
+            error!(
+                error = %e,
+                body = %sanitized_body,
+                "Failed to parse token response"
+            );
+            CredentialError::NetworkFailed(format!("Failed to parse token response: {e}"))
         })?;
 
         info!("OAuth2 client credentials flow completed successfully");

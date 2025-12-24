@@ -1,4 +1,10 @@
 //! `OAuth2` Authorization Code flow (interactive)
+//!
+//! # Security Notice
+//!
+//! This flow stores sensitive data (client_secret, PKCE verifier) in PartialState
+//! during the authorization process. The storage backend MUST implement encryption
+//! at rest to protect these secrets. See [`crate::traits::StateStore`] for details.
 
 use async_trait::async_trait;
 use nebula_log::prelude::{debug, error, info};
@@ -14,6 +20,43 @@ use crate::traits::{Credential, InteractiveCredential};
 use crate::utils::{generate_code_challenge, generate_pkce_verifier, generate_random_state};
 
 use super::common::{OAuth2State, TokenResponse};
+
+/// Maximum length for error response body to log (prevents log flooding)
+const MAX_ERROR_BODY_LOG_LENGTH: usize = 500;
+
+/// Sanitize response body for logging - truncate and remove potential secrets
+fn sanitize_response_for_logging(body: &str) -> String {
+    // Truncate to max length
+    let truncated = if body.len() > MAX_ERROR_BODY_LOG_LENGTH {
+        format!(
+            "{}... [truncated, {} total bytes]",
+            &body[..MAX_ERROR_BODY_LOG_LENGTH],
+            body.len()
+        )
+    } else {
+        body.to_string()
+    };
+
+    // Try to parse as JSON and redact sensitive fields
+    if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&truncated) {
+        // Redact known sensitive fields
+        for field in [
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "token",
+            "secret",
+            "password",
+        ] {
+            if json.get(field).is_some() {
+                json[field] = serde_json::json!("[REDACTED]");
+            }
+        }
+        json.to_string()
+    } else {
+        truncated
+    }
+}
 
 /// Input for `OAuth2` Authorization Code flow
 #[derive(Clone, Serialize, Deserialize)]
@@ -304,25 +347,25 @@ impl InteractiveCredential for OAuth2AuthorizationCode {
         })?;
 
         if !status.is_success() {
+            let sanitized_body = sanitize_response_for_logging(&body);
             error!(
                 status = %status,
-                body = %body,
+                body = %sanitized_body,
                 "Token exchange failed"
             );
             return Err(CredentialError::AuthenticationFailed {
-                reason: format!("HTTP {status} - {body}"),
+                reason: format!("HTTP {status}"),
             });
         }
 
         let token: TokenResponse = serde_json::from_str(&body).map_err(|e| {
+            let sanitized_body = sanitize_response_for_logging(&body);
             error!(
                 error = %e,
-                body = %body,
+                body = %sanitized_body,
                 "Failed to parse token response"
             );
-            CredentialError::NetworkFailed(format!(
-                "Failed to parse token response: {e}. Body: {body}"
-            ))
+            CredentialError::NetworkFailed(format!("Failed to parse token response: {e}"))
         })?;
 
         let state = OAuth2State::from_token_response(token);

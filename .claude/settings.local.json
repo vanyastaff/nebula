@@ -15,7 +15,12 @@
       "Bash(cargo clippy:*)",
       "Bash(cargo tree:*)",
       "Bash(cargo fmt:*)",
-      "Bash(cargo --list:*)"
+      "Bash(cargo --list:*)",
+      "Skill(superpowers:subagent-driven-development)",
+      "Bash(cargo bloat:*)",
+      "Bash(cargo deny:*)",
+      "Bash(cat:*)",
+      "Bash(tee:*)"
     ]
   }
 }

@@ -501,7 +501,12 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
                     let elapsed = Instant::now().duration_since(inner.last_state_change);
                     let timeout_duration = Duration::from_millis(RESET_TIMEOUT_MS);
                     if elapsed < timeout_duration {
-                        Some(timeout_duration.checked_sub(elapsed).unwrap())
+                        // Use unwrap_or to handle potential clock skew safely
+                        Some(
+                            timeout_duration
+                                .checked_sub(elapsed)
+                                .unwrap_or(Duration::ZERO),
+                        )
                     } else {
                         Some(Duration::ZERO)
                     }
@@ -708,7 +713,12 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
                 let elapsed = Instant::now().duration_since(inner.last_state_change);
                 let timeout_duration = Duration::from_millis(RESET_TIMEOUT_MS);
                 let retry_after = if elapsed < timeout_duration {
-                    Some(timeout_duration.checked_sub(elapsed).unwrap())
+                    // Use unwrap_or to handle potential clock skew safely
+                    Some(
+                        timeout_duration
+                            .checked_sub(elapsed)
+                            .unwrap_or(Duration::ZERO),
+                    )
                 } else {
                     Some(Duration::ZERO)
                 };

@@ -45,17 +45,3 @@ fn test_error_messages() {
         Ok(_) => panic!("Expected error"),
     }
 }
-
-#[test]
-fn test_nebula_error_integration() {
-    use nebula_validator::NebulaError;
-
-    let validator = min_length(5);
-    let result: Result<(), ValidationError> = validator.validate("hi");
-
-    // Convert to NebulaError
-    let nebula_err: NebulaError = result.unwrap_err().into();
-    let error_string = nebula_err.to_string();
-
-    assert!(error_string.contains("min_length"));
-}

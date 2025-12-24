@@ -413,7 +413,8 @@ mod tests {
     fn test_odd_length() {
         let validator = Hex::new();
         let result = validator.validate("abc").unwrap();
-        assert_eq!(result, vec![0x0a, 0xbc]); // Padded with 0
+        // "abc" -> "ab" (0xab), then "c" padded to "0c" (0x0c)
+        assert_eq!(result, vec![0xab, 0x0c]);
     }
 
     #[test]

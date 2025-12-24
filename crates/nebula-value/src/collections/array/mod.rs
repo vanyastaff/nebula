@@ -255,8 +255,11 @@ impl Eq for Array {}
 
 impl Hash for Array {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        // Hash length first for better distribution
+        self.inner.len().hash(state);
+        // Use Value's hash implementation recursively
         for item in self.inner.iter() {
-            format!("{:?}", item).hash(state);
+            crate::core::hash::HashableValue::new(item.clone()).hash(state);
         }
     }
 }

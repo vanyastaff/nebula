@@ -8,6 +8,29 @@ use super::{
 };
 use crate::traits::Credential;
 
+/// Sanitize a flow name to create a valid credential key.
+/// Replaces invalid characters with underscores and ensures the result is valid.
+fn sanitize_flow_name(name: &str) -> String {
+    // Replace any non-alphanumeric characters (except underscore and hyphen) with underscore
+    let sanitized: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    // Ensure it's not empty
+    if sanitized.is_empty() {
+        "unknown_flow".to_string()
+    } else {
+        sanitized
+    }
+}
+
 /// Generic wrapper that adapts any `CredentialFlow` to the Credential trait
 ///
 /// This adapter makes it easy to use flow-based credentials without
@@ -60,11 +83,13 @@ impl<F: CredentialFlow> Credential for FlowCredential<F> {
             return m.clone();
         }
 
-        // Generate metadata from flow
+        // Generate metadata from flow with sanitized name to prevent panic
+        let flow_name = self.flow.flow_name();
+        let sanitized_name = sanitize_flow_name(flow_name);
         CredentialMetadata {
-            key: CredentialKey::new(self.flow.flow_name())
-                .unwrap_or_else(|_| panic!("Invalid flow name: {}", self.flow.flow_name())),
-            name: format!("{} Flow", self.flow.flow_name()),
+            key: CredentialKey::new(&sanitized_name)
+                .expect("sanitized flow name should always be valid"),
+            name: format!("{} Flow", flow_name),
             description: format!("Authentication via {}", self.flow.flow_name()),
             supports_refresh: true, // Most flows support refresh
             requires_interaction: self.flow.requires_interaction(),

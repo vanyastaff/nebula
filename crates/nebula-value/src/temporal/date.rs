@@ -723,6 +723,11 @@ impl Sub<&Date> for &Date {
 
 // ==================== Send + Sync ====================
 
+// Static assertions to ensure inner types are Send + Sync
+// This catches issues at compile time if inner types change
+static_assertions::assert_impl_all!(DateInner: Send, Sync);
+static_assertions::assert_impl_all!(std::sync::Arc<DateInner>: Send, Sync);
+
 unsafe impl Send for Date {}
 unsafe impl Sync for Date {}
 

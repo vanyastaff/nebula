@@ -98,7 +98,11 @@ impl DisplayContext {
 
     /// Insert a parameter value (returns old value if present)
     #[inline]
-    pub fn insert(&mut self, key: impl Into<ParameterKey>, value: impl Into<Value>) -> Option<Value> {
+    pub fn insert(
+        &mut self,
+        key: impl Into<ParameterKey>,
+        value: impl Into<Value>,
+    ) -> Option<Value> {
         self.values.insert(key.into(), value.into())
     }
 
@@ -184,10 +188,7 @@ impl<const N: usize> From<[(ParameterKey, Value); N]> for DisplayContext {
 impl<const N: usize> From<[(&str, Value); N]> for DisplayContext {
     fn from(pairs: [(&str, Value); N]) -> Self {
         Self {
-            values: pairs
-                .into_iter()
-                .map(|(k, v)| (k.into(), v))
-                .collect(),
+            values: pairs.into_iter().map(|(k, v)| (k.into(), v)).collect(),
         }
     }
 }
@@ -199,7 +200,7 @@ impl From<&DisplayContext> for ValidationContext {
             ctx.values
                 .iter()
                 .map(|(k, v)| (k.as_str().to_string(), v.clone()))
-                .collect()
+                .collect(),
         );
         ValidationContext::simple(root)
     }
@@ -212,7 +213,7 @@ impl From<&DisplayContext> for Value {
             ctx.values
                 .iter()
                 .map(|(k, v)| (k.as_str().to_string(), v.clone()))
-                .collect()
+                .collect(),
         )
     }
 }
@@ -223,7 +224,7 @@ impl From<DisplayContext> for Value {
             ctx.values
                 .into_iter()
                 .map(|(k, v)| (k.as_str().to_string(), v))
-                .collect()
+                .collect(),
         )
     }
 }
@@ -243,10 +244,7 @@ impl FromIterator<(ParameterKey, Value)> for DisplayContext {
 impl<'a> FromIterator<(&'a str, Value)> for DisplayContext {
     fn from_iter<T: IntoIterator<Item = (&'a str, Value)>>(iter: T) -> Self {
         Self {
-            values: iter
-                .into_iter()
-                .map(|(k, v)| (k.into(), v))
-                .collect(),
+            values: iter.into_iter().map(|(k, v)| (k.into(), v)).collect(),
         }
     }
 }
@@ -335,7 +333,10 @@ impl DisplayRule {
 
     /// Specify which parameters this rule depends on (for optimization)
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_dependencies(mut self, deps: impl IntoIterator<Item = impl Into<ParameterKey>>) -> Self {
+    pub fn with_dependencies(
+        mut self,
+        deps: impl IntoIterator<Item = impl Into<ParameterKey>>,
+    ) -> Self {
         self.dependencies = Some(deps.into_iter().map(Into::into).collect());
         self
     }
@@ -541,9 +542,10 @@ impl From<DisplayRule> for DisplayRuleSet {
 }
 
 impl From<Vec<DisplayRule>> for DisplayRuleSet {
-    fn from(rules: Vec<DisplayRule>) -> Self {
+    fn from(mut rules: Vec<DisplayRule>) -> Self {
         if rules.len() == 1 {
-            DisplayRuleSet::Single(rules.into_iter().next().unwrap())
+            // SAFETY: We just checked that len() == 1, so pop() will return Some
+            DisplayRuleSet::Single(rules.pop().expect("vec has exactly one element"))
         } else {
             DisplayRuleSet::All(rules.into_iter().map(Into::into).collect())
         }
@@ -767,28 +769,40 @@ impl ParameterDisplayBuilder {
 
     /// Add multiple show conditions (all must pass)
     #[must_use = "builder methods must be chained or built"]
-    pub fn show_when_all(mut self, rules: impl IntoIterator<Item = impl Into<DisplayRuleSet>>) -> Self {
+    pub fn show_when_all(
+        mut self,
+        rules: impl IntoIterator<Item = impl Into<DisplayRuleSet>>,
+    ) -> Self {
         self.show_rules.push(DisplayRuleSet::all(rules));
         self
     }
 
     /// Add multiple show conditions (any must pass)
     #[must_use = "builder methods must be chained or built"]
-    pub fn show_when_any(mut self, rules: impl IntoIterator<Item = impl Into<DisplayRuleSet>>) -> Self {
+    pub fn show_when_any(
+        mut self,
+        rules: impl IntoIterator<Item = impl Into<DisplayRuleSet>>,
+    ) -> Self {
         self.show_rules.push(DisplayRuleSet::any(rules));
         self
     }
 
     /// Add multiple hide conditions (all must pass)
     #[must_use = "builder methods must be chained or built"]
-    pub fn hide_when_all(mut self, rules: impl IntoIterator<Item = impl Into<DisplayRuleSet>>) -> Self {
+    pub fn hide_when_all(
+        mut self,
+        rules: impl IntoIterator<Item = impl Into<DisplayRuleSet>>,
+    ) -> Self {
         self.hide_rules.push(DisplayRuleSet::all(rules));
         self
     }
 
     /// Add multiple hide conditions (any must pass)
     #[must_use = "builder methods must be chained or built"]
-    pub fn hide_when_any(mut self, rules: impl IntoIterator<Item = impl Into<DisplayRuleSet>>) -> Self {
+    pub fn hide_when_any(
+        mut self,
+        rules: impl IntoIterator<Item = impl Into<DisplayRuleSet>>,
+    ) -> Self {
         self.hide_rules.push(DisplayRuleSet::any(rules));
         self
     }
@@ -797,13 +811,21 @@ impl ParameterDisplayBuilder {
 
     /// Show when parameter equals value
     #[must_use = "builder methods must be chained or built"]
-    pub fn show_when_equals(self, parameter: impl Into<ParameterKey>, value: impl Into<Value>) -> Self {
+    pub fn show_when_equals(
+        self,
+        parameter: impl Into<ParameterKey>,
+        value: impl Into<Value>,
+    ) -> Self {
         self.show_when(DisplayRule::when_equals(parameter, value.into()))
     }
 
     /// Hide when parameter equals value
     #[must_use = "builder methods must be chained or built"]
-    pub fn hide_when_equals(self, parameter: impl Into<ParameterKey>, value: impl Into<Value>) -> Self {
+    pub fn hide_when_equals(
+        self,
+        parameter: impl Into<ParameterKey>,
+        value: impl Into<Value>,
+    ) -> Self {
         self.hide_when(DisplayRule::when_equals(parameter, value.into()))
     }
 
@@ -826,16 +848,22 @@ impl ParameterDisplayBuilder {
     }
 
     /// Build the final ParameterDisplay
-    pub fn build(self) -> ParameterDisplay {
+    pub fn build(mut self) -> ParameterDisplay {
         ParameterDisplay {
             show_when: match self.show_rules.len() {
                 0 => None,
-                1 => Some(self.show_rules.into_iter().next().unwrap()),
+                // SAFETY: We just checked len() == 1, so pop() will return Some
+                1 => Some(DisplayRuleSet::Single(
+                    self.show_rules.pop().expect("vec has exactly one element"),
+                )),
                 _ => Some(DisplayRuleSet::All(self.show_rules)),
             },
             hide_when: match self.hide_rules.len() {
                 0 => None,
-                1 => Some(self.hide_rules.into_iter().next().unwrap()),
+                // SAFETY: We just checked len() == 1, so pop() will return Some
+                1 => Some(DisplayRuleSet::Single(
+                    self.hide_rules.pop().expect("vec has exactly one element"),
+                )),
                 _ => Some(DisplayRuleSet::Any(self.hide_rules)),
             },
         }
@@ -852,9 +880,10 @@ impl DisplayRule {
         use nebula_validator::*;
 
         let param_key = parameter.into();
-        Self::new(Box::new(
-            WhenFieldValidator::new(param_key.as_str().to_string(), Box::new(equals(value)))
-        ))
+        Self::new(Box::new(WhenFieldValidator::new(
+            param_key.as_str().to_string(),
+            Box::new(equals(value)),
+        )))
         .with_dependencies([param_key])
     }
 
@@ -873,9 +902,10 @@ impl DisplayRule {
         use nebula_validator::*;
 
         let param_key = parameter.into();
-        Self::new(Box::new(
-            WhenFieldValidator::new(param_key.as_str().to_string(), Box::new(not_null()))
-        ))
+        Self::new(Box::new(WhenFieldValidator::new(
+            param_key.as_str().to_string(),
+            Box::new(not_null()),
+        )))
         .with_dependencies([param_key])
     }
 
@@ -884,9 +914,10 @@ impl DisplayRule {
         use nebula_validator::*;
 
         let param_key = parameter.into();
-        Self::new(Box::new(
-            WhenFieldValidator::new(param_key.as_str().to_string(), Box::new(not_empty()))
-        ))
+        Self::new(Box::new(WhenFieldValidator::new(
+            param_key.as_str().to_string(),
+            Box::new(not_empty()),
+        )))
         .with_dependencies([param_key])
     }
 
@@ -895,9 +926,10 @@ impl DisplayRule {
         use nebula_validator::*;
 
         let param_key = parameter.into();
-        Self::new(Box::new(
-            WhenFieldValidator::new(param_key.as_str().to_string(), Box::new(greater_than(value)))
-        ))
+        Self::new(Box::new(WhenFieldValidator::new(
+            param_key.as_str().to_string(),
+            Box::new(greater_than(value)),
+        )))
         .with_dependencies([param_key])
     }
 
@@ -906,9 +938,10 @@ impl DisplayRule {
         use nebula_validator::*;
 
         let param_key = parameter.into();
-        Self::new(Box::new(
-            WhenFieldValidator::new(param_key.as_str().to_string(), Box::new(less_than(value)))
-        ))
+        Self::new(Box::new(WhenFieldValidator::new(
+            param_key.as_str().to_string(),
+            Box::new(less_than(value)),
+        )))
         .with_dependencies([param_key])
     }
 
@@ -917,9 +950,10 @@ impl DisplayRule {
         use nebula_validator::*;
 
         let param_key = parameter.into();
-        Self::new(Box::new(
-            WhenFieldValidator::new(param_key.as_str().to_string(), Box::new(range(min, max)))
-        ))
+        Self::new(Box::new(WhenFieldValidator::new(
+            param_key.as_str().to_string(),
+            Box::new(range(min, max)),
+        )))
         .with_dependencies([param_key])
     }
 
@@ -928,9 +962,10 @@ impl DisplayRule {
         use nebula_validator::*;
 
         let param_key = parameter.into();
-        Self::new(Box::new(
-            WhenFieldValidator::new(param_key.as_str().to_string(), Box::new(string_contains(substring)))
-        ))
+        Self::new(Box::new(WhenFieldValidator::new(
+            param_key.as_str().to_string(),
+            Box::new(string_contains(substring)),
+        )))
         .with_dependencies([param_key])
     }
 
@@ -939,9 +974,10 @@ impl DisplayRule {
         use nebula_validator::*;
 
         let param_key = parameter.into();
-        Self::new(Box::new(
-            WhenFieldValidator::new(param_key.as_str().to_string(), Box::new(string_starts_with(prefix)))
-        ))
+        Self::new(Box::new(WhenFieldValidator::new(
+            param_key.as_str().to_string(),
+            Box::new(string_starts_with(prefix)),
+        )))
         .with_dependencies([param_key])
     }
 
@@ -950,9 +986,10 @@ impl DisplayRule {
         use nebula_validator::*;
 
         let param_key = parameter.into();
-        Self::new(Box::new(
-            WhenFieldValidator::new(param_key.as_str().to_string(), Box::new(one_of(values)))
-        ))
+        Self::new(Box::new(WhenFieldValidator::new(
+            param_key.as_str().to_string(),
+            Box::new(one_of(values)),
+        )))
         .with_dependencies([param_key])
     }
 
@@ -960,7 +997,10 @@ impl DisplayRule {
     pub fn when_fields_equal(field1: &str, field2: &str) -> Self {
         Self::new(Box::new(FieldsEqualValidator::new(field1, field2)))
             .with_dependencies([field1, field2])
-            .with_description(format!("Fields '{}' and '{}' must be equal", field1, field2))
+            .with_description(format!(
+                "Fields '{}' and '{}' must be equal",
+                field1, field2
+            ))
     }
 
     /// Two fields are different (cross-field validation)
@@ -969,7 +1009,10 @@ impl DisplayRule {
 
         Self::new(Box::new(different_from_str(field2)))
             .with_dependencies([field1, field2])
-            .with_description(format!("Fields '{}' and '{}' must be different", field1, field2))
+            .with_description(format!(
+                "Fields '{}' and '{}' must be different",
+                field1, field2
+            ))
     }
 
     /// Field is required if another field has a specific value
@@ -978,7 +1021,10 @@ impl DisplayRule {
 
         Self::new(Box::new(required_if_field_str(other_field, other_value)))
             .with_dependencies([field, other_field])
-            .with_description(format!("Field '{}' is required when '{}' has specific value", field, other_field))
+            .with_description(format!(
+                "Field '{}' is required when '{}' has specific value",
+                field, other_field
+            ))
     }
 
     /// Custom validator
@@ -1008,7 +1054,8 @@ mod tests {
         let ctx: DisplayContext = [
             ("auth_type", Value::text("api_key")),
             ("level", Value::integer(15)),
-        ].into();
+        ]
+        .into();
 
         assert_eq!(ctx.len(), 2);
         assert_eq!(ctx["auth_type"], Value::text("api_key"));

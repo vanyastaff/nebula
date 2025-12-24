@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
 
+/// Maximum number of expressions allowed in a single template (DoS protection)
+const MAX_TEMPLATE_EXPRESSIONS: usize = 1000;
+
 /// A template part - either static text or an expression to evaluate
 #[derive(Debug, Clone, PartialEq)]
 pub enum TemplatePart {
@@ -259,6 +262,18 @@ impl Template {
                         strip_left,
                         strip_right,
                     });
+
+                    // Check expression count limit (DoS protection)
+                    let expr_count = parts
+                        .iter()
+                        .filter(|p| matches!(p, TemplatePart::Expression { .. }))
+                        .count();
+                    if expr_count > MAX_TEMPLATE_EXPRESSIONS {
+                        return Err(ExpressionError::expression_parse_error(format!(
+                            "Template contains too many expressions: {} (max {})",
+                            expr_count, MAX_TEMPLATE_EXPRESSIONS
+                        )));
+                    }
 
                     // Update position tracking
                     i = j + 2;

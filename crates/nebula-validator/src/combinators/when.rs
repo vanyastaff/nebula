@@ -305,8 +305,8 @@ mod tests {
         let validator = When::new(MinLength { min: 10 }, |s: &str| s.starts_with("long_"));
 
         // Condition true, validates
-        assert!(validator.validate("long_enough_string").is_ok());
-        assert!(validator.validate("long_short").is_err());
+        assert!(validator.validate("long_enough_string").is_ok()); // 18 chars >= 10
+        assert!(validator.validate("long_foo").is_err()); // 8 chars < 10
     }
 
     #[test]
@@ -319,14 +319,14 @@ mod tests {
 
     #[test]
     fn test_when_chain() {
-        let validator = MinLength { min: 5 }
+        let validator = MinLength { min: 12 }
             .when(|s: &str| s.starts_with("check_"))
             .when(|s: &str| !s.is_empty());
 
         assert!(validator.validate("").is_ok()); // empty, second condition false
         assert!(validator.validate("other").is_ok()); // first condition false
-        assert!(validator.validate("check_hello").is_ok()); // both true, validates OK
-        assert!(validator.validate("check_hi").is_err()); // both true, too short
+        assert!(validator.validate("check_hello_world").is_ok()); // both true, 17 chars >= 12
+        assert!(validator.validate("check_hi").is_err()); // both true, 8 chars < 12
     }
 
     #[test]

@@ -502,6 +502,7 @@ mod tests {
         assert_eq!(stats.total_validations, 3);
         assert_eq!(stats.successful_validations, 2);
         assert_eq!(stats.failed_validations, 1);
-        assert_eq!(stats.success_rate(), 200.0 / 3.0);
+        // Use approximate comparison for floating point
+        assert!((stats.success_rate() - 200.0 / 3.0).abs() < 1e-10);
     }
 }

@@ -132,12 +132,19 @@ impl Value {
     }
 }
 
+/// Maximum number of path segments allowed (DoS protection)
+const MAX_PATH_SEGMENTS: usize = 100;
+
 /// Parse a path string into segments
 ///
 /// Examples:
 /// - "user.name" -> [Key("user"), Key("name")]
 /// - "items[0]" -> [Key("items"), Index(0)]
 /// - "data[0].value" -> [Key("data"), Index(0), Key("value")]
+///
+/// # Errors
+///
+/// Returns `ValueError::LimitExceeded` if the path has more than 100 segments.
 fn parse_path(path: &str) -> ValueResult<Vec<PathSegment>> {
     let mut segments = Vec::new();
     let mut current = String::new();
@@ -149,12 +156,30 @@ fn parse_path(path: &str) -> ValueResult<Vec<PathSegment>> {
                 if !current.is_empty() {
                     segments.push(PathSegment::Key(current.clone()));
                     current.clear();
+
+                    // Check segment limit
+                    if segments.len() > MAX_PATH_SEGMENTS {
+                        return Err(ValueError::limit_exceeded(
+                            "path segments",
+                            MAX_PATH_SEGMENTS,
+                            segments.len(),
+                        ));
+                    }
                 }
             }
             '[' => {
                 if !current.is_empty() {
                     segments.push(PathSegment::Key(current.clone()));
                     current.clear();
+
+                    // Check segment limit
+                    if segments.len() > MAX_PATH_SEGMENTS {
+                        return Err(ValueError::limit_exceeded(
+                            "path segments",
+                            MAX_PATH_SEGMENTS,
+                            segments.len(),
+                        ));
+                    }
                 }
 
                 // Parse index
@@ -176,6 +201,15 @@ fn parse_path(path: &str) -> ValueResult<Vec<PathSegment>> {
                     .map_err(|_| ValueError::parse_error("path index", index_str))?;
 
                 segments.push(PathSegment::Index(index));
+
+                // Check segment limit
+                if segments.len() > MAX_PATH_SEGMENTS {
+                    return Err(ValueError::limit_exceeded(
+                        "path segments",
+                        MAX_PATH_SEGMENTS,
+                        segments.len(),
+                    ));
+                }
             }
             _ => {
                 current.push(ch);
@@ -185,6 +219,15 @@ fn parse_path(path: &str) -> ValueResult<Vec<PathSegment>> {
 
     if !current.is_empty() {
         segments.push(PathSegment::Key(current));
+
+        // Final check
+        if segments.len() > MAX_PATH_SEGMENTS {
+            return Err(ValueError::limit_exceeded(
+                "path segments",
+                MAX_PATH_SEGMENTS,
+                segments.len(),
+            ));
+        }
     }
 
     Ok(segments)

@@ -9,6 +9,97 @@ use crate::core::value::Value;
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 
+/// Recursively hash a Value without using format!
+/// This is more efficient and produces deterministic hashes
+fn hash_value<H: Hasher>(value: &Value, state: &mut H) {
+    // Hash the type discriminant first
+    value.kind().hash(state);
+
+    match value {
+        Value::Null => {
+            // Nothing to hash beyond the discriminant
+        }
+
+        Value::Boolean(b) => {
+            b.hash(state);
+        }
+
+        Value::Integer(i) => {
+            i.value().hash(state);
+        }
+
+        Value::Float(f) => {
+            if f.is_nan() {
+                // Normalize ALL NaN values to same hash
+                f64::to_bits(f64::NAN).hash(state);
+            } else if f.value() == 0.0 {
+                // Normalize -0.0 and +0.0 to same hash
+                0.0f64.to_bits().hash(state);
+            } else {
+                f.to_bits().hash(state);
+            }
+        }
+
+        Value::Decimal(d) => {
+            // Hash mantissa and scale separately for deterministic hashing
+            d.mantissa().hash(state);
+            d.scale().hash(state);
+        }
+
+        Value::Text(t) => {
+            t.as_str().hash(state);
+        }
+
+        Value::Bytes(b) => {
+            b.as_slice().hash(state);
+        }
+
+        Value::Array(arr) => {
+            // Hash length and all elements recursively
+            arr.len().hash(state);
+            for item in arr.iter() {
+                hash_value(item, state);
+            }
+        }
+
+        Value::Object(obj) => {
+            // Hash length and all key-value pairs (order-independent)
+            obj.len().hash(state);
+
+            // Collect keys, sort them for deterministic hashing
+            let mut keys: Vec<_> = obj.keys().collect();
+            keys.sort();
+
+            for key in keys {
+                key.hash(state);
+                if let Some(val) = obj.get(key) {
+                    hash_value(val, state);
+                }
+            }
+        }
+
+        #[cfg(feature = "temporal")]
+        Value::Date(d) => {
+            d.hash(state);
+        }
+
+        #[cfg(feature = "temporal")]
+        Value::Time(t) => {
+            t.hash(state);
+        }
+
+        #[cfg(feature = "temporal")]
+        Value::DateTime(dt) => {
+            dt.hash(state);
+        }
+
+        #[cfg(feature = "temporal")]
+        Value::Duration(dur) => {
+            dur.hash(state);
+        }
+    }
+}
+
 /// Wrapper for Value that can be used as HashMap key
 ///
 /// **WARNING**: This wrapper treats all NaN values as equal for hashing purposes.
@@ -49,93 +140,8 @@ impl HashableValue {
 
 impl Hash for HashableValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Hash the type discriminant first
-        self.0.kind().hash(state);
-
-        match &self.0 {
-            Value::Null => {
-                // Nothing to hash beyond the discriminant
-            }
-
-            Value::Boolean(b) => {
-                b.hash(state);
-            }
-
-            Value::Integer(i) => {
-                i.value().hash(state);
-            }
-
-            Value::Float(f) => {
-                if f.is_nan() {
-                    // Normalize ALL NaN values to same hash
-                    f64::to_bits(f64::NAN).hash(state);
-                } else if f.value() == 0.0 {
-                    // Normalize -0.0 and +0.0 to same hash
-                    0.0f64.to_bits().hash(state);
-                } else {
-                    f.to_bits().hash(state);
-                }
-            }
-
-            Value::Decimal(d) => {
-                // Hash the string representation to ensure precision
-                d.to_string().hash(state);
-            }
-
-            Value::Text(t) => {
-                t.as_str().hash(state);
-            }
-
-            Value::Bytes(b) => {
-                b.as_slice().hash(state);
-            }
-
-            Value::Array(arr) => {
-                // Hash length and all elements
-                arr.len().hash(state);
-                for item in arr.iter() {
-                    // Hash serde_json::Value (stored internally)
-                    format!("{:?}", item).hash(state);
-                }
-            }
-
-            Value::Object(obj) => {
-                // Hash length and all key-value pairs (order-independent)
-                obj.len().hash(state);
-
-                // Collect keys, sort them for deterministic hashing
-                let mut keys: Vec<_> = obj.keys().collect();
-                keys.sort();
-
-                for key in keys {
-                    key.hash(state);
-                    if let Some(value) = obj.get(key) {
-                        // Hash serde_json::Value (stored internally)
-                        format!("{:?}", value).hash(state);
-                    }
-                }
-            }
-
-            #[cfg(feature = "temporal")]
-            Value::Date(d) => {
-                d.hash(state);
-            }
-
-            #[cfg(feature = "temporal")]
-            Value::Time(t) => {
-                t.hash(state);
-            }
-
-            #[cfg(feature = "temporal")]
-            Value::DateTime(dt) => {
-                dt.hash(state);
-            }
-
-            #[cfg(feature = "temporal")]
-            Value::Duration(dur) => {
-                dur.hash(state);
-            }
-        }
+        // Use the optimized recursive hash function
+        hash_value(&self.0, state);
     }
 }
 

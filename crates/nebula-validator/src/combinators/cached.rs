@@ -144,7 +144,10 @@ where
     }
 
     /// Returns the number of cached entries.
+    ///
+    /// Note: This method calls `run_pending_tasks()` to ensure accurate count.
     pub fn cache_size(&self) -> u64 {
+        self.cache.run_pending_tasks();
         self.cache.entry_count()
     }
 
@@ -162,6 +165,7 @@ where
     /// ```
     pub fn clear_cache(&self) {
         self.cache.invalidate_all();
+        self.cache.run_pending_tasks();
     }
 
     /// Returns cache statistics.
@@ -177,7 +181,10 @@ where
     /// let stats = validator.cache_stats();
     /// assert_eq!(stats.entries, 2);
     /// ```
+    ///
+    /// Note: This method calls `run_pending_tasks()` to ensure accurate stats.
     pub fn cache_stats(&self) -> CacheStats {
+        self.cache.run_pending_tasks();
         CacheStats {
             entries: self.cache.entry_count(),
             capacity: self.cache.policy().max_capacity().unwrap_or(0),

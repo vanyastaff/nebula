@@ -253,7 +253,17 @@ impl Evaluator {
     #[inline]
     fn add(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
-            (Value::Integer(l), Value::Integer(r)) => Ok(Value::integer(l.value() + r.value())),
+            (Value::Integer(l), Value::Integer(r)) => l
+                .value()
+                .checked_add(r.value())
+                .map(Value::integer)
+                .ok_or_else(|| {
+                    ExpressionError::expression_eval_error(format!(
+                        "Integer overflow: {} + {}",
+                        l.value(),
+                        r.value()
+                    ))
+                }),
             (Value::Float(l), Value::Float(r)) => Ok(Value::float(l.value() + r.value())),
             (Value::Integer(l), Value::Float(r)) => Ok(Value::float(l.value() as f64 + r.value())),
             (Value::Float(l), Value::Integer(r)) => Ok(Value::float(l.value() + r.value() as f64)),
@@ -277,7 +287,17 @@ impl Evaluator {
     #[inline]
     fn subtract(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
-            (Value::Integer(l), Value::Integer(r)) => Ok(Value::integer(l.value() - r.value())),
+            (Value::Integer(l), Value::Integer(r)) => l
+                .value()
+                .checked_sub(r.value())
+                .map(Value::integer)
+                .ok_or_else(|| {
+                    ExpressionError::expression_eval_error(format!(
+                        "Integer overflow: {} - {}",
+                        l.value(),
+                        r.value()
+                    ))
+                }),
             (Value::Float(l), Value::Float(r)) => Ok(Value::float(l.value() - r.value())),
             (Value::Integer(l), Value::Float(r)) => Ok(Value::float(l.value() as f64 - r.value())),
             (Value::Float(l), Value::Integer(r)) => Ok(Value::float(l.value() - r.value() as f64)),
@@ -292,7 +312,17 @@ impl Evaluator {
     #[inline]
     fn multiply(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
-            (Value::Integer(l), Value::Integer(r)) => Ok(Value::integer(l.value() * r.value())),
+            (Value::Integer(l), Value::Integer(r)) => l
+                .value()
+                .checked_mul(r.value())
+                .map(Value::integer)
+                .ok_or_else(|| {
+                    ExpressionError::expression_eval_error(format!(
+                        "Integer overflow: {} * {}",
+                        l.value(),
+                        r.value()
+                    ))
+                }),
             (Value::Float(l), Value::Float(r)) => Ok(Value::float(l.value() * r.value())),
             (Value::Integer(l), Value::Float(r)) => Ok(Value::float(l.value() as f64 * r.value())),
             (Value::Float(l), Value::Integer(r)) => Ok(Value::float(l.value() * r.value() as f64)),
@@ -311,7 +341,17 @@ impl Evaluator {
                 if r.value() == 0 {
                     return Err(ExpressionError::expression_division_by_zero());
                 }
-                Ok(Value::integer(l.value() / r.value()))
+                // checked_div handles MIN / -1 overflow case
+                l.value()
+                    .checked_div(r.value())
+                    .map(Value::integer)
+                    .ok_or_else(|| {
+                        ExpressionError::expression_eval_error(format!(
+                            "Integer overflow: {} / {}",
+                            l.value(),
+                            r.value()
+                        ))
+                    })
             }
             (Value::Float(l), Value::Float(r)) => {
                 if r.value() == 0.0 {
@@ -363,7 +403,24 @@ impl Evaluator {
                 if r.value() < 0 {
                     Ok(Value::float((l.value() as f64).powf(r.value() as f64)))
                 } else {
-                    Ok(Value::integer(l.value().pow(r.value() as u32)))
+                    // Limit exponent to prevent overflow and DoS
+                    // i64::MAX is ~9.2e18, so 2^63 overflows. Limit to 63.
+                    if r.value() > 63 {
+                        return Err(ExpressionError::expression_eval_error(format!(
+                            "Exponent too large: {} (max 63 for integer power)",
+                            r.value()
+                        )));
+                    }
+                    l.value()
+                        .checked_pow(r.value() as u32)
+                        .map(Value::integer)
+                        .ok_or_else(|| {
+                            ExpressionError::expression_eval_error(format!(
+                                "Integer overflow: {} ** {}",
+                                l.value(),
+                                r.value()
+                            ))
+                        })
                 }
             }
             (Value::Float(l), Value::Float(r)) => Ok(Value::float(l.value().powf(r.value()))),

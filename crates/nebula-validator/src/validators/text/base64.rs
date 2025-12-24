@@ -150,15 +150,24 @@ impl TypedValidator for Base64 {
         let padding_count = cleaned.chars().rev().take_while(|&c| c == '=').count();
 
         if self.require_padding {
-            // Valid padding: 0, 1, or 2 '=' chars at the end
-            let expected_padding = match cleaned.len() % 4 {
-                0 => 0,
-                2 => 2,
-                3 => 1,
+            // When padding is required, total length (including padding) must be multiple of 4
+            if cleaned.len() % 4 != 0 {
+                return Err(ValidationError::new(
+                    "invalid_base64_length",
+                    "Base64 string length must be a multiple of 4 when padding is required",
+                ));
+            }
+
+            // Calculate expected padding based on data length (without padding)
+            let data_len = cleaned.len() - padding_count;
+            let expected_padding = match data_len % 4 {
+                0 => 0, // No padding needed
+                2 => 2, // 2 data chars => 2 padding
+                3 => 1, // 3 data chars => 1 padding
                 _ => {
                     return Err(ValidationError::new(
                         "invalid_base64_length",
-                        "Base64 string length must be a multiple of 4 when padding is required",
+                        "Invalid Base64 data length",
                     ));
                 }
             };

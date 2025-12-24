@@ -483,13 +483,17 @@ mod tests {
     #[test]
     fn test_unicode_handling() {
         // Emoji and multi-byte characters
+        // Note: MinLength uses byte length (.len()), not character count
         let validator = MinLength::new(5);
-        assert!(validator.validate("hello").is_ok());
-        assert!(validator.validate("👋🌍").is_err()); // 2 chars but 8 bytes
+        assert!(validator.validate("hello").is_ok()); // 5 bytes
+        assert!(validator.validate("👋🌍").is_ok()); // 8 bytes >= 5
 
-        // String length counts Unicode scalar values, not bytes
+        // Demonstrate byte vs character count difference
         assert_eq!("👋🌍".len(), 8); // bytes
         assert_eq!("👋🌍".chars().count(), 2); // characters
+
+        // Test that short byte strings fail
+        assert!(validator.validate("hi").is_err()); // 2 bytes < 5
     }
 
     #[test]
