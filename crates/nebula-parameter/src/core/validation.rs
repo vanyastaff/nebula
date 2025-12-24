@@ -143,6 +143,30 @@ pub enum ValueCondition {
 
     /// Boolean value is false.
     IsFalse,
+
+    // === Combinators ===
+    /// All conditions must be true (AND).
+    And(Vec<ValueCondition>),
+
+    /// At least one condition must be true (OR).
+    Or(Vec<ValueCondition>),
+
+    /// Condition must be false (NOT).
+    Not(Box<ValueCondition>),
+
+    // === Cross-field ===
+    /// Evaluate condition on another field's value.
+    ///
+    /// Example: `Field("other_field", IsSet)` - check if other field is set
+    Field(ParameterKey, Box<ValueCondition>),
+
+    /// Current value must equal the referenced field's value.
+    ///
+    /// Example: `EqualsField("password")` - confirm_password equals password
+    EqualsField(ParameterKey),
+
+    /// Current value must not equal the referenced field's value.
+    NotEqualsField(ParameterKey),
 }
 
 impl ValueCondition {
@@ -196,13 +220,49 @@ impl ValueCondition {
 
             Self::IsTrue => value.as_boolean() == Some(true),
             Self::IsFalse => value.as_boolean() == Some(false),
+
+            // Combinators
+            Self::And(conditions) => conditions.iter().all(|c| c.evaluate(value)),
+            Self::Or(conditions) => conditions.iter().any(|c| c.evaluate(value)),
+            Self::Not(condition) => !condition.evaluate(value),
+
+            // Cross-field requires context, return false here
+            Self::Field(_, _) | Self::EqualsField(_) | Self::NotEqualsField(_) => false,
         }
     }
 
-    /// Check if this condition requires validation state.
+    /// Check if this condition requires context (validation state or other fields).
     #[must_use]
-    pub fn requires_validation_state(&self) -> bool {
-        matches!(self, Self::IsValid | Self::IsInvalid)
+    pub fn requires_context(&self) -> bool {
+        match self {
+            Self::IsValid | Self::IsInvalid => true,
+            Self::Field(_, _) | Self::EqualsField(_) | Self::NotEqualsField(_) => true,
+            Self::And(conditions) | Self::Or(conditions) => {
+                conditions.iter().any(|c| c.requires_context())
+            }
+            Self::Not(condition) => condition.requires_context(),
+            _ => false,
+        }
+    }
+
+    /// Collect all referenced fields from this condition and nested conditions.
+    pub fn collect_referenced_fields(&self, fields: &mut Vec<ParameterKey>) {
+        match self {
+            Self::Field(key, condition) => {
+                fields.push(key.clone());
+                condition.collect_referenced_fields(fields);
+            }
+            Self::EqualsField(key) | Self::NotEqualsField(key) => {
+                fields.push(key.clone());
+            }
+            Self::And(conditions) | Self::Or(conditions) => {
+                for c in conditions {
+                    c.collect_referenced_fields(fields);
+                }
+            }
+            Self::Not(condition) => condition.collect_referenced_fields(fields),
+            _ => {}
+        }
     }
 
     /// Check if a value is empty.
@@ -227,6 +287,38 @@ impl ValueCondition {
     #[must_use]
     pub fn get_string(value: &Value) -> Option<&str> {
         value.as_str()
+    }
+
+    // === Convenience constructors ===
+
+    /// Create AND condition.
+    pub fn and(conditions: impl IntoIterator<Item = ValueCondition>) -> Self {
+        Self::And(conditions.into_iter().collect())
+    }
+
+    /// Create OR condition.
+    pub fn or(conditions: impl IntoIterator<Item = ValueCondition>) -> Self {
+        Self::Or(conditions.into_iter().collect())
+    }
+
+    /// Create NOT condition.
+    pub fn not(condition: ValueCondition) -> Self {
+        Self::Not(Box::new(condition))
+    }
+
+    /// Create cross-field condition: check if other field's value matches condition.
+    pub fn field(key: impl Into<ParameterKey>, condition: ValueCondition) -> Self {
+        Self::Field(key.into(), Box::new(condition))
+    }
+
+    /// Create cross-field equals: current value must equal other field's value.
+    pub fn equals_field(key: impl Into<ParameterKey>) -> Self {
+        Self::EqualsField(key.into())
+    }
+
+    /// Create cross-field not-equals: current value must not equal other field's value.
+    pub fn not_equals_field(key: impl Into<ParameterKey>) -> Self {
+        Self::NotEqualsField(key.into())
     }
 }
 
