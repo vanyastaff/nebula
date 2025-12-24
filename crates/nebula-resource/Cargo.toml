@@ -107,7 +107,6 @@ rdkafka = { version = "0.38", features = ["tokio"], optional = true }
 # Note: deadpool and bb8 removed - we use custom pool implementation
 
 # Configuration and validation
-validator = { version = "0.20.0", features = ["derive"] }
 base64 = { workspace = true }
 
 # Development and testing

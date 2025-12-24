@@ -256,7 +256,7 @@ mod tests {
         let context = EvaluationContext::new();
 
         let result = engine.evaluate("42", &context).unwrap();
-        assert_eq!(result.as_integer(), Some(42));
+        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(42)));
     }
 
     #[test]
@@ -265,7 +265,7 @@ mod tests {
         let context = EvaluationContext::new();
 
         let result = engine.evaluate("2 + 3 * 4", &context).unwrap();
-        assert_eq!(result.as_integer(), Some(14));
+        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(14)));
     }
 
     #[test]
@@ -283,7 +283,7 @@ mod tests {
         let context = EvaluationContext::new();
 
         let result = engine.evaluate("{{ 2 + 3 }}", &context).unwrap();
-        assert_eq!(result.as_integer(), Some(5));
+        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(5)));
     }
 
     #[test]

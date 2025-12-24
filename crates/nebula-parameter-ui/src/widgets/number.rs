@@ -1,7 +1,7 @@
 //! Number input widget for NumberParameter.
 
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
-use egui::{DragValue, RichText, Ui, Widget};
+use egui::{DragValue, RichText, Ui};
 use egui_flex::{Flex, FlexAlign, item};
 use nebula_parameter::core::{HasValue, Parameter};
 use nebula_parameter::types::NumberParameter;
