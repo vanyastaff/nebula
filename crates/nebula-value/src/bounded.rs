@@ -20,10 +20,10 @@
 //! # Ok::<(), nebula_value::ValueError>(())
 //! ```
 
-use crate::core::{ValueError, ValueResult};
-use crate::scalar::Text;
 use crate::collections::{Array, Object};
 use crate::core::Value;
+use crate::core::{ValueError, ValueResult};
+use crate::scalar::Text;
 
 /// Text with a compile-time maximum byte length.
 ///

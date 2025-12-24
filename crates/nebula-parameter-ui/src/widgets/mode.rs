@@ -3,7 +3,7 @@
 //! Dropdown for mode selection with inline input field.
 
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
-use egui::{ComboBox, Frame, CornerRadius, Stroke, Ui};
+use egui::{ComboBox, CornerRadius, Frame, Stroke, Ui};
 use nebula_parameter::core::{HasValue, Parameter};
 use nebula_parameter::types::{ModeParameter, ModeValue};
 

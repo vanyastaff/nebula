@@ -19,6 +19,14 @@ use std::sync::Arc;
 /// Maximum recursion depth for expression evaluation
 const MAX_RECURSION_DEPTH: usize = 256;
 
+/// Maximum length for regex patterns to prevent ReDoS attacks
+#[cfg(feature = "regex")]
+const MAX_REGEX_PATTERN_LEN: usize = 1000;
+
+/// Maximum number of cached regex patterns (simple LRU-style eviction)
+#[cfg(feature = "regex")]
+const MAX_REGEX_CACHE_SIZE: usize = 100;
+
 /// Evaluator for expression ASTs
 pub struct Evaluator {
     builtins: Arc<BuiltinRegistry>,
@@ -416,7 +424,12 @@ impl Evaluator {
         }
     }
 
-    /// Regex match
+    /// Regex match with ReDoS protection
+    ///
+    /// Security measures:
+    /// - Pattern length limit (MAX_REGEX_PATTERN_LEN)
+    /// - Detection of potentially dangerous nested quantifiers
+    /// - Cache size limit with eviction (MAX_REGEX_CACHE_SIZE)
     #[cfg(feature = "regex")]
     fn regex_match(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         let text = left
@@ -427,6 +440,22 @@ impl Evaluator {
             .as_str()
             .ok_or_else(|| ExpressionError::expression_type_error("string", right.kind().name()))?;
 
+        // ReDoS protection: check pattern length
+        if pattern.len() > MAX_REGEX_PATTERN_LEN {
+            return Err(ExpressionError::expression_regex_error(format!(
+                "Regex pattern too long: {} chars (max {})",
+                pattern.len(),
+                MAX_REGEX_PATTERN_LEN
+            )));
+        }
+
+        // ReDoS protection: detect potentially dangerous patterns
+        if Self::is_potentially_dangerous_regex(pattern) {
+            return Err(ExpressionError::expression_regex_error(
+                "Regex pattern rejected: contains potentially dangerous nested quantifiers",
+            ));
+        }
+
         // Try to get from cache first
         let mut cache = self.regex_cache.lock();
         let regex = if let Some(cached_regex) = cache.get(pattern) {
@@ -436,12 +465,73 @@ impl Evaluator {
             // Cache miss - compile and cache
             let new_regex = Regex::new(pattern)
                 .map_err(|e| ExpressionError::expression_regex_error(e.to_string()))?;
+
+            // Enforce cache size limit with simple eviction
+            if cache.len() >= MAX_REGEX_CACHE_SIZE {
+                // Remove first entry (simple eviction strategy)
+                if let Some(key) = cache.keys().next().cloned() {
+                    cache.remove(&key);
+                }
+            }
+
             cache.insert(pattern.to_string(), new_regex.clone());
             new_regex
         };
-        drop(cache); // Release borrow before is_match
+        drop(cache); // Release lock before is_match
 
         Ok(Value::boolean(regex.is_match(text)))
+    }
+
+    /// Check if a regex pattern contains potentially dangerous constructs
+    /// that could lead to catastrophic backtracking (ReDoS).
+    ///
+    /// Detects patterns like `(a+)+`, `(a*)*`, `(a+)*` which can cause
+    /// exponential time complexity.
+    #[cfg(feature = "regex")]
+    fn is_potentially_dangerous_regex(pattern: &str) -> bool {
+        let chars: Vec<char> = pattern.chars().collect();
+        let len = chars.len();
+        let mut i = 0;
+
+        while i < len {
+            // Look for opening parenthesis
+            if chars[i] == '(' {
+                let group_start = i;
+                let mut depth = 1;
+                i += 1;
+
+                // Find matching closing parenthesis
+                while i < len && depth > 0 {
+                    match chars[i] {
+                        '(' => depth += 1,
+                        ')' => depth -= 1,
+                        '\\' => i += 1, // Skip escaped character
+                        _ => {}
+                    }
+                    i += 1;
+                }
+
+                // Check if group is followed by a quantifier
+                if i < len && (chars[i] == '+' || chars[i] == '*') {
+                    // Check if the group contains a quantifier
+                    let group_content: String = chars[group_start + 1..i - 1].iter().collect();
+                    if group_content.contains('+')
+                        || group_content.contains('*')
+                        || group_content.contains('{')
+                    {
+                        // Nested quantifiers detected - potentially dangerous
+                        return true;
+                    }
+                }
+            } else if chars[i] == '\\' {
+                // Skip escaped character
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+
+        false
     }
 
     #[cfg(not(feature = "regex"))]

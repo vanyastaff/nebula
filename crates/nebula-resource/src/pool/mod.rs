@@ -548,7 +548,9 @@ where
             strategy,
             // Pre-allocate for max pool size to avoid reallocations
             available: Arc::new(Mutex::new(Vec::with_capacity(config.max_size))),
-            acquired: Arc::new(Mutex::new(std::collections::HashMap::with_capacity(config.max_size))),
+            acquired: Arc::new(Mutex::new(std::collections::HashMap::with_capacity(
+                config.max_size,
+            ))),
             stats: Arc::new(RwLock::new(PoolStats::default())),
             factory: Arc::new(move || Box::pin(factory())),
             health_checker: None,

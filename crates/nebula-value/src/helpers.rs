@@ -3,8 +3,8 @@
 //! This module provides convenient extension traits and utilities
 //! that make common operations more ergonomic.
 
-use crate::core::{Value, ValueResult};
 use crate::collections::{Array, Object};
+use crate::core::{Value, ValueResult};
 
 /// Extension trait for Value with additional helper methods.
 pub trait ValueExt {
@@ -179,10 +179,8 @@ impl ObjectExt for Object {
     where
         F: FnMut(&Value) -> Value,
     {
-        let entries: Vec<(String, Value)> = self
-            .entries()
-            .map(|(k, v)| (k.clone(), f(v)))
-            .collect();
+        let entries: Vec<(String, Value)> =
+            self.entries().map(|(k, v)| (k.clone(), f(v))).collect();
         Object::from_iter(entries)
     }
 }

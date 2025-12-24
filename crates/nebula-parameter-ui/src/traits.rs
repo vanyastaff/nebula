@@ -1,7 +1,7 @@
 //! Common traits for parameter widgets.
 
 use crate::ParameterTheme;
-use egui::{Frame, CornerRadius, Stroke, Ui};
+use egui::{CornerRadius, Frame, Stroke, Ui};
 
 /// Response from a parameter widget.
 #[derive(Debug, Clone, Default)]

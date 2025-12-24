@@ -205,7 +205,12 @@ impl HttpClientInstance {
             .as_ref()
             .map(|cb_config| CircuitBreaker::with_config(cb_config.clone()))
             .transpose()
-            .map_err(|e| ResourceError::initialization("http_client:1.0", format!("Failed to create circuit breaker: {}", e)))?
+            .map_err(|e| {
+                ResourceError::initialization(
+                    "http_client:1.0",
+                    format!("Failed to create circuit breaker: {}", e),
+                )
+            })?
             .map(Arc::new);
 
         Ok(Self {

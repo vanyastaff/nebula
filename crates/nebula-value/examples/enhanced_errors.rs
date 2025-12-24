@@ -90,8 +90,7 @@ fn process_user_data() -> Result<(), EnhancedError> {
 }
 
 fn validate_profile() -> Result<(), EnhancedError> {
-    check_required_fields()
-        .map_err(|e| e.with_context("While validating user profile"))
+    check_required_fields().map_err(|e| e.with_context("While validating user profile"))
 }
 
 fn check_required_fields() -> Result<(), EnhancedError> {

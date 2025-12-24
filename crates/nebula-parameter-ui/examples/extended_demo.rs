@@ -291,7 +291,7 @@ impl eframe::App for ExtendedDemoApp {
                 // Information
                 ui.heading("ℹ️ Information");
                 ui.separator();
-                
+
                 ui.group(|ui| {
                     ui.vertical(|ui| {
                         ui.label("This demo showcases the extended parameter widgets:");

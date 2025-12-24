@@ -272,8 +272,8 @@ impl Value {
             Self::Integer(i) => Some(*i),
             Self::Float(f) => {
                 let v = f.value();
-                if v.is_finite() && v.fract() == 0.0
-                    && v >= i64::MIN as f64 && v <= i64::MAX as f64 {
+                if v.is_finite() && v.fract() == 0.0 && v >= i64::MIN as f64 && v <= i64::MAX as f64
+                {
                     Some(Integer::new(v as i64))
                 } else {
                     None
@@ -694,9 +694,15 @@ mod tests {
         assert_eq!(Value::from_str("null").unwrap(), Value::Null);
         assert_eq!(Value::from_str("true").unwrap(), Value::boolean(true));
         assert_eq!(Value::from_str("false").unwrap(), Value::boolean(false));
-        assert_eq!(Value::from_str("42").unwrap().as_integer(), Some(Integer::new(42)));
+        assert_eq!(
+            Value::from_str("42").unwrap().as_integer(),
+            Some(Integer::new(42))
+        );
         assert!(Value::from_str("3.14").unwrap().is_float());
-        assert_eq!(Value::from_str("\"hello\"").unwrap().as_str(), Some("hello"));
+        assert_eq!(
+            Value::from_str("\"hello\"").unwrap().as_str(),
+            Some("hello")
+        );
 
         // Parse arrays
         let arr: Value = "[1, 2, 3]".parse().unwrap();

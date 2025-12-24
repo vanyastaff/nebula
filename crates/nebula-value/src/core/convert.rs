@@ -49,7 +49,7 @@ impl ValueRefExt for Value {
                 let mut map = serde_json::Map::with_capacity(size_hint);
                 map.extend(entries.map(|(k, v)| (k.clone(), v.to_json())));
                 serde_json::Value::Object(map)
-            },
+            }
             #[cfg(feature = "temporal")]
             Value::Date(d) => serde_json::Value::String(d.to_iso_string().to_string()),
             #[cfg(feature = "temporal")]

@@ -1,7 +1,7 @@
 //! Notice display widget for NoticeParameter.
 
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
-use egui::{Frame, CornerRadius, Stroke, Ui};
+use egui::{CornerRadius, Frame, Stroke, Ui};
 use nebula_parameter::core::Parameter;
 use nebula_parameter::types::{NoticeParameter, NoticeType};
 

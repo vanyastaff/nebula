@@ -161,7 +161,12 @@ impl fmt::Display for EnhancedError {
             use colored::Colorize;
 
             // Main error message (red, bold)
-            writeln!(f, "{} {}", "Error:".red().bold(), self.error.to_string().red())?;
+            writeln!(
+                f,
+                "{} {}",
+                "Error:".red().bold(),
+                self.error.to_string().red()
+            )?;
 
             // Error code (cyan)
             writeln!(f, "{} {}", "Code:".cyan(), self.error.code().cyan())?;
@@ -203,7 +208,12 @@ impl fmt::Display for EnhancedError {
             if !self.docs.is_empty() {
                 writeln!(f, "\n{}", "Documentation:".bright_blue().bold())?;
                 for doc in &self.docs {
-                    writeln!(f, "  {} {}", "📚".bright_blue(), doc.bright_blue().underline())?;
+                    writeln!(
+                        f,
+                        "  {} {}",
+                        "📚".bright_blue(),
+                        doc.bright_blue().underline()
+                    )?;
                 }
             }
         }
@@ -351,7 +361,8 @@ impl ErrorBuilder {
 
         // Suggest similar keys if any
         if !available_keys.is_empty() {
-            enhanced = enhanced.with_context(format!("Available keys: {}", available_keys.join(", ")));
+            enhanced =
+                enhanced.with_context(format!("Available keys: {}", available_keys.join(", ")));
 
             // Find similar keys (simple Levenshtein-like similarity)
             let similar: Vec<_> = available_keys
@@ -376,8 +387,15 @@ impl ErrorBuilder {
     pub fn index_out_of_bounds(index: usize, length: usize) -> EnhancedError {
         let error = ValueError::index_out_of_bounds(index, length);
         EnhancedError::new(error)
-            .with_hint(format!("Array has {} elements (indices 0..{})", length, length.saturating_sub(1)))
-            .with_suggestion(format!("Use an index between 0 and {}", length.saturating_sub(1)))
+            .with_hint(format!(
+                "Array has {} elements (indices 0..{})",
+                length,
+                length.saturating_sub(1)
+            ))
+            .with_suggestion(format!(
+                "Use an index between 0 and {}",
+                length.saturating_sub(1)
+            ))
             .with_suggestion("Check the array length with .len() before accessing")
             .with_suggestion("Use .get() which returns Option instead of panicking")
     }
@@ -441,8 +459,8 @@ mod tests {
 
     #[test]
     fn test_value_error_ext() {
-        let error = ValueError::type_mismatch("String", "Integer")
-            .suggest("Use Value::text() instead");
+        let error =
+            ValueError::type_mismatch("String", "Integer").suggest("Use Value::text() instead");
 
         assert_eq!(error.suggestions().len(), 1);
     }
