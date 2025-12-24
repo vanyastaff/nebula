@@ -271,6 +271,62 @@ pub enum DisplayCondition {
     /// assert!(!condition.evaluate(&Value::text("DELETE")));
     /// ```
     OneOf(Vec<Value>),
+
+    /// Field has passed validation (is valid).
+    ///
+    /// This condition checks the validation state of a field, not its value.
+    /// It returns true if the field has been validated and passed validation.
+    ///
+    /// Note: This condition is evaluated against the `DisplayContext`'s validation
+    /// state, not the value itself. When using `evaluate()` directly on a value,
+    /// this will always return false. Use `DisplayRule::evaluate()` with a context
+    /// that has validation state set.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nebula_parameter::core::display::{DisplayCondition, DisplayContext, DisplayRule};
+    /// use nebula_core::ParameterKey;
+    ///
+    /// let rule = DisplayRule::when(
+    ///     ParameterKey::new("password").unwrap(),
+    ///     DisplayCondition::IsValid,
+    /// );
+    ///
+    /// let ctx = DisplayContext::new()
+    ///     .with_validation(ParameterKey::new("password").unwrap(), true);
+    ///
+    /// assert!(rule.evaluate(&ctx));
+    /// ```
+    IsValid,
+
+    /// Field has failed validation (is invalid).
+    ///
+    /// This condition checks the validation state of a field, not its value.
+    /// It returns true if the field has been validated and failed validation.
+    ///
+    /// Note: This condition is evaluated against the `DisplayContext`'s validation
+    /// state, not the value itself. When using `evaluate()` directly on a value,
+    /// this will always return false. Use `DisplayRule::evaluate()` with a context
+    /// that has validation state set.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nebula_parameter::core::display::{DisplayCondition, DisplayContext, DisplayRule};
+    /// use nebula_core::ParameterKey;
+    ///
+    /// let rule = DisplayRule::when(
+    ///     ParameterKey::new("email").unwrap(),
+    ///     DisplayCondition::IsInvalid,
+    /// );
+    ///
+    /// let ctx = DisplayContext::new()
+    ///     .with_validation(ParameterKey::new("email").unwrap(), false);
+    ///
+    /// assert!(rule.evaluate(&ctx));
+    /// ```
+    IsInvalid,
 }
 
 impl DisplayCondition {
@@ -314,7 +370,18 @@ impl DisplayCondition {
             }
             Self::EndsWith(suffix) => Self::get_string(value).is_some_and(|s| s.ends_with(suffix)),
             Self::OneOf(values) => values.iter().any(|v| Self::values_equal(value, v)),
+            // IsValid/IsInvalid cannot be evaluated against a value alone,
+            // they require the DisplayContext. Always return false here.
+            Self::IsValid | Self::IsInvalid => false,
         }
+    }
+
+    /// Check if this condition requires validation state (not just value).
+    ///
+    /// Returns `true` for `IsValid` and `IsInvalid` conditions.
+    #[must_use]
+    pub fn requires_validation_state(&self) -> bool {
+        matches!(self, Self::IsValid | Self::IsInvalid)
     }
 
     /// Check if a value is empty.
@@ -397,10 +464,12 @@ impl DisplayCondition {
     }
 }
 
-/// Context containing resolved parameter values for display evaluation
+/// Context containing resolved parameter values and validation state for display evaluation
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DisplayContext {
     values: HashMap<ParameterKey, Value>,
+    /// Validation state for each parameter (true = valid, false = invalid)
+    validation: HashMap<ParameterKey, bool>,
 }
 
 impl DisplayContext {
@@ -417,6 +486,32 @@ impl DisplayContext {
             .and_then(|k| self.values.get(&k))
     }
 
+    /// Get validation state for a parameter
+    ///
+    /// Returns `Some(true)` if valid, `Some(false)` if invalid,
+    /// `None` if validation state is not set (not yet validated).
+    pub fn get_validation(&self, key: &str) -> Option<bool> {
+        ParameterKey::new(key)
+            .ok()
+            .and_then(|k| self.validation.get(&k).copied())
+    }
+
+    /// Check if a parameter is valid
+    ///
+    /// Returns `true` only if the parameter has been validated and passed.
+    /// Returns `false` if invalid or not yet validated.
+    pub fn is_valid(&self, key: &str) -> bool {
+        self.get_validation(key) == Some(true)
+    }
+
+    /// Check if a parameter is invalid
+    ///
+    /// Returns `true` only if the parameter has been validated and failed.
+    /// Returns `false` if valid or not yet validated.
+    pub fn is_invalid(&self, key: &str) -> bool {
+        self.get_validation(key) == Some(false)
+    }
+
     /// Builder pattern: add a value and return self
     #[must_use]
     pub fn with_value(mut self, key: impl Into<ParameterKey>, value: Value) -> Self {
@@ -424,9 +519,38 @@ impl DisplayContext {
         self
     }
 
+    /// Builder pattern: add validation state and return self
+    #[must_use]
+    pub fn with_validation(mut self, key: impl Into<ParameterKey>, is_valid: bool) -> Self {
+        self.validation.insert(key.into(), is_valid);
+        self
+    }
+
     /// Insert a value
     pub fn insert(&mut self, key: impl Into<ParameterKey>, value: Value) {
         self.values.insert(key.into(), value);
+    }
+
+    /// Set validation state for a parameter
+    pub fn set_validation(&mut self, key: impl Into<ParameterKey>, is_valid: bool) {
+        self.validation.insert(key.into(), is_valid);
+    }
+
+    /// Mark a parameter as valid
+    pub fn mark_valid(&mut self, key: impl Into<ParameterKey>) {
+        self.set_validation(key, true);
+    }
+
+    /// Mark a parameter as invalid
+    pub fn mark_invalid(&mut self, key: impl Into<ParameterKey>) {
+        self.set_validation(key, false);
+    }
+
+    /// Clear validation state for a parameter
+    pub fn clear_validation(&mut self, key: &str) {
+        if let Ok(k) = ParameterKey::new(key) {
+            self.validation.remove(&k);
+        }
     }
 
     /// Check if context contains a key
@@ -440,6 +564,11 @@ impl DisplayContext {
     /// Get all values as HashMap reference
     pub fn values(&self) -> &HashMap<ParameterKey, Value> {
         &self.values
+    }
+
+    /// Get all validation states as HashMap reference
+    pub fn validations(&self) -> &HashMap<ParameterKey, bool> {
+        &self.validation
     }
 }
 
@@ -463,9 +592,15 @@ impl DisplayRule {
 
     /// Evaluate this rule against a context
     pub fn evaluate(&self, ctx: &DisplayContext) -> bool {
-        match ctx.get(self.field.as_str()) {
-            Some(value) => self.condition.evaluate(value),
-            None => false, // Missing field = condition not met
+        // Handle validation-based conditions specially
+        match &self.condition {
+            DisplayCondition::IsValid => ctx.is_valid(self.field.as_str()),
+            DisplayCondition::IsInvalid => ctx.is_invalid(self.field.as_str()),
+            // For value-based conditions, get the value and evaluate
+            _ => match ctx.get(self.field.as_str()) {
+                Some(value) => self.condition.evaluate(value),
+                None => false, // Missing field = condition not met
+            },
         }
     }
 
@@ -654,6 +789,30 @@ impl ParameterDisplay {
     #[must_use]
     pub fn hide_when_true(self, field: impl Into<ParameterKey>) -> Self {
         self.hide_when(DisplayRule::when(field, DisplayCondition::IsTrue))
+    }
+
+    /// Convenience: show when field is valid (passed validation)
+    #[must_use]
+    pub fn show_when_valid(self, field: impl Into<ParameterKey>) -> Self {
+        self.show_when(DisplayRule::when(field, DisplayCondition::IsValid))
+    }
+
+    /// Convenience: show when field is invalid (failed validation)
+    #[must_use]
+    pub fn show_when_invalid(self, field: impl Into<ParameterKey>) -> Self {
+        self.show_when(DisplayRule::when(field, DisplayCondition::IsInvalid))
+    }
+
+    /// Convenience: hide when field is valid
+    #[must_use]
+    pub fn hide_when_valid(self, field: impl Into<ParameterKey>) -> Self {
+        self.hide_when(DisplayRule::when(field, DisplayCondition::IsValid))
+    }
+
+    /// Convenience: hide when field is invalid
+    #[must_use]
+    pub fn hide_when_invalid(self, field: impl Into<ParameterKey>) -> Self {
+        self.hide_when(DisplayRule::when(field, DisplayCondition::IsInvalid))
     }
 }
 
@@ -1258,5 +1417,251 @@ mod tests {
         assert!(display.should_display(&ctx_neither));
         assert!(!display.should_display(&ctx_one));
         assert!(!display.should_display(&ctx_both));
+    }
+
+    // ==========================================================================
+    // Validation-based display condition tests
+    // ==========================================================================
+
+    #[test]
+    fn test_condition_is_valid() {
+        let rule = DisplayRule::when(
+            ParameterKey::new("password").unwrap(),
+            DisplayCondition::IsValid,
+        );
+
+        // Valid password
+        let ctx_valid =
+            DisplayContext::new().with_validation(ParameterKey::new("password").unwrap(), true);
+        assert!(rule.evaluate(&ctx_valid));
+
+        // Invalid password
+        let ctx_invalid =
+            DisplayContext::new().with_validation(ParameterKey::new("password").unwrap(), false);
+        assert!(!rule.evaluate(&ctx_invalid));
+
+        // No validation state
+        let ctx_none = DisplayContext::new();
+        assert!(!rule.evaluate(&ctx_none));
+    }
+
+    #[test]
+    fn test_condition_is_invalid() {
+        let rule = DisplayRule::when(
+            ParameterKey::new("email").unwrap(),
+            DisplayCondition::IsInvalid,
+        );
+
+        // Invalid email
+        let ctx_invalid =
+            DisplayContext::new().with_validation(ParameterKey::new("email").unwrap(), false);
+        assert!(rule.evaluate(&ctx_invalid));
+
+        // Valid email
+        let ctx_valid =
+            DisplayContext::new().with_validation(ParameterKey::new("email").unwrap(), true);
+        assert!(!rule.evaluate(&ctx_valid));
+
+        // No validation state
+        let ctx_none = DisplayContext::new();
+        assert!(!rule.evaluate(&ctx_none));
+    }
+
+    #[test]
+    fn test_condition_is_valid_evaluate_on_value_returns_false() {
+        // IsValid/IsInvalid conditions cannot be evaluated against values directly
+        let condition = DisplayCondition::IsValid;
+        assert!(!condition.evaluate(&Value::boolean(true)));
+        assert!(!condition.evaluate(&Value::text("valid")));
+
+        let condition = DisplayCondition::IsInvalid;
+        assert!(!condition.evaluate(&Value::boolean(false)));
+        assert!(!condition.evaluate(&Value::text("invalid")));
+    }
+
+    #[test]
+    fn test_condition_requires_validation_state() {
+        assert!(DisplayCondition::IsValid.requires_validation_state());
+        assert!(DisplayCondition::IsInvalid.requires_validation_state());
+        assert!(!DisplayCondition::IsTrue.requires_validation_state());
+        assert!(!DisplayCondition::Equals(Value::integer(1)).requires_validation_state());
+    }
+
+    #[test]
+    fn test_display_context_validation_methods() {
+        let mut ctx = DisplayContext::new();
+
+        // Initially no validation state
+        assert_eq!(ctx.get_validation("field"), None);
+        assert!(!ctx.is_valid("field"));
+        assert!(!ctx.is_invalid("field"));
+
+        // Mark as valid
+        ctx.mark_valid(ParameterKey::new("field").unwrap());
+        assert_eq!(ctx.get_validation("field"), Some(true));
+        assert!(ctx.is_valid("field"));
+        assert!(!ctx.is_invalid("field"));
+
+        // Mark as invalid
+        ctx.mark_invalid(ParameterKey::new("field").unwrap());
+        assert_eq!(ctx.get_validation("field"), Some(false));
+        assert!(!ctx.is_valid("field"));
+        assert!(ctx.is_invalid("field"));
+
+        // Clear validation
+        ctx.clear_validation("field");
+        assert_eq!(ctx.get_validation("field"), None);
+        assert!(!ctx.is_valid("field"));
+        assert!(!ctx.is_invalid("field"));
+    }
+
+    #[test]
+    fn test_display_context_with_validation_builder() {
+        let ctx = DisplayContext::new()
+            .with_value(
+                ParameterKey::new("password").unwrap(),
+                Value::text("secret"),
+            )
+            .with_validation(ParameterKey::new("password").unwrap(), true)
+            .with_validation(ParameterKey::new("email").unwrap(), false);
+
+        assert!(ctx.is_valid("password"));
+        assert!(ctx.is_invalid("email"));
+        assert_eq!(ctx.get("password"), Some(&Value::text("secret")));
+    }
+
+    #[test]
+    fn test_parameter_display_show_when_valid() {
+        // Show "Confirm Password" only when "Password" is valid
+        let display =
+            ParameterDisplay::new().show_when_valid(ParameterKey::new("password").unwrap());
+
+        let ctx_valid =
+            DisplayContext::new().with_validation(ParameterKey::new("password").unwrap(), true);
+        let ctx_invalid =
+            DisplayContext::new().with_validation(ParameterKey::new("password").unwrap(), false);
+        let ctx_none = DisplayContext::new();
+
+        assert!(display.should_display(&ctx_valid));
+        assert!(!display.should_display(&ctx_invalid));
+        assert!(!display.should_display(&ctx_none));
+    }
+
+    #[test]
+    fn test_parameter_display_show_when_invalid() {
+        // Show error hint when email is invalid
+        let display =
+            ParameterDisplay::new().show_when_invalid(ParameterKey::new("email").unwrap());
+
+        let ctx_invalid =
+            DisplayContext::new().with_validation(ParameterKey::new("email").unwrap(), false);
+        let ctx_valid =
+            DisplayContext::new().with_validation(ParameterKey::new("email").unwrap(), true);
+
+        assert!(display.should_display(&ctx_invalid));
+        assert!(!display.should_display(&ctx_valid));
+    }
+
+    #[test]
+    fn test_parameter_display_hide_when_invalid() {
+        // Hide submit button when form has invalid fields
+        let display =
+            ParameterDisplay::new().hide_when_invalid(ParameterKey::new("required_field").unwrap());
+
+        let ctx_valid = DisplayContext::new()
+            .with_validation(ParameterKey::new("required_field").unwrap(), true);
+        let ctx_invalid = DisplayContext::new()
+            .with_validation(ParameterKey::new("required_field").unwrap(), false);
+
+        assert!(display.should_display(&ctx_valid));
+        assert!(!display.should_display(&ctx_invalid));
+    }
+
+    #[test]
+    fn test_combined_value_and_validation_conditions() {
+        // Show "Advanced Settings" when mode is "advanced" AND basic config is valid
+        let display = ParameterDisplay::new().show_when(DisplayRuleSet::all([
+            DisplayRule::when(
+                ParameterKey::new("mode").unwrap(),
+                DisplayCondition::Equals(Value::text("advanced")),
+            ),
+            DisplayRule::when(
+                ParameterKey::new("basic_config").unwrap(),
+                DisplayCondition::IsValid,
+            ),
+        ]));
+
+        // Both conditions met
+        let ctx_both = DisplayContext::new()
+            .with_value(ParameterKey::new("mode").unwrap(), Value::text("advanced"))
+            .with_validation(ParameterKey::new("basic_config").unwrap(), true);
+        assert!(display.should_display(&ctx_both));
+
+        // Value matches but validation fails
+        let ctx_value_only = DisplayContext::new()
+            .with_value(ParameterKey::new("mode").unwrap(), Value::text("advanced"))
+            .with_validation(ParameterKey::new("basic_config").unwrap(), false);
+        assert!(!display.should_display(&ctx_value_only));
+
+        // Validation passes but value doesn't match
+        let ctx_valid_only = DisplayContext::new()
+            .with_value(ParameterKey::new("mode").unwrap(), Value::text("simple"))
+            .with_validation(ParameterKey::new("basic_config").unwrap(), true);
+        assert!(!display.should_display(&ctx_valid_only));
+    }
+
+    #[test]
+    fn test_validation_state_serialization() {
+        let condition_valid = DisplayCondition::IsValid;
+        let json = serde_json::to_string(&condition_valid).expect("Failed to serialize");
+        let deserialized: DisplayCondition =
+            serde_json::from_str(&json).expect("Failed to deserialize");
+        assert_eq!(condition_valid, deserialized);
+
+        let condition_invalid = DisplayCondition::IsInvalid;
+        let json = serde_json::to_string(&condition_invalid).expect("Failed to serialize");
+        let deserialized: DisplayCondition =
+            serde_json::from_str(&json).expect("Failed to deserialize");
+        assert_eq!(condition_invalid, deserialized);
+    }
+
+    #[test]
+    fn test_validation_conditions_in_complex_ruleset() {
+        // Show when: (password valid AND confirm_password valid) OR admin_override is true
+        let ruleset = DisplayRuleSet::any([
+            DisplayRuleSet::all([
+                DisplayRule::when(
+                    ParameterKey::new("password").unwrap(),
+                    DisplayCondition::IsValid,
+                ),
+                DisplayRule::when(
+                    ParameterKey::new("confirm_password").unwrap(),
+                    DisplayCondition::IsValid,
+                ),
+            ]),
+            DisplayRuleSet::single(DisplayRule::when(
+                ParameterKey::new("admin_override").unwrap(),
+                DisplayCondition::IsTrue,
+            )),
+        ]);
+
+        // Both passwords valid
+        let ctx_valid = DisplayContext::new()
+            .with_validation(ParameterKey::new("password").unwrap(), true)
+            .with_validation(ParameterKey::new("confirm_password").unwrap(), true);
+        assert!(ruleset.evaluate(&ctx_valid));
+
+        // Admin override
+        let ctx_admin = DisplayContext::new().with_value(
+            ParameterKey::new("admin_override").unwrap(),
+            Value::boolean(true),
+        );
+        assert!(ruleset.evaluate(&ctx_admin));
+
+        // Neither condition met
+        let ctx_none = DisplayContext::new()
+            .with_validation(ParameterKey::new("password").unwrap(), true)
+            .with_validation(ParameterKey::new("confirm_password").unwrap(), false);
+        assert!(!ruleset.evaluate(&ctx_none));
     }
 }
