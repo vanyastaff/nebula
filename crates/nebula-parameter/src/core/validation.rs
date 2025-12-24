@@ -31,7 +31,7 @@ use nebula_core::ParameterKey;
 use nebula_validator::core::{
     AsValidatable, AsyncValidator, ValidationContext, ValidationError, Validator,
 };
-use nebula_validator::validators::string::{email, url};
+
 use nebula_value::Value;
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
@@ -625,19 +625,7 @@ impl ParameterValidation {
         }
     }
 
-    /// Quick email validation
-    #[must_use]
-    pub fn email() -> Self {
-        Self::from(email())
-    }
-
-    /// Quick URL validation
-    #[must_use]
-    pub fn url() -> Self {
-        Self::from(url())
-    }
-
-    /// Quick required validation
+    /// Required field validation (no validator, just checks for null)
     #[must_use]
     pub fn required_field() -> Self {
         Self {
@@ -681,7 +669,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_email_validation() {
-        let validation = ParameterValidation::email();
+        use nebula_validator::validators::string::email;
+        let validation = ParameterValidation::from(email());
 
         // Valid email
         assert!(
