@@ -300,21 +300,19 @@ impl DisplayCondition {
             Self::IsTrue => value.as_boolean() == Some(true),
             Self::IsFalse => value.as_boolean() == Some(false),
             Self::GreaterThan(threshold) => {
-                Self::get_numeric(value).map_or(false, |n| n > *threshold)
+                Self::get_numeric(value).is_some_and(|n| n > *threshold)
             }
-            Self::LessThan(threshold) => Self::get_numeric(value).map_or(false, |n| n < *threshold),
+            Self::LessThan(threshold) => Self::get_numeric(value).is_some_and(|n| n < *threshold),
             Self::InRange { min, max } => {
-                Self::get_numeric(value).map_or(false, |n| n >= *min && n <= *max)
+                Self::get_numeric(value).is_some_and(|n| n >= *min && n <= *max)
             }
             Self::Contains(substring) => {
-                Self::get_string(value).map_or(false, |s| s.contains(substring))
+                Self::get_string(value).is_some_and(|s| s.contains(substring))
             }
             Self::StartsWith(prefix) => {
-                Self::get_string(value).map_or(false, |s| s.starts_with(prefix))
+                Self::get_string(value).is_some_and(|s| s.starts_with(prefix))
             }
-            Self::EndsWith(suffix) => {
-                Self::get_string(value).map_or(false, |s| s.ends_with(suffix))
-            }
+            Self::EndsWith(suffix) => Self::get_string(value).is_some_and(|s| s.ends_with(suffix)),
             Self::OneOf(values) => values.iter().any(|v| Self::values_equal(value, v)),
         }
     }
@@ -596,19 +594,18 @@ impl ParameterDisplay {
     /// Check if parameter should be displayed
     pub fn should_display(&self, ctx: &DisplayContext) -> bool {
         // Priority: hide_when is checked first
-        if let Some(hide_rules) = &self.hide_when {
-            if hide_rules.evaluate(ctx) {
-                return false;
-            }
+        if self
+            .hide_when
+            .as_ref()
+            .is_some_and(|rules| rules.evaluate(ctx))
+        {
+            return false;
         }
 
-        // Then check show_when
-        if let Some(show_rules) = &self.show_when {
-            return show_rules.evaluate(ctx);
-        }
-
-        // Default: show
-        true
+        // Then check show_when (if no show_when, default to show)
+        self.show_when
+            .as_ref()
+            .is_none_or(|rules| rules.evaluate(ctx))
     }
 
     /// Check if this display has no conditions
