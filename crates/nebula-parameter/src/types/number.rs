@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::traits::ParameterValue;
 use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
@@ -238,32 +237,5 @@ impl NumberParameter {
     #[must_use]
     pub fn is_within_bounds(&self, value: f64) -> bool {
         self.validate_number(value).is_ok()
-    }
-}
-
-impl ParameterValue for NumberParameter {
-    fn validate_value(
-        &self,
-        value: &Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
-    {
-        let value = value.clone();
-        Box::pin(async move { self.validate(&value).await })
-    }
-
-    fn accepts_value(&self, value: &Value) -> bool {
-        value.is_null() || value.as_float().is_some() || value.as_integer().is_some()
-    }
-
-    fn expected_type(&self) -> &'static str {
-        "number"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
     }
 }

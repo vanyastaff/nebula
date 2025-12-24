@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, ParameterValue, SelectOption, Validatable,
+    ParameterValidation, SelectOption, Validatable,
 };
 use nebula_value::Value;
 
@@ -76,33 +76,6 @@ impl Displayable for MultiSelectParameter {
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
         self.display = display;
-    }
-}
-
-impl ParameterValue for MultiSelectParameter {
-    fn validate_value(
-        &self,
-        value: &Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
-    {
-        let value = value.clone();
-        Box::pin(async move { self.validate(&value).await })
-    }
-
-    fn accepts_value(&self, value: &Value) -> bool {
-        value.is_null() || value.as_array().is_some()
-    }
-
-    fn expected_type(&self) -> &'static str {
-        "array"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
     }
 }
 

@@ -1,10 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::future::Future;
-use std::pin::Pin;
 
 use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, ParameterValue, Validatable,
+    ParameterValidation, Validatable,
 };
 use nebula_value::Value;
 
@@ -61,32 +59,6 @@ impl Parameter for SecretParameter {
 impl std::fmt::Display for SecretParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "SecretParameter({})", self.metadata.name)
-    }
-}
-
-impl ParameterValue for SecretParameter {
-    fn validate_value(
-        &self,
-        value: &Value,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
-        let value = value.clone();
-        Box::pin(async move { self.validate(&value).await })
-    }
-
-    fn accepts_value(&self, value: &Value) -> bool {
-        matches!(value, Value::Text(_))
-    }
-
-    fn expected_type(&self) -> &'static str {
-        "secret"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
     }
 }
 

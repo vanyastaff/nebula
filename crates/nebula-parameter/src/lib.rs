@@ -22,7 +22,7 @@ pub mod prelude {
     pub use crate::core::{
         DisplayContext, Displayable, Parameter, ParameterCollection, ParameterDisplay,
         ParameterError, ParameterKind, ParameterMetadata, ParameterSnapshot, ParameterValidation,
-        ParameterValue, ParameterValues, Validatable, ValidationResult,
+        ParameterValues, Validatable,
     };
 
     pub use crate::types::{

@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::{Parameter, ParameterError, ParameterKind, ParameterMetadata, ParameterValue};
-use nebula_value::Value;
+use crate::core::{Parameter, ParameterKind, ParameterMetadata};
 
 /// Parameter that is hidden from the user interface but can store values
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
@@ -28,34 +27,6 @@ impl Parameter for HiddenParameter {
 impl std::fmt::Display for HiddenParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "HiddenParameter({})", self.metadata.name)
-    }
-}
-
-impl ParameterValue for HiddenParameter {
-    fn validate_value(
-        &self,
-        _value: &Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
-    {
-        // Hidden parameters accept any value without validation
-        Box::pin(async move { Ok(()) })
-    }
-
-    fn accepts_value(&self, _value: &Value) -> bool {
-        // Hidden parameters accept any value
-        true
-    }
-
-    fn expected_type(&self) -> &'static str {
-        "any"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
     }
 }
 

@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::traits::ParameterValue;
 use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
@@ -118,23 +117,26 @@ impl Validatable for TextParameter {
 
         // Options validation (min_length, max_length, pattern)
         if let Some(text) = value.as_text()
-            && let Some(opts) = &self.options {
-                if let Some(min) = opts.min_length
-                    && text.len() < min {
-                        return Err(ParameterError::InvalidValue {
-                            key: self.metadata.key.clone(),
-                            reason: format!("Text length {} below minimum {}", text.len(), min),
-                        });
-                    }
-                if let Some(max) = opts.max_length
-                    && text.len() > max {
-                        return Err(ParameterError::InvalidValue {
-                            key: self.metadata.key.clone(),
-                            reason: format!("Text length {} above maximum {}", text.len(), max),
-                        });
-                    }
-                // Pattern validation if regex crate is available
+            && let Some(opts) = &self.options
+        {
+            if let Some(min) = opts.min_length
+                && text.len() < min
+            {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Text length {} below minimum {}", text.len(), min),
+                });
             }
+            if let Some(max) = opts.max_length
+                && text.len() > max
+            {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Text length {} above maximum {}", text.len(), max),
+                });
+            }
+            // Pattern validation if regex crate is available
+        }
 
         Ok(())
     }
@@ -155,32 +157,5 @@ impl Displayable for TextParameter {
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
         self.display = display;
-    }
-}
-
-impl ParameterValue for TextParameter {
-    fn validate_value(
-        &self,
-        value: &Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
-    {
-        let value = value.clone();
-        Box::pin(async move { self.validate(&value).await })
-    }
-
-    fn accepts_value(&self, value: &Value) -> bool {
-        value.is_null() || value.as_text().is_some()
-    }
-
-    fn expected_type(&self) -> &'static str {
-        "text"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
     }
 }

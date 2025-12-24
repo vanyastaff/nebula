@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::traits::ParameterValue;
 use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
@@ -77,30 +76,25 @@ impl Validatable for TextareaParameter {
 
         // Validate length constraints from options
         if let Some(text) = value.as_text()
-            && let Some(opts) = &self.options {
-                if let Some(min_len) = opts.min_length
-                    && text.len() < min_len {
-                        return Err(ParameterError::InvalidValue {
-                            key: self.metadata.key.clone(),
-                            reason: format!(
-                                "Text too short: {} chars, minimum {}",
-                                text.len(),
-                                min_len
-                            ),
-                        });
-                    }
-                if let Some(max_len) = opts.max_length
-                    && text.len() > max_len {
-                        return Err(ParameterError::InvalidValue {
-                            key: self.metadata.key.clone(),
-                            reason: format!(
-                                "Text too long: {} chars, maximum {}",
-                                text.len(),
-                                max_len
-                            ),
-                        });
-                    }
+            && let Some(opts) = &self.options
+        {
+            if let Some(min_len) = opts.min_length
+                && text.len() < min_len
+            {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Text too short: {} chars, minimum {}", text.len(), min_len),
+                });
             }
+            if let Some(max_len) = opts.max_length
+                && text.len() > max_len
+            {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Text too long: {} chars, maximum {}", text.len(), max_len),
+                });
+            }
+        }
 
         Ok(())
     }
@@ -148,32 +142,5 @@ impl TextareaParameter {
             return Some(max.saturating_sub(curr));
         }
         None
-    }
-}
-
-impl ParameterValue for TextareaParameter {
-    fn validate_value(
-        &self,
-        value: &Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ParameterError>> + Send + '_>>
-    {
-        let value = value.clone();
-        Box::pin(async move { self.validate(&value).await })
-    }
-
-    fn accepts_value(&self, value: &Value) -> bool {
-        value.is_null() || value.as_text().is_some()
-    }
-
-    fn expected_type(&self) -> &'static str {
-        "text"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
     }
 }

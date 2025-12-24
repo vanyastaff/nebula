@@ -1,11 +1,9 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use std::future::Future;
-use std::pin::Pin;
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, ParameterValue, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata,
+    ParameterValidation, Validatable,
 };
 use nebula_expression::MaybeExpression;
 use nebula_value::Value;
@@ -226,10 +224,11 @@ impl Validatable for ExpirableParameter {
             // Check if expired
             if let Some(expires_at) = obj.get("expires_at")
                 && let Some(timestamp_str) = expires_at.as_text()
-                    && let Ok(timestamp) = DateTime::parse_from_rfc3339(timestamp_str.as_str())
-                        && timestamp.with_timezone(&Utc) <= Utc::now() {
-                            return true;
-                        }
+                && let Ok(timestamp) = DateTime::parse_from_rfc3339(timestamp_str.as_str())
+                && timestamp.with_timezone(&Utc) <= Utc::now()
+            {
+                return true;
+            }
             // Check if inner value is empty
             if let Some(inner_value) = obj.get("value") {
                 match inner_value {
@@ -245,32 +244,6 @@ impl Validatable for ExpirableParameter {
         } else {
             value.is_null()
         }
-    }
-}
-
-impl ParameterValue for ExpirableParameter {
-    fn validate_value(
-        &self,
-        value: &Value,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
-        let value = value.clone();
-        Box::pin(async move { self.validate(&value).await })
-    }
-
-    fn accepts_value(&self, value: &Value) -> bool {
-        value.is_null() || value.as_object().is_some()
-    }
-
-    fn expected_type(&self) -> &'static str {
-        "expirable"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
     }
 }
 

@@ -6,11 +6,10 @@ use crate::core::display_stub::{
 use crate::core::validation::ParameterValidation;
 use crate::core::{ParameterError, ParameterKind, ParameterMetadata};
 pub use async_trait::async_trait;
+use downcast_rs::{Downcast, impl_downcast};
 use nebula_core::ParameterKey as Key;
 pub use nebula_expression::{EvaluationContext, ExpressionEngine, MaybeExpression};
 use nebula_value::Value;
-use std::future::Future;
-use std::pin::Pin;
 
 // =============================================================================
 // Base Trait
@@ -40,7 +39,7 @@ use std::pin::Pin;
 ///     }
 /// }
 /// ```
-pub trait Parameter: Send + Sync {
+pub trait Parameter: Downcast + Send + Sync {
     /// Get the kind/type of this parameter
     fn kind(&self) -> ParameterKind;
 
@@ -66,91 +65,7 @@ pub trait Parameter: Send + Sync {
     }
 }
 
-// =============================================================================
-// Type-Erased Parameter Value Trait
-// =============================================================================
-
-/// Type-erased access to parameter values
-///
-/// This trait allows working with parameters without knowing their concrete
-/// value type. Useful for:
-/// - Storing heterogeneous parameters in collections (`Vec<Box<dyn ParameterValue>>`)
-/// - UI code that needs to display/edit values generically
-/// - Serialization/deserialization of parameter collections
-/// - Runtime validation of external values
-///
-/// # Design Note
-///
-/// This trait operates on external `Value` instances rather than internal state.
-/// Parameters are now pure schema definitions - values are stored separately
-/// in `ParameterValues` or similar storage structures.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_parameter::prelude::*;
-///
-/// let params: Vec<Box<dyn ParameterValue>> = vec![
-///     Box::new(TextParameter::new("name")),
-///     Box::new(NumberParameter::new("age")),
-/// ];
-///
-/// // Type-erased validation
-/// for param in &params {
-///     let value = Value::String("test".to_string());
-///     if param.accepts_value(&value) {
-///         param.validate_value(&value).await?;
-///     }
-/// }
-/// ```
-pub trait ParameterValue: Parameter {
-    /// Validate a value against this parameter's schema (async)
-    ///
-    /// Returns a boxed future to allow trait objects.
-    /// This includes all validation: synchronous, asynchronous, and custom rules.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ParameterError` if the value violates any validation rules.
-    fn validate_value(
-        &self,
-        value: &Value,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>>;
-
-    /// Check if this parameter accepts the given value type
-    ///
-    /// This is a fast type-check that doesn't perform full validation.
-    /// Use this for quick filtering before calling `validate_value`.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// # use nebula_parameter::prelude::*;
-    /// let param = TextParameter::new("name");
-    /// assert!(param.accepts_value(&Value::text("test")));
-    /// assert!(!param.accepts_value(&Value::integer(42)));
-    /// ```
-    fn accepts_value(&self, value: &Value) -> bool;
-
-    /// Get a human-readable description of the expected value type
-    ///
-    /// This is useful for error messages and UI hints.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// # use nebula_parameter::prelude::*;
-    /// let param = TextParameter::new("name");
-    /// assert_eq!(param.expected_type(), "String");
-    /// ```
-    fn expected_type(&self) -> &'static str;
-
-    /// Downcast to concrete type
-    fn as_any(&self) -> &dyn std::any::Any;
-
-    /// Downcast to concrete type (mutable)
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
-}
+impl_downcast!(Parameter);
 
 // =============================================================================
 // Validation Trait

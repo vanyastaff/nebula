@@ -1,11 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Display};
-use std::future::Future;
-use std::pin::Pin;
 
 use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, ParameterValue, Validatable,
+    ParameterValidation, Validatable,
 };
 use nebula_core::ParameterKey;
 use nebula_value::Value;
@@ -224,32 +222,6 @@ impl Validatable for RoutingParameter {
         } else {
             true
         }
-    }
-}
-
-impl ParameterValue for RoutingParameter {
-    fn validate_value(
-        &self,
-        value: &Value,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
-        let value = value.clone();
-        Box::pin(async move { self.validate(&value).await })
-    }
-
-    fn accepts_value(&self, value: &Value) -> bool {
-        value.is_null() || value.as_object().is_some()
-    }
-
-    fn expected_type(&self) -> &'static str {
-        "routing"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
     }
 }
 

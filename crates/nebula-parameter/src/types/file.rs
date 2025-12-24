@@ -1,11 +1,9 @@
 use serde::{Deserialize, Serialize};
-use std::future::Future;
 use std::path::PathBuf;
-use std::pin::Pin;
 
 use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, ParameterValue, Validatable,
+    ParameterValidation, Validatable,
 };
 use nebula_value::Value;
 
@@ -163,32 +161,6 @@ impl std::fmt::Display for FileParameter {
     }
 }
 
-impl ParameterValue for FileParameter {
-    fn validate_value(
-        &self,
-        value: &Value,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
-        let value = value.clone();
-        Box::pin(async move { self.validate(&value).await })
-    }
-
-    fn accepts_value(&self, value: &Value) -> bool {
-        matches!(value, Value::Object(_))
-    }
-
-    fn expected_type(&self) -> &'static str {
-        "file"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-}
-
 impl Validatable for FileParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
@@ -241,28 +213,25 @@ impl Validatable for FileParameter {
             // Check file size constraints
             if let Some(size_value) = obj.get("size")
                 && let Value::Integer(num) = size_value
-                    && let Ok(size) = u64::try_from(num.value()) {
-                        if let Some(max_size) = options.max_size
-                            && size > max_size
-                        {
-                            return Err(ParameterError::InvalidValue {
-                                key: self.metadata.key.clone(),
-                                reason: format!(
-                                    "File size {size} bytes exceeds maximum {max_size} bytes"
-                                ),
-                            });
-                        }
-                        if let Some(min_size) = options.min_size
-                            && size < min_size
-                        {
-                            return Err(ParameterError::InvalidValue {
-                                key: self.metadata.key.clone(),
-                                reason: format!(
-                                    "File size {size} bytes is below minimum {min_size} bytes"
-                                ),
-                            });
-                        }
-                    }
+                && let Ok(size) = u64::try_from(num.value())
+            {
+                if let Some(max_size) = options.max_size
+                    && size > max_size
+                {
+                    return Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!("File size {size} bytes exceeds maximum {max_size} bytes"),
+                    });
+                }
+                if let Some(min_size) = options.min_size
+                    && size < min_size
+                {
+                    return Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!("File size {size} bytes is below minimum {min_size} bytes"),
+                    });
+                }
+            }
 
             // Check accepted formats
             if let Some(accepted_formats) = &options.accepted_formats

@@ -1,10 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::future::Future;
-use std::pin::Pin;
 
 use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, ParameterValue, Validatable,
+    ParameterValidation, Validatable,
 };
 use nebula_value::Value;
 
@@ -190,32 +188,6 @@ impl std::fmt::Display for GroupParameter {
     }
 }
 
-impl ParameterValue for GroupParameter {
-    fn validate_value(
-        &self,
-        value: &Value,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
-        let value = value.clone();
-        Box::pin(async move { self.validate(&value).await })
-    }
-
-    fn accepts_value(&self, value: &Value) -> bool {
-        matches!(value, Value::Object(_))
-    }
-
-    fn expected_type(&self) -> &'static str {
-        "object"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-}
-
 impl Validatable for GroupParameter {
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
@@ -259,12 +231,13 @@ impl Validatable for GroupParameter {
 
             // Validate field type if value exists
             if let Some(field_value) = obj.get(&field.key)
-                && !self.is_valid_field_value(field, field_value) {
-                    return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
-                        reason: format!("Invalid value for field '{}'", field.key),
-                    });
-                }
+                && !self.is_valid_field_value(field, field_value)
+            {
+                return Err(ParameterError::InvalidValue {
+                    key: self.metadata.key.clone(),
+                    reason: format!("Invalid value for field '{}'", field.key),
+                });
+            }
         }
 
         Ok(())

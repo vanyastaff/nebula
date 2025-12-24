@@ -1,11 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, ParameterValue, Validatable,
+    Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata,
+    ParameterValidation, Validatable,
 };
 use nebula_core::ParameterKey;
 use nebula_expression::MaybeExpression;
@@ -182,32 +180,6 @@ impl Validatable for ModeParameter {
         } else {
             value.is_null()
         }
-    }
-}
-
-impl ParameterValue for ModeParameter {
-    fn validate_value(
-        &self,
-        value: &Value,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
-        let value = value.clone();
-        Box::pin(async move { self.validate(&value).await })
-    }
-
-    fn accepts_value(&self, value: &Value) -> bool {
-        value.is_null() || value.as_text().is_some() || value.as_object().is_some()
-    }
-
-    fn expected_type(&self) -> &'static str {
-        "mode"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
     }
 }
 

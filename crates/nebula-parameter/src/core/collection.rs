@@ -3,16 +3,14 @@
 use std::collections::HashMap;
 
 use nebula_core::ParameterKey;
-use nebula_value::Value;
 
-use crate::core::values::ParameterValues;
-use crate::core::{Displayable, ParameterError, ParameterValue};
+use crate::core::{Displayable, Parameter};
 
 /// A type-safe collection of parameters with dependency tracking
 #[derive(Default)]
 pub struct ParameterCollection {
-    /// Storage for all parameters
-    parameters: HashMap<ParameterKey, Box<dyn ParameterValue>>,
+    /// Storage for all parameters (schema only, no values)
+    parameters: HashMap<ParameterKey, Box<dyn Parameter>>,
 
     /// Dependency graph (`parameter_key` -> `depends_on_keys`)
     dependencies: HashMap<ParameterKey, Vec<ParameterKey>>,
@@ -28,7 +26,7 @@ impl ParameterCollection {
     /// Add a parameter to the collection
     pub fn add<P>(&mut self, param: P) -> &mut Self
     where
-        P: ParameterValue + Displayable + 'static,
+        P: Parameter + Displayable + 'static,
     {
         let key = param.metadata().key.clone();
 
@@ -48,7 +46,7 @@ impl ParameterCollection {
     #[must_use = "builder methods must be chained or built"]
     pub fn with<P>(mut self, param: P) -> Self
     where
-        P: ParameterValue + Displayable + 'static,
+        P: Parameter + Displayable + 'static,
     {
         self.add(param);
         self
@@ -57,23 +55,17 @@ impl ParameterCollection {
     /// Get a parameter by key with type safety
     pub fn get<P>(&self, key: impl Into<ParameterKey>) -> Option<&P>
     where
-        P: ParameterValue + 'static,
+        P: Parameter + 'static,
     {
-        self.parameters
-            .get(&key.into())?
-            .as_any()
-            .downcast_ref::<P>()
+        self.parameters.get(&key.into())?.downcast_ref::<P>()
     }
 
     /// Get a mutable parameter by key with type safety
     pub fn get_mut<P>(&mut self, key: impl Into<ParameterKey>) -> Option<&mut P>
     where
-        P: ParameterValue + 'static,
+        P: Parameter + 'static,
     {
-        self.parameters
-            .get_mut(&key.into())?
-            .as_any_mut()
-            .downcast_mut::<P>()
+        self.parameters.get_mut(&key.into())?.downcast_mut::<P>()
     }
 
     /// Check if a parameter exists
@@ -82,7 +74,7 @@ impl ParameterCollection {
     }
 
     /// Remove a parameter from the collection
-    pub fn remove(&mut self, key: impl Into<ParameterKey>) -> Option<Box<dyn ParameterValue>> {
+    pub fn remove(&mut self, key: impl Into<ParameterKey>) -> Option<Box<dyn Parameter>> {
         let key = key.into();
         self.dependencies.remove(&key);
         self.parameters.remove(&key)
@@ -134,29 +126,8 @@ impl ParameterCollection {
             .collect()
     }
 
-    /// Validate all values against parameter schemas
-    pub async fn validate_all(&self, values: &ParameterValues) -> ValidationResult {
-        let mut errors = Vec::new();
-
-        // Validate in topological order (dependencies first)
-        for key in self.topological_sort() {
-            if let Some(param) = self.parameters.get(&key) {
-                let value = values.get(key.clone()).cloned().unwrap_or(Value::Null);
-                if let Err(e) = param.validate_value(&value).await {
-                    errors.push((key.clone(), e));
-                }
-            }
-        }
-
-        if errors.is_empty() {
-            ValidationResult::Valid
-        } else {
-            ValidationResult::Invalid(errors)
-        }
-    }
-
     /// Get parameters in topological order (dependencies first)
-    fn topological_sort(&self) -> Vec<ParameterKey> {
+    pub fn topological_sort(&self) -> Vec<ParameterKey> {
         let mut result = Vec::new();
         let mut visited = std::collections::HashSet::new();
         let mut temp_mark = std::collections::HashSet::new();
@@ -200,32 +171,6 @@ impl ParameterCollection {
         temp_mark.remove(key);
         visited.insert(key.clone());
         result.push(key.clone());
-    }
-}
-
-/// Result of validating all parameters
-#[derive(Debug)]
-pub enum ValidationResult {
-    /// All parameters are valid
-    Valid,
-    /// Some parameters failed validation
-    Invalid(Vec<(ParameterKey, ParameterError)>),
-}
-
-impl ValidationResult {
-    /// Check if validation passed
-    #[must_use]
-    pub fn is_valid(&self) -> bool {
-        matches!(self, ValidationResult::Valid)
-    }
-
-    /// Get validation errors
-    #[must_use]
-    pub fn errors(&self) -> Option<&[(ParameterKey, ParameterError)]> {
-        match self {
-            ValidationResult::Valid => None,
-            ValidationResult::Invalid(errors) => Some(errors),
-        }
     }
 }
 
@@ -319,33 +264,10 @@ mod tests {
         assert!(param.is_some());
     }
 
-    #[tokio::test]
-    async fn test_validate_all() {
-        let mut collection = ParameterCollection::new();
-
-        collection.add(
-            TextParameter::builder()
-                .metadata(
-                    crate::core::ParameterMetadata::builder()
-                        .key("test")
-                        .name("Test")
-                        .description("")
-                        .build()
-                        .unwrap(),
-                )
-                .build(),
-        );
-
-        let mut values = ParameterValues::new();
-        values.set(key("test"), Value::text("hello"));
-
-        let result = collection.validate_all(&values).await;
-        assert!(result.is_valid());
-    }
-
     #[test]
     fn test_snapshot_restore_with_parameter_values() {
-        let collection = ParameterCollection::new();
+        use crate::core::values::ParameterValues;
+        use nebula_value::Value;
 
         let mut values = ParameterValues::new();
         values.set(key("test"), Value::text("initial"));

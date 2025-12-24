@@ -1,11 +1,9 @@
 use serde::Serialize;
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 
 use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, ParameterValue, Validatable,
+    ParameterValidation, Validatable,
     option::{OptionsResponse, Pagination, SelectOption},
 };
 use nebula_expression::MaybeExpression;
@@ -237,32 +235,6 @@ impl Validatable for ResourceParameter {
             .as_text()
             .is_some_and(|s| s.as_str().trim().is_empty())
             || value.is_null()
-    }
-}
-
-impl ParameterValue for ResourceParameter {
-    fn validate_value(
-        &self,
-        value: &Value,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ParameterError>> + Send + '_>> {
-        let value = value.clone();
-        Box::pin(async move { self.validate(&value).await })
-    }
-
-    fn accepts_value(&self, value: &Value) -> bool {
-        value.is_null() || value.as_text().is_some()
-    }
-
-    fn expected_type(&self) -> &'static str {
-        "resource"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
     }
 }
 
