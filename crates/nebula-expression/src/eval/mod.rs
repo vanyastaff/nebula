@@ -113,7 +113,12 @@ impl Evaluator {
             }
 
             Expr::FunctionCall { name, args } => {
-                // Optimize: pre-allocate Vec with known capacity
+                // Try higher-order functions first (they need raw AST args for lambdas)
+                if let Some(result) = self.try_higher_order_function(name, args, context, depth) {
+                    return result;
+                }
+
+                // Regular function: evaluate all args to values
                 let mut arg_values = Vec::with_capacity(args.len());
                 for arg in args {
                     arg_values.push(self.eval_with_depth(arg, context, depth + 1)?);
@@ -126,8 +131,20 @@ impl Evaluator {
                 function,
                 args,
             } => {
+                // For higher-order functions in pipelines, prepend the value as first arg
+                let mut full_args = Vec::with_capacity(1 + args.len());
+                full_args.push(value.as_ref().clone());
+                full_args.extend(args.iter().cloned());
+
+                // Try higher-order functions first
+                if let Some(result) =
+                    self.try_higher_order_function(function, &full_args, context, depth)
+                {
+                    return result;
+                }
+
+                // Regular function: evaluate all args to values
                 let val = self.eval_with_depth(value, context, depth + 1)?;
-                // Optimize: pre-allocate Vec with known capacity
                 let mut arg_values: Vec<Value> = Vec::with_capacity(1 + args.len());
                 arg_values.push(val);
                 for arg in args {
@@ -640,6 +657,296 @@ impl Evaluator {
         lambda_context.set_execution_var(param, value.clone());
         self.eval(body, &lambda_context)
     }
+
+    /// Handle higher-order functions that require lambda expressions.
+    /// Returns Some(result) if the function was handled, None if it should
+    /// be passed to the regular builtin registry.
+    fn try_higher_order_function(
+        &self,
+        name: &str,
+        args: &[Expr],
+        context: &EvaluationContext,
+        depth: usize,
+    ) -> Option<ExpressionResult<Value>> {
+        match name {
+            "filter" => Some(self.eval_filter(args, context, depth)),
+            "map" => Some(self.eval_map(args, context, depth)),
+            "reduce" => Some(self.eval_reduce(args, context, depth)),
+            "find" => Some(self.eval_find(args, context, depth)),
+            "every" | "all" => Some(self.eval_every(args, context, depth)),
+            "some" | "any" => Some(self.eval_some(args, context, depth)),
+            _ => None,
+        }
+    }
+
+    /// Filter array elements using a lambda predicate
+    ///
+    /// Usage: `filter(array, x => condition)`
+    /// Example: `filter([1, 2, 3, 4, 5], x => x > 2)` returns `[3, 4, 5]`
+    fn eval_filter(
+        &self,
+        args: &[Expr],
+        context: &EvaluationContext,
+        depth: usize,
+    ) -> ExpressionResult<Value> {
+        if args.len() != 2 {
+            return Err(ExpressionError::expression_invalid_argument(
+                "filter",
+                format!("expected 2 arguments, got {}", args.len()),
+            ));
+        }
+
+        // Evaluate the array argument
+        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
+        let array = array_val.as_array().ok_or_else(|| {
+            ExpressionError::expression_type_error("array", array_val.kind().name())
+        })?;
+
+        // Extract the lambda
+        let (param, body) = match &args[1] {
+            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
+            _ => {
+                return Err(ExpressionError::expression_type_error(
+                    "lambda expression",
+                    "non-lambda",
+                ));
+            }
+        };
+
+        // Filter the array
+        let mut result = Vec::with_capacity(array.len());
+        for item in array.iter() {
+            let predicate_result = self.eval_lambda(param, body, item, context)?;
+            if predicate_result.to_boolean() {
+                result.push(item.clone());
+            }
+        }
+
+        Ok(Value::Array(nebula_value::Array::from_vec(result)))
+    }
+
+    /// Map over array elements using a lambda transformer
+    ///
+    /// Usage: `map(array, x => transform)`
+    /// Example: `map([1, 2, 3], x => x * 2)` returns `[2, 4, 6]`
+    fn eval_map(
+        &self,
+        args: &[Expr],
+        context: &EvaluationContext,
+        depth: usize,
+    ) -> ExpressionResult<Value> {
+        if args.len() != 2 {
+            return Err(ExpressionError::expression_invalid_argument(
+                "map",
+                format!("expected 2 arguments, got {}", args.len()),
+            ));
+        }
+
+        // Evaluate the array argument
+        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
+        let array = array_val.as_array().ok_or_else(|| {
+            ExpressionError::expression_type_error("array", array_val.kind().name())
+        })?;
+
+        // Extract the lambda
+        let (param, body) = match &args[1] {
+            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
+            _ => {
+                return Err(ExpressionError::expression_type_error(
+                    "lambda expression",
+                    "non-lambda",
+                ));
+            }
+        };
+
+        // Map the array
+        let mut result = Vec::with_capacity(array.len());
+        for item in array.iter() {
+            let transformed = self.eval_lambda(param, body, item, context)?;
+            result.push(transformed);
+        }
+
+        Ok(Value::Array(nebula_value::Array::from_vec(result)))
+    }
+
+    /// Reduce array elements using a lambda accumulator
+    ///
+    /// Usage: `reduce(array, initial, (acc, x) => expression)`
+    /// Note: Since we only support single-parameter lambdas, we use a special syntax:
+    /// `reduce(array, initial, x => expression)` where `$acc` is available in context
+    ///
+    /// Example: `reduce([1, 2, 3], 0, x => $acc + x)` returns `6`
+    fn eval_reduce(
+        &self,
+        args: &[Expr],
+        context: &EvaluationContext,
+        depth: usize,
+    ) -> ExpressionResult<Value> {
+        if args.len() != 3 {
+            return Err(ExpressionError::expression_invalid_argument(
+                "reduce",
+                format!("expected 3 arguments, got {}", args.len()),
+            ));
+        }
+
+        // Evaluate the array argument
+        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
+        let array = array_val.as_array().ok_or_else(|| {
+            ExpressionError::expression_type_error("array", array_val.kind().name())
+        })?;
+
+        // Evaluate the initial value
+        let initial = self.eval_with_depth(&args[1], context, depth + 1)?;
+
+        // Extract the lambda
+        let (param, body) = match &args[2] {
+            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
+            _ => {
+                return Err(ExpressionError::expression_type_error(
+                    "lambda expression",
+                    "non-lambda",
+                ));
+            }
+        };
+
+        // Reduce the array
+        let mut accumulator = initial;
+        for item in array.iter() {
+            // Create context with both accumulator and current item
+            let mut reduce_context = context.clone();
+            reduce_context.set_execution_var("$acc", accumulator.clone());
+            reduce_context.set_execution_var(param, item.clone());
+            accumulator = self.eval(body, &reduce_context)?;
+        }
+
+        Ok(accumulator)
+    }
+
+    /// Find the first element matching a predicate
+    ///
+    /// Usage: `find(array, x => condition)`
+    /// Example: `find([1, 2, 3, 4], x => x > 2)` returns `3`
+    fn eval_find(
+        &self,
+        args: &[Expr],
+        context: &EvaluationContext,
+        depth: usize,
+    ) -> ExpressionResult<Value> {
+        if args.len() != 2 {
+            return Err(ExpressionError::expression_invalid_argument(
+                "find",
+                format!("expected 2 arguments, got {}", args.len()),
+            ));
+        }
+
+        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
+        let array = array_val.as_array().ok_or_else(|| {
+            ExpressionError::expression_type_error("array", array_val.kind().name())
+        })?;
+
+        let (param, body) = match &args[1] {
+            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
+            _ => {
+                return Err(ExpressionError::expression_type_error(
+                    "lambda expression",
+                    "non-lambda",
+                ));
+            }
+        };
+
+        for item in array.iter() {
+            let predicate_result = self.eval_lambda(param, body, item, context)?;
+            if predicate_result.to_boolean() {
+                return Ok(item.clone());
+            }
+        }
+
+        Ok(Value::Null)
+    }
+
+    /// Check if all elements match a predicate
+    ///
+    /// Usage: `every(array, x => condition)` or `all(array, x => condition)`
+    /// Example: `every([2, 4, 6], x => x % 2 == 0)` returns `true`
+    fn eval_every(
+        &self,
+        args: &[Expr],
+        context: &EvaluationContext,
+        depth: usize,
+    ) -> ExpressionResult<Value> {
+        if args.len() != 2 {
+            return Err(ExpressionError::expression_invalid_argument(
+                "every",
+                format!("expected 2 arguments, got {}", args.len()),
+            ));
+        }
+
+        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
+        let array = array_val.as_array().ok_or_else(|| {
+            ExpressionError::expression_type_error("array", array_val.kind().name())
+        })?;
+
+        let (param, body) = match &args[1] {
+            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
+            _ => {
+                return Err(ExpressionError::expression_type_error(
+                    "lambda expression",
+                    "non-lambda",
+                ));
+            }
+        };
+
+        for item in array.iter() {
+            let predicate_result = self.eval_lambda(param, body, item, context)?;
+            if !predicate_result.to_boolean() {
+                return Ok(Value::boolean(false));
+            }
+        }
+
+        Ok(Value::boolean(true))
+    }
+
+    /// Check if any element matches a predicate
+    ///
+    /// Usage: `some(array, x => condition)` or `any(array, x => condition)`
+    /// Example: `some([1, 2, 3], x => x > 2)` returns `true`
+    fn eval_some(
+        &self,
+        args: &[Expr],
+        context: &EvaluationContext,
+        depth: usize,
+    ) -> ExpressionResult<Value> {
+        if args.len() != 2 {
+            return Err(ExpressionError::expression_invalid_argument(
+                "some",
+                format!("expected 2 arguments, got {}", args.len()),
+            ));
+        }
+
+        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
+        let array = array_val.as_array().ok_or_else(|| {
+            ExpressionError::expression_type_error("array", array_val.kind().name())
+        })?;
+
+        let (param, body) = match &args[1] {
+            Expr::Lambda { param, body } => (param.as_ref(), body.as_ref()),
+            _ => {
+                return Err(ExpressionError::expression_type_error(
+                    "lambda expression",
+                    "non-lambda",
+                ));
+            }
+        };
+
+        for item in array.iter() {
+            let predicate_result = self.eval_lambda(param, body, item, context)?;
+            if predicate_result.to_boolean() {
+                return Ok(Value::boolean(true));
+            }
+        }
+
+        Ok(Value::boolean(false))
+    }
 }
 
 #[cfg(test)]
@@ -947,5 +1254,238 @@ mod tests {
         // Escaped parentheses and quantifiers should not trigger false positives
         assert!(!Evaluator::is_potentially_dangerous_regex(r"\(a+\)+"));
         assert!(!Evaluator::is_potentially_dangerous_regex(r"\+\*"));
+    }
+
+    // Higher-order function tests
+
+    #[test]
+    fn test_filter_with_lambda() {
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+
+        // filter([1, 2, 3, 4, 5], x => x > 2) should return [3, 4, 5]
+        let expr = Expr::FunctionCall {
+            name: Arc::from("filter"),
+            args: vec![
+                Expr::Array(vec![
+                    Expr::Literal(Value::integer(1)),
+                    Expr::Literal(Value::integer(2)),
+                    Expr::Literal(Value::integer(3)),
+                    Expr::Literal(Value::integer(4)),
+                    Expr::Literal(Value::integer(5)),
+                ]),
+                Expr::Lambda {
+                    param: Arc::from("x"),
+                    body: Box::new(Expr::Binary {
+                        left: Box::new(Expr::Variable(Arc::from("x"))),
+                        op: BinaryOp::GreaterThan,
+                        right: Box::new(Expr::Literal(Value::integer(2))),
+                    }),
+                },
+            ],
+        };
+
+        let result = evaluator.eval(&expr, &context).unwrap();
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(
+            arr.get(0).unwrap().as_integer(),
+            Some(nebula_value::Integer::new(3))
+        );
+        assert_eq!(
+            arr.get(1).unwrap().as_integer(),
+            Some(nebula_value::Integer::new(4))
+        );
+        assert_eq!(
+            arr.get(2).unwrap().as_integer(),
+            Some(nebula_value::Integer::new(5))
+        );
+    }
+
+    #[test]
+    fn test_map_with_lambda() {
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+
+        // map([1, 2, 3], x => x * 2) should return [2, 4, 6]
+        let expr = Expr::FunctionCall {
+            name: Arc::from("map"),
+            args: vec![
+                Expr::Array(vec![
+                    Expr::Literal(Value::integer(1)),
+                    Expr::Literal(Value::integer(2)),
+                    Expr::Literal(Value::integer(3)),
+                ]),
+                Expr::Lambda {
+                    param: Arc::from("x"),
+                    body: Box::new(Expr::Binary {
+                        left: Box::new(Expr::Variable(Arc::from("x"))),
+                        op: BinaryOp::Multiply,
+                        right: Box::new(Expr::Literal(Value::integer(2))),
+                    }),
+                },
+            ],
+        };
+
+        let result = evaluator.eval(&expr, &context).unwrap();
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(
+            arr.get(0).unwrap().as_integer(),
+            Some(nebula_value::Integer::new(2))
+        );
+        assert_eq!(
+            arr.get(1).unwrap().as_integer(),
+            Some(nebula_value::Integer::new(4))
+        );
+        assert_eq!(
+            arr.get(2).unwrap().as_integer(),
+            Some(nebula_value::Integer::new(6))
+        );
+    }
+
+    #[test]
+    fn test_reduce_with_lambda() {
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+
+        // reduce([1, 2, 3], 0, x => $acc + x) should return 6
+        let expr = Expr::FunctionCall {
+            name: Arc::from("reduce"),
+            args: vec![
+                Expr::Array(vec![
+                    Expr::Literal(Value::integer(1)),
+                    Expr::Literal(Value::integer(2)),
+                    Expr::Literal(Value::integer(3)),
+                ]),
+                Expr::Literal(Value::integer(0)),
+                Expr::Lambda {
+                    param: Arc::from("x"),
+                    body: Box::new(Expr::Binary {
+                        left: Box::new(Expr::Variable(Arc::from("$acc"))),
+                        op: BinaryOp::Add,
+                        right: Box::new(Expr::Variable(Arc::from("x"))),
+                    }),
+                },
+            ],
+        };
+
+        let result = evaluator.eval(&expr, &context).unwrap();
+        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(6)));
+    }
+
+    #[test]
+    fn test_find_with_lambda() {
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+
+        // find([1, 2, 3, 4], x => x > 2) should return 3
+        let expr = Expr::FunctionCall {
+            name: Arc::from("find"),
+            args: vec![
+                Expr::Array(vec![
+                    Expr::Literal(Value::integer(1)),
+                    Expr::Literal(Value::integer(2)),
+                    Expr::Literal(Value::integer(3)),
+                    Expr::Literal(Value::integer(4)),
+                ]),
+                Expr::Lambda {
+                    param: Arc::from("x"),
+                    body: Box::new(Expr::Binary {
+                        left: Box::new(Expr::Variable(Arc::from("x"))),
+                        op: BinaryOp::GreaterThan,
+                        right: Box::new(Expr::Literal(Value::integer(2))),
+                    }),
+                },
+            ],
+        };
+
+        let result = evaluator.eval(&expr, &context).unwrap();
+        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(3)));
+    }
+
+    #[test]
+    fn test_every_with_lambda() {
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+
+        // every([2, 4, 6], x => x % 2 == 0) should return true
+        let expr = Expr::FunctionCall {
+            name: Arc::from("every"),
+            args: vec![
+                Expr::Array(vec![
+                    Expr::Literal(Value::integer(2)),
+                    Expr::Literal(Value::integer(4)),
+                    Expr::Literal(Value::integer(6)),
+                ]),
+                Expr::Lambda {
+                    param: Arc::from("x"),
+                    body: Box::new(Expr::Binary {
+                        left: Box::new(Expr::Binary {
+                            left: Box::new(Expr::Variable(Arc::from("x"))),
+                            op: BinaryOp::Modulo,
+                            right: Box::new(Expr::Literal(Value::integer(2))),
+                        }),
+                        op: BinaryOp::Equal,
+                        right: Box::new(Expr::Literal(Value::integer(0))),
+                    }),
+                },
+            ],
+        };
+
+        let result = evaluator.eval(&expr, &context).unwrap();
+        assert_eq!(result.as_boolean(), Some(true));
+    }
+
+    #[test]
+    fn test_some_with_lambda() {
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+
+        // some([1, 2, 3], x => x > 2) should return true
+        let expr = Expr::FunctionCall {
+            name: Arc::from("some"),
+            args: vec![
+                Expr::Array(vec![
+                    Expr::Literal(Value::integer(1)),
+                    Expr::Literal(Value::integer(2)),
+                    Expr::Literal(Value::integer(3)),
+                ]),
+                Expr::Lambda {
+                    param: Arc::from("x"),
+                    body: Box::new(Expr::Binary {
+                        left: Box::new(Expr::Variable(Arc::from("x"))),
+                        op: BinaryOp::GreaterThan,
+                        right: Box::new(Expr::Literal(Value::integer(2))),
+                    }),
+                },
+            ],
+        };
+
+        let result = evaluator.eval(&expr, &context).unwrap();
+        assert_eq!(result.as_boolean(), Some(true));
+
+        // some([1, 2, 3], x => x > 5) should return false
+        let expr2 = Expr::FunctionCall {
+            name: Arc::from("some"),
+            args: vec![
+                Expr::Array(vec![
+                    Expr::Literal(Value::integer(1)),
+                    Expr::Literal(Value::integer(2)),
+                    Expr::Literal(Value::integer(3)),
+                ]),
+                Expr::Lambda {
+                    param: Arc::from("x"),
+                    body: Box::new(Expr::Binary {
+                        left: Box::new(Expr::Variable(Arc::from("x"))),
+                        op: BinaryOp::GreaterThan,
+                        right: Box::new(Expr::Literal(Value::integer(5))),
+                    }),
+                },
+            ],
+        };
+
+        let result2 = evaluator.eval(&expr2, &context).unwrap();
+        assert_eq!(result2.as_boolean(), Some(false));
     }
 }

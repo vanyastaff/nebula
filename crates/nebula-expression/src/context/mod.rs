@@ -76,6 +76,11 @@ impl EvaluationContext {
 
     /// Resolve a variable by name
     pub fn resolve_variable(&self, name: &str) -> Option<Value> {
+        // First, check for local variables (e.g., lambda parameters)
+        if let Some(value) = self.execution_vars.get(name) {
+            return Some((**value).clone());
+        }
+
         match name {
             "node" => {
                 // Return an object containing all nodes
