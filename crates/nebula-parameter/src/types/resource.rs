@@ -7,7 +7,7 @@ use crate::core::{
     option::{OptionsResponse, Pagination, SelectOption},
 };
 use nebula_expression::MaybeExpression;
-use nebula_value::Value;
+use nebula_value::{Value, ValueKind};
 
 /// Context for resource loading
 pub struct ResourceContext<'a> {
@@ -227,9 +227,14 @@ impl std::fmt::Display for ResourceParameter {
 }
 
 impl Validatable for ResourceParameter {
+    fn expected_kind(&self) -> Option<ValueKind> {
+        Some(ValueKind::String)
+    }
+
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
+
     fn is_empty(&self, value: &Value) -> bool {
         value
             .as_text()

@@ -6,7 +6,7 @@ use crate::core::{
     ParameterValidation, Validatable,
 };
 use nebula_core::ParameterKey;
-use nebula_value::Value;
+use nebula_value::{Value, ValueKind};
 
 /// Routing parameter - container with connection point functionality
 /// Acts as a wrapper around any child parameter with routing/connection capabilities
@@ -211,6 +211,10 @@ impl Display for RoutingParameter {
 }
 
 impl Validatable for RoutingParameter {
+    fn expected_kind(&self) -> Option<ValueKind> {
+        Some(ValueKind::Object)
+    }
+
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }

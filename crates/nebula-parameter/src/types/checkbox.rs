@@ -5,7 +5,7 @@ use crate::core::{
     ParameterValidation, Validatable,
 };
 
-use nebula_value::{Boolean, Value};
+use nebula_value::{Boolean, Value, ValueKind};
 
 /// Parameter for boolean checkbox
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
@@ -59,19 +59,27 @@ impl std::fmt::Display for CheckboxParameter {
 }
 
 impl Validatable for CheckboxParameter {
+    fn expected_kind(&self) -> Option<ValueKind> {
+        Some(ValueKind::Boolean)
+    }
+
     fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
-        // Check required
+        // Type check
+        if let Some(expected) = self.expected_kind() {
+            let actual = value.kind();
+            if actual != ValueKind::Null && actual != expected {
+                return Err(ParameterError::InvalidType {
+                    key: self.metadata.key.clone(),
+                    expected_type: expected.name().to_string(),
+                    actual_details: actual.name().to_string(),
+                });
+            }
+        }
+
+        // Required check
         if self.is_required() && self.is_empty(value) {
             return Err(ParameterError::MissingValue {
                 key: self.metadata.key.clone(),
-            });
-        }
-
-        // Type check - allow null or boolean
-        if !value.is_null() && value.as_boolean().is_none() {
-            return Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected boolean value".to_string(),
             });
         }
 

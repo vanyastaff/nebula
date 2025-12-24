@@ -9,7 +9,7 @@ pub use async_trait::async_trait;
 use downcast_rs::{Downcast, impl_downcast};
 use nebula_core::ParameterKey as Key;
 pub use nebula_expression::{EvaluationContext, ExpressionEngine, MaybeExpression};
-use nebula_value::Value;
+use nebula_value::{Value, ValueKind};
 
 // =============================================================================
 // Base Trait
@@ -118,6 +118,31 @@ impl_downcast!(Parameter);
 /// ```
 #[async_trait]
 pub trait Validatable: Parameter + Send + Sync {
+    /// Get the expected value kind for this parameter
+    ///
+    /// Returns the `ValueKind` that this parameter expects.
+    /// The default implementation returns `None`, meaning
+    /// no type checking is performed.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// impl Validatable for TextParameter {
+    ///     fn expected_kind(&self) -> Option<ValueKind> {
+    ///         Some(ValueKind::String)
+    ///     }
+    /// }
+    ///
+    /// impl Validatable for NumberParameter {
+    ///     fn expected_kind(&self) -> Option<ValueKind> {
+    ///         Some(ValueKind::Float) // Numbers stored as float
+    ///     }
+    /// }
+    /// ```
+    fn expected_kind(&self) -> Option<ValueKind> {
+        None // No type checking by default
+    }
+
     /// Synchronous validation (fast, local checks)
     ///
     /// Override this for basic validation like:
@@ -127,12 +152,28 @@ pub trait Validatable: Parameter + Send + Sync {
     /// - Required field validation
     /// - Format validation
     ///
-    /// Default implementation only checks if required field is empty.
+    /// Default implementation checks:
+    /// 1. Type matches `expected_kind()` (if specified)
+    /// 2. Required field is not empty
     ///
     /// # Parameters
     ///
     /// * `value` - The value to validate (passed by reference)
     fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
+        // 1. Type checking (if expected_kind is specified)
+        if let Some(expected) = self.expected_kind() {
+            let actual = value.kind();
+            // Allow Null for optional parameters
+            if actual != ValueKind::Null && actual != expected {
+                return Err(ParameterError::InvalidType {
+                    key: self.metadata().key.clone(),
+                    expected_type: expected.name().to_string(),
+                    actual_details: actual.name().to_string(),
+                });
+            }
+        }
+
+        // 2. Required field check
         if self.is_empty(value) && self.is_required() {
             return Err(ParameterError::MissingValue {
                 key: self.metadata().key.clone(),

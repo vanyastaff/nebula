@@ -4,7 +4,7 @@ use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
-use nebula_value::Value;
+use nebula_value::{Value, ValueKind};
 
 /// Value for list parameters containing array of child parameter values
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -147,20 +147,31 @@ impl std::fmt::Display for ListParameter {
 }
 
 impl Validatable for ListParameter {
+    fn expected_kind(&self) -> Option<ValueKind> {
+        Some(ValueKind::Array)
+    }
+
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
 
     fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
         // Type check
-        let arr = match value {
-            Value::Array(a) => a,
-            _ => {
-                return Err(ParameterError::InvalidValue {
+        if let Some(expected) = self.expected_kind() {
+            let actual = value.kind();
+            if actual != ValueKind::Null && actual != expected {
+                return Err(ParameterError::InvalidType {
                     key: self.metadata.key.clone(),
-                    reason: format!("Expected array value for list, got {}", value.kind()),
+                    expected_type: expected.name().to_string(),
+                    actual_details: actual.name().to_string(),
                 });
             }
+        }
+
+        let arr = match value {
+            Value::Array(a) => a,
+            Value::Null => return Ok(()), // Null is allowed for optional
+            _ => return Ok(()),           // Type error already handled above
         };
 
         // Required check

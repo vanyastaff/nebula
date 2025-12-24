@@ -4,7 +4,7 @@ use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, SelectOption, Validatable,
 };
-use nebula_value::Value;
+use nebula_value::{Value, ValueKind};
 
 /// Parameter for single-choice selection from a dropdown
 ///
@@ -101,19 +101,27 @@ impl std::fmt::Display for SelectParameter {
 }
 
 impl Validatable for SelectParameter {
+    fn expected_kind(&self) -> Option<ValueKind> {
+        Some(ValueKind::String)
+    }
+
     fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
-        // Check required
+        // Type check
+        if let Some(expected) = self.expected_kind() {
+            let actual = value.kind();
+            if actual != ValueKind::Null && actual != expected {
+                return Err(ParameterError::InvalidType {
+                    key: self.metadata.key.clone(),
+                    expected_type: expected.name().to_string(),
+                    actual_details: actual.name().to_string(),
+                });
+            }
+        }
+
+        // Required check
         if self.is_required() && self.is_empty(value) {
             return Err(ParameterError::MissingValue {
                 key: self.metadata.key.clone(),
-            });
-        }
-
-        // Type check - allow null or text
-        if !value.is_null() && value.as_text().is_none() {
-            return Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
-                reason: "Expected text value".to_string(),
             });
         }
 

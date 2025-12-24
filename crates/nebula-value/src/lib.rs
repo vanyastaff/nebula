@@ -248,7 +248,9 @@ pub mod scalar;
 pub mod temporal;
 
 // Re-export core types
-pub use core::{ConversionError, ConversionResult, ResultExt, limits::ValueLimits, value::Value};
+pub use core::{
+    ConversionError, ConversionResult, ResultExt, ValueKind, limits::ValueLimits, value::Value,
+};
 
 // Re-export standalone error
 pub use error::{ValueError, ValueResult, ValueResultExt};

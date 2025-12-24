@@ -6,7 +6,7 @@ use crate::core::{
     ParameterValidation, Validatable,
 };
 use nebula_expression::MaybeExpression;
-use nebula_value::Value;
+use nebula_value::{Value, ValueKind};
 
 // Default Time-To-Live in seconds (1 hour)
 const DEFAULT_TTL: u64 = 3600;
@@ -215,9 +215,14 @@ impl std::fmt::Display for ExpirableParameter {
 }
 
 impl Validatable for ExpirableParameter {
+    fn expected_kind(&self) -> Option<ValueKind> {
+        Some(ValueKind::Object)
+    }
+
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
+
     fn is_empty(&self, value: &Value) -> bool {
         // Check if value is an expirable object
         if let Some(obj) = value.as_object() {

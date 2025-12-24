@@ -4,7 +4,7 @@ use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
-use nebula_value::Value;
+use nebula_value::{Value, ValueKind};
 
 /// Parameter for password or sensitive inputs
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
@@ -63,21 +63,26 @@ impl std::fmt::Display for SecretParameter {
 }
 
 impl Validatable for SecretParameter {
+    fn expected_kind(&self) -> Option<ValueKind> {
+        Some(ValueKind::String)
+    }
+
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
 
     fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
         // Type check
-        let text = match value {
-            Value::Text(t) => t,
-            _ => {
-                return Err(ParameterError::InvalidValue {
+        if let Some(expected) = self.expected_kind() {
+            let actual = value.kind();
+            if actual != ValueKind::Null && actual != expected {
+                return Err(ParameterError::InvalidType {
                     key: self.metadata.key.clone(),
-                    reason: format!("Expected text value for secret, got {}", value.kind()),
+                    expected_type: expected.name().to_string(),
+                    actual_details: actual.name().to_string(),
                 });
             }
-        };
+        }
 
         // Required check
         if self.is_empty(value) && self.is_required() {
@@ -87,25 +92,31 @@ impl Validatable for SecretParameter {
         }
 
         // Length validation
-        if let Some(options) = &self.options {
-            let len = text.len();
+        if let Some(text) = value.as_text() {
+            if let Some(options) = &self.options {
+                let len = text.len();
 
-            if let Some(min_length) = options.min_length
-                && len < min_length
-            {
-                return Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
-                    reason: format!("Secret must be at least {min_length} characters, got {len}"),
-                });
-            }
+                if let Some(min_length) = options.min_length
+                    && len < min_length
+                {
+                    return Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!(
+                            "Secret must be at least {min_length} characters, got {len}"
+                        ),
+                    });
+                }
 
-            if let Some(max_length) = options.max_length
-                && len > max_length
-            {
-                return Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
-                    reason: format!("Secret must be at most {max_length} characters, got {len}"),
-                });
+                if let Some(max_length) = options.max_length
+                    && len > max_length
+                {
+                    return Err(ParameterError::InvalidValue {
+                        key: self.metadata.key.clone(),
+                        reason: format!(
+                            "Secret must be at most {max_length} characters, got {len}"
+                        ),
+                    });
+                }
             }
         }
 
@@ -115,6 +126,7 @@ impl Validatable for SecretParameter {
     fn is_empty(&self, value: &Value) -> bool {
         match value {
             Value::Text(t) => t.is_empty(),
+            Value::Null => true,
             _ => true,
         }
     }

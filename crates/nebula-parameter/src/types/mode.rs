@@ -7,7 +7,7 @@ use crate::core::{
 };
 use nebula_core::ParameterKey;
 use nebula_expression::MaybeExpression;
-use nebula_value::Value;
+use nebula_value::{Value, ValueKind};
 
 /// Parameter for mode selection with switching between different parameter types
 #[derive(Debug, Serialize)]
@@ -157,9 +157,14 @@ impl std::fmt::Display for ModeParameter {
 }
 
 impl Validatable for ModeParameter {
+    fn expected_kind(&self) -> Option<ValueKind> {
+        Some(ValueKind::Object)
+    }
+
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
+
     fn is_empty(&self, value: &Value) -> bool {
         // Mode parameter can accept text (mode key) or object (ModeValue)
         if let Some(obj) = value.as_object() {

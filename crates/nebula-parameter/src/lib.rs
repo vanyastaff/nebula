@@ -24,6 +24,7 @@ pub mod prelude {
         ParameterError, ParameterKind, ParameterMetadata, ParameterSnapshot, ParameterValidation,
         ParameterValues, Validatable,
     };
+    pub use nebula_value::ValueKind;
 
     pub use crate::types::{
         CheckboxParameter, CheckboxParameterOptions, CodeLanguage, CodeParameter,

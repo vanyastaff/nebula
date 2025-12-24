@@ -4,7 +4,7 @@ use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata,
     ParameterValidation, SelectOption, Validatable,
 };
-use nebula_value::Value;
+use nebula_value::{Value, ValueKind};
 
 /// Parameter for selecting a single option from radio buttons
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
@@ -62,9 +62,14 @@ impl std::fmt::Display for RadioParameter {
 }
 
 impl Validatable for RadioParameter {
+    fn expected_kind(&self) -> Option<ValueKind> {
+        Some(ValueKind::String)
+    }
+
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
+
     fn is_empty(&self, value: &Value) -> bool {
         value.as_text().is_none_or(|s| s.is_empty())
     }

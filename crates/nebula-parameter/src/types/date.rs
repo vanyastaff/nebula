@@ -4,7 +4,7 @@ use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
-use nebula_value::Value;
+use nebula_value::{Value, ValueKind};
 
 /// Parameter for date selection
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
@@ -72,9 +72,14 @@ impl std::fmt::Display for DateParameter {
 }
 
 impl Validatable for DateParameter {
+    fn expected_kind(&self) -> Option<ValueKind> {
+        Some(ValueKind::String)
+    }
+
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
+
     fn is_empty(&self, value: &Value) -> bool {
         value.as_text().is_none_or(|s| s.is_empty())
     }

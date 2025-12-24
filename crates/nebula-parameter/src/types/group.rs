@@ -4,7 +4,7 @@ use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
-use nebula_value::Value;
+use nebula_value::{Value, ValueKind};
 
 /// Parameter for grouping related data into a structured object
 ///
@@ -189,20 +189,31 @@ impl std::fmt::Display for GroupParameter {
 }
 
 impl Validatable for GroupParameter {
+    fn expected_kind(&self) -> Option<ValueKind> {
+        Some(ValueKind::Object)
+    }
+
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
 
     fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
         // Type check
-        let obj = match value {
-            Value::Object(o) => o,
-            _ => {
-                return Err(ParameterError::InvalidValue {
+        if let Some(expected) = self.expected_kind() {
+            let actual = value.kind();
+            if actual != ValueKind::Null && actual != expected {
+                return Err(ParameterError::InvalidType {
                     key: self.metadata.key.clone(),
-                    reason: format!("Expected object value for group, got {}", value.kind()),
+                    expected_type: expected.name().to_string(),
+                    actual_details: actual.name().to_string(),
                 });
             }
+        }
+
+        let obj = match value {
+            Value::Object(o) => o,
+            Value::Null => return Ok(()), // Null is allowed for optional
+            _ => return Ok(()),           // Type error already handled above
         };
 
         // Required check

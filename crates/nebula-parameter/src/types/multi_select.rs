@@ -4,7 +4,7 @@ use crate::core::{
     Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, SelectOption, Validatable,
 };
-use nebula_value::Value;
+use nebula_value::{Value, ValueKind};
 
 /// Parameter for selecting multiple options from a dropdown
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
@@ -61,9 +61,14 @@ impl std::fmt::Display for MultiSelectParameter {
 }
 
 impl Validatable for MultiSelectParameter {
+    fn expected_kind(&self) -> Option<ValueKind> {
+        Some(ValueKind::Array)
+    }
+
     fn validation(&self) -> Option<&ParameterValidation> {
         self.validation.as_ref()
     }
+
     fn is_empty(&self, value: &Value) -> bool {
         value.as_array().is_none_or(|arr| arr.is_empty())
     }
