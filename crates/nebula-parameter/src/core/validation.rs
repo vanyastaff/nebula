@@ -1,23 +1,13 @@
 //! Parameter validation using nebula-validator
 //!
-//! This module provides integration between `nebula-validator` and parameter values.
-//!
 //! # Examples
 //!
 //! ```ignore
 //! use nebula_parameter::core::ParameterValidation;
-//! use nebula_validator::validators::string::{min_length, max_length, email};
-//! use nebula_validator::validators::numeric::{min, max, positive};
+//! use nebula_validator::validators::string::{min_length, email};
 //! use nebula_validator::combinators::and;
 //!
-//! // String validation
-//! let validation = ParameterValidation::from(and(min_length(3), max_length(50)));
-//!
-//! // Email validation
-//! let validation = ParameterValidation::from(email());
-//!
-//! // Number range
-//! let validation = ParameterValidation::from(and(min(18.0), max(120.0)));
+//! let validation = ParameterValidation::from(and(min_length(3), email()));
 //! ```
 
 use nebula_validator::core::{AsValidatable, ValidationError, Validator};
@@ -26,51 +16,21 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
 use std::sync::Arc;
 
-/// Type-erased validator that works with Value.
-trait ValueValidator: Send + Sync {
-    fn validate_value(&self, value: &Value) -> Result<(), ValidationError>;
-}
-
-/// Wrapper to store any Validator<Input=T> as ValueValidator.
-struct ValidatorWrapper<V, T: ?Sized + 'static> {
-    validator: V,
-    _phantom: std::marker::PhantomData<fn() -> T>,
-}
-
-impl<V, T> ValueValidator for ValidatorWrapper<V, T>
-where
-    V: Validator<Input = T> + Send + Sync,
-    T: ?Sized + 'static,
-    Value: AsValidatable<T>,
-    for<'a> <Value as AsValidatable<T>>::Output<'a>: Borrow<T>,
-{
-    fn validate_value(&self, value: &Value) -> Result<(), ValidationError> {
-        self.validator.validate_any(value)
-    }
-}
-
-// =============================================================================
-// ParameterValidation
-// =============================================================================
+type ValidateFn = dyn Fn(&Value) -> Result<(), ValidationError> + Send + Sync;
 
 /// Validation configuration for parameters.
-///
-/// Wraps validators from `nebula-validator` with custom error messages.
-/// Note: Required field checking is handled by `ParameterMetadata.required`.
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct ParameterValidation {
-    /// The underlying validator (type-erased)
     #[serde(skip)]
-    validator: Option<Arc<dyn ValueValidator>>,
+    validate_fn: Option<Arc<ValidateFn>>,
 
-    /// Custom validation message override
     message: Option<String>,
 }
 
 impl std::fmt::Debug for ParameterValidation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ParameterValidation")
-            .field("has_validator", &self.validator.is_some())
+            .field("has_validator", &self.validate_fn.is_some())
             .field("message", &self.message)
             .finish()
     }
@@ -78,9 +38,6 @@ impl std::fmt::Debug for ParameterValidation {
 
 impl ParameterValidation {
     /// Create validation from any validator.
-    ///
-    /// The type is automatically extracted from `Value` using `AsValidatable`.
-    /// If the value type doesn't match, validation returns a type mismatch error.
     pub fn from<V, T>(validator: V) -> Self
     where
         V: Validator<Input = T> + Send + Sync + 'static,
@@ -89,10 +46,7 @@ impl ParameterValidation {
         for<'a> <Value as AsValidatable<T>>::Output<'a>: Borrow<T>,
     {
         Self {
-            validator: Some(Arc::new(ValidatorWrapper {
-                validator,
-                _phantom: std::marker::PhantomData,
-            })),
+            validate_fn: Some(Arc::new(move |value| validator.validate_any(value))),
             message: None,
         }
     }
@@ -110,18 +64,14 @@ impl ParameterValidation {
         self.message.as_deref()
     }
 
-    /// Validate a value (skips null values).
+    /// Validate a value (skips null).
     pub fn validate(&self, value: &Value) -> Result<(), ValidationError> {
-        // Skip validation for null values (required check is in ParameterMetadata)
         if value.is_null() {
             return Ok(());
         }
 
-        // Run validator if present
-        if let Some(validator) = &self.validator {
-            let result = validator.validate_value(value);
-
-            if let Err(mut err) = result {
+        if let Some(f) = &self.validate_fn {
+            if let Err(mut err) = f(value) {
                 if let Some(msg) = &self.message {
                     err = ValidationError::new(&err.code, msg);
                 }
@@ -173,8 +123,6 @@ mod tests {
     #[test]
     fn test_null_skipped() {
         let validation = ParameterValidation::from(min_length(3));
-
-        // Null values are skipped (required check is elsewhere)
         assert!(validation.validate(&Value::Null).is_ok());
     }
 
