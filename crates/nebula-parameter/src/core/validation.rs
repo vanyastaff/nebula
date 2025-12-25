@@ -20,7 +20,6 @@
 //! let validation = ParameterValidation::from(and(min(18.0), max(120.0)));
 //! ```
 
-use nebula_core::ParameterKey;
 use nebula_validator::core::{AsValidatable, AsyncValidator, ValidationError, Validator};
 use nebula_value::Value;
 use serde::{Deserialize, Serialize};
@@ -34,42 +33,28 @@ use std::sync::Arc;
 
 /// Validation configuration for parameters.
 ///
-/// Wraps validators from `nebula-validator` with parameter-specific features
-/// like required field checking and custom error messages.
+/// Wraps validators from `nebula-validator` with custom error messages.
+/// Note: Required field checking is handled by `ParameterMetadata.required`.
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct ParameterValidation {
     /// The underlying validator (type-erased)
     #[serde(skip)]
     validator: Option<Arc<dyn AsyncValidator<Input = Value> + Send + Sync>>,
 
-    /// Whether the parameter is required
-    required: bool,
-
     /// Custom validation message override
     message: Option<String>,
-
-    /// Parameter key (for error context)
-    key: Option<ParameterKey>,
 }
 
 impl std::fmt::Debug for ParameterValidation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ParameterValidation")
             .field("has_validator", &self.validator.is_some())
-            .field("required", &self.required)
             .field("message", &self.message)
-            .field("key", &self.key)
             .finish()
     }
 }
 
 impl ParameterValidation {
-    /// Create a new empty validation.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Create validation from any validator.
     ///
     /// The type is automatically extracted from `Value` using `AsValidatable`.
@@ -83,28 +68,8 @@ impl ParameterValidation {
     {
         Self {
             validator: Some(Arc::new(ValueValidatorAdapter::<V, T>::new(validator))),
-            required: false,
             message: None,
-            key: None,
         }
-    }
-
-    /// Create a required field validation (no validator, just null check).
-    #[must_use]
-    pub fn required_field() -> Self {
-        Self {
-            validator: None,
-            required: true,
-            message: Some("This field is required".to_string()),
-            key: None,
-        }
-    }
-
-    /// Set the parameter as required.
-    #[must_use]
-    pub fn required(mut self) -> Self {
-        self.required = true;
-        self
     }
 
     /// Set custom validation message.
@@ -114,42 +79,15 @@ impl ParameterValidation {
         self
     }
 
-    /// Set parameter key for error context.
-    #[must_use]
-    pub fn with_key(mut self, key: ParameterKey) -> Self {
-        self.key = Some(key);
-        self
-    }
-
     /// Get the custom validation message.
     #[must_use]
     pub fn message(&self) -> Option<&str> {
         self.message.as_deref()
     }
 
-    /// Check if validation is required.
-    #[must_use]
-    pub fn is_required(&self) -> bool {
-        self.required
-    }
-
-    /// Validate a value.
+    /// Validate a value (skips null values).
     pub async fn validate(&self, value: &Value) -> Result<(), ValidationError> {
-        // Check required first
-        if self.required && value.is_null() {
-            let mut err = ValidationError::new(
-                "required",
-                self.message.as_deref().unwrap_or("This field is required"),
-            );
-
-            if let Some(key) = &self.key {
-                err = err.with_field(key.as_str());
-            }
-
-            return Err(err);
-        }
-
-        // If null and not required, skip validation
+        // Skip validation for null values (required check is in ParameterMetadata)
         if value.is_null() {
             return Ok(());
         }
@@ -161,9 +99,6 @@ impl ParameterValidation {
             if let Err(mut err) = result {
                 if let Some(msg) = &self.message {
                     err = ValidationError::new(&err.code, msg);
-                }
-                if let Some(key) = &self.key {
-                    err = err.with_field(key.as_str());
                 }
                 return Err(err);
             }
@@ -259,11 +194,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_required_validation() {
-        let validation = ParameterValidation::required_field();
+    async fn test_null_skipped() {
+        let validation = ParameterValidation::from(min_length(3));
 
-        assert!(validation.validate(&Value::Null).await.is_err());
-        assert!(validation.validate(&Value::text("anything")).await.is_ok());
+        // Null values are skipped (required check is elsewhere)
+        assert!(validation.validate(&Value::Null).await.is_ok());
     }
 
     #[tokio::test]
