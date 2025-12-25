@@ -26,7 +26,7 @@ url = { workspace = true }
 
 # Internal crates
 nebula-log = { path = "../nebula-log" }
-nebula-value = { path = "../nebula-value" }
+nebula-value = { path = "../nebula-value", optional = true }
 
 # Randomness
 rand = { workspace = true }
@@ -50,19 +50,20 @@ bon = { workspace = true }
 
 [features]
 # Feature flags
-# default enables the full set for typical usage
 default = ["full"]
-# Async support (currently just ensures tokio's full feature is active)
+# Async support
 async = ["tokio/full"]
 # Optional subsystems
 caching = []
 cache = ["caching"]  # Alias for backwards compatibility
-lru = []  # LRU cache support (deprecated, use caching instead)
 performance = []
 registry = []
-serde = []  # Serde is always available, this is for cfg compatibility
+# Integration with nebula-value types
+value = ["dep:nebula-value"]
+# Serde serialization support (enables extra serde impls)
+serde = []
 # Convenience umbrella
-full = ["async", "caching", "registry", "performance"]
+full = ["async", "caching", "registry", "performance", "value", "serde"]
 
 [dev-dependencies]
 # Testing

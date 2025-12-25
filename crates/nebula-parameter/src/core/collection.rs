@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use nebula_core::ParameterKey;
 
-use crate::core::{Displayable, Parameter};
+use crate::core::{Displayable, Parameter, Validatable};
 
 /// A type-safe collection of parameters with dependency tracking
 #[derive(Default)]
@@ -66,6 +66,25 @@ impl ParameterCollection {
         P: Parameter + 'static,
     {
         self.parameters.get_mut(&key.into())?.downcast_mut::<P>()
+    }
+
+    /// Get a parameter as a dyn Parameter reference
+    pub fn get_dyn(&self, key: impl Into<ParameterKey>) -> Option<&dyn Parameter> {
+        self.parameters.get(&key.into()).map(|p| p.as_ref())
+    }
+
+    /// Get a parameter as Validatable if it implements the trait
+    pub fn get_validatable(&self, key: impl Into<ParameterKey>) -> Option<&dyn Validatable> {
+        self.parameters
+            .get(&key.into())
+            .and_then(|p| p.as_validatable())
+    }
+
+    /// Get a parameter as Displayable if it implements the trait
+    pub fn get_displayable(&self, key: impl Into<ParameterKey>) -> Option<&dyn Displayable> {
+        self.parameters
+            .get(&key.into())
+            .and_then(|p| p.as_displayable())
     }
 
     /// Check if a parameter exists

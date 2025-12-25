@@ -57,6 +57,7 @@ arc-swap = "1.7"
 spin = "0.10.0"
 
 # Data structures
+bitflags = "2.9"
 domain-key = { version = "0.1.1", features = ["serde"] }
 bon = { version = "3.8.1" }
 uuid = { version = "1.19.0", features = ["v4", "serde"] }

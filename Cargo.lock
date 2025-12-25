@@ -4046,6 +4046,7 @@ name = "nebula-parameter"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bitflags 2.10.0",
  "bon",
  "chrono",
  "downcast-rs 2.0.2",

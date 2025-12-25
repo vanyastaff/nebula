@@ -250,120 +250,125 @@ impl AsValidatable<f64> for i32 {
 // NEBULA-VALUE IMPLEMENTATIONS
 // ============================================================================
 
-impl AsValidatable<str> for nebula_value::Value {
-    type Output<'a>
-        = &'a str
-    where
-        Self: 'a;
+#[cfg(feature = "value")]
+mod value_impl {
+    use super::*;
 
-    #[inline]
-    fn as_validatable(&self) -> Result<&str, ValidationError> {
-        self.as_str().ok_or_else(|| {
-            ValidationError::new(
-                "type_mismatch",
-                format!("Expected string, got {}", self.kind().name()),
-            )
-        })
+    impl AsValidatable<str> for nebula_value::Value {
+        type Output<'a>
+            = &'a str
+        where
+            Self: 'a;
+
+        #[inline]
+        fn as_validatable(&self) -> Result<&str, ValidationError> {
+            self.as_str().ok_or_else(|| {
+                ValidationError::new(
+                    "type_mismatch",
+                    format!("Expected string, got {}", self.kind().name()),
+                )
+            })
+        }
     }
-}
 
-impl AsValidatable<i64> for nebula_value::Value {
-    type Output<'a> = i64;
+    impl AsValidatable<i64> for nebula_value::Value {
+        type Output<'a> = i64;
 
-    #[inline]
-    fn as_validatable(&self) -> Result<i64, ValidationError> {
-        self.to_integer().map_err(|e| {
-            ValidationError::new("type_mismatch", format!("Cannot convert to integer: {e}"))
-        })
+        #[inline]
+        fn as_validatable(&self) -> Result<i64, ValidationError> {
+            self.to_integer().map_err(|e| {
+                ValidationError::new("type_mismatch", format!("Cannot convert to integer: {e}"))
+            })
+        }
     }
-}
 
-impl AsValidatable<f64> for nebula_value::Value {
-    type Output<'a> = f64;
+    impl AsValidatable<f64> for nebula_value::Value {
+        type Output<'a> = f64;
 
-    #[inline]
-    fn as_validatable(&self) -> Result<f64, ValidationError> {
-        self.to_float().map_err(|e| {
-            ValidationError::new("type_mismatch", format!("Cannot convert to float: {e}"))
-        })
+        #[inline]
+        fn as_validatable(&self) -> Result<f64, ValidationError> {
+            self.to_float().map_err(|e| {
+                ValidationError::new("type_mismatch", format!("Cannot convert to float: {e}"))
+            })
+        }
     }
-}
 
-impl AsValidatable<bool> for nebula_value::Value {
-    type Output<'a> = bool;
+    impl AsValidatable<bool> for nebula_value::Value {
+        type Output<'a> = bool;
 
-    #[inline]
-    fn as_validatable(&self) -> Result<bool, ValidationError> {
-        Ok(self.to_boolean())
+        #[inline]
+        fn as_validatable(&self) -> Result<bool, ValidationError> {
+            Ok(self.to_boolean())
+        }
     }
-}
 
-impl AsValidatable<nebula_value::Array> for nebula_value::Value {
-    type Output<'a>
-        = &'a nebula_value::Array
-    where
-        Self: 'a;
+    impl AsValidatable<nebula_value::Array> for nebula_value::Value {
+        type Output<'a>
+            = &'a nebula_value::Array
+        where
+            Self: 'a;
 
-    #[inline]
-    fn as_validatable(&self) -> Result<&nebula_value::Array, ValidationError> {
-        self.as_array().ok_or_else(|| {
-            ValidationError::new(
-                "type_mismatch",
-                format!("Expected array, got {}", self.kind().name()),
-            )
-        })
+        #[inline]
+        fn as_validatable(&self) -> Result<&nebula_value::Array, ValidationError> {
+            self.as_array().ok_or_else(|| {
+                ValidationError::new(
+                    "type_mismatch",
+                    format!("Expected array, got {}", self.kind().name()),
+                )
+            })
+        }
     }
-}
 
-impl AsValidatable<nebula_value::Object> for nebula_value::Value {
-    type Output<'a>
-        = &'a nebula_value::Object
-    where
-        Self: 'a;
+    impl AsValidatable<nebula_value::Object> for nebula_value::Value {
+        type Output<'a>
+            = &'a nebula_value::Object
+        where
+            Self: 'a;
 
-    #[inline]
-    fn as_validatable(&self) -> Result<&nebula_value::Object, ValidationError> {
-        self.as_object().ok_or_else(|| {
-            ValidationError::new(
-                "type_mismatch",
-                format!("Expected object, got {}", self.kind().name()),
-            )
-        })
+        #[inline]
+        fn as_validatable(&self) -> Result<&nebula_value::Object, ValidationError> {
+            self.as_object().ok_or_else(|| {
+                ValidationError::new(
+                    "type_mismatch",
+                    format!("Expected object, got {}", self.kind().name()),
+                )
+            })
+        }
     }
-}
 
-/// AsValidatable for Value to slice of Values.
-///
-/// This enables collection validators to work with Value arrays.
-/// Note: Returns a Vec because im::Vector doesn't expose contiguous slice.
-impl AsValidatable<[nebula_value::Value]> for nebula_value::Value {
-    type Output<'a>
-        = Vec<nebula_value::Value>
-    where
-        Self: 'a;
+    /// AsValidatable for Value to slice of Values.
+    ///
+    /// This enables collection validators to work with Value arrays.
+    /// Note: Returns a Vec because im::Vector doesn't expose contiguous slice.
+    impl AsValidatable<[nebula_value::Value]> for nebula_value::Value {
+        type Output<'a>
+            = Vec<nebula_value::Value>
+        where
+            Self: 'a;
 
-    #[inline]
-    fn as_validatable(&self) -> Result<Vec<nebula_value::Value>, ValidationError> {
-        let arr = self.as_array().ok_or_else(|| {
-            ValidationError::new(
-                "type_mismatch",
-                format!("Expected array, got {}", self.kind().name()),
-            )
-        })?;
-        Ok(arr.iter().cloned().collect())
+        #[inline]
+        fn as_validatable(&self) -> Result<Vec<nebula_value::Value>, ValidationError> {
+            let arr = self.as_array().ok_or_else(|| {
+                ValidationError::new(
+                    "type_mismatch",
+                    format!("Expected array, got {}", self.kind().name()),
+                )
+            })?;
+            Ok(arr.iter().cloned().collect())
+        }
     }
-}
 
-/// AsValidatable for Array to slice of Values.
-impl AsValidatable<[nebula_value::Value]> for nebula_value::Array {
-    type Output<'a>
-        = Vec<nebula_value::Value>
-    where
-        Self: 'a;
+    /// AsValidatable for Array to slice of Values.
+    impl AsValidatable<[nebula_value::Value]> for nebula_value::Array {
+        type Output<'a>
+            = Vec<nebula_value::Value>
+        where
+            Self: 'a;
 
-    #[inline]
-    fn as_validatable(&self) -> Result<Vec<nebula_value::Value>, ValidationError> {
-        Ok(self.iter().cloned().collect())
+        #[inline]
+        fn as_validatable(&self) -> Result<Vec<nebula_value::Value>, ValidationError> {
+            Ok(self.iter().cloned().collect())
+        }
     }
 }
 
@@ -501,6 +506,12 @@ mod tests {
         // Works with u8
         assert!(validator.validate_any(&42u8).is_ok());
     }
+}
+
+#[cfg(all(test, feature = "value"))]
+mod value_tests {
+    use super::*;
+    use crate::core::Validator;
 
     #[test]
     fn test_value_to_str() {

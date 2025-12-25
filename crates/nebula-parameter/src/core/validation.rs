@@ -5,9 +5,13 @@
 //! ```ignore
 //! use nebula_parameter::core::ParameterValidation;
 //! use nebula_validator::validators::string::{min_length, email};
-//! use nebula_validator::combinators::and;
+//! use nebula_validator::combinators::{and, with_message};
 //!
+//! // Simple validation
 //! let validation = ParameterValidation::from(and(min_length(3), email()));
+//!
+//! // With custom message
+//! let validation = ParameterValidation::from(with_message(min_length(8), "Password too short"));
 //! ```
 
 use nebula_validator::core::{AsValidatable, ValidationError, Validator};
@@ -19,25 +23,29 @@ use std::sync::Arc;
 type ValidateFn = dyn Fn(&Value) -> Result<(), ValidationError> + Send + Sync;
 
 /// Validation configuration for parameters.
+///
+/// Use `with_message` combinator from nebula-validator for custom error messages.
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct ParameterValidation {
     #[serde(skip)]
     validate_fn: Option<Arc<ValidateFn>>,
-
-    message: Option<String>,
 }
 
 impl std::fmt::Debug for ParameterValidation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ParameterValidation")
             .field("has_validator", &self.validate_fn.is_some())
-            .field("message", &self.message)
             .finish()
     }
 }
 
 impl ParameterValidation {
     /// Create validation from any validator.
+    ///
+    /// Use `with_message` combinator for custom error messages:
+    /// ```ignore
+    /// ParameterValidation::from(with_message(min_length(8), "Too short"))
+    /// ```
     pub fn from<V, T>(validator: V) -> Self
     where
         V: Validator<Input = T> + Send + Sync + 'static,
@@ -47,21 +55,7 @@ impl ParameterValidation {
     {
         Self {
             validate_fn: Some(Arc::new(move |value| validator.validate_any(value))),
-            message: None,
         }
-    }
-
-    /// Set custom validation message.
-    #[must_use]
-    pub fn with_message(mut self, message: impl Into<String>) -> Self {
-        self.message = Some(message.into());
-        self
-    }
-
-    /// Get the custom validation message.
-    #[must_use]
-    pub fn message(&self) -> Option<&str> {
-        self.message.as_deref()
     }
 
     /// Validate a value (skips null).
@@ -71,12 +65,7 @@ impl ParameterValidation {
         }
 
         if let Some(f) = &self.validate_fn {
-            if let Err(mut err) = f(value) {
-                if let Some(msg) = &self.message {
-                    err = ValidationError::new(&err.code, msg);
-                }
-                return Err(err);
-            }
+            f(value)?;
         }
 
         Ok(())
@@ -86,7 +75,7 @@ impl ParameterValidation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_validator::combinators::and;
+    use nebula_validator::combinators::{and, with_message};
     use nebula_validator::validators::string::{email, max_length, min_length};
 
     #[test]
@@ -135,5 +124,14 @@ mod tests {
         let err = validation.validate(&Value::integer(42));
         assert!(err.is_err());
         assert_eq!(err.unwrap_err().code, "type_mismatch");
+    }
+
+    #[test]
+    fn test_with_message_combinator() {
+        let validation =
+            ParameterValidation::from(with_message(min_length(8), "Password too short"));
+
+        let err = validation.validate(&Value::text("short")).unwrap_err();
+        assert_eq!(err.message, "Password too short");
     }
 }

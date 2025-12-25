@@ -90,6 +90,14 @@ impl Parameter for TextParameter {
     fn metadata(&self) -> &ParameterMetadata {
         &self.metadata
     }
+
+    fn as_validatable(&self) -> Option<&dyn Validatable> {
+        Some(self)
+    }
+
+    fn as_displayable(&self) -> Option<&dyn Displayable> {
+        Some(self)
+    }
 }
 
 impl std::fmt::Display for TextParameter {

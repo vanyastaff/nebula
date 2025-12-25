@@ -61,6 +61,24 @@ pub trait Parameter: Downcast + Send + Sync {
     fn is_required(&self) -> bool {
         self.metadata().required
     }
+
+    /// Get this parameter as a Validatable reference if it implements validation
+    ///
+    /// Returns `Some(&dyn Validatable)` if this parameter type implements validation,
+    /// `None` otherwise. This enables runtime access to validation capabilities
+    /// without needing to know the concrete type.
+    fn as_validatable(&self) -> Option<&dyn Validatable> {
+        None
+    }
+
+    /// Get this parameter as a Displayable reference if it implements display logic
+    ///
+    /// Returns `Some(&dyn Displayable)` if this parameter type implements display conditions,
+    /// `None` otherwise. This enables runtime access to display capabilities
+    /// without needing to know the concrete type.
+    fn as_displayable(&self) -> Option<&dyn Displayable> {
+        None
+    }
 }
 
 impl_downcast!(Parameter);

@@ -15,6 +15,10 @@ documentation.workspace = true
 # Async and macros
 async-trait = { workspace = true }
 bon = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+# Bitflags
+bitflags = { workspace = true }
 
 # Downcast support for trait objects
 downcast-rs = "2.0"
