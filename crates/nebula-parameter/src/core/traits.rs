@@ -219,7 +219,7 @@ pub trait Validatable: Parameter + Send + Sync {
         // 3. Custom validation from configuration
         if let Some(validation) = self.validation() {
             validation
-                .validate(value, None)
+                .validate(value)
                 .await
                 .map_err(|e| ParameterError::InvalidValue {
                     key: self.metadata().key.clone(),
