@@ -16,30 +16,45 @@ pub use nebula_value::{JsonValueExt, ValueRefExt};
 
 /// Prelude module for convenient imports
 pub mod prelude {
+    // Core traits
     pub use crate::core::{
-        Describable, DisplayCondition, DisplayContext, DisplayRule, DisplayRuleSet, Displayable,
-        Parameter, ParameterCollection, ParameterDisplay, ParameterDisplayError, ParameterError,
-        ParameterKind, ParameterMetadata, ParameterSnapshot, ParameterValidation, ParameterValues,
-        Validatable,
-    };
-    pub use nebula_value::ValueKind;
-
-    pub use crate::types::{
-        CheckboxParameter, CheckboxParameterOptions, CodeLanguage, CodeParameter,
-        CodeParameterOptions, ColorFormat, ColorParameter, ColorParameterOptions, DateParameter,
-        DateParameterOptions, DateTimeParameter, DateTimeParameterOptions, ExpirableParameter,
-        ExpirableParameterOptions, ExpirableValue, FileParameter, FileParameterOptions,
-        FileReference, GroupField, GroupFieldType, GroupParameter, GroupParameterOptions,
-        GroupValue, HiddenParameter, ListParameter, ListParameterOptions, ListValue, ModeItem,
-        ModeParameter, ModeValue, MultiSelectParameter, MultiSelectParameterOptions,
-        NoticeParameter, NoticeParameterOptions, NoticeType, NumberParameter,
-        NumberParameterOptions, ObjectParameter, ObjectParameterOptions, ObjectValue, Panel,
-        PanelParameter, PanelParameterOptions, RadioParameter, RadioParameterOptions,
-        ResourceContext, ResourceLoader, ResourceParameter, ResourceValue, RoutingParameter,
-        RoutingParameterOptions, RoutingValue, SecretParameter, SecretParameterOptions,
-        SelectParameter, SelectParameterOptions, TextParameter, TextParameterOptions,
-        TextareaParameter, TextareaParameterOptions, TimeParameter, TimeParameterOptions,
+        Describable, // base trait for parameter description
+        Displayable, // display conditions
+        Parameter,   // supertrait combining all
+        Validatable, // validation
     };
 
+    // Core types
+    pub use crate::core::{
+        ParameterBase,       // common fields for all parameters
+        ParameterCollection, // parameter registry
+        ParameterContext,    // runtime context with reactive updates
+        ParameterError,      // error type
+        ParameterKind,       // parameter type enum
+        ParameterMetadata,   // parameter metadata
+        ParameterValues,     // value storage
+    };
+
+    // Display system
+    pub use crate::core::{
+        DisplayCondition, DisplayContext, DisplayRule, DisplayRuleSet, ParameterDisplay,
+        ParameterDisplayError,
+    };
+
+    // Validation
+    pub use crate::core::ParameterValidation;
+
+    // State management
+    pub use crate::core::{
+        ParameterFlags,    // bitflags for parameter state
+        ParameterSnapshot, // snapshot for saving/restoring
+        ParameterState,    // runtime state of a parameter
+    };
+
+    // All parameter types
+    pub use crate::types::*;
+
+    // Re-exports from dependencies
     pub use nebula_core::prelude::{KeyParseError, ParameterKey};
+    pub use nebula_value::ValueKind;
 }
