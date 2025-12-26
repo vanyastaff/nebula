@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 
 #[allow(unused_imports)]
 use crate::core::traits::Expressible;
-use crate::core::{Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata};
+use crate::core::{
+    Describable, Displayable, ParameterDisplay, ParameterKind, ParameterMetadata, Validatable,
+};
+use nebula_value::Value;
 
 /// Parameter for displaying a notice or information to the user
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
@@ -48,13 +51,20 @@ pub enum NoticeType {
     Success,
 }
 
-impl Parameter for NoticeParameter {
+impl Describable for NoticeParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Notice
     }
 
     fn metadata(&self) -> &ParameterMetadata {
         &self.metadata
+    }
+}
+
+// Notice parameters implement minimal Validatable for blanket Parameter impl
+impl Validatable for NoticeParameter {
+    fn is_empty(&self, _value: &Value) -> bool {
+        false // Notice parameters don't have values
     }
 }
 

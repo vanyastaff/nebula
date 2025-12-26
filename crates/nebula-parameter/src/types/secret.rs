@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
@@ -46,7 +46,7 @@ pub struct SecretParameterOptions {
     pub always_masked: bool,
 }
 
-impl Parameter for SecretParameter {
+impl Describable for SecretParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Secret
     }

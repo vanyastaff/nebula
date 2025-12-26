@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
@@ -172,7 +172,7 @@ impl Default for GroupValue {
     }
 }
 
-impl Parameter for GroupParameter {
+impl Describable for GroupParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Group
     }

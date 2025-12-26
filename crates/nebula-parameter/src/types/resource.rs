@@ -2,7 +2,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
     option::{OptionsResponse, Pagination, SelectOption},
 };
@@ -210,7 +210,7 @@ impl ResourceParameter {
     }
 }
 
-impl Parameter for ResourceParameter {
+impl Describable for ResourceParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Resource
     }

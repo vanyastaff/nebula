@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
@@ -59,7 +59,7 @@ pub enum ColorFormat {
     Hsv,
 }
 
-impl Parameter for ColorParameter {
+impl Describable for ColorParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Color
     }

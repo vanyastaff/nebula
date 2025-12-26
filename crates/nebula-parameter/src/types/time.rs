@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterDisplay, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
@@ -59,7 +59,7 @@ pub struct TimeParameterOptions {
     pub step_minutes: Option<u32>,
 }
 
-impl Parameter for TimeParameter {
+impl Describable for TimeParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Time
     }

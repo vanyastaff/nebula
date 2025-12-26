@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::{Parameter, ParameterKind, ParameterMetadata};
+use crate::core::{
+    Describable, Displayable, ParameterDisplay, ParameterKind, ParameterMetadata, Validatable,
+};
+use nebula_value::Value;
 
 /// Parameter that is hidden from the user interface but can store values
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
@@ -14,7 +17,7 @@ pub struct HiddenParameter {
     pub default: Option<String>,
 }
 
-impl Parameter for HiddenParameter {
+impl Describable for HiddenParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Hidden
     }
@@ -30,5 +33,19 @@ impl std::fmt::Display for HiddenParameter {
     }
 }
 
-// Hidden parameters don't implement Validatable or Displayable by design
-// They're meant to be internal-only values
+// Hidden parameters implement minimal Validatable and Displayable for blanket Parameter impl
+impl Validatable for HiddenParameter {
+    fn is_empty(&self, value: &Value) -> bool {
+        value.is_null() || value.as_text().map(|s| s.is_empty()).unwrap_or(false)
+    }
+}
+
+impl Displayable for HiddenParameter {
+    fn display(&self) -> Option<&ParameterDisplay> {
+        None // Hidden parameters are never displayed
+    }
+
+    fn set_display(&mut self, _display: Option<ParameterDisplay>) {
+        // No-op for hidden parameters
+    }
+}

@@ -20,6 +20,8 @@ pub use kind::*;
 pub use metadata::*;
 pub use option::SelectOption;
 pub use state::*;
-pub use traits::*;
+pub use traits::{
+    Describable, Displayable, DisplayableMut, DisplayableReactive, Parameter, Validatable,
+};
 pub use validation::*;
 pub use values::*;

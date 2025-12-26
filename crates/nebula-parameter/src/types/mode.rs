@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata,
+    Describable, Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
 use nebula_core::ParameterKey;
@@ -140,7 +140,7 @@ impl ModeValue {
     }
 }
 
-impl Parameter for ModeParameter {
+impl Describable for ModeParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Mode
     }

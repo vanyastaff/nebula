@@ -1,6 +1,7 @@
 //! Tests for ParameterCollection
 
 use nebula_core::ParameterKey;
+use nebula_parameter::core::Displayable;
 use nebula_parameter::core::values::ParameterValues;
 use nebula_parameter::prelude::*;
 use nebula_parameter::types::TextParameter;
@@ -284,4 +285,51 @@ fn test_collection_clear() {
 
     assert_eq!(collection.len(), 0);
     assert!(collection.is_empty());
+}
+
+#[test]
+fn test_get_validatable() {
+    let mut collection = ParameterCollection::new();
+    collection.add(
+        TextParameter::builder()
+            .metadata(
+                ParameterMetadata::builder()
+                    .key("email")
+                    .name("Email")
+                    .description("User email")
+                    .required(true)
+                    .build()
+                    .unwrap(),
+            )
+            .build(),
+    );
+
+    let validatable = collection.get_validatable(key("email"));
+    assert!(validatable.is_some());
+
+    let validatable = collection.get_validatable(key("nonexistent"));
+    assert!(validatable.is_none());
+}
+
+#[test]
+fn test_get_displayable() {
+    let mut collection = ParameterCollection::new();
+    collection.add(
+        TextParameter::builder()
+            .metadata(
+                ParameterMetadata::builder()
+                    .key("name")
+                    .name("Name")
+                    .description("")
+                    .build()
+                    .unwrap(),
+            )
+            .build(),
+    );
+
+    let displayable = collection.get_displayable(key("name"));
+    assert!(displayable.is_some());
+
+    // Verify we can call Displayable methods
+    assert!(!displayable.unwrap().has_conditions());
 }

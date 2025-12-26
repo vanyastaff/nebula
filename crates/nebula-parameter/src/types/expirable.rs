@@ -2,7 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata,
+    Describable, Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
 use nebula_expression::MaybeExpression;
@@ -198,7 +198,7 @@ impl std::fmt::Debug for ExpirableParameter {
     }
 }
 
-impl Parameter for ExpirableParameter {
+impl Describable for ExpirableParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Expirable
     }

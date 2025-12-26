@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
@@ -41,7 +41,7 @@ pub struct TextareaParameterOptions {
     pub max_length: Option<usize>,
 }
 
-impl Parameter for TextareaParameter {
+impl Describable for TextareaParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Textarea
     }

@@ -2,7 +2,11 @@ use serde::{Deserialize, Serialize};
 
 #[allow(unused_imports)]
 use crate::core::traits::Expressible;
-use crate::core::{Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata};
+use crate::core::{
+    Describable, Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata,
+    Validatable,
+};
+use nebula_value::Value;
 
 /// Panel parameter - container for organizing parameters into sections/tabs
 #[derive(Serialize)]
@@ -147,13 +151,20 @@ impl Panel {
     }
 }
 
-impl Parameter for PanelParameter {
+impl Describable for PanelParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Panel
     }
 
     fn metadata(&self) -> &ParameterMetadata {
         &self.metadata
+    }
+}
+
+// Panel parameters implement minimal Validatable for blanket Parameter impl
+impl Validatable for PanelParameter {
+    fn is_empty(&self, _value: &Value) -> bool {
+        self.panels.is_empty() // Panel is empty if it has no panels
     }
 }
 

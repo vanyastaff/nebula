@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterDisplay, ParameterKind, ParameterMetadata,
     ParameterValidation, SelectOption, Validatable,
 };
 use nebula_value::{Value, ValueKind};
@@ -45,7 +45,7 @@ pub struct RadioParameterOptions {
     pub other_label: Option<String>,
 }
 
-impl Parameter for RadioParameter {
+impl Describable for RadioParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Radio
     }

@@ -13,7 +13,7 @@ use nebula_value::{Value, ValueKind};
 // Base Trait
 // =============================================================================
 
-/// Base trait for all parameter types
+/// Base trait for parameter description and identification
 ///
 /// This is the foundation trait that provides core identification
 /// and metadata capabilities. All parameter types must implement this trait.
@@ -27,7 +27,7 @@ use nebula_value::{Value, ValueKind};
 ///     metadata: ParameterMetadata,
 /// }
 ///
-/// impl Parameter for MyParameter {
+/// impl Describable for MyParameter {
 ///     fn kind(&self) -> ParameterKind {
 ///         ParameterKind::Text
 ///     }
@@ -37,7 +37,7 @@ use nebula_value::{Value, ValueKind};
 ///     }
 /// }
 /// ```
-pub trait Parameter: Downcast + Send + Sync {
+pub trait Describable: Downcast + Send + Sync {
     /// Get the kind/type of this parameter
     fn kind(&self) -> ParameterKind;
 
@@ -61,27 +61,9 @@ pub trait Parameter: Downcast + Send + Sync {
     fn is_required(&self) -> bool {
         self.metadata().required
     }
-
-    /// Get this parameter as a Validatable reference if it implements validation
-    ///
-    /// Returns `Some(&dyn Validatable)` if this parameter type implements validation,
-    /// `None` otherwise. This enables runtime access to validation capabilities
-    /// without needing to know the concrete type.
-    fn as_validatable(&self) -> Option<&dyn Validatable> {
-        None
-    }
-
-    /// Get this parameter as a Displayable reference if it implements display logic
-    ///
-    /// Returns `Some(&dyn Displayable)` if this parameter type implements display conditions,
-    /// `None` otherwise. This enables runtime access to display capabilities
-    /// without needing to know the concrete type.
-    fn as_displayable(&self) -> Option<&dyn Displayable> {
-        None
-    }
 }
 
-impl_downcast!(Parameter);
+impl_downcast!(Describable);
 
 // =============================================================================
 // Validation Trait
@@ -133,7 +115,7 @@ impl_downcast!(Parameter);
 /// }
 /// ```
 #[async_trait]
-pub trait Validatable: Parameter + Send + Sync {
+pub trait Validatable: Describable + Send + Sync {
     /// Get the expected value kind for this parameter
     ///
     /// Returns the `ValueKind` that this parameter expects.
@@ -336,7 +318,7 @@ pub trait Validatable: Parameter + Send + Sync {
 /// assert_eq!(result, Value::String("Alice".to_string()));
 /// ```
 #[async_trait::async_trait]
-pub trait Expressible: Parameter {
+pub trait Expressible: Describable {
     /// Check if a value contains an expression
     ///
     /// This should detect expression syntax in the value.
@@ -444,7 +426,7 @@ pub trait Expressible: Parameter {
 /// # Ok(())
 /// # }
 /// ```
-pub trait Displayable: Parameter {
+pub trait Displayable: Describable {
     /// Get the display configuration
     fn display(&self) -> Option<&ParameterDisplay>;
 
@@ -607,6 +589,45 @@ pub fn apply_display_change<P>(
         param.on_display_change(old_visible, new_visible, new_context);
     }
 }
+
+// =============================================================================
+// Combined Parameter Trait
+// =============================================================================
+
+/// Complete parameter trait combining all capabilities.
+///
+/// This is the primary trait for working with parameters. It combines:
+/// - [`Describable`]: Core identification and metadata
+/// - [`Validatable`]: Value validation
+/// - [`Displayable`]: Conditional visibility
+///
+/// All parameter types in this crate implement this trait automatically
+/// via blanket implementation.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_parameter::prelude::*;
+///
+/// fn process_parameter(param: &dyn Parameter) {
+///     // Access descriptive info
+///     println!("Key: {}", param.key());
+///
+///     // Validate values
+///     let result = param.validate_sync(&Value::Null);
+///
+///     // Check display conditions
+///     if param.has_conditions() {
+///         println!("Has display conditions");
+///     }
+/// }
+/// ```
+pub trait Parameter: Describable + Validatable + Displayable + Send + Sync {}
+
+impl_downcast!(Parameter);
+
+// Blanket implementation for all qualifying types
+impl<T> Parameter for T where T: Describable + Validatable + Displayable + Send + Sync + 'static {}
 
 // =============================================================================
 // Testing Utilities

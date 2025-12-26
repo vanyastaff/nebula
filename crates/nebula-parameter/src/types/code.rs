@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
@@ -87,7 +87,7 @@ pub enum CodeLanguage {
     PlainText,
 }
 
-impl Parameter for CodeParameter {
+impl Describable for CodeParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Code
     }

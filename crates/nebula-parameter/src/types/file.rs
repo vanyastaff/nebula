@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
@@ -145,7 +145,7 @@ pub struct FileParameterOptions {
     pub validate_content: bool,
 }
 
-impl Parameter for FileParameter {
+impl Describable for FileParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::File
     }

@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, Validatable,
+    Describable, Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
 
@@ -143,7 +143,7 @@ impl std::fmt::Debug for ObjectParameter {
     }
 }
 
-impl Parameter for ObjectParameter {
+impl Describable for ObjectParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Object
     }

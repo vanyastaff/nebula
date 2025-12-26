@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use nebula_core::ParameterKey;
 
-use crate::core::{Displayable, Parameter, Validatable};
+use crate::core::{Describable, Displayable, Parameter, Validatable};
 
 /// A type-safe collection of parameters with dependency tracking
 #[derive(Default)]
@@ -26,7 +26,7 @@ impl ParameterCollection {
     /// Add a parameter to the collection
     pub fn add<P>(&mut self, param: P) -> &mut Self
     where
-        P: Parameter + Displayable + 'static,
+        P: Parameter + 'static,
     {
         let key = param.metadata().key.clone();
 
@@ -46,7 +46,7 @@ impl ParameterCollection {
     #[must_use = "builder methods must be chained or built"]
     pub fn with<P>(mut self, param: P) -> Self
     where
-        P: Parameter + Displayable + 'static,
+        P: Parameter + 'static,
     {
         self.add(param);
         self
@@ -68,23 +68,25 @@ impl ParameterCollection {
         self.parameters.get_mut(&key.into())?.downcast_mut::<P>()
     }
 
-    /// Get a parameter as a dyn Parameter reference
-    pub fn get_dyn(&self, key: impl Into<ParameterKey>) -> Option<&dyn Parameter> {
-        self.parameters.get(&key.into()).map(|p| p.as_ref())
+    /// Get a parameter as a dyn Describable reference
+    pub fn get_dyn(&self, key: impl Into<ParameterKey>) -> Option<&dyn Describable> {
+        self.parameters
+            .get(&key.into())
+            .map(|p| p.as_ref() as &dyn Describable)
     }
 
-    /// Get a parameter as Validatable if it implements the trait
+    /// Get a parameter as Validatable
     pub fn get_validatable(&self, key: impl Into<ParameterKey>) -> Option<&dyn Validatable> {
         self.parameters
             .get(&key.into())
-            .and_then(|p| p.as_validatable())
+            .map(|p| p.as_ref() as &dyn Validatable)
     }
 
-    /// Get a parameter as Displayable if it implements the trait
+    /// Get a parameter as Displayable
     pub fn get_displayable(&self, key: impl Into<ParameterKey>) -> Option<&dyn Displayable> {
         self.parameters
             .get(&key.into())
-            .and_then(|p| p.as_displayable())
+            .map(|p| p.as_ref() as &dyn Displayable)
     }
 
     /// Check if a parameter exists
@@ -281,6 +283,51 @@ mod tests {
 
         let param: Option<&TextParameter> = collection.get(key("test"));
         assert!(param.is_some());
+    }
+
+    #[test]
+    fn test_get_validatable() {
+        let mut collection = ParameterCollection::new();
+        collection.add(
+            TextParameter::builder()
+                .metadata(
+                    crate::core::ParameterMetadata::builder()
+                        .key("email")
+                        .name("Email")
+                        .description("User email")
+                        .required(true)
+                        .build()
+                        .unwrap(),
+                )
+                .build(),
+        );
+
+        let validatable = collection.get_validatable(key("email"));
+        assert!(validatable.is_some());
+
+        let validatable = collection.get_validatable(key("nonexistent"));
+        assert!(validatable.is_none());
+    }
+
+    #[test]
+    fn test_get_displayable() {
+        let mut collection = ParameterCollection::new();
+        collection.add(
+            TextParameter::builder()
+                .metadata(
+                    crate::core::ParameterMetadata::builder()
+                        .key("name")
+                        .name("Name")
+                        .description("")
+                        .build()
+                        .unwrap(),
+                )
+                .build(),
+        );
+
+        let displayable = collection.get_displayable(key("name"));
+        assert!(displayable.is_some());
+        assert!(!displayable.unwrap().has_conditions());
     }
 
     #[test]

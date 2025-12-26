@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterDisplay, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
@@ -55,7 +55,7 @@ pub struct DateParameterOptions {
     pub default_to_today: bool,
 }
 
-impl Parameter for DateParameter {
+impl Describable for DateParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Date
     }

@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, Validatable,
+    Describable, Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
 
@@ -130,7 +130,7 @@ impl std::fmt::Debug for ListParameter {
     }
 }
 
-impl Parameter for ListParameter {
+impl Describable for ListParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::List
     }

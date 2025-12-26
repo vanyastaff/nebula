@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, SelectOption, Validatable,
 };
 use nebula_value::{Value, ValueKind};
@@ -84,7 +84,7 @@ pub struct SelectParameterOptions {
     pub placeholder: Option<String>,
 }
 
-impl Parameter for SelectParameter {
+impl Describable for SelectParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Select
     }

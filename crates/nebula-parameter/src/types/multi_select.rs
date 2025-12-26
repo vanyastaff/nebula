@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, SelectOption, Validatable,
 };
 use nebula_value::{Value, ValueKind};
@@ -44,7 +44,7 @@ pub struct MultiSelectParameterOptions {
     pub max_selections: Option<usize>,
 }
 
-impl Parameter for MultiSelectParameter {
+impl Describable for MultiSelectParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::MultiSelect
     }

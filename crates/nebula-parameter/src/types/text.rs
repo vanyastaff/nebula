@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
@@ -82,21 +82,13 @@ pub struct TextParameterOptions {
     pub min_length: Option<usize>,
 }
 
-impl Parameter for TextParameter {
+impl Describable for TextParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Text
     }
 
     fn metadata(&self) -> &ParameterMetadata {
         &self.metadata
-    }
-
-    fn as_validatable(&self) -> Option<&dyn Validatable> {
-        Some(self)
-    }
-
-    fn as_displayable(&self) -> Option<&dyn Displayable> {
-        Some(self)
     }
 }
 

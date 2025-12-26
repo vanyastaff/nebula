@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{self, Display};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, Validatable,
+    Describable, Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
 use nebula_core::ParameterKey;
 use nebula_value::{Value, ValueKind};
@@ -194,7 +194,7 @@ impl fmt::Debug for RoutingParameter {
     }
 }
 
-impl Parameter for RoutingParameter {
+impl Describable for RoutingParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Routing
     }

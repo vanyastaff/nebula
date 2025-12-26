@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
 
@@ -42,7 +42,7 @@ pub struct CheckboxParameterOptions {
     pub help_text: Option<String>,
 }
 
-impl Parameter for CheckboxParameter {
+impl Describable for CheckboxParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Checkbox
     }

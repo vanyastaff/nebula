@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
 use nebula_value::Value;
@@ -90,7 +90,7 @@ pub struct NumberParameterOptions {
     pub precision: Option<u8>,
 }
 
-impl Parameter for NumberParameter {
+impl Describable for NumberParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Number
     }
