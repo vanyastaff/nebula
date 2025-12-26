@@ -6,7 +6,7 @@ use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{RichText, Ui};
 use egui_flex::{Flex, FlexAlign, item};
 use egui_phosphor::regular::{CARET_DOWN, CARET_RIGHT, PLUS, TRASH};
-use nebula_parameter::core::{Parameter, ParameterKind};
+use nebula_parameter::core::{Describable, Parameter, ParameterKind};
 use nebula_parameter::types::{ObjectParameter, ObjectValue};
 use std::collections::HashSet;
 

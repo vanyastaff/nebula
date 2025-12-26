@@ -3,11 +3,8 @@
 //! This module provides a lightweight wrapper around `ComputeCache` with
 //! periodic TTL-based cleanup. For the 80% use case in workflow automation.
 
-#![cfg(feature = "std")]
-
 use std::{
     collections::HashMap,
-    hash::Hash,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},

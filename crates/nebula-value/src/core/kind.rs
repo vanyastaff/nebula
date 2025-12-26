@@ -7,21 +7,34 @@ use core::fmt::{Display, Formatter};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
 pub enum ValueKind {
+    /// Null/nil value
     Null,
+    /// Boolean true/false
     Boolean,
+    /// Signed 64-bit integer
     Integer,
+    /// 64-bit floating point number
     Float,
+    /// Arbitrary precision decimal
     Decimal,
+    /// UTF-8 string
     String,
+    /// Binary data
     Bytes,
+    /// Ordered collection of values
     Array,
+    /// Key-value map
     Object,
+    /// Calendar date
     #[cfg(feature = "temporal")]
     Date,
+    /// Time of day
     #[cfg(feature = "temporal")]
     Time,
+    /// Date and time with timezone
     #[cfg(feature = "temporal")]
     DateTime,
+    /// Time duration
     #[cfg(feature = "temporal")]
     Duration,
 }

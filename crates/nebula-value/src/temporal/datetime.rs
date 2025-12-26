@@ -27,7 +27,9 @@ use crate::core::{ValueError, ValueResult};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct DateTimeInner {
+    /// Date component
     pub date: DateInner,
+    /// Time component
     pub time: TimeInner,
 }
 

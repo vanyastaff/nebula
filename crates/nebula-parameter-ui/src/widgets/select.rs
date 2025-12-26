@@ -3,7 +3,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{ComboBox, RichText, Ui};
 use egui_flex::{Flex, FlexAlign, item};
-use nebula_parameter::core::Parameter;
+use nebula_parameter::core::{Describable, Parameter};
 use nebula_parameter::types::SelectParameter;
 
 /// Widget for single-choice dropdown selection.

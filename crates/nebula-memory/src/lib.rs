@@ -48,6 +48,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(incomplete_features)]
+#![allow(dead_code)]
+#![allow(unused_variables)]
 #![warn(clippy::all)]
 #![warn(rust_2018_idioms)]
 

@@ -75,13 +75,12 @@ pub use watchers::{
 };
 
 /// Prelude module for convenient imports
+///
+/// # Example
+/// ```rust
+/// use nebula_config::prelude::*;
+/// ```
 pub mod prelude {
-    //! Prelude for common imports
-    //!
-    //! # Example
-    //! ```rust
-    //! use nebula_config::prelude::*;
-    //! ```
 
     // Core types
     pub use crate::core::{
@@ -110,10 +109,8 @@ pub mod prelude {
     };
 }
 
-/// Builder pattern helpers
+/// Builder pattern helpers for configuration
 pub mod builders {
-    //! Builder utilities for configuration
-
     use crate::core::{ConfigBuilder, ConfigSource};
     use crate::loaders::{EnvLoader, FileLoader};
     use crate::validators::SchemaValidator;
@@ -177,8 +174,6 @@ pub mod builders {
 
 /// Utilities for working with configuration
 pub mod utils {
-    //! Utility functions for configuration management
-
     use crate::core::{ConfigError, ConfigResult};
     use std::path::Path;
 
@@ -299,12 +294,6 @@ pub mod utils {
                             ));
                         }
                         Yaml::Alias(_) => {
-                            return Err(ConfigError::parse_error(
-                                std::path::PathBuf::from("string"),
-                                "Unsupported YAML type",
-                            ));
-                        }
-                        _ => {
                             return Err(ConfigError::parse_error(
                                 std::path::PathBuf::from("string"),
                                 "Unsupported YAML type",

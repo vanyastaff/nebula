@@ -21,7 +21,8 @@
       "Bash(cargo deny:*)",
       "Bash(cat:*)",
       "Bash(tee:*)",
-      "Skill(superpowers:using-superpowers)"
+      "Skill(superpowers:using-superpowers)",
+      "Skill(superpowers:finishing-a-development-branch)"
     ]
   }
 }

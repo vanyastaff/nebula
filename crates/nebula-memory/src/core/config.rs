@@ -3,6 +3,9 @@
 //! This module provides comprehensive configuration management for all memory
 //! components in the nebula-memory crate, following nebula patterns.
 
+// Using field reassignment for conditional compilation patterns
+#![allow(clippy::field_reassign_with_default)]
+
 use core::fmt;
 
 #[cfg(feature = "std")]

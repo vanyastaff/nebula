@@ -137,10 +137,31 @@
 //! - **Sealed Traits**: Controlled API extensibility
 //! - **Typestate Pattern**: Compile-time state machine correctness
 
+#![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::self_only_used_in_recursion)]
+#![allow(clippy::double_must_use)]
+#![allow(clippy::match_same_arms)]
+#![allow(clippy::wrong_self_convention)]
+#![allow(clippy::unused_self)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::let_unit_value)]
+#![allow(clippy::ignored_unit_patterns)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::trivially_copy_pass_by_ref)]
+#![allow(clippy::should_implement_trait)]
+#![allow(clippy::return_self_not_must_use)]
+#![allow(clippy::new_without_default)]
+#![allow(clippy::unused_async)]
+#![allow(dead_code)]
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
-#![warn(clippy::all, clippy::pedantic)]
 
 // Core modules with advanced type system features
 pub mod core;

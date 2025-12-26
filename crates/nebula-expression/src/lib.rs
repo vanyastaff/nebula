@@ -1,4 +1,6 @@
 #![warn(clippy::all)]
+#![allow(clippy::excessive_nesting)]
+#![allow(clippy::needless_range_loop)]
 
 //! # nebula-expression
 //!

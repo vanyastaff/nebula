@@ -4,7 +4,7 @@
 
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{ComboBox, CornerRadius, Frame, Stroke, Ui};
-use nebula_parameter::core::Parameter;
+use nebula_parameter::core::{Describable, Parameter};
 use nebula_parameter::types::{ModeParameter, ModeValue};
 
 /// Widget for mode selection with inline child input.

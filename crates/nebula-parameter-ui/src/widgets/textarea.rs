@@ -3,7 +3,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{RichText, TextEdit, Ui, Widget};
 use egui_flex::{Flex, FlexAlign, item};
-use nebula_parameter::core::Parameter;
+use nebula_parameter::core::{Describable, Parameter};
 use nebula_parameter::types::TextareaParameter;
 
 /// Widget for multi-line text input.

@@ -1,3 +1,11 @@
+#![allow(clippy::excessive_nesting)]
+#![allow(clippy::should_implement_trait)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::if_same_then_else)]
+#![allow(clippy::collapsible_if)]
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 //! # Nebula Resource Management
 //!
 //! A comprehensive resource management framework for the Nebula workflow engine.

@@ -179,7 +179,13 @@ pub fn memory_barrier() {
 }
 
 /// Securely zero memory
+///
+/// # Safety
+///
+/// - `ptr` must be valid for writes of `len` bytes
+/// - The memory region must remain valid for the duration of the call
 #[inline(always)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn secure_zero(ptr: *mut u8, len: usize) {
     if len == 0 {
         return;
@@ -279,6 +285,12 @@ pub unsafe fn copy_aligned_simd(dst: *mut u8, src: *const u8, len: usize) {
 }
 
 /// SIMD-optimized memory copy (fallback for non-AVX2)
+///
+/// # Safety
+///
+/// - `dst` must be valid for writes of `len` bytes
+/// - `src` must be valid for reads of `len` bytes
+/// - Memory regions must not overlap
 #[inline]
 #[cfg(all(feature = "simd", target_arch = "x86_64", not(target_feature = "avx2")))]
 pub unsafe fn copy_aligned_simd(dst: *mut u8, src: *const u8, len: usize) {
@@ -286,6 +298,12 @@ pub unsafe fn copy_aligned_simd(dst: *mut u8, src: *const u8, len: usize) {
 }
 
 /// SIMD-optimized memory copy (fallback for non-x86_64)
+///
+/// # Safety
+///
+/// - `dst` must be valid for writes of `len` bytes
+/// - `src` must be valid for reads of `len` bytes
+/// - Memory regions must not overlap
 #[inline]
 #[cfg(not(all(feature = "simd", target_arch = "x86_64")))]
 pub unsafe fn copy_aligned_simd(dst: *mut u8, src: *const u8, len: usize) {
@@ -336,6 +354,10 @@ pub unsafe fn fill_simd(dst: *mut u8, pattern: u8, len: usize) {
 }
 
 /// SIMD-optimized memory fill (fallback)
+///
+/// # Safety
+///
+/// - `dst` must be valid for writes of `len` bytes
 #[inline]
 #[cfg(not(all(feature = "simd", target_arch = "x86_64", target_feature = "avx2")))]
 pub unsafe fn fill_simd(dst: *mut u8, pattern: u8, len: usize) {
@@ -398,6 +420,10 @@ pub unsafe fn compare_simd(a: *const u8, b: *const u8, len: usize) -> bool {
 }
 
 /// SIMD-optimized memory compare (fallback)
+///
+/// # Safety
+///
+/// - Both `a` and `b` must be valid for reads of `len` bytes
 #[inline]
 #[cfg(not(all(feature = "simd", target_arch = "x86_64", target_feature = "avx2")))]
 #[must_use]
@@ -617,6 +643,7 @@ pub fn memory_barrier_ex(barrier_type: BarrierType) {
 }
 
 /// Memory operations utilities
+#[derive(Default)]
 pub struct MemoryOps;
 
 impl MemoryOps {
@@ -627,6 +654,12 @@ impl MemoryOps {
         Self
     }
     /// Copy memory with prefetching
+    ///
+    /// # Safety
+    ///
+    /// - `dst` must be valid for writes of `len` bytes
+    /// - `src` must be valid for reads of `len` bytes
+    /// - Memory regions must not overlap
     #[inline]
     pub unsafe fn copy_with_prefetch(dst: *mut u8, src: *const u8, len: usize) {
         if len == 0 {
@@ -656,6 +689,10 @@ impl MemoryOps {
     }
 
     /// Zero memory with optimization
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must be valid for writes of `len` bytes
     #[inline]
     pub unsafe fn zero_optimized(ptr: *mut u8, len: usize) {
         if len == 0 {
@@ -671,6 +708,11 @@ impl MemoryOps {
     }
 
     /// Secure fill slice with pattern
+    ///
+    /// # Safety
+    ///
+    /// This function is safe despite being marked `unsafe` because it operates
+    /// on a valid `&mut [u8]` slice. The unsafe marker is preserved for API consistency.
     #[inline]
     pub unsafe fn secure_fill_slice(slice: &mut [u8], pattern: u8) {
         // SAFETY: Filling slice with pattern.

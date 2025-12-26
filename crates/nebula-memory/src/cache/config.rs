@@ -113,7 +113,7 @@ impl CacheConfig {
     /// Set the load factor for hash-based caches
     #[must_use = "builder methods must be chained or built"]
     pub fn with_load_factor(mut self, load_factor: f32) -> Self {
-        self.load_factor = load_factor.max(0.1).min(0.95);
+        self.load_factor = load_factor.clamp(0.1, 0.95);
         self
     }
 

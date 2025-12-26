@@ -4,6 +4,7 @@
 //! and avoids recomputation when the same key is requested again.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(clippy::excessive_nesting)]
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
@@ -514,7 +515,7 @@ where
         #[cfg(feature = "std")]
         {
             // True random using rng
-            use rand::prelude::{IndexedRandom, SliceRandom};
+            use rand::prelude::IndexedRandom;
             let keys: Vec<_> = self.entries.keys().cloned().collect();
             if let Some(key) = keys.choose(&mut rand::rng()) {
                 self.entries.remove(key);

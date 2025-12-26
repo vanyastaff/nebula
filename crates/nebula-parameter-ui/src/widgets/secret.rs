@@ -4,7 +4,7 @@ use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{RichText, TextEdit, Ui};
 use egui_flex::{Flex, FlexAlign, item};
 use egui_phosphor::regular::{EYE, EYE_SLASH};
-use nebula_parameter::core::Parameter;
+use nebula_parameter::core::{Describable, Parameter};
 use nebula_parameter::types::SecretParameter;
 
 /// Widget for password/secret input.

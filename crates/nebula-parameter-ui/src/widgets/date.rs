@@ -7,7 +7,7 @@ use chrono::{Datelike, Local, NaiveDate};
 use egui::{RichText, Ui};
 use egui_flex::{Flex, FlexAlign, item};
 use egui_phosphor::regular::{CALENDAR, CARET_LEFT, CARET_RIGHT};
-use nebula_parameter::core::Parameter;
+use nebula_parameter::core::{Describable, Parameter};
 use nebula_parameter::types::DateParameter;
 
 /// Widget for date selection with custom calendar.

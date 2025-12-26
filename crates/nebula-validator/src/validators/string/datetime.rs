@@ -326,8 +326,8 @@ impl Validator for DateTime {
         let time_part = parts[1];
 
         // Check for timezone
-        let (time_str, has_timezone) = if time_part.ends_with('Z') {
-            (&time_part[..time_part.len() - 1], true)
+        let (time_str, has_timezone) = if let Some(stripped) = time_part.strip_suffix('Z') {
+            (stripped, true)
         } else if let Some(pos) = time_part.rfind('+').or_else(|| time_part.rfind('-')) {
             if pos > 0 {
                 // Make sure it's not at the start

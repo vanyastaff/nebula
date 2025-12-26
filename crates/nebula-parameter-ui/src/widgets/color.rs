@@ -5,7 +5,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{Color32, CornerRadius, RichText, Stroke, TextEdit, Ui};
 use egui_flex::{Flex, FlexAlign, item};
-use nebula_parameter::core::Parameter;
+use nebula_parameter::core::{Describable, Parameter};
 use nebula_parameter::types::ColorParameter;
 
 /// Widget for color selection.

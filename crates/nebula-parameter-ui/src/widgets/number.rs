@@ -3,7 +3,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{DragValue, RichText, Ui};
 use egui_flex::{Flex, FlexAlign, item};
-use nebula_parameter::core::Parameter;
+use nebula_parameter::core::{Describable, Parameter};
 use nebula_parameter::types::NumberParameter;
 
 /// Widget for numeric input.

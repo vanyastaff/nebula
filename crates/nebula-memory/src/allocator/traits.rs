@@ -84,7 +84,7 @@ fn validate_layout(layout: Layout) -> AllocResult<()> {
 /// for resizing existing allocations. All methods are unsafe as they deal
 /// with raw pointers and have specific safety requirements.
 ///
-/// # Safety Requirements
+/// # Safety
 ///
 /// Implementors must ensure that:
 /// - Returned pointers are valid for the requested lifetime
@@ -296,6 +296,12 @@ pub unsafe trait Allocator {
 /// Provides optimized operations for allocating multiple contiguous blocks.
 /// This trait is useful for scenarios where you need to allocate many objects
 /// of the same type efficiently.
+///
+/// # Safety
+///
+/// Implementors must uphold the same invariants as [`Allocator`], plus:
+/// - Bulk allocations must be contiguous and properly aligned for array access
+/// - Total allocation size must not overflow
 ///
 /// # Use Cases
 /// - Array allocations

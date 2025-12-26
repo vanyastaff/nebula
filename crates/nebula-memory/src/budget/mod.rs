@@ -22,6 +22,7 @@
 //! println!("Used: {} / {} bytes", metrics.used, metrics.limit);
 //! ```
 
+#[allow(clippy::module_inception)]
 mod budget;
 mod config;
 

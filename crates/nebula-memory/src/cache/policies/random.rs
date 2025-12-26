@@ -11,7 +11,7 @@
 extern crate alloc;
 
 #[cfg(feature = "std")]
-use std::{collections::HashSet, hash::Hash, marker::PhantomData};
+use std::{collections::HashSet, marker::PhantomData};
 
 #[cfg(not(feature = "std"))]
 use {

@@ -463,15 +463,24 @@ use thiserror::Error;
 pub enum SerdeError {
     /// Serialization error
     #[error("Serialization error: {message}")]
-    Serialization { message: String },
+    Serialization {
+        /// Error message
+        message: String,
+    },
 
     /// Deserialization error
     #[error("Deserialization error: {message}")]
-    Deserialization { message: String },
+    Deserialization {
+        /// Error message
+        message: String,
+    },
 
     /// Invalid format
     #[error("Invalid format: {format}")]
-    InvalidFormat { format: String },
+    InvalidFormat {
+        /// Format description
+        format: String,
+    },
 }
 
 impl SerdeError {

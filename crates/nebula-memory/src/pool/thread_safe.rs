@@ -1,5 +1,7 @@
 //! Thread-safe object pool implementation
 
+#![allow(clippy::excessive_nesting)]
+
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::mem::ManuallyDrop;

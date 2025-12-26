@@ -3,8 +3,6 @@
 //! This module provides a high-performance concurrent cache that uses `DashMap`
 //! for lock-free read and write operations, eliminating `RwLock` contention.
 
-#![cfg(feature = "std")]
-
 use dashmap::DashMap;
 use std::hash::Hash;
 use std::sync::Arc;

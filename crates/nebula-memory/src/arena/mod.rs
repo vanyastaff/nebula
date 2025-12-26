@@ -1,49 +1,22 @@
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!     *value
-//!     let value = arena_clone.alloc(100).unwrap();
-//!   access
-//!   access)
-//!   patterns
-//! # Arena Types
-//! # Examples
-//! - [`Arena`]: Basic single-threaded bump allocator for general use
-//! - [`CompressedArena`]: Arena with transparent compression support
-//! - [`CrossThreadArena`]: Arena that can be moved between threads (exclusive
-//! - [`LocalArena`]: Thread-local arena for maximum performance
-//! - [`StreamingArena`]: Arena optimized for streaming/sequential allocation
-//! - [`ThreadSafeArena`]: Lock-free arena with atomic operations for concurrent
-//! - [`TypedArena<T>`]: Type-safe arena for homogeneous allocations
-//! Basic usage:
 //! High-performance arena allocation module for nebula-memory
-//! This module provides various arena allocators optimized for different use
-//! Thread-safe usage:
-//! ```
-//! ```
-//! ```rust
-//! ```rust
-//! assert_eq!(*value, 42);
-//! assert_eq!(handle.join().unwrap(), 100);
-//! cases:
-//! let arena = Arc::new(ThreadSafeArena::new(ArenaConfig::default()));
-//! let arena = Arena::new(ArenaConfig::default());
-//! let arena_clone = Arc::clone(&arena);
-//! let handle = thread::spawn(move || {
-//! let value = arena.alloc(42).unwrap();
-//! use nebula_memory::arena::{Arena, ArenaConfig};
-//! use nebula_memory::arena::{ArenaConfig, ThreadSafeArena};
-//! use std::sync::Arc;
-//! use std::thread;
-//! });
+//!
+//! This module provides various arena allocators optimized for different use cases.
+//!
+//! # Arena Types
+//!
+//! - [`Arena`]: Basic single-threaded bump allocator for general use
+//! - [`ThreadSafeArena`]: Lock-free arena with atomic operations for concurrent access
+//! - [`TypedArena<T>`]: Type-safe arena for homogeneous allocations
+//! - [`LocalArena`]: Thread-local arena for maximum performance
+//! - [`CrossThreadArena`]: Arena that can be moved between threads (exclusive access)
+//! - [`StreamingArena`]: Arena optimized for streaming/sequential allocation patterns
+//! - [`CompressedArena`]: Arena with transparent compression support
+
+// Arena allocators intentionally use interior mutability patterns
+#![allow(clippy::mut_from_ref)]
+#![allow(clippy::arc_with_non_send_sync)]
+#![allow(clippy::module_inception)]
+
 pub mod scope;
 use std::alloc::Layout;
 

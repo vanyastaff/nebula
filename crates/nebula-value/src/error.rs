@@ -17,66 +17,111 @@ use thiserror::Error;
 pub enum ValueError {
     /// Type mismatch between expected and actual types
     #[error("Type mismatch: expected {expected}, got {actual}")]
-    TypeMismatch { expected: String, actual: String },
+    TypeMismatch {
+        /// Expected type name
+        expected: String,
+        /// Actual type name
+        actual: String,
+    },
 
     /// Value limit exceeded
     #[error("{limit} exceeded: {actual} > {max}")]
     LimitExceeded {
+        /// Name of the limit that was exceeded
         limit: String,
+        /// Maximum allowed value
         max: usize,
+        /// Actual value that exceeded the limit
         actual: usize,
     },
 
     /// Conversion between types failed
     #[error("Cannot convert from {from} to {to}")]
-    ConversionError { from: String, to: String },
+    ConversionError {
+        /// Source type name
+        from: String,
+        /// Target type name
+        to: String,
+    },
 
     /// Array index out of bounds
     #[error("Index {index} out of bounds (length: {length})")]
-    IndexOutOfBounds { index: usize, length: usize },
+    IndexOutOfBounds {
+        /// Requested index
+        index: usize,
+        /// Array length
+        length: usize,
+    },
 
     /// Object key not found
     #[error("Key not found: '{key}'")]
-    KeyNotFound { key: String },
+    KeyNotFound {
+        /// The key that was not found
+        key: String,
+    },
 
     /// Path not found in nested value
     #[error("Path not found: {path}")]
-    PathNotFound { path: String },
+    PathNotFound {
+        /// The path that was not found
+        path: String,
+    },
 
     /// Parse error for specific format
     #[error("Invalid {format_type} format: {input}")]
     ParseError {
+        /// Type of format being parsed
         format_type: String,
+        /// Input string that failed to parse
         input: String,
+        /// Position in input where error occurred
         position: Option<usize>,
     },
 
     /// Operation not supported for this value type
     #[error("Operation '{operation}' not supported for {value_type}")]
     OperationNotSupported {
+        /// Name of the operation
         operation: String,
+        /// Type of value
         value_type: String,
     },
 
     /// Numeric overflow
     #[error("Numeric overflow in {operation}: value {value}")]
-    Overflow { operation: String, value: String },
+    Overflow {
+        /// Operation that caused overflow
+        operation: String,
+        /// Value that caused overflow
+        value: String,
+    },
 
     /// Feature not enabled
     #[error("Feature '{feature}' not enabled for operation: {operation}")]
-    FeatureNotEnabled { feature: String, operation: String },
+    FeatureNotEnabled {
+        /// Feature name
+        feature: String,
+        /// Operation that requires the feature
+        operation: String,
+    },
 
     /// Value out of range
     #[error("Value {value} out of range [{min}, {max}]")]
     OutOfRange {
+        /// The value that was out of range
         value: String,
+        /// Minimum allowed value
         min: String,
+        /// Maximum allowed value
         max: String,
     },
 
     /// Validation error
     #[error("Validation failed: {reason}")]
-    ValidationFailed { reason: String },
+    ValidationFailed {
+        /// Reason for validation failure
+        reason: String,
+    },
 
     /// Serialization error
     #[error("Serialization error: {0}")]
@@ -89,7 +134,9 @@ pub enum ValueError {
     /// Context information (nested error with additional info)
     #[error("{message}: {source}")]
     WithContext {
+        /// Context message
         message: String,
+        /// Underlying error
         #[source]
         source: Box<ValueError>,
     },

@@ -137,6 +137,12 @@ pub struct AllocatorManager {
     default_allocator: Option<AllocatorId>,
 }
 
+impl Default for AllocatorManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AllocatorManager {
     /// Creates a new `AllocatorManager`
     #[must_use]

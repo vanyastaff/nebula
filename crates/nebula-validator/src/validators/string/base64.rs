@@ -149,7 +149,7 @@ impl Validator for Base64 {
 
         if self.require_padding {
             // When padding is required, total length (including padding) must be multiple of 4
-            if cleaned.len() % 4 != 0 {
+            if !cleaned.len().is_multiple_of(4) {
                 return Err(ValidationError::new(
                     "invalid_base64_length",
                     "Base64 string length must be a multiple of 4 when padding is required",

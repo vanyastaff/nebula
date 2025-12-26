@@ -42,11 +42,13 @@ impl<T> PoolBox<T> {
 
     /// Gets a reference to the contained value
     #[must_use]
+    #[allow(clippy::should_implement_trait)]
     pub fn as_ref(&self) -> &T {
         unsafe { self.ptr.as_ref() }
     }
 
     /// Gets a mutable reference to the contained value
+    #[allow(clippy::should_implement_trait)]
     pub fn as_mut(&mut self) -> &mut T {
         unsafe { self.ptr.as_mut() }
     }

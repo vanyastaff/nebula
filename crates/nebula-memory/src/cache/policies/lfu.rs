@@ -5,6 +5,7 @@
 //! efficient data structures for large-scale caching scenarios.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(clippy::excessive_nesting)]
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
@@ -12,7 +13,6 @@ extern crate alloc;
 #[cfg(feature = "std")]
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
-    hash::Hash,
     marker::PhantomData,
     time::{Duration, Instant},
 };
@@ -568,7 +568,6 @@ where
     where
         K: core::hash::Hash,
     {
-        use core::hash::{Hash as _, Hasher};
         use std::collections::hash_map::RandomState;
         use std::hash::BuildHasher;
 

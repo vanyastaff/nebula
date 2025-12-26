@@ -41,6 +41,12 @@ pub struct LocalArena {
     generation: Cell<u64>,
 }
 
+impl Default for LocalArena {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LocalArena {
     /// Creates new local arena with default config
     #[must_use]

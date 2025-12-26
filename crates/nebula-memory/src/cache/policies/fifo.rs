@@ -12,7 +12,6 @@ extern crate alloc;
 #[cfg(feature = "std")]
 use std::{
     collections::{HashMap, VecDeque},
-    hash::Hash,
     marker::PhantomData,
 };
 

@@ -2,6 +2,8 @@
 //!
 //! Validates that a string contains well-formed JSON.
 
+#![allow(clippy::excessive_nesting)]
+
 use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
 
 // ============================================================================

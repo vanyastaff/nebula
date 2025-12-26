@@ -1,3 +1,6 @@
+//! Object pooling for efficient memory reuse
+//!
+//! This module provides various object pool implementations for different use cases:
 //!
 //! - `BatchAllocator`: Batch allocation optimization
 //! - `HierarchicalPool`: Multi-level pool hierarchy
@@ -6,9 +9,6 @@
 //! - `PriorityPool`: Pool with priority-based retention
 //! - `ThreadSafePool`: Multi-threaded pool with mutex
 //! - `TtlPool`: Pool with time-to-live for objects
-//! Object pooling for efficient memory reuse
-//! This module provides various object pool implementations for different use
-//! cases:
 mod batch;
 pub mod health;
 mod hierarchical;

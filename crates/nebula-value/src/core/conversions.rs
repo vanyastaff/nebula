@@ -21,28 +21,42 @@ pub enum ConversionError {
     /// Cannot convert between incompatible types
     #[error("Cannot convert from {from} to {to}")]
     Incompatible {
+        /// Source type name
         from: &'static str,
+        /// Target type name
         to: &'static str,
     },
 
     /// Numeric overflow during conversion
     #[error("Numeric overflow converting to {target}: value {value}")]
-    Overflow { target: &'static str, value: String },
+    Overflow {
+        /// Target type name
+        target: &'static str,
+        /// The value that caused overflow
+        value: String,
+    },
 
     /// Value out of range for target type
     #[error("Value {value} out of range for {target} [{min}, {max}]")]
     OutOfRange {
+        /// The value that was out of range
         value: String,
+        /// Target type name
         target: &'static str,
+        /// Minimum allowed value
         min: String,
+        /// Maximum allowed value
         max: String,
     },
 
     /// Precision loss during conversion
     #[error("Precision loss converting {from} to {to}: value {value}")]
     PrecisionLoss {
+        /// Source type name
         from: &'static str,
+        /// Target type name
         to: &'static str,
+        /// The value that would lose precision
         value: String,
     },
 }

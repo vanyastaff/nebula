@@ -2,7 +2,7 @@
 
 use crate::{ParameterTheme, ParameterWidget, UiExt, WidgetResponse};
 use egui::Ui;
-use nebula_parameter::core::Parameter;
+use nebula_parameter::core::{Describable, Parameter};
 use nebula_parameter::types::PanelParameter;
 
 /// Widget for tabbed/accordion panel containers.

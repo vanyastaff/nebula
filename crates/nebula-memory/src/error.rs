@@ -3,11 +3,10 @@
 //! Uses thiserror for clean, idiomatic Rust error definitions.
 
 use core::alloc::Layout;
-use core::fmt;
 use thiserror::Error;
 
 #[cfg(feature = "logging")]
-use nebula_log::{debug, error, warn};
+use nebula_log::{error, warn};
 
 // ============================================================================
 // Main Error Types

@@ -216,18 +216,17 @@ impl Validator for Uuid {
         // Validate RFC 4122 variant (bits 10xx in the variant field)
         // Special case: nil UUID (all zeros) is valid per RFC 4122 Section 4.1.7
         let is_nil = uuid.chars().all(|c| c == '0' || c == '-');
-        if !is_nil {
-            if let Some(variant) = Self::extract_variant(uuid) {
-                // RFC 4122 variant has bits 10xx (decimal 8-11)
-                if !(8..=11).contains(&variant) {
-                    return Err(ValidationError::new(
-                        "invalid_uuid_variant",
-                        format!(
-                            "Invalid UUID variant (expected RFC 4122, found variant bits: {variant:x})"
-                        ),
-                    ));
-                }
-            }
+        if !is_nil
+            && let Some(variant) = Self::extract_variant(uuid)
+            && !(8..=11).contains(&variant)
+        {
+            // RFC 4122 variant has bits 10xx (decimal 8-11)
+            return Err(ValidationError::new(
+                "invalid_uuid_variant",
+                format!(
+                    "Invalid UUID variant (expected RFC 4122, found variant bits: {variant:x})"
+                ),
+            ));
         }
 
         Ok(())

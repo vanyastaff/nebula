@@ -6,7 +6,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{ComboBox, RichText, Ui};
 use egui_flex::{Flex, FlexAlign, FlexAlignContent, item};
-use nebula_parameter::core::Parameter;
+use nebula_parameter::core::{Describable, Parameter};
 use nebula_parameter::types::MultiSelectParameter;
 
 /// Widget for multiple selection with dropdown containing checkboxes.

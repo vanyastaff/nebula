@@ -2,7 +2,7 @@
 
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::{FontFamily, FontId, TextEdit, Ui};
-use nebula_parameter::core::Parameter;
+use nebula_parameter::core::{Describable, Parameter};
 use nebula_parameter::types::{CodeLanguage, CodeParameter};
 
 /// Widget for code input with syntax highlighting info.

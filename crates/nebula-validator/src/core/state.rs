@@ -450,6 +450,7 @@ impl ValidationGroup<Unvalidated> {
 
     /// Adds a parameter to the group.
     #[must_use = "builder methods must be chained or built"]
+    #[allow(clippy::should_implement_trait)]
     pub fn add<T: 'static>(mut self, param: Parameter<T, Unvalidated>) -> Self {
         self.params.push(Box::new(param));
         self

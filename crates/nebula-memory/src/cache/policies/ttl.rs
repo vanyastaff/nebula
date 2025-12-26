@@ -4,6 +4,7 @@
 //! which evicts entries that have expired based on their time-to-live.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(clippy::excessive_nesting)]
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;

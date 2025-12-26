@@ -104,25 +104,25 @@ impl ArrayExt for Array {
         }
     }
 
-    fn any<F>(&self, mut f: F) -> bool
+    fn any<F>(&self, f: F) -> bool
     where
         F: FnMut(&Value) -> bool,
     {
-        self.iter().any(|v| f(v))
+        self.iter().any(f)
     }
 
-    fn all<F>(&self, mut f: F) -> bool
+    fn all<F>(&self, f: F) -> bool
     where
         F: FnMut(&Value) -> bool,
     {
-        self.iter().all(|v| f(v))
+        self.iter().all(f)
     }
 
-    fn map<F>(&self, mut f: F) -> Array
+    fn map<F>(&self, f: F) -> Array
     where
         F: FnMut(&Value) -> Value,
     {
-        let items: Vec<Value> = self.iter().map(|v| f(v)).collect();
+        let items: Vec<Value> = self.iter().map(f).collect();
         Array::from_vec(items)
     }
 

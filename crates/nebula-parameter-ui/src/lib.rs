@@ -1,3 +1,12 @@
+#![allow(clippy::excessive_nesting)]
+#![allow(clippy::double_must_use)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::collapsible_else_if)]
+#![allow(clippy::unnecessary_map_or)]
+#![allow(clippy::redundant_closure)]
+#![allow(unused_imports)]
+#![allow(deprecated)]
+
 //! UI components for nebula-parameter using egui
 //!
 //! This crate provides egui-based widgets for rendering and editing

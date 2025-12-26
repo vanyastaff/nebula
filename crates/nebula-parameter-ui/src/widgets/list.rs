@@ -2,7 +2,7 @@
 
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::Ui;
-use nebula_parameter::core::Parameter;
+use nebula_parameter::core::{Describable, Parameter};
 use nebula_parameter::types::ListParameter;
 
 /// Widget for dynamic list of values.

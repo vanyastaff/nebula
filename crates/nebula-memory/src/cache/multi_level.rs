@@ -5,6 +5,7 @@
 //! performance characteristics.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(clippy::excessive_nesting)]
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;

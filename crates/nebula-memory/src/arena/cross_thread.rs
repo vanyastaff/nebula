@@ -31,6 +31,12 @@ pub struct CrossThreadArena {
     inner: Arc<Mutex<Arena>>,
 }
 
+impl Default for CrossThreadArena {
+    fn default() -> Self {
+        Self::new(ArenaConfig::default())
+    }
+}
+
 impl CrossThreadArena {
     /// Create a new cross-thread arena
     #[must_use]
@@ -38,12 +44,6 @@ impl CrossThreadArena {
         CrossThreadArena {
             inner: Arc::new(Mutex::new(Arena::new(config))),
         }
-    }
-
-    /// Create with default configuration
-    #[must_use]
-    pub fn default() -> Self {
-        Self::new(ArenaConfig::default())
     }
 
     /// Lock the arena for exclusive access

@@ -468,12 +468,11 @@ impl SchemaValidator {
     /// Validate reference
     fn validate_ref(&self, data: &Value, ref_str: &str, path: &str) -> ConfigResult<()> {
         // Simple implementation - just validate against definitions
-        if let Some(def_name) = ref_str.strip_prefix("#/definitions/") {
-            if let Some(definitions) = self.schema.get("definitions")
-                && let Some(def_schema) = definitions.get(def_name)
-            {
-                return self.validate_recursive(data, def_schema, path);
-            }
+        if let Some(def_name) = ref_str.strip_prefix("#/definitions/")
+            && let Some(definitions) = self.schema.get("definitions")
+            && let Some(def_schema) = definitions.get(def_name)
+        {
+            return self.validate_recursive(data, def_schema, path);
         }
 
         Err(ConfigError::validation_error(

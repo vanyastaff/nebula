@@ -71,7 +71,7 @@ impl<const MAX: usize> BoundedText<MAX> {
     }
 
     /// Create from &str with validation.
-    pub fn from_str(s: &str) -> ValueResult<Self> {
+    pub fn parse(s: &str) -> ValueResult<Self> {
         Self::new(s.to_string())
     }
 
@@ -130,7 +130,7 @@ impl<const MAX: usize> TryFrom<&str> for BoundedText<MAX> {
     type Error = ValueError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Self::from_str(s)
+        Self::parse(s)
     }
 }
 

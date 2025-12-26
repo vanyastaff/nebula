@@ -9,12 +9,7 @@
 extern crate alloc;
 
 #[cfg(feature = "std")]
-use std::{
-    hash::{Hash, Hasher},
-    sync::Arc,
-    thread,
-    time::Instant,
-};
+use std::{hash::Hasher, sync::Arc, thread, time::Instant};
 
 #[cfg(feature = "std")]
 use parking_lot::RwLock;
@@ -131,7 +126,7 @@ impl PartitionedConfig {
     /// Configure for memory efficiency
     #[must_use]
     pub fn for_memory_efficiency(max_entries: usize) -> Self {
-        let partition_count = num_cpus().max(2).min(4);
+        let partition_count = num_cpus().clamp(2, 4);
         Self::new(max_entries, partition_count).with_hash_strategy(HashStrategy::Modulo)
     }
 

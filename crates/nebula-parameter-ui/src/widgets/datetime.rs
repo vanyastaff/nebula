@@ -3,7 +3,7 @@
 use crate::{ParameterTheme, ParameterWidget, WidgetResponse};
 use egui::Ui;
 use egui_extras::DatePickerButton;
-use nebula_parameter::core::Parameter;
+use nebula_parameter::core::{Describable, Parameter};
 use nebula_parameter::types::DateTimeParameter;
 
 /// Widget for combined date and time selection.

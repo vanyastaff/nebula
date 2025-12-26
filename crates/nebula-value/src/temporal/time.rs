@@ -22,7 +22,8 @@ use crate::core::{ValueError, ValueResult};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct TimeInner {
-    pub nanos: u64, // Nanoseconds since midnight (0 to 86_399_999_999_999)
+    /// Nanoseconds since midnight (0 to 86_399_999_999_999)
+    pub nanos: u64,
 }
 
 impl TimeInner {

@@ -4,10 +4,13 @@ use crate::core::{ConfigResult, ConfigValidator};
 use async_trait::async_trait;
 use std::sync::Arc;
 
+/// Type alias for validator function
+type ValidatorFn = Arc<dyn Fn(&serde_json::Value) -> ConfigResult<()> + Send + Sync>;
+
 /// Function-based validator using a closure
 pub struct FunctionValidator {
     /// Validation function
-    validator_fn: Arc<dyn Fn(&serde_json::Value) -> ConfigResult<()> + Send + Sync>,
+    validator_fn: ValidatorFn,
     /// Optional schema
     schema: Option<serde_json::Value>,
 }

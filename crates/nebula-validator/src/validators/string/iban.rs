@@ -270,22 +270,21 @@ impl Validator for Iban {
         }
 
         // Validate country-specific length
-        if self.validate_country_length {
-            if let Some(expected_len) = Self::country_length(country_code) {
-                if iban.len() != expected_len {
-                    return Err(ValidationError::new(
-                        "iban_wrong_length",
-                        format!(
-                            "IBAN for {} must be {} characters (found {})",
-                            country_code,
-                            expected_len,
-                            iban.len()
-                        ),
-                    ));
-                }
-            }
-            // Note: We don't error for unknown countries, just skip length validation
+        if self.validate_country_length
+            && let Some(expected_len) = Self::country_length(country_code)
+            && iban.len() != expected_len
+        {
+            return Err(ValidationError::new(
+                "iban_wrong_length",
+                format!(
+                    "IBAN for {} must be {} characters (found {})",
+                    country_code,
+                    expected_len,
+                    iban.len()
+                ),
+            ));
         }
+        // Note: We don't error for unknown countries, just skip length validation
 
         // Validate checksum
         Self::validate_checksum(&iban)?;

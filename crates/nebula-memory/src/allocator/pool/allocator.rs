@@ -406,12 +406,11 @@ impl PoolAllocator {
             let next = unsafe { (*head).next };
 
             // Try to atomically update the head to point to the next block
-            if let Ok(_) = self.free_head.compare_exchange_weak(
-                head,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
+            if self
+                .free_head
+                .compare_exchange_weak(head, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
                 // Successfully removed the block from free list
                 self.free_count.fetch_sub(1, Ordering::Relaxed);
 
