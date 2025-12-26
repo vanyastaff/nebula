@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-#[allow(unused_imports)]
-use crate::core::traits::Expressible;
 use crate::core::{
     Describable, Displayable, Parameter, ParameterBase, ParameterDisplay, ParameterKind,
     ParameterMetadata, Validatable,

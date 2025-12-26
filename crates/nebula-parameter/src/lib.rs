@@ -14,9 +14,6 @@ pub use nebula_core::prelude::{KeyParseError, ParameterKey};
 // Re-export conversion traits from nebula-value
 pub use nebula_value::{JsonValueExt, ValueRefExt};
 
-// Re-export MaybeExpression from nebula-expression
-pub use nebula_expression::MaybeExpression;
-
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::core::{

@@ -6,7 +6,6 @@ use crate::core::{ParameterError, ParameterKind, ParameterMetadata};
 pub use async_trait::async_trait;
 use downcast_rs::{Downcast, impl_downcast};
 use nebula_core::ParameterKey as Key;
-pub use nebula_expression::{EvaluationContext, ExpressionEngine, MaybeExpression};
 use nebula_value::{Value, ValueKind};
 
 // =============================================================================
@@ -272,121 +271,6 @@ pub trait Validatable: Describable + Send + Sync {
     fn is_empty(&self, _value: &Value) -> bool {
         false // Default: most types don't have "empty" concept
     }
-}
-
-// =============================================================================
-// Expression Evaluation Trait
-// =============================================================================
-
-/// Trait for parameters that can evaluate expressions
-///
-/// This trait provides methods for detecting and evaluating expression values.
-/// Unlike the previous design, parameters no longer store values - they only
-/// define the schema and provide evaluation capabilities.
-///
-/// # Expression Detection
-///
-/// Values can be in two forms:
-/// - **Concrete values**: `Value::String("hello")`
-/// - **Expression strings**: `Value::String("{{ $input.value }}")`
-///
-/// Use `is_expression_value` to detect if a value contains an expression.
-///
-/// # Async Note
-///
-/// The `evaluate` method is async by design to support future expression engines
-/// that may perform I/O (e.g., fetching data from external sources).
-/// Current implementations may be synchronous (fast-path), but the async
-/// contract ensures forward compatibility.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_parameter::prelude::*;
-///
-/// let param = TextParameter::new("user_name");
-/// let value = Value::String("{{ $input.user.name }}".to_string());
-///
-/// assert!(param.is_expression_value(&value));
-///
-/// // Evaluate at runtime
-/// let engine = ExpressionEngine::new();
-/// let mut context = EvaluationContext::new();
-/// context.set_input(json!({"user": {"name": "Alice"}}));
-///
-/// let result = param.evaluate(&value, &engine, &context).await.unwrap();
-/// assert_eq!(result, Value::String("Alice".to_string()));
-/// ```
-#[async_trait::async_trait]
-pub trait Expressible: Describable {
-    /// Check if a value contains an expression
-    ///
-    /// This should detect expression syntax in the value.
-    /// For string-based parameters, this typically checks for `{{ ... }}` markers.
-    ///
-    /// # Parameters
-    ///
-    /// * `value` - The value to check for expression syntax
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// # use nebula_parameter::prelude::*;
-    /// let param = TextParameter::new("test");
-    /// assert!(param.is_expression_value(&Value::String("{{ 1 + 1 }}".to_string())));
-    /// assert!(!param.is_expression_value(&Value::String("hello".to_string())));
-    /// ```
-    fn is_expression_value(&self, value: &Value) -> bool;
-
-    /// Evaluate an expression value and return the result
-    ///
-    /// If the value is a concrete value (not an expression), returns it directly.
-    /// If it contains an expression, evaluates it using the provided engine and context.
-    ///
-    /// # Parameters
-    ///
-    /// * `value` - The value to evaluate (may be concrete or expression)
-    /// * `engine` - The expression engine to use for evaluation
-    /// * `context` - The evaluation context containing variables
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if expression evaluation fails.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// # use nebula_parameter::prelude::*;
-    /// # use nebula_value::Value;
-    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let param = TextParameter::builder()
-    ///     .metadata(ParameterMetadata::builder()
-    ///         .key("test")
-    ///         .name("Test")
-    ///         .description("")
-    ///         .build()?)
-    ///     .build();
-    /// let engine = ExpressionEngine::new();
-    /// let context = EvaluationContext::new();
-    ///
-    /// // Concrete value
-    /// let value = Value::text("hello");
-    /// let result = param.evaluate(&value, &engine, &context).await?;
-    /// assert_eq!(result, value);
-    ///
-    /// // Expression value
-    /// let expr_value = Value::text("{{ 1 + 1 }}");
-    /// let result = param.evaluate(&expr_value, &engine, &context).await?;
-    /// assert_eq!(result, Value::integer(2));
-    /// # Ok(())
-    /// # }
-    /// ```
-    async fn evaluate(
-        &self,
-        value: &Value,
-        engine: &ExpressionEngine,
-        context: &EvaluationContext,
-    ) -> Result<Value, ParameterError>;
 }
 
 // =============================================================================
