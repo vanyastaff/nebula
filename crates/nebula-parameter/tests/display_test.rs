@@ -1,6 +1,7 @@
 //! Integration tests for the display condition system
 
 use nebula_parameter::DisplayableMut;
+use nebula_parameter::core::ParameterBase;
 use nebula_parameter::prelude::*;
 use nebula_value::{Array, Value};
 
@@ -73,18 +74,20 @@ fn test_display_serialization() {
 #[test]
 fn test_text_parameter_with_display_condition() {
     let param = TextParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("api_key")
-                .name("API Key")
-                .description("Enter your API key")
-                .build()
-                .unwrap(),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("api_key")
+                    .name("API Key")
+                    .description("Enter your API key")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(ParameterDisplay::new().show_when_equals(
+                ParameterKey::new("auth_type").unwrap(),
+                Value::text("api_key"),
+            )),
         )
-        .display(ParameterDisplay::new().show_when_equals(
-            ParameterKey::new("auth_type").unwrap(),
-            Value::text("api_key"),
-        ))
         .build();
 
     let ctx_show = DisplayContext::new().with_value(
@@ -220,34 +223,38 @@ fn test_parameter_collection_with_display_dependencies() {
 
     // API key field (shown when auth_type is "api_key")
     let api_key_param = TextParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("api_key")
-                .name("API Key")
-                .description("Enter your API key")
-                .build()
-                .unwrap(),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("api_key")
+                    .name("API Key")
+                    .description("Enter your API key")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(ParameterDisplay::new().show_when_equals(
+                ParameterKey::new("auth_type").unwrap(),
+                Value::text("api_key"),
+            )),
         )
-        .display(ParameterDisplay::new().show_when_equals(
-            ParameterKey::new("auth_type").unwrap(),
-            Value::text("api_key"),
-        ))
         .build();
 
     // OAuth client ID (shown when auth_type is "oauth")
     let oauth_client_id_param = TextParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("oauth_client_id")
-                .name("OAuth Client ID")
-                .description("Enter your OAuth client ID")
-                .build()
-                .unwrap(),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("oauth_client_id")
+                    .name("OAuth Client ID")
+                    .description("Enter your OAuth client ID")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(ParameterDisplay::new().show_when_equals(
+                ParameterKey::new("auth_type").unwrap(),
+                Value::text("oauth"),
+            )),
         )
-        .display(ParameterDisplay::new().show_when_equals(
-            ParameterKey::new("auth_type").unwrap(),
-            Value::text("oauth"),
-        ))
         .build();
 
     collection.add(auth_type_param);
@@ -491,18 +498,20 @@ fn test_is_empty_is_not_empty_conditions() {
 #[test]
 fn test_hide_when_takes_precedence() {
     let param = TextParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("field")
-                .name("Field")
-                .description("Test field")
-                .build()
-                .unwrap(),
-        )
-        .display(
-            ParameterDisplay::new()
-                .show_when_true(ParameterKey::new("show_advanced").unwrap())
-                .hide_when_true(ParameterKey::new("maintenance_mode").unwrap()),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("field")
+                    .name("Field")
+                    .description("Test field")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(
+                ParameterDisplay::new()
+                    .show_when_true(ParameterKey::new("show_advanced").unwrap())
+                    .hide_when_true(ParameterKey::new("maintenance_mode").unwrap()),
+            ),
         )
         .build();
 
@@ -1155,14 +1164,14 @@ fn test_display_context_values() {
 #[test]
 fn test_displayable_trait_methods() {
     let mut param = TextParameter::builder()
-        .metadata(
+        .base(ParameterBase::new(
             ParameterMetadata::builder()
                 .key("test")
                 .name("Test")
                 .description("Test parameter")
                 .build()
                 .unwrap(),
-        )
+        ))
         .build();
 
     // Initially no conditions
@@ -1190,14 +1199,14 @@ fn test_displayable_trait_methods() {
 #[test]
 fn test_displayable_mut_hide_condition() {
     let mut param = TextParameter::builder()
-        .metadata(
+        .base(ParameterBase::new(
             ParameterMetadata::builder()
                 .key("test")
                 .name("Test")
                 .description("Test parameter")
                 .build()
                 .unwrap(),
-        )
+        ))
         .build();
 
     // Add hide condition via set_display

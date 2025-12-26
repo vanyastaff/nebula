@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, Validatable,
+    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
 
@@ -15,11 +15,13 @@ use nebula_value::{Value, ValueKind};
 ///
 /// // Using builder with Into conversions
 /// let param = TextParameter::builder()
-///     .metadata(ParameterMetadata::new()
-///         .key("username")
-///         .name("Username")
-///         .description("Enter your username")
-///         .call()?)
+///     .base(ParameterBase::new(
+///         ParameterMetadata::builder()
+///             .key("username")
+///             .name("Username")
+///             .description("Enter your username")
+///             .build()?
+///     ))
 ///     .default("guest")  // &str -> Text via Into
 ///     .options(TextParameterOptions::builder()
 ///         .min_length(3)
@@ -31,26 +33,18 @@ use nebula_value::{Value, ValueKind};
 #[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
 #[builder(on(String, into))]
 pub struct TextParameter {
+    /// Base parameter fields (metadata, display, validation)
     #[serde(flatten)]
-    /// Parameter metadata including key, name, description
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
+    /// Default value if parameter is not set
     #[serde(skip_serializing_if = "Option::is_none")]
     #[builder(into)]
-    /// Default value if parameter is not set
     pub default: Option<nebula_value::Text>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<TextParameterOptions>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Display rules controlling when this parameter is shown
-    pub display: Option<ParameterDisplay>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Validation rules for this parameter
-    pub validation: Option<ParameterValidation>,
 }
 
 /// Configuration options for text parameters
@@ -88,13 +82,13 @@ impl Describable for TextParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
 impl std::fmt::Display for TextParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TextParameter({})", self.metadata.name)
+        write!(f, "TextParameter({})", self.base.metadata.name)
     }
 }
 
@@ -109,7 +103,7 @@ impl Validatable for TextParameter {
             let actual = value.kind();
             if actual != ValueKind::Null && actual != expected {
                 return Err(ParameterError::InvalidType {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     expected_type: expected.name().to_string(),
                     actual_details: actual.name().to_string(),
                 });
@@ -119,7 +113,7 @@ impl Validatable for TextParameter {
         // Required check
         if self.is_required() && self.is_empty(value) {
             return Err(ParameterError::MissingValue {
-                key: self.metadata.key.clone(),
+                key: self.base.metadata.key.clone(),
             });
         }
 
@@ -131,7 +125,7 @@ impl Validatable for TextParameter {
                 && text.len() < min
             {
                 return Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     reason: format!("Text length {} below minimum {}", text.len(), min),
                 });
             }
@@ -139,7 +133,7 @@ impl Validatable for TextParameter {
                 && text.len() > max
             {
                 return Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     reason: format!("Text length {} above maximum {}", text.len(), max),
                 });
             }
@@ -150,7 +144,7 @@ impl Validatable for TextParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.validation.as_ref()
+        self.base.validation.as_ref()
     }
 
     fn is_empty(&self, value: &Value) -> bool {
@@ -160,10 +154,10 @@ impl Validatable for TextParameter {
 
 impl Displayable for TextParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }

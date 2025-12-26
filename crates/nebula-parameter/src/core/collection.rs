@@ -198,6 +198,7 @@ impl ParameterCollection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::ParameterBase;
     use crate::types::TextParameter;
 
     /// Helper to create a ParameterKey for tests
@@ -217,14 +218,14 @@ mod tests {
         let mut collection = ParameterCollection::new();
 
         let param = TextParameter::builder()
-            .metadata(
+            .base(ParameterBase::new(
                 crate::core::ParameterMetadata::builder()
                     .key("test")
                     .name("Test")
                     .description("")
                     .build()
                     .unwrap(),
-            )
+            ))
             .build();
 
         collection.add(param);
@@ -238,26 +239,26 @@ mod tests {
         let collection = ParameterCollection::new()
             .with(
                 TextParameter::builder()
-                    .metadata(
+                    .base(ParameterBase::new(
                         crate::core::ParameterMetadata::builder()
                             .key("test1")
                             .name("Test 1")
                             .description("")
                             .build()
                             .unwrap(),
-                    )
+                    ))
                     .build(),
             )
             .with(
                 TextParameter::builder()
-                    .metadata(
+                    .base(ParameterBase::new(
                         crate::core::ParameterMetadata::builder()
                             .key("test2")
                             .name("Test 2")
                             .description("")
                             .build()
                             .unwrap(),
-                    )
+                    ))
                     .build(),
             );
 
@@ -270,14 +271,14 @@ mod tests {
 
         collection.add(
             TextParameter::builder()
-                .metadata(
+                .base(ParameterBase::new(
                     crate::core::ParameterMetadata::builder()
                         .key("test")
                         .name("Test")
                         .description("")
                         .build()
                         .unwrap(),
-                )
+                ))
                 .build(),
         );
 
@@ -290,7 +291,7 @@ mod tests {
         let mut collection = ParameterCollection::new();
         collection.add(
             TextParameter::builder()
-                .metadata(
+                .base(ParameterBase::new(
                     crate::core::ParameterMetadata::builder()
                         .key("email")
                         .name("Email")
@@ -298,7 +299,7 @@ mod tests {
                         .required(true)
                         .build()
                         .unwrap(),
-                )
+                ))
                 .build(),
         );
 
@@ -314,14 +315,14 @@ mod tests {
         let mut collection = ParameterCollection::new();
         collection.add(
             TextParameter::builder()
-                .metadata(
+                .base(ParameterBase::new(
                     crate::core::ParameterMetadata::builder()
                         .key("name")
                         .name("Name")
                         .description("")
                         .build()
                         .unwrap(),
-                )
+                ))
                 .build(),
         );
 
