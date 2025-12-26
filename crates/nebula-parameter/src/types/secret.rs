@@ -1,17 +1,17 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, Validatable,
+    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
 
 /// Parameter for password or sensitive inputs
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct SecretParameter {
+    /// Base parameter fields (metadata, display, validation)
     #[serde(flatten)]
-    /// Parameter metadata including key, name, description
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -20,14 +20,6 @@ pub struct SecretParameter {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
     pub options: Option<SecretParameterOptions>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Display rules controlling when this parameter is shown
-    pub display: Option<ParameterDisplay>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Validation rules for this parameter
-    pub validation: Option<ParameterValidation>,
 }
 
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
@@ -52,13 +44,13 @@ impl Describable for SecretParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
 impl std::fmt::Display for SecretParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SecretParameter({})", self.metadata.name)
+        write!(f, "SecretParameter({})", self.base.metadata.name)
     }
 }
 
@@ -68,7 +60,7 @@ impl Validatable for SecretParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.validation.as_ref()
+        self.base.validation.as_ref()
     }
 
     fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
@@ -77,7 +69,7 @@ impl Validatable for SecretParameter {
             let actual = value.kind();
             if actual != ValueKind::Null && actual != expected {
                 return Err(ParameterError::InvalidType {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     expected_type: expected.name().to_string(),
                     actual_details: actual.name().to_string(),
                 });
@@ -87,7 +79,7 @@ impl Validatable for SecretParameter {
         // Required check
         if self.is_empty(value) && self.is_required() {
             return Err(ParameterError::MissingValue {
-                key: self.metadata.key.clone(),
+                key: self.base.metadata.key.clone(),
             });
         }
 
@@ -100,7 +92,7 @@ impl Validatable for SecretParameter {
                     && len < min_length
                 {
                     return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
+                        key: self.base.metadata.key.clone(),
                         reason: format!(
                             "Secret must be at least {min_length} characters, got {len}"
                         ),
@@ -111,7 +103,7 @@ impl Validatable for SecretParameter {
                     && len > max_length
                 {
                     return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
+                        key: self.base.metadata.key.clone(),
                         reason: format!(
                             "Secret must be at most {max_length} characters, got {len}"
                         ),
@@ -134,11 +126,11 @@ impl Validatable for SecretParameter {
 
 impl Displayable for SecretParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }
 

@@ -2,8 +2,8 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Describable, Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata,
-    ParameterValidation, Validatable,
+    Describable, Displayable, Parameter, ParameterBase, ParameterDisplay, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
 use nebula_expression::MaybeExpression;
 use nebula_value::{Value, ValueKind};
@@ -15,20 +15,15 @@ const DEFAULT_TTL: u64 = 3600;
 /// Acts as a container that wraps another parameter with expiration logic
 #[derive(Serialize, bon::Builder)]
 pub struct ExpirableParameter {
+    /// Base parameter fields (metadata, display, validation)
     #[serde(flatten)]
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<ExpirableValue>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<ExpirableParameterOptions>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display: Option<ParameterDisplay>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub validation: Option<ParameterValidation>,
 
     /// The child parameter that this expirable parameter wraps
     #[serde(skip)]
@@ -188,11 +183,9 @@ impl ExpirableValue {
 impl std::fmt::Debug for ExpirableParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExpirableParameter")
-            .field("metadata", &self.metadata)
+            .field("base", &self.base)
             .field("default", &self.default)
             .field("options", &self.options)
-            .field("display", &self.display)
-            .field("validation", &self.validation)
             .field("children", &"Option<Box<dyn ParameterType>>")
             .finish()
     }
@@ -204,13 +197,13 @@ impl Describable for ExpirableParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
 impl std::fmt::Display for ExpirableParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ExpirableParameter({})", self.metadata.name)
+        write!(f, "ExpirableParameter({})", self.base.metadata.name)
     }
 }
 
@@ -220,7 +213,7 @@ impl Validatable for ExpirableParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.validation.as_ref()
+        self.base.validation.as_ref()
     }
 
     fn is_empty(&self, value: &Value) -> bool {
@@ -254,11 +247,11 @@ impl Validatable for ExpirableParameter {
 
 impl Displayable for ExpirableParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }
 
@@ -271,18 +264,16 @@ impl ExpirableParameter {
         child: Option<Box<dyn Parameter>>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            metadata: ParameterMetadata {
+            base: ParameterBase::new(ParameterMetadata {
                 key: nebula_core::ParameterKey::new(key)?,
                 name: name.to_string(),
                 description: description.to_string(),
                 required: false,
                 placeholder: Some("Expirable value...".to_string()),
                 hint: Some("Value will expire after TTL".to_string()),
-            },
+            }),
             default: None,
             options: Some(ExpirableParameterOptions::default()),
-            display: None,
-            validation: None,
             children: child,
         })
     }

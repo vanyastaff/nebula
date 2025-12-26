@@ -1,16 +1,18 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Describable, Displayable, ParameterDisplay, ParameterKind, ParameterMetadata, Validatable,
+    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterKind, ParameterMetadata,
+    Validatable,
 };
 use nebula_value::Value;
 
 /// Parameter that is hidden from the user interface but can store values
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct HiddenParameter {
+    /// Base parameter fields (metadata, display, validation)
+    /// Note: display and validation are ignored for hidden parameters
     #[serde(flatten)]
-    /// Parameter metadata including key, name, description
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -23,13 +25,13 @@ impl Describable for HiddenParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
 impl std::fmt::Display for HiddenParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "HiddenParameter({})", self.metadata.name)
+        write!(f, "HiddenParameter({})", self.base.metadata.name)
     }
 }
 

@@ -1,17 +1,17 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, Validatable,
+    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
 
 /// Parameter for code input with syntax highlighting and validation
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct CodeParameter {
+    /// Base parameter fields (metadata, display, validation)
     #[serde(flatten)]
-    /// Parameter metadata including key, name, description
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -20,14 +20,6 @@ pub struct CodeParameter {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
     pub options: Option<CodeParameterOptions>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Display rules controlling when this parameter is shown
-    pub display: Option<ParameterDisplay>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Validation rules for this parameter
-    pub validation: Option<ParameterValidation>,
 }
 
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
@@ -93,13 +85,13 @@ impl Describable for CodeParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
 impl std::fmt::Display for CodeParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CodeParameter({})", self.metadata.name)
+        write!(f, "CodeParameter({})", self.base.metadata.name)
     }
 }
 
@@ -114,7 +106,7 @@ impl Validatable for CodeParameter {
             let actual = value.kind();
             if actual != ValueKind::Null && actual != expected {
                 return Err(ParameterError::InvalidType {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     expected_type: expected.name().to_string(),
                     actual_details: actual.name().to_string(),
                 });
@@ -124,7 +116,7 @@ impl Validatable for CodeParameter {
         // Required check
         if self.is_required() && self.is_empty(value) {
             return Err(ParameterError::MissingValue {
-                key: self.metadata.key.clone(),
+                key: self.base.metadata.key.clone(),
             });
         }
 
@@ -132,7 +124,7 @@ impl Validatable for CodeParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.validation.as_ref()
+        self.base.validation.as_ref()
     }
 
     fn is_empty(&self, value: &Value) -> bool {
@@ -146,11 +138,11 @@ impl Validatable for CodeParameter {
 
 impl Displayable for CodeParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }
 

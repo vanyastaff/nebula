@@ -3,17 +3,18 @@ use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
 use crate::core::traits::Expressible;
 use crate::core::{
-    Describable, Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata,
-    Validatable,
+    Describable, Displayable, Parameter, ParameterBase, ParameterDisplay, ParameterKind,
+    ParameterMetadata, Validatable,
 };
 use nebula_value::Value;
 
 /// Panel parameter - container for organizing parameters into sections/tabs
 #[derive(Serialize)]
 pub struct PanelParameter {
+    /// Base parameter fields (metadata, display, validation)
+    /// Note: validation is not used for panel parameters
     #[serde(flatten)]
-    /// Parameter metadata including key, name, description
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     /// Panel sections with their parameters
     pub panels: Vec<Panel>,
@@ -21,10 +22,6 @@ pub struct PanelParameter {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
     pub options: Option<PanelParameterOptions>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Display rules controlling when this parameter is shown
-    pub display: Option<ParameterDisplay>,
 }
 
 /// A single panel section containing parameters
@@ -82,10 +79,9 @@ impl std::fmt::Debug for Panel {
 impl std::fmt::Debug for PanelParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PanelParameter")
-            .field("metadata", &self.metadata)
+            .field("base", &self.base)
             .field("panels", &self.panels)
             .field("options", &self.options)
-            .field("display", &self.display)
             .finish()
     }
 }
@@ -157,7 +153,7 @@ impl Describable for PanelParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
@@ -170,17 +166,17 @@ impl Validatable for PanelParameter {
 
 impl std::fmt::Display for PanelParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "PanelParameter({})", self.metadata.name)
+        write!(f, "PanelParameter({})", self.base.metadata.name)
     }
 }
 
 impl Displayable for PanelParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }
 
@@ -189,10 +185,9 @@ impl PanelParameter {
     #[must_use]
     pub fn new(metadata: ParameterMetadata) -> Self {
         Self {
-            metadata,
+            base: ParameterBase::new(metadata),
             panels: Vec::new(),
             options: None,
-            display: None,
         }
     }
 

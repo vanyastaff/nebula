@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Describable, Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Describable, Displayable, Parameter, ParameterBase, ParameterDisplay, ParameterError,
+    ParameterKind, ParameterMetadata, ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
 
@@ -47,9 +47,9 @@ impl ListValue {
 /// Parameter for lists - acts as a container with child parameters
 #[derive(Serialize, bon::Builder)]
 pub struct ListParameter {
+    /// Base parameter fields (metadata, display, validation)
     #[serde(flatten)]
-    /// Parameter metadata including key, name, description
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -66,14 +66,6 @@ pub struct ListParameter {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
     pub options: Option<ListParameterOptions>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Display rules controlling when this parameter is shown
-    pub display: Option<ParameterDisplay>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Validation rules for this parameter
-    pub validation: Option<ParameterValidation>,
 }
 
 /// Configuration options for list parameters
@@ -116,7 +108,7 @@ impl Default for ListParameterOptions {
 impl std::fmt::Debug for ListParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ListParameter")
-            .field("metadata", &self.metadata)
+            .field("base", &self.base)
             .field("default", &self.default)
             .field(
                 "children",
@@ -124,8 +116,6 @@ impl std::fmt::Debug for ListParameter {
             )
             .field("item_template", &"Option<Box<dyn ParameterType>>")
             .field("options", &self.options)
-            .field("display", &self.display)
-            .field("validation", &self.validation)
             .finish()
     }
 }
@@ -136,13 +126,13 @@ impl Describable for ListParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
 impl std::fmt::Display for ListParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ListParameter({})", self.metadata.name)
+        write!(f, "ListParameter({})", self.base.metadata.name)
     }
 }
 
@@ -152,7 +142,7 @@ impl Validatable for ListParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.validation.as_ref()
+        self.base.validation.as_ref()
     }
 
     fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
@@ -161,7 +151,7 @@ impl Validatable for ListParameter {
             let actual = value.kind();
             if actual != ValueKind::Null && actual != expected {
                 return Err(ParameterError::InvalidType {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     expected_type: expected.name().to_string(),
                     actual_details: actual.name().to_string(),
                 });
@@ -177,7 +167,7 @@ impl Validatable for ListParameter {
         // Required check
         if self.is_empty(value) && self.is_required() {
             return Err(ParameterError::MissingValue {
-                key: self.metadata.key.clone(),
+                key: self.base.metadata.key.clone(),
             });
         }
 
@@ -189,7 +179,7 @@ impl Validatable for ListParameter {
                 && item_count < min_items
             {
                 return Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     reason: format!("List must have at least {min_items} items, got {item_count}"),
                 });
             }
@@ -198,7 +188,7 @@ impl Validatable for ListParameter {
                 && item_count > max_items
             {
                 return Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     reason: format!("List must have at most {max_items} items, got {item_count}"),
                 });
             }
@@ -217,11 +207,11 @@ impl Validatable for ListParameter {
 
 impl Displayable for ListParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }
 
@@ -233,20 +223,18 @@ impl ListParameter {
         description: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            metadata: ParameterMetadata {
+            base: ParameterBase::new(ParameterMetadata {
                 key: nebula_core::ParameterKey::new(key)?,
                 name: name.to_string(),
                 description: description.to_string(),
                 required: false,
                 placeholder: Some("Add list items...".to_string()),
                 hint: Some("List container with child parameters".to_string()),
-            },
+            }),
             default: None,
             children: Vec::new(),
             item_template: None,
             options: Some(ListParameterOptions::default()),
-            display: None,
-            validation: None,
         })
     }
 

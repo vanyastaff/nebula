@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Describable, Displayable, ParameterDisplay, ParameterKind, ParameterMetadata,
+    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterKind, ParameterMetadata,
     ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
@@ -9,9 +9,9 @@ use nebula_value::{Value, ValueKind};
 /// Parameter for time selection
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct TimeParameter {
+    /// Base parameter fields (metadata, display, validation)
     #[serde(flatten)]
-    /// Parameter metadata including key, name, description
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -20,14 +20,6 @@ pub struct TimeParameter {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
     pub options: Option<TimeParameterOptions>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Display rules controlling when this parameter is shown
-    pub display: Option<ParameterDisplay>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Validation rules for this parameter
-    pub validation: Option<ParameterValidation>,
 }
 
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
@@ -65,13 +57,13 @@ impl Describable for TimeParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
 impl std::fmt::Display for TimeParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TimeParameter({})", self.metadata.name)
+        write!(f, "TimeParameter({})", self.base.metadata.name)
     }
 }
 
@@ -81,7 +73,7 @@ impl Validatable for TimeParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.validation.as_ref()
+        self.base.validation.as_ref()
     }
 
     fn is_empty(&self, value: &Value) -> bool {
@@ -91,11 +83,11 @@ impl Validatable for TimeParameter {
 
 impl Displayable for TimeParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }
 

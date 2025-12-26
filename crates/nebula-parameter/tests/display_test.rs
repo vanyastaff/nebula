@@ -107,18 +107,20 @@ fn test_text_parameter_with_display_condition() {
 #[test]
 fn test_number_parameter_with_range_display() {
     let param = NumberParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("timeout")
-                .name("Timeout")
-                .description("Request timeout in seconds")
-                .build()
-                .unwrap(),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("timeout")
+                    .name("Timeout")
+                    .description("Request timeout in seconds")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(ParameterDisplay::new().show_when(DisplayRule::when(
+                ParameterKey::new("advanced_mode").unwrap(),
+                DisplayCondition::IsTrue,
+            ))),
         )
-        .display(ParameterDisplay::new().show_when(DisplayRule::when(
-            ParameterKey::new("advanced_mode").unwrap(),
-            DisplayCondition::IsTrue,
-        )))
         .build();
 
     let ctx_show = DisplayContext::new().with_value(
@@ -138,18 +140,20 @@ fn test_number_parameter_with_range_display() {
 #[test]
 fn test_checkbox_parameter_with_not_condition() {
     let param = CheckboxParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("enable_ssl")
-                .name("Enable SSL")
-                .description("Use SSL connection")
-                .build()
-                .unwrap(),
-        )
-        .display(
-            ParameterDisplay::new().show_when(DisplayRuleSet::not(DisplayRule::when(
-                ParameterKey::new("use_http").unwrap(),
-                DisplayCondition::IsTrue,
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("enable_ssl")
+                    .name("Enable SSL")
+                    .description("Use SSL connection")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(ParameterDisplay::new().show_when(DisplayRuleSet::not(
+                DisplayRule::when(
+                    ParameterKey::new("use_http").unwrap(),
+                    DisplayCondition::IsTrue,
+                ),
             ))),
         )
         .build();
@@ -169,25 +173,27 @@ fn test_checkbox_parameter_with_not_condition() {
 #[test]
 fn test_select_parameter_with_or_condition() {
     let param = SelectParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("region")
-                .name("Region")
-                .description("Select region")
-                .build()
-                .unwrap(),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("region")
+                    .name("Region")
+                    .description("Select region")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(ParameterDisplay::new().show_when(DisplayRuleSet::any([
+                DisplayRule::when(
+                    ParameterKey::new("service").unwrap(),
+                    DisplayCondition::Equals(Value::text("s3")),
+                ),
+                DisplayRule::when(
+                    ParameterKey::new("service").unwrap(),
+                    DisplayCondition::Equals(Value::text("ec2")),
+                ),
+            ]))),
         )
         .options(vec![]) // Required field
-        .display(ParameterDisplay::new().show_when(DisplayRuleSet::any([
-            DisplayRule::when(
-                ParameterKey::new("service").unwrap(),
-                DisplayCondition::Equals(Value::text("s3")),
-            ),
-            DisplayRule::when(
-                ParameterKey::new("service").unwrap(),
-                DisplayCondition::Equals(Value::text("ec2")),
-            ),
-        ])))
         .build();
 
     let ctx_s3 =
@@ -210,14 +216,14 @@ fn test_parameter_collection_with_display_dependencies() {
 
     // Auth type selector
     let auth_type_param = SelectParameter::builder()
-        .metadata(
+        .base(ParameterBase::new(
             ParameterMetadata::builder()
                 .key("auth_type")
                 .name("Authentication Type")
                 .description("Select authentication method")
                 .build()
                 .unwrap(),
-        )
+        ))
         .options(vec![]) // Required field
         .build();
 
@@ -536,15 +542,19 @@ fn test_hide_when_takes_precedence() {
 #[test]
 fn test_textarea_parameter_with_display() {
     let param = TextareaParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("notes")
-                .name("Notes")
-                .description("Additional notes")
-                .build()
-                .unwrap(),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("notes")
+                    .name("Notes")
+                    .description("Additional notes")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(
+                ParameterDisplay::new().show_when_true(ParameterKey::new("show_notes").unwrap()),
+            ),
         )
-        .display(ParameterDisplay::new().show_when_true(ParameterKey::new("show_notes").unwrap()))
         .build();
 
     let ctx_show = DisplayContext::new().with_value(
@@ -563,18 +573,20 @@ fn test_textarea_parameter_with_display() {
 #[test]
 fn test_secret_parameter_with_display() {
     let param = SecretParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("password")
-                .name("Password")
-                .description("Enter password")
-                .build()
-                .unwrap(),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("password")
+                    .name("Password")
+                    .description("Enter password")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(ParameterDisplay::new().show_when_equals(
+                ParameterKey::new("auth_method").unwrap(),
+                Value::text("password"),
+            )),
         )
-        .display(ParameterDisplay::new().show_when_equals(
-            ParameterKey::new("auth_method").unwrap(),
-            Value::text("password"),
-        ))
         .build();
 
     let ctx_show = DisplayContext::new().with_value(
@@ -593,17 +605,19 @@ fn test_secret_parameter_with_display() {
 #[test]
 fn test_color_parameter_with_display() {
     let param = ColorParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("theme_color")
-                .name("Theme Color")
-                .description("Custom theme color")
-                .build()
-                .unwrap(),
-        )
-        .display(
-            ParameterDisplay::new()
-                .show_when_equals(ParameterKey::new("theme").unwrap(), Value::text("custom")),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("theme_color")
+                    .name("Theme Color")
+                    .description("Custom theme color")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(
+                ParameterDisplay::new()
+                    .show_when_equals(ParameterKey::new("theme").unwrap(), Value::text("custom")),
+            ),
         )
         .build();
 
@@ -619,17 +633,19 @@ fn test_color_parameter_with_display() {
 #[test]
 fn test_code_parameter_with_display() {
     let param = CodeParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("custom_code")
-                .name("Custom Code")
-                .description("Enter custom code")
-                .build()
-                .unwrap(),
-        )
-        .display(
-            ParameterDisplay::new()
-                .show_when_true(ParameterKey::new("enable_custom_code").unwrap()),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("custom_code")
+                    .name("Custom Code")
+                    .description("Enter custom code")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(
+                ParameterDisplay::new()
+                    .show_when_true(ParameterKey::new("enable_custom_code").unwrap()),
+            ),
         )
         .build();
 
@@ -644,16 +660,19 @@ fn test_code_parameter_with_display() {
 #[test]
 fn test_date_parameter_with_display() {
     let param = DateParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("start_date")
-                .name("Start Date")
-                .description("Select start date")
-                .build()
-                .unwrap(),
-        )
-        .display(
-            ParameterDisplay::new().show_when_true(ParameterKey::new("use_date_range").unwrap()),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("start_date")
+                    .name("Start Date")
+                    .description("Select start date")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(
+                ParameterDisplay::new()
+                    .show_when_true(ParameterKey::new("use_date_range").unwrap()),
+            ),
         )
         .build();
 
@@ -668,16 +687,19 @@ fn test_date_parameter_with_display() {
 #[test]
 fn test_time_parameter_with_display() {
     let param = TimeParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("start_time")
-                .name("Start Time")
-                .description("Select start time")
-                .build()
-                .unwrap(),
-        )
-        .display(
-            ParameterDisplay::new().show_when_true(ParameterKey::new("schedule_enabled").unwrap()),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("start_time")
+                    .name("Start Time")
+                    .description("Select start time")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(
+                ParameterDisplay::new()
+                    .show_when_true(ParameterKey::new("schedule_enabled").unwrap()),
+            ),
         )
         .build();
 
@@ -692,16 +714,19 @@ fn test_time_parameter_with_display() {
 #[test]
 fn test_datetime_parameter_with_display() {
     let param = DateTimeParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("expires_at")
-                .name("Expires At")
-                .description("Expiration datetime")
-                .build()
-                .unwrap(),
-        )
-        .display(
-            ParameterDisplay::new().show_when_true(ParameterKey::new("set_expiration").unwrap()),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("expires_at")
+                    .name("Expires At")
+                    .description("Expiration datetime")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(
+                ParameterDisplay::new()
+                    .show_when_true(ParameterKey::new("set_expiration").unwrap()),
+            ),
         )
         .build();
 
@@ -721,18 +746,21 @@ fn test_datetime_parameter_with_display() {
 #[test]
 fn test_radio_parameter_with_display() {
     let param = RadioParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("priority")
-                .name("Priority")
-                .description("Select priority")
-                .build()
-                .unwrap(),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("priority")
+                    .name("Priority")
+                    .description("Select priority")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(
+                ParameterDisplay::new()
+                    .show_when_true(ParameterKey::new("advanced_settings").unwrap()),
+            ),
         )
         .options(vec![])
-        .display(
-            ParameterDisplay::new().show_when_true(ParameterKey::new("advanced_settings").unwrap()),
-        )
         .build();
 
     let ctx_show = DisplayContext::new().with_value(
@@ -746,18 +774,21 @@ fn test_radio_parameter_with_display() {
 #[test]
 fn test_multi_select_parameter_with_display() {
     let param = MultiSelectParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("tags")
-                .name("Tags")
-                .description("Select tags")
-                .build()
-                .unwrap(),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("tags")
+                    .name("Tags")
+                    .description("Select tags")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(
+                ParameterDisplay::new()
+                    .show_when_true(ParameterKey::new("enable_tagging").unwrap()),
+            ),
         )
         .options(vec![])
-        .display(
-            ParameterDisplay::new().show_when_true(ParameterKey::new("enable_tagging").unwrap()),
-        )
         .build();
 
     let ctx_show = DisplayContext::new().with_value(
@@ -771,18 +802,20 @@ fn test_multi_select_parameter_with_display() {
 #[test]
 fn test_file_parameter_with_display() {
     let param = FileParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("upload_file")
-                .name("Upload File")
-                .description("Select file to upload")
-                .build()
-                .unwrap(),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("upload_file")
+                    .name("Upload File")
+                    .description("Select file to upload")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(ParameterDisplay::new().show_when_equals(
+                ParameterKey::new("input_type").unwrap(),
+                Value::text("file"),
+            )),
         )
-        .display(ParameterDisplay::new().show_when_equals(
-            ParameterKey::new("input_type").unwrap(),
-            Value::text("file"),
-        ))
         .build();
 
     let ctx_show = DisplayContext::new().with_value(
@@ -801,16 +834,20 @@ fn test_file_parameter_with_display() {
 #[test]
 fn test_list_parameter_with_display() {
     let param = ListParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("items")
-                .name("Items")
-                .description("Enter items")
-                .build()
-                .unwrap(),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("items")
+                    .name("Items")
+                    .description("Enter items")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(
+                ParameterDisplay::new().show_when_true(ParameterKey::new("enable_list").unwrap()),
+            ),
         )
         .children(vec![])
-        .display(ParameterDisplay::new().show_when_true(ParameterKey::new("enable_list").unwrap()))
         .build();
 
     let ctx_show = DisplayContext::new().with_value(
@@ -825,7 +862,7 @@ fn test_list_parameter_with_display() {
 fn test_object_parameter_with_display() {
     let mut param = ObjectParameter::new("config", "Configuration", "Custom configuration object")
         .expect("should create parameter");
-    param.display = Some(
+    param.base.display = Some(
         ParameterDisplay::new().show_when_true(ParameterKey::new("use_custom_config").unwrap()),
     );
 
@@ -840,18 +877,20 @@ fn test_object_parameter_with_display() {
 #[test]
 fn test_group_parameter_with_display() {
     let param = GroupParameter::builder()
-        .metadata(
-            ParameterMetadata::builder()
-                .key("advanced_group")
-                .name("Advanced Settings")
-                .description("Advanced configuration group")
-                .build()
-                .unwrap(),
+        .base(
+            ParameterBase::new(
+                ParameterMetadata::builder()
+                    .key("advanced_group")
+                    .name("Advanced Settings")
+                    .description("Advanced configuration group")
+                    .build()
+                    .unwrap(),
+            )
+            .with_display(
+                ParameterDisplay::new().show_when_true(ParameterKey::new("show_advanced").unwrap()),
+            ),
         )
         .fields(vec![])
-        .display(
-            ParameterDisplay::new().show_when_true(ParameterKey::new("show_advanced").unwrap()),
-        )
         .build();
 
     let ctx_show = DisplayContext::new().with_value(
@@ -877,7 +916,7 @@ fn test_resource_parameter_with_display() {
         .unwrap();
 
     let mut param = ResourceParameter::new(metadata);
-    param.display = Some(ParameterDisplay::new().show_when_equals(
+    param.base.display = Some(ParameterDisplay::new().show_when_equals(
         ParameterKey::new("storage_type").unwrap(),
         Value::text("database"),
     ));

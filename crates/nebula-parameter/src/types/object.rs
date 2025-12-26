@@ -2,16 +2,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::core::{
-    Describable, Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Describable, Displayable, Parameter, ParameterBase, ParameterDisplay, ParameterError,
+    ParameterKind, ParameterMetadata, ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
 
 /// Parameter for structured object data - acts as a container with named child parameters
 #[derive(Serialize)]
 pub struct ObjectParameter {
+    /// Base parameter fields (metadata, display, validation)
     #[serde(flatten)]
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<ObjectValue>,
@@ -22,12 +23,6 @@ pub struct ObjectParameter {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<ObjectParameterOptions>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display: Option<ParameterDisplay>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub validation: Option<ParameterValidation>,
 }
 
 /// Configuration options for object parameters
@@ -127,7 +122,7 @@ impl Default for ObjectValue {
 impl std::fmt::Debug for ObjectParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ObjectParameter")
-            .field("metadata", &self.metadata)
+            .field("base", &self.base)
             .field("default", &self.default)
             .field(
                 "children",
@@ -137,8 +132,6 @@ impl std::fmt::Debug for ObjectParameter {
                 ),
             )
             .field("options", &self.options)
-            .field("display", &self.display)
-            .field("validation", &self.validation)
             .finish()
     }
 }
@@ -149,13 +142,13 @@ impl Describable for ObjectParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
 impl std::fmt::Display for ObjectParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ObjectParameter({})", self.metadata.name)
+        write!(f, "ObjectParameter({})", self.base.metadata.name)
     }
 }
 
@@ -165,7 +158,7 @@ impl Validatable for ObjectParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.validation.as_ref()
+        self.base.validation.as_ref()
     }
 
     fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
@@ -174,7 +167,7 @@ impl Validatable for ObjectParameter {
             let actual = value.kind();
             if actual != ValueKind::Null && actual != expected {
                 return Err(ParameterError::InvalidType {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     expected_type: expected.name().to_string(),
                     actual_details: actual.name().to_string(),
                 });
@@ -190,7 +183,7 @@ impl Validatable for ObjectParameter {
         // Required check
         if self.is_empty(value) && self.is_required() {
             return Err(ParameterError::MissingValue {
-                key: self.metadata.key.clone(),
+                key: self.base.metadata.key.clone(),
             });
         }
 
@@ -206,7 +199,7 @@ impl Validatable for ObjectParameter {
         for (key, child) in &self.children {
             if child.metadata().required && !obj.contains_key(key) {
                 return Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     reason: format!("Required field '{key}' is missing"),
                 });
             }
@@ -221,7 +214,7 @@ impl Validatable for ObjectParameter {
             for key in obj.keys() {
                 if !defined_children.contains(key) && key != "_expression" {
                     return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
+                        key: self.base.metadata.key.clone(),
                         reason: format!("Additional property '{key}' is not allowed"),
                     });
                 }
@@ -241,11 +234,11 @@ impl Validatable for ObjectParameter {
 
 impl Displayable for ObjectParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }
 
@@ -257,19 +250,17 @@ impl ObjectParameter {
         description: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            metadata: ParameterMetadata {
+            base: ParameterBase::new(ParameterMetadata {
                 key: nebula_core::ParameterKey::new(key)?,
                 name: name.to_string(),
                 description: description.to_string(),
                 required: false,
                 placeholder: Some("Configure object fields...".to_string()),
                 hint: Some("Object container with child parameters".to_string()),
-            },
+            }),
             default: None,
             children: HashMap::new(),
             options: Some(ObjectParameterOptions::default()),
-            display: None,
-            validation: None,
         })
     }
 

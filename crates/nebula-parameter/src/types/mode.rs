@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use crate::core::{
-    Describable, Displayable, Parameter, ParameterDisplay, ParameterKind, ParameterMetadata,
-    ParameterValidation, Validatable,
+    Describable, Displayable, Parameter, ParameterBase, ParameterDisplay, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
 use nebula_core::ParameterKey;
 use nebula_expression::MaybeExpression;
@@ -12,9 +12,9 @@ use nebula_value::{Value, ValueKind};
 /// Parameter for mode selection with switching between different parameter types
 #[derive(Debug, Serialize)]
 pub struct ModeParameter {
+    /// Base parameter fields (metadata, display, validation)
     #[serde(flatten)]
-    /// Parameter metadata including key, name, description
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -22,14 +22,6 @@ pub struct ModeParameter {
 
     /// Available modes with their parameters
     pub modes: Vec<ModeItem>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Display rules controlling when this parameter is shown
-    pub display: Option<ParameterDisplay>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Validation rules for this parameter
-    pub validation: Option<ParameterValidation>,
 }
 
 /// Configuration for a specific mode
@@ -146,13 +138,13 @@ impl Describable for ModeParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
 impl std::fmt::Display for ModeParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ModeParameter({})", self.metadata.name)
+        write!(f, "ModeParameter({})", self.base.metadata.name)
     }
 }
 
@@ -162,7 +154,7 @@ impl Validatable for ModeParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.validation.as_ref()
+        self.base.validation.as_ref()
     }
 
     fn is_empty(&self, value: &Value) -> bool {
@@ -190,11 +182,11 @@ impl Validatable for ModeParameter {
 
 impl Displayable for ModeParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }
 
@@ -206,18 +198,16 @@ impl ModeParameter {
         description: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            metadata: ParameterMetadata {
+            base: ParameterBase::new(ParameterMetadata {
                 key: ParameterKey::new(key)?,
                 name: name.to_string(),
                 description: description.to_string(),
                 required: false,
                 placeholder: Some("Select mode...".to_string()),
                 hint: Some("Choose mode and configure parameters".to_string()),
-            },
+            }),
             default: None,
             modes: Vec::new(),
-            display: None,
-            validation: None,
         })
     }
 

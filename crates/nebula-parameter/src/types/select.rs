@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, SelectOption, Validatable,
+    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, SelectOption, Validatable,
 };
 use nebula_value::{Value, ValueKind};
 
@@ -14,11 +14,13 @@ use nebula_value::{Value, ValueKind};
 /// use nebula_parameter::prelude::*;
 ///
 /// let param = SelectParameter::builder()
-///     .metadata(ParameterMetadata::new()
-///         .key("auth_type")
-///         .name("Authentication Type")
-///         .description("Choose authentication method")
-///         .call()?)
+///     .base(ParameterBase::new(
+///         ParameterMetadata::builder()
+///             .key("auth_type")
+///             .name("Authentication Type")
+///             .description("Choose authentication method")
+///             .build()?
+///     ))
 ///     .options(vec![
 ///         SelectOption::new("api_key", "API Key", "api_key"),
 ///         SelectOption::new("oauth", "OAuth 2.0", "oauth"),
@@ -33,9 +35,9 @@ use nebula_value::{Value, ValueKind};
 #[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
 #[builder(on(String, into))]
 pub struct SelectParameter {
+    /// Base parameter fields (metadata, display, validation)
     #[serde(flatten)]
-    /// Parameter metadata including key, name, description
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     #[builder(into)]
@@ -49,14 +51,6 @@ pub struct SelectParameter {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
     pub select_options: Option<SelectParameterOptions>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Display rules controlling when this parameter is shown
-    pub display: Option<ParameterDisplay>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Validation rules for this parameter
-    pub validation: Option<ParameterValidation>,
 }
 
 /// Configuration options for select parameters
@@ -90,13 +84,13 @@ impl Describable for SelectParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
 impl std::fmt::Display for SelectParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SelectParameter({})", self.metadata.name)
+        write!(f, "SelectParameter({})", self.base.metadata.name)
     }
 }
 
@@ -111,7 +105,7 @@ impl Validatable for SelectParameter {
             let actual = value.kind();
             if actual != ValueKind::Null && actual != expected {
                 return Err(ParameterError::InvalidType {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     expected_type: expected.name().to_string(),
                     actual_details: actual.name().to_string(),
                 });
@@ -121,7 +115,7 @@ impl Validatable for SelectParameter {
         // Required check
         if self.is_required() && self.is_empty(value) {
             return Err(ParameterError::MissingValue {
-                key: self.metadata.key.clone(),
+                key: self.base.metadata.key.clone(),
             });
         }
 
@@ -130,7 +124,7 @@ impl Validatable for SelectParameter {
             && !self.is_valid_option(text.as_str())
         {
             return Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
+                key: self.base.metadata.key.clone(),
                 reason: format!("Value '{}' is not a valid option", text.as_str()),
             });
         }
@@ -139,7 +133,7 @@ impl Validatable for SelectParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.validation.as_ref()
+        self.base.validation.as_ref()
     }
 
     fn is_empty(&self, value: &Value) -> bool {
@@ -149,11 +143,11 @@ impl Validatable for SelectParameter {
 
 impl Displayable for SelectParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }
 

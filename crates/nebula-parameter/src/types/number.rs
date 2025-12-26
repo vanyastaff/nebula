@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, Validatable,
+    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
 use nebula_value::Value;
 
@@ -14,11 +14,13 @@ use nebula_value::Value;
 /// use nebula_parameter::prelude::*;
 ///
 /// let param = NumberParameter::builder()
-///     .metadata(ParameterMetadata::new()
-///         .key("age")
-///         .name("Age")
-///         .description("Your age in years")
-///         .call()?)
+///     .base(ParameterBase::new(
+///         ParameterMetadata::builder()
+///             .key("age")
+///             .name("Age")
+///             .description("Your age in years")
+///             .build()?
+///     ))
 ///     .default(18.0)
 ///     .options(NumberParameterOptions::builder()
 ///         .min(0.0)
@@ -30,9 +32,9 @@ use nebula_value::Value;
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
 pub struct NumberParameter {
+    /// Base parameter fields (metadata, display, validation)
     #[serde(flatten)]
-    /// Parameter metadata including key, name, description
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -41,14 +43,6 @@ pub struct NumberParameter {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
     pub options: Option<NumberParameterOptions>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Display rules controlling when this parameter is shown
-    pub display: Option<ParameterDisplay>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Validation rules for this parameter
-    pub validation: Option<ParameterValidation>,
 }
 
 /// Configuration options for number parameters
@@ -96,13 +90,13 @@ impl Describable for NumberParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
 impl std::fmt::Display for NumberParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NumberParameter({})", self.metadata.name)
+        write!(f, "NumberParameter({})", self.base.metadata.name)
     }
 }
 
@@ -111,14 +105,14 @@ impl Validatable for NumberParameter {
         // Check required
         if self.is_required() && self.is_empty(value) {
             return Err(ParameterError::MissingValue {
-                key: self.metadata.key.clone(),
+                key: self.base.metadata.key.clone(),
             });
         }
 
         // Type check - allow null or number
         if !value.is_null() && value.as_float().is_none() && value.as_integer().is_none() {
             return Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
+                key: self.base.metadata.key.clone(),
                 reason: "Expected numeric value".to_string(),
             });
         }
@@ -136,7 +130,7 @@ impl Validatable for NumberParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.validation.as_ref()
+        self.base.validation.as_ref()
     }
 
     fn is_empty(&self, value: &Value) -> bool {
@@ -146,11 +140,11 @@ impl Validatable for NumberParameter {
 
 impl Displayable for NumberParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }
 
@@ -163,7 +157,7 @@ impl NumberParameter {
                 && num < min
             {
                 return Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     reason: format!("Value {num} is below minimum {min}"),
                 });
             }
@@ -173,7 +167,7 @@ impl NumberParameter {
                 && num > max
             {
                 return Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     reason: format!("Value {num} is above maximum {max}"),
                 });
             }
@@ -185,7 +179,7 @@ impl NumberParameter {
                 let offset = (num - min) % step;
                 if offset.abs() > f64::EPSILON {
                     return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
+                        key: self.base.metadata.key.clone(),
                         reason: format!("Value {num} does not align with step {step}"),
                     });
                 }
@@ -197,7 +191,7 @@ impl NumberParameter {
                 let rounded = (num * multiplier).round() / multiplier;
                 if (num - rounded).abs() > f64::EPSILON {
                     return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
+                        key: self.base.metadata.key.clone(),
                         reason: format!(
                             "Value {num} exceeds precision of {precision} decimal places"
                         ),

@@ -3,16 +3,18 @@ use serde::{Deserialize, Serialize};
 #[allow(unused_imports)]
 use crate::core::traits::Expressible;
 use crate::core::{
-    Describable, Displayable, ParameterDisplay, ParameterKind, ParameterMetadata, Validatable,
+    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterKind, ParameterMetadata,
+    Validatable,
 };
 use nebula_value::Value;
 
 /// Parameter for displaying a notice or information to the user
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct NoticeParameter {
+    /// Base parameter fields (metadata, display, validation)
+    /// Note: validation is not used for notice parameters
     #[serde(flatten)]
-    /// Parameter metadata including key, name, description
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     /// The text content of the notice
     pub content: String,
@@ -20,10 +22,6 @@ pub struct NoticeParameter {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
     pub options: Option<NoticeParameterOptions>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Display rules controlling when this parameter is shown
-    pub display: Option<ParameterDisplay>,
 }
 
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
@@ -57,7 +55,7 @@ impl Describable for NoticeParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
@@ -70,17 +68,17 @@ impl Validatable for NoticeParameter {
 
 impl std::fmt::Display for NoticeParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NoticeParameter({})", self.metadata.name)
+        write!(f, "NoticeParameter({})", self.base.metadata.name)
     }
 }
 
 impl Displayable for NoticeParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }
 

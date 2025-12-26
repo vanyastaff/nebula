@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{self, Display};
 
 use crate::core::{
-    Describable, Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Describable, Displayable, Parameter, ParameterBase, ParameterDisplay, ParameterError,
+    ParameterKind, ParameterMetadata, ParameterValidation, Validatable,
 };
 use nebula_core::ParameterKey;
 use nebula_value::{Value, ValueKind};
@@ -12,8 +12,9 @@ use nebula_value::{Value, ValueKind};
 /// Acts as a wrapper around any child parameter with routing/connection capabilities
 #[derive(Serialize)]
 pub struct RoutingParameter {
+    /// Base parameter fields (metadata, display, validation)
     #[serde(flatten)]
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<RoutingValue>,
@@ -24,12 +25,6 @@ pub struct RoutingParameter {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<RoutingParameterOptions>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display: Option<ParameterDisplay>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub validation: Option<ParameterValidation>,
 }
 
 /// Configuration options for routing parameters
@@ -184,12 +179,10 @@ impl Default for RoutingValue {
 impl fmt::Debug for RoutingParameter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RoutingParameter")
-            .field("metadata", &self.metadata)
+            .field("base", &self.base)
             .field("default", &self.default)
             .field("children", &"Option<Box<dyn ParameterType>>")
             .field("options", &self.options)
-            .field("display", &self.display)
-            .field("validation", &self.validation)
             .finish()
     }
 }
@@ -200,13 +193,13 @@ impl Describable for RoutingParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
 impl Display for RoutingParameter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "RoutingParameter({})", self.metadata.name)
+        write!(f, "RoutingParameter({})", self.base.metadata.name)
     }
 }
 
@@ -216,7 +209,7 @@ impl Validatable for RoutingParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.validation.as_ref()
+        self.base.validation.as_ref()
     }
 
     fn is_empty(&self, value: &Value) -> bool {
@@ -231,11 +224,11 @@ impl Validatable for RoutingParameter {
 
 impl Displayable for RoutingParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }
 
@@ -248,19 +241,17 @@ impl RoutingParameter {
         child: Option<Box<dyn Parameter>>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            metadata: ParameterMetadata {
+            base: ParameterBase::new(ParameterMetadata {
                 key: ParameterKey::new(key)?,
                 name: name.to_string(),
                 description: description.to_string(),
                 required: false,
                 placeholder: Some("Configure routing connection...".to_string()),
                 hint: Some("Routing container with connection point".to_string()),
-            },
+            }),
             default: None,
             children: child,
             options: Some(RoutingParameterOptions::default()),
-            display: None,
-            validation: None,
         })
     }
 
@@ -320,7 +311,7 @@ impl RoutingParameter {
         // Check if connection is required but missing
         if self.is_connection_required() && !is_connected {
             return Err(ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
+                key: self.base.metadata.key.clone(),
                 reason: "Connection is required but not configured".to_string(),
             });
         }

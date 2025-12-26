@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::core::{
-    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, Validatable,
+    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
 
@@ -95,9 +95,9 @@ impl FileReference {
 /// Parameter for file uploads
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct FileParameter {
+    /// Base parameter fields (metadata, display, validation)
     #[serde(flatten)]
-    /// Parameter metadata including key, name, description
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -106,14 +106,6 @@ pub struct FileParameter {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
     pub options: Option<FileParameterOptions>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Display rules controlling when this parameter is shown
-    pub display: Option<ParameterDisplay>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Validation rules for this parameter
-    pub validation: Option<ParameterValidation>,
 }
 
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
@@ -151,13 +143,13 @@ impl Describable for FileParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
 impl std::fmt::Display for FileParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "FileParameter({})", self.metadata.name)
+        write!(f, "FileParameter({})", self.base.metadata.name)
     }
 }
 
@@ -167,7 +159,7 @@ impl Validatable for FileParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.validation.as_ref()
+        self.base.validation.as_ref()
     }
 
     fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
@@ -176,7 +168,7 @@ impl Validatable for FileParameter {
             let actual = value.kind();
             if actual != ValueKind::Null && actual != expected {
                 return Err(ParameterError::InvalidType {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     expected_type: expected.name().to_string(),
                     actual_details: actual.name().to_string(),
                 });
@@ -192,7 +184,7 @@ impl Validatable for FileParameter {
         // Required check
         if self.is_empty(value) && self.is_required() {
             return Err(ParameterError::MissingValue {
-                key: self.metadata.key.clone(),
+                key: self.base.metadata.key.clone(),
             });
         }
 
@@ -200,7 +192,7 @@ impl Validatable for FileParameter {
         let path_value = obj
             .get("path")
             .ok_or_else(|| ParameterError::InvalidValue {
-                key: self.metadata.key.clone(),
+                key: self.base.metadata.key.clone(),
                 reason: "File object missing 'path' field".to_string(),
             })?;
 
@@ -208,7 +200,7 @@ impl Validatable for FileParameter {
             Value::Text(t) => t.as_str(),
             _ => {
                 return Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     reason: "File 'path' field must be text".to_string(),
                 });
             }
@@ -230,7 +222,7 @@ impl Validatable for FileParameter {
                     && size > max_size
                 {
                     return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
+                        key: self.base.metadata.key.clone(),
                         reason: format!("File size {size} bytes exceeds maximum {max_size} bytes"),
                     });
                 }
@@ -238,7 +230,7 @@ impl Validatable for FileParameter {
                     && size < min_size
                 {
                     return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
+                        key: self.base.metadata.key.clone(),
                         reason: format!("File size {size} bytes is below minimum {min_size} bytes"),
                     });
                 }
@@ -264,7 +256,7 @@ impl Validatable for FileParameter {
 
                 if !is_format_accepted {
                     return Err(ParameterError::InvalidValue {
-                        key: self.metadata.key.clone(),
+                        key: self.base.metadata.key.clone(),
                         reason: format!(
                             "File format not accepted. Accepted formats: {}",
                             accepted_formats.join(", ")
@@ -285,11 +277,11 @@ impl Validatable for FileParameter {
 
 impl Displayable for FileParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }
 

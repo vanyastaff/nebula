@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, Validatable,
+    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
 
@@ -14,11 +14,13 @@ use nebula_value::{Value, ValueKind};
 /// use nebula_parameter::prelude::*;
 ///
 /// let param = GroupParameter::builder()
-///     .metadata(ParameterMetadata::new()
-///         .key("address")
-///         .name("Address")
-///         .description("Shipping address")
-///         .call()?)
+///     .base(ParameterBase::new(
+///         ParameterMetadata::builder()
+///             .key("address")
+///             .name("Address")
+///             .description("Shipping address")
+///             .build()?
+///     ))
 ///     .fields([
 ///         GroupField::builder()
 ///             .key("street")
@@ -38,9 +40,9 @@ use nebula_value::{Value, ValueKind};
 #[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
 #[builder(on(String, into))]
 pub struct GroupParameter {
+    /// Base parameter fields (metadata, display, validation)
     #[serde(flatten)]
-    /// Parameter metadata including key, name, description
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
@@ -53,14 +55,6 @@ pub struct GroupParameter {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
     pub options: Option<GroupParameterOptions>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Display rules controlling when this parameter is shown
-    pub display: Option<ParameterDisplay>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// Validation rules for this parameter
-    pub validation: Option<ParameterValidation>,
 }
 
 /// Field definition for a group parameter
@@ -178,13 +172,13 @@ impl Describable for GroupParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
 impl std::fmt::Display for GroupParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "GroupParameter({})", self.metadata.name)
+        write!(f, "GroupParameter({})", self.base.metadata.name)
     }
 }
 
@@ -194,7 +188,7 @@ impl Validatable for GroupParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.validation.as_ref()
+        self.base.validation.as_ref()
     }
 
     fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
@@ -203,7 +197,7 @@ impl Validatable for GroupParameter {
             let actual = value.kind();
             if actual != ValueKind::Null && actual != expected {
                 return Err(ParameterError::InvalidType {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     expected_type: expected.name().to_string(),
                     actual_details: actual.name().to_string(),
                 });
@@ -219,7 +213,7 @@ impl Validatable for GroupParameter {
         // Required check
         if self.is_empty(value) && self.is_required() {
             return Err(ParameterError::MissingValue {
-                key: self.metadata.key.clone(),
+                key: self.base.metadata.key.clone(),
             });
         }
 
@@ -235,7 +229,7 @@ impl Validatable for GroupParameter {
         for field in &self.fields {
             if field.required && !obj.contains_key(&field.key) {
                 return Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     reason: format!("Required field '{}' is missing", field.key),
                 });
             }
@@ -245,7 +239,7 @@ impl Validatable for GroupParameter {
                 && !self.is_valid_field_value(field, field_value)
             {
                 return Err(ParameterError::InvalidValue {
-                    key: self.metadata.key.clone(),
+                    key: self.base.metadata.key.clone(),
                     reason: format!("Invalid value for field '{}'", field.key),
                 });
             }
@@ -264,11 +258,11 @@ impl Validatable for GroupParameter {
 
 impl Displayable for GroupParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }
 

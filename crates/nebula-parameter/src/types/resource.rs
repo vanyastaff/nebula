@@ -2,8 +2,8 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 use crate::core::{
-    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
-    ParameterValidation, Validatable,
+    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
     option::{OptionsResponse, Pagination, SelectOption},
 };
 use nebula_expression::MaybeExpression;
@@ -89,8 +89,9 @@ pub struct ResourceParameterOptions {
 /// Parameter for dynamic resource selection (like n8n's `ResourceLocator`)
 #[derive(Serialize)]
 pub struct ResourceParameter {
+    /// Base parameter fields (metadata, display, validation)
     #[serde(flatten)]
-    pub metadata: ParameterMetadata,
+    pub base: ParameterBase,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<ResourceValue>,
@@ -101,23 +102,15 @@ pub struct ResourceParameter {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<ResourceParameterOptions>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display: Option<ParameterDisplay>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub validation: Option<ParameterValidation>,
 }
 
 impl std::fmt::Debug for ResourceParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResourceParameter")
-            .field("metadata", &self.metadata)
+            .field("base", &self.base)
             .field("default", &self.default)
             .field("loader", &self.loader.as_ref().map(|_| "<loader>"))
             .field("options", &self.options)
-            .field("display", &self.display)
-            .field("validation", &self.validation)
             .finish()
     }
 }
@@ -127,12 +120,10 @@ impl ResourceParameter {
     #[must_use]
     pub fn new(metadata: ParameterMetadata) -> Self {
         Self {
-            metadata,
+            base: ParameterBase::new(metadata),
             default: None,
             loader: None,
             options: None,
-            display: None,
-            validation: None,
         }
     }
 
@@ -216,13 +207,13 @@ impl Describable for ResourceParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.metadata
+        &self.base.metadata
     }
 }
 
 impl std::fmt::Display for ResourceParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ResourceParameter({})", self.metadata.name)
+        write!(f, "ResourceParameter({})", self.base.metadata.name)
     }
 }
 
@@ -232,7 +223,7 @@ impl Validatable for ResourceParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.validation.as_ref()
+        self.base.validation.as_ref()
     }
 
     fn is_empty(&self, value: &Value) -> bool {
@@ -245,10 +236,10 @@ impl Validatable for ResourceParameter {
 
 impl Displayable for ResourceParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.display.as_ref()
+        self.base.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.display = display;
+        self.base.display = display;
     }
 }
