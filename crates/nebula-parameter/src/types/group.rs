@@ -249,10 +249,7 @@ impl Validatable for GroupParameter {
     }
 
     fn is_empty(&self, value: &Value) -> bool {
-        match value {
-            Value::Object(o) => o.is_empty(),
-            _ => true,
-        }
+        value.is_null() || value.as_object().is_some_and(|obj| obj.is_empty())
     }
 }
 

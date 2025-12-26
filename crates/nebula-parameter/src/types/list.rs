@@ -158,18 +158,18 @@ impl Validatable for ListParameter {
             }
         }
 
+        // Required check - must come before early return for Null
+        if self.is_required() && self.is_empty(value) {
+            return Err(ParameterError::MissingValue {
+                key: self.base.metadata.key.clone(),
+            });
+        }
+
         let arr = match value {
             Value::Array(a) => a,
             Value::Null => return Ok(()), // Null is allowed for optional
             _ => return Ok(()),           // Type error already handled above
         };
-
-        // Required check
-        if self.is_empty(value) && self.is_required() {
-            return Err(ParameterError::MissingValue {
-                key: self.base.metadata.key.clone(),
-            });
-        }
 
         // Item count validation
         if let Some(options) = &self.options {
@@ -198,10 +198,7 @@ impl Validatable for ListParameter {
     }
 
     fn is_empty(&self, value: &Value) -> bool {
-        match value {
-            Value::Array(a) => a.is_empty(),
-            _ => true,
-        }
+        value.is_null() || value.as_array().is_some_and(|arr| arr.is_empty())
     }
 }
 

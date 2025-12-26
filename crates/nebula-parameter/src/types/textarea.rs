@@ -104,11 +104,7 @@ impl Validatable for TextareaParameter {
     }
 
     fn is_empty(&self, value: &Value) -> bool {
-        value.is_null()
-            || value
-                .as_text()
-                .map(|s| s.trim().is_empty())
-                .unwrap_or(false)
+        value.is_null() || value.as_text().is_some_and(|s| s.is_empty())
     }
 }
 

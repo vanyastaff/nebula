@@ -62,7 +62,7 @@ impl Validatable for MultiSelectParameter {
     }
 
     fn is_empty(&self, value: &Value) -> bool {
-        value.as_array().is_none_or(|arr| arr.is_empty())
+        value.is_null() || value.as_array().is_some_and(|arr| arr.is_empty())
     }
 }
 
