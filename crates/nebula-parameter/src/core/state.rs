@@ -42,6 +42,7 @@ impl ParameterState {
     }
 
     /// Get the current flags.
+    #[inline]
     #[must_use]
     pub fn flags(&self) -> ParameterFlags {
         self.flags
@@ -63,42 +64,49 @@ impl ParameterState {
     }
 
     /// Check if a flag is set.
+    #[inline]
     #[must_use]
     pub fn has_flag(&self, flag: ParameterFlags) -> bool {
         self.flags.contains(flag)
     }
 
     /// Check if parameter is dirty.
+    #[inline]
     #[must_use]
     pub fn is_dirty(&self) -> bool {
         self.has_flag(ParameterFlags::DIRTY)
     }
 
     /// Check if parameter was touched.
+    #[inline]
     #[must_use]
     pub fn is_touched(&self) -> bool {
         self.has_flag(ParameterFlags::TOUCHED)
     }
 
     /// Check if parameter is valid.
+    #[inline]
     #[must_use]
     pub fn is_valid(&self) -> bool {
         self.has_flag(ParameterFlags::VALID)
     }
 
     /// Check if parameter is visible.
+    #[inline]
     #[must_use]
     pub fn is_visible(&self) -> bool {
         self.has_flag(ParameterFlags::VISIBLE)
     }
 
     /// Check if parameter is enabled.
+    #[inline]
     #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.has_flag(ParameterFlags::ENABLED)
     }
 
     /// Get validation errors.
+    #[inline]
     #[must_use]
     pub fn errors(&self) -> &[ValidationError] {
         &self.errors

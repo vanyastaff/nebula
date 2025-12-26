@@ -78,6 +78,7 @@ impl ParameterValues {
     // =========================================================================
 
     /// Get a value by key (immutable)
+    #[inline]
     #[must_use]
     pub fn get(&self, key: impl Into<ParameterKey>) -> Option<&Value> {
         self.values.get(&key.into())
@@ -102,6 +103,7 @@ impl ParameterValues {
     }
 
     /// Check if a parameter has a value
+    #[inline]
     #[must_use]
     pub fn contains(&self, key: impl Into<ParameterKey>) -> bool {
         self.values.contains_key(&key.into())
@@ -113,12 +115,14 @@ impl ParameterValues {
     }
 
     /// Get the number of values
+    #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
         self.values.len()
     }
 
     /// Check if empty
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()

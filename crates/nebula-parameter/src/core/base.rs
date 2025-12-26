@@ -56,6 +56,7 @@ pub struct ParameterBase {
 
 impl ParameterBase {
     /// Create a new base with just metadata
+    #[inline]
     #[must_use]
     pub fn new(metadata: ParameterMetadata) -> Self {
         Self {
