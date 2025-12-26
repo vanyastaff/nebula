@@ -242,8 +242,8 @@ impl ListParameter {
 
     /// Get the template parameter
     #[must_use]
-    pub fn template(&self) -> Option<&Box<dyn Parameter>> {
-        self.item_template.as_ref()
+    pub fn template(&self) -> Option<&dyn Parameter> {
+        self.item_template.as_deref()
     }
 
     /// Add a child parameter to the list
@@ -262,8 +262,8 @@ impl ListParameter {
 
     /// Get child parameter by index
     #[must_use]
-    pub fn get_child(&self, index: usize) -> Option<&Box<dyn Parameter>> {
-        self.children.get(index)
+    pub fn get_child(&self, index: usize) -> Option<&dyn Parameter> {
+        self.children.get(index).map(|b| b.as_ref())
     }
 
     /// Get mutable child parameter by index

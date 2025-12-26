@@ -169,7 +169,7 @@ impl ExpirableValue {
         Self::new(nebula_value::Value::integer(value), ttl)
     }
 
-    /// Create a new `ExpirableValue` from `ParameterValue` (`MaybeExpression`<Value>)
+    /// Create a new `ExpirableValue` from `ParameterValue` (`MaybeExpression<Value>`)
     pub fn from_parameter_value(param_value: &MaybeExpression<Value>, ttl: u64) -> Self {
         let nebula_val = match param_value {
             MaybeExpression::Value(v) => v.clone(),
@@ -279,8 +279,8 @@ impl ExpirableParameter {
     }
 
     /// Get the child parameter
-    pub fn child(&self) -> Option<&Box<dyn Parameter>> {
-        self.children.as_ref()
+    pub fn child(&self) -> Option<&dyn Parameter> {
+        self.children.as_deref()
     }
 
     /// Set the child parameter

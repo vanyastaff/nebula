@@ -59,6 +59,7 @@ impl ParameterValidation {
     }
 
     /// Validate a value (skips null).
+    #[allow(clippy::result_large_err)]
     pub fn validate(&self, value: &Value) -> Result<(), ValidationError> {
         if value.is_null() {
             return Ok(());

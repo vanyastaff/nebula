@@ -116,7 +116,7 @@ impl ModeValue {
         }
     }
 
-    /// Create a new `ModeValue` from `ParameterValue` (`MaybeExpression`<Value>)
+    /// Create a new `ModeValue` from `ParameterValue` (`MaybeExpression<Value>`)
     pub fn from_parameter_value(
         key: impl Into<String>,
         param_value: &MaybeExpression<Value>,
@@ -227,11 +227,11 @@ impl ModeParameter {
     }
 
     /// Get the child parameter for a specific mode key
-    pub fn get_mode_child(&self, mode_key: &str) -> Option<&Box<dyn Parameter>> {
+    pub fn get_mode_child(&self, mode_key: &str) -> Option<&dyn Parameter> {
         self.modes
             .iter()
             .find(|m| m.key == mode_key)
-            .map(|mode| &mode.children)
+            .map(|mode| mode.children.as_ref())
     }
 
     /// Get the default mode

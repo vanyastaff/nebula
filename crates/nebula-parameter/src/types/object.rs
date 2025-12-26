@@ -263,8 +263,8 @@ impl ObjectParameter {
 
     /// Get child parameter by key
     #[must_use]
-    pub fn get_child(&self, key: &str) -> Option<&Box<dyn Parameter>> {
-        self.children.get(key)
+    pub fn get_child(&self, key: &str) -> Option<&dyn Parameter> {
+        self.children.get(key).map(|b| b.as_ref())
     }
 
     /// Get mutable child parameter by key

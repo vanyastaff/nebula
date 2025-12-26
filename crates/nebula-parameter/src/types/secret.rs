@@ -84,31 +84,27 @@ impl Validatable for SecretParameter {
         }
 
         // Length validation
-        if let Some(text) = value.as_text() {
-            if let Some(options) = &self.options {
-                let len = text.len();
+        if let Some(text) = value.as_text()
+            && let Some(options) = &self.options
+        {
+            let len = text.len();
 
-                if let Some(min_length) = options.min_length
-                    && len < min_length
-                {
-                    return Err(ParameterError::InvalidValue {
-                        key: self.base.metadata.key.clone(),
-                        reason: format!(
-                            "Secret must be at least {min_length} characters, got {len}"
-                        ),
-                    });
-                }
+            if let Some(min_length) = options.min_length
+                && len < min_length
+            {
+                return Err(ParameterError::InvalidValue {
+                    key: self.base.metadata.key.clone(),
+                    reason: format!("Secret must be at least {min_length} characters, got {len}"),
+                });
+            }
 
-                if let Some(max_length) = options.max_length
-                    && len > max_length
-                {
-                    return Err(ParameterError::InvalidValue {
-                        key: self.base.metadata.key.clone(),
-                        reason: format!(
-                            "Secret must be at most {max_length} characters, got {len}"
-                        ),
-                    });
-                }
+            if let Some(max_length) = options.max_length
+                && len > max_length
+            {
+                return Err(ParameterError::InvalidValue {
+                    key: self.base.metadata.key.clone(),
+                    reason: format!("Secret must be at most {max_length} characters, got {len}"),
+                });
             }
         }
 

@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, SelectOption, Validatable,
+    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterKind, ParameterMetadata,
+    ParameterValidation, SelectOption, Validatable,
 };
 use nebula_value::{Value, ValueKind};
 
@@ -77,64 +77,6 @@ impl Displayable for MultiSelectParameter {
 }
 
 impl MultiSelectParameter {
-    /// Validate all selected values are valid options and meet constraints
-    fn are_valid_selections(&self, selections: &[String]) -> Result<bool, ParameterError> {
-        // Check if all selections are expressions
-        if selections.len() == 1 && selections[0].starts_with("{{") && selections[0].ends_with("}}")
-        {
-            return Ok(true); // Allow expressions
-        }
-
-        // Validate each selection is a valid option
-        for selection in selections {
-            if !self.is_valid_option(selection) {
-                return Ok(false);
-            }
-        }
-
-        // Check min/max constraints
-        if let Some(options) = &self.multi_select_options {
-            if let Some(min) = options.min_selections
-                && selections.len() < min
-            {
-                return Err(ParameterError::InvalidValue {
-                    key: self.base.metadata.key.clone(),
-                    reason: format!(
-                        "Must select at least {} options, got {}",
-                        min,
-                        selections.len()
-                    ),
-                });
-            }
-            if let Some(max) = options.max_selections
-                && selections.len() > max
-            {
-                return Err(ParameterError::InvalidValue {
-                    key: self.base.metadata.key.clone(),
-                    reason: format!(
-                        "Must select at most {} options, got {}",
-                        max,
-                        selections.len()
-                    ),
-                });
-            }
-        }
-
-        Ok(true)
-    }
-
-    /// Check if a single value is a valid option
-    fn is_valid_option(&self, value: &str) -> bool {
-        if value.is_empty() {
-            return false;
-        }
-
-        // Check if value matches any option's value or key
-        self.options
-            .iter()
-            .any(|option| option.value == value || option.key == value)
-    }
-
     /// Get option by value
     #[must_use]
     pub fn get_option_by_value(&self, value: &str) -> Option<&SelectOption> {

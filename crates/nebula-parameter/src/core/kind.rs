@@ -273,7 +273,7 @@ impl ParameterKind {
 
     /// Parse from string
     #[must_use]
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "text" => Some(Self::Text),
             "textarea" => Some(Self::Textarea),

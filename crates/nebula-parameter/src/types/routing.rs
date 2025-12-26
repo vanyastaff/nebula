@@ -257,8 +257,8 @@ impl RoutingParameter {
 
     /// Get the child parameter
     #[must_use]
-    pub fn child(&self) -> Option<&Box<dyn Parameter>> {
-        self.children.as_ref()
+    pub fn child(&self) -> Option<&dyn Parameter> {
+        self.children.as_deref()
     }
 
     /// Set the child parameter

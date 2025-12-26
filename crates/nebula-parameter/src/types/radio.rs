@@ -78,38 +78,6 @@ impl Displayable for RadioParameter {
 }
 
 impl RadioParameter {
-    /// Check if a value matches one of the available options
-    fn is_valid_option(&self, value: &str) -> bool {
-        if value.is_empty() {
-            return false;
-        }
-
-        // Check for expressions (start with {{ and end with }})
-        if value.starts_with("{{") && value.ends_with("}}") {
-            return true;
-        }
-
-        // Check if value matches any option's value or key
-        let is_standard_option = self
-            .options
-            .iter()
-            .any(|option| option.value == value || option.key == value);
-
-        if is_standard_option {
-            return true;
-        }
-
-        // Check if "other" is allowed and this might be an "other" value
-        if let Some(radio_options) = &self.radio_options
-            && radio_options.allow_other
-        {
-            // For "other" option, we accept any non-empty string
-            return !value.is_empty();
-        }
-
-        false
-    }
-
     /// Get option by value
     #[must_use]
     pub fn get_option_by_value(&self, value: &str) -> Option<&SelectOption> {
