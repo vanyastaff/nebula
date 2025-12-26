@@ -1,3 +1,4 @@
+mod base;
 pub mod collection;
 pub mod context;
 pub mod display;
@@ -11,6 +12,7 @@ pub mod traits;
 pub mod validation;
 pub mod values;
 
+pub use base::ParameterBase;
 pub use collection::*;
 pub use context::*;
 pub use display::*;
