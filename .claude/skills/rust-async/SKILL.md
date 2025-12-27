@@ -248,7 +248,7 @@ fn update_and_read(lock: &RwLock<Data>) -> Data {
     read_guard.clone()
 }
 
-// Note: std::sync::RwLockWriteGuard::downgrade stabilized in Rust 1.92
+// Note: std::sync::RwLockWriteGuard::downgrade stabilized in Rust 1.92 (project MSRV)
 // For async code, use parking_lot or clone data before releasing write lock
 ```
 

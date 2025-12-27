@@ -18,7 +18,7 @@ Modern Rust project organization following 2024 Edition best practices.
 | 2015 | Rust 1.0 | 1 | Original edition, `mod.rs` required |
 | 2018 | Rust 1.31 | 1 | `mod.rs` optional, `async`/`await` keywords, path changes |
 | 2021 | Rust 1.56 | 2 | Disjoint capture, `IntoIterator` for arrays, feature resolver |
-| 2024 | Rust 1.85 | 3 | Async closures, RPIT lifetime capture, MSRV-aware resolver |
+| 2024 | Rust 1.85+ | 3 | Async closures, RPIT lifetime capture, MSRV-aware resolver |
 
 ### Cargo.toml Edition Configuration
 
@@ -27,7 +27,7 @@ Modern Rust project organization following 2024 Edition best practices.
 name = "my-crate"
 version = "0.1.0"
 edition = "2024"           # Use latest edition
-rust-version = "1.85"      # MSRV for resolver 3
+rust-version = "1.92"      # Project MSRV (2024 edition minimum is 1.85)
 
 [workspace]
 resolver = "3"             # Required for virtual workspaces
@@ -65,7 +65,7 @@ resolver = "3"  # MSRV-aware dependency resolution
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.92"
 license = "MIT"
 repository = "https://github.com/user/project"
 ```
@@ -175,7 +175,7 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.92"
 authors = ["Your Name <you@example.com>"]
 license = "MIT"
 

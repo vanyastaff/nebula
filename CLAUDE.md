@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Nebula is a workflow automation toolkit in Rust, similar to n8n.
 
 **Stack:**
-- Rust 2024 Edition (MSRV: 1.90)
+- Rust 2024 Edition (MSRV: 1.92)
 - Tokio async runtime
 - 16-crate workspace
 - egui for UI
