@@ -112,6 +112,16 @@ let value = option.ok_or(Error::NotFound)?;
 
 // Use transpose for Option<Result<T>> <-> Result<Option<T>>
 let result: Result<Option<i32>, Error> = option_result.transpose();
+
+// is_none_or (Rust 1.82+) - cleaner than matches!
+if option.is_none_or(|x| x > 10) { /* None or > 10 */ }
+
+// Result::flatten (Rust 1.89+)
+let nested: Result<Result<i32, E>, E> = Ok(Ok(42));
+let flat = nested.flatten();  // Ok(42)
+
+// get_or_insert_default (Rust 1.83+)
+let value = option.get_or_insert_default();
 ```
 
 ### Iteration

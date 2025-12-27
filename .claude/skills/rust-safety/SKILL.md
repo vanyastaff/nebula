@@ -55,6 +55,24 @@ process(slice);
 
 ## Input Validation
 
+### File Existence Check (Rust 1.81+)
+
+```rust
+use std::fs;
+
+// GOOD - explicit existence check
+if fs::exists("config.toml")? {
+    let config = fs::read_to_string("config.toml")?;
+}
+
+// For optional files
+let config = if fs::exists(&path)? {
+    Some(fs::read_to_string(&path)?)
+} else {
+    None
+};
+```
+
 ### Validate at Boundaries
 
 ```rust

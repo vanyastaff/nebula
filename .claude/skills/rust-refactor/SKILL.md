@@ -14,6 +14,52 @@ version: 1.0.0
 3. **After each step**: `cargo check && cargo test`
 4. **Final verification**: `cargo clippy --workspace -- -D warnings`
 
+## Modern Rust Patterns (1.85+)
+
+### Let Chains (Edition 2024)
+```rust
+// Before - nested ifs
+if let Some(x) = opt {
+    if x > 0 {
+        if let Some(y) = other {
+            process(x, y);
+        }
+    }
+}
+
+// After - let chains
+if let Some(x) = opt && x > 0 && let Some(y) = other {
+    process(x, y);
+}
+
+// Works with while too
+while let Some(item) = iter.next() && item.is_valid() {
+    process(item);
+}
+```
+
+### Replace matches! with is_none_or (Rust 1.82+)
+```rust
+// Before
+if matches!(opt, None | Some(x) if x > 10) { ... }
+
+// After
+if opt.is_none_or(|x| x > 10) { ... }
+```
+
+### Replace nested Result with flatten (Rust 1.89+)
+```rust
+// Before
+match result {
+    Ok(Ok(value)) => Ok(value),
+    Ok(Err(e)) => Err(e),
+    Err(e) => Err(e),
+}
+
+// After
+result.flatten()
+```
+
 ## Common Refactorings
 
 ### Extract Function
