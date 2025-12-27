@@ -271,10 +271,13 @@ use regex::Regex;
 let re = Regex::new(user_input)?;
 
 // GOOD - pre-compiled patterns or validated
+use std::sync::LazyLock;
+use regex::Regex;
+
 const ALLOWED_PATTERN: &str = r"^[a-zA-Z0-9_-]+$";
-lazy_static! {
-    static ref NAME_REGEX: Regex = Regex::new(ALLOWED_PATTERN).unwrap();
-}
+static NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(ALLOWED_PATTERN).unwrap()
+});
 
 fn validate_name(name: &str) -> bool {
     NAME_REGEX.is_match(name)

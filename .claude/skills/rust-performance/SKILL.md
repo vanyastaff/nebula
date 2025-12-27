@@ -230,7 +230,9 @@ fn sum_array(arr: &[f32]) -> f32 {
     arr.iter().sum()  // Compiler can auto-vectorize
 }
 
-// Explicit SIMD with portable-simd (nightly)
+// Explicit SIMD with portable-simd (NIGHTLY ONLY - not for Nebula)
+// Nebula uses stable Rust (MSRV 1.90), so prefer auto-vectorization above
+// or use stable crates like `wide` for explicit SIMD
 #![feature(portable_simd)]
 use std::simd::*;
 

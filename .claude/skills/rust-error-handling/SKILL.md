@@ -299,13 +299,14 @@ let results: Result<Vec<_>, Error> = items
     .map(process_item)
     .collect();
 
-// Collect all: gather successes and failures
+// Collect all: gather successes and failures (requires itertools)
+use itertools::Itertools;
 let (successes, failures): (Vec<_>, Vec<_>) = items
     .into_iter()
     .map(process_item)
-    .partition_result();
+    .partition_result();  // From itertools crate
 
-// Partition manually
+// Partition manually (no external dependencies)
 let mut successes = Vec::new();
 let mut failures = Vec::new();
 for item in items {

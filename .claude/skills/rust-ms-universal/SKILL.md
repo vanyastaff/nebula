@@ -38,7 +38,7 @@ let _unused = compute();
 ```rust
 // SCREAMING_SNAKE_CASE
 const MAX_RETRIES: u32 = 3;
-static GLOBAL_CONFIG: Lazy<Config> = Lazy::new(|| Config::load());
+static GLOBAL_CONFIG: LazyLock<Config> = LazyLock::new(|| Config::load());
 ```
 
 ### Acronyms
