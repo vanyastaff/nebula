@@ -7,6 +7,32 @@ version: 1.0.0
 
 # Rust Async Patterns with Tokio
 
+## Async Closures (Rust 1.85+)
+
+```rust
+// Async closures - stable since Rust 1.85
+let fetch_data = async |url: &str| -> Result<Data, Error> {
+    let response = reqwest::get(url).await?;
+    response.json().await
+};
+
+// Use with higher-order functions
+async fn process_urls(urls: Vec<String>) -> Vec<Result<Data, Error>> {
+    let fetch = async |url: String| {
+        reqwest::get(&url).await?.json().await
+    };
+    
+    futures::future::join_all(urls.into_iter().map(fetch)).await
+}
+
+// Async closures capture by reference by default (like regular closures)
+let data = vec![1, 2, 3];
+let process = async || {
+    // `data` is borrowed here
+    data.iter().sum::<i32>()
+};
+```
+
 ## Task Management
 
 ### Spawning Tasks
@@ -203,6 +229,25 @@ impl SharedState {
 }
 ```
 
+### Downgrade Write Lock to Read Lock (Rust 1.92+)
+
+```rust
+use tokio::sync::RwLock;
+
+async fn update_and_read(lock: &RwLock<Data>) -> Data {
+    let mut write_guard = lock.write().await;
+    
+    // Modify data
+    write_guard.value += 1;
+    
+    // Downgrade to read lock without releasing
+    // Other readers can now access, but we keep our view
+    let read_guard = write_guard.downgrade();
+    
+    read_guard.clone()
+}
+```
+
 ### Avoid Holding Locks Across Await
 
 ```rust
@@ -340,6 +385,29 @@ async fn test_timeout() {
 }
 ```
 
+## Blocking Work in Async Context
+
+```rust
+use tokio::task::spawn_blocking;
+
+async fn process_with_cpu_work(data: Data) -> Result<Output, Error> {
+    // Don't block the async runtime with CPU-heavy work
+    let result = spawn_blocking(move || {
+        // CPU-intensive computation runs on blocking thread pool
+        expensive_computation(&data)
+    })
+    .await
+    .map_err(|e| Error::TaskPanic(e.to_string()))?;
+    
+    Ok(result)
+}
+
+// For sync I/O in async context
+async fn read_file_blocking(path: PathBuf) -> std::io::Result<String> {
+    spawn_blocking(move || std::fs::read_to_string(path)).await?
+}
+```
+
 ## Nebula-Specific Async Patterns
 
 - Default timeout: 30s for operations
@@ -349,3 +417,4 @@ async fn test_timeout() {
 - Use `JoinSet` for managing concurrent workflow steps
 - Prefer bounded channels to prevent memory exhaustion
 - Use `select!` for responsive shutdown handling
+- Use `spawn_blocking` for CPU-bound work

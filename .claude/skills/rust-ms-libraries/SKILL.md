@@ -347,8 +347,8 @@ pub fn new() -> Self { ... }
 [package]
 name = "my-library"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.70"  # MSRV
+edition = "2024"
+rust-version = "1.85"  # MSRV - Rust 2024 edition requires 1.85+
 description = "A brief description"
 documentation = "https://docs.rs/my-library"
 repository = "https://github.com/org/my-library"

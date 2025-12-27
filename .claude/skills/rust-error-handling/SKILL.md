@@ -131,6 +131,37 @@ fn validate_age(age: i32) -> Result<(), ValidationError> {
 }
 ```
 
+### IO Error Kinds (Rust 1.85+)
+
+```rust
+use std::io::{Error, ErrorKind};
+
+fn handle_io_error(err: Error) {
+    match err.kind() {
+        // New in Rust 1.85
+        ErrorKind::QuotaExceeded => {
+            eprintln!("Disk quota exceeded");
+        }
+        ErrorKind::CrossesDevices => {
+            eprintln!("Cannot move across filesystems, will copy instead");
+        }
+        // Common kinds
+        ErrorKind::NotFound => {
+            eprintln!("File not found");
+        }
+        ErrorKind::PermissionDenied => {
+            eprintln!("Permission denied");
+        }
+        ErrorKind::TimedOut => {
+            eprintln!("Operation timed out");
+        }
+        _ => {
+            eprintln!("IO error: {err}");
+        }
+    }
+}
+```
+
 ### Error Categorization
 
 ```rust

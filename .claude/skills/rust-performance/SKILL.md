@@ -201,6 +201,37 @@ let sum: i32 = items.iter()
     .sum();
 ```
 
+## Numeric Helpers (Rust 1.85+)
+
+```rust
+// midpoint() - avoids overflow, useful for binary search
+let a: u32 = 10;
+let b: u32 = 20;
+let mid = a.midpoint(b);  // 15, no overflow risk
+
+// Works with floats too
+let x: f64 = 1.0;
+let y: f64 = 3.0;
+let mid = x.midpoint(y);  // 2.0
+
+// Binary search example
+fn binary_search(arr: &[i32], target: i32) -> Option<usize> {
+    let mut low = 0usize;
+    let mut high = arr.len();
+    
+    while low < high {
+        // Use midpoint to avoid overflow on large indices
+        let mid = low.midpoint(high);
+        match arr[mid].cmp(&target) {
+            std::cmp::Ordering::Less => low = mid + 1,
+            std::cmp::Ordering::Greater => high = mid,
+            std::cmp::Ordering::Equal => return Some(mid),
+        }
+    }
+    None
+}
+```
+
 ## Inlining
 
 ```rust
