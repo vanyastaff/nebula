@@ -185,9 +185,10 @@ impl SharedState {
 #[error("Failed to read {path}: {source}")]
 ReadError { path: PathBuf, source: std::io::Error }
 
-// GOOD - sanitized error
+// GOOD - sanitized error (user sees generic message, details for logging)
 #[error("Failed to read configuration file")]
 ConfigReadError {
+    path: PathBuf,  // Keep for internal logging
     #[source]
     source: std::io::Error,
 }
@@ -195,7 +196,7 @@ ConfigReadError {
 impl ConfigReadError {
     /// Returns internal details for logging (not user-facing).
     pub fn internal_details(&self) -> String {
-        format!("path: {}, error: {}", self.path, self.source)
+        format!("path: {:?}, error: {}", self.path, self.source)
     }
 }
 ```
@@ -317,6 +318,52 @@ cargo clippy -- -W clippy::unwrap_used -W clippy::expect_used
 # Miri for undefined behavior (nightly)
 cargo +nightly miri test
 ```
+
+## Common Safety Issues Reference
+
+### Memory Safety Issues
+- **Stack/Heap overflow** - exceeding memory limits
+- **Integer overflow/underflow** - use `checked_*`, `saturating_*`, `wrapping_*`
+- **Null pointer dereference** - Rust prevents via Option, but watch for FFI
+- **Out-of-bounds access** - use safe slice methods, avoid unsafe indexing
+- **Uninitialized memory** - use `MaybeUninit` carefully in unsafe
+- **Type confusion** - ensure proper type casting, avoid transmute abuse
+
+### Rust-Specific Issues to Watch
+- **RefCell panic** - borrow checking at runtime can panic
+- **Mutex poisoning** - handle `PoisonError` from panicked threads
+- **Drop order dependencies** - be explicit about destruction order
+- **Async runtime blocking** - never use `std::thread::sleep` in async
+- **Pin projection issues** - use `pin-project` crate for safe projections
+- **Send/Sync violations** - ensure types are thread-safe if shared
+
+### Concurrency Issues
+- **Race condition** - use proper synchronization (Mutex, RwLock, atomics)
+- **Deadlock** - consistent lock ordering, avoid nested locks
+- **Livelock** - ensure progress in retry loops
+- **Starvation** - use fair locks (parking_lot), avoid long critical sections
+- **False sharing** - pad cache lines with `#[repr(align(64))]`
+- **ABA problem** - use epoch-based reclamation for lock-free code
+
+### Performance Anti-patterns
+- **Excessive cloning** - use references, Cow, or Arc where possible
+- **String concatenation in loops** - preallocate with `String::with_capacity`
+- **Unnecessary boxing** - prefer stack allocation for small types
+- **N+1 queries** - batch database operations
+- **Busy waiting** - use proper async or condvar waiting
+
+### Error Handling Anti-patterns
+- **Silent failures** - never ignore errors with `let _ = ...`
+- **Error swallowing** - log or propagate all errors
+- **Panic in libraries** - return Result, don't panic
+- **Unwrap/expect abuse** - only use in tests or with documented invariants
+- **Context loss** - chain errors with `.context()` or `#[from]`
+
+### Resource Management
+- **Resource leaks** - use RAII, implement Drop properly
+- **Connection pool exhaustion** - bound pools, add timeouts
+- **Unbounded growth** - use bounded channels and collections
+- **File descriptor exhaustion** - close handles promptly
 
 ## Nebula-Specific Safety
 

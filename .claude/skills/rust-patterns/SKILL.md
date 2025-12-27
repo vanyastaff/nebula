@@ -14,6 +14,15 @@ Comprehensive guide to idiomatic Rust patterns and advanced techniques.
 ### Builder Pattern
 
 ```rust
+use std::time::Duration;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum BuildError {
+    #[error("missing required field: {0}")]
+    MissingField(&'static str),
+}
+
 #[derive(Debug)]
 pub struct Server {
     host: String,
@@ -599,6 +608,156 @@ impl<'data, T> StreamingIterator for WindowedSlice<'data, T> {
         } else {
             None
         }
+    }
+}
+```
+
+### HRTB (Higher-Rank Trait Bounds)
+
+```rust
+// Function that accepts a closure working with any lifetime
+fn apply_to_ref<F>(f: F)
+where
+    F: for<'a> Fn(&'a str) -> &'a str,
+{
+    let s = String::from("hello");
+    println!("{}", f(&s));
+}
+
+// Useful for callbacks that work with borrowed data
+fn process_with_callback<F>(data: Vec<String>, callback: F)
+where
+    F: for<'a> Fn(&'a str) -> bool,
+{
+    for item in &data {
+        if callback(item) {
+            println!("Match: {}", item);
+        }
+    }
+}
+
+// Usage
+apply_to_ref(|s| s);
+process_with_callback(data, |s| s.starts_with("prefix"));
+```
+
+### Variance and Lifetime Bounds
+
+```rust
+use std::marker::PhantomData;
+
+// Covariant over 'a - can shorten lifetime
+struct Covariant<'a, T> {
+    value: &'a T,
+}
+
+// Invariant over 'a - lifetime must match exactly
+struct Invariant<'a, T> {
+    value: &'a mut T,
+}
+
+// Contravariant (rare) - can lengthen lifetime
+struct Contravariant<'a, T> {
+    func: fn(&'a T),
+    _marker: PhantomData<T>,
+}
+
+// Lifetime bounds on generic types
+struct Cache<'a, T: 'a> {
+    data: &'a T,
+}
+
+fn store_reference<'a, T: 'a>(cache: &mut Cache<'a, T>, value: &'a T) {
+    cache.data = value;
+}
+```
+
+### Never Type and Diverging Functions
+
+```rust
+// The never type (!) indicates a function never returns
+fn diverges() -> ! {
+    panic!("This never returns!");
+}
+
+// Useful in match arms
+fn example(condition: bool) -> i32 {
+    if condition {
+        42
+    } else {
+        diverges() // ! coerces to any type
+    }
+}
+
+// Common in infinite loops
+fn run_server() -> ! {
+    loop {
+        accept_connection();
+    }
+}
+
+// In Result handling
+fn must_succeed() -> Value {
+    match fallible_op() {
+        Ok(v) => v,
+        Err(_) => std::process::exit(1), // returns !
+    }
+}
+```
+
+### DST and ?Sized
+
+```rust
+// [T] and str are Dynamically Sized Types (DST)
+fn print_slice<T: std::fmt::Debug>(slice: &[T]) {
+    println!("{:?}", slice);
+}
+
+// By default, generics require T: Sized
+// Use ?Sized to accept unsized types
+fn generic_unsized<T: ?Sized + std::fmt::Debug>(value: &T) {
+    println!("{:?}", value);
+}
+
+// Works with both sized and unsized types
+generic_unsized(&42i32);      // &i32 - sized
+generic_unsized("hello");     // &str - unsized
+generic_unsized(&[1, 2, 3]);  // &[i32] - can work too
+
+// Trait objects are also DST
+fn call_draw(drawable: &dyn Draw) {
+    drawable.draw();
+}
+```
+
+### Zero-Sized Types (ZST)
+
+```rust
+struct MyZst;
+
+// Size = 0, no memory allocation needed
+assert_eq!(std::mem::size_of::<MyZst>(), 0);
+
+// Useful for type-level markers
+struct Collection<T, Strategy = DefaultStrategy> {
+    items: Vec<T>,
+    _strategy: PhantomData<Strategy>,
+}
+
+struct DefaultStrategy;
+struct SortedStrategy;
+
+// The strategy marker has no runtime cost
+impl<T> Collection<T, DefaultStrategy> {
+    fn add(&mut self, item: T) {
+        self.items.push(item);
+    }
+}
+
+impl<T: Ord> Collection<T, SortedStrategy> {
+    fn add(&mut self, item: T) {
+        let pos = self.items.binary_search(&item).unwrap_or_else(|p| p);
+        self.items.insert(pos, item);
     }
 }
 ```

@@ -242,6 +242,97 @@ cargo doc --no-deps 2>&1 | grep -i "warning"
 RUSTDOCFLAGS="-Z unstable-options --show-coverage" cargo +nightly doc --no-deps
 ```
 
+## API Guidelines Checklist (C-* conventions)
+
+### Naming (C-CASE)
+- Types: `UpperCamelCase` (`WorkflowEngine`, `NodeId`)
+- Functions/methods: `snake_case` (`execute_node`, `get_value`)
+- Constants: `SCREAMING_SNAKE_CASE` (`MAX_RETRIES`, `DEFAULT_TIMEOUT`)
+- Crate names: `kebab-case` (`nebula-core`, `nebula-value`)
+
+### Conversions (C-CONV)
+- `as_` prefix: cheap reference-to-reference (`as_str`, `as_bytes`)
+- `to_` prefix: expensive conversion (`to_string`, `to_vec`)
+- `into_` prefix: ownership transfer (`into_inner`, `into_boxed_slice`)
+- `from_` prefix: constructors from other types (`from_str`, `from_utf8`)
+
+### Getters (C-GETTER)
+- Field access: no `get_` prefix (`fn len()`, not `fn get_len()`)
+- Fallible getters: use `get` (`fn get(&self, key: K) -> Option<&V>`)
+
+### Iterators (C-ITER)
+- `iter()` - returns `Iterator<Item = &T>`
+- `iter_mut()` - returns `Iterator<Item = &mut T>`
+- `into_iter()` - returns `Iterator<Item = T>` (consumes collection)
+
+### Common Traits to Implement (C-COMMON-TRAITS)
+- `Debug` - always (derive or manual)
+- `Clone` - if sensible
+- `Default` - if there's a sensible default
+- `PartialEq`, `Eq` - if equality makes sense
+- `Hash` - if used as HashMap key
+- `Send`, `Sync` - if thread-safe
+
+### Conversion Traits (C-CONV-TRAITS)
+- `From<T>` - infallible conversion (auto-implements `Into`)
+- `TryFrom<T>` - fallible conversion
+- `AsRef<T>` - cheap reference conversion
+- `Deref` - for smart pointer types only
+
+### Serde (C-SERDE)
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Config {
+    #[serde(default)]
+    pub timeout_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub optional_field: Option<String>,
+}
+```
+
+### Type Safety (C-NEWTYPE, C-CUSTOM-TYPE)
+```rust
+// Use newtypes for type-safe IDs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WorkflowId(Uuid);
+
+// Use enums for constrained values
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Priority {
+    Low,
+    Normal,
+    High,
+    Critical,
+}
+```
+
+### Future Proofing (C-SEALED, C-STRUCT-PRIVATE)
+```rust
+// Sealed trait - prevents external implementations
+mod private {
+    pub trait Sealed {}
+}
+
+pub trait MyTrait: private::Sealed { /* ... */ }
+
+// Non-exhaustive enum - allows adding variants
+#[non_exhaustive]
+pub enum Error {
+    Io(std::io::Error),
+    Parse(ParseError),
+    // Future variants won't break downstream code
+}
+
+// Private field for extensibility
+pub struct Options {
+    pub timeout: Duration,
+    pub retries: u32,
+    // Private field prevents struct literal construction
+    _private: (),
+}
+```
+
 ## Best Practices
 
 1. **Write for the reader**: Assume they know Rust but not your code

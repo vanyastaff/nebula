@@ -229,23 +229,27 @@ impl SharedState {
 }
 ```
 
-### Downgrade Write Lock to Read Lock (Rust 1.92+)
+### Downgrade Write Lock to Read Lock
 
 ```rust
-use tokio::sync::RwLock;
+use parking_lot::RwLock;
 
-async fn update_and_read(lock: &RwLock<Data>) -> Data {
-    let mut write_guard = lock.write().await;
+// parking_lot RwLock supports downgrade (not available in tokio::sync::RwLock)
+fn update_and_read(lock: &RwLock<Data>) -> Data {
+    let mut write_guard = lock.write();
     
     // Modify data
     write_guard.value += 1;
     
-    // Downgrade to read lock without releasing
+    // Atomically downgrade to read lock without releasing
     // Other readers can now access, but we keep our view
-    let read_guard = write_guard.downgrade();
+    let read_guard = parking_lot::RwLockWriteGuard::downgrade(write_guard);
     
     read_guard.clone()
 }
+
+// Note: std::sync::RwLockWriteGuard::downgrade stabilized in Rust 1.92
+// For async code, use parking_lot or clone data before releasing write lock
 ```
 
 ### Avoid Holding Locks Across Await
@@ -405,6 +409,78 @@ async fn process_with_cpu_work(data: Data) -> Result<Output, Error> {
 // For sync I/O in async context
 async fn read_file_blocking(path: PathBuf) -> std::io::Result<String> {
     spawn_blocking(move || std::fs::read_to_string(path)).await?
+}
+```
+
+## Async Anti-patterns and Pitfalls
+
+### Common Async Issues
+- **Blocking in async** - never use `std::thread::sleep`, `std::sync::Mutex`, or blocking I/O
+- **Runtime mixing** - don't mix Tokio and async-std; pick one runtime
+- **Send bound violations** - ensure spawned futures are Send
+- **Task starvation** - yield periodically in long computations with `tokio::task::yield_now()`
+- **Unbounded channel growth** - always use bounded channels for backpressure
+- **Select bias** - `select!` polls randomly by default; use `biased;` for deterministic priority order
+- **Cancellation unsafety** - dropped futures may leave resources in inconsistent state
+- **Future leak** - spawned tasks without JoinHandle tracking can leak
+
+### Async Recursion
+```rust
+// BAD - infinite stack size due to recursive future
+async fn bad_recursive(n: u32) -> u32 {
+    if n == 0 { 0 } else { bad_recursive(n - 1).await }
+}
+
+// GOOD - use Box::pin for async recursion
+use std::pin::Pin;
+use std::future::Future;
+
+fn good_recursive(n: u32) -> Pin<Box<dyn Future<Output = u32> + Send>> {
+    Box::pin(async move {
+        if n == 0 { 0 } else { good_recursive(n - 1).await }
+    })
+}
+```
+
+### Avoiding Blocking
+```rust
+// BAD - blocks the async runtime
+async fn bad_blocking() {
+    std::thread::sleep(Duration::from_secs(1));  // Blocks!
+    std::fs::read_to_string("file.txt");         // Blocks!
+}
+
+// GOOD - use async alternatives or spawn_blocking
+async fn good_non_blocking() {
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::fs::read_to_string("file.txt").await;
+    
+    // For unavoidable blocking:
+    tokio::task::spawn_blocking(|| {
+        heavy_cpu_work()
+    }).await;
+}
+```
+
+### Proper Mutex Usage
+```rust
+use tokio::sync::Mutex;  // NOT std::sync::Mutex
+
+// GOOD - tokio Mutex for async
+async fn async_safe(data: Arc<tokio::sync::Mutex<Data>>) {
+    let guard = data.lock().await;
+    // Use guard
+}
+
+// ALSO GOOD - parking_lot for short non-async critical sections
+use parking_lot::Mutex;
+
+async fn quick_sync(data: Arc<parking_lot::Mutex<Data>>) {
+    let result = {
+        let guard = data.lock();  // Very brief, OK
+        guard.clone()
+    };  // Lock released immediately
+    do_async_work(result).await;
 }
 ```
 
