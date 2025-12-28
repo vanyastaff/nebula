@@ -2,7 +2,6 @@
 name: rust-security
 description: Rust security best practices and vulnerability prevention. Use when handling user input, authentication, cryptography, secrets management, network security, or conducting security reviews.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Rust Security Best Practices

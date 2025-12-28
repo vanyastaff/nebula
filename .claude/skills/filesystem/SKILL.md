@@ -2,7 +2,6 @@
 name: filesystem
 description: Filesystem operations and codebase navigation. Use when exploring project structure, finding files, searching code, reading/writing files, or understanding codebase organization.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Filesystem Operations

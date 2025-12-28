@@ -2,7 +2,6 @@
 name: rust-ms-applications
 description: Microsoft Pragmatic Rust Application Guidelines. Use when building CLI tools, binaries, services, or user-facing applications.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Microsoft Pragmatic Rust - Application Guidelines

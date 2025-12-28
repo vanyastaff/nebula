@@ -2,7 +2,6 @@
 name: rust-tdd
 description: Test-Driven Development for Rust. Use when creating new functionality, writing tests, or fixing bugs through the Red-Green-Refactor TDD cycle.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Rust TDD Workflow

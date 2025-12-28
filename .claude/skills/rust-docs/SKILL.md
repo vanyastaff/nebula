@@ -2,7 +2,6 @@
 name: rust-docs
 description: Rust documentation generation and improvement. Use when documenting public APIs, creating examples, writing module-level docs, or improving existing documentation.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Rust Documentation Standards

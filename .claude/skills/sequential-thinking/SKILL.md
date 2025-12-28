@@ -2,7 +2,6 @@
 name: sequential-thinking
 description: Sequential thinking and structured reasoning process. Use for complex problems, debugging, architectural decisions, or any task requiring careful step-by-step analysis before action.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Sequential Thinking Process

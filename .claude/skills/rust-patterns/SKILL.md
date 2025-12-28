@@ -2,7 +2,6 @@
 name: rust-patterns
 description: Rust design patterns and advanced language patterns. Use when designing APIs, implementing complex abstractions, applying type-level programming, or looking for idiomatic solutions to common problems.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Rust Design Patterns and Advanced Patterns

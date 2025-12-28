@@ -2,7 +2,6 @@
 name: rust-ffi
 description: Microsoft Pragmatic Rust FFI Guidelines. Use when working with C/C++ interop, creating cdylib, writing unsafe FFI code, or multi-DLL Rust projects.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Microsoft Pragmatic Rust - FFI Guidelines

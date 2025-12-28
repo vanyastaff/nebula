@@ -2,7 +2,6 @@
 name: rust-tracing
 description: Rust tracing and structured logging with the tracing ecosystem. Use when adding logging, instrumenting functions, setting up observability, configuring log output, or debugging with traces.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Rust Tracing and Structured Logging

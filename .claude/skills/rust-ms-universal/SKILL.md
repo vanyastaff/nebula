@@ -2,7 +2,6 @@
 name: rust-ms-universal
 description: Microsoft Pragmatic Rust Universal Guidelines. Use when reviewing naming conventions, code style, import organization, or applying foundational Rust idioms like Option/Result combinators and destructuring.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Microsoft Pragmatic Rust - Universal Guidelines

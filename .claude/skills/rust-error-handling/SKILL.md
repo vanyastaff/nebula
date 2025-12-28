@@ -2,7 +2,6 @@
 name: rust-error-handling
 description: Rust error handling patterns and best practices. Use when designing error types, implementing error propagation, adding error context, converting between error types, or debugging error handling issues.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Rust Error Handling

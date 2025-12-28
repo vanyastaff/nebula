@@ -2,7 +2,6 @@
 name: rust-performance
 description: Rust performance optimization. Use when optimizing code, reducing allocations, improving cache locality, profiling, or benchmarking.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Rust Performance Optimization

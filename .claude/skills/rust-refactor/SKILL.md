@@ -2,7 +2,6 @@
 name: rust-refactor
 description: Rust code refactoring with API compatibility preservation. Use when improving code structure, eliminating duplication, optimizing, or restructuring modules.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Rust Refactoring Patterns

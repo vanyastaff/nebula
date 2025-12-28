@@ -2,7 +2,6 @@
 name: rust-async
 description: Rust async/await patterns with Tokio. Use when writing async code, handling concurrency, managing tasks, working with channels, or debugging async issues.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Rust Async Patterns with Tokio

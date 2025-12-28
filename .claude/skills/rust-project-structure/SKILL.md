@@ -2,7 +2,6 @@
 name: rust-project-structure
 description: Rust project organization and structure. Use when creating new projects, organizing modules, setting up workspaces, configuring Cargo.toml, or migrating between editions.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Rust Project Structure and Organization

@@ -2,7 +2,6 @@
 name: rust-safety
 description: Rust safety patterns and secure coding. Use when writing code that handles untrusted input, uses unsafe blocks, deals with memory safety, or requires security review.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Rust Safety Guidelines

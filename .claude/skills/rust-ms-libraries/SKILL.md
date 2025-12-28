@@ -2,7 +2,6 @@
 name: rust-ms-libraries
 description: Microsoft Pragmatic Rust Library Guidelines. Use when designing library crates, public APIs, managing dependencies, or creating reusable components.
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob
-version: 1.0.0
 ---
 
 # Microsoft Pragmatic Rust - Library Guidelines
