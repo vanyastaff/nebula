@@ -1,0 +1,55 @@
+[package]
+name = "nebula-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "UI component library for Nebula workflow automation"
+license.workspace = true
+repository.workspace = true
+keywords = ["ui", "egui", "workflow", "components", "theme"]
+categories = ["gui", "visualization"]
+
+[features]
+default = ["std"]
+std = []
+persistence = ["dep:serde", "egui/persistence"]
+full = ["std", "persistence"]
+
+[dependencies]
+# Core UI framework
+egui = "0.33.3"
+eframe = { version = "0.33.3", default-features = false, features = ["glow"] }
+
+# Graphics
+epaint = "0.33.3"
+
+# Drag and drop
+egui_dnd = "0.14"
+
+# Workspace dependencies
+nebula-value = { path = "../nebula-value", features = ["full"] }
+
+# Async & concurrency
+parking_lot.workspace = true
+once_cell.workspace = true
+
+# Data structures
+smallvec.workspace = true
+
+# Date/time
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+# Optional: serialization for persistence
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+
+[[example]]
+name = "basic"
+path = "examples/basic.rs"
+
+[[example]]
+name = "components_showcase"
+path = "examples/components_showcase.rs"

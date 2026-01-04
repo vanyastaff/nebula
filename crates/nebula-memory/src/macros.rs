@@ -399,18 +399,30 @@ macro_rules! alloc {
     // Simple typed allocation
     ($allocator:expr, $ty:ty) => {{
         use $crate::allocator::TypedAllocator;
+        // SAFETY: alloc_typed is safe when:
+        // - Allocator implements Allocator trait correctly
+        // - Caller ensures returned pointer is used correctly (lifetime, alignment)
+        // - Type $ty has valid layout (checked by TypedAllocator)
         unsafe { $allocator.alloc_typed::<$ty>() }
     }};
 
     // Allocation with initialization
     ($allocator:expr, $ty:ty = $value:expr) => {{
         use $crate::allocator::TypedAllocator;
+        // SAFETY: alloc_init is safe when:
+        // - Allocator provides valid, aligned memory
+        // - $value is valid instance of $ty
+        // - Initialization writes are within allocated bounds
         unsafe { $allocator.alloc_init::<$ty>($value) }
     }};
 
     // Array allocation
     ($allocator:expr, [$ty:ty; $count:expr]) => {{
         use $crate::allocator::TypedAllocator;
+        // SAFETY: alloc_array is safe when:
+        // - Allocator provides sufficient contiguous memory
+        // - size_of::<$ty>() * $count doesn't overflow
+        // - Array layout is valid (checked by TypedAllocator)
         unsafe { $allocator.alloc_array::<$ty>($count) }
     }};
 }
@@ -437,12 +449,20 @@ macro_rules! dealloc {
     // Deallocate typed pointer
     ($allocator:expr, $ptr:expr, $ty:ty) => {{
         use $crate::allocator::TypedAllocator;
+        // SAFETY: dealloc is safe when:
+        // - $ptr was allocated by $allocator
+        // - $ptr has not been deallocated yet (no double-free)
+        // - Layout matches original allocation
         unsafe { $allocator.dealloc::<$ty>($ptr) }
     }};
 
     // Deallocate array
     ($allocator:expr, $ptr:expr, [$ty:ty; $count:expr]) => {{
         use $crate::allocator::TypedAllocator;
+        // SAFETY: dealloc_array is safe when:
+        // - $ptr was allocated as array by $allocator
+        // - Array size matches original allocation
+        // - No double-free (pointer used only once)
         unsafe { $allocator.dealloc_array::<$ty>($ptr) }
     }};
 }

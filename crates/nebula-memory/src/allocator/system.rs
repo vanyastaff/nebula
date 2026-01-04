@@ -254,6 +254,9 @@ mod tests {
         let allocator = SystemAllocator::new();
         let layout = Layout::new::<u64>();
 
+        // SAFETY: Test allocates and deallocates with matching layout.
+        // - layout is valid (from Layout::new)
+        // - ptr is deallocated with same layout it was allocated with
         unsafe {
             let ptr = allocator.allocate(layout).unwrap();
             assert!(!ptr.as_ptr().is_null());
@@ -268,6 +271,9 @@ mod tests {
         let allocator = SystemAllocator::new();
         let layout = Layout::new::<()>();
 
+        // SAFETY: Zero-sized allocation test.
+        // - layout.size() == 0, returns dangling pointer
+        // - deallocate with zero-size is no-op
         unsafe {
             let ptr = allocator.allocate(layout).unwrap();
             assert_eq!(ptr.len(), 0);
@@ -282,6 +288,12 @@ mod tests {
         let old_layout = Layout::new::<u32>();
         let new_layout = Layout::new::<u64>();
 
+        // SAFETY: Test reallocates memory preserving data.
+        // - ptr allocated with old_layout
+        // - write to ptr is within bounds (u32 size)
+        // - reallocate copies data to new location
+        // - read from new_ptr within bounds
+        // - final deallocate with correct new_layout
         unsafe {
             let ptr = allocator.allocate(old_layout).unwrap();
 
@@ -306,6 +318,9 @@ mod tests {
         // Try to create layout with invalid alignment
         if let Ok(layout) = Layout::from_size_align(8, 3) {
             // 3 is not power of 2
+            // SAFETY: Test error handling for invalid alignment.
+            // - layout has non-power-of-2 alignment (intentional error case)
+            // - allocate should return error, not proceed with allocation
             unsafe {
                 let result = allocator.allocate(layout);
                 assert!(result.is_err());
@@ -322,6 +337,10 @@ mod tests {
         let layout = Layout::new::<u32>();
         let count = 10;
 
+        // SAFETY: Test bulk allocation/deallocation.
+        // - allocate_contiguous allocates contiguous array of 10 u32s
+        // - ptr.len() should equal total size (layout.size() * count)
+        // - deallocate_contiguous with matching layout and count
         unsafe {
             let ptr = allocator.allocate_contiguous(layout, count).unwrap();
             assert_eq!(ptr.len(), layout.size() * count);

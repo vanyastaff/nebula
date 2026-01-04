@@ -12,6 +12,7 @@ members = [
     "crates/nebula-resilience",
     "crates/nebula-resource",
     "crates/nebula-system",
+    "crates/nebula-ui",
     "crates/nebula-validator",
     "crates/nebula-value"
 ]
@@ -99,8 +100,10 @@ tempfile = "3.24.0"
 proptest = "1.9"
 criterion = "0.8.1"
 
+
+
 [profile.dev]
-# Standard dev mode (dependency optimization disabled due to Windows compiler ICE)
+# Standard dev mode
 opt-level = 0
 incremental = true
 debug = 2

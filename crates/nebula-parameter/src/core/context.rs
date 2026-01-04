@@ -9,8 +9,8 @@ use nebula_value::Value;
 use tokio::sync::broadcast;
 
 use super::{
-    DisplayContext, ParameterCollection, ParameterEvent, ParameterFlags, ParameterSnapshot,
-    ParameterState, ParameterValues,
+    DisplayContext, ParameterCollection, ParameterEvent, ParameterSnapshot, ParameterState,
+    ParameterValues, StateFlags,
 };
 
 /// Default capacity for the event broadcast channel.
@@ -140,7 +140,7 @@ impl ParameterContext {
         // Reset all states to clean
         for state in self.states.values_mut() {
             state.mark_clean();
-            state.clear_flag(ParameterFlags::TOUCHED);
+            state.clear_flag(StateFlags::TOUCHED);
         }
 
         let _ = self.event_tx.send(ParameterEvent::Loaded);
@@ -430,7 +430,6 @@ impl std::fmt::Debug for ParameterContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{ParameterBase, ParameterMetadata};
     use crate::types::TextParameter;
 
     fn test_key(name: &str) -> ParameterKey {
@@ -441,27 +440,17 @@ mod tests {
         let mut collection = ParameterCollection::new();
         collection.add(
             TextParameter::builder()
-                .base(ParameterBase::new(
-                    ParameterMetadata::builder()
-                        .key("name")
-                        .name("Name")
-                        .description("")
-                        .build()
-                        .unwrap(),
-                ))
-                .build(),
+                .key("name")
+                .name("Name")
+                .build()
+                .unwrap(),
         );
         collection.add(
             TextParameter::builder()
-                .base(ParameterBase::new(
-                    ParameterMetadata::builder()
-                        .key("email")
-                        .name("Email")
-                        .description("")
-                        .build()
-                        .unwrap(),
-                ))
-                .build(),
+                .key("email")
+                .name("Email")
+                .build()
+                .unwrap(),
         );
         Arc::new(collection)
     }

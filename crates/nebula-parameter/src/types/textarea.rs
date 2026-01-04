@@ -1,37 +1,280 @@
+//! Textarea parameter type for multi-line text input
+
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
 
 /// Parameter for multi-line text input
-#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_parameter::prelude::*;
+///
+/// let param = TextareaParameter::builder()
+///     .key("description")
+///     .name("Description")
+///     .description("Enter a detailed description")
+///     .options(
+///         TextareaParameterOptions::builder()
+///             .min_length(10)
+///             .max_length(1000)
+///             .build()
+///     )
+///     .build()?;
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextareaParameter {
-    /// Base parameter fields (metadata, display, validation)
+    /// Parameter metadata (key, name, description, etc.)
     #[serde(flatten)]
-    pub base: ParameterBase,
+    pub metadata: ParameterMetadata,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<nebula_value::Text>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<TextareaParameterOptions>,
+
+    /// Display conditions controlling when this parameter is shown
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<ParameterDisplay>,
+
+    /// Validation rules for this parameter
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
+/// Configuration options for textarea parameters
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TextareaParameterOptions {
     /// Minimum number of characters
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_length: Option<usize>,
 
     /// Maximum number of characters
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_length: Option<usize>,
 }
+
+// =============================================================================
+// TextareaParameter Builder
+// =============================================================================
+
+/// Builder for `TextareaParameter`
+#[derive(Debug, Default)]
+pub struct TextareaParameterBuilder {
+    // Metadata fields
+    key: Option<String>,
+    name: Option<String>,
+    description: String,
+    required: bool,
+    placeholder: Option<String>,
+    hint: Option<String>,
+    // Parameter fields
+    default: Option<nebula_value::Text>,
+    options: Option<TextareaParameterOptions>,
+    display: Option<ParameterDisplay>,
+    validation: Option<ParameterValidation>,
+}
+
+impl TextareaParameter {
+    /// Create a new builder
+    #[must_use]
+    pub fn builder() -> TextareaParameterBuilder {
+        TextareaParameterBuilder::new()
+    }
+}
+
+impl TextareaParameterBuilder {
+    /// Create a new builder
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            key: None,
+            name: None,
+            description: String::new(),
+            required: false,
+            placeholder: None,
+            hint: None,
+            default: None,
+            options: None,
+            display: None,
+            validation: None,
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Metadata methods
+    // -------------------------------------------------------------------------
+
+    /// Set the parameter key (required)
+    #[must_use]
+    pub fn key(mut self, key: impl Into<String>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    /// Set the display name (required)
+    #[must_use]
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set the description
+    #[must_use]
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// Set whether the parameter is required
+    #[must_use]
+    pub fn required(mut self, required: bool) -> Self {
+        self.required = required;
+        self
+    }
+
+    /// Set placeholder text
+    #[must_use]
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    /// Set hint text
+    #[must_use]
+    pub fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    // -------------------------------------------------------------------------
+    // Parameter-specific methods
+    // -------------------------------------------------------------------------
+
+    /// Set the default value
+    #[must_use]
+    pub fn default(mut self, default: impl Into<nebula_value::Text>) -> Self {
+        self.default = Some(default.into());
+        self
+    }
+
+    /// Set the options
+    #[must_use]
+    pub fn options(mut self, options: TextareaParameterOptions) -> Self {
+        self.options = Some(options);
+        self
+    }
+
+    /// Set display conditions
+    #[must_use]
+    pub fn display(mut self, display: ParameterDisplay) -> Self {
+        self.display = Some(display);
+        self
+    }
+
+    /// Set validation rules
+    #[must_use]
+    pub fn validation(mut self, validation: ParameterValidation) -> Self {
+        self.validation = Some(validation);
+        self
+    }
+
+    // -------------------------------------------------------------------------
+    // Build
+    // -------------------------------------------------------------------------
+
+    /// Build the `TextareaParameter`
+    ///
+    /// # Errors
+    ///
+    /// Returns error if required fields are missing or key format is invalid.
+    pub fn build(self) -> Result<TextareaParameter, ParameterError> {
+        let metadata = ParameterMetadata::builder()
+            .key(
+                self.key
+                    .ok_or_else(|| ParameterError::BuilderMissingField {
+                        field: "key".into(),
+                    })?,
+            )
+            .name(
+                self.name
+                    .ok_or_else(|| ParameterError::BuilderMissingField {
+                        field: "name".into(),
+                    })?,
+            )
+            .description(self.description)
+            .required(self.required)
+            .build()?;
+
+        let mut metadata = metadata;
+        metadata.placeholder = self.placeholder;
+        metadata.hint = self.hint;
+
+        Ok(TextareaParameter {
+            metadata,
+            default: self.default,
+            options: self.options,
+            display: self.display,
+            validation: self.validation,
+        })
+    }
+}
+
+// =============================================================================
+// TextareaParameterOptions Builder
+// =============================================================================
+
+/// Builder for `TextareaParameterOptions`
+#[derive(Debug, Default)]
+pub struct TextareaParameterOptionsBuilder {
+    min_length: Option<usize>,
+    max_length: Option<usize>,
+}
+
+impl TextareaParameterOptions {
+    /// Create a new builder
+    #[must_use]
+    pub fn builder() -> TextareaParameterOptionsBuilder {
+        TextareaParameterOptionsBuilder::default()
+    }
+}
+
+impl TextareaParameterOptionsBuilder {
+    /// Set minimum length
+    #[must_use]
+    pub fn min_length(mut self, min_length: usize) -> Self {
+        self.min_length = Some(min_length);
+        self
+    }
+
+    /// Set maximum length
+    #[must_use]
+    pub fn max_length(mut self, max_length: usize) -> Self {
+        self.max_length = Some(max_length);
+        self
+    }
+
+    /// Build the options
+    #[must_use]
+    pub fn build(self) -> TextareaParameterOptions {
+        TextareaParameterOptions {
+            min_length: self.min_length,
+            max_length: self.max_length,
+        }
+    }
+}
+
+// =============================================================================
+// Trait Implementations
+// =============================================================================
 
 impl Describable for TextareaParameter {
     fn kind(&self) -> ParameterKind {
@@ -39,13 +282,13 @@ impl Describable for TextareaParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.base.metadata
+        &self.metadata
     }
 }
 
 impl std::fmt::Display for TextareaParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TextareaParameter({})", self.base.metadata.name)
+        write!(f, "TextareaParameter({})", self.metadata.name)
     }
 }
 
@@ -60,7 +303,7 @@ impl Validatable for TextareaParameter {
             let actual = value.kind();
             if actual != ValueKind::Null && actual != expected {
                 return Err(ParameterError::InvalidType {
-                    key: self.base.metadata.key.clone(),
+                    key: self.metadata.key.clone(),
                     expected_type: expected.name().to_string(),
                     actual_details: actual.name().to_string(),
                 });
@@ -70,7 +313,7 @@ impl Validatable for TextareaParameter {
         // Required check
         if self.is_required() && self.is_empty(value) {
             return Err(ParameterError::MissingValue {
-                key: self.base.metadata.key.clone(),
+                key: self.metadata.key.clone(),
             });
         }
 
@@ -82,7 +325,7 @@ impl Validatable for TextareaParameter {
                 && text.len() < min_len
             {
                 return Err(ParameterError::InvalidValue {
-                    key: self.base.metadata.key.clone(),
+                    key: self.metadata.key.clone(),
                     reason: format!("Text too short: {} chars, minimum {}", text.len(), min_len),
                 });
             }
@@ -90,7 +333,7 @@ impl Validatable for TextareaParameter {
                 && text.len() > max_len
             {
                 return Err(ParameterError::InvalidValue {
-                    key: self.base.metadata.key.clone(),
+                    key: self.metadata.key.clone(),
                     reason: format!("Text too long: {} chars, maximum {}", text.len(), max_len),
                 });
             }
@@ -100,7 +343,7 @@ impl Validatable for TextareaParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.base.validation.as_ref()
+        self.validation.as_ref()
     }
 
     fn is_empty(&self, value: &Value) -> bool {
@@ -110,11 +353,11 @@ impl Validatable for TextareaParameter {
 
 impl Displayable for TextareaParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.base.display.as_ref()
+        self.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.base.display = display;
+        self.display = display;
     }
 }
 
@@ -132,11 +375,63 @@ impl TextareaParameter {
             && let Some(max_len) = options.max_length
         {
             let current = self.character_count(value);
-            // Use try_from to safely convert usize to i32, saturating at i32::MAX if too large
             let max = i32::try_from(max_len).unwrap_or(i32::MAX);
             let curr = i32::try_from(current).unwrap_or(i32::MAX);
             return Some(max.saturating_sub(curr));
         }
         None
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_textarea_parameter_builder() {
+        let param = TextareaParameter::builder()
+            .key("description")
+            .name("Description")
+            .description("Enter a detailed description")
+            .required(true)
+            .build()
+            .unwrap();
+
+        assert_eq!(param.metadata.key.as_str(), "description");
+        assert_eq!(param.metadata.name, "Description");
+        assert!(param.metadata.required);
+    }
+
+    #[test]
+    fn test_textarea_parameter_with_options() {
+        let param = TextareaParameter::builder()
+            .key("bio")
+            .name("Biography")
+            .options(
+                TextareaParameterOptions::builder()
+                    .min_length(10)
+                    .max_length(500)
+                    .build(),
+            )
+            .build()
+            .unwrap();
+
+        let opts = param.options.unwrap();
+        assert_eq!(opts.min_length, Some(10));
+        assert_eq!(opts.max_length, Some(500));
+    }
+
+    #[test]
+    fn test_textarea_parameter_missing_key() {
+        let result = TextareaParameter::builder().name("Test").build();
+
+        assert!(matches!(
+            result,
+            Err(ParameterError::BuilderMissingField { field }) if field == "key"
+        ));
     }
 }

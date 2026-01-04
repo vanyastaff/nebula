@@ -1,184 +1,165 @@
-// =============================================================================
-// Parameter Metadata - Core parameter identification and description
-// =============================================================================
+//! Parameter Metadata - Core parameter identification and description
 //!
 //! Metadata provides the core identification and descriptive information
 //! for parameters. It's used by all parameter types to store basic attributes
 //! like key, name, description, and UI hints.
 
 use crate::core::ParameterError;
-use bon::bon;
 use nebula_core::ParameterKey;
 use serde::{Deserialize, Serialize};
-use serde_with::skip_serializing_none;
 
 /// Core metadata for all parameters
 ///
 /// This structure contains the essential identification and descriptive information
-/// needed by all parameter types. It follows the builder pattern for ergonomic construction.
+/// needed by all parameter types.
 ///
 /// # Examples
 ///
 /// ```rust,ignore
 /// use nebula_parameter::ParameterMetadata;
 ///
-/// // Basic metadata
 /// let metadata = ParameterMetadata::builder()
 ///     .key("username")
 ///     .name("Username")
 ///     .description("Your account username")
-///     .build()?;
-///
-/// // Required parameter with hints
-/// let metadata = ParameterMetadata::builder()
-///     .key("email")
-///     .name("Email Address")
-///     .description("Your email for notifications")
 ///     .required(true)
-///     .placeholder("user@example.com")
-///     .hint("We'll never share your email")
+///     .placeholder("john_doe")
 ///     .build()?;
 /// ```
-#[skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub struct ParameterMetadata {
     /// Unique identifier for the parameter
     ///
     /// Must be a valid `ParameterKey` (lowercase, alphanumeric, underscores).
-    /// Used as the stable identifier for parameter access and storage.
     pub key: ParameterKey,
 
     /// Human-readable display name
-    ///
-    /// Shown to users in UI forms. Should be concise and descriptive.
     pub name: String,
 
     /// Detailed description of the parameter's purpose
-    ///
-    /// Provides context and guidance to users. Can be multi-line.
+    #[serde(default)]
     pub description: String,
 
     /// Whether this parameter must be provided
-    ///
-    /// When `true`, validation will fail if no value is set.
-    /// Defaults to `false` (optional parameter).
     #[serde(default)]
     pub required: bool,
 
     /// Placeholder text for UI inputs
-    ///
-    /// Shown in empty input fields as a hint. Should be an example value.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
 
     /// Additional help text or usage hint
-    ///
-    /// Supplementary information shown near the input, typically in smaller text.
-    /// Use for format specifications, character limits, etc.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
 }
 
-#[bon]
+// =============================================================================
+// Builder
+// =============================================================================
+
+/// Builder for `ParameterMetadata`
+#[derive(Debug, Default)]
+pub struct ParameterMetadataBuilder {
+    key: Option<String>,
+    name: Option<String>,
+    description: String,
+    required: bool,
+    placeholder: Option<String>,
+    hint: Option<String>,
+}
+
 impl ParameterMetadata {
-    /// Create metadata with validation (builder pattern)
-    ///
-    /// This is the primary constructor that validates the key format.
-    /// Use the builder pattern for a more ergonomic API.
+    /// Create a new builder for `ParameterMetadata`
+    #[must_use]
+    pub fn builder() -> ParameterMetadataBuilder {
+        ParameterMetadataBuilder::default()
+    }
+}
+
+impl ParameterMetadataBuilder {
+    /// Set the parameter key (required)
+    #[must_use]
+    pub fn key(mut self, key: impl Into<String>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    /// Set the display name (required)
+    #[must_use]
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set the description
+    #[must_use]
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// Set whether the parameter is required
+    #[must_use]
+    pub fn required(mut self, required: bool) -> Self {
+        self.required = required;
+        self
+    }
+
+    /// Set placeholder text
+    #[must_use]
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    /// Set hint text
+    #[must_use]
+    pub fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    /// Set placeholder text if Some
+    #[must_use]
+    pub fn maybe_placeholder(mut self, placeholder: Option<String>) -> Self {
+        self.placeholder = placeholder;
+        self
+    }
+
+    /// Set hint text if Some
+    #[must_use]
+    pub fn maybe_hint(mut self, hint: Option<String>) -> Self {
+        self.hint = hint;
+        self
+    }
+
+    /// Build the `ParameterMetadata`
     ///
     /// # Errors
     ///
-    /// Returns `ParameterError::InvalidKeyFormat` if the key is invalid.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// let metadata = ParameterMetadata::builder()
-    ///     .key("api_key")
-    ///     .name("API Key")
-    ///     .description("Your authentication key")
-    ///     .required(true)
-    ///     .build()?;
-    /// ```
-    #[builder]
-    pub fn new(
-        key: impl Into<String>,
-        name: impl Into<String>,
-        description: impl Into<String>,
-        #[builder(default = false)] required: bool,
-        placeholder: Option<String>,
-        hint: Option<String>,
-    ) -> Result<Self, ParameterError> {
-        Ok(Self {
-            key: ParameterKey::new(key.into())?,
-            name: name.into(),
-            description: description.into(),
-            required,
-            placeholder,
-            hint,
-        })
-    }
+    /// Returns error if `key` or `name` is not set, or if key format is invalid.
+    pub fn build(self) -> Result<ParameterMetadata, ParameterError> {
+        let key_str = self
+            .key
+            .ok_or_else(|| ParameterError::BuilderMissingField {
+                field: "key".into(),
+            })?;
 
-    /// Create required parameter metadata
-    ///
-    /// Convenience method for creating metadata with `required = true`.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// let metadata = ParameterMetadata::builder()
-    ///     .required()
-    ///     .key("password")
-    ///     .name("Password")
-    ///     .description("Your secure password")
-    ///     .build()?;
-    /// ```
-    #[builder]
-    pub fn required(
-        key: impl Into<String>,
-        name: impl Into<String>,
-        description: impl Into<String>,
-        placeholder: Option<String>,
-        hint: Option<String>,
-    ) -> Result<Self, ParameterError> {
-        Ok(Self {
-            key: ParameterKey::new(key.into())?,
-            name: name.into(),
-            description: description.into(),
-            required: true,
-            placeholder,
-            hint,
-        })
-    }
+        let name = self
+            .name
+            .ok_or_else(|| ParameterError::BuilderMissingField {
+                field: "name".into(),
+            })?;
 
-    /// Create optional parameter metadata
-    ///
-    /// Convenience method for creating basic optional metadata without UI hints.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// let metadata = ParameterMetadata::builder()
-    ///     .optional()
-    ///     .key("middle_name")
-    ///     .name("Middle Name")
-    ///     .description("Your middle name (optional)")
-    ///     .build()?;
-    /// ```
-    #[builder]
-    pub fn optional(
-        key: impl Into<String>,
-        name: impl Into<String>,
-        description: impl Into<String>,
-    ) -> Result<Self, ParameterError> {
-        Ok(Self {
-            key: ParameterKey::new(key.into())?,
-            name: name.into(),
-            description: description.into(),
-            required: false,
-            placeholder: None,
-            hint: None,
+        let key = ParameterKey::new(key_str)?;
+
+        Ok(ParameterMetadata {
+            key,
+            name,
+            description: self.description,
+            required: self.required,
+            placeholder: self.placeholder,
+            hint: self.hint,
         })
     }
 }
@@ -266,8 +247,8 @@ mod tests {
             .key("email")
             .name("Email")
             .description("Your email address")
-            .placeholder("user@example.com".to_string())
-            .hint("We'll never share your email".to_string())
+            .placeholder("user@example.com")
+            .hint("We'll never share your email")
             .build()
             .unwrap();
 
@@ -276,14 +257,40 @@ mod tests {
     }
 
     #[test]
-    fn test_metadata_invalid_key() {
+    fn test_metadata_missing_key() {
         let result = ParameterMetadata::builder()
-            .key("Invalid Key!") // Spaces and special chars not allowed
             .name("Test")
             .description("Test")
             .build();
 
-        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(ParameterError::BuilderMissingField { field }) if field == "key"
+        ));
+    }
+
+    #[test]
+    fn test_metadata_missing_name() {
+        let result = ParameterMetadata::builder()
+            .key("test")
+            .description("Test")
+            .build();
+
+        assert!(matches!(
+            result,
+            Err(ParameterError::BuilderMissingField { field }) if field == "name"
+        ));
+    }
+
+    #[test]
+    fn test_metadata_invalid_key() {
+        let result = ParameterMetadata::builder()
+            .key("Invalid Key!")
+            .name("Test")
+            .description("Test")
+            .build();
+
+        assert!(matches!(result, Err(ParameterError::InvalidKeyFormat(_))));
     }
 
     #[test]
@@ -312,7 +319,7 @@ mod tests {
             .name("Test")
             .description("Test")
             .required(true)
-            .placeholder("example".to_string())
+            .placeholder("example")
             .build()
             .unwrap();
 

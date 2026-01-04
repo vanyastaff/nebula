@@ -12,9 +12,8 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-# Async and macros
+# Async
 async-trait = { workspace = true }
-bon = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 
 # Bitflags

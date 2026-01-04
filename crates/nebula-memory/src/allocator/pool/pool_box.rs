@@ -21,6 +21,13 @@ impl<T> PoolBox<T> {
     pub fn new_in(value: T, allocator: &PoolAllocator) -> Result<Self, AllocError> {
         let layout = Layout::new::<T>();
 
+        // SAFETY: Pool allocation and initialization sequence.
+        // 1. allocate() returns valid, aligned memory or error
+        // 2. cast::<T>() preserves pointer validity and alignment
+        // 3. write(value) initializes memory (moves value, doesn't drop)
+        // 4. NonNull::new() validates non-null (defensive check)
+        // 5. allocator reference converted to NonNull (always valid for &T)
+        // 6. No aliasing: ptr is exclusive until Drop runs
         unsafe {
             let ptr = allocator.allocate(layout)?;
             let typed_ptr = ptr.as_ptr().cast::<T>();
@@ -44,21 +51,41 @@ impl<T> PoolBox<T> {
     #[must_use]
     #[allow(clippy::should_implement_trait)]
     pub fn as_ref(&self) -> &T {
+        // SAFETY: Dereferencing self.ptr as shared reference.
+        // - self.ptr is NonNull, guaranteed non-null
+        // - Points to initialized T (from new_in)
+        // - PoolBox owns the allocation exclusively
+        // - Lifetime tied to &self, prevents use-after-free
         unsafe { self.ptr.as_ref() }
     }
 
     /// Gets a mutable reference to the contained value
     #[allow(clippy::should_implement_trait)]
     pub fn as_mut(&mut self) -> &mut T {
+        // SAFETY: Dereferencing self.ptr as mutable reference.
+        // - self.ptr is NonNull, guaranteed non-null
+        // - Points to initialized T (from new_in)
+        // - &mut self ensures exclusive access (no aliasing)
+        // - Lifetime tied to &mut self, prevents use-after-free
         unsafe { self.ptr.as_mut() }
     }
 
     /// Consumes the `PoolBox` and returns the contained value
     #[must_use]
     pub fn into_inner(self) -> T {
+        // SAFETY: Reading value from owned allocation.
+        // - self.ptr points to initialized T
+        // - ptr::read performs bitwise copy (doesn't drop)
+        // - Ownership of T transferred to caller
+        // - No double-drop: mem::forget(self) prevents Drop::drop
         let value = unsafe { ptr::read(self.ptr.as_ptr()) };
 
-        // Deallocate without running the destructor
+        // SAFETY: Deallocating memory without dropping T.
+        // - self.allocator points to valid PoolAllocator (from new_in)
+        // - self.ptr matches original allocation
+        // - Layout matches allocation layout
+        // - T already moved out (ptr::read above), no drop needed
+        // - mem::forget below prevents Drop from running
         unsafe {
             let layout = Layout::new::<T>();
             self.allocator.as_ref().deallocate(self.ptr.cast(), layout);
@@ -87,6 +114,15 @@ impl<T> core::ops::DerefMut for PoolBox<T> {
 
 impl<T> Drop for PoolBox<T> {
     fn drop(&mut self) {
+        // SAFETY: Dropping value and returning memory to pool.
+        // 1. drop_in_place runs T's destructor:
+        //    - self.ptr points to initialized T
+        //    - Exclusive access via &mut self (no aliasing)
+        // 2. deallocate returns memory to pool:
+        //    - self.allocator is valid PoolAllocator reference
+        //    - self.ptr matches original allocation from new_in
+        //    - Layout matches original allocation
+        //    - T already dropped, safe to reclaim memory
         unsafe {
             // Run the destructor
             ptr::drop_in_place(self.ptr.as_ptr());

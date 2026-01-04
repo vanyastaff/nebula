@@ -198,7 +198,6 @@ impl ParameterCollection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::ParameterBase;
     use crate::types::TextParameter;
 
     /// Helper to create a ParameterKey for tests
@@ -218,15 +217,10 @@ mod tests {
         let mut collection = ParameterCollection::new();
 
         let param = TextParameter::builder()
-            .base(ParameterBase::new(
-                crate::core::ParameterMetadata::builder()
-                    .key("test")
-                    .name("Test")
-                    .description("")
-                    .build()
-                    .unwrap(),
-            ))
-            .build();
+            .key("test")
+            .name("Test")
+            .build()
+            .unwrap();
 
         collection.add(param);
 
@@ -239,27 +233,17 @@ mod tests {
         let collection = ParameterCollection::new()
             .with(
                 TextParameter::builder()
-                    .base(ParameterBase::new(
-                        crate::core::ParameterMetadata::builder()
-                            .key("test1")
-                            .name("Test 1")
-                            .description("")
-                            .build()
-                            .unwrap(),
-                    ))
-                    .build(),
+                    .key("test1")
+                    .name("Test 1")
+                    .build()
+                    .unwrap(),
             )
             .with(
                 TextParameter::builder()
-                    .base(ParameterBase::new(
-                        crate::core::ParameterMetadata::builder()
-                            .key("test2")
-                            .name("Test 2")
-                            .description("")
-                            .build()
-                            .unwrap(),
-                    ))
-                    .build(),
+                    .key("test2")
+                    .name("Test 2")
+                    .build()
+                    .unwrap(),
             );
 
         assert_eq!(collection.len(), 2);
@@ -271,15 +255,10 @@ mod tests {
 
         collection.add(
             TextParameter::builder()
-                .base(ParameterBase::new(
-                    crate::core::ParameterMetadata::builder()
-                        .key("test")
-                        .name("Test")
-                        .description("")
-                        .build()
-                        .unwrap(),
-                ))
-                .build(),
+                .key("test")
+                .name("Test")
+                .build()
+                .unwrap(),
         );
 
         let param: Option<&TextParameter> = collection.get(key("test"));
@@ -291,16 +270,12 @@ mod tests {
         let mut collection = ParameterCollection::new();
         collection.add(
             TextParameter::builder()
-                .base(ParameterBase::new(
-                    crate::core::ParameterMetadata::builder()
-                        .key("email")
-                        .name("Email")
-                        .description("User email")
-                        .required(true)
-                        .build()
-                        .unwrap(),
-                ))
-                .build(),
+                .key("email")
+                .name("Email")
+                .description("User email")
+                .required(true)
+                .build()
+                .unwrap(),
         );
 
         let validatable = collection.get_validatable(key("email"));
@@ -315,15 +290,10 @@ mod tests {
         let mut collection = ParameterCollection::new();
         collection.add(
             TextParameter::builder()
-                .base(ParameterBase::new(
-                    crate::core::ParameterMetadata::builder()
-                        .key("name")
-                        .name("Name")
-                        .description("")
-                        .build()
-                        .unwrap(),
-                ))
-                .build(),
+                .key("name")
+                .name("Name")
+                .build()
+                .unwrap(),
         );
 
         let displayable = collection.get_displayable(key("name"));

@@ -483,6 +483,11 @@ mod tests {
 
         let layout = Layout::from_size_align(1024, 8).unwrap();
 
+        // SAFETY: Test verifies allocation tracking.
+        // - allocate with valid layout
+        // - stats checked after allocation
+        // - deallocate with matching layout
+        // - stats checked after deallocation
         unsafe {
             if let Ok(ptr) = monitored.allocate(layout) {
                 let stats = monitored.statistics();
@@ -506,6 +511,10 @@ mod tests {
 
         // Allocate some memory to generate stats
         let layout = Layout::from_size_align(1024, 8).unwrap();
+        // SAFETY: Test verifies integrated statistics.
+        // - allocate with valid layout
+        // - integrated_stats combines allocator and system metrics
+        // - deallocate with matching layout
         unsafe {
             if let Ok(ptr) = monitored.allocate(layout) {
                 let integrated = monitored.integrated_stats().unwrap();

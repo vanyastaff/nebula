@@ -18,7 +18,7 @@ categories = ["memory-management", "data-structures", "caching", "no-std"]
 default = ["std", "pool", "arena", "cache", "budget", "logging"]
 
 # Core runtime
-std = ["once_cell", "parking_lot", "libc", "chrono"]
+std = ["once_cell", "libc", "chrono"]
 alloc = []
 
 # Major feature groups (простые, понятные)
@@ -67,14 +67,9 @@ heapless = { workspace = true }
 # Platform-specific
 libc = { workspace = true, optional = true }
 
-[target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["memoryapi", "sysinfoapi", "libloaderapi"] }
-
-# Linux NUMA support is available through libc
-
 # Synchronization
 once_cell = { workspace = true, optional = true }
-parking_lot = { workspace = true, optional = true }
+parking_lot = { workspace = true }
 
 # Async runtime (optional)
 tokio = { version = "1.0", optional = true, default-features = false, features = ["sync", "time"] }
@@ -92,9 +87,14 @@ rand = { workspace = true, optional = true }
 thiserror = { workspace = true }
 
 # Internal crates
-nebula-core = { path = "..\\nebula-core" }
-nebula-log = { path = "..\\nebula-log", optional = true }
-nebula-system = { path = "..\\nebula-system" }
+nebula-core = { path = "../nebula-core" }
+nebula-log = { path = "../nebula-log", optional = true }
+nebula-system = { path = "../nebula-system" }
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["memoryapi", "sysinfoapi", "libloaderapi"] }
+
+# Linux NUMA support is available through libc
 
 [dev-dependencies]
 criterion = { workspace = true }
@@ -110,4 +110,3 @@ targets = [
     "x86_64-apple-darwin",
     "x86_64-pc-windows-msvc"
 ]
-

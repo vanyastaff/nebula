@@ -24,8 +24,8 @@ impl ParameterWidget for GroupWidget {
         if let Some(default) = &parameter.default {
             for field in &parameter.fields {
                 if let Some(val) = default.get_field(&field.key) {
-                    field_buffers.insert(field.key.clone(), value_to_string(&val));
-                    group_value.set_field(&field.key, val);
+                    field_buffers.insert(field.key.clone(), value_to_string(val));
+                    group_value.set_field(&field.key, val.clone());
                 }
             }
         }

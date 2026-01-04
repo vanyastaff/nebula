@@ -58,7 +58,7 @@ pub use conversions::{ConversionError, ConversionResult, ValueConversion};
 pub use error::{ValueError, ValueResult, ValueResultExt};
 pub use hash::{HashableValue, HashableValueExt};
 pub use kind::ValueKind;
-pub use path::PathSegment;
+pub use path::{Path, PathSegment};
 #[cfg(feature = "serde")]
 pub use serde::{SerdeError, SerdeResult};
 pub use value::Value;
@@ -80,5 +80,5 @@ impl<T, E: std::error::Error> ResultExt<T> for Result<T, E> {
 
 /// A small prelude to import frequently used types in one go.
 pub mod prelude {
-    pub use super::{PathSegment, ResultExt, Value, ValueError, ValueResult, ValueResultExt};
+    pub use super::{Path, PathSegment, ResultExt, Value, ValueError, ValueResult, ValueResultExt};
 }

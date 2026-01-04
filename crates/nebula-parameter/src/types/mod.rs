@@ -47,6 +47,6 @@ pub use resource::{
 pub use routing::{RoutingParameter, RoutingParameterOptions, RoutingValue};
 pub use secret::{SecretParameter, SecretParameterOptions};
 pub use select::{SelectParameter, SelectParameterOptions};
-pub use text::{TextParameter, TextParameterOptions};
+pub use text::{LengthRange, TextCase, TextCharset, TextConfig, TextParameter};
 pub use textarea::{TextareaParameter, TextareaParameterOptions};
 pub use time::{TimeParameter, TimeParameterOptions};

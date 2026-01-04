@@ -387,10 +387,10 @@ pub mod affinity {
             }
 
             if sched_setaffinity(0, mem::size_of::<cpu_set_t>(), &set) != 0 {
-                return Err(crate::error::SystemError::PlatformError {
-                    message: "Failed to set CPU affinity".to_string(),
-                    code: Some(std::io::Error::last_os_error().raw_os_error().unwrap_or(0)),
-                });
+                return Err(crate::core::error::SystemError::PlatformError(format!(
+                    "Failed to set CPU affinity: {}",
+                    std::io::Error::last_os_error()
+                )));
             }
         }
 

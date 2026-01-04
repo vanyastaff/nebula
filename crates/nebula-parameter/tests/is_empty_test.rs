@@ -4,32 +4,9 @@
 //! properly implement `is_empty()` in their `Validatable` impl to ensure required field
 //! validation correctly rejects empty values.
 
-use nebula_parameter::core::ParameterBase;
 use nebula_parameter::prelude::*;
 use nebula_value::Value;
 use nebula_value::collections::Array;
-
-/// Helper to create required ParameterMetadata for tests
-fn required_metadata(key: &str) -> ParameterMetadata {
-    ParameterMetadata::builder()
-        .key(key)
-        .name("Test")
-        .description("")
-        .required(true)
-        .build()
-        .unwrap()
-}
-
-/// Helper to create optional ParameterMetadata for tests
-fn optional_metadata(key: &str) -> ParameterMetadata {
-    ParameterMetadata::builder()
-        .key(key)
-        .name("Test")
-        .description("")
-        .required(false)
-        .build()
-        .unwrap()
-}
 
 // =============================================================================
 // String Types - is_empty tests
@@ -38,8 +15,11 @@ fn optional_metadata(key: &str) -> ParameterMetadata {
 #[test]
 fn test_text_is_empty() {
     let param = TextParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     assert!(param.is_empty(&Value::Null), "Null should be empty");
     assert!(
@@ -59,8 +39,11 @@ fn test_text_is_empty() {
 #[test]
 fn test_textarea_is_empty() {
     let param = TextareaParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     assert!(param.is_empty(&Value::Null), "Null should be empty");
     assert!(
@@ -80,8 +63,11 @@ fn test_textarea_is_empty() {
 #[test]
 fn test_secret_is_empty() {
     let param = SecretParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     assert!(param.is_empty(&Value::Null), "Null should be empty");
     assert!(
@@ -97,8 +83,11 @@ fn test_secret_is_empty() {
 #[test]
 fn test_code_is_empty() {
     let param = CodeParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     assert!(param.is_empty(&Value::Null), "Null should be empty");
     assert!(
@@ -118,8 +107,11 @@ fn test_code_is_empty() {
 #[test]
 fn test_color_is_empty() {
     let param = ColorParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     assert!(param.is_empty(&Value::Null), "Null should be empty");
     assert!(
@@ -139,9 +131,11 @@ fn test_color_is_empty() {
 #[test]
 fn test_list_is_empty() {
     let param = ListParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .children(vec![])
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     assert!(param.is_empty(&Value::Null), "Null should be empty");
     assert!(
@@ -158,7 +152,11 @@ fn test_list_is_empty() {
 
 #[test]
 fn test_object_is_empty() {
-    let param = ObjectParameter::new("test", "Test", "").unwrap();
+    let param = ObjectParameter::builder()
+        .key("test")
+        .name("Test")
+        .build()
+        .unwrap();
 
     assert!(param.is_empty(&Value::Null), "Null should be empty");
     assert!(
@@ -170,9 +168,11 @@ fn test_object_is_empty() {
 #[test]
 fn test_group_is_empty() {
     let param = GroupParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .fields(vec![])
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     assert!(param.is_empty(&Value::Null), "Null should be empty");
     assert!(
@@ -184,9 +184,11 @@ fn test_group_is_empty() {
 #[test]
 fn test_multi_select_is_empty() {
     let param = MultiSelectParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .options(vec![])
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     assert!(param.is_empty(&Value::Null), "Null should be empty");
     assert!(
@@ -208,8 +210,11 @@ fn test_multi_select_is_empty() {
 #[tokio::test]
 async fn test_required_text_rejects_empty_string() {
     let param = TextParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     let result = param.validate(&Value::text("")).await;
     assert!(result.is_err(), "Required text should reject empty string");
@@ -227,8 +232,11 @@ async fn test_required_text_rejects_empty_string() {
 #[tokio::test]
 async fn test_required_textarea_rejects_empty_string() {
     let param = TextareaParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     let result = param.validate(&Value::text("")).await;
     assert!(
@@ -246,8 +254,11 @@ async fn test_required_textarea_rejects_empty_string() {
 #[tokio::test]
 async fn test_required_secret_rejects_empty_string() {
     let param = SecretParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     let result = param.validate(&Value::text("")).await;
     assert!(
@@ -265,8 +276,11 @@ async fn test_required_secret_rejects_empty_string() {
 #[tokio::test]
 async fn test_required_code_rejects_empty_string() {
     let param = CodeParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     let result = param.validate(&Value::text("")).await;
     assert!(result.is_err(), "Required code should reject empty string");
@@ -281,9 +295,11 @@ async fn test_required_code_rejects_empty_string() {
 #[tokio::test]
 async fn test_required_list_rejects_empty_array() {
     let param = ListParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .children(vec![])
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     let result = param.validate(&Value::array_empty()).await;
     assert!(result.is_err(), "Required list should reject empty array");
@@ -302,9 +318,11 @@ async fn test_required_list_rejects_empty_array() {
 #[tokio::test]
 async fn test_required_multi_select_rejects_empty_array() {
     let param = MultiSelectParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .options(vec![])
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     let result = param.validate(&Value::array_empty()).await;
     assert!(
@@ -320,8 +338,11 @@ async fn test_required_multi_select_rejects_empty_array() {
 #[tokio::test]
 async fn test_optional_text_accepts_empty_string() {
     let param = TextParameter::builder()
-        .base(ParameterBase::new(optional_metadata("test")))
-        .build();
+        .key("test")
+        .name("Test")
+        .required(false)
+        .build()
+        .unwrap();
 
     let result = param.validate(&Value::text("")).await;
     assert!(result.is_ok(), "Optional text should accept empty string");
@@ -333,9 +354,11 @@ async fn test_optional_text_accepts_empty_string() {
 #[tokio::test]
 async fn test_optional_list_accepts_empty_array() {
     let param = ListParameter::builder()
-        .base(ParameterBase::new(optional_metadata("test")))
-        .children(vec![])
-        .build();
+        .key("test")
+        .name("Test")
+        .required(false)
+        .build()
+        .unwrap();
 
     let result = param.validate(&Value::array_empty()).await;
     assert!(result.is_ok(), "Optional list should accept empty array");
@@ -351,8 +374,11 @@ async fn test_optional_list_accepts_empty_array() {
 #[test]
 fn test_is_empty_handles_type_mismatch_gracefully() {
     let text_param = TextParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     // Text parameter receiving array - should not panic, is_empty returns false
     // (type validation will catch this separately)
@@ -360,9 +386,11 @@ fn test_is_empty_handles_type_mismatch_gracefully() {
     let _ = text_param.is_empty(&Value::integer(42));
 
     let list_param = ListParameter::builder()
-        .base(ParameterBase::new(required_metadata("test")))
-        .children(vec![])
-        .build();
+        .key("test")
+        .name("Test")
+        .required(true)
+        .build()
+        .unwrap();
 
     // List parameter receiving string - should not panic
     let _ = list_param.is_empty(&Value::text("hello"));

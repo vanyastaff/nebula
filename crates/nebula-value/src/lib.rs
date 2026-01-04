@@ -106,27 +106,24 @@
 //! ### Working with Collections
 //!
 //! ```rust
-//! # #[cfg(feature = "serde")]
-//! # {
-//! use nebula_value::{Array, Object};
+//! use nebula_value::{Array, Object, Value};
 //! use nebula_value::collections::array::ArrayBuilder;
 //! use nebula_value::collections::object::ObjectBuilder;
-//! use nebula_value::json;
 //!
 //! // Build an array
 //! let array = ArrayBuilder::new()
-//!     .push(json!(1))
-//!     .push(json!(2))
-//!     .push(json!(3))
-//!     .build()?;
+//!     .push(Value::integer(1))
+//!     .push(Value::integer(2))
+//!     .push(Value::integer(3))
+//!     .build()
+//!     .unwrap();
 //!
 //! // Build an object
 //! let object = ObjectBuilder::new()
-//!     .insert("name", json!("Alice"))
-//!     .insert("age", json!(30))
-//!     .build()?;
-//! # Ok::<(), nebula_value::ValueError>(())
-//! # }
+//!     .insert("name", Value::text("Alice"))
+//!     .insert("age", Value::integer(30))
+//!     .build()
+//!     .unwrap();
 //! ```
 //!
 //! ### Type Conversions
@@ -224,6 +221,42 @@ pub mod bounded;
 /// [`ObjectExt`]: helpers::ObjectExt
 pub mod helpers;
 
+/// Diff and Patch operations for comparing and updating Values.
+///
+/// Provides:
+/// - [`ValueDiff`] - Represents a single change (added/removed/changed)
+/// - [`Value::diff`] - Compute differences between values
+/// - [`Value::apply_diff`] - Apply changes to produce new value
+/// - [`DiffOptions`] - Control diff behavior
+///
+/// [`ValueDiff`]: diff::ValueDiff
+/// [`DiffOptions`]: diff::DiffOptions
+pub mod diff;
+
+/// Value Schema for type introspection and validation.
+///
+/// Provides:
+/// - [`ValueSchema`] - Describes expected value structure
+/// - [`Value::infer_schema`] - Derive schema from value
+/// - [`Value::matches_schema`] - Check if value matches schema
+/// - [`ObjectSchema`] - Schema for object types
+///
+/// [`ValueSchema`]: schema::ValueSchema
+/// [`ObjectSchema`]: schema::ObjectSchema
+pub mod schema;
+
+/// Iterators for traversing and transforming Value structures.
+///
+/// Provides:
+/// - [`ValueWalker`] - Depth-first traversal iterator
+/// - [`Value::walk`] - Walk all nested values
+/// - [`Value::find`] - Find values by predicate
+/// - [`Value::map_values`] - Transform values
+/// - [`Value::filter_deep`] - Recursively filter values
+///
+/// [`ValueWalker`]: iter::ValueWalker
+pub mod iter;
+
 /// Scalar value types.
 ///
 /// This module provides wrapper types for scalar values:
@@ -249,7 +282,8 @@ pub mod temporal;
 
 // Re-export core types
 pub use core::{
-    ConversionError, ConversionResult, ResultExt, ValueKind, limits::ValueLimits, value::Value,
+    ConversionError, ConversionResult, Path, PathSegment, ResultExt, ValueKind,
+    limits::ValueLimits, value::Value,
 };
 
 // Re-export standalone error
@@ -262,6 +296,9 @@ pub use core::{SerdeError, SerdeResult};
 // Re-export scalar and collection types
 pub use collections::{Array, Object};
 pub use scalar::{Boolean, Bytes, Float, Integer, Text};
+
+// Re-export iterator types
+pub use iter::{LeavesWalker, ValueWalker};
 
 // Re-export temporal types
 #[cfg(feature = "temporal")]
@@ -277,7 +314,7 @@ pub use core::convert::{JsonValueExt, ValueRefExt};
 
 /// Prelude for common imports
 pub mod prelude {
-    pub use crate::{Array, Boolean, Bytes, Float, Integer, Object, Text};
+    pub use crate::{Array, Boolean, Bytes, Float, Integer, Object, Path, PathSegment, Text};
     pub use crate::{
         ConversionError, ConversionResult, Value, ValueError, ValueResult, ValueResultExt,
     };

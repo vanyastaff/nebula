@@ -90,6 +90,13 @@ pub enum ParameterError {
     /// Configuration error
     #[error("Configuration error: {0}")]
     ConfigError(String),
+
+    /// Builder missing required field
+    #[error("Builder missing required field: {field}")]
+    BuilderMissingField {
+        /// The missing field name
+        field: String,
+    },
 }
 
 // ============================================================================
@@ -183,6 +190,7 @@ impl ParameterError {
             Self::InvalidValue { .. } => "invalid_value",
             Self::Io(_) => "io_error",
             Self::ConfigError(_) => "config_error",
+            Self::BuilderMissingField { .. } => "builder_missing_field",
         }
     }
 
@@ -201,6 +209,7 @@ impl ParameterError {
             Self::InvalidValue { .. } => "PARAM_INVALID_VALUE",
             Self::Io(_) => "PARAM_IO_ERROR",
             Self::ConfigError(_) => "PARAM_CONFIG_ERROR",
+            Self::BuilderMissingField { .. } => "PARAM_BUILDER_MISSING_FIELD",
         }
     }
 
@@ -223,6 +232,7 @@ impl ParameterError {
                 | Self::ValidationError { .. }
                 | Self::MissingValue { .. }
                 | Self::InvalidValue { .. }
+                | Self::BuilderMissingField { .. }
         )
     }
 

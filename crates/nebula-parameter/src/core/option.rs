@@ -222,8 +222,7 @@ impl DynamicOptions {
 ///     .icon("key")
 ///     .build();
 /// ```
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, bon::Builder)]
-#[builder(on(String, into), on(Cow<'_, str>, into))]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct SelectOption {
     /// Unique key for the option
     pub key: Cow<'static, str>,
@@ -298,6 +297,121 @@ impl SelectOption {
             group: None,
             color: None,
             subtitle: None,
+        }
+    }
+
+    /// Create a new builder for SelectOption
+    #[must_use]
+    pub fn builder() -> SelectOptionBuilder {
+        SelectOptionBuilder::new()
+    }
+}
+
+// =============================================================================
+// SelectOptionBuilder
+// =============================================================================
+
+/// Builder for SelectOption
+#[derive(Debug, Default)]
+pub struct SelectOptionBuilder {
+    key: Option<Cow<'static, str>>,
+    name: Option<String>,
+    value: Option<String>,
+    description: Option<Cow<'static, str>>,
+    icon: Option<Cow<'static, str>>,
+    disabled: Option<bool>,
+    group: Option<Cow<'static, str>>,
+    color: Option<Cow<'static, str>>,
+    subtitle: Option<String>,
+}
+
+impl SelectOptionBuilder {
+    /// Create a new builder
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the key (required)
+    #[must_use]
+    pub fn key(mut self, key: impl Into<Cow<'static, str>>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    /// Set the display name (required)
+    #[must_use]
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set the value (required)
+    #[must_use]
+    pub fn value(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    /// Set the description
+    #[must_use]
+    pub fn description(mut self, description: impl Into<Cow<'static, str>>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    /// Set the icon
+    #[must_use]
+    pub fn icon(mut self, icon: impl Into<Cow<'static, str>>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// Set whether this option is disabled
+    #[must_use]
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = Some(disabled);
+        self
+    }
+
+    /// Set the group name
+    #[must_use]
+    pub fn group(mut self, group: impl Into<Cow<'static, str>>) -> Self {
+        self.group = Some(group.into());
+        self
+    }
+
+    /// Set the color hint
+    #[must_use]
+    pub fn color(mut self, color: impl Into<Cow<'static, str>>) -> Self {
+        self.color = Some(color.into());
+        self
+    }
+
+    /// Set the subtitle
+    #[must_use]
+    pub fn subtitle(mut self, subtitle: impl Into<String>) -> Self {
+        self.subtitle = Some(subtitle.into());
+        self
+    }
+
+    /// Build the SelectOption
+    ///
+    /// # Panics
+    ///
+    /// Panics if key, name, or value are not set.
+    #[must_use]
+    pub fn build(self) -> SelectOption {
+        SelectOption {
+            key: self.key.expect("key is required"),
+            name: self.name.expect("name is required"),
+            value: self.value.expect("value is required"),
+            description: self.description,
+            icon: self.icon,
+            disabled: self.disabled,
+            group: self.group,
+            color: self.color,
+            subtitle: self.subtitle,
         }
     }
 }

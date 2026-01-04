@@ -1,43 +1,73 @@
+//! Color parameter type for color selection
+
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
 
 /// Parameter for color selection
-#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_parameter::prelude::*;
+///
+/// let param = ColorParameter::builder()
+///     .key("bg_color")
+///     .name("Background Color")
+///     .description("Choose a background color")
+///     .default("#ffffff")
+///     .options(
+///         ColorParameterOptions::builder()
+///             .format(ColorFormat::Hex)
+///             .allow_alpha(true)
+///             .build()
+///     )
+///     .build()?;
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColorParameter {
-    /// Base parameter fields (metadata, display, validation)
+    /// Parameter metadata (key, name, description, etc.)
     #[serde(flatten)]
-    pub base: ParameterBase,
+    pub metadata: ParameterMetadata,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<nebula_value::Text>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<ColorParameterOptions>,
+
+    /// Display conditions controlling when this parameter is shown
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<ParameterDisplay>,
+
+    /// Validation rules for this parameter
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
+/// Configuration options for color parameters
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ColorParameterOptions {
     /// Color format: "hex", "rgb", "hsl", "hsv"
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<ColorFormat>,
 
     /// Whether to show an alpha/opacity channel
-    #[builder(default)]
     #[serde(default)]
     pub allow_alpha: bool,
 
     /// Predefined color palette
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub palette: Option<Vec<String>>,
 }
 
+/// Color format types
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum ColorFormat {
     #[serde(rename = "hex")]
@@ -51,19 +81,242 @@ pub enum ColorFormat {
     Hsv,
 }
 
+// =============================================================================
+// ColorParameter Builder
+// =============================================================================
+
+/// Builder for `ColorParameter`
+#[derive(Debug, Default)]
+pub struct ColorParameterBuilder {
+    // Metadata fields
+    key: Option<String>,
+    name: Option<String>,
+    description: String,
+    required: bool,
+    placeholder: Option<String>,
+    hint: Option<String>,
+    // Parameter fields
+    default: Option<nebula_value::Text>,
+    options: Option<ColorParameterOptions>,
+    display: Option<ParameterDisplay>,
+    validation: Option<ParameterValidation>,
+}
+
+impl ColorParameter {
+    /// Create a new builder
+    #[must_use]
+    pub fn builder() -> ColorParameterBuilder {
+        ColorParameterBuilder::new()
+    }
+}
+
+impl ColorParameterBuilder {
+    /// Create a new builder
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            key: None,
+            name: None,
+            description: String::new(),
+            required: false,
+            placeholder: None,
+            hint: None,
+            default: None,
+            options: None,
+            display: None,
+            validation: None,
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Metadata methods
+    // -------------------------------------------------------------------------
+
+    /// Set the parameter key (required)
+    #[must_use]
+    pub fn key(mut self, key: impl Into<String>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    /// Set the display name (required)
+    #[must_use]
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set the description
+    #[must_use]
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// Set whether the parameter is required
+    #[must_use]
+    pub fn required(mut self, required: bool) -> Self {
+        self.required = required;
+        self
+    }
+
+    /// Set placeholder text
+    #[must_use]
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    /// Set hint text
+    #[must_use]
+    pub fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    // -------------------------------------------------------------------------
+    // Parameter-specific methods
+    // -------------------------------------------------------------------------
+
+    /// Set the default value
+    #[must_use]
+    pub fn default(mut self, default: impl Into<nebula_value::Text>) -> Self {
+        self.default = Some(default.into());
+        self
+    }
+
+    /// Set the options
+    #[must_use]
+    pub fn options(mut self, options: ColorParameterOptions) -> Self {
+        self.options = Some(options);
+        self
+    }
+
+    /// Set display conditions
+    #[must_use]
+    pub fn display(mut self, display: ParameterDisplay) -> Self {
+        self.display = Some(display);
+        self
+    }
+
+    /// Set validation rules
+    #[must_use]
+    pub fn validation(mut self, validation: ParameterValidation) -> Self {
+        self.validation = Some(validation);
+        self
+    }
+
+    // -------------------------------------------------------------------------
+    // Build
+    // -------------------------------------------------------------------------
+
+    /// Build the `ColorParameter`
+    ///
+    /// # Errors
+    ///
+    /// Returns error if required fields are missing or key format is invalid.
+    pub fn build(self) -> Result<ColorParameter, ParameterError> {
+        let metadata = ParameterMetadata::builder()
+            .key(
+                self.key
+                    .ok_or_else(|| ParameterError::BuilderMissingField {
+                        field: "key".into(),
+                    })?,
+            )
+            .name(
+                self.name
+                    .ok_or_else(|| ParameterError::BuilderMissingField {
+                        field: "name".into(),
+                    })?,
+            )
+            .description(self.description)
+            .required(self.required)
+            .build()?;
+
+        let mut metadata = metadata;
+        metadata.placeholder = self.placeholder;
+        metadata.hint = self.hint;
+
+        Ok(ColorParameter {
+            metadata,
+            default: self.default,
+            options: self.options,
+            display: self.display,
+            validation: self.validation,
+        })
+    }
+}
+
+// =============================================================================
+// ColorParameterOptions Builder
+// =============================================================================
+
+/// Builder for `ColorParameterOptions`
+#[derive(Debug, Default)]
+pub struct ColorParameterOptionsBuilder {
+    format: Option<ColorFormat>,
+    allow_alpha: bool,
+    palette: Option<Vec<String>>,
+}
+
+impl ColorParameterOptions {
+    /// Create a new builder
+    #[must_use]
+    pub fn builder() -> ColorParameterOptionsBuilder {
+        ColorParameterOptionsBuilder::default()
+    }
+}
+
+impl ColorParameterOptionsBuilder {
+    /// Set color format
+    #[must_use]
+    pub fn format(mut self, format: ColorFormat) -> Self {
+        self.format = Some(format);
+        self
+    }
+
+    /// Set whether to allow alpha channel
+    #[must_use]
+    pub fn allow_alpha(mut self, allow_alpha: bool) -> Self {
+        self.allow_alpha = allow_alpha;
+        self
+    }
+
+    /// Set predefined color palette
+    #[must_use]
+    pub fn palette(mut self, palette: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.palette = Some(palette.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Build the options
+    #[must_use]
+    pub fn build(self) -> ColorParameterOptions {
+        ColorParameterOptions {
+            format: self.format,
+            allow_alpha: self.allow_alpha,
+            palette: self.palette,
+        }
+    }
+}
+
+// =============================================================================
+// Trait Implementations
+// =============================================================================
+
 impl Describable for ColorParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Color
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.base.metadata
+        &self.metadata
     }
 }
 
 impl std::fmt::Display for ColorParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ColorParameter({})", self.base.metadata.name)
+        write!(f, "ColorParameter({})", self.metadata.name)
     }
 }
 
@@ -78,7 +331,7 @@ impl Validatable for ColorParameter {
             let actual = value.kind();
             if actual != ValueKind::Null && actual != expected {
                 return Err(ParameterError::InvalidType {
-                    key: self.base.metadata.key.clone(),
+                    key: self.metadata.key.clone(),
                     expected_type: expected.name().to_string(),
                     actual_details: actual.name().to_string(),
                 });
@@ -88,7 +341,7 @@ impl Validatable for ColorParameter {
         // Required check
         if self.is_required() && self.is_empty(value) {
             return Err(ParameterError::MissingValue {
-                key: self.base.metadata.key.clone(),
+                key: self.metadata.key.clone(),
             });
         }
 
@@ -97,7 +350,7 @@ impl Validatable for ColorParameter {
             && !self.is_valid_color(text.as_str())
         {
             return Err(ParameterError::InvalidValue {
-                key: self.base.metadata.key.clone(),
+                key: self.metadata.key.clone(),
                 reason: format!("Invalid color format: {}", text.as_str()),
             });
         }
@@ -106,21 +359,21 @@ impl Validatable for ColorParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.base.validation.as_ref()
+        self.validation.as_ref()
     }
 
     fn is_empty(&self, value: &Value) -> bool {
-        value.is_null() || value.as_text().map(|s| s.is_empty()).unwrap_or(false)
+        value.is_null() || value.as_text().is_some_and(|s| s.is_empty())
     }
 }
 
 impl Displayable for ColorParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.base.display.as_ref()
+        self.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.base.display = display;
+        self.display = display;
     }
 }
 
@@ -194,5 +447,75 @@ impl ColorParameter {
             ColorFormat::Hex if !color.starts_with("#") => Some(format!("#{color}")),
             _ => Some(color.to_string()),
         }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_color_parameter_builder() {
+        let param = ColorParameter::builder()
+            .key("bg_color")
+            .name("Background Color")
+            .description("Choose a background color")
+            .required(true)
+            .build()
+            .unwrap();
+
+        assert_eq!(param.metadata.key.as_str(), "bg_color");
+        assert_eq!(param.metadata.name, "Background Color");
+        assert!(param.metadata.required);
+    }
+
+    #[test]
+    fn test_color_parameter_with_options() {
+        let param = ColorParameter::builder()
+            .key("theme_color")
+            .name("Theme Color")
+            .default("#3366ff")
+            .options(
+                ColorParameterOptions::builder()
+                    .format(ColorFormat::Hex)
+                    .allow_alpha(true)
+                    .palette(["#ff0000", "#00ff00", "#0000ff"])
+                    .build(),
+            )
+            .build()
+            .unwrap();
+
+        let opts = param.options.unwrap();
+        assert_eq!(opts.format, Some(ColorFormat::Hex));
+        assert!(opts.allow_alpha);
+        assert_eq!(opts.palette.as_ref().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_color_parameter_missing_key() {
+        let result = ColorParameter::builder().name("Test").build();
+
+        assert!(matches!(
+            result,
+            Err(ParameterError::BuilderMissingField { field }) if field == "key"
+        ));
+    }
+
+    #[test]
+    fn test_color_validation() {
+        let param = ColorParameter::builder()
+            .key("color")
+            .name("Color")
+            .build()
+            .unwrap();
+
+        assert!(param.is_valid_color("#fff"));
+        assert!(param.is_valid_color("#ffffff"));
+        assert!(param.is_valid_color("#ffffffff"));
+        assert!(!param.is_valid_color("invalid"));
     }
 }

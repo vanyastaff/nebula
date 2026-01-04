@@ -1,25 +1,48 @@
+//! Panel parameter type for organizing parameters into sections/tabs
+
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Describable, Displayable, Parameter, ParameterBase, ParameterDisplay, ParameterKind,
+    Describable, Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind,
     ParameterMetadata, Validatable,
 };
 use nebula_value::Value;
 
 /// Panel parameter - container for organizing parameters into sections/tabs
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_parameter::prelude::*;
+///
+/// let param = PanelParameter::builder()
+///     .key("settings")
+///     .name("Settings")
+///     .description("Application settings")
+///     .options(
+///         PanelParameterOptions::builder()
+///             .default_panel("general")
+///             .allow_multiple_open(false)
+///             .build()
+///     )
+///     .build()?;
+/// ```
 #[derive(Serialize)]
 pub struct PanelParameter {
-    /// Base parameter fields (metadata, display, validation)
-    /// Note: validation is not used for panel parameters
+    /// Parameter metadata (key, name, description, etc.)
     #[serde(flatten)]
-    pub base: ParameterBase,
+    pub metadata: ParameterMetadata,
 
     /// Panel sections with their parameters
     pub panels: Vec<Panel>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<PanelParameterOptions>,
+
+    /// Display conditions controlling when this parameter is shown
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<ParameterDisplay>,
 }
 
 /// A single panel section containing parameters
@@ -32,7 +55,7 @@ pub struct Panel {
     pub label: String,
 
     /// Optional description for the panel
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
     /// Parameters contained in this panel
@@ -40,7 +63,7 @@ pub struct Panel {
     pub children: Vec<Box<dyn Parameter>>,
 
     /// Optional icon identifier
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
 
     /// Whether this panel is enabled
@@ -49,17 +72,227 @@ pub struct Panel {
 }
 
 /// Configuration options for panel parameter
-#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PanelParameterOptions {
     /// Key of the default active panel
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_panel: Option<String>,
 
     /// Whether multiple panels can be open at once (accordion mode)
-    #[builder(default)]
     #[serde(default)]
     pub allow_multiple_open: bool,
 }
+
+// =============================================================================
+// PanelParameter Builder
+// =============================================================================
+
+/// Builder for `PanelParameter`
+#[derive(Default)]
+pub struct PanelParameterBuilder {
+    // Metadata fields
+    key: Option<String>,
+    name: Option<String>,
+    description: String,
+    required: bool,
+    placeholder: Option<String>,
+    hint: Option<String>,
+    // Parameter fields
+    panels: Vec<Panel>,
+    options: Option<PanelParameterOptions>,
+    display: Option<ParameterDisplay>,
+}
+
+impl PanelParameter {
+    /// Create a new builder
+    #[must_use]
+    pub fn builder() -> PanelParameterBuilder {
+        PanelParameterBuilder::new()
+    }
+}
+
+impl PanelParameterBuilder {
+    /// Create a new builder
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            key: None,
+            name: None,
+            description: String::new(),
+            required: false,
+            placeholder: None,
+            hint: None,
+            panels: Vec::new(),
+            options: None,
+            display: None,
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Metadata methods
+    // -------------------------------------------------------------------------
+
+    /// Set the parameter key (required)
+    #[must_use]
+    pub fn key(mut self, key: impl Into<String>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    /// Set the display name (required)
+    #[must_use]
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set the description
+    #[must_use]
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// Set whether the parameter is required
+    #[must_use]
+    pub fn required(mut self, required: bool) -> Self {
+        self.required = required;
+        self
+    }
+
+    /// Set placeholder text
+    #[must_use]
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    /// Set hint text
+    #[must_use]
+    pub fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    // -------------------------------------------------------------------------
+    // Parameter-specific methods
+    // -------------------------------------------------------------------------
+
+    /// Set the panels
+    #[must_use]
+    pub fn panels(mut self, panels: Vec<Panel>) -> Self {
+        self.panels = panels;
+        self
+    }
+
+    /// Add a single panel
+    #[must_use]
+    pub fn panel(mut self, panel: Panel) -> Self {
+        self.panels.push(panel);
+        self
+    }
+
+    /// Set the options
+    #[must_use]
+    pub fn options(mut self, options: PanelParameterOptions) -> Self {
+        self.options = Some(options);
+        self
+    }
+
+    /// Set display conditions
+    #[must_use]
+    pub fn display(mut self, display: ParameterDisplay) -> Self {
+        self.display = Some(display);
+        self
+    }
+
+    // -------------------------------------------------------------------------
+    // Build
+    // -------------------------------------------------------------------------
+
+    /// Build the `PanelParameter`
+    ///
+    /// # Errors
+    ///
+    /// Returns error if required fields are missing or key format is invalid.
+    pub fn build(self) -> Result<PanelParameter, ParameterError> {
+        let metadata = ParameterMetadata::builder()
+            .key(
+                self.key
+                    .ok_or_else(|| ParameterError::BuilderMissingField {
+                        field: "key".into(),
+                    })?,
+            )
+            .name(
+                self.name
+                    .ok_or_else(|| ParameterError::BuilderMissingField {
+                        field: "name".into(),
+                    })?,
+            )
+            .description(self.description)
+            .required(self.required)
+            .build()?;
+
+        let mut metadata = metadata;
+        metadata.placeholder = self.placeholder;
+        metadata.hint = self.hint;
+
+        Ok(PanelParameter {
+            metadata,
+            panels: self.panels,
+            options: self.options,
+            display: self.display,
+        })
+    }
+}
+
+// =============================================================================
+// PanelParameterOptions Builder
+// =============================================================================
+
+/// Builder for `PanelParameterOptions`
+#[derive(Debug, Default)]
+pub struct PanelParameterOptionsBuilder {
+    default_panel: Option<String>,
+    allow_multiple_open: bool,
+}
+
+impl PanelParameterOptions {
+    /// Create a new builder
+    #[must_use]
+    pub fn builder() -> PanelParameterOptionsBuilder {
+        PanelParameterOptionsBuilder::default()
+    }
+}
+
+impl PanelParameterOptionsBuilder {
+    /// Set the default active panel
+    #[must_use]
+    pub fn default_panel(mut self, default_panel: impl Into<String>) -> Self {
+        self.default_panel = Some(default_panel.into());
+        self
+    }
+
+    /// Set whether multiple panels can be open at once
+    #[must_use]
+    pub fn allow_multiple_open(mut self, allow: bool) -> Self {
+        self.allow_multiple_open = allow;
+        self
+    }
+
+    /// Build the options
+    #[must_use]
+    pub fn build(self) -> PanelParameterOptions {
+        PanelParameterOptions {
+            default_panel: self.default_panel,
+            allow_multiple_open: self.allow_multiple_open,
+        }
+    }
+}
+
+// =============================================================================
+// Panel Implementation
+// =============================================================================
 
 impl std::fmt::Debug for Panel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -77,9 +310,10 @@ impl std::fmt::Debug for Panel {
 impl std::fmt::Debug for PanelParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PanelParameter")
-            .field("base", &self.base)
+            .field("metadata", &self.metadata)
             .field("panels", &self.panels)
             .field("options", &self.options)
+            .field("display", &self.display)
             .finish()
     }
 }
@@ -145,13 +379,17 @@ impl Panel {
     }
 }
 
+// =============================================================================
+// Trait Implementations
+// =============================================================================
+
 impl Describable for PanelParameter {
     fn kind(&self) -> ParameterKind {
         ParameterKind::Panel
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.base.metadata
+        &self.metadata
     }
 }
 
@@ -164,31 +402,21 @@ impl Validatable for PanelParameter {
 
 impl std::fmt::Display for PanelParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "PanelParameter({})", self.base.metadata.name)
+        write!(f, "PanelParameter({})", self.metadata.name)
     }
 }
 
 impl Displayable for PanelParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.base.display.as_ref()
+        self.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.base.display = display;
+        self.display = display;
     }
 }
 
 impl PanelParameter {
-    /// Create a new panel parameter
-    #[must_use]
-    pub fn new(metadata: ParameterMetadata) -> Self {
-        Self {
-            base: ParameterBase::new(metadata),
-            panels: Vec::new(),
-            options: None,
-        }
-    }
-
     /// Add a panel
     pub fn add_panel(&mut self, panel: Panel) {
         self.panels.push(panel);
@@ -259,5 +487,81 @@ impl PanelParameter {
                 .map(std::convert::AsRef::as_ref)
                 .collect()
         })
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_panel_parameter_builder() {
+        let param = PanelParameter::builder()
+            .key("settings")
+            .name("Settings")
+            .description("Application settings")
+            .build()
+            .unwrap();
+
+        assert_eq!(param.metadata.key.as_str(), "settings");
+        assert_eq!(param.metadata.name, "Settings");
+    }
+
+    #[test]
+    fn test_panel_parameter_with_options() {
+        let param = PanelParameter::builder()
+            .key("tabs")
+            .name("Tabs")
+            .options(
+                PanelParameterOptions::builder()
+                    .default_panel("general")
+                    .allow_multiple_open(true)
+                    .build(),
+            )
+            .build()
+            .unwrap();
+
+        assert!(param.allows_multiple_open());
+    }
+
+    #[test]
+    fn test_panel_parameter_with_panels() {
+        let param = PanelParameter::builder()
+            .key("config")
+            .name("Configuration")
+            .panel(Panel::new("general", "General").with_description("General settings"))
+            .panel(Panel::new("advanced", "Advanced").with_enabled(false))
+            .build()
+            .unwrap();
+
+        assert_eq!(param.panel_count(), 2);
+        assert_eq!(param.get_enabled_panels().len(), 1);
+    }
+
+    #[test]
+    fn test_panel_parameter_missing_key() {
+        let result = PanelParameter::builder().name("Test").build();
+
+        assert!(matches!(
+            result,
+            Err(ParameterError::BuilderMissingField { field }) if field == "key"
+        ));
+    }
+
+    #[test]
+    fn test_panel() {
+        let panel = Panel::new("test", "Test Panel")
+            .with_description("A test panel")
+            .with_icon("settings")
+            .with_enabled(true);
+
+        assert_eq!(panel.key, "test");
+        assert_eq!(panel.label, "Test Panel");
+        assert!(panel.enabled);
+        assert!(panel.is_empty());
     }
 }

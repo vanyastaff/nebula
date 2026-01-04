@@ -337,7 +337,12 @@ where
     type Output = T;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // Safety: We're not moving `future` out of `self`, just polling it
+        // SAFETY: Pin projection to poll inner future.
+        // - self is Pin<&mut Self>, guaranteed not to move
+        // - get_unchecked_mut accesses self.future field
+        // - future field is !Unpin (Box<dyn Future>)
+        // - Pin::new_unchecked safe because self's pin guarantee transfers to field
+        // - Not moving future out, only polling in place
         unsafe {
             let future = &mut self.as_mut().get_unchecked_mut().future;
             Pin::new_unchecked(future).poll(cx)
@@ -366,6 +371,11 @@ mod tests {
             RawWaker::new(core::ptr::null(), vtable)
         }
 
+        // SAFETY: Creating Waker from RawWaker in test helper.
+        // - dummy_raw_waker() creates valid RawWaker with proper vtable
+        // - vtable functions (clone, no_op) are valid for null data pointer
+        // - Waker is only used within this function scope (no leaks)
+        // - This is test code (block_on helper for tests)
         let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
         let mut cx = Context::from_waker(&waker);
 

@@ -161,15 +161,15 @@ impl Object {
     ///
     /// ```
     /// use nebula_value::collections::Object;
-    /// use serde_json::json;
+    /// use nebula_value::Value;
     ///
     /// let obj1 = Object::from_iter(vec![
     ///     ("a".to_string(), Value::integer(1)),
-    ///     ("b".to_string(), json!({"x": 10})),
+    ///     ("b".to_string(), Value::integer(10)),
     /// ]);
     ///
     /// let obj2 = Object::from_iter(vec![
-    ///     ("b".to_string(), json!({"y": 20})),
+    ///     ("b".to_string(), Value::integer(20)),
     ///     ("c".to_string(), Value::integer(3)),
     /// ]);
     ///

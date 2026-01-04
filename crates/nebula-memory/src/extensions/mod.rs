@@ -222,6 +222,11 @@ impl GlobalExtensions {
             static mut REGISTRY: Option<ExtensionRegistry> = None;
             static INIT: Once = Once::new();
 
+            // SAFETY: Singleton pattern using Once for thread-safe initialization.
+            // - call_once guarantees REGISTRY initialized exactly once
+            // - No races: call_once blocks other threads until initialization completes
+            // - After initialization, REGISTRY is only read (never written)
+            // - unreachable!() branch never executes (call_once guarantees initialization)
             unsafe {
                 INIT.call_once(|| {
                     REGISTRY = Some(ExtensionRegistry::new());
@@ -241,6 +246,12 @@ impl GlobalExtensions {
             static mut REGISTRY: Option<ExtensionRegistry> = None;
             static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+            // SAFETY: No-std singleton using atomic flag for initialization.
+            // - Acquire/Release ordering ensures visibility of REGISTRY write
+            // - Single-threaded no_std context (no races)
+            // - After initialization, REGISTRY only read (never written again)
+            // - Acquire load sees all writes before Release store
+            // - unreachable!() branch never executes (initialization always runs first)
             unsafe {
                 if !INITIALIZED.load(Ordering::Acquire) {
                     REGISTRY = Some(ExtensionRegistry::new());

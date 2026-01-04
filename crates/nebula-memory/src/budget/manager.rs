@@ -98,7 +98,12 @@ impl GlobalBudgetManager {
                 metrics_interval: Duration::from_secs(1),
                 last_update: Mutex::new(Instant::now()),
             });
-            
+
+            // SAFETY: Writing to static INSTANCE inside Once::call_once.
+            // - call_once guarantees this code runs exactly once
+            // - No other thread can access INSTANCE until call_once completes
+            // - Arc provides thread-safe reference counting
+            // - After initialization, INSTANCE is only read (never written again)
             unsafe {
                 INSTANCE = Some(manager);
             }
@@ -109,6 +114,12 @@ impl GlobalBudgetManager {
     
     /// Get the global budget manager instance
     pub fn instance() -> Arc<GlobalBudgetManager> {
+        // SAFETY: Reading from static INSTANCE.
+        // - Once::call_once in initialize() ensures INSTANCE is fully initialized before read
+        // - Auto-initialization path calls initialize() which uses Once guard
+        // - After initialization, INSTANCE is never mutated (only read)
+        // - Arc::clone is thread-safe
+        // - unwrap() is safe after initialize() succeeds (enforced by expect)
         unsafe {
             if let Some(instance) = &INSTANCE {
                 instance.clone()

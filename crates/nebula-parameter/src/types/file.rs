@@ -1,9 +1,11 @@
+//! File parameter type for file uploads
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::core::{
-    Describable, Displayable, ParameterBase, ParameterDisplay, ParameterError, ParameterKind,
-    ParameterMetadata, ParameterValidation, Validatable,
+    Describable, Displayable, ParameterDisplay, ParameterError, ParameterKind, ParameterMetadata,
+    ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
 
@@ -63,6 +65,7 @@ impl From<FileReference> for nebula_value::Value {
 }
 
 impl FileReference {
+    /// Create a new file reference
     pub fn new(path: impl Into<PathBuf>, name: impl Into<String>) -> Self {
         Self {
             path: path.into(),
@@ -73,18 +76,21 @@ impl FileReference {
         }
     }
 
+    /// Set file size
     #[must_use = "builder methods must be chained or built"]
     pub fn with_size(mut self, size: u64) -> Self {
         self.size = Some(size);
         self
     }
 
+    /// Set MIME type
     #[must_use = "builder methods must be chained or built"]
     pub fn with_mime_type(mut self, mime_type: impl Into<String>) -> Self {
         self.mime_type = Some(mime_type.into());
         self
     }
 
+    /// Mark as temporary file
     #[must_use = "builder methods must be chained or built"]
     pub fn as_temporary(mut self) -> Self {
         self.is_temporary = true;
@@ -93,49 +99,328 @@ impl FileReference {
 }
 
 /// Parameter for file uploads
-#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_parameter::prelude::*;
+///
+/// let param = FileParameter::builder()
+///     .key("document")
+///     .name("Document")
+///     .description("Upload a document")
+///     .required(true)
+///     .options(
+///         FileParameterOptions::builder()
+///             .accepted_formats(vec![".pdf", ".docx", "application/pdf"])
+///             .max_size(10 * 1024 * 1024) // 10 MB
+///             .build()
+///     )
+///     .build()?;
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileParameter {
-    /// Base parameter fields (metadata, display, validation)
+    /// Parameter metadata (key, name, description, etc.)
     #[serde(flatten)]
-    pub base: ParameterBase,
+    pub metadata: ParameterMetadata,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<FileReference>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<FileParameterOptions>,
+
+    /// Display conditions controlling when this parameter is shown
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<ParameterDisplay>,
+
+    /// Validation rules for this parameter
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation: Option<ParameterValidation>,
 }
 
-#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
+/// Configuration options for file parameters
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FileParameterOptions {
     /// Accepted file formats (MIME types or extensions like ".pdf", "image/*")
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accepted_formats: Option<Vec<String>>,
 
     /// Maximum file size in bytes
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_size: Option<u64>,
 
     /// Minimum file size in bytes
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_size: Option<u64>,
 
     /// Allow multiple file selection (creates array of `FileReference`)
-    #[builder(default)]
     #[serde(default)]
     pub multiple: bool,
 
     /// Upload directory restriction
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upload_directory: Option<String>,
 
     /// Whether to validate file content (not just extension)
-    #[builder(default)]
     #[serde(default)]
     pub validate_content: bool,
 }
+
+// =============================================================================
+// FileParameter Builder
+// =============================================================================
+
+/// Builder for `FileParameter`
+#[derive(Debug, Default)]
+pub struct FileParameterBuilder {
+    // Metadata fields
+    key: Option<String>,
+    name: Option<String>,
+    description: String,
+    required: bool,
+    placeholder: Option<String>,
+    hint: Option<String>,
+    // Parameter fields
+    default: Option<FileReference>,
+    options: Option<FileParameterOptions>,
+    display: Option<ParameterDisplay>,
+    validation: Option<ParameterValidation>,
+}
+
+impl FileParameter {
+    /// Create a new builder
+    #[must_use]
+    pub fn builder() -> FileParameterBuilder {
+        FileParameterBuilder::new()
+    }
+}
+
+impl FileParameterBuilder {
+    /// Create a new builder
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            key: None,
+            name: None,
+            description: String::new(),
+            required: false,
+            placeholder: None,
+            hint: None,
+            default: None,
+            options: None,
+            display: None,
+            validation: None,
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Metadata methods
+    // -------------------------------------------------------------------------
+
+    /// Set the parameter key (required)
+    #[must_use]
+    pub fn key(mut self, key: impl Into<String>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    /// Set the display name (required)
+    #[must_use]
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set the description
+    #[must_use]
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// Set whether the parameter is required
+    #[must_use]
+    pub fn required(mut self, required: bool) -> Self {
+        self.required = required;
+        self
+    }
+
+    /// Set placeholder text
+    #[must_use]
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    /// Set hint text
+    #[must_use]
+    pub fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    // -------------------------------------------------------------------------
+    // Parameter-specific methods
+    // -------------------------------------------------------------------------
+
+    /// Set the default value
+    #[must_use]
+    pub fn default(mut self, default: FileReference) -> Self {
+        self.default = Some(default);
+        self
+    }
+
+    /// Set the options
+    #[must_use]
+    pub fn options(mut self, options: FileParameterOptions) -> Self {
+        self.options = Some(options);
+        self
+    }
+
+    /// Set display conditions
+    #[must_use]
+    pub fn display(mut self, display: ParameterDisplay) -> Self {
+        self.display = Some(display);
+        self
+    }
+
+    /// Set validation rules
+    #[must_use]
+    pub fn validation(mut self, validation: ParameterValidation) -> Self {
+        self.validation = Some(validation);
+        self
+    }
+
+    // -------------------------------------------------------------------------
+    // Build
+    // -------------------------------------------------------------------------
+
+    /// Build the `FileParameter`
+    ///
+    /// # Errors
+    ///
+    /// Returns error if required fields are missing or key format is invalid.
+    pub fn build(self) -> Result<FileParameter, ParameterError> {
+        let metadata = ParameterMetadata::builder()
+            .key(
+                self.key
+                    .ok_or_else(|| ParameterError::BuilderMissingField {
+                        field: "key".into(),
+                    })?,
+            )
+            .name(
+                self.name
+                    .ok_or_else(|| ParameterError::BuilderMissingField {
+                        field: "name".into(),
+                    })?,
+            )
+            .description(self.description)
+            .required(self.required)
+            .build()?;
+
+        let mut metadata = metadata;
+        metadata.placeholder = self.placeholder;
+        metadata.hint = self.hint;
+
+        Ok(FileParameter {
+            metadata,
+            default: self.default,
+            options: self.options,
+            display: self.display,
+            validation: self.validation,
+        })
+    }
+}
+
+// =============================================================================
+// FileParameterOptions Builder
+// =============================================================================
+
+/// Builder for `FileParameterOptions`
+#[derive(Debug, Default)]
+pub struct FileParameterOptionsBuilder {
+    accepted_formats: Option<Vec<String>>,
+    max_size: Option<u64>,
+    min_size: Option<u64>,
+    multiple: bool,
+    upload_directory: Option<String>,
+    validate_content: bool,
+}
+
+impl FileParameterOptions {
+    /// Create a new builder
+    #[must_use]
+    pub fn builder() -> FileParameterOptionsBuilder {
+        FileParameterOptionsBuilder::default()
+    }
+}
+
+impl FileParameterOptionsBuilder {
+    /// Set accepted file formats
+    #[must_use]
+    pub fn accepted_formats(
+        mut self,
+        formats: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.accepted_formats = Some(formats.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Set maximum file size in bytes
+    #[must_use]
+    pub fn max_size(mut self, max_size: u64) -> Self {
+        self.max_size = Some(max_size);
+        self
+    }
+
+    /// Set minimum file size in bytes
+    #[must_use]
+    pub fn min_size(mut self, min_size: u64) -> Self {
+        self.min_size = Some(min_size);
+        self
+    }
+
+    /// Set whether to allow multiple files
+    #[must_use]
+    pub fn multiple(mut self, multiple: bool) -> Self {
+        self.multiple = multiple;
+        self
+    }
+
+    /// Set upload directory restriction
+    #[must_use]
+    pub fn upload_directory(mut self, upload_directory: impl Into<String>) -> Self {
+        self.upload_directory = Some(upload_directory.into());
+        self
+    }
+
+    /// Set whether to validate file content
+    #[must_use]
+    pub fn validate_content(mut self, validate_content: bool) -> Self {
+        self.validate_content = validate_content;
+        self
+    }
+
+    /// Build the options
+    #[must_use]
+    pub fn build(self) -> FileParameterOptions {
+        FileParameterOptions {
+            accepted_formats: self.accepted_formats,
+            max_size: self.max_size,
+            min_size: self.min_size,
+            multiple: self.multiple,
+            upload_directory: self.upload_directory,
+            validate_content: self.validate_content,
+        }
+    }
+}
+
+// =============================================================================
+// Trait Implementations
+// =============================================================================
 
 impl Describable for FileParameter {
     fn kind(&self) -> ParameterKind {
@@ -143,13 +428,13 @@ impl Describable for FileParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.base.metadata
+        &self.metadata
     }
 }
 
 impl std::fmt::Display for FileParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "FileParameter({})", self.base.metadata.name)
+        write!(f, "FileParameter({})", self.metadata.name)
     }
 }
 
@@ -159,7 +444,7 @@ impl Validatable for FileParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.base.validation.as_ref()
+        self.validation.as_ref()
     }
 
     fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
@@ -168,7 +453,7 @@ impl Validatable for FileParameter {
             let actual = value.kind();
             if actual != ValueKind::Null && actual != expected {
                 return Err(ParameterError::InvalidType {
-                    key: self.base.metadata.key.clone(),
+                    key: self.metadata.key.clone(),
                     expected_type: expected.name().to_string(),
                     actual_details: actual.name().to_string(),
                 });
@@ -184,7 +469,7 @@ impl Validatable for FileParameter {
         // Required check
         if self.is_empty(value) && self.is_required() {
             return Err(ParameterError::MissingValue {
-                key: self.base.metadata.key.clone(),
+                key: self.metadata.key.clone(),
             });
         }
 
@@ -192,7 +477,7 @@ impl Validatable for FileParameter {
         let path_value = obj
             .get("path")
             .ok_or_else(|| ParameterError::InvalidValue {
-                key: self.base.metadata.key.clone(),
+                key: self.metadata.key.clone(),
                 reason: "File object missing 'path' field".to_string(),
             })?;
 
@@ -200,7 +485,7 @@ impl Validatable for FileParameter {
             Value::Text(t) => t.as_str(),
             _ => {
                 return Err(ParameterError::InvalidValue {
-                    key: self.base.metadata.key.clone(),
+                    key: self.metadata.key.clone(),
                     reason: "File 'path' field must be text".to_string(),
                 });
             }
@@ -222,7 +507,7 @@ impl Validatable for FileParameter {
                     && size > max_size
                 {
                     return Err(ParameterError::InvalidValue {
-                        key: self.base.metadata.key.clone(),
+                        key: self.metadata.key.clone(),
                         reason: format!("File size {size} bytes exceeds maximum {max_size} bytes"),
                     });
                 }
@@ -230,7 +515,7 @@ impl Validatable for FileParameter {
                     && size < min_size
                 {
                     return Err(ParameterError::InvalidValue {
-                        key: self.base.metadata.key.clone(),
+                        key: self.metadata.key.clone(),
                         reason: format!("File size {size} bytes is below minimum {min_size} bytes"),
                     });
                 }
@@ -256,7 +541,7 @@ impl Validatable for FileParameter {
 
                 if !is_format_accepted {
                     return Err(ParameterError::InvalidValue {
-                        key: self.base.metadata.key.clone(),
+                        key: self.metadata.key.clone(),
                         reason: format!(
                             "File format not accepted. Accepted formats: {}",
                             accepted_formats.join(", ")
@@ -277,11 +562,11 @@ impl Validatable for FileParameter {
 
 impl Displayable for FileParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.base.display.as_ref()
+        self.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.base.display = display;
+        self.display = display;
     }
 }
 
@@ -427,5 +712,82 @@ impl FileParameter {
         } else {
             format!("{:.1} {}", size, UNITS[unit_index])
         }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_file_parameter_builder() {
+        let param = FileParameter::builder()
+            .key("document")
+            .name("Document")
+            .description("Upload a document")
+            .required(true)
+            .build()
+            .unwrap();
+
+        assert_eq!(param.metadata.key.as_str(), "document");
+        assert_eq!(param.metadata.name, "Document");
+        assert!(param.metadata.required);
+    }
+
+    #[test]
+    fn test_file_parameter_with_options() {
+        let param = FileParameter::builder()
+            .key("image")
+            .name("Image")
+            .options(
+                FileParameterOptions::builder()
+                    .accepted_formats([".png", ".jpg", "image/*"])
+                    .max_size(5 * 1024 * 1024)
+                    .multiple(true)
+                    .build(),
+            )
+            .build()
+            .unwrap();
+
+        let opts = param.options.unwrap();
+        assert_eq!(opts.accepted_formats.as_ref().unwrap().len(), 3);
+        assert_eq!(opts.max_size, Some(5 * 1024 * 1024));
+        assert!(opts.multiple);
+    }
+
+    #[test]
+    fn test_file_parameter_missing_key() {
+        let result = FileParameter::builder().name("Test").build();
+
+        assert!(matches!(
+            result,
+            Err(ParameterError::BuilderMissingField { field }) if field == "key"
+        ));
+    }
+
+    #[test]
+    fn test_file_reference() {
+        let file_ref = FileReference::new("/path/to/file.pdf", "file.pdf")
+            .with_size(1024)
+            .with_mime_type("application/pdf")
+            .as_temporary();
+
+        assert_eq!(file_ref.path, PathBuf::from("/path/to/file.pdf"));
+        assert_eq!(file_ref.name, "file.pdf");
+        assert_eq!(file_ref.size, Some(1024));
+        assert_eq!(file_ref.mime_type, Some("application/pdf".to_string()));
+        assert!(file_ref.is_temporary);
+    }
+
+    #[test]
+    fn test_format_file_size() {
+        assert_eq!(FileParameter::format_file_size(500), "500 B");
+        assert_eq!(FileParameter::format_file_size(1024), "1.0 KB");
+        assert_eq!(FileParameter::format_file_size(1536), "1.5 KB");
+        assert_eq!(FileParameter::format_file_size(1048576), "1.0 MB");
     }
 }

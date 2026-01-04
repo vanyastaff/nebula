@@ -1,8 +1,10 @@
+//! List parameter type for array/list containers
+
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    Describable, Displayable, Parameter, ParameterBase, ParameterDisplay, ParameterError,
-    ParameterKind, ParameterMetadata, ParameterValidation, Validatable,
+    Describable, Displayable, Parameter, ParameterDisplay, ParameterError, ParameterKind,
+    ParameterMetadata, ParameterValidation, Validatable,
 };
 use nebula_value::{Value, ValueKind};
 
@@ -45,14 +47,32 @@ impl ListValue {
 }
 
 /// Parameter for lists - acts as a container with child parameters
-#[derive(Serialize, bon::Builder)]
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_parameter::prelude::*;
+///
+/// let param = ListParameter::builder()
+///     .key("items")
+///     .name("Items")
+///     .description("List of items")
+///     .options(
+///         ListParameterOptions::builder()
+///             .min_items(1)
+///             .max_items(10)
+///             .build()
+///     )
+///     .build()?;
+/// ```
+#[derive(Serialize)]
 pub struct ListParameter {
-    /// Base parameter fields (metadata, display, validation)
+    /// Parameter metadata (key, name, description, etc.)
     #[serde(flatten)]
-    pub base: ParameterBase,
+    pub metadata: ParameterMetadata,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// Default value if parameter is not set
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<nebula_value::Array>,
 
     /// Child parameters in this list
@@ -63,20 +83,28 @@ pub struct ListParameter {
     #[serde(skip)]
     pub item_template: Option<Box<dyn Parameter>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// Configuration options for this parameter type
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<ListParameterOptions>,
+
+    /// Display conditions controlling when this parameter is shown
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<ParameterDisplay>,
+
+    /// Validation rules for this parameter
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation: Option<ParameterValidation>,
 }
 
 /// Configuration options for list parameters
-#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ListParameterOptions {
     /// Minimum number of items
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_items: Option<usize>,
 
     /// Maximum number of items
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_items: Option<usize>,
 
     /// Whether items can be reordered
@@ -84,7 +112,6 @@ pub struct ListParameterOptions {
     pub allow_reorder: bool,
 
     /// Whether items can be duplicated
-    #[builder(default)]
     #[serde(default)]
     pub allow_duplicates: bool,
 }
@@ -93,29 +120,282 @@ fn default_allow_reorder() -> bool {
     true
 }
 
-impl Default for ListParameterOptions {
-    fn default() -> Self {
+// =============================================================================
+// ListParameter Builder
+// =============================================================================
+
+/// Builder for `ListParameter`
+#[derive(Default)]
+pub struct ListParameterBuilder {
+    // Metadata fields
+    key: Option<String>,
+    name: Option<String>,
+    description: String,
+    required: bool,
+    placeholder: Option<String>,
+    hint: Option<String>,
+    // Parameter fields
+    default: Option<nebula_value::Array>,
+    children: Vec<Box<dyn Parameter>>,
+    item_template: Option<Box<dyn Parameter>>,
+    options: Option<ListParameterOptions>,
+    display: Option<ParameterDisplay>,
+    validation: Option<ParameterValidation>,
+}
+
+impl ListParameter {
+    /// Create a new builder
+    #[must_use]
+    pub fn builder() -> ListParameterBuilder {
+        ListParameterBuilder::new()
+    }
+}
+
+impl ListParameterBuilder {
+    /// Create a new builder
+    #[must_use]
+    pub fn new() -> Self {
         Self {
-            min_items: None,
-            max_items: None,
+            key: None,
+            name: None,
+            description: String::new(),
+            required: false,
+            placeholder: None,
+            hint: None,
+            default: None,
+            children: Vec::new(),
+            item_template: None,
+            options: None,
+            display: None,
+            validation: None,
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Metadata methods
+    // -------------------------------------------------------------------------
+
+    /// Set the parameter key (required)
+    #[must_use]
+    pub fn key(mut self, key: impl Into<String>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    /// Set the display name (required)
+    #[must_use]
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set the description
+    #[must_use]
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// Set whether the parameter is required
+    #[must_use]
+    pub fn required(mut self, required: bool) -> Self {
+        self.required = required;
+        self
+    }
+
+    /// Set placeholder text
+    #[must_use]
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+
+    /// Set hint text
+    #[must_use]
+    pub fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    // -------------------------------------------------------------------------
+    // Parameter-specific methods
+    // -------------------------------------------------------------------------
+
+    /// Set the default value
+    #[must_use]
+    pub fn default(mut self, default: nebula_value::Array) -> Self {
+        self.default = Some(default);
+        self
+    }
+
+    /// Set child parameters
+    #[must_use]
+    pub fn children(mut self, children: Vec<Box<dyn Parameter>>) -> Self {
+        self.children = children;
+        self
+    }
+
+    /// Add a child parameter
+    #[must_use]
+    pub fn child(mut self, child: Box<dyn Parameter>) -> Self {
+        self.children.push(child);
+        self
+    }
+
+    /// Set item template
+    #[must_use]
+    pub fn item_template(mut self, template: Box<dyn Parameter>) -> Self {
+        self.item_template = Some(template);
+        self
+    }
+
+    /// Set the options
+    #[must_use]
+    pub fn options(mut self, options: ListParameterOptions) -> Self {
+        self.options = Some(options);
+        self
+    }
+
+    /// Set display conditions
+    #[must_use]
+    pub fn display(mut self, display: ParameterDisplay) -> Self {
+        self.display = Some(display);
+        self
+    }
+
+    /// Set validation rules
+    #[must_use]
+    pub fn validation(mut self, validation: ParameterValidation) -> Self {
+        self.validation = Some(validation);
+        self
+    }
+
+    // -------------------------------------------------------------------------
+    // Build
+    // -------------------------------------------------------------------------
+
+    /// Build the `ListParameter`
+    ///
+    /// # Errors
+    ///
+    /// Returns error if required fields are missing or key format is invalid.
+    pub fn build(self) -> Result<ListParameter, ParameterError> {
+        let metadata = ParameterMetadata::builder()
+            .key(
+                self.key
+                    .ok_or_else(|| ParameterError::BuilderMissingField {
+                        field: "key".into(),
+                    })?,
+            )
+            .name(
+                self.name
+                    .ok_or_else(|| ParameterError::BuilderMissingField {
+                        field: "name".into(),
+                    })?,
+            )
+            .description(self.description)
+            .required(self.required)
+            .build()?;
+
+        let mut metadata = metadata;
+        metadata.placeholder = self.placeholder;
+        metadata.hint = self.hint;
+
+        Ok(ListParameter {
+            metadata,
+            default: self.default,
+            children: self.children,
+            item_template: self.item_template,
+            options: self.options,
+            display: self.display,
+            validation: self.validation,
+        })
+    }
+}
+
+// =============================================================================
+// ListParameterOptions Builder
+// =============================================================================
+
+/// Builder for `ListParameterOptions`
+#[derive(Debug, Default)]
+pub struct ListParameterOptionsBuilder {
+    min_items: Option<usize>,
+    max_items: Option<usize>,
+    allow_reorder: bool,
+    allow_duplicates: bool,
+}
+
+impl ListParameterOptions {
+    /// Create a new builder
+    #[must_use]
+    pub fn builder() -> ListParameterOptionsBuilder {
+        ListParameterOptionsBuilder {
             allow_reorder: true,
-            allow_duplicates: true,
+            ..Default::default()
         }
     }
 }
+
+impl ListParameterOptionsBuilder {
+    /// Set minimum number of items
+    #[must_use]
+    pub fn min_items(mut self, min_items: usize) -> Self {
+        self.min_items = Some(min_items);
+        self
+    }
+
+    /// Set maximum number of items
+    #[must_use]
+    pub fn max_items(mut self, max_items: usize) -> Self {
+        self.max_items = Some(max_items);
+        self
+    }
+
+    /// Set whether items can be reordered
+    #[must_use]
+    pub fn allow_reorder(mut self, allow_reorder: bool) -> Self {
+        self.allow_reorder = allow_reorder;
+        self
+    }
+
+    /// Set whether duplicates are allowed
+    #[must_use]
+    pub fn allow_duplicates(mut self, allow_duplicates: bool) -> Self {
+        self.allow_duplicates = allow_duplicates;
+        self
+    }
+
+    /// Build the options
+    #[must_use]
+    pub fn build(self) -> ListParameterOptions {
+        ListParameterOptions {
+            min_items: self.min_items,
+            max_items: self.max_items,
+            allow_reorder: self.allow_reorder,
+            allow_duplicates: self.allow_duplicates,
+        }
+    }
+}
+
+// =============================================================================
+// Trait Implementations
+// =============================================================================
 
 // Manual Debug implementation since we skip trait objects
 impl std::fmt::Debug for ListParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ListParameter")
-            .field("base", &self.base)
+            .field("metadata", &self.metadata)
             .field("default", &self.default)
             .field(
                 "children",
-                &format!("Vec<Box<dyn ParameterType>> (len: {})", self.children.len()),
+                &format!("Vec<Box<dyn Parameter>> (len: {})", self.children.len()),
             )
-            .field("item_template", &"Option<Box<dyn ParameterType>>")
+            .field("item_template", &"Option<Box<dyn Parameter>>")
             .field("options", &self.options)
+            .field("display", &self.display)
+            .field("validation", &self.validation)
             .finish()
     }
 }
@@ -126,13 +406,13 @@ impl Describable for ListParameter {
     }
 
     fn metadata(&self) -> &ParameterMetadata {
-        &self.base.metadata
+        &self.metadata
     }
 }
 
 impl std::fmt::Display for ListParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ListParameter({})", self.base.metadata.name)
+        write!(f, "ListParameter({})", self.metadata.name)
     }
 }
 
@@ -142,7 +422,7 @@ impl Validatable for ListParameter {
     }
 
     fn validation(&self) -> Option<&ParameterValidation> {
-        self.base.validation.as_ref()
+        self.validation.as_ref()
     }
 
     fn validate_sync(&self, value: &Value) -> Result<(), ParameterError> {
@@ -151,7 +431,7 @@ impl Validatable for ListParameter {
             let actual = value.kind();
             if actual != ValueKind::Null && actual != expected {
                 return Err(ParameterError::InvalidType {
-                    key: self.base.metadata.key.clone(),
+                    key: self.metadata.key.clone(),
                     expected_type: expected.name().to_string(),
                     actual_details: actual.name().to_string(),
                 });
@@ -161,7 +441,7 @@ impl Validatable for ListParameter {
         // Required check - must come before early return for Null
         if self.is_required() && self.is_empty(value) {
             return Err(ParameterError::MissingValue {
-                key: self.base.metadata.key.clone(),
+                key: self.metadata.key.clone(),
             });
         }
 
@@ -179,7 +459,7 @@ impl Validatable for ListParameter {
                 && item_count < min_items
             {
                 return Err(ParameterError::InvalidValue {
-                    key: self.base.metadata.key.clone(),
+                    key: self.metadata.key.clone(),
                     reason: format!("List must have at least {min_items} items, got {item_count}"),
                 });
             }
@@ -188,7 +468,7 @@ impl Validatable for ListParameter {
                 && item_count > max_items
             {
                 return Err(ParameterError::InvalidValue {
-                    key: self.base.metadata.key.clone(),
+                    key: self.metadata.key.clone(),
                     reason: format!("List must have at most {max_items} items, got {item_count}"),
                 });
             }
@@ -204,37 +484,15 @@ impl Validatable for ListParameter {
 
 impl Displayable for ListParameter {
     fn display(&self) -> Option<&ParameterDisplay> {
-        self.base.display.as_ref()
+        self.display.as_ref()
     }
 
     fn set_display(&mut self, display: Option<ParameterDisplay>) {
-        self.base.display = display;
+        self.display = display;
     }
 }
 
 impl ListParameter {
-    /// Create a new list parameter as a container
-    pub fn new(
-        key: &str,
-        name: &str,
-        description: &str,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        Ok(Self {
-            base: ParameterBase::new(ParameterMetadata {
-                key: nebula_core::ParameterKey::new(key)?,
-                name: name.to_string(),
-                description: description.to_string(),
-                required: false,
-                placeholder: Some("Add list items...".to_string()),
-                hint: Some("List container with child parameters".to_string()),
-            }),
-            default: None,
-            children: Vec::new(),
-            item_template: None,
-            options: Some(ListParameterOptions::default()),
-        })
-    }
-
     /// Set the template parameter for creating new items
     pub fn set_template(&mut self, template: Box<dyn Parameter>) {
         self.item_template = Some(template);
@@ -345,5 +603,69 @@ impl ListParameter {
     }
 }
 
-// Note: Conversion function removed - use nebula_value::ValueRefExt trait instead
-// The trait provides .to_json() method for ergonomic conversions
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_list_parameter_builder() {
+        let param = ListParameter::builder()
+            .key("items")
+            .name("Items")
+            .description("List of items")
+            .required(true)
+            .build()
+            .unwrap();
+
+        assert_eq!(param.metadata.key.as_str(), "items");
+        assert_eq!(param.metadata.name, "Items");
+        assert!(param.metadata.required);
+    }
+
+    #[test]
+    fn test_list_parameter_with_options() {
+        let param = ListParameter::builder()
+            .key("tags")
+            .name("Tags")
+            .options(
+                ListParameterOptions::builder()
+                    .min_items(1)
+                    .max_items(5)
+                    .allow_reorder(true)
+                    .build(),
+            )
+            .build()
+            .unwrap();
+
+        let opts = param.options.unwrap();
+        assert_eq!(opts.min_items, Some(1));
+        assert_eq!(opts.max_items, Some(5));
+        assert!(opts.allow_reorder);
+    }
+
+    #[test]
+    fn test_list_parameter_missing_key() {
+        let result = ListParameter::builder().name("Test").build();
+
+        assert!(matches!(
+            result,
+            Err(ParameterError::BuilderMissingField { field }) if field == "key"
+        ));
+    }
+
+    #[test]
+    fn test_list_value() {
+        let mut list = ListValue::empty();
+        assert!(list.is_empty());
+
+        list.push(nebula_value::Value::text("item1"));
+        list.push(nebula_value::Value::text("item2"));
+
+        assert_eq!(list.len(), 2);
+        assert!(!list.is_empty());
+    }
+}

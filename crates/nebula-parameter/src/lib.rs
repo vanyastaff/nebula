@@ -28,7 +28,6 @@ pub mod prelude {
 
     // Core types
     pub use crate::core::{
-        ParameterBase,       // common fields for all parameters
         ParameterCollection, // parameter registry
         ParameterContext,    // runtime context with reactive updates
         ParameterError,      // error type
