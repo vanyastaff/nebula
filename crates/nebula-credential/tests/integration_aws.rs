@@ -28,6 +28,7 @@ fn test_metadata(tags: HashMap<String, String>) -> CredentialMetadata {
         created_at: chrono::Utc::now(),
         last_accessed: None,
         last_modified: chrono::Utc::now(),
+        scope: None,
         rotation_policy: None,
         tags,
     }

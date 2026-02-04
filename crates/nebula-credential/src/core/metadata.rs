@@ -22,6 +22,9 @@ pub struct CredentialMetadata {
     /// When credential was last modified
     pub last_modified: DateTime<Utc>,
 
+    /// Optional scope for multi-tenant isolation
+    pub scope: Option<crate::core::ScopeId>,
+
     /// Optional rotation policy (for automatic credential rotation)
     pub rotation_policy: Option<RotationPolicy>,
 
@@ -37,6 +40,7 @@ impl CredentialMetadata {
             created_at: now,
             last_accessed: None,
             last_modified: now,
+            scope: None,
             rotation_policy: None,
             tags: HashMap::new(),
         }

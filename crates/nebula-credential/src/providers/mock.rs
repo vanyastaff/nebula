@@ -209,19 +209,19 @@ impl StorageProvider for MockStorageProvider {
         let mut ids: Vec<CredentialId> = storage.keys().cloned().collect();
 
         // Apply filter if provided
-        if let Some(filter) = filter {
-            if let Some(filter_tags) = &filter.tags {
-                // Filter by tags - only include credentials that have ALL specified tag key-value pairs
-                ids.retain(|id| {
-                    if let Some((_, metadata)) = storage.get(id) {
-                        filter_tags.iter().all(|(key, value)| {
-                            metadata.tags.get(key).map_or(false, |v| v == value)
-                        })
-                    } else {
-                        false
-                    }
-                });
-            }
+        if let Some(filter) = filter
+            && let Some(filter_tags) = &filter.tags
+        {
+            // Filter by tags - only include credentials that have ALL specified tag key-value pairs
+            ids.retain(|id| {
+                if let Some((_, metadata)) = storage.get(id) {
+                    filter_tags
+                        .iter()
+                        .all(|(key, value)| metadata.tags.get(key).is_some_and(|v| v == value))
+                } else {
+                    false
+                }
+            });
         }
 
         Ok(ids)

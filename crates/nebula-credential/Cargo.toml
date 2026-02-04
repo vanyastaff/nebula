@@ -45,10 +45,13 @@ tracing = { workspace = true }
 humantime-serde = "1.1"
 futures = "0.3"
 
+# Caching
+moka = { version = "0.12", features = ["future"] }
+
 # Optional storage backends
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls"], optional = true }
 
-# Storage backend dependencies (Phase 2)
+# Storage backend dependencies
 # Local storage
 atomicwrites = "0.4"
 fs2 = "0.4"
@@ -57,12 +60,6 @@ directories = "5.0"
 # AWS Secrets Manager (optional)
 aws-config = { version = "1.0", optional = true }
 aws-sdk-secretsmanager = { version = "1.0", optional = true }
-
-# Azure Key Vault - SKIPPED (Phase 5)
-# Azure SDK 0.10 has incompatible internal dependencies (azure_identity uses azure_core 0.10,
-# but azure_security_keyvault_secrets uses azure_core 0.31)
-# Git main branch has breaking API changes
-# Decision: Skip Azure provider for now, focus on working providers (Local, AWS, Vault, K8s)
 
 # HashiCorp Vault (optional)
 vaultrs = { version = "0.7", optional = true }
