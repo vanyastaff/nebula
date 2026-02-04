@@ -7,6 +7,9 @@
 //! - [`Toolbar`]: Horizontal toolbar with items
 //! - [`SplitView`]: Resizable split panes
 
+// Layout components have complex nested structure for hierarchical UI
+#![allow(clippy::excessive_nesting)]
+
 mod panel;
 mod sidebar;
 mod split;

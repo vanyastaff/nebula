@@ -120,8 +120,5 @@ proptest = { workspace = true }
 test-case = "3.3.1"
 mockall = { workspace = true }
 tempfile = { workspace = true }
-testcontainers = "0.15"
-testcontainers-modules = { version = "0.3", features = ["postgres"] }
-
-
-
+testcontainers = "0.26"
+testcontainers-modules = { version = "0.14", features = ["postgres"] }

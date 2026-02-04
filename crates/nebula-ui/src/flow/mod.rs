@@ -8,6 +8,9 @@
 //! - [`Connection`]: Bezier curve connections
 //! - [`Layer`]: Hierarchical node grouping
 //! - [`Minimap`]: Bird's-eye view for navigation
+
+// Flow editor has complex nested logic for interaction handling
+#![allow(clippy::excessive_nesting)]
 //! - [`Controls`]: Zoom and view controls
 //! - [`Background`]: Customizable background patterns
 

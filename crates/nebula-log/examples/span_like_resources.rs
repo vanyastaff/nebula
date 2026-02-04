@@ -18,7 +18,7 @@ fn main() {
         fn on_event_with_context(
             &self,
             event: &dyn ObservabilityEvent,
-            ctx: Option<std::sync::Arc<NodeContext>>,
+            _ctx: Option<std::sync::Arc<NodeContext>>,
         ) {
             // Get merged resource from ALL parent spans
             if let Some(merged) = get_current_logger_resource() {

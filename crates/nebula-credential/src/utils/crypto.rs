@@ -105,7 +105,16 @@ impl EncryptedData {
     }
 }
 
-/// Nonce generator with atomic counter (prevents reuse)
+/// Nonce generator with atomic counter and random component
+///
+/// Uses 8 bytes for counter (prevents reuse within session) and 4 bytes
+/// for random data (prevents reuse across process restarts).
+///
+/// # Security Note
+///
+/// The random component protects against nonce reuse if the same encryption
+/// key is used after a process restart. Without this, the counter would reset
+/// to 0, potentially reusing (key, nonce) pairs - a catastrophic failure for AES-GCM.
 struct NonceGenerator {
     counter: AtomicU64,
 }
@@ -118,10 +127,16 @@ impl NonceGenerator {
     }
 
     fn next(&self) -> aes_gcm::Nonce<aes_gcm::aes::cipher::typenum::U12> {
-        let value = self.counter.fetch_add(1, Ordering::SeqCst);
-        // Convert u64 to 12-byte nonce (8 bytes value + 4 bytes zeros)
+        use rand::Rng;
+
+        let counter = self.counter.fetch_add(1, Ordering::SeqCst);
+        let random: u32 = rand::rng().random();
+
+        // 12-byte nonce: 8 bytes counter + 4 bytes random
         let mut nonce_bytes = [0u8; 12];
-        nonce_bytes[0..8].copy_from_slice(&value.to_le_bytes());
+        nonce_bytes[0..8].copy_from_slice(&counter.to_le_bytes());
+        nonce_bytes[8..12].copy_from_slice(&random.to_le_bytes());
+
         *aes_gcm::Nonce::from_slice(&nonce_bytes)
     }
 }
@@ -285,8 +300,29 @@ mod tests {
         let nonce2 = generator.next();
         let nonce3 = generator.next();
 
+        // All nonces must be different
         assert_ne!(nonce1.as_slice(), nonce2.as_slice());
         assert_ne!(nonce2.as_slice(), nonce3.as_slice());
+        assert_ne!(nonce1.as_slice(), nonce3.as_slice());
+    }
+
+    #[test]
+    fn test_nonce_generator_has_random_component() {
+        // Generate nonces from two different generators (simulating restart)
+        let gen1 = NonceGenerator::new();
+        let gen2 = NonceGenerator::new();
+
+        let nonce1 = gen1.next();
+        let nonce2 = gen2.next();
+
+        // Even though both start with counter=0, random component makes them different
+        // Extract random part (last 4 bytes)
+        let random1 = &nonce1.as_slice()[8..12];
+        let random2 = &nonce2.as_slice()[8..12];
+
+        // With extremely high probability, random components should differ
+        // (collision probability is 1 in 2^32 = 1 in 4.3 billion)
+        assert_ne!(random1, random2);
     }
 
     // ========================================================================

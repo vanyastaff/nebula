@@ -397,27 +397,7 @@ mod integration_tests {
 mod doc_tests {
     //! These tests verify that documentation examples compile and work.
 
-    use super::*;
     use crate::core::{ValidationError, Validator, ValidatorExt};
-
-    struct Contains {
-        substring: String,
-    }
-
-    impl Validator for Contains {
-        type Input = str;
-
-        fn validate(&self, input: &str) -> Result<(), ValidationError> {
-            if input.contains(&self.substring) {
-                Ok(())
-            } else {
-                Err(ValidationError::new(
-                    "contains",
-                    format!("Must contain '{}'", self.substring),
-                ))
-            }
-        }
-    }
 
     #[test]
     fn test_readme_example() {
