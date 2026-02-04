@@ -14,10 +14,13 @@ mod id;
 mod metadata;
 
 pub use context::CredentialContext;
-pub use error::{CredentialError, CryptoError, Result, StorageError, ValidationError};
+pub use error::{
+    CredentialError, CryptoError, ManagerError, ManagerResult, Result, StorageError,
+    ValidationError,
+};
 pub use filter::CredentialFilter;
-pub use id::CredentialId;
-pub use metadata::CredentialMetadata;
+pub use id::{CredentialId, ScopeId};
+pub use metadata::{CredentialMetadata, RotationPolicy};
 
 // Re-exports from utils
 pub use crate::utils::{SecretString, from_unix_timestamp, to_unix_timestamp, unix_now};

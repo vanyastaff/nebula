@@ -14,6 +14,8 @@
 
 /// Core types, errors, and primitives
 pub mod core;
+/// Credential manager - high-level API for credential operations
+pub mod manager;
 /// Storage provider implementations
 pub mod providers;
 /// Core traits for credentials, storage, and locking
@@ -26,7 +28,7 @@ pub mod prelude {
     // Core types
     pub use crate::core::{
         CredentialContext, CredentialError, CredentialFilter, CredentialId, CredentialMetadata,
-        SecretString,
+        RotationPolicy, SecretString,
     };
 
     // Traits
@@ -59,4 +61,10 @@ pub mod prelude {
 
     // Retry utilities
     pub use crate::utils::RetryPolicy;
+
+    // Credential Manager (Phase 3)
+    pub use crate::manager::{
+        CacheConfig, CacheLayer, CacheStats, CredentialManager, CredentialManagerBuilder,
+        EvictionStrategy, ManagerConfig, ValidationDetails, ValidationResult,
+    };
 }

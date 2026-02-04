@@ -65,7 +65,83 @@ pub enum CredentialError {
         #[source]
         source: ValidationError,
     },
+
+    /// Credential manager error
+    #[error("Manager error: {source}")]
+    Manager {
+        /// Underlying manager error
+        #[source]
+        source: ManagerError,
+    },
 }
+
+/// Manager operation errors
+///
+/// Errors specific to credential manager operations including
+/// cache failures, scope violations, and batch operation errors.
+#[derive(Debug, Error)]
+pub enum ManagerError {
+    /// Credential not found in storage
+    #[error("Credential not found: {credential_id}")]
+    NotFound { credential_id: String },
+
+    /// Storage provider error
+    #[error("Storage error for credential {credential_id}: {source}")]
+    StorageError {
+        credential_id: String,
+        #[source]
+        source: StorageError,
+    },
+
+    /// Cache operation error
+    #[error("Cache error: {0}")]
+    CacheError(String),
+
+    /// Credential validation failed
+    #[error("Validation failed for {credential_id}: {reason}")]
+    ValidationError {
+        credential_id: String,
+        reason: String,
+    },
+
+    /// Scope isolation violation
+    #[error(
+        "Scope violation: credential {credential_id} in scope {actual_scope}, requested {requested_scope}"
+    )]
+    ScopeViolation {
+        credential_id: String,
+        actual_scope: String,
+        requested_scope: String,
+    },
+
+    /// Scope required for operation
+    #[error("Operation '{operation}' requires a scope in the context")]
+    ScopeRequired { operation: String },
+
+    /// Batch operation partial failure
+    #[error("Batch operation failed: {successful} succeeded, {failed} failed")]
+    BatchError {
+        successful: usize,
+        failed: usize,
+        errors: Vec<(String, Box<ManagerError>)>,
+    },
+}
+
+impl ManagerError {
+    /// Add credential_id context to error
+    pub fn with_credential_id(self, id: String) -> Self {
+        match self {
+            Self::StorageError { source, .. } => Self::StorageError {
+                credential_id: id,
+                source,
+            },
+            other => other,
+        }
+    }
+}
+
+/// Result type alias for manager operations
+pub type ManagerResult<T> = std::result::Result<T, ManagerError>;
 
 /// Storage operation errors
 ///

@@ -261,24 +261,24 @@ fn filter_matches(metadata: &CredentialMetadata, filter: &CredentialFilter) -> b
     // Check tags if present in filter
     if let Some(filter_tags) = &filter.tags {
         for (key, value) in filter_tags {
-            if !metadata.tags.get(key).map_or(false, |v| v == value) {
+            if metadata.tags.get(key).is_none_or(|v| v != value) {
                 return false;
             }
         }
     }
 
     // Check created_after if present
-    if let Some(created_after) = filter.created_after {
-        if metadata.created_at < created_after {
-            return false;
-        }
+    if let Some(created_after) = filter.created_after
+        && metadata.created_at < created_after
+    {
+        return false;
     }
 
     // Check created_before if present
-    if let Some(created_before) = filter.created_before {
-        if metadata.created_at > created_before {
-            return false;
-        }
+    if let Some(created_before) = filter.created_before
+        && metadata.created_at > created_before
+    {
+        return false;
     }
 
     true
@@ -531,29 +531,35 @@ impl StorageProvider for LocalStorageProvider {
             let path = entry.path();
 
             // Check if file has correct extension
-            if let Some(ext) = path.extension() {
-                if ext == self.config.file_extension.as_str() {
-                    // Extract credential ID from filename
-                    if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        if let Ok(id) = CredentialId::try_from(file_stem.to_string()) {
-                            // Apply filter if provided
-                            if let Some(filter) = filter {
-                                // Read metadata to check filter
-                                if let Ok(json) = tokio::fs::read(&path).await {
-                                    if let Ok(cred_file) =
-                                        serde_json::from_slice::<CredentialFile>(&json)
-                                    {
-                                        if filter_matches(&cred_file.metadata, filter) {
-                                            ids.push(id);
-                                        }
-                                    }
-                                }
-                            } else {
-                                ids.push(id);
-                            }
-                        }
-                    }
+            let Some(ext) = path.extension() else {
+                continue;
+            };
+            if ext != self.config.file_extension.as_str() {
+                continue;
+            }
+
+            // Extract credential ID from filename
+            let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let Ok(id) = CredentialId::try_from(file_stem.to_string()) else {
+                continue;
+            };
+
+            // Apply filter if provided
+            if let Some(filter) = filter {
+                // Read metadata to check filter
+                let Ok(json) = tokio::fs::read(&path).await else {
+                    continue;
+                };
+                let Ok(cred_file) = serde_json::from_slice::<CredentialFile>(&json) else {
+                    continue;
+                };
+                if filter_matches(&cred_file.metadata, filter) {
+                    ids.push(id);
                 }
+            } else {
+                ids.push(id);
             }
         }
 

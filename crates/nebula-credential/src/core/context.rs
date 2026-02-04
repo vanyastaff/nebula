@@ -5,6 +5,8 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use super::ScopeId;
+
 /// Request context for credential operations
 ///
 /// Carries owner, scope, and tracing metadata for observability
@@ -20,7 +22,7 @@ use uuid::Uuid;
 ///
 /// // With scope for multi-tenancy
 /// let ctx = CredentialContext::new("user_123")
-///     .with_scope("workflow_456");
+///     .with_scope("org:acme/team:eng").unwrap();
 ///
 /// // With custom trace ID
 /// use uuid::Uuid;
@@ -34,7 +36,7 @@ pub struct CredentialContext {
     pub owner_id: String,
 
     /// Optional scope for isolation (multi-tenancy support)
-    pub scope_id: Option<String>,
+    pub scope_id: Option<ScopeId>,
 
     /// Trace ID for distributed tracing
     pub trace_id: Uuid,
@@ -55,9 +57,16 @@ impl CredentialContext {
     }
 
     /// Set scope for this context (builder pattern)
-    pub fn with_scope(mut self, scope_id: impl Into<String>) -> Self {
-        self.scope_id = Some(scope_id.into());
-        self
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValidationError` if the scope ID is invalid
+    pub fn with_scope(
+        mut self,
+        scope_id: impl Into<String>,
+    ) -> Result<Self, crate::core::ValidationError> {
+        self.scope_id = Some(ScopeId::new(scope_id)?);
+        Ok(self)
     }
 
     /// Set trace ID for this context (builder pattern)
@@ -80,10 +89,15 @@ mod tests {
 
     #[test]
     fn test_context_with_scope() {
-        let ctx = CredentialContext::new("user_123").with_scope("workflow_456");
+        let ctx = CredentialContext::new("user_123")
+            .with_scope("org:acme/team:eng")
+            .unwrap();
 
         assert_eq!(ctx.owner_id, "user_123");
-        assert_eq!(ctx.scope_id, Some("workflow_456".to_string()));
+        assert_eq!(
+            ctx.scope_id.as_ref().map(|s| s.as_str()),
+            Some("org:acme/team:eng")
+        );
     }
 
     #[test]
@@ -98,17 +112,23 @@ mod tests {
     fn test_context_builder_pattern() {
         let trace = Uuid::new_v4();
         let ctx = CredentialContext::new("user_123")
-            .with_scope("tenant_abc")
+            .with_scope("org:tenant/app:backend")
+            .unwrap()
             .with_trace_id(trace);
 
         assert_eq!(ctx.owner_id, "user_123");
-        assert_eq!(ctx.scope_id, Some("tenant_abc".to_string()));
+        assert_eq!(
+            ctx.scope_id.as_ref().map(|s| s.as_str()),
+            Some("org:tenant/app:backend")
+        );
         assert_eq!(ctx.trace_id, trace);
     }
 
     #[test]
     fn test_context_clone() {
-        let ctx1 = CredentialContext::new("user_123").with_scope("scope_1");
+        let ctx1 = CredentialContext::new("user_123")
+            .with_scope("org:test/app:clone")
+            .unwrap();
         let ctx2 = ctx1.clone();
 
         assert_eq!(ctx1.owner_id, ctx2.owner_id);

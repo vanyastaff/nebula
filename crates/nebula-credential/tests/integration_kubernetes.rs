@@ -77,6 +77,7 @@ fn create_test_data() -> (EncryptedData, CredentialMetadata) {
         created_at: Utc::now(),
         last_accessed: None,
         last_modified: Utc::now(),
+        scope: None,
         rotation_policy: None,
         tags,
     };
@@ -421,6 +422,7 @@ async fn test_k8s_update_credential() {
         created_at: Utc::now(),
         last_accessed: None,
         last_modified: Utc::now(),
+        scope: None,
         rotation_policy: None,
         tags: tags2.clone(),
     };

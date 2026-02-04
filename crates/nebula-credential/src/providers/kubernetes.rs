@@ -513,6 +513,7 @@ impl StorageProvider for KubernetesSecretsProvider {
             last_modified,
             rotation_policy: None,
             tags,
+            scope: None,
         };
 
         self.metrics
