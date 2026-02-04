@@ -1,25 +1,29 @@
 <!--
-Sync Impact Report - Constitution v1.0.0
+Sync Impact Report - Constitution v1.1.0
 
-VERSION CHANGE: Initial constitution (no previous version → 1.0.0)
-RATIONALE: First formal constitution for Nebula project, codifying existing practices from CLAUDE.md, AGENTS.md, and .cursorrules.
+VERSION CHANGE: Minor update (v1.0.0 → v1.1.0)
+RATIONALE: Add Rust API Guidelines compliance and per-phase quality gates to ensure idiomatic, well-documented code following Rust ecosystem conventions.
 
-MODIFIED PRINCIPLES: N/A (initial creation)
+MODIFIED PRINCIPLES: N/A
 ADDED SECTIONS:
-  - Core Principles (7 principles)
-  - Code Quality Standards
-  - Development Workflow
-  - Governance
+  - Principle VIII: Rust API Guidelines and Documentation (MANDATORY)
+    - Documentation standards (rustdoc, examples, errors, panics)
+    - Naming conventions (snake_case, PascalCase, SCREAMING_SNAKE_CASE)
+    - Method organization and builder patterns
+    - Quality gates per phase (fmt, clippy, check, doc)
 
-REMOVED SECTIONS: N/A (initial creation)
+REMOVED SECTIONS: N/A
 
 TEMPLATES STATUS:
-  ✅ plan-template.md - Constitution Check section aligns with principles
+  ✅ plan-template.md - Constitution Check section aligns with principles (includes new Principle VIII)
   ✅ spec-template.md - Requirements structure aligns with quality standards
   ✅ tasks-template.md - Task organization aligns with TDD and parallel execution principles
   ✅ All command files - Generic guidance verified (no agent-specific references)
 
-FOLLOW-UP TODOs: None
+FOLLOW-UP TODOs:
+  - Update existing Phase 2 code to remove phase markers from public documentation
+  - Run quality gates (fmt, clippy, check, doc) after Phase 2 completion
+  - Apply naming convention fixes (ctx → context, gen → generator)
 -->
 
 # Nebula Constitution
@@ -116,6 +120,48 @@ FOLLOW-UP TODOs: None
 - MUST prefer composition over inheritance
 - MUST prefer data over code (declarative workflow definitions)
 - MUST delete unused code rather than comment it out
+
+### VIII. Rust API Guidelines and Documentation (MANDATORY)
+
+**All code MUST follow Rust API Guidelines and rustdoc conventions.** Documentation, naming, and structure follow idiomatic Rust patterns without implementation phase markers or task references.
+
+**Rationale**: Consistent, idiomatic code is easier to understand, review, and maintain. Following Rust conventions ensures the codebase feels natural to Rust developers and leverages ecosystem tooling effectively.
+
+**Rules - Documentation**:
+- MUST write rustdoc comments for all public items (modules, types, functions, traits)
+- MUST use `///` for item documentation, `//!` for module/crate documentation
+- MUST include `# Examples` section for non-trivial public APIs
+- MUST include `# Errors` section documenting error conditions
+- MUST include `# Panics` section if code can panic
+- MUST use proper markdown formatting (code blocks with language tags)
+- MUST NOT include phase markers (Phase 1, Phase 2) in public documentation
+- MUST NOT include task references (T001, TODO) in public documentation
+- MAY include phase/task markers only in private comments for implementation tracking
+
+**Rules - Naming Conventions**:
+- MUST use `snake_case` for functions, methods, variables, modules
+- MUST use `PascalCase` for types, traits, enum variants
+- MUST use `SCREAMING_SNAKE_CASE` for constants and statics
+- MUST use clear, descriptive names (no abbreviations like `ctx`, prefer `context`)
+- MUST use standard Rust terminology: `new()` for constructors, `from_*()` for conversions, `as_*()` for cheap references, `to_*()` for expensive conversions, `into_*()` for consuming conversions
+
+**Rules - Method Organization**:
+- MUST order methods: constructors (`new`, `with_*`), conversions (`from_*`, `as_*`, `to_*`, `into_*`), getters, setters, operations
+- MUST use builder pattern with `with_*` methods for optional configuration
+- MUST use `#[must_use]` for functions with important return values
+- MUST mark deprecated APIs with `#[deprecated]` and migration guidance
+
+**Rules - Quality Gates Per Phase**:
+- MUST run after each phase completion (before marking phase complete):
+  ```bash
+  cargo fmt --all
+  cargo clippy --workspace -- -D warnings  
+  cargo check --workspace
+  cargo doc --no-deps --workspace
+  ```
+- MUST fix all warnings before proceeding to next phase
+- MUST ensure documentation builds without errors
+- MUST verify examples compile in doc comments
 
 ## Code Quality Standards
 
@@ -227,4 +273,4 @@ For detailed development guidance, consult:
 - `AGENTS.md` - Session completion workflow, issue tracking
 - Architecture docs in `docs/` - System design and patterns
 
-**Version**: 1.0.0 | **Ratified**: 2026-01-28 | **Last Amended**: 2026-01-28
+**Version**: 1.1.0 | **Ratified**: 2026-01-28 | **Last Amended**: 2026-02-03

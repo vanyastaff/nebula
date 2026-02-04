@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    CredentialContext, CredentialError, CredentialState, SecureString,
+    CredentialContext, CredentialError, CredentialState, SecretString,
     result::{CredentialFlow, InitializeResult},
 };
 
@@ -17,7 +17,7 @@ pub struct ApiKeyInput {
 /// State for API key credential
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ApiKeyState {
-    pub api_key: SecureString,
+    pub api_key: SecretString,
 }
 
 impl CredentialState for ApiKeyState {
@@ -54,7 +54,7 @@ impl CredentialFlow for ApiKeyFlow {
         }
 
         Ok(InitializeResult::Complete(ApiKeyState {
-            api_key: SecureString::new(&input.api_key),
+            api_key: SecretString::new(&input.api_key),
         }))
     }
 }

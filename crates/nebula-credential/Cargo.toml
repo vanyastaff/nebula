@@ -14,10 +14,13 @@ async-trait = { workspace = true }
 tokio = { workspace = true, features = ["time", "sync", "macros", "rt"] }
 
 # Crypto and security
+aes-gcm = "0.10"
+argon2 = "0.5"
 base64 = { workspace = true }
 domain-key = { workspace = true }
 rand = { workspace = true }
 sha2 = "0.10"
+subtle = "2.5"
 zeroize = { version = "1.8.1", features = ["zeroize_derive"] }
 
 # Core types
@@ -35,6 +38,10 @@ url = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
+# Utilities
+chrono = { workspace = true }
+uuid = { workspace = true, features = ["v4", "serde"] }
+
 # Optional storage backends
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls"], optional = true }
 
@@ -45,5 +52,3 @@ pretty_assertions = "1.4"
 [features]
 default = []
 storage-postgres = ["sqlx"]
-
-

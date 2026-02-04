@@ -1,312 +1,329 @@
-//! Integration tests for error handling scenarios
+//! Error handling tests
+//!
+//! Tests for error messages, context propagation, and actionable error information.
 
-use nebula_credential::core::CredentialId;
-use nebula_credential::testing::{MockLock, MockStateStore, MockTokenCache, TestCredentialFactory};
-use nebula_credential::traits::StateStore;
-use nebula_credential::{CredentialManager, CredentialRegistry};
-use serde_json::json;
-use std::sync::Arc;
+use nebula_credential::core::{CredentialError, CryptoError, StorageError, ValidationError};
+use std::io;
 
-async fn create_test_manager() -> CredentialManager {
-    let store = Arc::new(MockStateStore::new());
-    let lock = MockLock::new();
-    let cache = Arc::new(MockTokenCache::new());
-    let registry = Arc::new(CredentialRegistry::new());
-
-    CredentialManager::builder()
-        .with_store(store)
-        .with_lock(lock)
-        .with_cache(cache)
-        .with_registry(registry)
-        .build()
-        .expect("Failed to build test manager")
-}
-
-#[tokio::test]
-async fn test_unknown_credential_type_error() {
-    let manager = create_test_manager().await;
-    // Don't register any factories
-
-    let result = manager
-        .create_credential("unknown_type", json!({"value": "test"}))
-        .await;
-
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(
-        err,
-        nebula_credential::core::CredentialError::TypeNotRegistered { .. }
-    ));
-}
-
-#[tokio::test]
-async fn test_get_nonexistent_credential() {
-    let manager = create_test_manager().await;
-    manager
-        .registry()
-        .register(Arc::new(TestCredentialFactory::new()));
-
-    let result = manager.get_token(&CredentialId::new()).await;
-
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(
-        err,
-        nebula_credential::core::CredentialError::NotFound { .. }
-    ));
-}
-
-#[tokio::test]
-async fn test_credential_initialization_failure() {
-    let manager = create_test_manager().await;
-    manager
-        .registry()
-        .register(Arc::new(TestCredentialFactory::new()));
-
-    // Create credential with should_fail = true
-    let result = manager
-        .create_credential(
-            "test_credential",
-            json!({
-                "value": "test",
-                "should_fail": true
-            }),
-        )
-        .await;
-
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(
-        err,
-        nebula_credential::core::CredentialError::InvalidInput { .. }
-    ));
-}
-
-#[tokio::test]
-async fn test_credential_refresh_failure() {
-    use nebula_credential::core::AccessToken;
-    use nebula_credential::testing::TestCredential;
-    use nebula_credential::traits::TokenCache;
-    use std::time::{Duration, SystemTime};
-
-    // Create manager with TestCredential that fails on refresh
-    let store = Arc::new(MockStateStore::new());
-    let cache = Arc::new(MockTokenCache::new());
-    let registry = Arc::new(CredentialRegistry::new());
-
-    let failing_credential = TestCredential {
-        fail_on_refresh: true,
-        refresh_delay: None,
+/// Test: StorageError::NotFound includes credential ID
+///
+/// Verifies that NotFound errors contain the credential ID for debugging.
+#[test]
+fn test_storage_error_not_found() {
+    let err = StorageError::NotFound {
+        id: "github_token".to_string(),
     };
 
-    registry.register(Arc::new(TestCredentialFactory::with_credential(
-        failing_credential,
-    )));
+    let msg = err.to_string();
 
-    let manager = CredentialManager::builder()
-        .with_store(store)
-        .with_lock(MockLock::new())
-        .with_cache(Arc::clone(&cache) as Arc<dyn TokenCache>)
-        .with_registry(registry)
-        .build()
-        .unwrap();
+    // Verify error message includes credential ID
+    assert!(
+        msg.contains("github_token"),
+        "Error should include credential ID"
+    );
+    assert!(msg.contains("not found"), "Error should indicate not found");
 
-    // First create credential successfully (init doesn't fail)
-    let cred_id = manager
-        .create_credential(
-            "test_credential",
-            json!({
-                "value": "test",
-                "should_fail": false
-            }),
-        )
-        .await
-        .unwrap();
+    // Verify exact format
+    assert_eq!(msg, "Credential 'github_token' not found");
+}
 
-    // Put expired token to force refresh
-    let expired_token = AccessToken {
-        token: nebula_credential::core::SecureString::new("expired"),
-        token_type: nebula_credential::core::TokenType::Bearer,
-        issued_at: SystemTime::now() - Duration::from_secs(7200),
-        expires_at: Some(SystemTime::now() - Duration::from_secs(1)),
-        scopes: None,
-        claims: Default::default(),
+/// Test: Storage error messages are actionable
+///
+/// Verifies that storage error messages provide enough context
+/// for users to understand and fix the issue.
+#[test]
+fn test_storage_error_display() {
+    // Test NotFound
+    let not_found = StorageError::NotFound {
+        id: "missing_cred".to_string(),
+    };
+    assert!(not_found.to_string().contains("missing_cred"));
+    assert!(not_found.to_string().contains("not found"));
+
+    // Test ReadFailure
+    let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "access denied");
+    let read_fail = StorageError::ReadFailure {
+        id: "protected_cred".to_string(),
+        source: io_err,
+    };
+    let msg = read_fail.to_string();
+    assert!(
+        msg.contains("protected_cred"),
+        "Should include credential ID"
+    );
+    assert!(
+        msg.contains("Failed to read"),
+        "Should indicate read failure"
+    );
+    assert!(
+        msg.contains("access denied"),
+        "Should include underlying error"
+    );
+
+    // Test WriteFailure
+    let io_err = io::Error::new(io::ErrorKind::NotFound, "directory not found");
+    let write_fail = StorageError::WriteFailure {
+        id: "new_cred".to_string(),
+        source: io_err,
+    };
+    let msg = write_fail.to_string();
+    assert!(msg.contains("new_cred"));
+    assert!(msg.contains("Failed to write"));
+    assert!(msg.contains("directory not found"));
+
+    // Test PermissionDenied
+    let perm_denied = StorageError::PermissionDenied {
+        id: "secure_cred".to_string(),
+    };
+    assert!(perm_denied.to_string().contains("secure_cred"));
+    assert!(perm_denied.to_string().contains("Permission denied"));
+
+    // Test Timeout
+    let timeout = StorageError::Timeout {
+        duration: std::time::Duration::from_secs(30),
+    };
+    assert!(timeout.to_string().contains("30s"));
+    assert!(timeout.to_string().contains("timed out"));
+}
+
+/// Test: Crypto error messages don't leak secrets
+///
+/// Verifies that cryptographic errors never include sensitive data
+/// like passwords, keys, or plaintext in error messages.
+#[test]
+fn test_crypto_error_display() {
+    // DecryptionFailed - should not leak actual key values or plaintext
+    let decrypt_err = CryptoError::DecryptionFailed;
+    let msg = decrypt_err.to_string();
+    // Should not leak actual key bytes/values (mentioning "key" generically is OK)
+    assert!(!msg.contains("0x"), "Should not leak key bytes");
+    assert!(!msg.contains("password"), "Should not leak password");
+    assert!(!msg.contains("plaintext"), "Should not leak plaintext");
+    assert!(!msg.contains("secret"), "Should not leak secret values");
+    assert!(
+        msg.contains("Decryption failed"),
+        "Should indicate what failed"
+    );
+    assert!(
+        msg.contains("invalid key") || msg.contains("corrupted data"),
+        "Should suggest possible causes"
+    );
+
+    // EncryptionFailed - generic message only
+    let encrypt_err = CryptoError::EncryptionFailed("cipher initialization failed".to_string());
+    let msg = encrypt_err.to_string();
+    assert!(msg.contains("Encryption failed"));
+    assert!(msg.contains("cipher initialization"));
+    assert!(!msg.contains("secret"), "Should not leak secrets");
+
+    // KeyDerivation - should not leak password
+    let kd_err = CryptoError::KeyDerivation("invalid parameters".to_string());
+    let msg = kd_err.to_string();
+    assert!(msg.contains("Key derivation failed"));
+    assert!(msg.contains("invalid parameters"));
+    assert!(!msg.contains("password"), "Should not leak password");
+
+    // NonceGeneration
+    let nonce_err = CryptoError::NonceGeneration;
+    assert_eq!(nonce_err.to_string(), "Nonce generation failed");
+
+    // UnsupportedVersion - safe to show version number
+    let version_err = CryptoError::UnsupportedVersion(99);
+    let msg = version_err.to_string();
+    assert!(msg.contains("99"), "Can safely show version number");
+    assert!(msg.contains("Unsupported"));
+}
+
+/// Test: Validation error messages include helpful reason
+///
+/// Verifies that validation errors explain why validation failed
+/// and what the user should do to fix it.
+#[test]
+fn test_validation_error_display() {
+    // EmptyCredentialId
+    let empty_err = ValidationError::EmptyCredentialId;
+    let msg = empty_err.to_string();
+    assert!(msg.contains("empty"), "Should indicate empty ID");
+    assert!(
+        msg.contains("Credential ID"),
+        "Should mention credential ID"
+    );
+
+    // InvalidCredentialId with reason
+    let invalid_err = ValidationError::InvalidCredentialId {
+        id: "../etc/passwd".to_string(),
+        reason: "contains invalid characters (only alphanumeric, hyphens, underscores allowed)"
+            .to_string(),
+    };
+    let msg = invalid_err.to_string();
+    assert!(msg.contains("../etc/passwd"), "Should show the invalid ID");
+    assert!(
+        msg.contains("contains invalid characters"),
+        "Should explain why"
+    );
+    assert!(
+        msg.contains("only alphanumeric"),
+        "Should explain what's allowed"
+    );
+
+    // InvalidFormat
+    let format_err =
+        ValidationError::InvalidFormat("missing required field 'credential_type'".to_string());
+    let msg = format_err.to_string();
+    assert!(msg.contains("Invalid credential format"));
+    assert!(msg.contains("missing required field"));
+}
+
+/// Test: Error source chain works correctly
+///
+/// Verifies that error source chaining (via #[source] attribute)
+/// allows traversing the full error context.
+#[test]
+fn test_error_source_chain() {
+    use std::error::Error;
+
+    // Create nested error: I/O -> Storage -> Credential
+    let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "access denied");
+    let storage_err = StorageError::ReadFailure {
+        id: "protected".to_string(),
+        source: io_err,
+    };
+    let cred_err = CredentialError::Storage {
+        id: "protected".to_string(),
+        source: storage_err,
     };
 
-    cache
-        .as_ref()
-        .put(cred_id.as_str(), &expired_token, Duration::from_secs(1))
-        .await
-        .unwrap();
+    // Verify top-level error
+    let msg = cred_err.to_string();
+    assert!(
+        msg.contains("protected"),
+        "Top-level should have credential ID"
+    );
+    assert!(
+        msg.contains("Storage error"),
+        "Should indicate storage error"
+    );
 
-    // Get token should fail because refresh fails
-    let result = manager.get_token(&cred_id).await;
+    // Verify source chain Level 1: StorageError
+    let source1 = cred_err.source();
+    assert!(source1.is_some(), "Should have source");
+    let storage_source = source1.unwrap();
+    assert!(storage_source.to_string().contains("Failed to read"));
 
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(
-        err,
-        nebula_credential::core::CredentialError::RefreshFailed { .. }
-    ));
+    // Verify source chain Level 2: io::Error
+    let source2 = storage_source.source();
+    assert!(source2.is_some(), "Should have nested source");
+    let io_source = source2.unwrap();
+    assert!(io_source.to_string().contains("access denied"));
+
+    // No further sources
+    assert!(io_source.source().is_none(), "I/O error is the root cause");
 }
 
-#[tokio::test]
-async fn test_delete_nonexistent_credential() {
-    let manager = create_test_manager().await;
+/// Test: Crypto error conversion doesn't leak context
+///
+/// Verifies that when converting crypto errors to credential errors,
+/// no additional secret context is added.
+#[test]
+fn test_crypto_error_conversion() {
+    let crypto_err = CryptoError::DecryptionFailed;
+    let cred_err: CredentialError = crypto_err.into();
 
-    // Delete is idempotent - deleting nonexistent credential succeeds
-    let result = manager.delete_credential(&CredentialId::new()).await;
-    assert!(result.is_ok());
+    let msg = cred_err.to_string();
+    assert!(msg.contains("Cryptographic error"));
+    assert!(msg.contains("Decryption failed"));
+    // Should not leak actual key/password values (generic mentions are OK)
+    assert!(!msg.contains("0x"), "Should not add key bytes");
+    assert!(!msg.contains("password:"), "Should not add password values");
+    assert!(!msg.contains("secret:"), "Should not add secret values");
 }
 
-#[tokio::test]
-async fn test_manager_without_cache_works() {
-    // Manager should work in degraded mode without cache
-    let store = Arc::new(MockStateStore::new());
-    let registry = Arc::new(CredentialRegistry::new());
-    registry.register(Arc::new(TestCredentialFactory::new()));
+/// Test: Storage error includes ID in all variants
+///
+/// Verifies that all storage error variants that involve a credential
+/// include the credential ID for debugging.
+#[test]
+fn test_storage_error_always_includes_id() {
+    // NotFound
+    let err1 = StorageError::NotFound {
+        id: "id1".to_string(),
+    };
+    assert!(err1.to_string().contains("id1"));
 
-    let manager = CredentialManager::builder()
-        .with_store(store)
-        .with_lock(MockLock::new())
-        // No cache!
-        .with_registry(registry)
-        .build()
-        .unwrap();
+    // ReadFailure
+    let err2 = StorageError::ReadFailure {
+        id: "id2".to_string(),
+        source: io::Error::new(io::ErrorKind::NotFound, "test"),
+    };
+    assert!(err2.to_string().contains("id2"));
 
-    // Should still be able to create and get tokens
-    let cred_id = manager
-        .create_credential(
-            "test_credential",
-            json!({
-                "value": "test",
-                "should_fail": false
-            }),
-        )
-        .await
-        .unwrap();
+    // WriteFailure
+    let err3 = StorageError::WriteFailure {
+        id: "id3".to_string(),
+        source: io::Error::new(io::ErrorKind::PermissionDenied, "test"),
+    };
+    assert!(err3.to_string().contains("id3"));
 
-    let token = manager.get_token(&cred_id).await.unwrap();
-    assert!(!token.is_expired());
+    // PermissionDenied
+    let err4 = StorageError::PermissionDenied {
+        id: "id4".to_string(),
+    };
+    assert!(err4.to_string().contains("id4"));
+
+    // Timeout doesn't have credential ID (operation-level error)
+    let err5 = StorageError::Timeout {
+        duration: std::time::Duration::from_secs(5),
+    };
+    // This is OK - timeout is a general operation error
+    assert!(!err5.to_string().contains("credential"));
 }
 
-#[tokio::test]
-async fn test_manager_requires_lock() {
-    // Manager requires a distributed lock - building without it should fail
-    let store = Arc::new(MockStateStore::new());
-    let cache = Arc::new(MockTokenCache::new());
-    let registry = Arc::new(CredentialRegistry::new());
-    registry.register(Arc::new(TestCredentialFactory::new()));
+/// Test: Validation errors are user-friendly
+///
+/// Verifies that validation errors use clear, non-technical language
+/// that helps users understand what went wrong.
+#[test]
+fn test_validation_errors_user_friendly() {
+    // Empty ID
+    let err1 = ValidationError::EmptyCredentialId;
+    let msg1 = err1.to_string();
+    assert!(!msg1.contains("null"), "Avoid technical jargon");
+    assert!(!msg1.contains("undefined"), "Avoid technical jargon");
+    assert!(msg1.contains("empty"), "Use simple language");
 
-    let result = CredentialManager::builder()
-        .with_store(store)
-        .with_cache(cache)
-        // No lock!
-        .with_registry(registry)
-        .build();
-
-    assert!(result.is_err());
-    if let Err(err) = result {
-        assert!(err.to_string().contains("DistributedLock"));
-    }
+    // Invalid ID with helpful reason
+    let err2 = ValidationError::InvalidCredentialId {
+        id: "bad/id".to_string(),
+        reason: "contains invalid characters (only alphanumeric, hyphens, underscores allowed)"
+            .to_string(),
+    };
+    let msg2 = err2.to_string();
+    assert!(msg2.contains("bad/id"), "Show what was invalid");
+    assert!(msg2.contains("only alphanumeric"), "Explain what's allowed");
+    assert!(!msg2.contains("regex"), "Avoid implementation details");
+    assert!(!msg2.contains("pattern"), "Avoid implementation details");
 }
 
-#[tokio::test]
-async fn test_invalid_json_deserialization() {
-    let manager = create_test_manager().await;
-    manager
-        .registry()
-        .register(Arc::new(TestCredentialFactory::new()));
+/// Test: Error Display implementation is stable
+///
+/// Verifies that error messages have stable formats that can be
+/// relied upon for logging and monitoring.
+#[test]
+fn test_error_display_format_stable() {
+    // StorageError::NotFound format
+    let err1 = StorageError::NotFound {
+        id: "test".to_string(),
+    };
+    assert_eq!(err1.to_string(), "Credential 'test' not found");
 
-    // Missing required field
-    let result = manager
-        .create_credential("test_credential", json!({"wrong_field": "value"}))
-        .await;
+    // CryptoError::DecryptionFailed format
+    let err2 = CryptoError::DecryptionFailed;
+    assert_eq!(
+        err2.to_string(),
+        "Decryption failed - invalid key or corrupted data"
+    );
 
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(
-        err,
-        nebula_credential::core::CredentialError::DeserializationFailed(_)
-    ));
-}
-
-#[tokio::test]
-async fn test_storage_failure_on_load() {
-    let store = Arc::new(MockStateStore::new());
-    let registry = Arc::new(CredentialRegistry::new());
-    registry.register(Arc::new(TestCredentialFactory::new()));
-
-    let manager = CredentialManager::builder()
-        .with_store(Arc::clone(&store) as Arc<dyn StateStore>)
-        .with_lock(MockLock::new())
-        .with_cache(Arc::new(MockTokenCache::new()))
-        .with_registry(registry)
-        .build()
-        .unwrap();
-
-    let cred_id = manager
-        .create_credential(
-            "test_credential",
-            json!({
-                "value": "test",
-                "should_fail": false
-            }),
-        )
-        .await
-        .unwrap();
-
-    // Make store fail on next load
-    store.fail_next_load();
-
-    // Clear cache to force load from storage
-    manager.cache().unwrap().clear().await.unwrap();
-
-    // Get token should fail due to storage failure
-    let result = manager.get_token(&cred_id).await;
-
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(matches!(
-        err,
-        nebula_credential::core::CredentialError::StorageFailed { .. }
-    ));
-}
-
-#[tokio::test]
-async fn test_multiple_error_types() {
-    let manager = create_test_manager().await;
-
-    // NotFound error
-    let result1 = manager.get_token(&CredentialId::new()).await;
-    assert!(matches!(
-        result1.unwrap_err(),
-        nebula_credential::core::CredentialError::NotFound { .. }
-    ));
-
-    // Register factory for next tests
-    manager
-        .registry()
-        .register(Arc::new(TestCredentialFactory::new()));
-
-    // InvalidInput error
-    let result2 = manager
-        .create_credential(
-            "test_credential",
-            json!({"value": "test", "should_fail": true}),
-        )
-        .await;
-    assert!(matches!(
-        result2.unwrap_err(),
-        nebula_credential::core::CredentialError::InvalidInput { .. }
-    ));
-
-    // DeserializationFailed error
-    let result3 = manager
-        .create_credential("test_credential", json!({"missing_fields": true}))
-        .await;
-    assert!(matches!(
-        result3.unwrap_err(),
-        nebula_credential::core::CredentialError::DeserializationFailed(_)
-    ));
+    // ValidationError::EmptyCredentialId format
+    let err3 = ValidationError::EmptyCredentialId;
+    assert_eq!(err3.to_string(), "Credential ID cannot be empty");
 }

@@ -21,10 +21,12 @@ pub struct MinimapConfig {
     pub background_opacity: f32,
     /// Whether nodes show their category color.
     pub colored_nodes: bool,
-    /// Node scale factor in minimap.
-    pub node_scale: f32,
+    /// Whether to show connections in minimap.
+    pub show_connections: bool,
     /// Padding around content.
     pub padding: f32,
+    /// Node stroke width.
+    pub node_stroke_width: f32,
 }
 
 impl Default for MinimapConfig {
@@ -35,8 +37,9 @@ impl Default for MinimapConfig {
             position: MinimapPosition::BottomRight,
             background_opacity: 0.9,
             colored_nodes: true,
-            node_scale: 0.1,
-            padding: 20.0,
+            show_connections: false,
+            padding: 15.0,
+            node_stroke_width: 1.0,
         }
     }
 }
@@ -131,7 +134,7 @@ impl<'a> Minimap<'a> {
             minimap_rect,
             4.0,
             egui::Stroke::new(1.0, tokens.border),
-            egui::StrokeKind::Outside,
+            egui::epaint::StrokeKind::Middle,
         );
 
         // Calculate bounds of all nodes
@@ -156,36 +159,16 @@ impl<'a> Minimap<'a> {
                 Pos2::new(offset.x + relative.x * scale, offset.y + relative.y * scale)
             };
 
-            // Draw connections (as thin lines)
-            for connection in self.connections {
-                if let (Some(from_node), Some(to_node)) = (
-                    self.nodes
-                        .iter()
-                        .find(|n| n.outputs.iter().any(|p| p.id == connection.source)),
-                    self.nodes
-                        .iter()
-                        .find(|n| n.inputs.iter().any(|p| p.id == connection.target)),
-                ) {
-                    let from = to_minimap(from_node.position);
-                    let to = to_minimap(to_node.position);
+            // Transform size from canvas to minimap
+            let scale_size = |size: Vec2| -> Vec2 { size * scale };
 
-                    let conn_color = if self.config.colored_nodes {
-                        theme
-                            .color_for_data_type(&connection.data_type)
-                            .gamma_multiply(0.5)
-                    } else {
-                        tokens.border
-                    };
-
-                    painter.line_segment([from, to], egui::Stroke::new(1.0, conn_color));
-                }
-            }
-
-            // Draw nodes (as small rectangles)
+            // Draw nodes first (as rectangles, like ReactFlow)
             for node in self.nodes {
-                let node_pos = to_minimap(node.position);
-                let node_size = node.size * scale * self.config.node_scale;
-                let node_rect = Rect::from_min_size(node_pos, node_size);
+                let node_min = to_minimap(node.position);
+                let node_size = scale_size(node.size);
+                // Ensure minimum visible size
+                let node_size = Vec2::new(node_size.x.max(4.0), node_size.y.max(3.0));
+                let node_rect = Rect::from_min_size(node_min, node_size);
 
                 let node_color = if self.config.colored_nodes {
                     theme.color_for_category(&node.category)
@@ -193,7 +176,51 @@ impl<'a> Minimap<'a> {
                     tokens.accent
                 };
 
-                painter.rect_filled(node_rect, 1.0, node_color);
+                // Fill with semi-transparent color
+                painter.rect_filled(node_rect, 2.0, node_color.gamma_multiply(0.8));
+                // Draw border
+                painter.rect_stroke(
+                    node_rect,
+                    2.0,
+                    egui::Stroke::new(self.config.node_stroke_width, node_color),
+                    egui::epaint::StrokeKind::Middle,
+                );
+            }
+
+            // Draw connections (optional, as thin lines between node centers)
+            if self.config.show_connections {
+                for connection in self.connections {
+                    if let (Some(from_node), Some(to_node)) = (
+                        self.nodes
+                            .iter()
+                            .find(|n| n.outputs.iter().any(|p| p.id == connection.source)),
+                        self.nodes
+                            .iter()
+                            .find(|n| n.inputs.iter().any(|p| p.id == connection.target)),
+                    ) {
+                        // Calculate center of nodes in minimap
+                        let from_min = to_minimap(from_node.position);
+                        let from_size = scale_size(from_node.size);
+                        let from_center = from_min + from_size / 2.0;
+
+                        let to_min = to_minimap(to_node.position);
+                        let to_size = scale_size(to_node.size);
+                        let to_center = to_min + to_size / 2.0;
+
+                        let conn_color = if self.config.colored_nodes {
+                            theme
+                                .color_for_data_type(&connection.data_type)
+                                .gamma_multiply(0.4)
+                        } else {
+                            tokens.border.gamma_multiply(0.5)
+                        };
+
+                        painter.line_segment(
+                            [from_center, to_center],
+                            egui::Stroke::new(1.0, conn_color),
+                        );
+                    }
+                }
             }
 
             // Calculate and draw viewport indicator
@@ -207,7 +234,7 @@ impl<'a> Minimap<'a> {
                 viewport_minimap_rect,
                 2.0,
                 egui::Stroke::new(2.0, tokens.accent),
-                egui::StrokeKind::Outside,
+                egui::epaint::StrokeKind::Middle,
             );
 
             // Draw semi-transparent viewport fill

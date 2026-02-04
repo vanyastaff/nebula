@@ -154,8 +154,8 @@ impl PinWidget {
         // Draw connection indicator for connected pins
         if self.state == PinState::Connected {
             let indicator_offset = match self.kind {
-                PinKind::Input => Vec2::new(-radius * 0.5, 0.0),
-                PinKind::Output => Vec2::new(radius * 0.5, 0.0),
+                PinKind::Input => Vec2::new(radius * 0.5, 0.0), // Input on right
+                PinKind::Output => Vec2::new(-radius * 0.5, 0.0), // Output on left
             };
             painter.circle_filled(center + indicator_offset, 2.0 * zoom, base_color);
         }
@@ -207,7 +207,7 @@ impl PinWidget {
                     rect,
                     CornerRadius::same(2),
                     Stroke::new(border_width, border),
-                    egui::StrokeKind::Outside,
+                    egui::epaint::StrokeKind::Middle,
                 );
             }
             ValueType::HashSet => {
@@ -269,7 +269,7 @@ pub fn can_connect(source: &Pin, target: &Pin) -> bool {
 /// Gets the connection point offset for a pin based on its kind.
 pub fn connection_offset(kind: PinKind, radius: f32) -> Vec2 {
     match kind {
-        PinKind::Input => Vec2::new(-radius, 0.0),
-        PinKind::Output => Vec2::new(radius, 0.0),
+        PinKind::Input => Vec2::new(radius, 0.0), // Input pins on the right
+        PinKind::Output => Vec2::new(-radius, 0.0), // Output pins on the left
     }
 }

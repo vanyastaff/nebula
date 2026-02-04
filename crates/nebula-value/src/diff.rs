@@ -331,10 +331,10 @@ impl Value {
         diffs: &mut Vec<ValueDiff>,
     ) {
         // Check depth limit
-        if let Some(max_depth) = options.max_depth {
-            if depth > max_depth {
-                return;
-            }
+        if let Some(max_depth) = options.max_depth
+            && depth > max_depth
+        {
+            return;
         }
 
         // Check if path should be ignored

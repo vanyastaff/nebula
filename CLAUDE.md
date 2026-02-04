@@ -148,3 +148,9 @@ async fn test_async() {
 
 - `.cursorrules` - Engineering rules (JSON format with CI, async, resilience patterns)
 - `AGENTS.md` - Build commands, coding style, commit guidelines
+
+## Active Technologies
+- File-based local storage with encrypted credentials (Phase 2 adds cloud providers) (001-credential-core-abstractions)
+
+## Recent Changes
+- 001-credential-core-abstractions: Added Rust 2024 Edition (MSRV: 1.92)

@@ -146,7 +146,7 @@ impl Controls {
             panel_rect,
             6.0,
             egui::Stroke::new(1.0, tokens.border),
-            egui::StrokeKind::Outside,
+            egui::epaint::StrokeKind::Middle,
         );
 
         // Draw buttons in a vertical layout

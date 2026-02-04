@@ -80,9 +80,10 @@ use crate::core::value::Value;
 /// This is a **descriptive** schema — it tells you what shape data should have.
 /// For actual validation logic, use `nebula-validator` which can validate
 /// values against these schemas with full error reporting, async support, etc.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum ValueSchema {
     /// Matches any value
+    #[default]
     Any,
 
     /// Matches a specific kind
@@ -299,6 +300,15 @@ impl ValueSchema {
         }
     }
 
+    /// Helper to collect unique kinds into a vector
+    fn collect_unique_kinds(kinds: &mut Vec<ValueKind>, new_kinds: Vec<ValueKind>) {
+        for k in new_kinds {
+            if !kinds.contains(&k) {
+                kinds.push(k);
+            }
+        }
+    }
+
     /// Get the expected ValueKind(s) for this schema
     pub fn expected_kinds(&self) -> Vec<ValueKind> {
         match self {
@@ -329,11 +339,7 @@ impl ValueSchema {
             Self::OneOf(schemas) => {
                 let mut kinds = Vec::new();
                 for s in schemas {
-                    for k in s.expected_kinds() {
-                        if !kinds.contains(&k) {
-                            kinds.push(k);
-                        }
-                    }
+                    Self::collect_unique_kinds(&mut kinds, s.expected_kinds());
                 }
                 kinds
             }
@@ -430,12 +436,6 @@ impl ValueSchema {
             }
             (this, other) => Self::OneOf(vec![this, other]),
         }
-    }
-}
-
-impl Default for ValueSchema {
-    fn default() -> Self {
-        Self::Any
     }
 }
 

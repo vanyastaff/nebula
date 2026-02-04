@@ -145,6 +145,8 @@ impl BoardState {
     }
 
     /// Fits the view to show all nodes.
+    /// Note: This uses cached node_rects which may be from previous frame.
+    /// For immediate fit, use `fit_to_nodes` instead.
     pub fn fit_to_content(&mut self, viewport: Rect) {
         if self.node_rects.is_empty() {
             return;
@@ -172,6 +174,61 @@ impl BoardState {
                 viewport.center().y - padded.center().y * zoom,
             );
         }
+    }
+
+    /// Fits the view to show all provided nodes.
+    pub fn fit_to_nodes(&mut self, nodes: &[Node], viewport: Rect) {
+        if nodes.is_empty() {
+            return;
+        }
+
+        // Calculate bounds in canvas space
+        let mut min_x = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut min_y = f32::MAX;
+        let mut max_y = f32::MIN;
+
+        for node in nodes {
+            min_x = min_x.min(node.position.x);
+            max_x = max_x.max(node.position.x + node.size.x);
+            min_y = min_y.min(node.position.y);
+            max_y = max_y.max(node.position.y + node.size.y);
+        }
+
+        let content_bounds = Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y));
+
+        let padding = 50.0;
+        let content_with_padding = content_bounds.expand(padding);
+
+        // Calculate zoom to fit
+        let zoom_x = viewport.width() / content_with_padding.width();
+        let zoom_y = viewport.height() / content_with_padding.height();
+        let zoom = zoom_x.min(zoom_y).clamp(0.1, 2.0);
+
+        self.canvas.zoom = zoom;
+
+        // To center: we want content_center to appear at viewport_center
+        // screen_pos = canvas_pos * zoom + pan
+        // viewport_center = content_center * zoom + pan
+        // pan = viewport_center - content_center * zoom
+        // But viewport_center should be relative to canvas origin (0,0), so it's viewport.size()/2
+        let content_center = content_with_padding.center();
+        let viewport_center = viewport.size() / 2.0;
+
+        self.canvas.pan = Vec2::new(
+            viewport_center.x - content_center.x * zoom,
+            viewport_center.y - content_center.y * zoom,
+        );
+
+        eprintln!("fit_to_nodes debug:");
+        eprintln!("  content_bounds: {:?}", content_bounds);
+        eprintln!("  content_with_padding: {:?}", content_with_padding);
+        eprintln!("  content_center: {:?}", content_center);
+        eprintln!("  viewport: {:?}", viewport);
+        eprintln!("  viewport.size(): {:?}", viewport.size());
+        eprintln!("  viewport_center: {:?}", viewport_center);
+        eprintln!("  zoom: {}", zoom);
+        eprintln!("  pan: {:?}", self.canvas.pan);
     }
 
     /// Clears cached data.
@@ -314,11 +371,11 @@ impl<'a> BoardEditor<'a> {
             }
         }
 
-        // Draw nodes first to populate pin_positions
-        self.draw_nodes(ui);
-
-        // Draw connections (using pin_positions from draw_nodes)
+        // Draw connections first (uses cached pin_positions from previous frame)
         self.draw_connections(ui);
+
+        // Draw nodes second (on top) and update pin_positions for next frame
+        self.draw_nodes(ui);
 
         // Draw pending connection
         if let Some(ref pending) = self.state.pending_connection {
@@ -333,7 +390,7 @@ impl<'a> BoardEditor<'a> {
                 box_sel.rect(),
                 0,
                 egui::Stroke::new(1.0, theme.tokens.accent),
-                egui::StrokeKind::Outside,
+                egui::epaint::StrokeKind::Middle,
             );
         }
 
@@ -555,7 +612,8 @@ impl<'a> BoardEditor<'a> {
     }
 
     fn draw_nodes(&mut self, ui: &mut Ui) {
-        let canvas_offset = self.state.canvas.pan;
+        let viewport = self.state.canvas.viewport;
+        let pan = self.state.canvas.pan;
         let zoom = self.state.canvas.zoom;
 
         for node in self.nodes {
@@ -574,7 +632,7 @@ impl<'a> BoardEditor<'a> {
             let node_response = NodeWidget::new(node, input_pins, output_pins)
                 .style(self.state.config.node_style.clone())
                 .visual_state(visual_state)
-                .show(ui, canvas_offset, zoom);
+                .show(ui, viewport, pan, zoom);
 
             // Cache node rect (screen space) and pin positions
             self.state
@@ -644,9 +702,6 @@ impl<'a> BoardEditor<'a> {
     fn draw_connections(&mut self, ui: &mut Ui) {
         let zoom = self.state.canvas.zoom;
 
-        // Collect node rects for smart routing (only actual nodes, no screen boundaries)
-        let obstacles: Vec<egui::Rect> = self.state.node_rects.values().copied().collect();
-
         for connection in self.connections {
             let from_pos = self.state.pin_positions.get(&connection.source).copied();
             let to_pos = self.state.pin_positions.get(&connection.target).copied();
@@ -662,9 +717,7 @@ impl<'a> BoardEditor<'a> {
                 let mut style = self.state.config.connection_style.clone();
                 style.edge_type = connection.edge_type;
 
-                let renderer = ConnectionRenderer::new()
-                    .style(style)
-                    .obstacles(obstacles.clone());
+                let renderer = ConnectionRenderer::new().style(style);
 
                 renderer.draw_connection(ui, connection, from, to, state, zoom);
             }
