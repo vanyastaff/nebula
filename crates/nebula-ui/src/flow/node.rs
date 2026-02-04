@@ -146,14 +146,14 @@ impl<'a> NodeWidget<'a> {
     }
 
     /// Renders the node and returns the response.
-    pub fn show(self, ui: &mut Ui, canvas_offset: Vec2, zoom: f32) -> NodeResponse {
+    pub fn show(self, ui: &mut Ui, viewport: Rect, pan: Vec2, zoom: f32) -> NodeResponse {
         let theme = theme::current_theme();
         let tokens = &theme.tokens;
 
-        // Calculate screen position
+        // Calculate screen position using proper canvas_to_screen formula
         let screen_pos = Pos2::new(
-            self.node.position.x * zoom + canvas_offset.x,
-            self.node.position.y * zoom + canvas_offset.y,
+            self.node.position.x * zoom + pan.x + viewport.min.x,
+            self.node.position.y * zoom + pan.y + viewport.min.y,
         );
 
         // Calculate node size
@@ -165,11 +165,11 @@ impl<'a> NodeWidget<'a> {
 
         let node_rect = Rect::from_min_size(screen_pos, Vec2::new(width, total_height));
 
-        // Use ui.interact() for proper egui integration (like egui-snarl does)
-        // This creates a proper response that works with egui's input handling
+        // Use ui.interact() for proper egui integration
+        // Create unique ID from node ID to avoid conflicts
         let response = ui.interact(
             node_rect,
-            ui.id().with(self.node.id),
+            egui::Id::new(("node", self.node.id)),
             Sense::click_and_drag(),
         );
 
@@ -227,7 +227,7 @@ impl<'a> NodeWidget<'a> {
             node_rect,
             CornerRadius::same(rounding),
             Stroke::new(border_width * zoom, border_color),
-            egui::StrokeKind::Outside,
+            egui::epaint::StrokeKind::Middle,
         );
 
         // Draw header
@@ -355,7 +355,7 @@ impl<'a> NodeWidget<'a> {
         let hit_radius = 12.0 * zoom; // Larger hit area for easier clicking
 
         let hit_rect = Rect::from_center_size(center, Vec2::splat(hit_radius * 2.0));
-        let pin_response = ui.allocate_rect(hit_rect, Sense::click());
+        let pin_response = ui.interact(hit_rect, egui::Id::new(("pin", pin.id)), Sense::click());
 
         let painter = ui.painter().clone();
         let pin_color = theme.color_for_data_type(&pin.data_type);
@@ -393,7 +393,7 @@ impl<'a> NodeWidget<'a> {
                     rect,
                     CornerRadius::same(pin_rounding),
                     Stroke::new(1.0 * zoom, theme.tokens.border),
-                    egui::StrokeKind::Outside,
+                    egui::epaint::StrokeKind::Middle,
                 );
             }
         }

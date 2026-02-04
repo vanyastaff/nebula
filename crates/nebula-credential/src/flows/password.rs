@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    CredentialContext, CredentialError, CredentialState, SecureString,
+    CredentialContext, CredentialError, CredentialState, SecretString,
     result::{CredentialFlow, InitializeResult},
 };
 
@@ -19,7 +19,7 @@ pub struct PasswordInput {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PasswordState {
     pub username: String,
-    pub password: SecureString,
+    pub password: SecretString,
 }
 
 impl CredentialState for PasswordState {
@@ -64,7 +64,7 @@ impl CredentialFlow for PasswordFlow {
 
         Ok(InitializeResult::Complete(PasswordState {
             username: input.username.clone(),
-            password: SecureString::new(&input.password),
+            password: SecretString::new(&input.password),
         }))
     }
 }

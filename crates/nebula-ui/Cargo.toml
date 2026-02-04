@@ -19,10 +19,14 @@ full = ["std", "persistence"]
 [dependencies]
 # Core UI framework
 egui = "0.33.3"
-eframe = { version = "0.33.3", default-features = false, features = ["glow"] }
-
-# Graphics
+eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow", "web_screen_reader", "accesskit"] }
 epaint = "0.33.3"
+
+# Logging
+log = "0.4"
+
+# Web support
+wasm-bindgen-futures = "0.4"
 
 # Drag and drop
 egui_dnd = "0.14"
@@ -38,10 +42,20 @@ once_cell.workspace = true
 smallvec.workspace = true
 
 # Date/time
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+chrono.workspace = true
+
+# Unique identifiers
+uuid = { version = "1.11", features = ["v4", "serde"] }
 
 # Optional: serialization for persistence
 serde = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = "0.3"
+wasm-bindgen = "0.2"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+web-time = "1.1"
+uuid = { version = "1.11", features = ["v4", "js", "serde"] }
 
 [dev-dependencies]
 pretty_assertions.workspace = true
@@ -53,3 +67,7 @@ path = "examples/basic.rs"
 [[example]]
 name = "components_showcase"
 path = "examples/components_showcase.rs"
+
+[[example]]
+name = "flow_showcase"
+path = "examples/flow_showcase.rs"

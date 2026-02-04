@@ -198,6 +198,7 @@ impl From<ValidationError> for CredentialError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error;
 
     #[test]
     fn test_storage_error_not_found() {

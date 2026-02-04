@@ -1,3 +1,8 @@
+//! Storage provider abstraction for credential persistence
+//!
+//! Provides the [`StorageProvider`] trait that abstracts storage operations,
+//! enabling pluggable backends (local filesystem, cloud providers, secret vaults).
+
 use crate::core::{
     CredentialContext, CredentialError, CredentialFilter, CredentialId, CredentialMetadata,
     StorageError,

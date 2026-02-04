@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    CredentialContext, CredentialError, CredentialState, SecureString,
+    CredentialContext, CredentialError, CredentialState, SecretString,
     result::{CredentialFlow, InitializeResult},
 };
 
@@ -17,7 +17,7 @@ pub struct BearerTokenInput {
 /// State for Bearer Token credential
 #[derive(Clone, Serialize, Deserialize)]
 pub struct BearerTokenState {
-    pub token: SecureString,
+    pub token: SecretString,
 }
 
 impl CredentialState for BearerTokenState {
@@ -54,7 +54,7 @@ impl CredentialFlow for BearerTokenFlow {
         }
 
         Ok(InitializeResult::Complete(BearerTokenState {
-            token: SecureString::new(&input.token),
+            token: SecretString::new(&input.token),
         }))
     }
 }

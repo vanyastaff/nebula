@@ -298,11 +298,11 @@ fn parse_path(path: &str) -> ValueResult<Vec<PathSegment>> {
 
     let mut segments = Vec::new();
     let mut current = String::new();
-    let mut chars = path.chars().peekable();
+    let chars = path.chars().peekable();
     let mut in_bracket = false;
     let mut bracket_content = String::new();
 
-    while let Some(ch) = chars.next() {
+    for ch in chars {
         match ch {
             '.' if !in_bracket => {
                 // Flush current key

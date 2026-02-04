@@ -2,27 +2,23 @@
 
 use egui::{Color32, Pos2, Vec2};
 use std::collections::{HashMap, HashSet};
+use uuid::Uuid;
 
 pub use super::connection::EdgeType;
 
 /// Unique identifier for a node
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct NodeId(pub u64);
+pub struct NodeId(pub Uuid);
 
 impl NodeId {
-    /// Create a new node ID
-    pub fn new(id: u64) -> Self {
+    /// Create a new node ID from a UUID
+    pub fn new(id: Uuid) -> Self {
         Self(id)
     }
 
     /// Generate a random ID
     pub fn random() -> Self {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-        Self(time)
+        Self(Uuid::new_v4())
     }
 }
 
@@ -46,33 +42,33 @@ impl PinId {
 
 /// Unique identifier for a connection
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ConnectionId(pub u64);
+pub struct ConnectionId(pub Uuid);
 
 impl ConnectionId {
-    /// Create a new connection ID
-    pub fn new(id: u64) -> Self {
+    /// Create a new connection ID from a UUID
+    pub fn new(id: Uuid) -> Self {
         Self(id)
     }
 
     /// Generate a random ID
     pub fn random() -> Self {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-        Self(time)
+        Self(Uuid::new_v4())
     }
 }
 
 /// Unique identifier for a layer
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct LayerId(pub u64);
+pub struct LayerId(pub Uuid);
 
 impl LayerId {
-    /// Create a new layer ID
-    pub fn new(id: u64) -> Self {
+    /// Create a new layer ID from a UUID
+    pub fn new(id: Uuid) -> Self {
         Self(id)
+    }
+
+    /// Generate a random ID
+    pub fn random() -> Self {
+        Self(Uuid::new_v4())
     }
 }
 
@@ -408,7 +404,7 @@ impl Layer {
     /// Create a new layer
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            id: LayerId::new(rand_id()),
+            id: LayerId::random(),
             name: name.into(),
             parent: None,
             nodes: HashSet::new(),
@@ -452,14 +448,6 @@ impl Variable {
         self.current_value = self.default_value.clone();
         self
     }
-}
-
-fn rand_id() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
 }
 
 #[cfg(test)]

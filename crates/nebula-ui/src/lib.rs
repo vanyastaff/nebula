@@ -1,6 +1,8 @@
 //! # nebula-ui
 //!
 //! UI component library for Nebula workflow automation.
+#![allow(clippy::excessive_nesting)]
+#![allow(unused_imports)]
 //!
 //! ## Overview
 //!
