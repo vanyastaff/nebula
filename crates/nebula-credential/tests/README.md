@@ -76,17 +76,6 @@ cargo test --package nebula-credential --test mod units::encryption_tests::
 
 **Total: 70+ tests** across unit, provider, and integration levels.
 
-## Legacy Tests
-
-The following test files are currently disabled (commented out in `mod.rs`):
-- `caching_tests.rs` - Requires CredentialManager
-- `concurrency_tests.rs` - Requires CredentialManager
-- `locking_tests.rs` - Requires CredentialManager
-- `manager_tests.rs` - Requires CredentialManager
-- `registry_tests.rs` - Requires CredentialRegistry
-
-These will be re-enabled when the corresponding components are implemented in future phases.
-
 ## Adding New Tests
 
 ### Unit test
