@@ -1,141 +1,128 @@
-use std::collections::HashMap;
+//! Credential operation context
+//!
+//! Provides request context for observability and audit logging.
 
-/// Context passed to credential operations
+use chrono::{DateTime, Utc};
+use uuid::Uuid;
+
+/// Request context for credential operations
+///
+/// Carries owner, scope, and tracing metadata for observability
+/// and audit logging.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_credential::CredentialContext;
+///
+/// // Basic context
+/// let ctx = CredentialContext::new("user_123");
+///
+/// // With scope for multi-tenancy
+/// let ctx = CredentialContext::new("user_123")
+///     .with_scope("workflow_456");
+///
+/// // With custom trace ID
+/// use uuid::Uuid;
+/// let trace_id = Uuid::new_v4();
+/// let ctx = CredentialContext::new("user_123")
+///     .with_trace_id(trace_id);
+/// ```
+#[derive(Debug, Clone)]
 pub struct CredentialContext {
-    /// HTTP client for making requests
-    http_client: reqwest::Client,
+    /// Owner of the credential
+    pub owner_id: String,
 
-    /// Additional parameters
-    pub params: HashMap<String, serde_json::Value>,
+    /// Optional scope for isolation (multi-tenancy support)
+    pub scope_id: Option<String>,
 
-    /// Request metadata
-    pub metadata: HashMap<String, String>,
-}
+    /// Trace ID for distributed tracing
+    pub trace_id: Uuid,
 
-impl Default for CredentialContext {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// Timestamp of the request
+    pub timestamp: DateTime<Utc>,
 }
 
 impl CredentialContext {
-    /// Create new context
-    #[must_use]
-    pub fn new() -> Self {
+    /// Create new context with owner
+    pub fn new(owner_id: impl Into<String>) -> Self {
         Self {
-            http_client: reqwest::Client::new(),
-            params: HashMap::new(),
-            metadata: HashMap::new(),
+            owner_id: owner_id.into(),
+            scope_id: None,
+            trace_id: Uuid::new_v4(),
+            timestamp: Utc::now(),
         }
     }
 
-    /// Get HTTP client
-    #[must_use]
-    pub fn http_client(&self) -> &reqwest::Client {
-        &self.http_client
+    /// Set scope for this context (builder pattern)
+    pub fn with_scope(mut self, scope_id: impl Into<String>) -> Self {
+        self.scope_id = Some(scope_id.into());
+        self
     }
 
-    /// Set parameter
-    pub fn set_param(&mut self, key: impl Into<String>, value: serde_json::Value) {
-        self.params.insert(key.into(), value);
-    }
-
-    /// Get parameter
-    #[must_use]
-    pub fn get_param(&self, key: &str) -> Option<&serde_json::Value> {
-        self.params.get(key)
-    }
-
-    /// Set metadata
-    pub fn set_metadata(&mut self, key: impl Into<String>, value: impl Into<String>) {
-        self.metadata.insert(key.into(), value.into());
-    }
-
-    /// Get metadata
-    #[must_use]
-    pub fn get_metadata(&self, key: &str) -> Option<&String> {
-        self.metadata.get(key)
+    /// Set trace ID for this context (builder pattern)
+    pub fn with_trace_id(mut self, trace_id: Uuid) -> Self {
+        self.trace_id = trace_id;
+        self
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn test_context_new() {
-        let context = CredentialContext::new();
-        assert!(context.params.is_empty());
-        assert!(context.metadata.is_empty());
+        let ctx = CredentialContext::new("user_123");
+        assert_eq!(ctx.owner_id, "user_123");
+        assert!(ctx.scope_id.is_none());
     }
 
     #[test]
-    fn test_context_default() {
-        let context = CredentialContext::default();
-        assert!(context.params.is_empty());
-        assert!(context.metadata.is_empty());
+    fn test_context_with_scope() {
+        let ctx = CredentialContext::new("user_123").with_scope("workflow_456");
+
+        assert_eq!(ctx.owner_id, "user_123");
+        assert_eq!(ctx.scope_id, Some("workflow_456".to_string()));
     }
 
     #[test]
-    fn test_context_set_and_get_param() {
-        let mut context = CredentialContext::new();
-        context.set_param("key1", json!("value1"));
-        context.set_param("key2", json!(42));
+    fn test_context_with_trace_id() {
+        let custom_trace = Uuid::new_v4();
+        let ctx = CredentialContext::new("user_123").with_trace_id(custom_trace);
 
-        assert_eq!(context.get_param("key1"), Some(&json!("value1")));
-        assert_eq!(context.get_param("key2"), Some(&json!(42)));
-        assert_eq!(context.get_param("nonexistent"), None);
+        assert_eq!(ctx.trace_id, custom_trace);
     }
 
     #[test]
-    fn test_context_param_overwrite() {
-        let mut context = CredentialContext::new();
-        context.set_param("key", json!("first"));
-        context.set_param("key", json!("second"));
+    fn test_context_builder_pattern() {
+        let trace = Uuid::new_v4();
+        let ctx = CredentialContext::new("user_123")
+            .with_scope("tenant_abc")
+            .with_trace_id(trace);
 
-        assert_eq!(context.get_param("key"), Some(&json!("second")));
+        assert_eq!(ctx.owner_id, "user_123");
+        assert_eq!(ctx.scope_id, Some("tenant_abc".to_string()));
+        assert_eq!(ctx.trace_id, trace);
     }
 
     #[test]
-    fn test_context_metadata_field() {
-        let mut context = CredentialContext::new();
-        context
-            .metadata
-            .insert("request_id".to_string(), "abc-123".to_string());
-        context
-            .metadata
-            .insert("user_id".to_string(), "user-456".to_string());
+    fn test_context_clone() {
+        let ctx1 = CredentialContext::new("user_123").with_scope("scope_1");
+        let ctx2 = ctx1.clone();
 
-        assert_eq!(context.metadata.len(), 2);
-        assert_eq!(
-            context.metadata.get("request_id"),
-            Some(&"abc-123".to_string())
-        );
+        assert_eq!(ctx1.owner_id, ctx2.owner_id);
+        assert_eq!(ctx1.scope_id, ctx2.scope_id);
+        assert_eq!(ctx1.trace_id, ctx2.trace_id);
     }
 
     #[test]
-    fn test_context_params_with_complex_json() {
-        let mut context = CredentialContext::new();
-        context.set_param(
-            "config",
-            json!({
-                "timeout": 30,
-                "retries": 3,
-                "enabled": true
-            }),
-        );
+    fn test_context_timestamp() {
+        let before = Utc::now();
+        let ctx = CredentialContext::new("user_123");
+        let after = Utc::now();
 
-        let config = context.get_param("config").unwrap();
-        assert_eq!(config["timeout"], 30);
-        assert_eq!(config["retries"], 3);
-        assert_eq!(config["enabled"], true);
-    }
-
-    #[test]
-    fn test_context_empty_after_creation() {
-        let context = CredentialContext::new();
-        assert_eq!(context.params.len(), 0);
-        assert_eq!(context.metadata.len(), 0);
+        assert!(ctx.timestamp >= before);
+        assert!(ctx.timestamp <= after);
     }
 }
