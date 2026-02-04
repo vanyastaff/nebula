@@ -15,7 +15,8 @@
 /// Core types, errors, and primitives
 pub mod core;
 /// Built-in credential flows (OAuth2, API Key, etc.)
-pub mod flows;
+// TODO: Phase 5 - Re-enable flows after updating to new error API
+// pub mod flows;
 /// Core traits for credentials, storage, and locking
 pub mod traits;
 /// Utilities for crypto, time, etc.
@@ -25,36 +26,49 @@ pub mod utils;
 pub mod prelude {
     // Core types
     pub use crate::core::{
-        CredentialContext, CredentialError, CredentialId, CredentialMetadata, CredentialState,
-        SecureString,
-        adapter::FlowCredential,
-        result::{
-            CaptchaType, CodeFormat, CredentialFlow, DisplayData, InitializeResult,
-            InteractionRequest, PartialState, UserInput,
-        },
+        CredentialContext, CredentialError, CredentialFilter, CredentialId, CredentialMetadata,
+        SecretString,
     };
 
-    // Built-in flows
-    pub use crate::flows::{
-        api_key::{ApiKeyCredential, ApiKeyFlow, ApiKeyInput, ApiKeyState},
-        basic_auth::{BasicAuthCredential, BasicAuthFlow, BasicAuthInput, BasicAuthState},
-        bearer_token::{
-            BearerTokenCredential, BearerTokenFlow, BearerTokenInput, BearerTokenState,
-        },
-        oauth2::{
-            AuthorizationCodeFlow, AuthorizationCodeInput, ClientCredentialsFlow,
-            ClientCredentialsInput, OAuth2AuthorizationCode, OAuth2ClientCredentials, OAuth2State,
-        },
-        password::{PasswordCredential, PasswordFlow, PasswordInput, PasswordState},
-    };
+    // TODO: Phase 5 - Re-enable after updating flows to new error API
+    // pub use crate::core::{
+    //     CredentialState,
+    //     adapter::FlowCredential,
+    //     result::{
+    //         CaptchaType, CodeFormat, CredentialFlow, DisplayData, InitializeResult,
+    //         InteractionRequest, PartialState, UserInput,
+    //     },
+    // };
+
+    // TODO: Phase 5 - Re-enable built-in flows
+    // pub use crate::flows::{
+    //     api_key::{ApiKeyCredential, ApiKeyFlow, ApiKeyInput, ApiKeyState},
+    //     basic_auth::{BasicAuthCredential, BasicAuthFlow, BasicAuthInput, BasicAuthState},
+    //     bearer_token::{
+    //         BearerTokenCredential, BearerTokenFlow, BearerTokenInput, BearerTokenState,
+    //     },
+    //     oauth2::{
+    //         AuthorizationCodeFlow, AuthorizationCodeInput, ClientCredentialsFlow,
+    //         ClientCredentialsInput, OAuth2AuthorizationCode, OAuth2ClientCredentials, OAuth2State,
+    //     },
+    //     password::{PasswordCredential, PasswordFlow, PasswordInput, PasswordState},
+    // };
 
     // Traits
     pub use crate::traits::{
-        Credential, DistributedLock, InteractiveCredential, LockError, LockGuard, StateStore,
+        // Credential, InteractiveCredential,
+        DistributedLock,
+        LockError,
+        LockGuard,
+        StateStore,
+        StorageProvider,
     };
 
-    // Utils
-    pub use crate::utils::{
-        generate_code_challenge, generate_pkce_verifier, generate_random_state,
-    };
+    // Utils - crypto functions
+    pub use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
+
+    // TODO: Phase 5 - Re-enable OAuth2 utils
+    // pub use crate::utils::{
+    //     generate_code_challenge, generate_pkce_verifier, generate_random_state,
+    // };
 }

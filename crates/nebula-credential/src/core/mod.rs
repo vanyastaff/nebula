@@ -1,15 +1,23 @@
 //! Core types for credential management
-pub mod adapter;
+
+// TODO: Phase 5 - Re-enable after updating to new error API
+// pub mod adapter;
+// pub mod result;
+// mod state;
+// pub use state::CredentialState;
+// pub use nebula_core::CredentialKey;
+
 mod context;
 mod error;
+mod filter;
+mod id;
 mod metadata;
-pub mod result;
-mod state;
+
 pub use context::CredentialContext;
-pub use error::{CredentialError, Result};
+pub use error::{CredentialError, CryptoError, Result, StorageError, ValidationError};
+pub use filter::CredentialFilter;
+pub use id::CredentialId;
 pub use metadata::CredentialMetadata;
-pub use nebula_core::{CredentialId, CredentialKey};
-pub use state::CredentialState;
 
 // Re-exports from utils
-pub use crate::utils::{SecureString, from_unix_timestamp, to_unix_timestamp, unix_now};
+pub use crate::utils::{SecretString, from_unix_timestamp, to_unix_timestamp, unix_now};
