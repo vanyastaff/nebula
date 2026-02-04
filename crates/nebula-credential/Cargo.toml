@@ -41,14 +41,47 @@ serde_json = { workspace = true }
 # Utilities
 chrono = { workspace = true }
 uuid = { workspace = true, features = ["v4", "serde"] }
+tracing = { workspace = true }
 
 # Optional storage backends
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls"], optional = true }
 
+# Storage backend dependencies (Phase 2)
+# Local storage
+atomicwrites = "0.4"
+fs2 = "0.4"
+directories = "5.0"
+
+# AWS Secrets Manager (optional)
+aws-config = { version = "1.0", optional = true }
+aws-sdk-secretsmanager = { version = "1.0", optional = true }
+
+# Azure Key Vault (optional)
+azure_identity = { version = "0.10", optional = true }
+azure_security_keyvault_secrets = { version = "0.10", optional = true }
+
+# HashiCorp Vault (optional)
+vaultrs = { version = "0.7", optional = true }
+
+# Kubernetes Secrets (optional)
+kube = { version = "0.87", optional = true, features = ["runtime", "derive"] }
+k8s-openapi = { version = "0.20", optional = true, features = ["latest"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-acl = "0.3"
+
 [dev-dependencies]
 tokio-test = "0.4.4"
 pretty_assertions = "1.4"
+tempfile = "3.8"
+testcontainers = "0.15"
 
 [features]
-default = []
+default = ["storage-local"]
+storage-local = []
+storage-aws = ["aws-sdk-secretsmanager", "aws-config"]
+storage-azure = ["azure_security_keyvault_secrets", "azure_identity"]
+storage-vault = ["vaultrs"]
+storage-k8s = ["kube", "k8s-openapi"]
+storage-all = ["storage-aws", "storage-azure", "storage-vault", "storage-k8s"]
 storage-postgres = ["sqlx"]

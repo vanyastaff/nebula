@@ -17,6 +17,8 @@ pub mod core;
 /// Built-in credential flows (OAuth2, API Key, etc.)
 // TODO: Phase 5 - Re-enable flows after updating to new error API
 // pub mod flows;
+/// Storage provider implementations
+pub mod providers;
 /// Core traits for credentials, storage, and locking
 pub mod traits;
 /// Utilities for crypto, time, etc.
@@ -71,4 +73,25 @@ pub mod prelude {
     // pub use crate::utils::{
     //     generate_code_challenge, generate_pkce_verifier, generate_random_state,
     // };
+
+    // Storage providers (Phase 2)
+    pub use crate::providers::{MockStorageProvider, ProviderConfig, StorageMetrics};
+
+    #[cfg(feature = "storage-local")]
+    pub use crate::providers::{LocalStorageConfig, LocalStorageProvider};
+
+    #[cfg(feature = "storage-aws")]
+    pub use crate::providers::{AwsSecretsManagerConfig, AwsSecretsManagerProvider};
+
+    #[cfg(feature = "storage-azure")]
+    pub use crate::providers::{AzureCredentialType, AzureKeyVaultConfig, AzureKeyVaultProvider};
+
+    #[cfg(feature = "storage-vault")]
+    pub use crate::providers::{HashiCorpVaultProvider, VaultAuthMethod, VaultConfig};
+
+    #[cfg(feature = "storage-k8s")]
+    pub use crate::providers::{KubernetesSecretsConfig, KubernetesSecretsProvider};
+
+    // Retry utilities
+    pub use crate::utils::RetryPolicy;
 }

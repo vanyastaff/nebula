@@ -47,7 +47,12 @@
       "mcp__plugin_context7_context7__query-docs",
       "mcp__deepwiki__read_wiki_contents",
       "mcp__deepwiki__ask_question",
-      "mcp__filesystem__read_multiple_files"
+      "mcp__filesystem__read_multiple_files",
+      "WebFetch(domain:docs.rs)",
+      "mcp__filesystem__create_directory",
+      "mcp__filesystem__write_file",
+      "WebFetch(domain:hub.docker.com)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }
