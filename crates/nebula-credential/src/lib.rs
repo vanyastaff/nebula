@@ -14,9 +14,6 @@
 
 /// Core types, errors, and primitives
 pub mod core;
-/// Built-in credential flows (OAuth2, API Key, etc.)
-// TODO: Phase 5 - Re-enable flows after updating to new error API
-// pub mod flows;
 /// Storage provider implementations
 pub mod providers;
 /// Core traits for credentials, storage, and locking
@@ -32,30 +29,6 @@ pub mod prelude {
         SecretString,
     };
 
-    // TODO: Phase 5 - Re-enable after updating flows to new error API
-    // pub use crate::core::{
-    //     CredentialState,
-    //     adapter::FlowCredential,
-    //     result::{
-    //         CaptchaType, CodeFormat, CredentialFlow, DisplayData, InitializeResult,
-    //         InteractionRequest, PartialState, UserInput,
-    //     },
-    // };
-
-    // TODO: Phase 5 - Re-enable built-in flows
-    // pub use crate::flows::{
-    //     api_key::{ApiKeyCredential, ApiKeyFlow, ApiKeyInput, ApiKeyState},
-    //     basic_auth::{BasicAuthCredential, BasicAuthFlow, BasicAuthInput, BasicAuthState},
-    //     bearer_token::{
-    //         BearerTokenCredential, BearerTokenFlow, BearerTokenInput, BearerTokenState,
-    //     },
-    //     oauth2::{
-    //         AuthorizationCodeFlow, AuthorizationCodeInput, ClientCredentialsFlow,
-    //         ClientCredentialsInput, OAuth2AuthorizationCode, OAuth2ClientCredentials, OAuth2State,
-    //     },
-    //     password::{PasswordCredential, PasswordFlow, PasswordInput, PasswordState},
-    // };
-
     // Traits
     pub use crate::traits::{
         // Credential, InteractiveCredential,
@@ -69,11 +42,6 @@ pub mod prelude {
     // Utils - crypto functions
     pub use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
 
-    // TODO: Phase 5 - Re-enable OAuth2 utils
-    // pub use crate::utils::{
-    //     generate_code_challenge, generate_pkce_verifier, generate_random_state,
-    // };
-
     // Storage providers (Phase 2)
     pub use crate::providers::{ConfigError, MockStorageProvider, ProviderConfig, StorageMetrics};
 
@@ -82,10 +50,6 @@ pub mod prelude {
 
     #[cfg(feature = "storage-aws")]
     pub use crate::providers::{AwsSecretsManagerConfig, AwsSecretsManagerProvider};
-
-    // Azure provider skipped - SDK issues
-    // #[cfg(feature = "storage-azure")]
-    // pub use crate::providers::{AzureCredentialType, AzureKeyVaultConfig, AzureKeyVaultProvider};
 
     #[cfg(feature = "storage-vault")]
     pub use crate::providers::{HashiCorpVaultProvider, VaultAuthMethod, VaultConfig};
