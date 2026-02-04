@@ -164,7 +164,7 @@
 
 ## Phase 2: Mock Provider for Testing (3 tasks)
 
-- [ ] [T011] Implement MockStorageProvider struct with in-memory storage
+- [X] [T011] Implement MockStorageProvider struct with in-memory storage
       Location: crates/nebula-credential/src/providers/mock.rs
       Dependencies: [T006]
       Estimated Lines: 40
@@ -175,7 +175,7 @@
       - should_fail: Arc<RwLock<Option<StorageError>>> for error simulation
       - new(), fail_next_with(), clear(), count() methods
 
-- [ ] [T012] Implement StorageProvider trait for MockStorageProvider
+- [X] [T012] Implement StorageProvider trait for MockStorageProvider
       Location: crates/nebula-credential/src/providers/mock.rs
       Dependencies: [T011]
       Estimated Lines: 100
@@ -187,8 +187,8 @@
       - list() - return keys, apply filter if provided
       - exists() - check HashMap contains_key
 
-- [ ] [T013] Write unit tests for MockStorageProvider
-      Location: crates/nebula-credential/tests/providers/mock_tests.rs
+- [X] [T013] Write unit tests for MockStorageProvider
+      Location: crates/nebula-credential/tests/mock_provider_tests.rs
       Dependencies: [T012]
       Estimated Lines: 150
       
@@ -205,7 +205,7 @@
 
 ## Phase 3: US1 - Local Storage Provider (Priority P1) (7 tasks)
 
-- [ ] [T014] [P] [US1] Implement LocalStorageConfig struct
+- [X] [T014] [P] [US1] Implement LocalStorageConfig struct
       Location: crates/nebula-credential/src/providers/local.rs
       Dependencies: [T005]
       Estimated Lines: 60
@@ -216,7 +216,7 @@
       - Validation (absolute path, no path separators in extension)
       - ProviderConfig trait implementation
 
-- [ ] [T015] [P] [US1] Implement CredentialFile serialization format
+- [X] [T015] [P] [US1] Implement CredentialFile serialization format
       Location: crates/nebula-credential/src/providers/local.rs
       Dependencies: [T014]
       Estimated Lines: 40
@@ -227,7 +227,7 @@
       - new(), needs_migration() methods
       - Serde Serialize + Deserialize
 
-- [ ] [T016] [US1] Implement atomic file write utility
+- [X] [T016] [US1] Implement atomic file write utility
       Location: crates/nebula-credential/src/providers/local.rs
       Dependencies: [T015]
       Estimated Lines: 50
@@ -239,7 +239,7 @@
       - Rename to final path (atomic operation)
       - Cleanup temp file on error
 
-- [ ] [T017] [US1] Implement LocalStorageProvider struct and initialization
+- [X] [T017] [US1] Implement LocalStorageProvider struct and initialization
       Location: crates/nebula-credential/src/providers/local.rs
       Dependencies: [T016]
       Estimated Lines: 50
@@ -250,7 +250,7 @@
       - ensure_directory_exists() - create with 0700 permissions
       - get_file_path(id) -> PathBuf
 
-- [ ] [T018] [US1] Implement StorageProvider trait for LocalStorageProvider
+- [X] [T018] [US1] Implement StorageProvider trait for LocalStorageProvider
       Location: crates/nebula-credential/src/providers/local.rs
       Dependencies: [T017]
       Estimated Lines: 120
@@ -262,8 +262,8 @@
       - list() - scan directory, filter by metadata
       - exists() - check file existence
 
-- [ ] [T019] [US1] Write unit tests for LocalStorageProvider
-      Location: crates/nebula-credential/tests/providers/local_tests.rs
+- [X] [T019] [US1] Write unit tests for LocalStorageProvider
+      Location: crates/nebula-credential/tests/local_provider_tests.rs
       Dependencies: [T018]
       Estimated Lines: 80
       
