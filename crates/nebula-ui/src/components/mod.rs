@@ -13,6 +13,9 @@
 //! - **Feedback**: [`Spinner`], [`ProgressBar`], [`Progress`], [`Skeleton`], [`Alert`], [`Toast`], [`Toaster`]
 //! - **Navigation**: [`Breadcrumb`], [`ContextMenu`], [`DropdownMenu`], [`CommandPalette`]
 //! - **Layout**: [`ScrollArea`], [`Table`], [`ResizablePanels`], [`ResizableBox`]
+
+// UI components naturally have deeper nesting due to egui's builder pattern and callbacks
+#![allow(clippy::excessive_nesting)]
 //! - **Data**: [`DataTable`], [`LineChart`], [`BarChart`], [`PieChart`], [`Sparkline`]
 //! - **Display**: [`Avatar`], [`Label`], [`EmptyState`], [`Calendar`]
 //!

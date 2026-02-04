@@ -202,6 +202,7 @@ impl CredentialFile {
     }
 
     /// Check if file needs migration
+    #[allow(dead_code)]
     fn needs_migration(&self) -> bool {
         self.version < CURRENT_VERSION
     }

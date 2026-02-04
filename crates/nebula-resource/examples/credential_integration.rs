@@ -26,9 +26,13 @@ use nebula_resource::credentials::{
     ResourceCredentialProvider, build_connection_string_with_credentials,
 };
 
+#[cfg(feature = "credentials")]
 use async_trait::async_trait;
+#[cfg(feature = "credentials")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "credentials")]
 use std::sync::Arc;
+#[cfg(feature = "credentials")]
 use std::time::{Duration, SystemTime};
 
 // ═══════════════════════════════════════════════════════════════

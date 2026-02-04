@@ -30,9 +30,13 @@ use nebula_resource::{
     credentials::{ResourceCredentialProvider, stateful::StatefulCredentialProvider},
 };
 
+#[cfg(feature = "credentials")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "credentials")]
 use std::collections::HashMap;
+#[cfg(feature = "credentials")]
 use std::sync::Arc;
+#[cfg(feature = "credentials")]
 use std::time::{Duration, SystemTime};
 
 // ════════════════════════════════════════════════════════════════════════════

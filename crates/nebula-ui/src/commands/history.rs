@@ -254,15 +254,7 @@ impl CommandHistory {
         while self.undo_stack.len() > self.config.max_history {
             if let Some(cmd) = self.undo_stack.pop_front() {
                 self.memory_usage = self.memory_usage.saturating_sub(cmd.memory_size());
-
-                // Adjust save point
-                if let Some(ref mut sp) = self.save_point {
-                    if *sp > 0 {
-                        *sp -= 1;
-                    } else {
-                        self.save_point = None;
-                    }
-                }
+                self.adjust_save_point();
             }
         }
 
@@ -270,15 +262,18 @@ impl CommandHistory {
         while self.memory_usage > self.config.max_memory && !self.undo_stack.is_empty() {
             if let Some(cmd) = self.undo_stack.pop_front() {
                 self.memory_usage = self.memory_usage.saturating_sub(cmd.memory_size());
-
-                if let Some(ref mut sp) = self.save_point {
-                    if *sp > 0 {
-                        *sp -= 1;
-                    } else {
-                        self.save_point = None;
-                    }
-                }
+                self.adjust_save_point();
             }
+        }
+    }
+
+    fn adjust_save_point(&mut self) {
+        if let Some(sp) = self.save_point.as_mut()
+            && *sp > 0
+        {
+            *sp -= 1;
+        } else {
+            self.save_point = None;
         }
     }
 

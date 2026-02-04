@@ -584,10 +584,9 @@ mod tests {
     #[test]
     fn test_event_subscription() {
         let collector = ObservabilityCollector::new(ObservabilityConfig::default());
-        let mut received_events: Vec<ObservabilityEvent> = Vec::new();
 
         // This is a simplified test - in reality we'd need thread-safe collection
-        collector.subscribe(|event| {
+        collector.subscribe(|_event| {
             // In a real test, we'd use a thread-safe way to collect events
         });
 

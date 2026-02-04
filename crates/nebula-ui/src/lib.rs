@@ -68,6 +68,7 @@ pub use state::AppState;
 pub use theme::{DataTypeColors, NodeCategoryColors, Theme, ThemeTokens};
 
 /// Prelude for common imports
+#[allow(ambiguous_glob_reexports)]
 pub mod prelude {
     pub use crate::commands::{Command, CommandHistory};
     pub use crate::components::prelude::*;
