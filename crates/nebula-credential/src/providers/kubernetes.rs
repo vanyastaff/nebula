@@ -31,7 +31,7 @@ use crate::core::{
 };
 use crate::providers::{ProviderConfig, StorageMetrics};
 use crate::traits::StorageProvider;
-use crate::utils::{EncryptedData, RetryPolicy};
+use crate::utils::{EncryptedData, RetryPolicy, validate_encrypted_size};
 use async_trait::async_trait;
 use k8s_openapi::ByteString;
 use k8s_openapi::api::core::v1::Secret;
@@ -355,24 +355,6 @@ impl KubernetesSecretsProvider {
 
         sanitized
     }
-
-    /// Validate payload size (1MB Kubernetes limit)
-    fn validate_size(&self, id: &CredentialId, data: &EncryptedData) -> Result<(), StorageError> {
-        let size = data.ciphertext.len() + data.nonce.len() + data.tag.len();
-        const MAX_SIZE: usize = 1_000_000; // 1MB
-
-        if size > MAX_SIZE {
-            return Err(StorageError::WriteFailure {
-                id: id.as_str().to_string(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("Payload size {} bytes exceeds Kubernetes 1MB limit", size),
-                ),
-            });
-        }
-
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -387,8 +369,8 @@ impl StorageProvider for KubernetesSecretsProvider {
         let secret_name = self.get_secret_name(id);
         let start = std::time::Instant::now();
 
-        // Validate size
-        self.validate_size(id, &data)?;
+        // Validate size (Kubernetes limit: 1MB)
+        validate_encrypted_size(id, &data, 1_000_000, "Kubernetes")?;
 
         // Serialize encrypted data to JSON
         let data_json = serde_json::to_vec(&data).map_err(|e| StorageError::WriteFailure {

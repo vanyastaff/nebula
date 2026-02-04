@@ -75,7 +75,7 @@ pub mod prelude {
     // };
 
     // Storage providers (Phase 2)
-    pub use crate::providers::{MockStorageProvider, ProviderConfig, StorageMetrics};
+    pub use crate::providers::{ConfigError, MockStorageProvider, ProviderConfig, StorageMetrics};
 
     #[cfg(feature = "storage-local")]
     pub use crate::providers::{LocalStorageConfig, LocalStorageProvider};

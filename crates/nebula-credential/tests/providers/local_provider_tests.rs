@@ -14,7 +14,7 @@ use tokio;
 fn create_test_provider() -> (LocalStorageProvider, TempDir) {
     let temp_dir = TempDir::new().unwrap();
     let config = LocalStorageConfig::new(temp_dir.path());
-    let provider = LocalStorageProvider::new(config);
+    let provider = LocalStorageProvider::new(config).unwrap();
     (provider, temp_dir)
 }
 
@@ -186,7 +186,7 @@ async fn test_directory_autocreate() {
     let nested_path = temp_dir.path().join("nested").join("dir");
 
     let config = LocalStorageConfig::new(&nested_path);
-    let provider = LocalStorageProvider::new(config);
+    let provider = LocalStorageProvider::new(config).unwrap();
     let context = CredentialContext::new("test_user");
 
     // Directory should be created on first store

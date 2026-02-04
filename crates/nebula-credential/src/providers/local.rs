@@ -304,15 +304,32 @@ impl LocalStorageProvider {
     /// # Panics
     ///
     /// Panics if configuration is invalid (programming error - validate config before calling new)
-    pub fn new(config: LocalStorageConfig) -> Self {
-        config
-            .validate()
-            .expect("LocalStorageConfig validation failed - validate config before calling new()");
+    /// Create a new LocalStorageProvider with validated configuration
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Provider configuration
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Self)` - Provider initialized successfully
+    /// * `Err(ConfigError)` - Configuration validation failed
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use nebula_credential::providers::{LocalStorageConfig, LocalStorageProvider};
+    ///
+    /// let config = LocalStorageConfig::default();
+    /// let provider = LocalStorageProvider::new(config)?;
+    /// ```
+    pub fn new(config: LocalStorageConfig) -> Result<Self, ConfigError> {
+        config.validate()?;
 
-        Self {
+        Ok(Self {
             config,
             metrics: Arc::new(RwLock::new(StorageMetrics::new())),
-        }
+        })
     }
 
     /// Ensure base directory exists with proper permissions

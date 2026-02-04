@@ -45,5 +45,5 @@ pub use vault::{HashiCorpVaultProvider, VaultAuthMethod, VaultConfig};
 #[cfg(feature = "storage-k8s")]
 pub use kubernetes::{KubernetesSecretsConfig, KubernetesSecretsProvider};
 
-pub use config::ProviderConfig;
+pub use config::{ConfigError, ProviderConfig};
 pub use metrics::StorageMetrics;

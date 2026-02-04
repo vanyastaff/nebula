@@ -32,7 +32,7 @@ use crate::core::{
 };
 use crate::providers::{ProviderConfig, StorageMetrics};
 use crate::traits::StorageProvider;
-use crate::utils::{EncryptedData, RetryPolicy};
+use crate::utils::{EncryptedData, RetryPolicy, validate_encrypted_size};
 use async_trait::async_trait;
 use aws_sdk_secretsmanager::Client as SecretsManagerClient;
 use aws_sdk_secretsmanager::types::Tag;
@@ -347,27 +347,6 @@ impl AwsSecretsManagerProvider {
 
         aws_tags
     }
-
-    /// Validate payload size (AWS limit: 64KB)
-    fn validate_size(&self, id: &CredentialId, data: &EncryptedData) -> Result<(), StorageError> {
-        let size = data.ciphertext.len() + data.nonce.len() + data.tag.len();
-        const MAX_SIZE: usize = 64 * 1024; // 64KB
-
-        if size > MAX_SIZE {
-            return Err(StorageError::WriteFailure {
-                id: id.as_str().to_string(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!(
-                        "Payload size {} bytes exceeds AWS Secrets Manager limit of {} bytes",
-                        size, MAX_SIZE
-                    ),
-                ),
-            });
-        }
-
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -382,8 +361,8 @@ impl StorageProvider for AwsSecretsManagerProvider {
     ) -> Result<(), StorageError> {
         let start = std::time::Instant::now();
 
-        // Validate size
-        self.validate_size(id, &data)?;
+        // Validate size (AWS limit: 64KB)
+        validate_encrypted_size(id, &data, 64 * 1024, "AWS Secrets Manager")?;
 
         let secret_name = self.get_secret_name(id);
         let tags = self.metadata_to_aws_tags(&metadata);

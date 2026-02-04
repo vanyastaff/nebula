@@ -7,10 +7,15 @@ use crate::core::ValidationError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// Maximum length for credential IDs (prevents DoS attacks)
+const MAX_ID_LENGTH: usize = 255;
+
 /// Unique credential identifier (validated)
 ///
 /// Only allows alphanumeric characters, hyphens, and underscores to prevent
 /// path traversal, filesystem issues, and injection attacks.
+///
+/// Maximum length is 255 characters to prevent denial-of-service attacks.
 ///
 /// # Examples
 ///
@@ -63,6 +68,14 @@ impl CredentialId {
 
         if id.is_empty() {
             return Err(ValidationError::EmptyCredentialId);
+        }
+
+        // Check length limit
+        if id.len() > MAX_ID_LENGTH {
+            return Err(ValidationError::InvalidCredentialId {
+                id: id.clone(),
+                reason: format!("exceeds maximum length of {} characters", MAX_ID_LENGTH),
+            });
         }
 
         // Only allow alphanumeric, hyphens, underscores
@@ -154,6 +167,22 @@ mod tests {
             CredentialId::new(""),
             Err(ValidationError::EmptyCredentialId)
         ));
+
+        // Too long (exceeds 255 characters)
+        let long_id = "a".repeat(256);
+        let result = CredentialId::new(long_id);
+        assert!(matches!(
+            result,
+            Err(ValidationError::InvalidCredentialId { .. })
+        ));
+        if let Err(ValidationError::InvalidCredentialId { reason, .. }) = result {
+            assert!(reason.contains("255"));
+            assert!(reason.contains("exceeds maximum length"));
+        }
+
+        // Exactly 255 characters should be OK
+        let max_length_id = "a".repeat(255);
+        assert!(CredentialId::new(max_length_id).is_ok());
 
         // Path traversal
         assert!(matches!(
