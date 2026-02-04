@@ -52,7 +52,9 @@
       "mcp__filesystem__create_directory",
       "mcp__filesystem__write_file",
       "WebFetch(domain:hub.docker.com)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

@@ -14,9 +14,9 @@ pub mod local;
 #[cfg(feature = "storage-aws")]
 pub mod aws;
 
-// Azure Key Vault provider
-#[cfg(feature = "storage-azure")]
-pub mod azure;
+// Azure Key Vault provider - SKIPPED (Phase 5)
+// #[cfg(feature = "storage-azure")]
+// pub mod azure;
 
 // HashiCorp Vault provider
 #[cfg(feature = "storage-vault")]
@@ -39,8 +39,9 @@ pub use local::{LocalStorageConfig, LocalStorageProvider};
 #[cfg(feature = "storage-aws")]
 pub use aws::{AwsSecretsManagerConfig, AwsSecretsManagerProvider};
 
-#[cfg(feature = "storage-azure")]
-pub use azure::{AzureCredentialType, AzureKeyVaultConfig, AzureKeyVaultProvider};
+// Azure provider skipped - SDK issues
+// #[cfg(feature = "storage-azure")]
+// pub use azure::{AzureCredentialType, AzureKeyVaultConfig, AzureKeyVaultProvider};
 
 #[cfg(feature = "storage-vault")]
 pub use vault::{HashiCorpVaultProvider, VaultAuthMethod, VaultConfig};

@@ -83,8 +83,9 @@ pub mod prelude {
     #[cfg(feature = "storage-aws")]
     pub use crate::providers::{AwsSecretsManagerConfig, AwsSecretsManagerProvider};
 
-    #[cfg(feature = "storage-azure")]
-    pub use crate::providers::{AzureCredentialType, AzureKeyVaultConfig, AzureKeyVaultProvider};
+    // Azure provider skipped - SDK issues
+    // #[cfg(feature = "storage-azure")]
+    // pub use crate::providers::{AzureCredentialType, AzureKeyVaultConfig, AzureKeyVaultProvider};
 
     #[cfg(feature = "storage-vault")]
     pub use crate::providers::{HashiCorpVaultProvider, VaultAuthMethod, VaultConfig};
