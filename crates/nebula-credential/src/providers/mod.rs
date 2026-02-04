@@ -39,10 +39,6 @@ pub use local::{LocalStorageConfig, LocalStorageProvider};
 #[cfg(feature = "storage-aws")]
 pub use aws::{AwsSecretsManagerConfig, AwsSecretsManagerProvider};
 
-// Azure provider skipped - SDK issues
-// #[cfg(feature = "storage-azure")]
-// pub use azure::{AzureCredentialType, AzureKeyVaultConfig, AzureKeyVaultProvider};
-
 #[cfg(feature = "storage-vault")]
 pub use vault::{HashiCorpVaultProvider, VaultAuthMethod, VaultConfig};
 

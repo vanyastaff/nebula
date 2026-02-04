@@ -486,7 +486,7 @@
 
 ## Phase 7: US5 - Kubernetes Secrets Provider (Priority P3) (6 tasks)
 
-- [ ] [T040] [P] [US5] Implement KubernetesSecretsConfig struct
+- [X] [T040] [P] [US5] Implement KubernetesSecretsConfig struct
       Location: crates/nebula-credential/src/providers/kubernetes.rs
       Dependencies: [T005, T007]
       Estimated Lines: 80
@@ -499,7 +499,7 @@
       - Validation (namespace format max 63 chars, label format)
       - ProviderConfig trait implementation
 
-- [ ] [T041] [P] [US5] Implement KubernetesSecretsProvider struct and initialization
+- [X] [T041] [P] [US5] Implement KubernetesSecretsProvider struct and initialization
       Location: crates/nebula-credential/src/providers/kubernetes.rs
       Dependencies: [T040]
       Estimated Lines: 70
@@ -510,7 +510,7 @@
       - Initialize kube::Client (in-cluster or kubeconfig)
       - Create Api<Secret> for namespace
 
-- [ ] [T042] [US5] Implement metadata to K8s labels/annotations conversion
+- [X] [T042] [US5] Implement metadata to K8s labels/annotations conversion
       Location: crates/nebula-credential/src/providers/kubernetes.rs
       Dependencies: [T041]
       Estimated Lines: 50
@@ -521,7 +521,7 @@
       - Sanitize labels (max 63 chars, valid DNS subdomain format)
       - Store full metadata in annotations
 
-- [ ] [T043] [US5] Implement StorageProvider trait for KubernetesSecretsProvider
+- [X] [T043] [US5] Implement StorageProvider trait for KubernetesSecretsProvider
       Location: crates/nebula-credential/src/providers/kubernetes.rs
       Dependencies: [T042, T009]
       Estimated Lines: 140
@@ -534,7 +534,7 @@
       - exists() - Get Secret metadata-only
       Map K8s errors to StorageError with RBAC context
 
-- [ ] [T044] [US5] Write unit tests for K8s provider (with mocks)
+- [X] [T044] [US5] Write unit tests for K8s provider (with mocks)
       Location: crates/nebula-credential/tests/providers/kubernetes_tests.rs
       Dependencies: [T043]
       Estimated Lines: 70
@@ -545,7 +545,7 @@
       - Metadata to labels/annotations conversion
       - Size limit validation (1MB)
 
-- [ ] [T045] [US5] Write integration tests for K8s provider (kind)
+- [X] [T045] [US5] Write integration tests for K8s provider (kind)
       Location: crates/nebula-credential/tests/integration/kubernetes_integration.rs
       Dependencies: [T043]
       Estimated Lines: 150

@@ -79,7 +79,7 @@ tokio-test = "0.4.4"
 pretty_assertions = "1.4"
 tempfile = "3.8"
 testcontainers = "0.26"
-testcontainers-modules = { version = "0.14", features = ["localstack", "hashicorp_vault"] }
+testcontainers-modules = { version = "0.14", features = ["localstack", "hashicorp_vault", "k3s"] }
 reqwest = "0.12"
 
 [features]
