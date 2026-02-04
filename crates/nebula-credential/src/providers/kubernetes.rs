@@ -144,9 +144,6 @@ impl ProviderConfig for KubernetesSecretsConfig {
 /// Kubernetes Secrets storage provider
 #[derive(Clone)]
 pub struct KubernetesSecretsProvider {
-    /// Kubernetes client
-    client: Client,
-
     /// API handle for Secrets in the configured namespace
     secrets_api: Api<Secret>,
 
@@ -232,7 +229,6 @@ impl KubernetesSecretsProvider {
         );
 
         Ok(Self {
-            client,
             secrets_api,
             config,
             metrics: Arc::new(StorageMetrics::default()),
@@ -292,10 +288,10 @@ impl KubernetesSecretsProvider {
         }
 
         // Store tags as JSON
-        if !metadata.tags.is_empty() {
-            if let Ok(tags_json) = serde_json::to_string(&metadata.tags) {
-                annotations.insert("nebula.credential.tags".to_string(), tags_json);
-            }
+        if !metadata.tags.is_empty()
+            && let Ok(tags_json) = serde_json::to_string(&metadata.tags)
+        {
+            annotations.insert("nebula.credential.tags".to_string(), tags_json);
         }
 
         annotations
@@ -622,15 +618,15 @@ impl StorageProvider for KubernetesSecretsProvider {
         // Build label selector from filter
         let mut label_selectors = Vec::new();
 
-        if let Some(filter) = filter {
-            if let Some(tags) = &filter.tags {
-                for (tag_key, tag_value) in tags.iter() {
-                    label_selectors.push(format!(
-                        "tag/{}={}",
-                        Self::sanitize_label(tag_key),
-                        Self::sanitize_label_value(tag_value)
-                    ));
-                }
+        if let Some(filter) = filter
+            && let Some(tags) = &filter.tags
+        {
+            for (tag_key, tag_value) in tags.iter() {
+                label_selectors.push(format!(
+                    "tag/{}={}",
+                    Self::sanitize_label(tag_key),
+                    Self::sanitize_label_value(tag_value)
+                ));
             }
         }
 
@@ -668,38 +664,29 @@ impl StorageProvider for KubernetesSecretsProvider {
                     let id_str = id_str.replace('-', "_");
                     if let Ok(id) = CredentialId::new(&id_str) {
                         // Apply additional filters
-                        if let Some(filter) = filter {
-                            if let Some(annotations) = &secret.metadata.annotations {
-                                // Filter by created_after
-                                if let Some(created_after) = filter.created_after {
-                                    if let Some(created_str) =
-                                        annotations.get("nebula.credential.created-at")
-                                    {
-                                        if let Ok(created) =
-                                            chrono::DateTime::parse_from_rfc3339(created_str)
-                                        {
-                                            if created.with_timezone(&chrono::Utc) < created_after {
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                }
+                        if let Some(filter) = filter
+                            && let Some(annotations) = &secret.metadata.annotations
+                        {
+                            // Filter by created_after
+                            if let Some(created_after) = filter.created_after
+                                && let Some(created_str) =
+                                    annotations.get("nebula.credential.created-at")
+                                && let Ok(created) =
+                                    chrono::DateTime::parse_from_rfc3339(created_str)
+                                && created.with_timezone(&chrono::Utc) < created_after
+                            {
+                                continue;
+                            }
 
-                                // Filter by created_before
-                                if let Some(created_before) = filter.created_before {
-                                    if let Some(created_str) =
-                                        annotations.get("nebula.credential.created-at")
-                                    {
-                                        if let Ok(created) =
-                                            chrono::DateTime::parse_from_rfc3339(created_str)
-                                        {
-                                            if created.with_timezone(&chrono::Utc) > created_before
-                                            {
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                }
+                            // Filter by created_before
+                            if let Some(created_before) = filter.created_before
+                                && let Some(created_str) =
+                                    annotations.get("nebula.credential.created-at")
+                                && let Ok(created) =
+                                    chrono::DateTime::parse_from_rfc3339(created_str)
+                                && created.with_timezone(&chrono::Utc) > created_before
+                            {
+                                continue;
                             }
                         }
 
