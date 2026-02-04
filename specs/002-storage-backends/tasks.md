@@ -274,8 +274,8 @@
       - Delete idempotent
       - List with filter
 
-- [ ] [T020] [US1] Write integration tests for local storage
-      Location: crates/nebula-credential/tests/integration/local_storage_integration.rs
+- [X] [T020] [US1] Write integration tests for local storage
+      Location: crates/nebula-credential/tests/local_storage_integration.rs
       Dependencies: [T018]
       Estimated Lines: 200
       
