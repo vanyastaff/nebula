@@ -157,6 +157,7 @@ async fn test_async() {
 - Builds on Phase 2 storage providers (requires durable storage for rotation state, backups, audit logs) (004-credential-rotation)
 - Rust 2024 Edition (MSRV: 1.92) + Tokio async runtime, async-trait, serde, thiserror, chrono (005-refactor-traits-validation)
 - N/A (pure refactoring) (005-refactor-traits-validation)
+- N/A (this feature only adds types, no persistence logic) (006-extend-core-identity)
 
 ## Recent Changes
 - 001-credential-core-abstractions: Added Rust 2024 Edition (MSRV: 1.92)
