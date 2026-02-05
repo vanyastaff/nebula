@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 ///     properties: Schema::default(),
 /// };
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialDescription {
     /// Unique identifier for this credential type (e.g., "github_oauth2", "postgres_db")
     pub key: String,
@@ -47,7 +47,7 @@ pub struct CredentialDescription {
 
     /// Optional documentation URL
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub documentation_url: Option<String>,
+    pub documentation_url: Option<String>
 
     /// Parameter definitions - what fields this credential type requires
     ///
@@ -57,7 +57,7 @@ pub struct CredentialDescription {
     /// - client_id: String (required)
     /// - client_secret: SecretString (required, sensitive)
     /// - scopes: Array<String> (optional)
-    pub properties: Schema,
+    /// pub properties: Schema, /// Disable till i update paramdef create enable serde
 }
 
 impl CredentialDescription {

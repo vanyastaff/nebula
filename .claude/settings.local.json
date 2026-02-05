@@ -55,7 +55,10 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:crates.io)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "mcp__filesystem__search_files"
+      "mcp__filesystem__search_files",
+      "Skill(commit-commands:commit-push-pr)",
+      "Skill(commit-commands:commit-push-pr:*)",
+      "WebFetch(domain:docs.n8n.io)"
     ]
   }
 }
