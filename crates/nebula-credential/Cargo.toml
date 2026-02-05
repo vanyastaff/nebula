@@ -12,6 +12,7 @@ repository.workspace = true
 # Async
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["time", "sync", "macros", "rt"] }
+tokio-util = { workspace = true }
 
 # Crypto and security
 aes-gcm = "0.10"
@@ -47,6 +48,9 @@ futures = "0.3"
 
 # Caching
 moka = { version = "0.12", features = ["future"] }
+
+# Synchronization
+parking_lot = { workspace = true }
 
 # Optional storage backends
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls"], optional = true }

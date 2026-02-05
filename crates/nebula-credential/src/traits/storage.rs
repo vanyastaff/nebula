@@ -193,4 +193,204 @@ pub trait StorageProvider: Send + Sync {
         id: &CredentialId,
         context: &CredentialContext,
     ) -> Result<bool, StorageError>;
+
+    // ========================================================================
+    // Credential Rotation State Tracking (Phase 4)
+    // ========================================================================
+
+    /// Store rotation transaction state
+    ///
+    /// Persists the state of an in-progress rotation transaction.
+    /// This is a stub - implementations will be added in user stories.
+    ///
+    /// # Arguments
+    ///
+    /// * `transaction_id` - Unique rotation transaction identifier
+    /// * `state` - Serialized transaction state
+    /// * `context` - Request context
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `StorageError::NotSupported` - implementations should override
+    /// this method to support rotation tracking.
+    async fn store_rotation_state(
+        &self,
+        _transaction_id: &str,
+        _state: &Value,
+        _context: &CredentialContext,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::NotSupported {
+            operation: "store_rotation_state".to_string(),
+            reason: "Rotation state tracking not implemented for this storage provider".to_string(),
+        })
+    }
+
+    /// Retrieve rotation transaction state
+    ///
+    /// Loads the state of a rotation transaction.
+    /// This is a stub - implementations will be added in user stories.
+    ///
+    /// # Arguments
+    ///
+    /// * `transaction_id` - Unique rotation transaction identifier
+    /// * `context` - Request context
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(state))` - Transaction state found
+    /// * `Ok(None)` - Transaction not found
+    /// * `Err(StorageError)` - Retrieval failed
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `StorageError::NotSupported` - implementations should override
+    /// this method to support rotation tracking.
+    async fn get_rotation_state(
+        &self,
+        _transaction_id: &str,
+        _context: &CredentialContext,
+    ) -> Result<Option<Value>, StorageError> {
+        Err(StorageError::NotSupported {
+            operation: "get_rotation_state".to_string(),
+            reason: "Rotation state tracking not implemented for this storage provider".to_string(),
+        })
+    }
+
+    /// Delete rotation transaction state
+    ///
+    /// Removes completed or cancelled rotation transaction state.
+    /// This is a stub - implementations will be added in user stories.
+    ///
+    /// # Arguments
+    ///
+    /// * `transaction_id` - Unique rotation transaction identifier
+    /// * `context` - Request context
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns `StorageError::NotSupported` - implementations should override
+    /// this method to support rotation tracking.
+    async fn delete_rotation_state(
+        &self,
+        _transaction_id: &str,
+        _context: &CredentialContext,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::NotSupported {
+            operation: "delete_rotation_state".to_string(),
+            reason: "Rotation state tracking not implemented for this storage provider".to_string(),
+        })
+    }
+
+    /// List all in-progress rotation transactions for a credential
+    ///
+    /// Returns transaction IDs for active rotations.
+    /// This is a stub - implementations will be added in user stories.
+    ///
+    /// # Arguments
+    ///
+    /// * `credential_id` - Credential to check for rotations
+    /// * `context` - Request context
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(vec![transaction_ids])` - List of active rotation transaction IDs
+    /// * `Err(StorageError)` - List operation failed
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns empty vector - implementations should override this method
+    /// to support rotation tracking.
+    async fn list_rotation_transactions(
+        &self,
+        _credential_id: &CredentialId,
+        _context: &CredentialContext,
+    ) -> Result<Vec<String>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    /// Store usage metrics for a credential during grace period
+    ///
+    /// # T070: Usage Metric Persistence
+    ///
+    /// Persists usage metrics for credentials during grace period to track
+    /// migration progress and determine when old credentials can be safely revoked.
+    ///
+    /// # Arguments
+    ///
+    /// * `credential_id` - Credential being tracked
+    /// * `metrics` - Usage metrics (request count, last used, etc.)
+    /// * `context` - Request context
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Metrics stored successfully
+    /// * `Err(StorageError)` - Storage operation failed
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns error - implementations should override this method
+    /// to support usage metric persistence.
+    async fn store_usage_metrics(
+        &self,
+        _credential_id: &CredentialId,
+        _metrics: &crate::rotation::UsageMetrics,
+        _context: &CredentialContext,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::NotSupported {
+            operation: "store_usage_metrics".to_string(),
+            reason: "Usage metric persistence not implemented for this storage provider"
+                .to_string(),
+        })
+    }
+
+    /// Retrieve usage metrics for a credential
+    ///
+    /// # Arguments
+    ///
+    /// * `credential_id` - Credential to get metrics for
+    /// * `context` - Request context
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(metrics))` - Metrics found and retrieved
+    /// * `Ok(None)` - No metrics stored for this credential
+    /// * `Err(StorageError)` - Retrieval operation failed
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns None - implementations should override this method
+    /// to support usage metric retrieval.
+    async fn retrieve_usage_metrics(
+        &self,
+        _credential_id: &CredentialId,
+        _context: &CredentialContext,
+    ) -> Result<Option<crate::rotation::UsageMetrics>, StorageError> {
+        Ok(None)
+    }
+
+    /// Delete usage metrics for a credential
+    ///
+    /// Called when grace period ends and metrics are no longer needed.
+    ///
+    /// # Arguments
+    ///
+    /// * `credential_id` - Credential to delete metrics for
+    /// * `context` - Request context
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Metrics deleted or didn't exist
+    /// * `Err(StorageError)` - Delete operation failed
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns Ok(()) - implementations should override this method
+    /// to support usage metric cleanup.
+    async fn delete_usage_metrics(
+        &self,
+        _credential_id: &CredentialId,
+        _context: &CredentialContext,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
 }

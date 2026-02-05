@@ -189,6 +189,15 @@ pub enum StorageError {
         /// Duration attempted
         duration: std::time::Duration,
     },
+
+    /// Operation not supported by this storage provider
+    #[error("Operation '{operation}' not supported: {reason}")]
+    NotSupported {
+        /// Operation name
+        operation: String,
+        /// Reason why not supported
+        reason: String,
+    },
 }
 
 /// Cryptographic operation errors
@@ -254,6 +263,7 @@ impl From<StorageError> for CredentialError {
             StorageError::WriteFailure { id, .. } => id.clone(),
             StorageError::PermissionDenied { id } => id.clone(),
             StorageError::Timeout { .. } => "unknown".to_string(),
+            StorageError::NotSupported { operation, .. } => operation.clone(),
         };
         Self::Storage { id, source }
     }
