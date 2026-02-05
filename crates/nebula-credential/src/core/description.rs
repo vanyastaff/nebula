@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 ///     properties: Schema::default(),
 /// };
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CredentialDescription {
     /// Unique identifier for this credential type (e.g., "github_oauth2", "postgres_db")
     pub key: String,
