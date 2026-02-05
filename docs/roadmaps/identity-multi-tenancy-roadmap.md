@@ -12,6 +12,77 @@
 
 ## 📋 Phase 1: Identity Foundation (2-3 недели)
 
+### Milestone 1.0: Extend nebula-core
+**Крейт:** `nebula-core` (обновление)
+
+**Задачи:**
+- [ ] Добавить новые идентификаторы в `id.rs`:
+  - [ ] `ProjectId` - идентификатор проекта
+  - [ ] `RoleId` - идентификатор роли
+  - [ ] `OrganizationId` - идентификатор организации (опционально, для Phase 4)
+- [ ] Расширить `ScopeLevel` в `scope.rs`:
+  - [ ] Добавить `Project(ProjectId)` вариант
+  - [ ] Добавить `Organization(OrganizationId)` вариант (опционально)
+  - [ ] Обновить методы containment для новых scope'ов
+  - [ ] Добавить методы `project_id()`, `is_project()`
+- [ ] Добавить типы для RBAC в `types.rs`:
+  - [ ] `ProjectType` enum (Personal | Team)
+  - [ ] `RoleScope` enum (Global | Project | Credential | Workflow)
+- [ ] Обновить `prelude` модуль:
+  - [ ] Экспортировать `ProjectId`, `RoleId`, `OrganizationId`
+  - [ ] Экспортировать `ProjectType`, `RoleScope`
+- [ ] Добавить тесты для новых типов
+- [ ] Обновить документацию
+
+**Deliverables:**
+```rust
+// nebula-core/src/id.rs
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ProjectId(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RoleId(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct OrganizationId(String);
+
+// nebula-core/src/scope.rs
+pub enum ScopeLevel {
+    Global,
+    Organization(OrganizationId),
+    Project(ProjectId),
+    Workflow(WorkflowId),
+    Execution(ExecutionId),
+    Action(ExecutionId, NodeId),
+}
+
+// nebula-core/src/types.rs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProjectType {
+    Personal,
+    Team,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoleScope {
+    Global,
+    Project,
+    Credential,
+    Workflow,
+}
+```
+
+**Dependencies:**
+- Никаких новых зависимостей (только внутренние изменения)
+
+**Rationale:**
+- `nebula-core` - базовый крейт, от которого зависят все остальные
+- Добавление ID типов в core предотвращает циклические зависимости
+- Расширение Scope системы обеспечивает правильную изоляцию ресурсов
+- Enum'ы для RBAC нужны в core, чтобы их могли использовать все крейты
+
+---
+
 ### Milestone 1.1: Core User Management
 **Крейт:** `nebula-user`
 
@@ -530,6 +601,7 @@ pub async fn tenant_middleware(
 ## 🎯 Success Metrics
 
 **Phase 1:**
+- ✅ nebula-core расширен (ProjectId, RoleId, новые Scope варианты)
 - ✅ User CRUD работает
 - ✅ Projects с members работают
 - ✅ PostgreSQL storage работает
@@ -562,6 +634,7 @@ pub async fn tenant_middleware(
 
 | Крейт | Phase | Статус | Dependencies |
 |-------|-------|--------|--------------|
+| `nebula-core` (extend) | 1.0 | 🔴 Not started | - |
 | `nebula-user` | 1.1 | 🔴 Not started | nebula-core |
 | `nebula-project` | 1.2 | 🔴 Not started | nebula-core, nebula-user |
 | `nebula-storage` | 1.3 | 🔴 Not started | nebula-core, sqlx |
@@ -575,11 +648,12 @@ pub async fn tenant_middleware(
 
 ## 🚀 Recommended Start
 
-**Начать с Phase 1.1-1.2:**
-1. Создать `nebula-user` с базовым User entity
-2. Создать `nebula-project` с Project и ProjectMember
-3. Написать unit tests
-4. Создать простой in-memory repository для тестов
+**Начать с Phase 1.0-1.2:**
+1. Расширить `nebula-core` с новыми ID типами и Scope вариантами
+2. Создать `nebula-user` с базовым User entity
+3. Создать `nebula-project` с Project и ProjectMember
+4. Написать unit tests
+5. Создать простой in-memory repository для тестов
 
 **Не делать сразу:**
 - ❌ Полную auth систему (можно заглушить)
