@@ -58,7 +58,6 @@ full = [
 [dependencies]
 # Nebula ecosystem
 nebula-log = { path = "../nebula-log" }
-nebula-derive = { path = "../nebula-derive" }
 nebula-credential = { path = "../nebula-credential", optional = true }
 nebula-resilience = { path = "../nebula-resilience" }
 

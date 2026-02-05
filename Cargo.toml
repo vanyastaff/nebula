@@ -7,12 +7,9 @@ members = [
     "crates/nebula-expression",
     "crates/nebula-log",
     "crates/nebula-memory",
-    "crates/nebula-parameter",
-    "crates/nebula-parameter-ui",
     "crates/nebula-resilience",
     "crates/nebula-resource",
     "crates/nebula-system",
-    "crates/nebula-ui",
     "crates/nebula-validator",
     "crates/nebula-value"
 ]

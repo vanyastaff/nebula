@@ -28,6 +28,9 @@ zeroize = { version = "1.8.1", features = ["zeroize_derive"] }
 nebula-core = { path = "../nebula-core" }
 nebula-log = { path = "../nebula-log" }
 
+# Parameter definitions
+paramdef = { version = "0.2.0", features = ["serde"] }
+
 # Errors
 thiserror = { workspace = true }
 
