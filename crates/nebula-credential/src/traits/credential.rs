@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::core::{
-    CredentialContext, CredentialError, CredentialMetadata, CredentialState,
+    CredentialContext, CredentialDescription, CredentialError, CredentialState,
     result::{InitializeResult, PartialState, UserInput},
 };
 
@@ -25,7 +25,7 @@ pub trait Credential: Send + Sync + 'static {
     type State: CredentialState;
 
     /// Get metadata about this credential
-    fn metadata(&self) -> CredentialMetadata;
+    fn description(&self) -> CredentialDescription;
 
     /// Initialize credential from input
     ///

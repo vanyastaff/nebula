@@ -105,6 +105,15 @@ impl EncryptedData {
     }
 }
 
+impl Drop for EncryptedData {
+    fn drop(&mut self) {
+        // Zero out sensitive data on drop to prevent memory scraping attacks
+        self.ciphertext.zeroize();
+        self.nonce.zeroize();
+        self.tag.zeroize();
+    }
+}
+
 /// Nonce generator with atomic counter and random component
 ///
 /// Uses 8 bytes for counter (prevents reuse within session) and 4 bytes

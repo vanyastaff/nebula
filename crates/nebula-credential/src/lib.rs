@@ -18,6 +18,8 @@ pub mod core;
 pub mod manager;
 /// Storage provider implementations
 pub mod providers;
+/// Credential rotation (Phase 4)
+pub mod rotation;
 /// Core traits for credentials, storage, and locking
 pub mod traits;
 /// Utilities for crypto, time, etc.
@@ -28,8 +30,12 @@ pub mod prelude {
     // Core types
     pub use crate::core::{
         CredentialContext, CredentialError, CredentialFilter, CredentialId, CredentialMetadata,
-        RotationPolicy, SecretString,
+        SecretString,
     };
+
+    // Rotation types
+    pub use crate::rotation::policy::RotationPolicy;
+    pub use crate::rotation::{RotationError, RotationResult};
 
     // Traits
     pub use crate::traits::{
@@ -67,4 +73,6 @@ pub mod prelude {
         CacheConfig, CacheLayer, CacheStats, CredentialManager, CredentialManagerBuilder,
         EvictionStrategy, ManagerConfig, ValidationDetails, ValidationResult,
     };
+
+    // Credential Rotation (Phase 4) - Already exported in prelude above
 }

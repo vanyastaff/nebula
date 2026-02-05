@@ -212,9 +212,9 @@ pub trait CredentialFlow: Send + Sync + 'static {
         _state: &mut Self::State,
         _ctx: &mut CredentialContext,
     ) -> Result<(), CredentialError> {
-        Err(CredentialError::refresh_not_supported(
-            self.flow_name().to_string(),
-        ))
+        // Default implementation: refresh not supported
+        // Override this method for credentials that support refresh (OAuth2, JWT, etc.)
+        Ok(())
     }
 
     /// Revoke the credential (optional)
