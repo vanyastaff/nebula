@@ -25,7 +25,7 @@
 //!
 //! #[async_trait]
 //! impl TestableCredential for MySqlCredential {
-//!     async fn test(&self) -> RotationResult<ValidationOutcome> {
+//!     async fn test(&self) -> RotationResult<TestResult> {
 //!         let start = Instant::now();
 //!
 //!         // Use mysql_async client library to test connection
@@ -49,7 +49,7 @@
 //!                 reason: format!("Query failed: {}", e),
 //!             })?;
 //!
-//!         Ok(ValidationOutcome::success(
+//!         Ok(TestResult::success(
 //!             "MySQL connection successful",
 //!             "SELECT 1",
 //!             start.elapsed(),
@@ -96,9 +96,12 @@ use crate::core::{CredentialId, CredentialMetadata};
 use super::error::{RotationError, RotationResult};
 use tokio::time::timeout;
 
-/// Context for credential validation
+// Import traits from traits/ module (source of truth)
+use crate::traits::{RotatableCredential, TestableCredential};
+
+/// Context for credential testing
 #[derive(Debug, Clone)]
-pub struct ValidationContext {
+pub struct TestContext {
     /// Credential being validated
     pub credential_id: CredentialId,
 
@@ -115,8 +118,8 @@ pub struct ValidationContext {
     pub retry_attempt: u32,
 }
 
-impl ValidationContext {
-    /// Create a new validation context
+impl TestContext {
+    /// Create a new test context
     pub fn new(credential_id: CredentialId, metadata: CredentialMetadata) -> Self {
         Self {
             credential_id,
@@ -140,32 +143,29 @@ impl ValidationContext {
         self
     }
 
-    /// Validate a credential with timeout enforcement
+    /// Test a credential with timeout enforcement
     ///
     /// Wraps the credential's `test()` method with a timeout to prevent
-    /// validation from hanging indefinitely.
+    /// testing from hanging indefinitely.
     ///
     /// # Arguments
     ///
-    /// * `credential` - The credential to validate
+    /// * `credential` - The credential to test
     ///
     /// # Returns
     ///
-    /// * `Ok(ValidationOutcome)` - Validation completed within timeout
-    /// * `Err(RotationError::Timeout)` - Validation exceeded timeout
+    /// * `Ok(TestResult)` - Test completed within timeout
+    /// * `Err(RotationError::Timeout)` - Test exceeded timeout
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// let context = ValidationContext::new(cred_id, metadata)
+    /// let context = TestContext::new(cred_id, metadata)
     ///     .with_timeout(Duration::from_secs(10));
     ///
-    /// let outcome = context.validate(&mysql_credential).await?;
+    /// let result = context.test(&mysql_credential).await?;
     /// ```
-    pub async fn validate<T: TestableCredential>(
-        &self,
-        credential: &T,
-    ) -> RotationResult<ValidationOutcome> {
+    pub async fn test<T: TestableCredential>(&self, credential: &T) -> RotationResult<TestResult> {
         let timeout_duration = self.timeout;
 
         tracing::debug!(
@@ -193,169 +193,9 @@ impl ValidationContext {
     }
 }
 
-/// Trait for credentials that can test themselves
-///
-/// Credential implementations use their specific client libraries to validate connectivity.
-///
-/// This follows the n8n pattern: test actual functionality, not just format validation.
-#[async_trait]
-pub trait TestableCredential: Send + Sync {
-    /// Test the credential by performing actual operation
-    ///
-    /// Each credential type implements this using their client library:
-    /// - **MySQL/PostgreSQL**: `SELECT 1` query
-    /// - **OAuth2**: Call userinfo endpoint with token
-    /// - **API Key**: Call account/status endpoint
-    /// - **Certificate**: Perform TLS handshake
-    ///
-    /// Returns `ValidationOutcome` with success/failure details.
-    async fn test(&self) -> RotationResult<ValidationOutcome>;
-
-    /// Get test timeout (default: 30 seconds)
-    fn test_timeout(&self) -> Duration {
-        Duration::from_secs(30)
-    }
-}
-
-/// Trait for credentials that support rotation
-///
-/// Credentials implementing this trait can generate new versions and cleanup old ones.
-///
-/// # Rotation Policy
-///
-/// The rotation policy is stored in `CredentialMetadata.rotation_policy` and can be
-/// configured per-credential instance. This allows different instances of the same
-/// credential type to have different rotation schedules.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// // Set rotation policy in metadata
-/// let metadata = CredentialMetadata {
-///     rotation_policy: Some(RotationPolicy::Periodic(PeriodicConfig {
-///         interval: Duration::from_secs(90 * 24 * 3600), // 90 days
-///         grace_period: Duration::from_secs(24 * 3600),  // 1 day
-///         enable_jitter: true,
-///     })),
-///     ..Default::default()
-/// };
-///
-/// // Or use BeforeExpiry for OAuth tokens
-/// let metadata = CredentialMetadata {
-///     rotation_policy: Some(RotationPolicy::BeforeExpiry(BeforeExpiryConfig {
-///         threshold_percent: 80.0,
-///         min_ttl_seconds: 3600,
-///     })),
-///     ..Default::default()
-/// };
-/// ```
-#[async_trait]
-pub trait RotatableCredential: TestableCredential {
-    /// Generate a new version of this credential
-    ///
-    /// The new credential should have:
-    /// - Different secrets (password, token, key)
-    /// - Same permissions and access levels
-    /// - Same connection details (host, port, database)
-    ///
-    /// For databases, this typically means creating a new user with identical grants.
-    async fn rotate(&self) -> RotationResult<Self>
-    where
-        Self: Sized;
-
-    /// Clean up old credential after rotation completes
-    ///
-    /// Optional: implement if cleanup is needed (e.g., delete old database user).
-    /// Called after grace period expires.
-    async fn cleanup_old(&self) -> RotationResult<()> {
-        Ok(())
-    }
-}
-
-/// Trait for credentials with token refresh capabilities (OAuth2, JWT)
-///
-/// Credentials implementing this trait can refresh their tokens before expiration.
-/// This is specifically for OAuth2 access tokens, JWT tokens, and similar short-lived credentials.
-#[async_trait]
-pub trait TokenRefreshValidator: TestableCredential {
-    /// Refresh the token using refresh_token or client credentials
-    ///
-    /// Returns a new credential instance with refreshed access token.
-    /// The refresh mechanism depends on the token type:
-    /// - **OAuth2 Authorization Code**: Use refresh_token to get new access_token
-    /// - **OAuth2 Client Credentials**: Request new token with client_id/client_secret
-    /// - **JWT**: Re-authenticate to get new JWT
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// impl TokenRefreshValidator for OAuth2Credential {
-    ///     async fn refresh_token(&self) -> RotationResult<Self> {
-    ///         // Use refresh_token to get new access_token
-    ///         let token_response = oauth2_client
-    ///             .exchange_refresh_token(&self.refresh_token)
-    ///             .request_async()
-    ///             .await?;
-    ///
-    ///         Ok(OAuth2Credential {
-    ///             access_token: token_response.access_token().secret().clone(),
-    ///             refresh_token: token_response.refresh_token()
-    ///                 .map(|t| t.secret().clone())
-    ///                 .unwrap_or(self.refresh_token.clone()),
-    ///             expires_at: Some(Utc::now() + token_response.expires_in().unwrap()),
-    ///             ..self.clone()
-    ///         })
-    ///     }
-    /// }
-    /// ```
-    async fn refresh_token(&self) -> RotationResult<Self>
-    where
-        Self: Sized;
-
-    /// Get the token expiration time
-    ///
-    /// Returns `None` if token doesn't expire or expiration is unknown.
-    fn get_expiration(&self) -> Option<chrono::DateTime<chrono::Utc>>;
-
-    /// Get remaining token lifetime
-    ///
-    /// Returns `None` if token doesn't expire.
-    fn time_until_expiry(&self) -> Option<chrono::Duration> {
-        self.get_expiration().map(|exp| exp - chrono::Utc::now())
-    }
-
-    /// Check if token should be refreshed based on remaining TTL
-    ///
-    /// Default implementation: refresh when < 20% of original TTL remains
-    fn should_refresh(&self, threshold_percentage: f32) -> bool {
-        if let Some(expires_at) = self.get_expiration() {
-            let now = chrono::Utc::now();
-
-            // Already expired or about to expire
-            if expires_at <= now {
-                return true;
-            }
-
-            // Calculate how much time is left as percentage of total TTL
-            // For simplicity, assume tokens have standard lifetimes:
-            // - OAuth2 access tokens: typically 1 hour
-            // - Assume we want to refresh when < threshold remains
-            let time_remaining = expires_at - now;
-            let threshold = chrono::Duration::seconds(
-                (time_remaining.num_seconds() as f32 / threshold_percentage) as i64,
-            );
-
-            time_remaining <= threshold
-        } else {
-            // No expiration time, cannot determine if refresh needed
-            false
-        }
-    }
-}
-
-/// Outcome of credential validation
+/// Result of credential testing
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ValidationOutcome {
+pub struct TestResult {
     /// Whether validation passed
     pub passed: bool,
 
@@ -369,8 +209,8 @@ pub struct ValidationOutcome {
     pub duration: Duration,
 }
 
-impl ValidationOutcome {
-    /// Create successful validation outcome
+impl TestResult {
+    /// Create successful test result
     pub fn success(
         message: impl Into<String>,
         method: impl Into<String>,
@@ -384,7 +224,7 @@ impl ValidationOutcome {
         }
     }
 
-    /// Create failed validation outcome
+    /// Create failed test result
     pub fn failure(
         message: impl Into<String>,
         method: impl Into<String>,
@@ -459,7 +299,7 @@ pub enum SuccessCriteria {
 /// # T074: Validation Failure Handler
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ValidationFailureType {
+pub enum FailureKind {
     /// Network connectivity issue (transient - may succeed on retry)
     NetworkError,
 
@@ -482,14 +322,12 @@ pub enum ValidationFailureType {
     Unknown,
 }
 
-impl ValidationFailureType {
+impl FailureKind {
     /// Check if failure is transient (worth retrying)
     pub fn is_transient(&self) -> bool {
         matches!(
             self,
-            ValidationFailureType::NetworkError
-                | ValidationFailureType::Timeout
-                | ValidationFailureType::ServiceUnavailable
+            FailureKind::NetworkError | FailureKind::Timeout | FailureKind::ServiceUnavailable
         )
     }
 
@@ -508,9 +346,9 @@ impl ValidationFailureType {
 /// # Example
 ///
 /// ```rust,ignore
-/// use nebula_credential::rotation::validation::ValidationFailureHandler;
+/// use nebula_credential::rotation::validation::FailureHandler;
 ///
-/// let handler = ValidationFailureHandler::new();
+/// let handler = FailureHandler::new();
 /// let failure_type = handler.classify_error("Connection timeout");
 ///
 /// if failure_type.is_transient() {
@@ -520,7 +358,7 @@ impl ValidationFailureType {
 /// }
 /// ```
 #[derive(Debug, Clone)]
-pub struct ValidationFailureHandler {
+pub struct FailureHandler {
     /// Maximum retry attempts for transient failures
     pub max_retries: u32,
 
@@ -528,7 +366,7 @@ pub struct ValidationFailureHandler {
     pub auto_rollback: bool,
 }
 
-impl Default for ValidationFailureHandler {
+impl Default for FailureHandler {
     fn default() -> Self {
         Self {
             max_retries: 3,
@@ -537,7 +375,7 @@ impl Default for ValidationFailureHandler {
     }
 }
 
-impl ValidationFailureHandler {
+impl FailureHandler {
     /// Create a new validation failure handler
     pub fn new() -> Self {
         Self::default()
@@ -546,14 +384,14 @@ impl ValidationFailureHandler {
     /// Classify an error message into failure type
     ///
     /// Uses heuristics based on error message content.
-    pub fn classify_error(&self, error_message: &str) -> ValidationFailureType {
+    pub fn classify_error(&self, error_message: &str) -> FailureKind {
         let error_lower = error_message.to_lowercase();
 
         if error_lower.contains("timeout")
             || error_lower.contains("timed out")
             || error_lower.contains("deadline exceeded")
         {
-            return ValidationFailureType::Timeout;
+            return FailureKind::Timeout;
         }
 
         if error_lower.contains("network")
@@ -561,7 +399,7 @@ impl ValidationFailureHandler {
             || error_lower.contains("connection reset")
             || error_lower.contains("dns")
         {
-            return ValidationFailureType::NetworkError;
+            return FailureKind::NetworkError;
         }
 
         if error_lower.contains("authentication")
@@ -570,7 +408,7 @@ impl ValidationFailureHandler {
             || error_lower.contains("unauthorized")
             || error_lower.contains("401")
         {
-            return ValidationFailureType::AuthenticationError;
+            return FailureKind::AuthenticationError;
         }
 
         if error_lower.contains("authorization")
@@ -579,24 +417,24 @@ impl ValidationFailureHandler {
             || error_lower.contains("forbidden")
             || error_lower.contains("403")
         {
-            return ValidationFailureType::AuthorizationError;
+            return FailureKind::AuthorizationError;
         }
 
         if error_lower.contains("service unavailable")
             || error_lower.contains("503")
             || error_lower.contains("temporarily unavailable")
         {
-            return ValidationFailureType::ServiceUnavailable;
+            return FailureKind::ServiceUnavailable;
         }
 
         if error_lower.contains("invalid format")
             || error_lower.contains("malformed")
             || error_lower.contains("parse error")
         {
-            return ValidationFailureType::InvalidFormat;
+            return FailureKind::InvalidFormat;
         }
 
-        ValidationFailureType::Unknown
+        FailureKind::Unknown
     }
 
     /// Determine if rollback should be triggered
@@ -611,11 +449,7 @@ impl ValidationFailureHandler {
     /// # Returns
     ///
     /// * `bool` - True if rollback should be triggered
-    pub fn should_trigger_rollback(
-        &self,
-        failure_type: &ValidationFailureType,
-        retry_count: u32,
-    ) -> bool {
+    pub fn should_trigger_rollback(&self, failure_type: &FailureKind, retry_count: u32) -> bool {
         // Always rollback if auto-rollback is disabled
         if !self.auto_rollback {
             return false;
@@ -644,7 +478,7 @@ impl ValidationFailureHandler {
     /// # Returns
     ///
     /// * `bool` - True if retry should be attempted
-    pub fn should_retry(&self, failure_type: &ValidationFailureType, retry_count: u32) -> bool {
+    pub fn should_retry(&self, failure_type: &FailureKind, retry_count: u32) -> bool {
         failure_type.is_transient() && retry_count < self.max_retries
     }
 }
@@ -660,18 +494,18 @@ mod tests {
 
     #[async_trait]
     impl TestableCredential for MockCredential {
-        async fn test(&self) -> RotationResult<ValidationOutcome> {
+        async fn test(&self) -> RotationResult<TestResult> {
             let start = std::time::Instant::now();
             let duration = start.elapsed();
 
             if self.should_pass {
-                Ok(ValidationOutcome::success(
+                Ok(TestResult::success(
                     "Mock test passed",
                     "mock_test",
                     duration,
                 ))
             } else {
-                Ok(ValidationOutcome::failure(
+                Ok(TestResult::failure(
                     "Mock test failed",
                     "mock_test",
                     duration,
@@ -729,7 +563,7 @@ mod tests {
             tags: std::collections::HashMap::new(),
         };
 
-        let context = ValidationContext::new(cred_id.clone(), metadata)
+        let context = TestContext::new(cred_id.clone(), metadata)
             .with_timeout(Duration::from_secs(10))
             .with_retry(2);
 
@@ -741,74 +575,74 @@ mod tests {
 
     #[test]
     fn test_validation_failure_type_classification() {
-        assert!(ValidationFailureType::NetworkError.is_transient());
-        assert!(ValidationFailureType::Timeout.is_transient());
-        assert!(ValidationFailureType::ServiceUnavailable.is_transient());
+        assert!(FailureKind::NetworkError.is_transient());
+        assert!(FailureKind::Timeout.is_transient());
+        assert!(FailureKind::ServiceUnavailable.is_transient());
 
-        assert!(ValidationFailureType::AuthenticationError.is_permanent());
-        assert!(ValidationFailureType::AuthorizationError.is_permanent());
-        assert!(ValidationFailureType::InvalidFormat.is_permanent());
-        assert!(ValidationFailureType::Unknown.is_permanent());
+        assert!(FailureKind::AuthenticationError.is_permanent());
+        assert!(FailureKind::AuthorizationError.is_permanent());
+        assert!(FailureKind::InvalidFormat.is_permanent());
+        assert!(FailureKind::Unknown.is_permanent());
     }
 
     #[test]
     fn test_validation_failure_handler_classify_timeout() {
-        let handler = ValidationFailureHandler::new();
+        let handler = FailureHandler::new();
 
         let result = handler.classify_error("Connection timeout");
-        assert_eq!(result, ValidationFailureType::Timeout);
+        assert_eq!(result, FailureKind::Timeout);
 
         let result = handler.classify_error("Operation timed out");
-        assert_eq!(result, ValidationFailureType::Timeout);
+        assert_eq!(result, FailureKind::Timeout);
     }
 
     #[test]
     fn test_validation_failure_handler_classify_network() {
-        let handler = ValidationFailureHandler::new();
+        let handler = FailureHandler::new();
 
         let result = handler.classify_error("Network error occurred");
-        assert_eq!(result, ValidationFailureType::NetworkError);
+        assert_eq!(result, FailureKind::NetworkError);
 
         let result = handler.classify_error("Connection refused");
-        assert_eq!(result, ValidationFailureType::NetworkError);
+        assert_eq!(result, FailureKind::NetworkError);
     }
 
     #[test]
     fn test_validation_failure_handler_classify_auth() {
-        let handler = ValidationFailureHandler::new();
+        let handler = FailureHandler::new();
 
         let result = handler.classify_error("Authentication failed");
-        assert_eq!(result, ValidationFailureType::AuthenticationError);
+        assert_eq!(result, FailureKind::AuthenticationError);
 
         let result = handler.classify_error("Invalid credentials");
-        assert_eq!(result, ValidationFailureType::AuthenticationError);
+        assert_eq!(result, FailureKind::AuthenticationError);
     }
 
     #[test]
     fn test_validation_failure_handler_should_trigger_rollback() {
-        let handler = ValidationFailureHandler::new();
+        let handler = FailureHandler::new();
 
         // Permanent failures trigger immediate rollback
-        assert!(handler.should_trigger_rollback(&ValidationFailureType::AuthenticationError, 0));
-        assert!(handler.should_trigger_rollback(&ValidationFailureType::InvalidFormat, 0));
+        assert!(handler.should_trigger_rollback(&FailureKind::AuthenticationError, 0));
+        assert!(handler.should_trigger_rollback(&FailureKind::InvalidFormat, 0));
 
         // Transient failures don't trigger rollback until max retries
-        assert!(!handler.should_trigger_rollback(&ValidationFailureType::Timeout, 0));
-        assert!(!handler.should_trigger_rollback(&ValidationFailureType::Timeout, 2));
-        assert!(handler.should_trigger_rollback(&ValidationFailureType::Timeout, 3));
+        assert!(!handler.should_trigger_rollback(&FailureKind::Timeout, 0));
+        assert!(!handler.should_trigger_rollback(&FailureKind::Timeout, 2));
+        assert!(handler.should_trigger_rollback(&FailureKind::Timeout, 3));
     }
 
     #[test]
     fn test_validation_failure_handler_should_retry() {
-        let handler = ValidationFailureHandler::new();
+        let handler = FailureHandler::new();
 
         // Transient failures should retry
-        assert!(handler.should_retry(&ValidationFailureType::Timeout, 0));
-        assert!(handler.should_retry(&ValidationFailureType::NetworkError, 2));
-        assert!(!handler.should_retry(&ValidationFailureType::Timeout, 3));
+        assert!(handler.should_retry(&FailureKind::Timeout, 0));
+        assert!(handler.should_retry(&FailureKind::NetworkError, 2));
+        assert!(!handler.should_retry(&FailureKind::Timeout, 3));
 
         // Permanent failures should not retry
-        assert!(!handler.should_retry(&ValidationFailureType::AuthenticationError, 0));
-        assert!(!handler.should_retry(&ValidationFailureType::InvalidFormat, 0));
+        assert!(!handler.should_retry(&FailureKind::AuthenticationError, 0));
+        assert!(!handler.should_retry(&FailureKind::InvalidFormat, 0));
     }
 }

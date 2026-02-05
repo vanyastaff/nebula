@@ -1510,7 +1510,7 @@ impl CredentialManager {
         );
 
         // TODO: Full token refresh workflow will be implemented in subsequent phases
-        // - Use TokenRefreshValidator::refresh_token() to get new token
+        // - Use Credential::refresh() to get new token
         // - Validate new token using TestableCredential::test()
         // - Update credential with new token and expiration time
         // - No grace period needed for token refresh (atomic update)

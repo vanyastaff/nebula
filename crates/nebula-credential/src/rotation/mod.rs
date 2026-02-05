@@ -134,7 +134,7 @@
 //! - `TransactionPhase`: Two-phase commit (Preparing → Prepared → Committing → Committed)
 //!
 //! ## Layer 3: Validation & Safety
-//! - `ValidationFailureHandler`: Classify and handle failures
+//! - `FailureHandler`: Classify and handle failures
 //! - `OptimisticLock`: Prevent concurrent rotations
 //! - `RotationBackup`: Disaster recovery
 //!
@@ -150,7 +150,7 @@
 //! ```rust,no_run
 //! use nebula_credential::rotation::{
 //!     RotationPolicy, PeriodicConfig, RotatableCredential, TestableCredential,
-//!     ValidationOutcome, RotationResult,
+//!     TestResult, RotationResult,
 //! };
 //! use async_trait::async_trait;
 //! use std::time::Duration;
@@ -165,10 +165,10 @@
 //!
 //! #[async_trait]
 //! impl TestableCredential for PostgresCredential {
-//!     async fn test(&self) -> RotationResult<ValidationOutcome> {
+//!     async fn test(&self) -> RotationResult<TestResult> {
 //!         // Test database connection
 //!         // let conn = tokio_postgres::connect(&self.connection_string(), ...).await?;
-//!         Ok(ValidationOutcome::success("Connection successful"))
+//!         Ok(TestResult::success("Connection successful"))
 //!     }
 //! }
 //!
@@ -237,7 +237,7 @@
 //! - [`RotationPolicy`] - Rotation strategies
 //! - [`RotationTransaction`] - Transaction lifecycle
 //! - [`BlueGreenRotation`] - Zero-downtime database rotation
-//! - [`ValidationFailureHandler`] - Failure handling
+//! - [`FailureHandler`] - Failure handling
 //! - [`RotatableCredential`] - Trait for rotatable credentials
 
 // Module exports
@@ -280,7 +280,6 @@ pub use transaction::{
     TransactionPhase, ValidationResult,
 };
 pub use validation::{
-    RotatableCredential, SuccessCriteria, TestMethod, TestableCredential, TokenRefreshValidator,
-    ValidationContext, ValidationFailureHandler, ValidationFailureType, ValidationOutcome,
-    ValidationTest,
+    FailureHandler, FailureKind, RotatableCredential, SuccessCriteria, TestContext, TestMethod,
+    TestResult, TestableCredential, ValidationTest,
 };
