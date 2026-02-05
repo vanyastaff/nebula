@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use std::time::Duration;
 
 use super::credential::Credential;
-use crate::rotation::{RotationResult, ValidationOutcome};
+use crate::rotation::{RotationResult, TestResult};
 
 /// Trait for credentials that can test themselves
 ///
@@ -30,7 +30,7 @@ use crate::rotation::{RotationResult, ValidationOutcome};
 ///
 /// #[async_trait]
 /// impl TestableCredential for MySqlCredential {
-///     async fn test(&self) -> RotationResult<ValidationOutcome> {
+///     async fn test(&self) -> RotationResult<TestResult> {
 ///         let start = Instant::now();
 ///
 ///         // Use mysql_async client library to test connection
@@ -43,7 +43,7 @@ use crate::rotation::{RotationResult, ValidationOutcome};
 ///         let mut conn = Conn::new(opts).await?;
 ///         conn.query_drop("SELECT 1").await?;
 ///
-///         Ok(ValidationOutcome::success(
+///         Ok(TestResult::success(
 ///             "MySQL connection successful",
 ///             "SELECT 1",
 ///             start.elapsed(),
@@ -63,8 +63,8 @@ pub trait TestableCredential: Credential {
     ///
     /// The credential should be in a valid state (initialized) before testing.
     ///
-    /// Returns `ValidationOutcome` with success/failure details.
-    async fn test(&self) -> RotationResult<ValidationOutcome>;
+    /// Returns `TestResult` with success/failure details.
+    async fn test(&self) -> RotationResult<TestResult>;
 
     /// Get test timeout (default: 30 seconds)
     fn test_timeout(&self) -> Duration {

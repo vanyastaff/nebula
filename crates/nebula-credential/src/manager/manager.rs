@@ -1112,7 +1112,7 @@ impl CredentialManager {
         id: &CredentialId,
         context: &CredentialContext,
     ) -> ManagerResult<String> {
-        use crate::rotation::{RotationErrorLog, RotationTransaction, ValidationFailureHandler};
+        use crate::rotation::{FailureHandler, RotationErrorLog, RotationTransaction};
 
         info!(
             credential_id = %id,
@@ -1133,7 +1133,7 @@ impl CredentialManager {
         let transaction_id = transaction.id.to_string();
 
         // 3. Create failure handler for automatic rollback
-        let failure_handler = ValidationFailureHandler::new();
+        let failure_handler = FailureHandler::new();
 
         // 4. Begin transaction
         if let Err(e) = transaction.begin_transaction() {
