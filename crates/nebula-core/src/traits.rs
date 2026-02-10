@@ -399,9 +399,9 @@ mod tests {
 
     #[test]
     fn test_scoped_trait() {
-        let execution_id = ExecutionId::new();
+        let execution_id = ExecutionId::v4();
         let entity = TestScopedEntity {
-            scope: ScopeLevel::Execution(execution_id.clone()),
+            scope: ScopeLevel::Execution(execution_id),
         };
 
         assert!(entity.is_execution());
@@ -412,14 +412,14 @@ mod tests {
 
     #[test]
     fn test_has_context_trait() {
-        let execution_id = ExecutionId::new();
-        let workflow_id = WorkflowId::new("test-workflow");
-        let node_id = NodeId::new("test-node");
+        let execution_id = ExecutionId::v4();
+        let workflow_id = WorkflowId::v4();
+        let node_id = NodeId::v4();
 
         let entity = TestContextEntity {
-            execution_id: Some(execution_id.clone()),
-            workflow_id: Some(workflow_id.clone()),
-            node_id: Some(node_id.clone()),
+            execution_id: Some(execution_id),
+            workflow_id: Some(workflow_id),
+            node_id: Some(node_id),
         };
 
         assert!(entity.has_execution_context());

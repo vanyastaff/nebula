@@ -57,7 +57,7 @@ spin = "0.10.0"
 
 # Data structures
 bitflags = "2.9"
-domain-key = { version = "0.1.1", features = ["serde"] }
+domain-key = { version = "0.2.1", features = ["serde", "uuid-v4"] }
 bon = { version = "3.8.1" }
 uuid = { version = "1.19.0", features = ["v4", "serde"] }
 chrono = { version = "0.4.42", default-features = false, features = ["clock"] }

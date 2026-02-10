@@ -221,6 +221,88 @@ impl std::fmt::Display for Priority {
     }
 }
 
+/// Type of project for multi-tenancy
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectType {
+    /// Personal project owned by a single user
+    Personal,
+
+    /// Team project shared among multiple users
+    Team,
+}
+
+impl ProjectType {
+    /// Check if this is a personal project
+    pub fn is_personal(&self) -> bool {
+        matches!(self, ProjectType::Personal)
+    }
+
+    /// Check if this is a team project
+    pub fn is_team(&self) -> bool {
+        matches!(self, ProjectType::Team)
+    }
+}
+
+impl std::fmt::Display for ProjectType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProjectType::Personal => write!(f, "personal"),
+            ProjectType::Team => write!(f, "team"),
+        }
+    }
+}
+
+/// Scope at which a role can be assigned
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleScope {
+    /// Role applies globally across all resources
+    Global,
+
+    /// Role applies to a specific project
+    Project,
+
+    /// Role applies to credential management
+    Credential,
+
+    /// Role applies to a specific workflow
+    Workflow,
+}
+
+impl RoleScope {
+    /// Check if this is a global role
+    pub fn is_global(&self) -> bool {
+        matches!(self, RoleScope::Global)
+    }
+
+    /// Check if this is a project-scoped role
+    pub fn is_project(&self) -> bool {
+        matches!(self, RoleScope::Project)
+    }
+
+    /// Check if this is a credential-scoped role
+    pub fn is_credential(&self) -> bool {
+        matches!(self, RoleScope::Credential)
+    }
+
+    /// Check if this is a workflow-scoped role
+    pub fn is_workflow(&self) -> bool {
+        matches!(self, RoleScope::Workflow)
+    }
+}
+
+impl std::fmt::Display for RoleScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RoleScope::Global => write!(f, "global"),
+            RoleScope::Project => write!(f, "project"),
+            RoleScope::Credential => write!(f, "credential"),
+            RoleScope::Workflow => write!(f, "workflow"),
+        }
+    }
+}
+
 /// Result of an operation with status and optional data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationResult<T> {
@@ -546,7 +628,7 @@ mod tests {
     #[test]
     fn test_operation_context() {
         let context = OperationContext::new("test-op")
-            .with_execution_id(ExecutionId::new())
+            .with_execution_id(ExecutionId::v4())
             .with_priority(Priority::High)
             .with_metadata("key", "value");
 
@@ -581,5 +663,89 @@ mod tests {
 
         let version_with_build = utils::parse_version("1.0.0+build.123").unwrap();
         assert_eq!(version_with_build.build, Some("build.123".to_string()));
+    }
+
+    #[test]
+    fn test_project_type() {
+        let personal = ProjectType::Personal;
+        let team = ProjectType::Team;
+
+        assert!(personal.is_personal());
+        assert!(!personal.is_team());
+        assert!(team.is_team());
+        assert!(!team.is_personal());
+
+        assert_eq!(personal.to_string(), "personal");
+        assert_eq!(team.to_string(), "team");
+    }
+
+    #[test]
+    fn test_project_type_serialization() {
+        let personal = ProjectType::Personal;
+        let team = ProjectType::Team;
+
+        let personal_json = serde_json::to_string(&personal).unwrap();
+        let team_json = serde_json::to_string(&team).unwrap();
+
+        assert_eq!(personal_json, "\"personal\"");
+        assert_eq!(team_json, "\"team\"");
+
+        let personal_deserialized: ProjectType = serde_json::from_str(&personal_json).unwrap();
+        let team_deserialized: ProjectType = serde_json::from_str(&team_json).unwrap();
+
+        assert_eq!(personal_deserialized, personal);
+        assert_eq!(team_deserialized, team);
+    }
+
+    #[test]
+    fn test_role_scope() {
+        let global = RoleScope::Global;
+        let project = RoleScope::Project;
+        let credential = RoleScope::Credential;
+        let workflow = RoleScope::Workflow;
+
+        assert!(global.is_global());
+        assert!(!global.is_project());
+
+        assert!(project.is_project());
+        assert!(!project.is_global());
+
+        assert!(credential.is_credential());
+        assert!(workflow.is_workflow());
+
+        assert_eq!(global.to_string(), "global");
+        assert_eq!(project.to_string(), "project");
+        assert_eq!(credential.to_string(), "credential");
+        assert_eq!(workflow.to_string(), "workflow");
+    }
+
+    #[test]
+    fn test_role_scope_serialization() {
+        let global = RoleScope::Global;
+        let project = RoleScope::Project;
+
+        let global_json = serde_json::to_string(&global).unwrap();
+        let project_json = serde_json::to_string(&project).unwrap();
+
+        assert_eq!(global_json, "\"global\"");
+        assert_eq!(project_json, "\"project\"");
+
+        let global_deserialized: RoleScope = serde_json::from_str(&global_json).unwrap();
+        let project_deserialized: RoleScope = serde_json::from_str(&project_json).unwrap();
+
+        assert_eq!(global_deserialized, global);
+        assert_eq!(project_deserialized, project);
+    }
+
+    #[test]
+    fn test_enum_copy_trait() {
+        // Verify that ProjectType and RoleScope are Copy
+        let project_type = ProjectType::Personal;
+        let _copy = project_type;
+        let _another_copy = project_type; // This should compile because it's Copy
+
+        let role_scope = RoleScope::Global;
+        let _copy2 = role_scope;
+        let _another_copy2 = role_scope; // This should compile because it's Copy
     }
 }

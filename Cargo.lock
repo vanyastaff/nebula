@@ -1915,13 +1915,14 @@ dependencies = [
 
 [[package]]
 name = "domain-key"
-version = "0.1.1"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "801ef422e03eaa7894cde35c34f235b085e6261f90aa666eeaddfa4d27b6db03"
+checksum = "6fd03d2b8b1710003b920f5514eb47729816708913d07cc35d93cc5655de6014"
 dependencies = [
  "serde",
  "smartstring",
  "thiserror 2.0.17",
+ "uuid",
 ]
 
 [[package]]
