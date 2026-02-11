@@ -14,7 +14,6 @@
 pub mod advanced;
 pub mod cancellation;
 pub mod categories;
-pub mod category;
 pub mod config;
 pub mod dynamic;
 mod error;
@@ -42,7 +41,7 @@ pub use dynamic::{
 };
 pub use error::{ErrorClass, ErrorContext, ResilienceError};
 pub use metrics::{MetricKind, MetricSnapshot, Metrics, MetricsCollector};
-pub use result::{AsyncResultExt, ErrorCollector, ResilienceResult, ResultExt};
+pub use result::{ResilienceResult, ResultExt};
 pub use traits::{
     Executable, HealthCheck, PatternMetrics, ResiliencePattern, Retryable,
     circuit_states::{Closed, HalfOpen, Open, StateTransition, TypestateCircuitState},
@@ -50,32 +49,8 @@ pub use traits::{
 
 // Re-export advanced type system features
 pub use advanced::{
-    Aggressive,
-    Balanced,
-    Complete,
-    ComposedPolicy,
-    Conservative,
-    // Const-validated configs
-    ConstValidated,
-    Contravariant,
-    // Variance markers
-    Covariant,
-    Failure,
-    Invariant,
-    OperationHandle,
-    // GADT-like patterns
-    OperationOutcome,
-    Pending,
-    // Typestate pattern
-    PolicyBuilder,
-    // Strategy markers
-    Strategy,
-    StrategyConfig,
-    Success,
-    Unconfigured,
-    ValidatedRetryConfig,
-    WithCircuitBreaker,
-    WithRetry,
+    Aggressive, Balanced, Complete, ComposedPolicy, Conservative, ConstValidated, PolicyBuilder,
+    Strategy, StrategyConfig, Unconfigured, ValidatedRetryConfig, WithCircuitBreaker, WithRetry,
 };
 
 // Re-export type-safe newtypes
@@ -95,9 +70,6 @@ pub use categories::{
     pattern::{Fallback, FlowControl, Protection, Retry, Timeout as TimeoutCategory},
     service::{Cache, Database, Generic, Http, MessageQueue},
 };
-
-// Re-export category traits
-pub use category::{FallbackPattern, FlowControlPattern, ProtectionPattern, RateLimitingPattern};
 
 /// Core constants
 pub mod constants {

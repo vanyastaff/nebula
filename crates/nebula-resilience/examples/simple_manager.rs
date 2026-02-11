@@ -44,9 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build();
 
-    manager
-        .register_service("payment-api", payment_policy)
-        .await;
+    manager.register_service("payment-api", payment_policy);
     println!("  ✓ Custom policy registered\n");
 
     // Example 3: Execute operation with custom policy

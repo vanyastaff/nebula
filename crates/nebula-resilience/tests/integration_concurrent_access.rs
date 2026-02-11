@@ -6,7 +6,6 @@
 //! - Manager concurrent operations
 //! - Race condition tests
 
-use nebula_resilience::CircuitState;
 use nebula_resilience::prelude::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -78,7 +77,7 @@ async fn test_manager_concurrent_registration() {
                 .with_timeout(Duration::from_secs(1))
                 .build();
 
-            manager.register_service(&service_name, policy).await;
+            manager.register_service(&service_name, policy);
             service_name
         });
 
@@ -115,7 +114,7 @@ async fn test_manager_operation_isolation() {
         })
         .build();
 
-    manager.register_service("isolated-service", policy).await;
+    manager.register_service("isolated-service", policy);
 
     let mut handles = vec![];
 
@@ -292,8 +291,8 @@ async fn test_multiple_managers_isolation() {
         .build();
 
     // Register same service name with different policies
-    manager1.register_service("shared-name", policy1).await;
-    manager2.register_service("shared-name", policy2).await;
+    manager1.register_service("shared-name", policy1);
+    manager2.register_service("shared-name", policy2);
 
     // Execute operations in parallel
     let (result1, result2) = tokio::join!(

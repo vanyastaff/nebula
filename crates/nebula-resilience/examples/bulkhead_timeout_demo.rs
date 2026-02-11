@@ -3,9 +3,7 @@
 //! This example demonstrates bulkhead isolation and timeout patterns with the
 //! performance optimizations and security improvements.
 
-use nebula_resilience::{
-    Bulkhead, BulkheadConfig, ResilienceError, timeout_fn, timeout_with_original_error,
-};
+use nebula_resilience::{Bulkhead, ResilienceError, timeout_fn, timeout_with_original_error};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
@@ -82,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  ✅ Created bulkhead for statistics testing");
 
     // Show initial stats
-    let stats = stats_bulkhead.stats().await;
+    let stats = stats_bulkhead.stats();
     println!(
         "  📊 Initial stats: max={}, active={}, available={}, at_capacity={}",
         stats.max_concurrency,
@@ -104,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     sleep(Duration::from_millis(50)).await;
 
     // Show stats with active operation
-    let stats = stats_bulkhead.stats().await;
+    let stats = stats_bulkhead.stats();
     println!(
         "  📊 With active operation: max={}, active={}, available={}, at_capacity={}",
         stats.max_concurrency,

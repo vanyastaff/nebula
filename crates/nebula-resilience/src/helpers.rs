@@ -21,11 +21,11 @@
 macro_rules! log_result {
     ($result:expr, $operation:expr, $description:expr) => {
         match &$result {
-            Ok(value) => {
+            Ok(_value) => {
                 info!(
                     operation = $operation,
                     description = $description,
-                    "✅ Operation succeeded"
+                    "Operation succeeded"
                 );
             }
             Err(err) => {
@@ -33,7 +33,7 @@ macro_rules! log_result {
                     operation = $operation,
                     description = $description,
                     error = %err,
-                    "❌ Operation failed"
+                    "Operation failed"
                 );
             }
         }
@@ -46,7 +46,7 @@ macro_rules! log_result {
                     operation = $operation,
                     description = $description,
                     result = %$value_expr(value),
-                    "✅ Operation succeeded"
+                    "Operation succeeded"
                 );
             }
             Err(err) => {
@@ -54,14 +54,14 @@ macro_rules! log_result {
                     operation = $operation,
                     description = $description,
                     error = %err,
-                    "❌ Operation failed"
+                    "Operation failed"
                 );
             }
         }
     };
 }
 
-/// Print the result of an operation with emoji indicators
+/// Print the result of an operation
 ///
 /// # Examples
 ///
@@ -77,19 +77,19 @@ macro_rules! log_result {
 macro_rules! print_result {
     ($result:expr, $fmt:expr $(, $arg:expr)*) => {
         match &$result {
-            Ok(value) => {
-                println!(concat!("✅ ", $fmt) $(, $arg)*);
+            Ok(_value) => {
+                println!(concat!("[OK] ", $fmt) $(, $arg)*);
             }
             Err(err) => {
-                println!(concat!("❌ ", $fmt, " - Error: {}") $(, $arg)*, err);
+                println!(concat!("[ERR] ", $fmt, " - Error: {}") $(, $arg)*, err);
             }
         }
     };
 
     (short $result:expr) => {
         match &$result {
-            Ok(_) => print!("✅"),
-            Err(_) => print!("❌"),
+            Ok(_) => print!("[OK]"),
+            Err(_) => print!("[ERR]"),
         }
     };
 }
@@ -118,7 +118,7 @@ macro_rules! print_result {
 #[macro_export]
 macro_rules! execute_logged {
     ($operation:expr, $description:expr, $future:expr) => {{
-        info!(operation = $operation, description = $description, "▶️  Starting operation");
+        info!(operation = $operation, description = $description, "Starting operation");
         let start = std::time::Instant::now();
         let result = $future.await;
         let elapsed = start.elapsed();
@@ -129,7 +129,7 @@ macro_rules! execute_logged {
                     operation = $operation,
                     description = $description,
                     elapsed = ?elapsed,
-                    "✅ Operation succeeded"
+                    "Operation succeeded"
                 );
             }
             Err(err) => {
@@ -138,7 +138,7 @@ macro_rules! execute_logged {
                     description = $description,
                     elapsed = ?elapsed,
                     error = %err,
-                    "❌ Operation failed"
+                    "Operation failed"
                 );
             }
         }
@@ -177,7 +177,7 @@ macro_rules! policy {
         }
         $(,)?
     ) => {
-        $crate::ResiliencePolicy::named($name)
+        $crate::ResiliencePolicy::new($name)
             .with_timeout($timeout)
             .with_retry($crate::RetryStrategy::exponential(
                 $max_attempts,
@@ -197,7 +197,7 @@ macro_rules! policy {
         retry: fixed($max_attempts:expr, $delay:expr)
         $(,)?
     ) => {
-        $crate::ResiliencePolicy::named($name)
+        $crate::ResiliencePolicy::new($name)
             .with_timeout($timeout)
             .with_retry($crate::RetryStrategy::fixed($max_attempts, $delay))
     };
@@ -205,8 +205,6 @@ macro_rules! policy {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_macros_compile() {
         // Just verify macros compile correctly

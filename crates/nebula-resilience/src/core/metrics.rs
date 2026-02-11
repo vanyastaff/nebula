@@ -109,24 +109,36 @@ impl Metric {
     fn new() -> Self {
         Self {
             count: AtomicU64::new(0),
-            sum: AtomicU64::new(0),
-            min: AtomicU64::new(u64::MAX),
-            max: AtomicU64::new(0),
+            sum: AtomicU64::new(0.0_f64.to_bits()),
+            min: AtomicU64::new(f64::INFINITY.to_bits()),
+            max: AtomicU64::new(0.0_f64.to_bits()),
         }
     }
 
     fn record(&self, value: f64) {
-        let value_bits = value.to_bits();
-
         self.count.fetch_add(1, Ordering::Relaxed);
-        self.sum.fetch_add(value_bits, Ordering::Relaxed);
 
-        // Update min
+        // CAS loop to atomically add the float value (not the bit pattern)
+        let mut current = self.sum.load(Ordering::Relaxed);
+        loop {
+            let new = f64::from_bits(current) + value;
+            match self.sum.compare_exchange_weak(
+                current,
+                new.to_bits(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(x) => current = x,
+            }
+        }
+
+        // Update min — compare actual float values, not bit patterns
         let mut current_min = self.min.load(Ordering::Relaxed);
-        while value_bits < current_min {
+        while value < f64::from_bits(current_min) {
             match self.min.compare_exchange_weak(
                 current_min,
-                value_bits,
+                value.to_bits(),
                 Ordering::Relaxed,
                 Ordering::Relaxed,
             ) {
@@ -135,12 +147,12 @@ impl Metric {
             }
         }
 
-        // Update max
+        // Update max — compare actual float values, not bit patterns
         let mut current_max = self.max.load(Ordering::Relaxed);
-        while value_bits > current_max {
+        while value > f64::from_bits(current_max) {
             match self.max.compare_exchange_weak(
                 current_max,
-                value_bits,
+                value.to_bits(),
                 Ordering::Relaxed,
                 Ordering::Relaxed,
             ) {

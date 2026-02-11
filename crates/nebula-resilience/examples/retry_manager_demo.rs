@@ -10,7 +10,6 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
-use tokio::time::sleep;
 
 // Helper for simulating retryable operations
 struct RetryableService {
@@ -170,7 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_retry_exponential(5, Duration::from_millis(200))
         .build();
 
-    manager.register_service("database", db_policy).await;
+    manager.register_service("database", db_policy);
     println!("  ✅ Registered database service with custom policy");
 
     // Register an API policy
@@ -179,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_retry_fixed(2, Duration::from_millis(500))
         .build();
 
-    manager.register_service("external_api", api_policy).await;
+    manager.register_service("external_api", api_policy);
     println!("  ✅ Registered external_api service with custom policy");
 
     // Test 6: Concurrent Retry Operations

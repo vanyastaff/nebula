@@ -47,7 +47,6 @@ impl Default for BulkheadConfig {
 pub struct Bulkhead {
     config: BulkheadConfig,
     semaphore: Arc<Semaphore>,
-    active_operations: Arc<tokio::sync::RwLock<usize>>,
 }
 
 impl Bulkhead {
@@ -65,18 +64,21 @@ impl Bulkhead {
     pub fn with_config(config: BulkheadConfig) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(config.max_concurrency)),
-            active_operations: Arc::new(tokio::sync::RwLock::new(0)),
             config,
         }
     }
 
-    /// Get the current number of active operations
-    pub async fn active_operations(&self) -> usize {
-        *self.active_operations.read().await
+    /// Get the current number of active operations.
+    ///
+    /// Derived from `max_concurrency - available_permits`.
+    #[must_use]
+    pub fn active_operations(&self) -> usize {
+        self.config.max_concurrency - self.semaphore.available_permits()
     }
 
     /// Get the current number of available permits
-    pub async fn available_permits(&self) -> usize {
+    #[must_use]
+    pub fn available_permits(&self) -> usize {
         self.semaphore.available_permits()
     }
 
@@ -87,8 +89,9 @@ impl Bulkhead {
     }
 
     /// Check if the bulkhead is at capacity
-    pub async fn is_at_capacity(&self) -> bool {
-        self.active_operations().await >= self.config.max_concurrency
+    #[must_use]
+    pub fn is_at_capacity(&self) -> bool {
+        self.semaphore.available_permits() == 0
     }
 
     /// Try to acquire a permit without waiting
@@ -98,18 +101,7 @@ impl Bulkhead {
     #[must_use]
     pub fn try_acquire(&self) -> Option<BulkheadPermit> {
         let permit = Arc::clone(&self.semaphore).try_acquire_owned().ok()?;
-
-        // Note: try_acquire is synchronous so we can't await here.
-        // The counter will be incremented on first access or in Drop.
-        // For now, we'll increment synchronously using try_write.
-        if let Ok(mut active) = self.active_operations.try_write() {
-            *active += 1;
-        }
-
-        Some(BulkheadPermit {
-            permit,
-            active_operations: Arc::clone(&self.active_operations),
-        })
+        Some(BulkheadPermit { _permit: permit })
     }
 
     /// Acquire a permit, waiting if necessary
@@ -121,16 +113,7 @@ impl Bulkhead {
             .await
             .map_err(|_| ResilienceError::bulkhead_full(self.config.max_concurrency))?;
 
-        // Increment active operations counter
-        {
-            let mut active = self.active_operations.write().await;
-            *active += 1;
-        }
-
-        Ok(BulkheadPermit {
-            permit,
-            active_operations: Arc::clone(&self.active_operations),
-        })
+        Ok(BulkheadPermit { _permit: permit })
     }
 
     /// Execute an operation with bulkhead protection
@@ -179,12 +162,13 @@ impl Bulkhead {
     }
 
     /// Get bulkhead statistics
-    pub async fn stats(&self) -> BulkheadStats {
+    #[must_use]
+    pub fn stats(&self) -> BulkheadStats {
         BulkheadStats {
             max_concurrency: self.config.max_concurrency,
-            active_operations: self.active_operations().await,
-            available_permits: self.available_permits().await,
-            is_at_capacity: self.is_at_capacity().await,
+            active_operations: self.active_operations(),
+            available_permits: self.available_permits(),
+            is_at_capacity: self.is_at_capacity(),
         }
     }
 }
@@ -201,29 +185,10 @@ impl Default for Bulkhead {
 
 /// Permit for executing an operation within the bulkhead.
 ///
-/// Uses RAII pattern - permit is automatically released when dropped.
+/// Uses RAII pattern — dropping the permit synchronously returns the semaphore
+/// slot, making it available for the next caller. No async cleanup needed.
 pub struct BulkheadPermit {
-    #[allow(dead_code)]
-    permit: tokio::sync::OwnedSemaphorePermit,
-    active_operations: Arc<tokio::sync::RwLock<usize>>,
-}
-
-impl BulkheadPermit {
-    /// Get the number of active operations
-    pub async fn active_operations(&self) -> usize {
-        *self.active_operations.read().await
-    }
-}
-
-impl Drop for BulkheadPermit {
-    fn drop(&mut self) {
-        // Use tokio::spawn to handle async decrement
-        let active_ops = Arc::clone(&self.active_operations);
-        tokio::spawn(async move {
-            let mut active = active_ops.write().await;
-            *active = active.saturating_sub(1);
-        });
-    }
+    _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 // =============================================================================
@@ -320,31 +285,29 @@ mod tests {
     async fn test_bulkhead_default() {
         let bulkhead = Bulkhead::new(5);
         assert_eq!(bulkhead.max_concurrency(), 5);
-        assert_eq!(bulkhead.active_operations().await, 0);
-        assert_eq!(bulkhead.available_permits().await, 5);
-        assert!(!bulkhead.is_at_capacity().await);
+        assert_eq!(bulkhead.active_operations(), 0);
+        assert_eq!(bulkhead.available_permits(), 5);
+        assert!(!bulkhead.is_at_capacity());
     }
 
     #[tokio::test]
     async fn test_bulkhead_active_operations_tracking() {
         let bulkhead = Bulkhead::new(3);
 
-        assert_eq!(bulkhead.active_operations().await, 0);
+        assert_eq!(bulkhead.active_operations(), 0);
 
         let permit1 = bulkhead.acquire().await.unwrap();
-        assert_eq!(bulkhead.active_operations().await, 1);
+        assert_eq!(bulkhead.active_operations(), 1);
 
         let permit2 = bulkhead.acquire().await.unwrap();
-        assert_eq!(bulkhead.active_operations().await, 2);
+        assert_eq!(bulkhead.active_operations(), 2);
 
         drop(permit1);
-        // Give time for async drop
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        assert_eq!(bulkhead.active_operations().await, 1);
+        // Synchronous drop — no sleep needed
+        assert_eq!(bulkhead.active_operations(), 1);
 
         drop(permit2);
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        assert_eq!(bulkhead.active_operations().await, 0);
+        assert_eq!(bulkhead.active_operations(), 0);
     }
 
     #[tokio::test]
@@ -427,7 +390,7 @@ mod tests {
     #[tokio::test]
     async fn test_bulkhead_stats() {
         let bulkhead = Bulkhead::new(3);
-        let stats = bulkhead.stats().await;
+        let stats = bulkhead.stats();
 
         assert_eq!(stats.max_concurrency, 3);
         assert_eq!(stats.active_operations, 0);

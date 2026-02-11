@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Mutex;
 
 use super::RateLimiter;
 use crate::{ResilienceError, ResilienceResult};
@@ -22,10 +22,6 @@ pub struct LeakyBucket {
     leak_rate: f64,
     /// Last leak timestamp
     last_leak: Arc<Mutex<Instant>>,
-    /// RAII guard - Semaphore for blocking/coordination.
-    /// Not directly accessed but maintains resource lifecycle.
-    #[allow(dead_code)]
-    semaphore: Arc<Semaphore>,
 }
 
 impl LeakyBucket {
@@ -37,7 +33,6 @@ impl LeakyBucket {
             level: Arc::new(Mutex::new(0)),
             leak_rate,
             last_leak: Arc::new(Mutex::new(Instant::now())),
-            semaphore: Arc::new(Semaphore::new(capacity)),
         }
     }
 

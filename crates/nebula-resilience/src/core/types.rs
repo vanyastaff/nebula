@@ -365,11 +365,7 @@ impl DurationExt for Duration {
     }
 
     fn with_jitter(self, factor: f64) -> Duration {
-        use std::collections::hash_map::RandomState;
-        use std::hash::{BuildHasher, Hasher};
-
-        // Simple pseudo-random jitter without external deps
-        let random = RandomState::new().build_hasher().finish() as f64 / u64::MAX as f64;
+        let random = fastrand::f64();
         let jitter_amount = self.as_secs_f64() * factor * random;
         Duration::from_secs_f64(self.as_secs_f64() + jitter_amount)
     }

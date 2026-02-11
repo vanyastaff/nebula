@@ -170,7 +170,6 @@ pub enum ErrorClass {
 
 impl ResilienceError {
     /// Create a custom error (for testing/benchmarking)
-    #[must_use]
     pub fn custom(message: impl Into<String>) -> Self {
         Self::Custom {
             message: message.into(),
@@ -180,7 +179,6 @@ impl ResilienceError {
     }
 
     /// Create a timeout error
-    #[must_use]
     pub fn timeout(duration: Duration) -> Self {
         Self::Timeout {
             duration,
@@ -197,7 +195,6 @@ impl ResilienceError {
     }
 
     /// Create a bulkhead full error
-    #[must_use]
     pub fn bulkhead_full(max_concurrency: usize) -> Self {
         Self::BulkheadFull {
             max_concurrency,
@@ -206,7 +203,6 @@ impl ResilienceError {
     }
 
     /// Create a retry limit exceeded error with cause
-    #[must_use]
     pub fn retry_limit_exceeded_with_cause(attempts: usize, last_error: Option<Box<Self>>) -> Self {
         Self::RetryLimitExceeded {
             attempts,
@@ -219,13 +215,13 @@ impl ResilienceError {
     pub fn classify(&self) -> ErrorClass {
         match self {
             Self::Timeout { .. } => ErrorClass::Transient,
-            Self::CircuitBreakerOpen { .. } => ErrorClass::ResourceExhaustion,
-            Self::BulkheadFull { .. } => ErrorClass::ResourceExhaustion,
-            Self::RateLimitExceeded { .. } => ErrorClass::ResourceExhaustion,
-            Self::RetryLimitExceeded { .. } => ErrorClass::Permanent,
+            Self::CircuitBreakerOpen { .. }
+            | Self::BulkheadFull { .. }
+            | Self::RateLimitExceeded { .. } => ErrorClass::ResourceExhaustion,
+            Self::RetryLimitExceeded { .. }
+            | Self::FallbackFailed { .. }
+            | Self::Cancelled { .. } => ErrorClass::Permanent,
             Self::InvalidConfig { .. } => ErrorClass::Configuration,
-            Self::FallbackFailed { .. } => ErrorClass::Permanent,
-            Self::Cancelled { .. } => ErrorClass::Permanent,
             Self::Custom { retryable, .. } => {
                 if *retryable {
                     ErrorClass::Transient

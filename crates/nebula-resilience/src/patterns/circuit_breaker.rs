@@ -10,7 +10,7 @@
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -22,11 +22,6 @@ use crate::core::{
     cancellation::CancellationContext,
     config::{ConfigError, ConfigResult, ResilienceConfig},
     traits::PatternMetrics,
-};
-
-// Re-export circuit states from core traits
-pub use crate::core::traits::circuit_states::{
-    Closed, HalfOpen, Open, StateMetadata, StateTransition, TypestateCircuitState as CircuitState,
 };
 
 /// Circuit breaker state for runtime representation
@@ -99,7 +94,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
     #[must_use]
     pub fn new() -> Self {
         // Trigger compile-time validation
-        let _ = Self::VALID;
+        let () = Self::VALID;
 
         Self {
             half_open_max_operations: 3,
@@ -178,11 +173,15 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64> ResilienceConf
     }
 }
 
-/// Sliding window for failure tracking with zero-cost abstractions
+/// Sliding window for failure tracking.
+///
+/// Uses `VecDeque` for O(1) push/pop and no intermediate allocations.
+/// No internal lock — callers must hold the outer `CircuitBreakerInner` lock.
 #[derive(Debug)]
-struct SlidingWindow<const WINDOW_SIZE: usize = 1000> {
-    entries: RwLock<heapless::Vec<WindowEntry, WINDOW_SIZE>>,
+struct SlidingWindow {
+    entries: std::collections::VecDeque<WindowEntry>,
     window_duration: Duration,
+    max_entries: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -191,125 +190,65 @@ struct WindowEntry {
     was_failure: bool,
 }
 
-impl<const WINDOW_SIZE: usize> SlidingWindow<WINDOW_SIZE> {
-    fn new(window_duration: Duration) -> Self {
+impl SlidingWindow {
+    fn new(window_duration: Duration, max_entries: usize) -> Self {
         Self {
-            entries: RwLock::new(heapless::Vec::new()),
+            entries: std::collections::VecDeque::with_capacity(max_entries),
             window_duration,
+            max_entries,
         }
     }
 
-    async fn record_operation(&self, was_failure: bool) {
+    fn record_operation(&mut self, was_failure: bool) {
         let now = Instant::now();
-        let mut entries = self.entries.write().await;
 
-        // Remove expired entries
-        entries.retain(|entry| now.duration_since(entry.timestamp) <= self.window_duration);
-
-        // Add new entry (drop oldest if full)
-        let new_entry = WindowEntry {
-            timestamp: now,
-            was_failure,
-        };
-
-        if entries.is_full() {
-            entries.remove(0);
-        }
-        let _ = entries.push(new_entry);
-    }
-
-    async fn get_failure_rate(&self) -> f64 {
-        let now = Instant::now();
-        let entries = self.entries.read().await;
-
-        let valid_entries: Vec<_> = entries
-            .iter()
-            .filter(|entry| now.duration_since(entry.timestamp) <= self.window_duration)
-            .collect();
-
-        if valid_entries.is_empty() {
-            return 0.0;
-        }
-
-        let failures = valid_entries.iter().filter(|e| e.was_failure).count();
-        failures as f64 / valid_entries.len() as f64
-    }
-
-    async fn get_operation_count(&self) -> usize {
-        let now = Instant::now();
-        let entries = self.entries.read().await;
-
-        entries
-            .iter()
-            .filter(|entry| now.duration_since(entry.timestamp) <= self.window_duration)
-            .count()
-    }
-}
-
-/// Main circuit breaker implementation
-pub struct StatefulCircuitBreaker<
-    S = Closed,
-    const FAILURE_THRESHOLD: usize = 5,
-    const RESET_TIMEOUT_MS: u64 = 30_000,
-> {
-    config: CircuitBreakerConfig<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>,
-    state: CircuitState<S>,
-    sliding_window: SlidingWindow<1000>,
-    total_operations: AtomicU64,
-    half_open_operations: AtomicUsize,
-}
-
-impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
-    StatefulCircuitBreaker<Closed, FAILURE_THRESHOLD, RESET_TIMEOUT_MS>
-{
-    /// Create new circuit breaker in closed state
-    pub fn new(
-        config: CircuitBreakerConfig<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>,
-    ) -> ConfigResult<Self> {
-        config.validate()?;
-
-        let sliding_window_ms = config.sliding_window_ms;
-        Ok(Self {
-            config,
-            state: CircuitState::new(0, 0),
-            sliding_window: SlidingWindow::new(Duration::from_millis(sliding_window_ms)),
-            total_operations: AtomicU64::new(0),
-            half_open_operations: AtomicUsize::new(0),
-        })
-    }
-
-    /// Execute operation in closed state with automatic state transition
-    pub async fn execute<T, F, Fut>(&self, operation: F) -> ResilienceResult<T>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = ResilienceResult<T>>,
-    {
-        self.total_operations.fetch_add(1, Ordering::Relaxed);
-
-        let result = operation().await;
-        let is_failure = result.is_err();
-
-        self.sliding_window.record_operation(is_failure).await;
-
-        if is_failure {
-            let operation_count = self.sliding_window.get_operation_count().await;
-            let failure_rate = self.sliding_window.get_failure_rate().await;
-
-            if operation_count >= self.config.min_operations
-                && failure_rate >= self.config.failure_rate_threshold
-            {
-                warn!(
-                    failure_count = self.state.metadata.failure_count + 1,
-                    failure_rate = failure_rate,
-                    "Circuit breaker opening due to high failure rate"
-                );
-
-                // In a real implementation, we'd need to handle state transition
-                // This is a limitation of the phantom type approach for runtime state changes
+        // Remove expired entries from the front (oldest first)
+        while let Some(front) = self.entries.front() {
+            if now.duration_since(front.timestamp) > self.window_duration {
+                self.entries.pop_front();
+            } else {
+                break;
             }
         }
 
-        result
+        // Drop oldest if at capacity
+        if self.entries.len() >= self.max_entries {
+            self.entries.pop_front();
+        }
+
+        self.entries.push_back(WindowEntry {
+            timestamp: now,
+            was_failure,
+        });
+    }
+
+    fn get_failure_rate(&self) -> f64 {
+        let now = Instant::now();
+        let mut total = 0usize;
+        let mut failures = 0usize;
+
+        for entry in &self.entries {
+            if now.duration_since(entry.timestamp) <= self.window_duration {
+                total += 1;
+                if entry.was_failure {
+                    failures += 1;
+                }
+            }
+        }
+
+        if total == 0 {
+            0.0
+        } else {
+            failures as f64 / total as f64
+        }
+    }
+
+    fn get_operation_count(&self) -> usize {
+        let now = Instant::now();
+        self.entries
+            .iter()
+            .filter(|entry| now.duration_since(entry.timestamp) <= self.window_duration)
+            .count()
     }
 }
 
@@ -317,6 +256,9 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
 pub struct CircuitBreaker<const FAILURE_THRESHOLD: usize = 5, const RESET_TIMEOUT_MS: u64 = 30_000>
 {
     inner: Arc<RwLock<CircuitBreakerInner<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>>>,
+    /// Atomic state for lock-free fast-path: 0=Closed, 1=Open, 2=HalfOpen.
+    /// Lives outside the RwLock so the closed-state fast path never acquires a lock.
+    atomic_state: Arc<AtomicU8>,
 }
 
 impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64> std::fmt::Debug
@@ -333,20 +275,20 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64> std::fmt::Debu
 struct CircuitBreakerInner<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64> {
     config: CircuitBreakerConfig<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>,
     state: State,
-    /// Atomic state cache for fast-path checking in closed state
-    /// 0 = Closed, 1 = Open, 2 = HalfOpen
-    atomic_state: AtomicU8,
+    /// Shared atomic state — also stored on the outer `CircuitBreaker`.
+    /// Updated here (under write lock) so both copies stay in sync.
+    atomic_state: Arc<AtomicU8>,
     failure_count: usize,
     last_failure_time: Option<Instant>,
     half_open_operations: usize,
-    sliding_window: SlidingWindow<1000>,
+    sliding_window: SlidingWindow,
     total_operations: u64,
     last_state_change: Instant,
 }
 
 impl State {
     /// Convert state to atomic representation
-    const fn to_atomic(&self) -> u8 {
+    const fn to_atomic(self) -> u8 {
         match self {
             State::Closed => 0,
             State::Open => 1,
@@ -375,12 +317,6 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
             .store(new_state.to_atomic(), Ordering::Release);
         self.last_state_change = Instant::now();
     }
-
-    /// Get cached atomic state for fast-path checking
-    fn get_atomic_state(&self) -> State {
-        let atomic_value = self.atomic_state.load(Ordering::Acquire);
-        State::from_atomic(atomic_value).unwrap_or(State::Closed)
-    }
 }
 
 impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
@@ -392,11 +328,16 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
     ) -> ConfigResult<Self> {
         config.validate()?;
 
+        let atomic_state = Arc::new(AtomicU8::new(State::Closed.to_atomic()));
+
         let inner = CircuitBreakerInner {
-            sliding_window: SlidingWindow::new(Duration::from_millis(config.sliding_window_ms)),
+            sliding_window: SlidingWindow::new(
+                Duration::from_millis(config.sliding_window_ms),
+                1000,
+            ),
             config,
             state: State::Closed,
-            atomic_state: AtomicU8::new(State::Closed.to_atomic()),
+            atomic_state: Arc::clone(&atomic_state),
             failure_count: 0,
             last_failure_time: None,
             half_open_operations: 0,
@@ -406,6 +347,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
 
         Ok(Self {
             inner: Arc::new(RwLock::new(inner)),
+            atomic_state,
         })
     }
 
@@ -455,11 +397,11 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
         F: FnOnce() -> Fut,
         Fut: Future<Output = ResilienceResult<T>>,
     {
-        // Fast path: Check atomic state first (most operations happen in Closed state)
-        // This avoids expensive lock acquisition for the common case
+        // Fast path: read atomic state without acquiring any lock.
+        // Most operations happen in Closed state — this avoids lock overhead entirely.
         let atomic_state = {
-            let inner = self.inner.read().await;
-            inner.get_atomic_state()
+            let v = self.atomic_state.load(Ordering::Acquire);
+            State::from_atomic(v).unwrap_or(State::Closed)
         };
 
         // For Closed state, we can proceed immediately without state transitions
@@ -534,8 +476,8 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
 
         match result {
             Ok(ref _value) => {
-                inner.sliding_window.record_operation(false).await;
-                self.record_success_inner(&mut inner).await;
+                inner.sliding_window.record_operation(false);
+                self.record_success_inner(&mut inner);
                 debug!(
                     state = %inner.state,
                     duration_ms = duration.as_millis(),
@@ -549,8 +491,8 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
                 };
 
                 if should_count {
-                    inner.sliding_window.record_operation(true).await;
-                    self.record_failure_inner(&mut inner).await;
+                    inner.sliding_window.record_operation(true);
+                    self.record_failure_inner(&mut inner);
                 }
 
                 error!(
@@ -565,7 +507,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
         result
     }
 
-    async fn record_success_inner(
+    fn record_success_inner(
         &self,
         inner: &mut CircuitBreakerInner<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>,
     ) {
@@ -593,7 +535,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
         }
     }
 
-    async fn record_failure_inner(
+    fn record_failure_inner(
         &self,
         inner: &mut CircuitBreakerInner<FAILURE_THRESHOLD, RESET_TIMEOUT_MS>,
     ) {
@@ -603,8 +545,8 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
         match inner.state {
             State::Closed => {
                 // Check if we should open the circuit
-                let operation_count = inner.sliding_window.get_operation_count().await;
-                let failure_rate = inner.sliding_window.get_failure_rate().await;
+                let operation_count = inner.sliding_window.get_operation_count();
+                let failure_rate = inner.sliding_window.get_failure_rate();
 
                 if operation_count >= inner.config.min_operations
                     && failure_rate >= inner.config.failure_rate_threshold
@@ -651,8 +593,8 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
     /// Get circuit breaker statistics
     pub async fn stats(&self) -> CircuitBreakerStats {
         let inner = self.inner.read().await;
-        let failure_rate = inner.sliding_window.get_failure_rate().await;
-        let operation_count = inner.sliding_window.get_operation_count().await;
+        let failure_rate = inner.sliding_window.get_failure_rate();
+        let operation_count = inner.sliding_window.get_operation_count();
 
         CircuitBreakerStats {
             state: inner.state,
@@ -733,13 +675,13 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
     /// Record a successful operation
     pub async fn record_success(&self) {
         let mut inner = self.inner.write().await;
-        self.record_success_inner(&mut inner).await;
+        self.record_success_inner(&mut inner);
     }
 
     /// Record a failed operation
     pub async fn record_failure(&self) {
         let mut inner = self.inner.write().await;
-        self.record_failure_inner(&mut inner).await;
+        self.record_failure_inner(&mut inner);
     }
 }
 
@@ -926,7 +868,7 @@ mod tests {
         sleep(Duration::from_millis(150)).await;
 
         // Try a successful operation (should work in half-open)
-        let result = breaker
+        let _result = breaker
             .execute(|| async { Ok::<_, ResilienceError>("recovery".to_string()) })
             .await;
 
@@ -940,15 +882,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_sliding_window() {
-        let window = SlidingWindow::<100>::new(Duration::from_millis(100));
+        let mut window = SlidingWindow::new(Duration::from_millis(100), 100);
 
         // Record some operations
-        window.record_operation(false).await; // Success
-        window.record_operation(true).await; // Failure
-        window.record_operation(true).await; // Failure
+        window.record_operation(false); // Success
+        window.record_operation(true); // Failure
+        window.record_operation(true); // Failure
 
-        let failure_rate = window.get_failure_rate().await;
-        let operation_count = window.get_operation_count().await;
+        let failure_rate = window.get_failure_rate();
+        let operation_count = window.get_operation_count();
 
         assert_eq!(operation_count, 3);
         assert!((failure_rate - 0.6667).abs() < 0.001);
@@ -956,8 +898,8 @@ mod tests {
         // Wait for window to expire
         sleep(Duration::from_millis(150)).await;
 
-        let failure_rate = window.get_failure_rate().await;
-        let operation_count = window.get_operation_count().await;
+        let failure_rate = window.get_failure_rate();
+        let operation_count = window.get_operation_count();
 
         assert_eq!(operation_count, 0);
         assert_eq!(failure_rate, 0.0);

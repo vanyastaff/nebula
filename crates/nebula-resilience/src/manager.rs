@@ -390,7 +390,7 @@ impl ResilienceManager {
     }
 
     /// Register a service with specific resilience policy
-    pub async fn register_service(&self, service: impl Into<String>, policy: ResiliencePolicy) {
+    pub fn register_service(&self, service: impl Into<String>, policy: ResiliencePolicy) {
         let service_name = service.into();
 
         // Initialize circuit breaker if configured
@@ -596,18 +596,13 @@ impl ResilienceManager {
         }
 
         // Collect circuit breaker stats (lock-free read)
-        let circuit_breaker = if let Some(cb) = self.circuit_breakers.get(service) {
-            Some(cb.value().stats().await)
-        } else {
-            None
+        let circuit_breaker = match self.circuit_breakers.get(service) {
+            Some(cb) => Some(cb.value().stats().await),
+            None => None,
         };
 
         // Collect bulkhead stats (lock-free read)
-        let bulkhead = if let Some(bh) = self.bulkheads.get(service) {
-            Some(bh.value().stats().await)
-        } else {
-            None
-        };
+        let bulkhead = self.bulkheads.get(service).map(|bh| bh.value().stats());
 
         Some(UnTypedServiceMetrics {
             service_name: service.to_string(),
@@ -641,7 +636,7 @@ impl ResilienceManager {
     }
 
     /// Remove service and cleanup resources
-    pub async fn unregister_service(&self, service: &str) {
+    pub fn unregister_service(&self, service: &str) {
         self.policies.remove(service);
         self.circuit_breakers.remove(service);
         self.bulkheads.remove(service);
@@ -661,12 +656,12 @@ impl ResilienceManager {
     // =========================================================================
 
     /// Register a service with category-based default policy.
-    pub async fn register_service_typed<S: Service>(&self, policy: ResiliencePolicy) {
-        self.register_service(S::NAME, policy).await;
+    pub fn register_service_typed<S: Service>(&self, policy: ResiliencePolicy) {
+        self.register_service(S::NAME, policy);
     }
 
     /// Register a service with category defaults.
-    pub async fn register_service_with_defaults<S: Service>(&self) {
+    pub fn register_service_with_defaults<S: Service>(&self) {
         let policy = PolicyBuilder::new()
             .with_timeout(S::Category::default_timeout())
             .with_retry_exponential(
@@ -674,7 +669,7 @@ impl ResilienceManager {
                 Duration::from_millis(100),
             )
             .build();
-        self.register_service(S::NAME, policy).await;
+        self.register_service(S::NAME, policy);
     }
 
     /// Execute operation with typed service and operation identifiers.
@@ -702,8 +697,8 @@ impl ResilienceManager {
     }
 
     /// Unregister a service.
-    pub async fn unregister_service_typed<S: Service>(&self) {
-        self.unregister_service(S::NAME).await;
+    pub fn unregister_service_typed<S: Service>(&self) {
+        self.unregister_service(S::NAME);
     }
 
     /// Check if a service is registered.
@@ -778,7 +773,7 @@ mod tests {
             .with_retry_fixed(3, Duration::from_millis(10))
             .build();
 
-        manager.register_service("retry-service", policy).await;
+        manager.register_service("retry-service", policy);
 
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
@@ -932,33 +927,25 @@ mod tests {
         let manager = ResilienceManager::with_defaults();
 
         // Register with defaults
-        manager
-            .register_service_with_defaults::<TestDatabaseService>()
-            .await;
+        manager.register_service_with_defaults::<TestDatabaseService>();
         assert!(manager.is_service_registered::<TestDatabaseService>());
 
         // Custom policy
         let custom_policy = PolicyBuilder::new()
             .with_timeout(Duration::from_secs(1))
             .build();
-        manager
-            .register_service_typed::<TestHttpService>(custom_policy)
-            .await;
+        manager.register_service_typed::<TestHttpService>(custom_policy);
         assert!(manager.is_service_registered::<TestHttpService>());
 
         // Unregister
-        manager
-            .unregister_service_typed::<TestDatabaseService>()
-            .await;
+        manager.unregister_service_typed::<TestDatabaseService>();
         assert!(!manager.is_service_registered::<TestDatabaseService>());
     }
 
     #[tokio::test]
     async fn test_typed_execution() {
         let manager = ResilienceManager::with_defaults();
-        manager
-            .register_service_with_defaults::<TestDatabaseService>()
-            .await;
+        manager.register_service_with_defaults::<TestDatabaseService>();
 
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();

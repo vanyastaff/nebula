@@ -26,12 +26,8 @@ thiserror = { workspace = true }
 parking_lot = { workspace = true, features = ["arc_lock", "serde"] }
 dashmap = { workspace = true }
 humantime-serde = "1.1.1"
-rand = { workspace = true }
 governor = "0.10"
 tokio-util = { version = "0.7", features = ["rt"] }
-
-# Advanced type system features
-heapless = { workspace = true }
 fastrand = "2.1"
 tracing = { workspace = true }
 
@@ -43,6 +39,7 @@ nebula-value = { path = "../nebula-value", features = ["serde"] }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
+rand = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 

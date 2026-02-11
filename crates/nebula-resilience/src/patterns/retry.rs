@@ -70,7 +70,7 @@ impl<const DELAY_MS: u64> FixedDelay<DELAY_MS> {
     /// Create new fixed delay backoff with validation
     #[must_use]
     pub const fn new() -> Self {
-        let _ = Self::VALID;
+        let () = Self::VALID;
         Self {
             _marker: PhantomData,
         }
@@ -123,7 +123,7 @@ impl<const BASE_DELAY_MS: u64, const MAX_DELAY_MS: u64> LinearBackoff<BASE_DELAY
     /// Create new linear backoff with validation
     #[must_use]
     pub const fn new() -> Self {
-        let _ = Self::VALID;
+        let () = Self::VALID;
         Self {
             _marker: PhantomData,
         }
@@ -195,7 +195,7 @@ impl<const BASE_DELAY_MS: u64, const MULTIPLIER_X10: u64, const MAX_DELAY_MS: u6
     /// Create new exponential backoff with validation
     #[must_use]
     pub const fn new() -> Self {
-        let _ = Self::VALID;
+        let () = Self::VALID;
         Self {
             _marker: PhantomData,
         }
@@ -433,20 +433,14 @@ impl<E, const MAX_ATTEMPTS: usize> RetryCondition<E> for AggressiveCondition<MAX
 where
     E: fmt::Debug,
 {
-    fn should_retry(&self, error: &E, attempt: usize, _elapsed: Duration) -> bool {
-        if attempt >= MAX_ATTEMPTS {
-            return false;
-        }
-        !self.is_terminal(error)
+    fn should_retry(&self, _error: &E, attempt: usize, _elapsed: Duration) -> bool {
+        attempt < MAX_ATTEMPTS
     }
 
-    fn is_terminal(&self, error: &E) -> bool {
-        let error_str = format!("{error:?}");
-        error_str.contains("NotFound")
-            || error_str.contains("Unauthorized")
-            || error_str.contains("InvalidInput")
-            || error_str.contains("PermissionDenied")
-            || error_str.contains("ParseError")
+    fn is_terminal(&self, _error: &E) -> bool {
+        // Aggressive condition retries everything up to MAX_ATTEMPTS.
+        // Use ConservativeCondition for terminal-error awareness.
+        false
     }
 
     fn condition_name(&self) -> &'static str {
@@ -484,23 +478,14 @@ impl<E, const MAX_DURATION_MS: u64> RetryCondition<E> for TimeBasedCondition<MAX
 where
     E: fmt::Debug,
 {
-    fn should_retry(&self, error: &E, attempt: usize, elapsed: Duration) -> bool {
-        if attempt >= self.max_attempts {
-            return false;
-        }
-
-        if elapsed >= Duration::from_millis(MAX_DURATION_MS) {
-            return false;
-        }
-
-        !self.is_terminal(error)
+    fn should_retry(&self, _error: &E, attempt: usize, elapsed: Duration) -> bool {
+        attempt < self.max_attempts && elapsed < Duration::from_millis(MAX_DURATION_MS)
     }
 
-    fn is_terminal(&self, error: &E) -> bool {
-        let error_str = format!("{error:?}");
-        error_str.contains("NotFound")
-            || error_str.contains("Unauthorized")
-            || error_str.contains("InvalidInput")
+    fn is_terminal(&self, _error: &E) -> bool {
+        // Time-based condition relies on attempt count and deadline, not error classification.
+        // Use ConservativeCondition for terminal-error awareness.
+        false
     }
 
     fn condition_name(&self) -> &'static str {
@@ -788,10 +773,7 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
         Fut: Future<Output = ResilienceResult<T>>,
         C: RetryCondition<ResilienceError>,
     {
-        match self.execute(operation).await {
-            Ok(result) => Ok(result),
-            Err(error) => Err(error),
-        }
+        self.execute(operation).await
     }
 
     /// Get configuration

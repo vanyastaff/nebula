@@ -20,9 +20,7 @@ fn manager_policy_lookup(c: &mut Criterion) {
         let manager = ResilienceManager::with_defaults();
 
         rt.block_on(async {
-            manager
-                .register_service("test-api", ResiliencePolicy::default())
-                .await;
+            manager.register_service("test-api", ResiliencePolicy::default());
         });
 
         b.to_async(&rt).iter(|| async {
@@ -69,9 +67,7 @@ fn manager_service_registration(c: &mut Criterion) {
             async move {
                 let count = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let service_name = format!("service-{}", count);
-                manager
-                    .register_service(service_name, ResiliencePolicy::default())
-                    .await;
+                manager.register_service(service_name, ResiliencePolicy::default());
             }
         });
     });
@@ -84,17 +80,11 @@ fn manager_service_registration(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let service_name = format!("service-{}", rand::random::<u32>());
-                rt.block_on(async {
-                    manager
-                        .register_service(&service_name, ResiliencePolicy::default())
-                        .await;
-                });
+                manager.register_service(&service_name, ResiliencePolicy::default());
                 service_name
             },
             |service_name| {
-                rt.block_on(async {
-                    manager.unregister_service(&service_name).await;
-                })
+                manager.unregister_service(&service_name);
             },
             criterion::BatchSize::SmallInput,
         );
@@ -111,11 +101,7 @@ fn manager_execute_overhead(c: &mut Criterion) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let manager = ResilienceManager::with_defaults();
 
-        rt.block_on(async {
-            manager
-                .register_service("api", ResiliencePolicy::default())
-                .await;
-        });
+        manager.register_service("api", ResiliencePolicy::default());
 
         b.to_async(&rt).iter(|| async {
             let result = manager
@@ -132,10 +118,8 @@ fn manager_execute_overhead(c: &mut Criterion) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let manager = ResilienceManager::with_defaults();
 
-        rt.block_on(async {
-            let policy = ResiliencePolicy::default().with_timeout(Duration::from_secs(5));
-            manager.register_service("api", policy).await;
-        });
+        let policy = ResiliencePolicy::default().with_timeout(Duration::from_secs(5));
+        manager.register_service("api", policy);
 
         b.to_async(&rt).iter(|| async {
             let result = manager
@@ -152,18 +136,16 @@ fn manager_execute_overhead(c: &mut Criterion) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let manager = ResilienceManager::with_defaults();
 
-        rt.block_on(async {
-            let retry_config = nebula_resilience::patterns::retry::RetryConfig::new(
-                nebula_resilience::patterns::retry::FixedDelay::<100>::default(),
-                nebula_resilience::patterns::retry::ConservativeCondition::<3>::new(),
-            );
-            let retry_strategy =
-                nebula_resilience::patterns::retry::RetryStrategy::new(retry_config).unwrap();
-            let policy = ResiliencePolicy::default()
-                .with_timeout(Duration::from_secs(5))
-                .with_retry(retry_strategy);
-            manager.register_service("api", policy).await;
-        });
+        let retry_config = nebula_resilience::patterns::retry::RetryConfig::new(
+            nebula_resilience::patterns::retry::FixedDelay::<100>::default(),
+            nebula_resilience::patterns::retry::ConservativeCondition::<3>::new(),
+        );
+        let retry_strategy =
+            nebula_resilience::patterns::retry::RetryStrategy::new(retry_config).unwrap();
+        let policy = ResiliencePolicy::default()
+            .with_timeout(Duration::from_secs(5))
+            .with_retry(retry_strategy);
+        manager.register_service("api", policy);
 
         b.to_async(&rt).iter(|| async {
             let result = manager
@@ -191,11 +173,7 @@ fn manager_concurrent_access(c: &mut Criterion) {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 let manager = Arc::new(ResilienceManager::with_defaults());
 
-                rt.block_on(async {
-                    manager
-                        .register_service("api", ResiliencePolicy::default())
-                        .await;
-                });
+                manager.register_service("api", ResiliencePolicy::default());
 
                 b.to_async(&rt).iter(|| {
                     let manager = Arc::clone(&manager);
@@ -231,11 +209,7 @@ fn manager_metrics_collection(c: &mut Criterion) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let manager = ResilienceManager::with_defaults();
 
-        rt.block_on(async {
-            manager
-                .register_service("api", ResiliencePolicy::default())
-                .await;
-        });
+        manager.register_service("api", ResiliencePolicy::default());
 
         b.to_async(&rt)
             .iter(|| async { black_box(manager.get_metrics("api").await) });
@@ -250,13 +224,9 @@ fn manager_metrics_collection(c: &mut Criterion) {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 let manager = ResilienceManager::with_defaults();
 
-                rt.block_on(async {
-                    for i in 0..num_services {
-                        manager
-                            .register_service(format!("service-{}", i), ResiliencePolicy::default())
-                            .await;
-                    }
-                });
+                for i in 0..num_services {
+                    manager.register_service(format!("service-{}", i), ResiliencePolicy::default());
+                }
 
                 b.to_async(&rt)
                     .iter(|| async { black_box(manager.get_all_metrics().await) });
@@ -269,13 +239,9 @@ fn manager_metrics_collection(c: &mut Criterion) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let manager = ResilienceManager::with_defaults();
 
-        rt.block_on(async {
-            for i in 0..100 {
-                manager
-                    .register_service(format!("service-{}", i), ResiliencePolicy::default())
-                    .await;
-            }
-        });
+        for i in 0..100 {
+            manager.register_service(format!("service-{}", i), ResiliencePolicy::default());
+        }
 
         b.iter(|| {
             // No async needed with DashMap!

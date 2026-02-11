@@ -6,7 +6,6 @@
 //! - Circuit Breaker + Timeout + Retry
 //! - Full policy composition
 
-use nebula_resilience::CircuitState;
 use nebula_resilience::prelude::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -137,7 +136,7 @@ async fn test_full_policy_composition() {
         })
         .build();
 
-    manager.register_service("test-service", policy).await;
+    manager.register_service("test-service", policy);
 
     let attempt_count = Arc::new(AtomicU32::new(0));
 
@@ -184,7 +183,7 @@ async fn test_manager_concurrent_access() {
         .with_timeout(Duration::from_millis(500))
         .build();
 
-    manager.register_service("concurrent-test", policy).await;
+    manager.register_service("concurrent-test", policy);
 
     let mut handles = vec![];
     let success_count = Arc::new(AtomicU32::new(0));

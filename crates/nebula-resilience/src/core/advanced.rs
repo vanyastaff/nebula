@@ -317,147 +317,6 @@ impl<S: Strategy> StrategyConfig<S> {
 }
 
 // =============================================================================
-// GADT-LIKE PATTERN FOR TYPED OPERATIONS
-// =============================================================================
-
-/// Type-level representation of operation outcomes.
-pub trait OperationOutcome: Send + Sync {
-    /// Associated value type.
-    type Value: Send;
-}
-
-/// Successful operation outcome.
-#[derive(Debug)]
-pub struct Success<T>(pub T);
-
-impl<T: Send + Sync> OperationOutcome for Success<T> {
-    type Value = T;
-}
-
-/// Failed operation outcome.
-#[derive(Debug)]
-pub struct Failure<E>(pub E);
-
-impl<E: Send + Sync> OperationOutcome for Failure<E> {
-    type Value = E;
-}
-
-/// Pending operation outcome.
-#[derive(Debug)]
-pub struct Pending;
-
-impl OperationOutcome for Pending {
-    type Value = ();
-}
-
-/// Type-safe operation handle with GADT-like behavior.
-///
-/// The type parameter ensures only valid operations on the handle.
-#[derive(Debug)]
-pub struct OperationHandle<O: OperationOutcome> {
-    id: u64,
-    _outcome: PhantomData<O>,
-}
-
-impl<O: OperationOutcome> OperationHandle<O> {
-    /// Create a new handle (internal use).
-    pub(crate) const fn new(id: u64) -> Self {
-        Self {
-            id,
-            _outcome: PhantomData,
-        }
-    }
-
-    /// Get operation ID.
-    #[must_use]
-    pub const fn id(&self) -> u64 {
-        self.id
-    }
-}
-
-impl OperationHandle<Pending> {
-    /// Create a pending operation handle.
-    #[must_use]
-    pub fn pending(id: u64) -> Self {
-        Self::new(id)
-    }
-
-    /// Transition to success (consumes self).
-    pub fn succeed<T: Send + Sync>(self, value: T) -> (OperationHandle<Success<T>>, T) {
-        (OperationHandle::new(self.id), value)
-    }
-
-    /// Transition to failure (consumes self).
-    pub fn fail<E: Send + Sync>(self, error: E) -> (OperationHandle<Failure<E>>, E) {
-        (OperationHandle::new(self.id), error)
-    }
-}
-
-// =============================================================================
-// VARIANCE MARKERS
-// =============================================================================
-
-/// Covariant marker for lifetime 'a.
-///
-/// Use when the type "produces" values of lifetime 'a.
-#[derive(Debug, Clone, Copy)]
-pub struct Covariant<'a>(PhantomData<&'a ()>);
-
-impl Covariant<'_> {
-    /// Create a new conservative strategy marker
-    #[must_use]
-    pub const fn new() -> Self {
-        Self(PhantomData)
-    }
-}
-
-impl Default for Covariant<'_> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Contravariant marker for lifetime 'a.
-///
-/// Use when the type "consumes" values of lifetime 'a.
-#[derive(Debug, Clone, Copy)]
-pub struct Contravariant<'a>(PhantomData<fn(&'a ()) -> ()>);
-
-impl Contravariant<'_> {
-    /// Create a new balanced strategy marker
-    #[must_use]
-    pub const fn new() -> Self {
-        Self(PhantomData)
-    }
-}
-
-impl Default for Contravariant<'_> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Invariant marker for lifetime 'a.
-///
-/// Use when the type both produces and consumes values of lifetime 'a.
-#[derive(Debug, Clone, Copy)]
-pub struct Invariant<'a>(PhantomData<fn(&'a ()) -> &'a ()>);
-
-impl Invariant<'_> {
-    /// Create a new aggressive strategy marker
-    #[must_use]
-    pub const fn new() -> Self {
-        Self(PhantomData)
-    }
-}
-
-impl Default for Invariant<'_> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// =============================================================================
 // CONST-VALIDATED CONFIGURATION
 // =============================================================================
 
@@ -599,28 +458,11 @@ mod tests {
     }
 
     #[test]
-    fn test_operation_handle_transitions() {
-        let pending = OperationHandle::<Pending>::pending(42);
-        assert_eq!(pending.id(), 42);
-
-        let (success_handle, value) = pending.succeed("ok");
-        assert_eq!(success_handle.id(), 42);
-        assert_eq!(value, "ok");
-    }
-
-    #[test]
     fn test_const_validated_config() {
         // Valid configuration
         const VALID: ValidatedRetryConfig<3, 100, 5000> = ValidatedRetryConfig::new();
         assert_eq!(VALID.max_attempts(), 3);
         assert_eq!(VALID.base_delay(), Duration::from_millis(100));
         assert_eq!(VALID.max_delay(), Duration::from_millis(5000));
-    }
-
-    #[test]
-    fn test_variance_markers() {
-        let _covariant: Covariant<'static> = Covariant::new();
-        let _contravariant: Contravariant<'static> = Contravariant::new();
-        let _invariant: Invariant<'static> = Invariant::new();
     }
 }

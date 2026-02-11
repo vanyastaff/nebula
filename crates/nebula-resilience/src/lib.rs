@@ -91,7 +91,7 @@
 //!
 //! ```rust
 //! use nebula_resilience::patterns::circuit_breaker::{
-//!     CircuitBreaker, CircuitBreakerConfig, Closed, Open, HalfOpen
+//!     CircuitBreaker, CircuitBreakerConfig,
 //! };
 //!
 //! # #[tokio::main]
@@ -141,25 +141,18 @@
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
-#![allow(clippy::cast_possible_wrap)]
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::cast_precision_loss)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::return_self_not_must_use)]
+#![allow(clippy::cast_possible_wrap)]
 #![allow(clippy::self_only_used_in_recursion)]
-#![allow(clippy::double_must_use)]
-#![allow(clippy::match_same_arms)]
 #![allow(clippy::wrong_self_convention)]
 #![allow(clippy::unused_self)]
-#![allow(clippy::needless_pass_by_value)]
-#![allow(clippy::let_unit_value)]
-#![allow(clippy::ignored_unit_patterns)]
-#![allow(clippy::doc_markdown)]
-#![allow(clippy::trivially_copy_pass_by_ref)]
 #![allow(clippy::should_implement_trait)]
-#![allow(clippy::return_self_not_must_use)]
 #![allow(clippy::new_without_default)]
-#![allow(clippy::unused_async)]
-#![allow(dead_code)]
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
@@ -183,36 +176,11 @@ pub use core::{
 
     // Advanced type system features
     advanced::{
-        Aggressive,
-        Balanced,
-        Complete,
-        ComposedPolicy,
-        Conservative,
-        // Const-validated configurations
-        ConstValidated,
-        Contravariant,
-        // Variance markers
-        Covariant,
-        Failure,
-        Invariant,
-        OperationHandle,
-        // GADT-like operation handles
-        OperationOutcome,
-        Pending,
-        // Typestate pattern for builders
-        PolicyBuilder as TypestatePolicyBuilder,
-        // Strategy markers (ZST)
-        Strategy,
-        StrategyConfig,
-        Success,
-        Unconfigured,
-        ValidatedRetryConfig,
-        WithCircuitBreaker,
-        WithRetry,
+        Aggressive, Balanced, Complete, ComposedPolicy, Conservative, ConstValidated,
+        PolicyBuilder as TypestatePolicyBuilder, Strategy, StrategyConfig, Unconfigured,
+        ValidatedRetryConfig, WithCircuitBreaker, WithRetry,
     },
 
-    // Category traits
-    category::{FallbackPattern, FlowControlPattern, ProtectionPattern, RateLimitingPattern},
     // Configuration types with const generics
     config::{ConfigError, ConfigResult, ResilienceConfig},
 
@@ -374,11 +342,6 @@ pub mod prelude {
 
     // Runtime policy builder (use PolicyBuilder for runtime configuration)
     pub use crate::manager::PolicyBuilder;
-
-    // Category traits (Sealed pattern)
-    pub use crate::core::category::{
-        FallbackPattern, FlowControlPattern, ProtectionPattern, RateLimitingPattern,
-    };
 
     // Type-safe circuit breaker
     pub use crate::patterns::circuit_breaker::{
@@ -605,7 +568,6 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn test_configurations() {

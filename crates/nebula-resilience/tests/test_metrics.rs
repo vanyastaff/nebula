@@ -9,7 +9,7 @@ async fn test_get_metrics_for_registered_service() {
 
     // Register a service with default policy
     let policy = PolicyBuilder::new().build();
-    manager.register_service("test-api", policy).await;
+    manager.register_service("test-api", policy);
 
     // Get metrics
     let metrics = manager.get_metrics("test-api").await;
@@ -39,7 +39,7 @@ async fn test_circuit_breaker_metrics() {
         .with_retry_fixed(3, Duration::from_millis(100))
         .with_circuit_breaker(CircuitBreakerConfig::default())
         .build();
-    manager.register_service("api-with-cb", policy).await;
+    manager.register_service("api-with-cb", policy);
 
     // Get metrics
     let metrics = manager.get_metrics("api-with-cb").await;
@@ -62,9 +62,9 @@ async fn test_get_all_metrics() {
 
     // Register multiple services
     let policy = PolicyBuilder::new().build();
-    manager.register_service("api1", policy.clone()).await;
-    manager.register_service("api2", policy.clone()).await;
-    manager.register_service("api3", policy).await;
+    manager.register_service("api1", policy.clone());
+    manager.register_service("api2", policy.clone());
+    manager.register_service("api3", policy);
 
     // Get all metrics
     let all_metrics = manager.get_all_metrics().await;
@@ -80,13 +80,13 @@ async fn test_metrics_after_service_unregister() {
     let manager = ResilienceManager::with_defaults();
 
     let policy = PolicyBuilder::new().build();
-    manager.register_service("temp-api", policy).await;
+    manager.register_service("temp-api", policy);
 
     // Verify service exists
     assert!(manager.get_metrics("temp-api").await.is_some());
 
     // Unregister service
-    manager.unregister_service("temp-api").await;
+    manager.unregister_service("temp-api");
 
     // Metrics should return None
     assert!(manager.get_metrics("temp-api").await.is_none());

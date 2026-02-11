@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_retry_fixed(3, Duration::from_millis(100))
         .build();
 
-    manager.register_service("database", policy).await;
+    manager.register_service("database", policy);
 
     // Execute with observability
     let result = manager
