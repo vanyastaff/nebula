@@ -111,7 +111,7 @@ impl Metric {
             count: AtomicU64::new(0),
             sum: AtomicU64::new(0.0_f64.to_bits()),
             min: AtomicU64::new(f64::INFINITY.to_bits()),
-            max: AtomicU64::new(0.0_f64.to_bits()),
+            max: AtomicU64::new(f64::NEG_INFINITY.to_bits()),
         }
     }
 
@@ -162,6 +162,10 @@ impl Metric {
         }
     }
 
+    // NOTE: Each field is loaded independently with Relaxed ordering.
+    // Under concurrent writes the snapshot may be slightly inconsistent
+    // (e.g. count and sum from different points in time). This is acceptable
+    // for approximate monitoring metrics — same trade-off as Prometheus counters.
     fn snapshot(&self) -> MetricSnapshot {
         let count = self.count.load(Ordering::Relaxed);
         let sum = f64::from_bits(self.sum.load(Ordering::Relaxed));

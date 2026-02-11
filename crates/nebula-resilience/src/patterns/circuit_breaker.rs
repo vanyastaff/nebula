@@ -399,6 +399,10 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
     {
         // Fast path: read atomic state without acquiring any lock.
         // Most operations happen in Closed state — this avoids lock overhead entirely.
+        // TOCTOU note: between this read and result recording (under write lock),
+        // another task may open the circuit. This is a deliberate trade-off —
+        // circuit breakers are approximate by nature, and the lock-free fast path
+        // eliminates contention for the common success case.
         let atomic_state = {
             let v = self.atomic_state.load(Ordering::Acquire);
             State::from_atomic(v).unwrap_or(State::Closed)
