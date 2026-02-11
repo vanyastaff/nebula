@@ -138,21 +138,67 @@
 //! - **Typestate Pattern**: Compile-time state machine correctness
 
 #![warn(clippy::all, clippy::pedantic)]
-#![allow(clippy::module_name_repetitions)]
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::missing_panics_doc)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::cast_sign_loss)]
-#![allow(clippy::cast_precision_loss)]
-#![allow(clippy::doc_markdown)]
-#![allow(clippy::needless_pass_by_value)]
-#![allow(clippy::return_self_not_must_use)]
-#![allow(clippy::cast_possible_wrap)]
-#![allow(clippy::self_only_used_in_recursion)]
-#![allow(clippy::wrong_self_convention)]
-#![allow(clippy::unused_self)]
-#![allow(clippy::should_implement_trait)]
-#![allow(clippy::new_without_default)]
+// Pedantic lints suppressed crate-wide — expect will warn if no longer needed
+#![expect(
+    clippy::module_name_repetitions,
+    reason = "pattern types repeat module name by design"
+)]
+#![expect(
+    clippy::missing_errors_doc,
+    reason = "error docs deferred to thiserror Display impls"
+)]
+#![expect(
+    clippy::missing_panics_doc,
+    reason = "panics section not needed for infallible paths"
+)]
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "numeric casts are range-checked at call sites"
+)]
+#![expect(
+    clippy::cast_sign_loss,
+    reason = "unsigned values cast from checked non-negative sources"
+)]
+#![expect(
+    clippy::cast_precision_loss,
+    reason = "precision loss acceptable for metrics/rates"
+)]
+#![expect(
+    clippy::doc_markdown,
+    reason = "technical identifiers in docs are intentional"
+)]
+#![expect(
+    clippy::needless_pass_by_value,
+    reason = "impl Into<String> params require owned values"
+)]
+#![expect(
+    clippy::return_self_not_must_use,
+    reason = "builder methods chain by convention"
+)]
+#![expect(
+    clippy::cast_possible_wrap,
+    reason = "usize to i64/i32 casts never exceed range"
+)]
+#![expect(
+    clippy::self_only_used_in_recursion,
+    reason = "recursive config traversal is idiomatic"
+)]
+#![expect(
+    clippy::wrong_self_convention,
+    reason = "as_timeout naming is intentional API choice"
+)]
+#![expect(
+    clippy::unused_self,
+    reason = "methods use self for future extensibility"
+)]
+#![expect(
+    clippy::should_implement_trait,
+    reason = "FallbackChain::add is builder-style, not Add trait"
+)]
+#![expect(
+    clippy::new_without_default,
+    reason = "const fn new() cannot be called from Default trait"
+)]
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
