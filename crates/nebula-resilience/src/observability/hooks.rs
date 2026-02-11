@@ -316,9 +316,16 @@ pub trait ObservabilityHookExt<C: EventCategory>: Send + Sync {
 }
 
 /// Adapter to convert `ObservabilityHookExt` to `ObservabilityHook`.
+///
+/// This adapter bridges the gap between typed and untyped hook interfaces,
+/// allowing category-specific hooks to be used in generic contexts.
 pub struct HookAdapter<C: EventCategory, H: ObservabilityHookExt<C>> {
-    #[allow(dead_code)]
+    /// The wrapped hook implementation
+    ///
+    /// Reserved for future implementation where the adapter will delegate
+    /// to the typed hook after event deserialization and type checking.
     hook: H,
+    /// Phantom data to track the event category at compile time
     _category: PhantomData<C>,
 }
 

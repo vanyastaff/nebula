@@ -31,8 +31,10 @@ pub struct GovernorRateLimiter {
     limiter: DefaultDirectRateLimiter,
     /// Request rate for metrics
     rate_per_second: f64,
-    /// Burst capacity (stored for future metrics/introspection)
-    #[allow(dead_code)]
+    /// Burst capacity for rate limiting
+    ///
+    /// Stored for future metrics collection and introspection APIs.
+    /// Will be exposed via a `stats()` method for observability.
     burst_capacity: u32,
 }
 
