@@ -139,16 +139,14 @@ impl<T> ArenaHandle<T> {
     where
         F: FnOnce(&mut T) -> R,
     {
-        timeout(duration, self.modify(f))
-            .await
-            .map_err(|_| {
-                #[cfg(feature = "tracing")]
-                warn!(?duration, "Arena modify operation timed out");
+        timeout(duration, self.modify(f)).await.map_err(|_| {
+            #[cfg(feature = "tracing")]
+            warn!(?duration, "Arena modify operation timed out");
 
-                MemoryError::InvalidState {
-                    reason: format!("arena modify timed out after {:?}", duration),
-                }
-            })
+            MemoryError::InvalidState {
+                reason: format!("arena modify timed out after {:?}", duration),
+            }
+        })
     }
 
     /// Try to read the value with a timeout
@@ -157,16 +155,14 @@ impl<T> ArenaHandle<T> {
     where
         F: FnOnce(&T) -> R,
     {
-        timeout(duration, self.read(f))
-            .await
-            .map_err(|_| {
-                #[cfg(feature = "tracing")]
-                warn!(?duration, "Arena read operation timed out");
+        timeout(duration, self.read(f)).await.map_err(|_| {
+            #[cfg(feature = "tracing")]
+            warn!(?duration, "Arena read operation timed out");
 
-                MemoryError::InvalidState {
-                    reason: format!("arena read timed out after {:?}", duration),
-                }
-            })
+            MemoryError::InvalidState {
+                reason: format!("arena read timed out after {:?}", duration),
+            }
+        })
     }
 }
 
@@ -286,7 +282,11 @@ impl AsyncArena {
     /// - `MemoryError::InvalidState` if arena is shut down or operation times out
     /// - `MemoryError::ArenaExhausted` if arena has insufficient space
     #[cfg_attr(feature = "tracing", instrument(skip(self, value)))]
-    pub async fn alloc_timeout<T>(&self, value: T, duration: Duration) -> MemoryResult<ArenaHandle<T>> {
+    pub async fn alloc_timeout<T>(
+        &self,
+        value: T,
+        duration: Duration,
+    ) -> MemoryResult<ArenaHandle<T>> {
         // Check for shutdown
         if self.shutdown.is_cancelled() {
             #[cfg(feature = "tracing")]
@@ -348,7 +348,8 @@ impl AsyncArena {
     where
         T: Copy,
     {
-        self.alloc_slice_copy_timeout(slice, self.default_timeout).await
+        self.alloc_slice_copy_timeout(slice, self.default_timeout)
+            .await
     }
 
     /// Allocate a slice with custom timeout
@@ -554,7 +555,9 @@ impl Drop for AsyncArenaScope {
         // Users should call reset() explicitly before dropping for guaranteed cleanup
 
         #[cfg(feature = "tracing")]
-        debug!("AsyncArenaScope dropped (reset not guaranteed in Drop - call reset() explicitly for cleanup)");
+        debug!(
+            "AsyncArenaScope dropped (reset not guaranteed in Drop - call reset() explicitly for cleanup)"
+        );
     }
 }
 
@@ -592,8 +595,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn test_async_arena_timeout() {
         let shutdown = CancellationToken::new();
-        let arena = AsyncArena::new(shutdown.clone())
-            .with_timeout(Duration::from_millis(50));
+        let arena = AsyncArena::new(shutdown.clone()).with_timeout(Duration::from_millis(50));
 
         // Normal allocation should succeed
         let handle = arena.alloc(42).await.unwrap();

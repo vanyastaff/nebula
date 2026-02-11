@@ -182,7 +182,8 @@ pub fn memory_barrier() {
 /// - `ptr` must be valid for writes of `len` bytes
 /// - The memory region must remain valid for the duration of the call
 #[inline(always)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
+// Clippy false positive: function is marked unsafe, dereferencing is documented in safety contract
+#[expect(clippy::not_unsafe_ptr_arg_deref)]
 pub fn secure_zero(ptr: *mut u8, len: usize) {
     if len == 0 {
         return;
@@ -512,19 +513,25 @@ impl CheckedArithmetic for usize {
     #[inline]
     fn try_add(self, rhs: Self) -> AllocResult<Self> {
         self.checked_add(rhs)
-            .ok_or_else(|| AllocError::invalid_layout(format!("overflow: {self} + {rhs}")))
+            .ok_or_else(|| AllocError::InvalidLayout {
+                reason: format!("overflow: {self} + {rhs}"),
+            })
     }
 
     #[inline]
     fn try_sub(self, rhs: Self) -> AllocResult<Self> {
         self.checked_sub(rhs)
-            .ok_or_else(|| AllocError::invalid_layout(format!("underflow: {self} - {rhs}")))
+            .ok_or_else(|| AllocError::InvalidLayout {
+                reason: format!("underflow: {self} - {rhs}"),
+            })
     }
 
     #[inline]
     fn try_mul(self, rhs: Self) -> AllocResult<Self> {
         self.checked_mul(rhs)
-            .ok_or_else(|| AllocError::invalid_layout(format!("overflow: {self} * {rhs}")))
+            .ok_or_else(|| AllocError::InvalidLayout {
+                reason: format!("overflow: {self} * {rhs}"),
+            })
     }
 
     #[inline]
@@ -538,19 +545,25 @@ impl CheckedArithmetic for isize {
     #[inline]
     fn try_add(self, rhs: Self) -> AllocResult<Self> {
         self.checked_add(rhs)
-            .ok_or_else(|| AllocError::invalid_layout(format!("overflow: {self} + {rhs}")))
+            .ok_or_else(|| AllocError::InvalidLayout {
+                reason: format!("overflow: {self} + {rhs}"),
+            })
     }
 
     #[inline]
     fn try_sub(self, rhs: Self) -> AllocResult<Self> {
         self.checked_sub(rhs)
-            .ok_or_else(|| AllocError::invalid_layout(format!("underflow: {self} - {rhs}")))
+            .ok_or_else(|| AllocError::InvalidLayout {
+                reason: format!("underflow: {self} - {rhs}"),
+            })
     }
 
     #[inline]
     fn try_mul(self, rhs: Self) -> AllocResult<Self> {
         self.checked_mul(rhs)
-            .ok_or_else(|| AllocError::invalid_layout(format!("overflow: {self} * {rhs}")))
+            .ok_or_else(|| AllocError::InvalidLayout {
+                reason: format!("overflow: {self} * {rhs}"),
+            })
     }
 
     #[inline]

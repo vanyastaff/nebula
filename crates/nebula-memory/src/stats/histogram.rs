@@ -120,10 +120,11 @@ impl MemoryHistogram {
         // If value is exactly the max of the last bucket, or outside all but the last
         if !found
             && let Some(last) = self.buckets.last_mut()
-                && value >= last.max {
-                    // Equal to max is still within last bucket
-                    last.count += 1;
-                }
+            && value >= last.max
+        {
+            // Equal to max is still within last bucket
+            last.count += 1;
+        }
     }
 
     /// Calculate mean

@@ -424,13 +424,11 @@ impl PoolAllocator {
                 // Convert pointer to NonNull with explicit check
                 // head is non-null (checked at loop start), but use explicit check for safety
                 return NonNull::new(head.cast::<u8>());
-            } else {
-                // Another thread modified the list, backoff and retry
-                attempts += 1;
-                if let Some(ref mut b) = backoff {
-                    b.spin();
-                }
-                continue;
+            }
+            // Another thread modified the list, backoff and retry
+            attempts += 1;
+            if let Some(ref mut b) = backoff {
+                b.spin();
             }
         }
     }

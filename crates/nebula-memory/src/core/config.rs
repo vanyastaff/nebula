@@ -135,34 +135,44 @@ impl MemoryConfig {
 
         self.allocator
             .validate()
-            .map_err(|e| MemoryError::invalid_config(format!("allocator: {e}")))?;
+            .map_err(|e| MemoryError::InvalidConfig {
+                reason: format!("allocator: {e}"),
+            })?;
 
         #[cfg(feature = "pool")]
         {
             self.pool
                 .validate()
-                .map_err(|e| MemoryError::invalid_config(format!("pool: {e}")))?;
+                .map_err(|e| MemoryError::InvalidConfig {
+                    reason: format!("pool: {e}"),
+                })?;
         }
 
         #[cfg(feature = "arena")]
         {
             self.arena
                 .validate()
-                .map_err(|e| MemoryError::invalid_config(format!("arena: {e}")))?;
+                .map_err(|e| MemoryError::InvalidConfig {
+                    reason: format!("arena: {e}"),
+                })?;
         }
 
         #[cfg(feature = "cache")]
         {
             self.cache
                 .validate()
-                .map_err(|e| MemoryError::invalid_config(format!("cache: {e}")))?;
+                .map_err(|e| MemoryError::InvalidConfig {
+                    reason: format!("cache: {e}"),
+                })?;
         }
 
         #[cfg(feature = "budget")]
         {
             self.budget
                 .validate()
-                .map_err(|e| MemoryError::invalid_config(format!("budget: {e}")))?;
+                .map_err(|e| MemoryError::InvalidConfig {
+                    reason: format!("budget: {e}"),
+                })?;
         }
 
         #[cfg(feature = "logging")]

@@ -250,7 +250,7 @@ mod tests {
         // - ptr is deallocated with same layout it was allocated with
         unsafe {
             let ptr = allocator.allocate(layout).unwrap();
-            assert!(!ptr.as_ptr().is_null());
+            // NonNull<u8> guarantees ptr is not null by type invariant
             assert_eq!(ptr.len(), layout.size());
 
             allocator.deallocate(ptr.cast(), layout);

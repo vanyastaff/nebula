@@ -64,19 +64,20 @@ impl AllocationSite {
                 .collect();
 
             if let Some(frame) = bt.frames().get(frames_to_skip)
-                && let Some(symbol) = frame.symbols().first() {
-                    file = symbol
-                        .filename()
-                        .and_then(|p| p.to_str())
-                        .unwrap_or("unknown_file")
-                        .to_string();
-                    line = symbol.lineno().unwrap_or(0);
-                    function = symbol
-                        .name()
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("unknown_function")
-                        .to_string();
-                }
+                && let Some(symbol) = frame.symbols().first()
+            {
+                file = symbol
+                    .filename()
+                    .and_then(|p| p.to_str())
+                    .unwrap_or("unknown_file")
+                    .to_string();
+                line = symbol.lineno().unwrap_or(0);
+                function = symbol
+                    .name()
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("unknown_function")
+                    .to_string();
+            }
             stack_trace = Some(filtered_frames);
         }
 
@@ -335,15 +336,16 @@ impl MemoryProfiler {
 
             // Get file and line info from the first frame
             if let Some(frame) = bt.frames().get(frames_to_skip)
-                && let Some(symbol) = frame.symbols().first() {
-                    if let Some(filename) = symbol.filename() {
-                        file = filename.display().to_string();
-                    }
-                    line = symbol.lineno().unwrap_or(0);
-                    if let Some(name) = symbol.name().and_then(|n| n.as_str()) {
-                        function = name.to_string();
-                    }
+                && let Some(symbol) = frame.symbols().first()
+            {
+                if let Some(filename) = symbol.filename() {
+                    file = filename.display().to_string();
                 }
+                line = symbol.lineno().unwrap_or(0);
+                if let Some(name) = symbol.name().and_then(|n| n.as_str()) {
+                    function = name.to_string();
+                }
+            }
 
             stack_trace = Some(filtered_frames);
         }

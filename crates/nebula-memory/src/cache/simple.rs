@@ -158,11 +158,13 @@ where
                     .iter()
                     .min_by_key(|(_, entry)| entry.last_accessed)
                     .map(|(k, _)| k.clone())
-                {
-                    cache.entries.remove(&evict_key);
-                }
+            {
+                cache.entries.remove(&evict_key);
+            }
 
-            cache.entries.insert(key, CacheEntry::new(Arc::clone(&value)));
+            cache
+                .entries
+                .insert(key, CacheEntry::new(Arc::clone(&value)));
         }
 
         Ok(value)
@@ -221,15 +223,16 @@ where
         let mut cache = self.inner.write().await;
 
         // Evict if at capacity
-        if cache.entries.len() >= self.max_entries && !cache.entries.contains_key(&key)
+        if cache.entries.len() >= self.max_entries
+            && !cache.entries.contains_key(&key)
             && let Some(evict_key) = cache
                 .entries
                 .iter()
                 .min_by_key(|(_, entry)| entry.last_accessed)
                 .map(|(k, _)| k.clone())
-            {
-                cache.entries.remove(&evict_key);
-            }
+        {
+            cache.entries.remove(&evict_key);
+        }
 
         cache
             .entries

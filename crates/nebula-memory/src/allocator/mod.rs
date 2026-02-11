@@ -7,6 +7,7 @@
 mod manager;
 #[cfg(feature = "monitoring")]
 mod monitored;
+pub mod sealed;
 mod stats;
 mod system;
 mod tracked;

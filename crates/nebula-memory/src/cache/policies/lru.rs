@@ -5,10 +5,7 @@
 //!
 //! All operations (access, insertion, removal) are O(1) for optimal performance.
 
-use std::{
-    collections::HashMap,
-    marker::PhantomData,
-};
+use std::{collections::HashMap, marker::PhantomData};
 
 use crate::cache::compute::{CacheEntry, CacheKey};
 

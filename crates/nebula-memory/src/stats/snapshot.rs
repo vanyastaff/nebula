@@ -711,7 +711,11 @@ impl SnapshotDiff {
 /// Helper function to format byte deltas
 fn format_bytes_delta(delta: i64) -> String {
     let sign = if delta >= 0 { "+" } else { "" };
-    format!("{}{}", sign, utils::format_bytes(delta.unsigned_abs() as usize))
+    format!(
+        "{}{}",
+        sign,
+        utils::format_bytes(delta.unsigned_abs() as usize)
+    )
 }
 
 #[cfg(test)]

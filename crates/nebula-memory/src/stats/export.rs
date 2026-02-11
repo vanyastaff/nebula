@@ -86,7 +86,7 @@ impl GlobalStats {
 
     fn to_prometheus_impl(&self) -> String {
         format!(
-            r#"# HELP memory_total_allocated_bytes Total allocated memory in bytes
+            r"# HELP memory_total_allocated_bytes Total allocated memory in bytes
 # TYPE memory_total_allocated_bytes gauge
 memory_total_allocated_bytes {}
 
@@ -121,7 +121,7 @@ memory_avg_allocation_size {:.2}
 # HELP memory_utilization_percent Memory utilization percentage
 # TYPE memory_utilization_percent gauge
 memory_utilization_percent {:.2}
-"#,
+",
             self.total_allocated,
             self.peak_allocated,
             self.total_allocations,
@@ -136,7 +136,7 @@ memory_utilization_percent {:.2}
 
     fn to_text_impl(&self) -> String {
         format!(
-            r#"Global Memory Statistics
+            r"Global Memory Statistics
 ========================
 Total Allocated:      {} bytes
 Peak Allocated:       {} bytes
@@ -151,7 +151,7 @@ Allocation Rate:      {:.2} allocs/sec
 Deallocation Rate:    {:.2} deallocs/sec
 Utilization:          {:.2}%
 Status:               {}
-"#,
+",
             self.total_allocated,
             self.peak_allocated,
             self.total_allocations,
@@ -221,12 +221,12 @@ impl MemoryMetrics {
 
     fn to_prometheus_impl(&self) -> String {
         format!(
-            r#"memory_metrics_current_allocated_bytes {}
+            r"memory_metrics_current_allocated_bytes {}
 memory_metrics_peak_allocated_bytes {}
 memory_metrics_allocations {}
 memory_metrics_deallocations {}
 memory_metrics_allocation_failures {}
-"#,
+",
             self.current_allocated,
             self.peak_allocated,
             self.allocations,

@@ -44,10 +44,12 @@
 //! - Performance monitoring and metrics
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![allow(incomplete_features)]
-#![allow(dead_code)]
 #![warn(clippy::all)]
+#![warn(clippy::perf)]
+#![warn(clippy::pedantic)]
 #![warn(rust_2018_idioms)]
+#![allow(clippy::module_name_repetitions)]
+#![allow(clippy::must_use_candidate)]
 
 // Error types
 pub mod error;
@@ -84,25 +86,9 @@ pub mod stats;
 pub mod syscalls;
 pub mod utils;
 
-// Core functionality - foundational types and traits
-
-// Memory allocators - the heart of nebula-memory
-
-// Utility functions and helpers
-
 // Re-export core types for convenience
 pub use crate::core::MemoryConfig;
 pub use crate::error::{MemoryError, MemoryResult, Result};
-
-// Core features that depend on allocators
-
-// Advanced features
-
-// Async support
-
-// Low-level system calls for allocators
-
-// System integration
 
 // Public API exports
 pub mod prelude {

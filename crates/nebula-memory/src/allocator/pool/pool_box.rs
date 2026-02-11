@@ -49,7 +49,8 @@ impl<T> PoolBox<T> {
 
     /// Gets a reference to the contained value
     #[must_use]
-    #[allow(clippy::should_implement_trait)]
+    // Custom implementation needed for pool semantics, not using std AsRef trait
+    #[expect(clippy::should_implement_trait)]
     pub fn as_ref(&self) -> &T {
         // SAFETY: Dereferencing self.ptr as shared reference.
         // - self.ptr is NonNull, guaranteed non-null
@@ -60,7 +61,8 @@ impl<T> PoolBox<T> {
     }
 
     /// Gets a mutable reference to the contained value
-    #[allow(clippy::should_implement_trait)]
+    // Custom implementation needed for pool semantics, not using std AsMut trait
+    #[expect(clippy::should_implement_trait)]
     pub fn as_mut(&mut self) -> &mut T {
         // SAFETY: Dereferencing self.ptr as mutable reference.
         // - self.ptr is NonNull, guaranteed non-null

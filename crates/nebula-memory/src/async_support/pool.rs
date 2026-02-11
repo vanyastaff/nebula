@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
@@ -271,16 +271,14 @@ impl<T: Poolable> AsyncPool<T> {
         }
 
         // Wrap the acquisition in a timeout
-        timeout(duration, self.acquire_inner())
-            .await
-            .map_err(|_| {
-                #[cfg(feature = "tracing")]
-                warn!(?duration, "Pool acquire operation timed out");
+        timeout(duration, self.acquire_inner()).await.map_err(|_| {
+            #[cfg(feature = "tracing")]
+            warn!(?duration, "Pool acquire operation timed out");
 
-                MemoryError::InvalidState {
-                    reason: format!("pool acquire timed out after {:?}", duration),
-                }
-            })?
+            MemoryError::InvalidState {
+                reason: format!("pool acquire timed out after {:?}", duration),
+            }
+        })?
     }
 
     /// Internal acquire implementation without timeout
@@ -327,11 +325,17 @@ impl<T: Poolable> AsyncPool<T> {
                 "Pool exhausted"
             );
 
-            return Err(MemoryError::pool_exhausted("async_pool", inner.total_created));
+            return Err(MemoryError::pool_exhausted(
+                "async_pool",
+                inner.total_created,
+            ));
         }
 
         #[cfg(feature = "tracing")]
-        debug!(total_created = inner.total_created, "Creating new pool object");
+        debug!(
+            total_created = inner.total_created,
+            "Creating new pool object"
+        );
 
         let obj = (inner.factory)();
         inner.total_created += 1;
@@ -367,7 +371,10 @@ impl<T: Poolable> AsyncPool<T> {
 
         if let Some(obj) = inner.objects.pop() {
             #[cfg(feature = "tracing")]
-            trace!(pool_size = inner.objects.len(), "Try acquired object from pool");
+            trace!(
+                pool_size = inner.objects.len(),
+                "Try acquired object from pool"
+            );
 
             drop(inner);
             return Some(AsyncPooledValue {
@@ -389,7 +396,10 @@ impl<T: Poolable> AsyncPool<T> {
         inner.total_created += 1;
 
         #[cfg(feature = "tracing")]
-        trace!(total_created = inner.total_created, "Created new object for try_acquire");
+        trace!(
+            total_created = inner.total_created,
+            "Created new object for try_acquire"
+        );
 
         drop(inner);
 

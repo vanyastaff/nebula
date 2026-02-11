@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_fifo_eviction_order() {
-        let policy = FifoPolicy::<String, i32>::new();
+        let _policy = FifoPolicy::<String, i32>::new();
         let entry = CacheEntry::new(42);
 
         // Build entries in insertion order

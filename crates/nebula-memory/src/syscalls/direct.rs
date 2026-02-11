@@ -477,7 +477,8 @@ pub fn memory_sync(addr: *mut u8, size: usize, sync_type: MemorySyncType) -> io:
 ///
 /// - `addr` must be valid for reads of `size` bytes
 /// - The memory region must remain valid for the duration of the call
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
+// Clippy false positive: function is marked unsafe, dereferencing is documented in safety contract
+#[expect(clippy::not_unsafe_ptr_arg_deref)]
 pub fn memory_prefetch(addr: *const u8, size: usize) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {

@@ -552,11 +552,10 @@ impl TrackingConfig {
         }
 
         #[cfg(feature = "profiling")]
-        if self.collect_stack_traces
-            && !(0.0..=1.0).contains(&self.profiler_sampling_rate) {
-                return Err(ConfigError::InvalidSamplingRate);
-            }
-            // Другие проверки для профилирования можно добавить здесь
+        if self.collect_stack_traces && !(0.0..=1.0).contains(&self.profiler_sampling_rate) {
+            return Err(ConfigError::InvalidSamplingRate);
+        }
+        // Другие проверки для профилирования можно добавить здесь
 
         self.sampling.validate()
     }
@@ -763,9 +762,10 @@ impl AlertConfig {
     #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), ConfigError> {
         if let Some(rate) = self.allocation_rate_threshold
-            && rate <= 0.0 {
-                return Err(ConfigError::InvalidAllocationRate);
-            }
+            && rate <= 0.0
+        {
+            return Err(ConfigError::InvalidAllocationRate);
+        }
         Ok(())
     }
 }

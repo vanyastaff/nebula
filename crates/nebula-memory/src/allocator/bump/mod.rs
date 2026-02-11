@@ -449,3 +449,111 @@ impl StatisticsProvider for BumpAllocator {
         self.stats.reset();
     }
 }
+
+// ============================================================================
+// Sealed Internal Trait Implementation
+// ============================================================================
+
+impl crate::allocator::sealed::AllocatorInternal for BumpAllocator {
+    fn internal_checkpoint(&self) -> crate::allocator::sealed::InternalCheckpoint {
+        let offset = self.cursor.load(Ordering::Acquire);
+        let generation = self.generation.load(Ordering::Acquire);
+
+        crate::allocator::sealed::InternalCheckpoint::new(
+            offset - self.start_addr, // Relative offset
+            self.start_addr as u64,   // Chunk ID (use start address as identifier)
+            generation,
+        )
+    }
+
+    unsafe fn internal_restore(
+        &mut self,
+        checkpoint: crate::allocator::sealed::InternalCheckpoint,
+    ) -> AllocResult<()> {
+        let current_generation = self.generation.load(Ordering::Acquire);
+
+        // Validate checkpoint is not stale
+        if checkpoint.generation != current_generation {
+            return Err(AllocError::InvalidState {
+                reason: format!(
+                    "stale checkpoint: expected generation {}, got {}",
+                    current_generation, checkpoint.generation
+                ),
+            });
+        }
+
+        // Validate checkpoint is from this allocator
+        if checkpoint.chunk_id != self.start_addr as u64 {
+            return Err(AllocError::InvalidState {
+                reason: "checkpoint from different allocator".into(),
+            });
+        }
+
+        // Validate offset is within bounds
+        if checkpoint.offset > self.capacity {
+            return Err(AllocError::InvalidState {
+                reason: format!(
+                    "checkpoint offset {} exceeds capacity {}",
+                    checkpoint.offset, self.capacity
+                ),
+            });
+        }
+
+        // SAFETY: Caller guarantees no allocations after checkpoint are in use
+        // - Checkpoint validated above (correct generation, allocator, bounds)
+        // - Setting cursor to checkpoint offset is safe (within [start_addr, end_addr))
+        // - Updates stats to reflect restored state
+        let restored_addr = self.start_addr + checkpoint.offset;
+        self.cursor.store(restored_addr, Ordering::Release);
+
+        // Update stats to reflect rewound state
+        let freed_bytes = self.used();
+        if freed_bytes > checkpoint.offset {
+            self.stats
+                .record_deallocation(freed_bytes - checkpoint.offset);
+        }
+
+        Ok(())
+    }
+
+    fn internal_fragmentation(&self) -> crate::allocator::sealed::FragmentationStats {
+        // Bump allocators have zero internal fragmentation by design
+        // - All free space is contiguous (at the end)
+        // - No free list, no fragments
+        let total_free = self.available();
+        crate::allocator::sealed::FragmentationStats::calculate(
+            total_free,
+            total_free,                         // Largest block = all free space
+            if total_free > 0 { 1 } else { 0 }, // Single fragment or none
+        )
+    }
+
+    #[cfg(debug_assertions)]
+    fn internal_validate(&self) -> Result<(), &'static str> {
+        let cursor_pos = self.cursor.load(Ordering::Acquire);
+
+        // Validate cursor is within bounds
+        if cursor_pos < self.start_addr || cursor_pos > self.end_addr {
+            return Err("cursor out of bounds");
+        }
+
+        // Validate monotonicity
+        let used = cursor_pos - self.start_addr;
+        if used > self.capacity {
+            return Err("used memory exceeds capacity");
+        }
+
+        // Validate stats consistency (if enabled)
+        if let Some(stats) = self.stats.snapshot() {
+            if stats.total_bytes_deallocated > stats.total_bytes_allocated {
+                return Err("deallocated bytes exceed allocated bytes");
+            }
+        }
+
+        Ok(())
+    }
+
+    fn internal_type_name(&self) -> &'static str {
+        "BumpAllocator"
+    }
+}

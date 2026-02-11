@@ -144,10 +144,9 @@ impl RealTimeMonitor {
                 let current_metrics = monitored_stats.metrics(); // Get current snapshot from atomic stats
 
                 let mut current_histogram_data = None;
-                if collect_histograms
-                    && let Some(hist) = histogram_arc.write().as_mut() {
-                        current_histogram_data = Some(hist.export());
-                    }
+                if collect_histograms && let Some(hist) = histogram_arc.write().as_mut() {
+                    current_histogram_data = Some(hist.export());
+                }
 
                 let mut active_alerts: Vec<MemoryAlert> = Vec::new();
                 if alert_enabled {
@@ -155,13 +154,14 @@ impl RealTimeMonitor {
 
                     // Check global memory threshold
                     if let Some(mem_threshold) = alert_memory_threshold
-                        && current_metrics.current_allocated as u64 >= mem_threshold {
-                            if let Some(last_time) = last_triggered.get("High Memory Usage") {
-                                if now.duration_since(*last_time) < alert_cooldown {
-                                    // Still in cooldown period, skip alert
-                                } else {
-                                    // Cooldown passed, trigger alert
-                                    active_alerts.push(MemoryAlert {
+                        && current_metrics.current_allocated as u64 >= mem_threshold
+                    {
+                        if let Some(last_time) = last_triggered.get("High Memory Usage") {
+                            if now.duration_since(*last_time) < alert_cooldown {
+                                // Still in cooldown period, skip alert
+                            } else {
+                                // Cooldown passed, trigger alert
+                                active_alerts.push(MemoryAlert {
                                         name: "High Memory Usage".to_string(),
                                         level: "Critical".to_string(), // Default to Critical for general threshold
                                         triggered_at: now,
@@ -170,11 +170,11 @@ impl RealTimeMonitor {
                                         message: format!("Current allocated memory ({}) is at or above critical threshold ({}).",
                                                          current_metrics.current_allocated, mem_threshold),
                                     });
-                                    last_triggered.insert("High Memory Usage".to_string(), now);
-                                }
-                            } else {
-                                // First time triggering this alert
-                                active_alerts.push(MemoryAlert {
+                                last_triggered.insert("High Memory Usage".to_string(), now);
+                            }
+                        } else {
+                            // First time triggering this alert
+                            active_alerts.push(MemoryAlert {
                                     name: "High Memory Usage".to_string(),
                                     level: "Critical".to_string(),
                                     triggered_at: now,
@@ -183,9 +183,9 @@ impl RealTimeMonitor {
                                     message: format!("Current allocated memory ({}) is at or above critical threshold ({}).",
                                                      current_metrics.current_allocated, mem_threshold),
                                 });
-                                last_triggered.insert("High Memory Usage".to_string(), now);
-                            }
+                            last_triggered.insert("High Memory Usage".to_string(), now);
                         }
+                    }
 
                     // Check global allocation rate threshold
                     if let Some(rate_threshold) = alert_allocation_rate_threshold {

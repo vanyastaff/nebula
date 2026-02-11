@@ -318,8 +318,8 @@ where
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 key.hash(&mut hasher);
                 let hash = hasher.finish();
-                // Simple FNV-like transformation
-                let fnv_hash = hash.wrapping_mul(1099511628211u64);
+                // Simple FNV-like transformation (FNV prime: 1099511628211)
+                let fnv_hash = hash.wrapping_mul(1_099_511_628_211_u64);
                 (fnv_hash as usize) % self.config.partition_count
             }
             HashStrategy::Consistent => {
