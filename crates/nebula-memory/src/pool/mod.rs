@@ -4,7 +4,6 @@
 //!
 //! - `BatchAllocator`: Batch allocation optimization
 //! - `HierarchicalPool`: Multi-level pool hierarchy
-//! - `LockFreePool`: Lock-free pool for high concurrency
 //! - `ObjectPool`: Basic single-threaded pool
 //! - `PriorityPool`: Pool with priority-based retention
 //! - `ThreadSafePool`: Multi-threaded pool with mutex
@@ -12,7 +11,6 @@
 mod batch;
 pub mod health;
 mod hierarchical;
-mod lockfree;
 mod object_pool;
 mod poolable;
 mod priority;
@@ -21,13 +19,11 @@ mod stats;
 mod thread_safe;
 mod ttl;
 
-#[cfg(feature = "std")]
 use std::time::Duration;
 
 pub use batch::BatchAllocator;
 pub use health::{HealthConfig, HealthMetrics, LeakDetectionReport, PoolHealth, PoolHealthMonitor};
 pub use hierarchical::HierarchicalPool;
-pub use lockfree::LockFreePool;
 pub use object_pool::{ObjectPool, PooledValue};
 pub use poolable::Poolable;
 pub use priority::PriorityPool;
@@ -59,7 +55,6 @@ pub struct PoolConfig {
     pub pre_warm: bool,
 
     /// Time-to-live for pooled objects
-    #[cfg(feature = "std")]
     pub ttl: Option<Duration>,
 
     /// Growth strategy when pool is empty
@@ -95,7 +90,6 @@ impl Default for PoolConfig {
             #[cfg(not(debug_assertions))]
             validate_on_return: false,
             pre_warm: true,
-            #[cfg(feature = "std")]
             ttl: None,
             growth_strategy: GrowthStrategy::Double,
             #[cfg(feature = "adaptive")]
@@ -127,7 +121,6 @@ impl PoolConfig {
     }
 
     /// Set time-to-live for objects
-    #[cfg(feature = "std")]
     #[must_use = "builder methods must be chained or built"]
     pub fn with_ttl(mut self, ttl: Duration) -> Self {
         self.ttl = Some(ttl);

@@ -1,42 +1,39 @@
-//! Simple LRU (Least Recently Used) cache eviction policy
+//! Optimized LRU (Least Recently Used) cache eviction policy
 //!
-//! This module provides a straightforward LRU implementation using a `VecDeque`.
+//! This module provides an O(1) LRU implementation using a HashMap with doubly-linked list indices.
 //! When the cache is full, it evicts the least recently used entry.
 //!
-//! This is a simplified version that focuses on clarity and correctness over
-//! advanced optimizations. For most use cases, this simple approach is sufficient.
+//! All operations (access, insertion, removal) are O(1) for optimal performance.
 
-#![cfg_attr(not(feature = "std"), no_std)]
-
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(feature = "std")]
-use std::{
-    collections::{HashMap, VecDeque},
-    marker::PhantomData,
-};
-
-#[cfg(not(feature = "std"))]
-use {
-    alloc::{boxed::Box, collections::VecDeque, vec::Vec},
-    core::{hash::Hash, marker::PhantomData},
-    hashbrown::HashMap,
-};
+use std::{collections::HashMap, marker::PhantomData};
 
 use crate::cache::compute::{CacheEntry, CacheKey};
 
 use super::{EvictionEntry, EvictionPolicy, VictimSelector};
 
-/// Simple LRU (Least Recently Used) cache eviction policy
+/// Node in the doubly-linked LRU list
+#[derive(Debug, Clone)]
+struct LruNode<K> {
+    key: K,
+    prev: Option<usize>,
+    next: Option<usize>,
+}
+
+/// Optimized LRU (Least Recently Used) cache eviction policy
 ///
-/// Maintains a queue of keys ordered by recency of access. When an entry is accessed,
-/// it's moved to the front of the queue. When eviction is needed, the key at the back
-/// (least recently used) is selected.
+/// Maintains keys in a doubly-linked list ordered by recency of access. When an entry is accessed,
+/// it's moved to the front in O(1) time. When eviction is needed, the key at the back
+/// (least recently used) is selected in O(1) time.
 ///
-/// This implementation uses a `VecDeque` for simplicity and clarity. For extremely
-/// high-throughput scenarios with millions of accesses per second, a doubly-linked
-/// list might be more efficient, but for typical caching use cases this is sufficient.
+/// This implementation uses a HashMap for O(1) lookups and a Vec-based doubly-linked list
+/// for O(1) reordering. All operations are constant time.
+///
+/// # Performance
+///
+/// - Access: O(1)
+/// - Insertion: O(1)
+/// - Removal: O(1)
+/// - Victim selection: O(1)
 ///
 /// # Examples
 ///
@@ -58,10 +55,16 @@ where
 {
     /// Phantom data for unused type parameter V
     _phantom: PhantomData<V>,
-    /// Queue of keys in LRU order (front = most recent, back = least recent)
-    queue: VecDeque<K>,
-    /// Set of keys for O(1) membership testing
-    key_set: HashMap<K, ()>,
+    /// Map from key to node index in the list
+    key_to_index: HashMap<K, usize>,
+    /// Doubly-linked list of nodes (Vec acts as arena allocator)
+    nodes: Vec<LruNode<K>>,
+    /// Index of the most recently used node (head)
+    head: Option<usize>,
+    /// Index of the least recently used node (tail)
+    tail: Option<usize>,
+    /// Free list for reusing removed node slots
+    free_list: Vec<usize>,
 }
 
 impl<K, V> LruPolicy<K, V>
@@ -73,35 +76,143 @@ where
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,
-            queue: VecDeque::new(),
-            key_set: HashMap::new(),
+            key_to_index: HashMap::new(),
+            nodes: Vec::new(),
+            head: None,
+            tail: None,
+            free_list: Vec::new(),
+        }
+    }
+
+    /// Create a new LRU eviction policy with preallocated capacity
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            _phantom: PhantomData,
+            key_to_index: HashMap::with_capacity(capacity),
+            nodes: Vec::with_capacity(capacity),
+            head: None,
+            tail: None,
+            free_list: Vec::new(),
         }
     }
 
     /// Get the number of tracked keys
     #[must_use]
     pub fn len(&self) -> usize {
-        self.queue.len()
+        self.key_to_index.len()
     }
 
     /// Check if the policy is tracking any keys
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.queue.is_empty()
+        self.key_to_index.is_empty()
     }
 
     /// Clear all tracked keys
     pub fn clear(&mut self) {
-        self.queue.clear();
-        self.key_set.clear();
+        self.key_to_index.clear();
+        self.nodes.clear();
+        self.head = None;
+        self.tail = None;
+        self.free_list.clear();
     }
 
-    /// Move a key to the front (mark as most recently used)
-    fn touch(&mut self, key: &K) {
-        // Remove key from its current position
-        self.queue.retain(|k| k != key);
-        // Add it to the front (most recent)
-        self.queue.push_front(key.clone());
+    /// Move a node to the front (make it most recently used) - O(1)
+    fn move_to_front(&mut self, index: usize) {
+        if self.head == Some(index) {
+            // Already at front
+            return;
+        }
+
+        // Remove from current position
+        let node = &self.nodes[index];
+        let prev = node.prev;
+        let next = node.next;
+
+        if let Some(prev_idx) = prev {
+            self.nodes[prev_idx].next = next;
+        }
+        if let Some(next_idx) = next {
+            self.nodes[next_idx].prev = prev;
+        }
+
+        // Update tail if this was the tail
+        if self.tail == Some(index) {
+            self.tail = prev;
+        }
+
+        // Insert at front
+        if let Some(old_head) = self.head {
+            self.nodes[old_head].prev = Some(index);
+        }
+
+        self.nodes[index].prev = None;
+        self.nodes[index].next = self.head;
+        self.head = Some(index);
+
+        // If this was the only node, it's also the tail
+        if self.tail.is_none() {
+            self.tail = Some(index);
+        }
+    }
+
+    /// Add a new node at the front - O(1)
+    fn push_front(&mut self, key: K) -> usize {
+        let index = if let Some(free_idx) = self.free_list.pop() {
+            // Reuse a free slot
+            self.nodes[free_idx] = LruNode {
+                key,
+                prev: None,
+                next: self.head,
+            };
+            free_idx
+        } else {
+            // Allocate new slot
+            let index = self.nodes.len();
+            self.nodes.push(LruNode {
+                key,
+                prev: None,
+                next: self.head,
+            });
+            index
+        };
+
+        if let Some(old_head) = self.head {
+            self.nodes[old_head].prev = Some(index);
+        }
+
+        self.head = Some(index);
+
+        if self.tail.is_none() {
+            self.tail = Some(index);
+        }
+
+        index
+    }
+
+    /// Remove a node from the list - O(1)
+    fn remove_node(&mut self, index: usize) {
+        let node = &self.nodes[index];
+        let prev = node.prev;
+        let next = node.next;
+
+        if let Some(prev_idx) = prev {
+            self.nodes[prev_idx].next = next;
+        } else {
+            // This was the head
+            self.head = next;
+        }
+
+        if let Some(next_idx) = next {
+            self.nodes[next_idx].prev = prev;
+        } else {
+            // This was the tail
+            self.tail = prev;
+        }
+
+        // Add to free list for reuse
+        self.free_list.push(index);
     }
 }
 
@@ -120,21 +231,23 @@ where
     V: Send + Sync,
 {
     fn record_access(&mut self, key: &K) {
-        // Only touch if key exists
-        if self.key_set.contains_key(key) {
-            self.touch(key);
+        // Move to front if key exists - O(1)
+        if let Some(&index) = self.key_to_index.get(key) {
+            self.move_to_front(index);
         }
     }
 
     fn record_insertion(&mut self, key: &K, _entry: &CacheEntry<V>) {
-        // Add to front (most recently used)
-        self.queue.push_front(key.clone());
-        self.key_set.insert(key.clone(), ());
+        // Add to front (most recently used) - O(1)
+        let index = self.push_front(key.clone());
+        self.key_to_index.insert(key.clone(), index);
     }
 
     fn record_removal(&mut self, key: &K) {
-        self.queue.retain(|k| k != key);
-        self.key_set.remove(key);
+        // Remove from list - O(1)
+        if let Some(index) = self.key_to_index.remove(key) {
+            self.remove_node(index);
+        }
     }
 
     fn as_victim_selector(&self) -> &dyn VictimSelector<K, V> {
@@ -152,8 +265,8 @@ where
     V: Send + Sync,
 {
     fn select_victim(&self, _entries: &[EvictionEntry<'_, K, V>]) -> Option<K> {
-        // Return the least recently used key (back of queue)
-        self.queue.back().cloned()
+        // Return the least recently used key (tail of list) - O(1)
+        self.tail.map(|tail_idx| self.nodes[tail_idx].key.clone())
     }
 }
 
@@ -240,7 +353,7 @@ mod tests {
     #[test]
     fn test_lru_empty_selection() {
         let policy = LruPolicy::<String, i32>::new();
-        let entries: Vec<EvictionEntry<String, i32>> = vec![];
+        let entries: Vec<EvictionEntry<'_, String, i32>> = vec![];
 
         let victim = policy.as_victim_selector().select_victim(&entries);
         assert!(victim.is_none());

@@ -102,79 +102,67 @@ mod tests {
 
     #[test]
     fn test_span_like_merging() {
-        // Execution context: Sentry + tag
-        let exec = ExecutionContext::new("exec-1", "wf-1", "tenant-1").with_resource(
-            LoggerResource::new()
-                .with_sentry_dsn("https://exec@sentry.io/project")
-                .with_tag("execution_id", "exec-1"),
-        );
+        ExecutionContext::new("exec-1", "wf-1", "tenant-1")
+            .with_resource(
+                LoggerResource::new()
+                    .with_sentry_dsn("https://exec@sentry.io/project")
+                    .with_tag("execution_id", "exec-1"),
+            )
+            .scope_sync(|| {
+                NodeContext::new("node-1", "action-1")
+                    .with_resource(
+                        LoggerResource::new()
+                            .with_webhook("https://hooks.slack.com/...")
+                            .with_tag("node_id", "node-1"),
+                    )
+                    .scope_sync(|| {
+                        let merged = get_current_logger_resource().unwrap();
 
-        let _exec_guard = exec.enter();
-
-        // Node context: webhook + tag
-        let node = NodeContext::new("node-1", "action-1").with_resource(
-            LoggerResource::new()
-                .with_webhook("https://hooks.slack.com/...")
-                .with_tag("node_id", "node-1"),
-        );
-
-        let _node_guard = node.enter();
-
-        // Get merged resource
-        let merged = get_current_logger_resource().unwrap();
-
-        // Should have Sentry from Execution
-        assert_eq!(merged.sentry_dsn(), Some("https://exec@sentry.io/project"));
-
-        // Should have webhook from Node
-        assert_eq!(merged.webhook_url(), Some("https://hooks.slack.com/..."));
-
-        // Should have both tags (accumulated)
-        assert_eq!(merged.tags.len(), 2);
-        let tag_keys: Vec<_> = merged.tags.iter().map(|(k, _)| k.as_str()).collect();
-        assert!(tag_keys.contains(&"execution_id"));
-        assert!(tag_keys.contains(&"node_id"));
+                        assert_eq!(merged.sentry_dsn(), Some("https://exec@sentry.io/project"));
+                        assert_eq!(merged.webhook_url(), Some("https://hooks.slack.com/..."));
+                        assert_eq!(merged.tags.len(), 2);
+                        let tag_keys: Vec<_> =
+                            merged.tags.iter().map(|(k, _)| k.as_str()).collect();
+                        assert!(tag_keys.contains(&"execution_id"));
+                        assert!(tag_keys.contains(&"node_id"));
+                    });
+            });
     }
 
     #[test]
     fn test_override_sentry() {
-        // Execution: default Sentry
-        let exec = ExecutionContext::new("exec-1", "wf-1", "tenant-1")
-            .with_resource(LoggerResource::new().with_sentry_dsn("https://exec@sentry.io/project"));
-
-        let _exec_guard = exec.enter();
-
-        // Node: override with different Sentry
-        let node = NodeContext::new("node-1", "action-1")
-            .with_resource(LoggerResource::new().with_sentry_dsn("https://node@sentry.io/other"));
-
-        let _node_guard = node.enter();
-
-        let merged = get_current_logger_resource().unwrap();
-
-        // Should use Node's Sentry (overrides Execution)
-        assert_eq!(merged.sentry_dsn(), Some("https://node@sentry.io/other"));
+        ExecutionContext::new("exec-1", "wf-1", "tenant-1")
+            .with_resource(LoggerResource::new().with_sentry_dsn("https://exec@sentry.io/project"))
+            .scope_sync(|| {
+                NodeContext::new("node-1", "action-1")
+                    .with_resource(
+                        LoggerResource::new().with_sentry_dsn("https://node@sentry.io/other"),
+                    )
+                    .scope_sync(|| {
+                        let merged = get_current_logger_resource().unwrap();
+                        assert_eq!(merged.sentry_dsn(), Some("https://node@sentry.io/other"));
+                    });
+            });
     }
 
     #[test]
     fn test_no_contexts() {
-        // No contexts active
         let merged = get_current_logger_resource();
         assert!(merged.is_none());
     }
 
     #[test]
     fn test_single_context() {
-        let exec = ExecutionContext::new("exec-1", "wf-1", "tenant-1").with_resource(
-            LoggerResource::new()
-                .with_sentry_dsn("https://test@sentry.io/project")
-                .with_tag("test", "value"),
-        );
-
-        let _guard = exec.enter();
-
-        let merged = get_current_logger_resource().unwrap();
-        assert_eq!(merged.sentry_dsn(), Some("https://test@sentry.io/project"));
-        assert_eq!(merged.tags.len(), 1);
+        ExecutionContext::new("exec-1", "wf-1", "tenant-1")
+            .with_resource(
+                LoggerResource::new()
+                    .with_sentry_dsn("https://test@sentry.io/project")
+                    .with_tag("test", "value"),
+            )
+            .scope_sync(|| {
+                let merged = get_current_logger_resource().unwrap();
+                assert_eq!(merged.sentry_dsn(), Some("https://test@sentry.io/project"));
+                assert_eq!(merged.tags.len(), 1);
+            });
     }
 }

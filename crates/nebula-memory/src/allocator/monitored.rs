@@ -19,19 +19,16 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::NonNull;
 
-#[cfg(feature = "std")]
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "logging")]
 use nebula_log::{debug, error, warn};
 
 use crate::allocator::{
-    AllocError, AllocErrorCode, AllocResult, Allocator, AllocatorStats, AtomicAllocatorStats,
-    StatisticsProvider,
+    AllocError, AllocResult, Allocator, AllocatorStats, AtomicAllocatorStats, StatisticsProvider,
 };
 use crate::error::{MemoryError, MemoryResult};
 
-#[cfg(feature = "std")]
 use crate::monitoring::{IntegratedStats, MemoryMonitor, MonitoringConfig, PressureAction};
 
 /// Allocator wrapper that monitors system memory pressure and adjusts behavior
@@ -41,7 +38,6 @@ pub struct MonitoredAllocator<A> {
     inner: A,
     /// Statistics tracking
     stats: AtomicAllocatorStats,
-    #[cfg(feature = "std")]
     /// Memory pressure monitor
     monitor: Arc<Mutex<MemoryMonitor>>,
     /// Configuration
@@ -77,13 +73,11 @@ where
     A: Allocator,
 {
     /// Create a new monitored allocator with default configuration
-    #[cfg(feature = "std")]
     pub fn new(allocator: A) -> Self {
         Self::with_config(allocator, MonitoredConfig::default())
     }
 
     /// Create a new monitored allocator with custom configuration
-    #[cfg(feature = "std")]
     pub fn with_config(allocator: A, config: MonitoredConfig) -> Self {
         Self {
             inner: allocator,
@@ -94,7 +88,6 @@ where
     }
 
     /// Create a monitored allocator with custom monitoring configuration
-    #[cfg(feature = "std")]
     pub fn with_monitoring_config(
         allocator: A,
         config: MonitoredConfig,
@@ -109,11 +102,10 @@ where
     }
 
     /// Get current integrated statistics combining allocator and system metrics
-    #[cfg(feature = "std")]
     pub fn integrated_stats(&self) -> MemoryResult<IntegratedStats> {
         let allocator_stats = self.stats.snapshot();
-        let monitor = self.monitor.lock().map_err(|e| {
-            MemoryError::initialization_failed(format!("Monitor lock failed: {}", e))
+        let monitor = self.monitor.lock().map_err(|e| MemoryError::InitializationFailed {
+            reason: format!("Monitor lock failed: {e}"),
         })?;
         let monitoring_stats = monitor.get_stats();
 
@@ -121,10 +113,9 @@ where
     }
 
     /// Check if allocation should be allowed based on size and system pressure
-    #[cfg(feature = "std")]
     fn should_allow_allocation(&self, layout: Layout) -> MemoryResult<bool> {
-        let mut monitor = self.monitor.lock().map_err(|e| {
-            MemoryError::initialization_failed(format!("Monitor lock failed: {}", e))
+        let mut monitor = self.monitor.lock().map_err(|e| MemoryError::InitializationFailed {
+            reason: format!("Monitor lock failed: {e}"),
         })?;
 
         // Check if large allocation should be allowed
@@ -184,41 +175,6 @@ where
     }
 }
 
-#[cfg(not(feature = "std"))]
-impl<A> MonitoredAllocator<A>
-where
-    A: Allocator,
-{
-    /// Create a new monitored allocator (no-std version - no monitoring)
-    pub fn new(allocator: A) -> Self {
-        Self::with_config(allocator, MonitoredConfig::default())
-    }
-
-    /// Create a new monitored allocator with custom configuration (no-std version)
-    pub fn with_config(allocator: A, config: MonitoredConfig) -> Self {
-        Self {
-            inner: allocator,
-            stats: AtomicAllocatorStats::new(),
-            config,
-        }
-    }
-
-    /// Check if allocation should be allowed (no-std version - always true)
-    fn should_allow_allocation(&self, _layout: Layout) -> MemoryResult<bool> {
-        Ok(true)
-    }
-
-    /// Get the underlying allocator
-    pub fn inner(&self) -> &A {
-        &self.inner
-    }
-
-    /// Get mutable reference to the underlying allocator
-    pub fn inner_mut(&mut self) -> &mut A {
-        &mut self.inner
-    }
-}
-
 // SAFETY: MonitoredAllocator forwards all operations to inner Allocator A.
 // - All safety contracts preserved through delegation
 // - Pressure checking happens before allocation (doesn't affect safety)
@@ -236,7 +192,7 @@ where
                 // SAFETY: Forwarding to inner allocator.
                 // - layout is valid (caller contract)
                 // - inner.allocate upholds same safety contract as self.allocate
-                match self.inner.allocate(layout) {
+                match unsafe { self.inner.allocate(layout) } {
                     Ok(ptr) => {
                         self.stats.record_allocation(layout.size());
 
@@ -271,7 +227,7 @@ where
             Ok(false) => {
                 // Allocation denied by monitor
                 self.stats.record_allocation_failure();
-                Err(AllocError::with_layout(0, layout))
+                Err(AllocError::allocation_failed_with_layout(layout))
             }
             Err(monitor_error) => {
                 // Monitor error - log and allow allocation
@@ -283,7 +239,7 @@ where
                 // SAFETY: Forwarding to inner allocator (monitor error fallback).
                 // - layout is valid (caller contract)
                 // - inner.allocate upholds safety contract
-                match self.inner.allocate(layout) {
+                match unsafe { self.inner.allocate(layout) } {
                     Ok(ptr) => {
                         self.stats.record_allocation(layout.size());
                         Ok(ptr)
@@ -301,7 +257,7 @@ where
         // SAFETY: Forwarding to inner allocator.
         // - ptr/layout match allocation (caller contract)
         // - inner.deallocate upholds safety contract
-        self.inner.deallocate(ptr, layout);
+        unsafe { self.inner.deallocate(ptr, layout) };
         self.stats.record_deallocation(layout.size());
 
         #[cfg(feature = "logging")]
@@ -326,7 +282,7 @@ where
                 // SAFETY: Forwarding to inner allocator.
                 // - ptr/old_layout/new_layout valid (caller contract)
                 // - inner.grow upholds safety contract
-                match self.inner.grow(ptr, old_layout, new_layout) {
+                match unsafe { self.inner.grow(ptr, old_layout, new_layout) } {
                     Ok(new_ptr) => {
                         self.stats
                             .record_reallocation(old_layout.size(), new_layout.size());
@@ -340,14 +296,14 @@ where
             }
             Ok(false) => {
                 self.stats.record_allocation_failure();
-                Err(AllocError::with_layout(0, new_layout))
+                Err(AllocError::allocation_failed_with_layout(new_layout))
             }
             Err(_) => {
                 // Monitor error - allow growth
                 // SAFETY: Forwarding to inner allocator (monitor error fallback).
                 // - ptr/old_layout/new_layout valid (caller contract)
                 // - inner.grow upholds safety contract
-                match self.inner.grow(ptr, old_layout, new_layout) {
+                match unsafe { self.inner.grow(ptr, old_layout, new_layout) } {
                     Ok(new_ptr) => {
                         self.stats
                             .record_reallocation(old_layout.size(), new_layout.size());
@@ -372,7 +328,7 @@ where
         // - ptr/old_layout/new_layout valid (caller contract)
         // - Shrinking always allowed (reduces memory usage)
         // - inner.shrink upholds safety contract
-        match self.inner.shrink(ptr, old_layout, new_layout) {
+        match unsafe { self.inner.shrink(ptr, old_layout, new_layout) } {
             Ok(new_ptr) => {
                 self.stats
                     .record_reallocation(old_layout.size(), new_layout.size());
@@ -397,7 +353,6 @@ where
     fn reset_statistics(&self) {
         self.stats.reset();
 
-        #[cfg(feature = "std")]
         if let Ok(mut monitor) = self.monitor.lock() {
             monitor.reset_stats();
         }
@@ -417,7 +372,7 @@ where
         // SAFETY: Calling self.allocate (Allocator trait method).
         // - layout valid (caller contract)
         // - Converting NonNull<[u8]> to *mut u8
-        match self.allocate(layout) {
+        match unsafe { self.allocate(layout) } {
             Ok(ptr) => ptr.as_ptr() as *mut u8,
             Err(_) => core::ptr::null_mut(),
         }
@@ -428,7 +383,7 @@ where
         // - ptr/layout valid (caller contract)
         // - NonNull::new safely handles null check
         if let Some(ptr) = NonNull::new(ptr) {
-            self.deallocate(ptr, layout);
+            unsafe { self.deallocate(ptr, layout) };
         }
     }
 
@@ -441,13 +396,13 @@ where
             if let Ok(new_layout) = Layout::from_size_align(new_size, layout.align()) {
                 if new_size > layout.size() {
                     // Growing
-                    match self.grow(ptr, layout, new_layout) {
+                    match unsafe { self.grow(ptr, layout, new_layout) } {
                         Ok(new_ptr) => new_ptr.as_ptr() as *mut u8,
                         Err(_) => core::ptr::null_mut(),
                     }
                 } else {
                     // Shrinking
-                    match self.shrink(ptr, layout, new_layout) {
+                    match unsafe { self.shrink(ptr, layout, new_layout) } {
                         Ok(new_ptr) => new_ptr.as_ptr() as *mut u8,
                         Err(_) => core::ptr::null_mut(),
                     }
@@ -503,7 +458,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_integrated_stats() {
         let system_alloc = SystemAllocator::new();

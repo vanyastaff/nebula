@@ -2,17 +2,10 @@
 
 #![allow(clippy::excessive_nesting)]
 
-#[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
-#[cfg(feature = "std")]
 use std::sync::{Arc, Condvar, Mutex};
-#[cfg(feature = "std")]
 use std::time::Duration;
-
-#[cfg(not(feature = "std"))]
-use spin::{Condvar, Mutex};
 
 #[cfg(feature = "stats")]
 use super::PoolStats;
@@ -49,7 +42,6 @@ pub struct ThreadSafePool<T: Poolable> {
     factory: Arc<dyn Fn() -> T + Send + Sync>,
     config: PoolConfig,
     callbacks: Arc<dyn PoolCallbacks<T>>,
-    #[cfg(feature = "std")]
     not_empty: Condvar,
     #[cfg(feature = "stats")]
     stats: Arc<PoolStats>,
@@ -103,7 +95,6 @@ impl<T: Poolable> ThreadSafePool<T> {
             factory: Arc::new(factory),
             config,
             callbacks: Arc::new(NoOpCallbacks),
-            #[cfg(feature = "std")]
             not_empty: Condvar::new(),
             #[cfg(feature = "stats")]
             stats,
@@ -153,7 +144,6 @@ impl<T: Poolable> ThreadSafePool<T> {
     }
 
     /// Get object with timeout
-    #[cfg(feature = "std")]
     pub fn get_timeout(
         &self,
         timeout: Option<Duration>,
@@ -252,16 +242,6 @@ impl<T: Poolable> ThreadSafePool<T> {
         })
     }
 
-    /// Get object with timeout (no-std version)
-    #[cfg(not(feature = "std"))]
-    pub fn get_timeout(
-        &self,
-        _timeout: Option<Duration>,
-    ) -> MemoryResult<ThreadSafePooledValue<T>> {
-        // Without std, we can't do timed waits
-        self.try_get().ok_or(MemoryError::pool_exhausted("pool", 0))
-    }
-
     /// Return object to pool
     fn return_object(&self, mut obj: T) {
         #[cfg(feature = "stats")]
@@ -307,7 +287,6 @@ impl<T: Poolable> ThreadSafePool<T> {
         obj.reset();
         inner.objects.push(obj);
 
-        #[cfg(feature = "std")]
         self.not_empty.notify_one();
 
         #[cfg(feature = "stats")]
@@ -376,7 +355,6 @@ impl<T: Poolable> ThreadSafePool<T> {
             self.callbacks.on_destroy(&obj);
         }
 
-        #[cfg(feature = "std")]
         self.not_empty.notify_all();
     }
 

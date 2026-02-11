@@ -1,16 +1,9 @@
 //! Aggregates memory statistics and reports from various components
 //! to provide a comprehensive view of memory usage.
 
-#[cfg(not(feature = "std"))]
-use alloc::string::String;
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
-#[cfg(feature = "std")]
 use std::sync::Arc;
-#[cfg(feature = "std")]
 use std::time::Duration;
 
-#[cfg(feature = "std")]
 use parking_lot::RwLock;
 
 use super::config::StatsConfig; // Use general StatsConfig for overall enablement
@@ -25,7 +18,6 @@ use super::tracker::MemoryTracker; // Tracker provides historical data // For pr
 
 /// A comprehensive snapshot of all aggregated memory statistics.
 #[derive(Debug, Clone)]
-#[cfg(feature = "std")]
 pub struct AggregatedStats {
     pub timestamp: std::time::Instant,
     pub overall_metrics: MemoryMetrics,
@@ -40,7 +32,6 @@ pub struct AggregatedStats {
 
 /// Summarized historical data for long-term analysis.
 #[derive(Debug, Clone)]
-#[cfg(feature = "std")]
 pub struct HistoricalMetricsSummary {
     pub total_snapshots: usize,
     pub avg_current_allocated: f64,
@@ -54,7 +45,6 @@ pub struct HistoricalMetricsSummary {
 
 /// The main aggregator responsible for collecting data from various memory
 /// components.
-#[cfg(feature = "std")]
 pub struct Aggregator {
     config: StatsConfig,
     monitored_stats: Arc<MemoryStats>,
@@ -65,7 +55,6 @@ pub struct Aggregator {
     predictive_analytics: Arc<RwLock<PredictiveAnalytics>>, // For trend and prediction
 }
 
-#[cfg(feature = "std")]
 impl Aggregator {
     /// Creates a new `Aggregator` instance.
     ///
@@ -242,7 +231,6 @@ mod tests {
         stats
             .total_deallocated_bytes
             .store(total_deallocated_bytes, Ordering::Relaxed);
-        #[cfg(feature = "std")]
         stats
             .total_allocation_time_nanos
             .store(0, Ordering::Relaxed);

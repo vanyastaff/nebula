@@ -8,7 +8,6 @@ use core::num::NonZeroUsize;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(feature = "std")]
 use dashmap::DashMap;
 
 use super::{AllocError, AllocResult, Allocator, ThreadSafeAllocator};
@@ -124,11 +123,7 @@ impl<A: ThreadSafeAllocator + 'static> ManagedAllocator for A {
 /// Manager for multiple allocators with registry
 pub struct AllocatorManager {
     /// Registry of allocators (lock-free concurrent map)
-    #[cfg(feature = "std")]
     allocators: DashMap<AllocatorId, Box<dyn ManagedAllocator>>,
-
-    #[cfg(not(feature = "std"))]
-    allocators: spin::RwLock<heapless::FnvIndexMap<AllocatorId, &'static dyn ManagedAllocator, 16>>,
 
     /// Currently active allocator ID (stored as usize for atomic operations)
     active_allocator: AtomicUsize,
@@ -155,35 +150,16 @@ impl AllocatorManager {
     }
 
     /// Register an allocator and return its ID
-    #[cfg(feature = "std")]
     pub fn register<A: ManagedAllocator + 'static>(&self, allocator: A) -> AllocatorId {
         let id = AllocatorId::new();
         self.allocators.insert(id, Box::new(allocator));
         id
     }
 
-    /// Register a static allocator (no_std)
-    #[cfg(not(feature = "std"))]
-    pub fn register_static(
-        &self,
-        allocator: &'static dyn ManagedAllocator,
-    ) -> Result<AllocatorId, &'static str> {
-        let id = AllocatorId::new();
-        let mut registry = self.allocators.write();
-        registry
-            .insert(id, allocator)
-            .map_err(|_| "Registry full")?;
-        Ok(id)
-    }
-
     /// Set the default allocator (must be already registered)
     #[must_use = "operation result must be checked"]
     pub fn set_default(&mut self, allocator_id: AllocatorId) -> Result<(), &'static str> {
-        #[cfg(feature = "std")]
         let exists = self.allocators.contains_key(&allocator_id);
-
-        #[cfg(not(feature = "std"))]
-        let exists = self.allocators.read().contains_key(&allocator_id);
 
         if exists {
             self.default_allocator = Some(allocator_id);
@@ -199,11 +175,7 @@ impl AllocatorManager {
     #[must_use = "operation result must be checked"]
     pub fn set_active_allocator(&self, allocator_id: AllocatorId) -> Result<(), &'static str> {
         // Verify allocator exists
-        #[cfg(feature = "std")]
         let exists = self.allocators.contains_key(&allocator_id);
-
-        #[cfg(not(feature = "std"))]
-        let exists = self.allocators.read().contains_key(&allocator_id);
 
         if exists {
             self.active_allocator
@@ -232,18 +204,9 @@ impl AllocatorManager {
     where
         F: FnOnce(&dyn ManagedAllocator) -> R,
     {
-        #[cfg(feature = "std")]
-        {
-            self.allocators
-                .get(&allocator_id)
-                .map(|alloc| f(alloc.as_ref()))
-        }
-
-        #[cfg(not(feature = "std"))]
-        {
-            let registry = self.allocators.read();
-            registry.get(&allocator_id).map(|&alloc| f(alloc))
-        }
+        self.allocators
+            .get(&allocator_id)
+            .map(|alloc| f(alloc.as_ref()))
     }
 
     /// Execute a function with the active allocator
@@ -278,22 +241,10 @@ impl AllocatorManager {
 
     /// List all registered allocators
     pub fn list_allocators(&self) -> Vec<(AllocatorId, &'static str)> {
-        #[cfg(feature = "std")]
-        {
-            self.allocators
-                .iter()
-                .map(|entry| (*entry.key(), entry.value().name()))
-                .collect()
-        }
-
-        #[cfg(not(feature = "std"))]
-        {
-            let registry = self.allocators.read();
-            registry
-                .iter()
-                .map(|(&id, &alloc)| (id, alloc.name()))
-                .collect()
-        }
+        self.allocators
+            .iter()
+            .map(|entry| (*entry.key(), entry.value().name()))
+            .collect()
     }
 
     /// Allocate using the currently active allocator
@@ -352,11 +303,7 @@ use core::sync::atomic::AtomicBool;
 
 static MANAGER_INIT: AtomicBool = AtomicBool::new(false);
 
-#[cfg(feature = "std")]
 static GLOBAL_MANAGER: std::sync::OnceLock<AllocatorManager> = std::sync::OnceLock::new();
-
-#[cfg(not(feature = "std"))]
-static GLOBAL_MANAGER: spin::Once<AllocatorManager> = spin::Once::new();
 
 /// Singleton implementation of allocator manager
 pub struct GlobalAllocatorManager;
@@ -365,61 +312,23 @@ impl GlobalAllocatorManager {
     /// Initializes the global allocator manager
     #[must_use = "initialization result must be checked"]
     pub fn init() -> Result<(), &'static str> {
-        #[cfg(feature = "std")]
-        {
-            GLOBAL_MANAGER
-                .set(AllocatorManager::new())
-                .map_err(|_| "Global allocator manager already initialized")?;
-            MANAGER_INIT.store(true, Ordering::SeqCst);
-            Ok(())
-        }
-
-        #[cfg(not(feature = "std"))]
-        {
-            if MANAGER_INIT.swap(true, Ordering::SeqCst) {
-                return Err("Global allocator manager already initialized");
-            }
-            GLOBAL_MANAGER.call_once(|| AllocatorManager::new());
-            Ok(())
-        }
+        GLOBAL_MANAGER
+            .set(AllocatorManager::new())
+            .map_err(|_| "Global allocator manager already initialized")?;
+        MANAGER_INIT.store(true, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Gets a reference to the global manager
     pub fn get() -> &'static AllocatorManager {
-        #[cfg(feature = "std")]
-        {
-            GLOBAL_MANAGER.get()
-                .expect("Global allocator manager not initialized. Call GlobalAllocatorManager::init() first.")
-        }
-
-        #[cfg(not(feature = "std"))]
-        {
-            if !MANAGER_INIT.load(Ordering::SeqCst) {
-                panic!(
-                    "Global allocator manager not initialized. Call GlobalAllocatorManager::init() first."
-                );
-            }
-            GLOBAL_MANAGER
-                .get()
-                .expect("Global allocator manager not initialized")
-        }
+        GLOBAL_MANAGER.get().expect(
+            "Global allocator manager not initialized. Call GlobalAllocatorManager::init() first.",
+        )
     }
 
     /// Try to get the global manager without panicking
     pub fn try_get() -> Option<&'static AllocatorManager> {
-        #[cfg(feature = "std")]
-        {
-            GLOBAL_MANAGER.get()
-        }
-
-        #[cfg(not(feature = "std"))]
-        {
-            if MANAGER_INIT.load(Ordering::SeqCst) {
-                GLOBAL_MANAGER.get()
-            } else {
-                None
-            }
-        }
+        GLOBAL_MANAGER.get()
     }
 }
 
@@ -478,7 +387,7 @@ unsafe impl Allocator for AllocatorManager {
 /// # Safety
 ///
 /// `AllocatorManager` is thread-safe because:
-/// - Registry uses lock-free `DashMap` (std) or `RwLock` (`no_std`) for concurrent access
+/// - Registry uses lock-free `DashMap` for concurrent access
 /// - Active allocator ID is stored in `AtomicUsize` with proper memory ordering
 /// - All registered allocators must be Send + Sync by trait bound
 /// - Allocator switching is atomic and properly synchronized (`SeqCst` ordering)
@@ -486,16 +395,13 @@ unsafe impl ThreadSafeAllocator for AllocatorManager {}
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "std")]
     use std::sync::Once;
 
     use super::*;
     use crate::allocator::system::SystemAllocator;
 
-    #[cfg(feature = "std")]
     static INIT: Once = Once::new();
 
-    #[cfg(feature = "std")]
     fn ensure_global_manager_initialized() {
         INIT.call_once(|| {
             GlobalAllocatorManager::init().expect("Failed to initialize global manager");
@@ -506,67 +412,58 @@ mod tests {
     fn test_manager_basic_functionality() {
         let manager = AllocatorManager::new();
 
-        #[cfg(feature = "std")]
-        {
-            let system_alloc = SystemAllocator::new();
-            let id = manager.register(system_alloc);
+        let system_alloc = SystemAllocator::new();
+        let id = manager.register(system_alloc);
 
-            let mut manager = manager; // Need mut for set_default
-            manager.set_default(id).unwrap();
+        let mut manager = manager; // Need mut for set_default
+        manager.set_default(id).unwrap();
 
-            let layout = Layout::new::<u64>();
-            unsafe {
-                let ptr = manager.allocate(layout).unwrap();
-                manager.deallocate(ptr.cast(), layout);
-            }
+        let layout = Layout::new::<u64>();
+        unsafe {
+            let ptr = manager.allocate(layout).unwrap();
+            manager.deallocate(ptr.cast(), layout);
         }
     }
 
     #[test]
     fn test_allocator_switching() {
-        #[cfg(feature = "std")]
-        {
-            ensure_global_manager_initialized();
-            let manager = GlobalAllocatorManager::get();
+        ensure_global_manager_initialized();
+        let manager = GlobalAllocatorManager::get();
 
-            let system1 = SystemAllocator::new();
-            let system2 = SystemAllocator::new();
+        let system1 = SystemAllocator::new();
+        let system2 = SystemAllocator::new();
 
-            let id1 = manager.register(system1);
-            let id2 = manager.register(system2);
+        let id1 = manager.register(system1);
+        let id2 = manager.register(system2);
 
-            manager.set_active_allocator(id1).unwrap();
-            assert_eq!(manager.get_active_allocator_id(), Some(id1));
+        manager.set_active_allocator(id1).unwrap();
+        assert_eq!(manager.get_active_allocator_id(), Some(id1));
 
-            manager.with_allocator(id2, || {
-                assert_eq!(manager.get_active_allocator_id(), Some(id2));
-            });
+        manager.with_allocator(id2, || {
+            assert_eq!(manager.get_active_allocator_id(), Some(id2));
+        });
 
-            assert_eq!(manager.get_active_allocator_id(), Some(id1));
-        }
+        assert_eq!(manager.get_active_allocator_id(), Some(id1));
     }
 
     #[test]
     fn test_macros() {
-        #[cfg(feature = "std")]
-        {
-            ensure_global_manager_initialized();
-            let manager = GlobalAllocatorManager::get();
+        ensure_global_manager_initialized();
+        let manager = GlobalAllocatorManager::get();
 
-            let system_alloc = SystemAllocator::new();
-            let id = manager.register(system_alloc);
+        let system_alloc = SystemAllocator::new();
+        let id = manager.register(system_alloc);
 
-            set_active_allocator!(id);
+        set_active_allocator!(id);
 
-            with_allocator!(id, {
-                // Code using specific allocator
-                let layout = Layout::new::<u32>();
-                unsafe {
-                    if let Ok(ptr) = manager.allocate(layout) {
-                        manager.deallocate(ptr.cast(), layout);
-                    }
+        with_allocator!(id, {
+            // Code using specific allocator
+            let layout = Layout::new::<u32>();
+            unsafe {
+                if let Ok(ptr) = manager.allocate(layout) {
+                    manager.deallocate(ptr.cast(), layout);
                 }
-            });
-        }
+            }
+        });
     }
 }

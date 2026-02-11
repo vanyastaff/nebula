@@ -289,7 +289,7 @@ impl ThreadSafeArena {
         chunk
             .try_alloc(size, align)
             .ok_or(MemoryError::allocation_failed(0, 1))
-            .inspect(|ptr| {
+            .inspect(|_ptr| {
                 if let Some(start) = start_time {
                     self.stats
                         .record_allocation(size, start.elapsed().as_nanos() as u64);

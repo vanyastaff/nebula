@@ -66,7 +66,7 @@ impl TimingGuard {
 impl Drop for TimingGuard {
     fn drop(&mut self) {
         let duration = self.start.elapsed().as_secs_f64();
-        let name = self.name.clone();
+        let name = std::mem::take(&mut self.name);
         metrics::histogram!(name).record(duration);
     }
 }

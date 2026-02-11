@@ -3,17 +3,10 @@
 //! This module provides `MemoryTracker` which maintains historical snapshots
 //! of memory metrics for trend analysis and debugging.
 
-#[cfg(not(feature = "std"))]
-use alloc::collections::VecDeque;
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
 use core::fmt;
-#[cfg(feature = "std")]
 use std::collections::VecDeque;
-#[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "std")]
 use parking_lot::RwLock;
 
 use super::config::{TrackedMetric, TrackingConfig, TrackingLevel};
@@ -22,7 +15,6 @@ use super::memory_stats::MemoryMetrics;
 /// Time series data point
 #[derive(Debug, Clone)]
 pub struct DataPoint {
-    #[cfg(feature = "std")]
     pub timestamp: Instant,
     pub value: f64,
     pub metadata: Option<&'static str>,
@@ -31,7 +23,6 @@ pub struct DataPoint {
 /// Window statistics
 #[derive(Debug, Clone)]
 pub struct WindowStats {
-    #[cfg(feature = "std")]
     pub window: Duration,
     pub average_usage: f64,
     pub max_usage: usize,
@@ -41,7 +32,6 @@ pub struct WindowStats {
 }
 
 /// Memory tracker for historical analysis
-#[cfg(feature = "std")]
 pub struct MemoryTracker {
     config: TrackingConfig,
     history: RwLock<VecDeque<MemoryMetrics>>,
@@ -49,7 +39,6 @@ pub struct MemoryTracker {
     last_sample: RwLock<Instant>,
 }
 
-#[cfg(feature = "std")]
 impl MemoryTracker {
     /// Create new memory tracker
     pub fn new(config: TrackingConfig) -> Self {
@@ -70,6 +59,7 @@ impl MemoryTracker {
     }
 
     /// Add a metrics snapshot to history
+    #[allow(clippy::excessive_nesting)]
     pub fn add_snapshot(&self, metrics: MemoryMetrics) {
         if self.config.level == TrackingLevel::Disabled {
             return;
@@ -324,39 +314,6 @@ impl fmt::Display for TrendAnalysis {
             "Trend for {:?}: {:?} (slope: {:.2}, R²: {:.2}, confidence: {:.2})",
             self.metric, self.trend_type, self.slope, self.r_squared, self.confidence
         )
-    }
-}
-
-#[cfg(not(feature = "std"))]
-pub struct MemoryTracker {
-    // Minimal no_std implementation
-    config: TrackingConfig,
-}
-
-#[cfg(not(feature = "std"))]
-impl MemoryTracker {
-    pub fn new(config: TrackingConfig) -> Self {
-        Self { config }
-    }
-
-    pub fn add_snapshot(&self, _metrics: MemoryMetrics) {
-        // No-op in no_std
-    }
-
-    pub fn should_sample(&self) -> bool {
-        false
-    }
-
-    pub fn get_history(&self) -> Vec<MemoryMetrics> {
-        Vec::new()
-    }
-
-    pub fn reset(&self) {
-        // No-op
-    }
-
-    pub fn is_enabled(&self) -> bool {
-        false
     }
 }
 

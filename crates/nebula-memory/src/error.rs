@@ -13,6 +13,7 @@ use nebula_log::{error, warn};
 // ============================================================================
 
 /// Memory management errors
+#[must_use = "errors should be handled"]
 #[non_exhaustive]
 #[derive(Error, Debug, Clone)]
 pub enum MemoryError {
@@ -73,6 +74,20 @@ pub enum MemoryError {
 
     #[error("Initialization failed: {reason}")]
     InitializationFailed { reason: String },
+
+    // --- Feature Support Errors ---
+    #[error("Feature not supported: {feature}{}", context.as_ref().map(|c| format!(" ({})", c)).unwrap_or_default())]
+    NotSupported {
+        feature: &'static str,
+        context: Option<String>,
+    },
+
+    // --- General Errors ---
+    #[error("Operation not found: {reason}")]
+    NotFound { reason: String },
+
+    #[error("Invalid operation: {reason}")]
+    InvalidOperation { reason: String },
 }
 
 impl MemoryError {
@@ -85,6 +100,7 @@ impl MemoryError {
                 | Self::ArenaExhausted { .. }
                 | Self::CacheOverflow { .. }
                 | Self::BudgetExceeded { .. }
+                | Self::CacheMiss { .. }
         )
     }
 
@@ -108,6 +124,9 @@ impl MemoryError {
             Self::ConcurrentAccess { .. } => "MEM:SYSTEM:CONCURRENT",
             Self::InvalidState { .. } => "MEM:SYSTEM:STATE",
             Self::InitializationFailed { .. } => "MEM:SYSTEM:INIT",
+            Self::NotSupported { .. } => "MEM:FEATURE:UNSUPPORTED",
+            Self::NotFound { .. } => "MEM:NOT_FOUND",
+            Self::InvalidOperation { .. } => "MEM:INVALID_OP",
         }
     }
 
@@ -133,16 +152,16 @@ impl MemoryError {
     }
 
     /// Create invalid layout error
-    pub fn invalid_layout(reason: impl Into<String>) -> Self {
+    pub fn invalid_layout(reason: &str) -> Self {
         Self::InvalidLayout {
-            reason: reason.into(),
+            reason: reason.to_string(),
         }
     }
 
     /// Create size overflow error
-    pub fn size_overflow(operation: impl Into<String>) -> Self {
+    pub fn size_overflow(operation: &str) -> Self {
         Self::SizeOverflow {
-            operation: operation.into(),
+            operation: operation.to_string(),
         }
     }
 
@@ -161,59 +180,55 @@ impl MemoryError {
     // --- Pool Errors ---
 
     /// Create pool exhausted error
-    pub fn pool_exhausted(pool_id: impl Into<String>, capacity: usize) -> Self {
-        let pool_id_str = pool_id.into();
-
+    pub fn pool_exhausted(pool_id: &str, capacity: usize) -> Self {
         #[cfg(feature = "logging")]
-        warn!("Memory pool exhausted: {}", pool_id_str);
+        warn!("Memory pool exhausted: {}", pool_id);
 
         Self::PoolExhausted {
-            pool_id: pool_id_str,
+            pool_id: pool_id.to_string(),
             capacity,
         }
     }
 
     /// Create invalid pool config error
-    pub fn invalid_pool_config(reason: impl Into<String>) -> Self {
+    pub fn invalid_pool_config(reason: &str) -> Self {
         Self::InvalidConfig {
-            reason: format!("invalid pool config: {}", reason.into()),
+            reason: format!("invalid pool config: {reason}"),
         }
     }
 
     /// Create invalid config error
-    pub fn invalid_config(reason: impl Into<String>) -> Self {
+    pub fn invalid_config(reason: &str) -> Self {
         Self::InvalidConfig {
-            reason: reason.into(),
+            reason: reason.to_string(),
         }
     }
 
     // --- Arena Errors ---
 
     /// Create arena exhausted error
-    pub fn arena_exhausted(
-        arena_id: impl Into<String>,
-        requested: usize,
-        available: usize,
-    ) -> Self {
+    pub fn arena_exhausted(arena_id: &str, requested: usize, available: usize) -> Self {
         Self::ArenaExhausted {
-            arena_id: arena_id.into(),
+            arena_id: arena_id.to_string(),
             requested,
             available,
         }
     }
 
     /// Create invalid arena operation error
-    pub fn invalid_arena_operation(operation: impl Into<String>) -> Self {
+    pub fn invalid_arena_operation(operation: &str) -> Self {
         Self::InvalidState {
-            reason: format!("invalid arena operation: {}", operation.into()),
+            reason: format!("invalid arena operation: {operation}"),
         }
     }
 
     // --- Cache Errors ---
 
     /// Create cache miss error
-    pub fn cache_miss(key: impl Into<String>) -> Self {
-        Self::CacheMiss { key: key.into() }
+    pub fn cache_miss(key: &str) -> Self {
+        Self::CacheMiss {
+            key: key.to_string(),
+        }
     }
 
     /// Create cache full error
@@ -226,9 +241,9 @@ impl MemoryError {
     }
 
     /// Create invalid cache key error
-    pub fn invalid_cache_key(key: impl Into<String>) -> Self {
+    pub fn invalid_cache_key(key: &str) -> Self {
         Self::InvalidCacheKey {
-            reason: format!("invalid key: {}", key.into()),
+            reason: format!("invalid key: {key}"),
         }
     }
 
@@ -241,40 +256,37 @@ impl MemoryError {
     }
 
     /// Create invalid budget error
-    pub fn invalid_budget(reason: impl Into<String>) -> Self {
+    pub fn invalid_budget(reason: &str) -> Self {
         Self::InvalidConfig {
-            reason: format!("invalid budget: {}", reason.into()),
+            reason: format!("invalid budget: {reason}"),
         }
     }
 
     // --- System Errors ---
 
     /// Create memory corruption error
-    pub fn corruption(component: impl Into<String>, details: impl Into<String>) -> Self {
-        let component_str = component.into();
-        let details_str = details.into();
-
+    pub fn corruption(component: &str, details: &str) -> Self {
         #[cfg(feature = "logging")]
-        error!("Memory corruption: {} - {}", component_str, details_str);
+        error!("Memory corruption: {component} - {details}");
 
         Self::Corruption {
-            component: component_str,
-            details: details_str,
+            component: component.to_string(),
+            details: details.to_string(),
         }
     }
 
     /// Create concurrent access error
-    pub fn concurrent_access(details: impl Into<String>) -> Self {
+    pub fn concurrent_access(details: &str) -> Self {
         Self::ConcurrentAccess {
-            details: details.into(),
+            details: details.to_string(),
         }
     }
 
     /// Create leak detected error
-    pub fn leak_detected(size: usize, location: impl Into<String>) -> Self {
+    pub fn leak_detected(size: usize, location: &str) -> Self {
         Self::Corruption {
-            component: "memory tracker".into(),
-            details: format!("leak detected: {} bytes at {}", size, location.into()),
+            component: "memory tracker".to_string(),
+            details: format!("leak detected: {size} bytes at {location}"),
         }
     }
 
@@ -289,19 +301,19 @@ impl MemoryError {
     }
 
     /// Create initialization failed error
-    pub fn initialization_failed(component: impl Into<String>) -> Self {
+    pub fn initialization_failed(component: &str) -> Self {
         Self::InitializationFailed {
-            reason: format!("failed to initialize {}", component.into()),
+            reason: format!("failed to initialize {component}"),
         }
     }
 
     /// Create invalid input error
-    pub fn invalid_input(reason: impl Into<String>) -> Self {
+    pub fn invalid_input(reason: &str) -> Self {
         Self::invalid_layout(reason)
     }
 
     /// Create invalid argument error (alias for `invalid_input`)
-    pub fn invalid_argument(reason: impl Into<String>) -> Self {
+    pub fn invalid_argument(reason: &str) -> Self {
         Self::invalid_input(reason)
     }
 
@@ -314,23 +326,23 @@ impl MemoryError {
     }
 
     /// Create decompression failed error
-    pub fn decompression_failed(reason: impl Into<String>) -> Self {
+    pub fn decompression_failed(reason: &str) -> Self {
         Self::InvalidState {
-            reason: format!("decompression failed: {}", reason.into()),
+            reason: format!("decompression failed: {reason}"),
         }
     }
 
     /// Create monitor error
-    pub fn monitor_error(reason: impl Into<String>) -> Self {
+    pub fn monitor_error(reason: &str) -> Self {
         Self::InvalidState {
-            reason: format!("monitor error: {}", reason.into()),
+            reason: format!("monitor error: {reason}"),
         }
     }
 
     /// Create not supported error
-    pub fn not_supported(operation: impl Into<String>) -> Self {
+    pub fn not_supported(operation: &str) -> Self {
         Self::InvalidState {
-            reason: format!("operation not supported: {}", operation.into()),
+            reason: format!("operation not supported: {operation}"),
         }
     }
 

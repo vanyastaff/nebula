@@ -167,7 +167,7 @@ mod tests {
         let config = ArenaConfig::default();
 
         {
-            let mut scope = ArenaScope::new(config);
+            let scope = ArenaScope::new(config);
             let _value = scope.alloc(42).unwrap();
             // Arena will be reset here
         }
@@ -206,8 +206,7 @@ mod tests {
 
         // Arena should be reset to outer position
         // Verify the outer allocation is still intact
-        let outer_after = arena.alloc(0).unwrap();
-        drop(outer_after);
+        let _outer_after = arena.alloc(0).unwrap();
         assert_eq!(arena.current_position(), pos_outer);
 
         // Can't safely verify outer_value persisted since arena was reset
@@ -283,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_position_validation() {
-        let mut arena1 = Arena::new(ArenaConfig::default());
+        let arena1 = Arena::new(ArenaConfig::default());
         let mut arena2 = Arena::new(ArenaConfig::default());
 
         let _val1 = arena1.alloc(1).unwrap();

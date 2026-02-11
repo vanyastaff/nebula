@@ -422,7 +422,6 @@ impl<A: crate::arena::ArenaAllocate> StrictArena<A> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::arena::*;
 
     #[test]

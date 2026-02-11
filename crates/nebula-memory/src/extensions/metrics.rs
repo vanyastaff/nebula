@@ -3,14 +3,8 @@
 //! This module provides extension traits that allow integrating
 //! the memory management system with various metrics and monitoring systems.
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
-#[cfg(feature = "std")]
 use std::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 
 use crate::error::MemoryResult;
@@ -279,7 +273,10 @@ pub struct MetricsExtension {
 impl MetricsExtension {
     /// Create a new metrics extension with the specified reporter
     pub fn new(reporter: impl MetricsReporter + 'static) -> Self {
-        Self { reporter: Box::new(reporter), metrics: BTreeMap::new() }
+        Self {
+            reporter: Box::new(reporter),
+            metrics: BTreeMap::new(),
+        }
     }
 
     /// Register a metric with this extension
@@ -358,7 +355,6 @@ impl MemoryExtension for MetricsExtension {
 }
 
 /// Create a debug metrics reporter that prints metrics to stdout
-#[cfg(feature = "std")]
 pub fn create_debug_metrics_reporter() -> impl MetricsReporter {
     struct DebugMetricsReporter;
 
@@ -419,19 +415,19 @@ pub fn create_debug_metrics_reporter() -> impl MetricsReporter {
 pub fn global_metrics() -> Option<Arc<MetricsExtension>> {
     use crate::extensions::GlobalExtensions;
 
-    if let Some(ext) = GlobalExtensions::get("metrics") {
-        if let Some(metrics_ext) = ext.as_any().downcast_ref::<MetricsExtension>() {
-            // Создаем новую обертку для репортера с использованием Arc
-            let reporter: Arc<dyn MetricsReporter + 'static> = Arc::new(NoopMetricsReporter);
+    if let Some(ext) = GlobalExtensions::get("metrics")
+        && let Some(metrics_ext) = ext.as_any().downcast_ref::<MetricsExtension>()
+    {
+        // Создаем новую обертку для репортера с использованием Arc
+        let reporter: Arc<dyn MetricsReporter + 'static> = Arc::new(NoopMetricsReporter);
 
-            // Создаем новый экземпляр с новым репортером, который делегирует вызовы
-            let reporter_wrapper = DelegatingReporter { inner: reporter };
+        // Создаем новый экземпляр с новым репортером, который делегирует вызовы
+        let reporter_wrapper = DelegatingReporter { inner: reporter };
 
-            return Some(Arc::new(MetricsExtension {
-                reporter: Box::new(reporter_wrapper),
-                metrics: metrics_ext.metrics.clone(),
-            }));
-        }
+        return Some(Arc::new(MetricsExtension {
+            reporter: Box::new(reporter_wrapper),
+            metrics: metrics_ext.metrics.clone(),
+        }));
     }
     None
 }

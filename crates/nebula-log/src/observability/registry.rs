@@ -121,13 +121,13 @@ static WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 /// register_hook(Arc::new(hook));
 /// ```
 pub fn register_hook(hook: Arc<dyn ObservabilityHook>) {
-    let _guard = WRITE_LOCK.lock().expect("registry write lock poisoned");
-
-    // Initialize the hook; skip registration if it panics
+    // Initialize outside the lock — user code may be slow and this is
+    // idempotent; the hook isn't visible to emit_event until HOOKS.store().
     if !try_initialize_hook(&*hook) {
         return;
     }
 
+    let _guard = WRITE_LOCK.lock().expect("registry write lock poisoned");
     let current = HOOKS.load();
     let mut new_hooks = (**current).clone();
     new_hooks.push(hook);
@@ -159,6 +159,7 @@ pub fn register_hook(hook: Arc<dyn ObservabilityHook>) {
 ///
 /// emit_event(&MyEvent);
 /// ```
+#[inline]
 pub fn emit_event(event: &dyn ObservabilityEvent) {
     let hooks = HOOKS.load();
     emit_to_hooks(&hooks, event);

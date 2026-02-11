@@ -1,13 +1,7 @@
 //! Statistics export formats (JSON, Prometheus, etc.)
 
-#[cfg(not(feature = "std"))]
-use alloc::{format, string::String, vec::Vec};
-
 use super::collector::GlobalStats;
 use super::memory_stats::MemoryMetrics;
-
-#[cfg(feature = "stats")]
-use super::histogram::{MemoryHistogram, Percentile};
 
 /// Export format for statistics
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,7 +86,7 @@ impl GlobalStats {
 
     fn to_prometheus_impl(&self) -> String {
         format!(
-            r#"# HELP memory_total_allocated_bytes Total allocated memory in bytes
+            r"# HELP memory_total_allocated_bytes Total allocated memory in bytes
 # TYPE memory_total_allocated_bytes gauge
 memory_total_allocated_bytes {}
 
@@ -127,7 +121,7 @@ memory_avg_allocation_size {:.2}
 # HELP memory_utilization_percent Memory utilization percentage
 # TYPE memory_utilization_percent gauge
 memory_utilization_percent {:.2}
-"#,
+",
             self.total_allocated,
             self.peak_allocated,
             self.total_allocations,
@@ -142,7 +136,7 @@ memory_utilization_percent {:.2}
 
     fn to_text_impl(&self) -> String {
         format!(
-            r#"Global Memory Statistics
+            r"Global Memory Statistics
 ========================
 Total Allocated:      {} bytes
 Peak Allocated:       {} bytes
@@ -157,7 +151,7 @@ Allocation Rate:      {:.2} allocs/sec
 Deallocation Rate:    {:.2} deallocs/sec
 Utilization:          {:.2}%
 Status:               {}
-"#,
+",
             self.total_allocated,
             self.peak_allocated,
             self.total_allocations,
@@ -227,12 +221,12 @@ impl MemoryMetrics {
 
     fn to_prometheus_impl(&self) -> String {
         format!(
-            r#"memory_metrics_current_allocated_bytes {}
+            r"memory_metrics_current_allocated_bytes {}
 memory_metrics_peak_allocated_bytes {}
 memory_metrics_allocations {}
 memory_metrics_deallocations {}
 memory_metrics_allocation_failures {}
-"#,
+",
             self.current_allocated,
             self.peak_allocated,
             self.allocations,
@@ -315,15 +309,16 @@ mod tests {
             peak_allocated: 1000,
             total_allocated_bytes: 1000,
             total_deallocated_bytes: 500,
-            #[cfg(feature = "std")]
             total_allocation_time_nanos: 0,
             operations: 0,
             hits: 0,
             misses: 0,
             evictions: 0,
             allocation_failures: 2,
-            #[cfg(feature = "std")]
-            last_reset: std::time::Instant::now(),
+            oom_errors: 0,
+            hit_rate: 0.0,
+            elapsed_secs: 0.0,
+            timestamp: std::time::Instant::now(),
         };
 
         let json = metrics.to_json();

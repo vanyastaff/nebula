@@ -1,19 +1,79 @@
 //! Context management for structured logging
 //!
-//! # Thread-Local Storage
+//! # Async-Safe Storage
 //!
-//! Contexts are stored in thread-local storage and are **not** propagated across
-//! `.await` points in async runtimes with work-stealing (e.g., Tokio multi-thread).
-//! For async context propagation, use `tracing::Span` fields instead.
+//! When the `async` feature is enabled, the context uses `tokio::task_local!`
+//! and survives across `.await` points in multi-thread Tokio runtimes.
+//!
+//! When the `async` feature is disabled, the context uses `thread_local!`
+//! (suitable for synchronous code or single-thread runtimes).
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-/// Thread-local context for structured logging
+// ---------------------------------------------------------------------------
+// Storage backend
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "async")]
+mod storage {
+    use super::*;
+    use std::future::Future;
+
+    tokio::task_local! {
+        static CTX: Arc<Context>;
+    }
+
+    #[inline]
+    pub fn current() -> Arc<Context> {
+        CTX.try_with(|c| c.clone())
+            .unwrap_or_else(|_| Arc::new(Context::default()))
+    }
+
+    pub async fn with_ctx<F: Future>(ctx: Arc<Context>, f: F) -> F::Output {
+        CTX.scope(ctx, f).await
+    }
+
+    pub fn with_ctx_sync<R>(ctx: Arc<Context>, f: impl FnOnce() -> R) -> R {
+        CTX.sync_scope(ctx, f)
+    }
+}
+
+#[cfg(not(feature = "async"))]
+mod storage {
+    use super::*;
+    use std::cell::RefCell;
+
+    thread_local! {
+        static CTX: RefCell<Arc<Context>> = RefCell::new(Arc::new(Context::default()));
+    }
+
+    #[inline]
+    pub fn current() -> Arc<Context> {
+        CTX.with(|c| c.borrow().clone())
+    }
+
+    pub fn with_ctx_sync<R>(ctx: Arc<Context>, f: impl FnOnce() -> R) -> R {
+        CTX.with(|cell| {
+            let prev = cell.borrow().clone();
+            *cell.borrow_mut() = ctx;
+            let result = f();
+            *cell.borrow_mut() = prev;
+            result
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Context type
+// ---------------------------------------------------------------------------
+
+/// Context for structured logging
+///
+/// Contains request-scoped fields like request ID, user ID, etc.
+/// Activate via `scope()` (async) or `scope_sync()` (sync).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Context {
     /// Request ID
@@ -57,55 +117,27 @@ impl Context {
         self
     }
 
-    /// Set as current context
-    #[must_use]
-    pub fn set_current(self) -> ContextGuard {
-        CONTEXT.with(|ctx| {
-            let old = ctx.borrow().clone();
-            *ctx.borrow_mut() = Arc::new(self);
-            ContextGuard {
-                old: Some(old),
-                _not_send: PhantomData,
-            }
-        })
-    }
-
     /// Get current context (cheap `Arc::clone`, no deep copy)
     #[inline]
     #[must_use]
     pub fn current() -> Arc<Self> {
-        CONTEXT.with(|ctx| Arc::clone(&ctx.borrow()))
+        storage::current()
     }
 
-    /// Run a closure with this context
-    pub fn scope<R>(self, f: impl FnOnce() -> R) -> R {
-        let _guard = self.set_current();
-        f()
+    /// Run a synchronous closure with this context active.
+    ///
+    /// Nesting is supported — inner scopes shadow outer ones and restore on return.
+    pub fn scope_sync<R>(self, f: impl FnOnce() -> R) -> R {
+        storage::with_ctx_sync(Arc::new(self), f)
     }
-}
 
-thread_local! {
-    static CONTEXT: RefCell<Arc<Context>> = RefCell::new(Arc::new(Context::default()));
-}
-
-/// RAII guard that restores previous context on drop
-///
-/// This guard is `!Send` because it references thread-local storage.
-/// Sending it across threads would restore context on the wrong thread.
-#[derive(Debug)]
-pub struct ContextGuard {
-    old: Option<Arc<Context>>,
-    /// Explicit `!Send` marker — thread-local guards must not cross threads
-    _not_send: PhantomData<*const ()>,
-}
-
-impl Drop for ContextGuard {
-    fn drop(&mut self) {
-        if let Some(old) = self.old.take() {
-            CONTEXT.with(|ctx| {
-                *ctx.borrow_mut() = old;
-            });
-        }
+    /// Run a future with this context active.
+    ///
+    /// The context survives across `.await` points, even in multi-thread
+    /// Tokio runtimes with work-stealing.
+    #[cfg(feature = "async")]
+    pub async fn scope<F: std::future::Future>(self, f: F) -> F::Output {
+        storage::with_ctx(Arc::new(self), f).await
     }
 }
 

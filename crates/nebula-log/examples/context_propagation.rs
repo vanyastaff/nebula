@@ -1,19 +1,20 @@
 //! Example showing context propagation across async boundaries
+//!
+//! Unlike the old thread-local approach, contexts now survive across `.await`
+//! points in multi-thread Tokio runtimes via `tokio::task_local!`.
 
 use anyhow::Result;
+use nebula_log::Context;
 use nebula_log::prelude::*;
-use nebula_log::{Context, with_context};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     nebula_log::auto_init()?;
 
-    // Set global context
-    let _ctx = with_context!(service = "api-gateway", environment = "staging");
-
     // Simulate handling multiple requests concurrently
-    let handles = (0..3)
-        .map(|i| tokio::spawn(async move { handle_user_request(format!("user-{}", i)).await }));
+    let handles: Vec<_> = (0..3)
+        .map(|i| tokio::spawn(handle_user_request(format!("user-{}", i))))
+        .collect();
 
     for handle in handles {
         handle.await??;
@@ -23,26 +24,27 @@ async fn main() -> Result<()> {
 }
 
 async fn handle_user_request(user_id: String) -> Result<()> {
-    // Set request-specific context
+    // Build request-specific context
     let ctx = (*Context::current())
         .clone()
         .with_request_id(format!("req-{}", uuid::Uuid::new_v4()))
         .with_user_id(&user_id);
 
-    // This context is scoped to this async task
-    ctx.scope(|| {
+    // Context survives across .await points
+    ctx.scope(async {
         info!("Processing user request");
 
-        // Context is preserved across function calls
-        process_user_data();
+        // Context is preserved in nested async calls
+        process_user_data().await;
 
         info!("User request completed");
-    });
+    })
+    .await;
 
     Ok(())
 }
 
-fn process_user_data() {
+async fn process_user_data() {
     let ctx = Context::current();
 
     debug!(
@@ -50,5 +52,12 @@ fn process_user_data() {
         request_id = ?ctx.request_id,
         "Processing user data"
     );
-    // Note: ctx is Arc<Context> — field access works transparently via Deref.
+
+    // Simulated async work — context persists
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    debug!(
+        user_id = ?ctx.user_id,
+        "Still have context after await"
+    );
 }

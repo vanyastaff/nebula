@@ -1,11 +1,7 @@
-#![cfg_attr(not(feature = "std"), no_std)]
 //!
 //! Statistics and monitoring for memory management
 //! This module provides comprehensive memory statistics collection,
 //! tracking, and analysis capabilities with minimal overhead.
-
-#[cfg(not(feature = "std"))]
-extern crate alloc;
 
 // Core statistics types
 pub mod config;
@@ -24,15 +20,15 @@ pub mod export;
 pub mod tracker;
 
 // Real-time monitoring
-#[cfg(all(feature = "stats", feature = "std"))]
+#[cfg(feature = "stats")]
 pub mod real_time;
 
 // Aggregation and analysis
-#[cfg(all(feature = "stats", feature = "std"))]
+#[cfg(feature = "stats")]
 pub mod aggregator;
 
 // Snapshots and comparisons
-#[cfg(all(feature = "stats", feature = "std"))]
+#[cfg(feature = "stats")]
 pub mod snapshot;
 
 // Histogram analysis
@@ -40,20 +36,20 @@ pub mod snapshot;
 pub mod histogram;
 
 // Predictive analytics
-#[cfg(all(feature = "stats", feature = "std"))]
+#[cfg(feature = "stats")]
 pub mod predictive;
 
 // Detailed profiling
-#[cfg(all(feature = "profiling", feature = "std"))]
+#[cfg(feature = "profiling")]
 pub mod profiler;
 
 // Re-exports for convenience
-#[cfg(all(feature = "stats", feature = "std"))]
+#[cfg(feature = "stats")]
 pub use aggregator::{AggregatedStats, Aggregator, HistoricalMetricsSummary};
 pub use collector::GlobalStats;
 #[cfg(feature = "stats")]
 pub use collector::HistogramStats;
-#[cfg(all(feature = "stats", feature = "std"))]
+#[cfg(feature = "stats")]
 pub use collector::StatsCollector;
 pub use config::{
     AlertConfig, HistogramConfig, MonitoringConfig, PerformanceImpact, StatsConfig, TrackedMetric,
@@ -65,22 +61,22 @@ pub use export::{ExportFormat, StatsExporter};
 #[cfg(feature = "stats")]
 pub use histogram::{HistogramData, MemoryHistogram, Percentile};
 pub use memory_stats::{MemoryMetrics, MemoryStats};
-#[cfg(all(feature = "stats", feature = "std"))]
+#[cfg(feature = "stats")]
 pub use predictive::{MemoryTrend, Prediction, PredictionModel, PredictiveAnalytics, TrendType};
-#[cfg(all(feature = "profiling", feature = "std"))]
+#[cfg(feature = "profiling")]
 pub use profiler::{AllocationSite, HotSpot, MemoryProfiler, ProfileReport};
-#[cfg(all(feature = "stats", feature = "std"))]
+#[cfg(feature = "stats")]
 pub use real_time::{MemoryAlert, RealTimeData, RealTimeMonitor};
-#[cfg(all(feature = "stats", feature = "std"))]
+#[cfg(feature = "stats")]
 pub use snapshot::{MemorySnapshot, SnapshotDiff, SnapshotFormat};
 #[cfg(feature = "stats")]
 pub use tracker::{DataPoint, MemoryTracker, WindowStats};
 
 /// Initialize global statistics system
-pub fn initialize(config: StatsConfig) -> crate::core::error::MemoryResult<()> {
+pub fn initialize(config: StatsConfig) -> crate::error::MemoryResult<()> {
     config
         .validate()
-        .map_err(|e| crate::core::error::MemoryError::invalid_config("invalid config"))?;
+        .map_err(|_e| crate::error::MemoryError::invalid_config("invalid config"))?;
     // Initialize any global state if needed
     Ok(())
 }

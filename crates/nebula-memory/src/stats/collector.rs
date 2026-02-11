@@ -1,19 +1,9 @@
 //! Statistics collector and global statistics types
 
-#[cfg(not(feature = "std"))]
-use alloc::{string::String, vec::Vec};
-
-#[cfg(feature = "std")]
-use std::sync::Arc;
-
-#[cfg(feature = "std")]
-use parking_lot::RwLock;
-
-use super::config::StatsConfig;
 use super::memory_stats::{MemoryMetrics, MemoryStats};
 
-#[cfg(all(feature = "stats", feature = "std"))]
-use super::aggregator::{AggregatedStats, Aggregator};
+#[cfg(feature = "stats")]
+use super::aggregator::Aggregator;
 #[cfg(feature = "stats")]
 use super::histogram::{MemoryHistogram, Percentile};
 
@@ -21,7 +11,7 @@ use super::histogram::{MemoryHistogram, Percentile};
 ///
 /// This is the main entry point for collecting and aggregating statistics
 /// from various memory subsystems.
-#[cfg(all(feature = "stats", feature = "std"))]
+#[cfg(feature = "stats")]
 pub type StatsCollector = Aggregator;
 
 /// Global system-wide memory statistics
@@ -142,7 +132,6 @@ pub struct HistogramStats {
     pub size_histogram: MemoryHistogram,
 
     /// Allocation latency histogram (if available)
-    #[cfg(feature = "std")]
     pub latency_histogram: Option<MemoryHistogram>,
 
     /// Cached percentile values
@@ -157,7 +146,6 @@ impl HistogramStats {
 
         Self {
             size_histogram,
-            #[cfg(feature = "std")]
             latency_histogram: None,
             percentiles,
         }

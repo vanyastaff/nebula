@@ -3,13 +3,7 @@
 //! This module provides extension traits that allow integrating
 //! the memory management system with various logging frameworks.
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use core::fmt;
-#[cfg(feature = "std")]
 use std::{boxed::Box, string::String, sync::Arc, vec::Vec};
 
 use crate::error::MemoryResult;
@@ -79,25 +73,19 @@ impl MemoryEvent {
 
     /// Add structured data to the event
     #[must_use = "builder methods must be chained or built"]
-pub fn with_data(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn with_data(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.data.push((key.into(), value.into()));
         self
     }
 }
 
 /// Get current timestamp in milliseconds
-#[cfg(feature = "std")]
 fn timestamp_now() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
-}
-
-/// Get current timestamp in milliseconds (fallback for no_std)
-#[cfg(not(feature = "std"))]
-fn timestamp_now() -> u64 {
-    // In no_std environment, we don't have a good way to get timestamps
-    // This could be provided by the platform-specific code
-    0
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 /// Trait for logging memory events
@@ -157,7 +145,10 @@ pub struct LoggingExtension {
 impl LoggingExtension {
     /// Create a new logging extension with the specified logger
     pub fn new(logger: impl MemoryLogger + 'static) -> Self {
-        Self { logger: Box::new(logger), min_level: LogLevel::Info }
+        Self {
+            logger: Box::new(logger),
+            min_level: LogLevel::Info,
+        }
     }
 
     /// Set the minimum log level
@@ -203,7 +194,6 @@ impl MemoryExtension for LoggingExtension {
 }
 
 /// Create a console logger that writes to stdout/stderr
-#[cfg(feature = "std")]
 pub fn create_console_logger() -> impl MemoryLogger {
     struct ConsoleLogger;
 
@@ -213,7 +203,9 @@ pub fn create_console_logger() -> impl MemoryLogger {
 
             // Форматируем время без зависимости от chrono
             let now = SystemTime::now();
-            let since_epoch = now.duration_since(UNIX_EPOCH).unwrap_or(Duration::from_secs(0));
+            let since_epoch = now
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::from_secs(0));
             let secs = since_epoch.as_secs();
             let millis = since_epoch.subsec_millis();
 
@@ -228,12 +220,12 @@ pub fn create_console_logger() -> impl MemoryLogger {
 
             if !event.data.is_empty() {
                 message.push_str(" {");
-                for (i, (key, value)) in event.data.iter().enumerate() {
-                    if i > 0 {
-                        message.push_str(", ");
-                    }
-                    message.push_str(&format!("{}={}", key, value));
-                }
+                let data_parts: Vec<String> = event
+                    .data
+                    .iter()
+                    .map(|(key, value)| format!("{}={}", key, value))
+                    .collect();
+                message.push_str(&data_parts.join(", "));
                 message.push('}');
             }
 
@@ -251,19 +243,19 @@ pub fn create_console_logger() -> impl MemoryLogger {
 pub fn global_logger() -> Option<Arc<LoggingExtension>> {
     use crate::extensions::GlobalExtensions;
 
-    if let Some(ext) = GlobalExtensions::get("logging") {
-        if let Some(logging_ext) = ext.as_any().downcast_ref::<LoggingExtension>() {
-            // Создаем новое расширение с тем же уровнем логирования
-            // Так как мы не можем клонировать исходный логгер, используем NoopLogger
-            // В реальном приложении лучше использовать фабрику логгеров, чтобы создавать
-            // клоны
-            let logger_wrapper = NoopLogger;
+    if let Some(ext) = GlobalExtensions::get("logging")
+        && let Some(logging_ext) = ext.as_any().downcast_ref::<LoggingExtension>()
+    {
+        // Создаем новое расширение с тем же уровнем логирования
+        // Так как мы не можем клонировать исходный логгер, используем NoopLogger
+        // В реальном приложении лучше использовать фабрику логгеров, чтобы создавать
+        // клоны
+        let logger_wrapper = NoopLogger;
 
-            return Some(Arc::new(LoggingExtension {
-                logger: Box::new(logger_wrapper),
-                min_level: logging_ext.min_level,
-            }));
-        }
+        return Some(Arc::new(LoggingExtension {
+            logger: Box::new(logger_wrapper),
+            min_level: logging_ext.min_level,
+        }));
     }
     None
 }
@@ -340,19 +332,20 @@ macro_rules! memory_log_error {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(feature = "std"))]
-    use alloc::vec::Vec;
-    #[cfg(feature = "std")]
     use std::vec::Vec;
 
     use super::*;
 
     #[test]
     fn test_memory_event() {
-        let event =
-            MemoryEvent::new("allocation", "arena", LogLevel::Debug, "Allocated memory block")
-                .with_data("size", "1024")
-                .with_data("alignment", "8");
+        let event = MemoryEvent::new(
+            "allocation",
+            "arena",
+            LogLevel::Debug,
+            "Allocated memory block",
+        )
+        .with_data("size", "1024")
+        .with_data("alignment", "8");
 
         assert_eq!(event.event_type, "allocation");
         assert_eq!(event.source, "arena");

@@ -3,20 +3,9 @@
 //! This module provides extension traits that allow integrating
 //! the memory management system with async/await code.
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
-use alloc::{
-    boxed::Box,
-    string::{String, ToString},
-    sync::Arc,
-    vec::Vec,
-};
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
-#[cfg(feature = "std")]
 use std::{
     boxed::Box,
     string::{String, ToString},
@@ -32,7 +21,9 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Create a boxed future from any future
 pub fn boxed<'a, F, T>(future: F) -> BoxFuture<'a, T>
-where F: Future<Output = T> + Send + 'a {
+where
+    F: Future<Output = T> + Send + 'a,
+{
     Box::pin(future)
 }
 
@@ -109,7 +100,8 @@ pub trait GenericAllocator {
 }
 
 impl<A> AsyncAllocator for AsyncAllocatorWrapper<A>
-where A: GenericAllocator + Send + Sync
+where
+    A: GenericAllocator + Send + Sync,
 {
     fn allocate<'a>(&'a self, size: usize, align: usize) -> BoxFuture<'a, MemoryResult<usize>> {
         let result = match self.allocator.allocate(size, align) {
@@ -159,7 +151,10 @@ pub struct AsyncPoolWrapper<P, T> {
 impl<P, T> AsyncPoolWrapper<P, T> {
     /// Create a new async pool wrapper
     pub fn new(pool: P) -> Self {
-        Self { pool, _phantom: core::marker::PhantomData }
+        Self {
+            pool,
+            _phantom: core::marker::PhantomData,
+        }
     }
 
     /// Get a reference to the inner pool
@@ -214,7 +209,10 @@ pub struct AsyncExtension {
 impl AsyncExtension {
     /// Create a new async extension
     pub fn new(executor_name: impl Into<String>) -> Self {
-        Self { enabled: true, executor_name: executor_name.into() }
+        Self {
+            enabled: true,
+            executor_name: executor_name.into(),
+        }
     }
 
     /// Check if async support is enabled
@@ -240,7 +238,10 @@ impl AsyncExtension {
 
 impl Default for AsyncExtension {
     fn default() -> Self {
-        Self { enabled: true, executor_name: "unknown".to_string() }
+        Self {
+            enabled: true,
+            executor_name: "unknown".to_string(),
+        }
     }
 }
 
@@ -270,14 +271,14 @@ impl MemoryExtension for AsyncExtension {
 pub fn global_async() -> Option<Arc<AsyncExtension>> {
     use crate::extensions::GlobalExtensions;
 
-    if let Some(ext) = GlobalExtensions::get("async") {
-        if let Some(async_ext) = ext.as_any().downcast_ref::<AsyncExtension>() {
-            // Создаем новый экземпляр с теми же параметрами
-            return Some(Arc::new(AsyncExtension {
-                enabled: async_ext.enabled,
-                executor_name: async_ext.executor_name.clone(),
-            }));
-        }
+    if let Some(ext) = GlobalExtensions::get("async")
+        && let Some(async_ext) = ext.as_any().downcast_ref::<AsyncExtension>()
+    {
+        // Создаем новый экземпляр с теми же параметрами
+        return Some(Arc::new(AsyncExtension {
+            enabled: async_ext.enabled,
+            executor_name: async_ext.executor_name.clone(),
+        }));
     }
     None
 }
@@ -315,7 +316,11 @@ where
 {
     /// Create a new simple task
     pub fn new(name: &'static str, future: F) -> Self {
-        Self { name, future, _phantom: core::marker::PhantomData }
+        Self {
+            name,
+            future,
+            _phantom: core::marker::PhantomData,
+        }
     }
 }
 
@@ -386,7 +391,7 @@ mod tests {
         loop {
             match future.as_mut().poll(&mut cx) {
                 Poll::Ready(output) => return output,
-                Poll::Pending => {},
+                Poll::Pending => {}
             }
         }
     }

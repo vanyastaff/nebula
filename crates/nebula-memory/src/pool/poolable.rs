@@ -1,8 +1,5 @@
 //! Trait for objects that can be pooled
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
 /// Trait for objects that can be pooled
 ///
 /// # Example
@@ -93,7 +90,7 @@ impl Poolable for String {
     #[cfg(feature = "adaptive")]
     fn compress(&mut self) -> bool {
         if self.capacity() > self.len() * 2 && self.capacity() > 64 {
-            let old_capacity = self.capacity();
+            let _old_capacity = self.capacity();
             *self = self.clone();
             true
         } else {
@@ -149,7 +146,6 @@ where
     }
 }
 
-#[cfg(feature = "std")]
 impl<K, V> Poolable for std::collections::HashMap<K, V>
 where
     K: Send + 'static,
@@ -209,13 +205,6 @@ macro_rules! impl_poolable {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(feature = "std"))]
-    use alloc::string::String;
-    #[cfg(not(feature = "std"))]
-    use alloc::vec;
-    #[cfg(feature = "std")]
-    use std::string::String;
-
     use super::*;
 
     #[test]
@@ -271,7 +260,7 @@ mod tests {
         assert_eq!(v, vec![1, 2, 3, 4, 5]);
     }
 
-    #[cfg(all(feature = "adaptive", feature = "std"))]
+    #[cfg(feature = "adaptive")]
     #[test]
     fn test_hashmap_compression() {
         use std::collections::HashMap;

@@ -50,8 +50,7 @@ mod span;
 
 // Re-export main types
 pub use context::{
-    ContextSnapshot, ExecutionContext, ExecutionGuard, GlobalContext, GlobalGuard, NodeContext,
-    NodeGuard, ResourceMap, current_contexts,
+    ContextSnapshot, ExecutionContext, GlobalContext, NodeContext, ResourceMap, current_contexts,
 };
 pub use events::{OperationCompleted, OperationFailed, OperationStarted, OperationTracker};
 pub use filter::{EventFilter, FilteredHook};

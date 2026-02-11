@@ -19,16 +19,7 @@
 //! - Checkpoints validated by generation counter
 //! - Individual deallocation not supported (no-op)
 
-#![cfg_attr(not(feature = "std"), no_std)]
-
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, vec, vec::Vec};
-
 use core::alloc::Layout;
-use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
@@ -45,36 +36,8 @@ use crate::allocator::{
     StatisticsProvider, ThreadSafeAllocator,
 };
 
+use crate::core::SyncUnsafeCell;
 use crate::utils::{Backoff, MemoryOps, PrefetchManager, align_up, atomic_max, cache_line_size};
-
-/// Thread-safe wrapper for memory buffer with interior mutability
-#[repr(transparent)]
-struct SyncUnsafeCell<T: ?Sized>(UnsafeCell<T>);
-
-// SAFETY: SyncUnsafeCell<T> is Sync even though UnsafeCell<T> is not.
-// - All mutable access goes through atomic cursor (compare_exchange)
-// - CAS success guarantees exclusive access to allocated range
-// - No overlapping mutable references (disjoint memory regions)
-// - AcqRel ordering synchronizes cursor updates between threads
-unsafe impl<T: ?Sized> Sync for SyncUnsafeCell<T> {}
-
-// SAFETY: SyncUnsafeCell<T> is Send if T is Send.
-// - Wrapper is repr(transparent), same layout as UnsafeCell<T>
-// - T: Send bound ensures inner value can move between threads
-// - No thread-local state in wrapper
-unsafe impl<T: ?Sized + Send> Send for SyncUnsafeCell<T> {}
-
-impl<T> SyncUnsafeCell<T> {
-    fn new(value: T) -> Self {
-        Self(UnsafeCell::new(value))
-    }
-}
-
-impl<T: ?Sized> SyncUnsafeCell<T> {
-    fn get(&self) -> *mut T {
-        self.0.get()
-    }
-}
 
 /// Production-ready bump allocator
 pub struct BumpAllocator {
@@ -82,7 +45,6 @@ pub struct BumpAllocator {
     memory: Box<SyncUnsafeCell<[u8]>>,
     config: BumpConfig,
     prefetch_mgr: PrefetchManager,
-    memory_ops: MemoryOps,
     start_addr: usize,
     end_addr: usize,
     capacity: usize,
@@ -101,7 +63,6 @@ impl BumpAllocator {
 
         let mut vec = vec![0u8; capacity];
 
-        let memory_ops = MemoryOps::new();
         if let Some(pattern) = config.alloc_pattern {
             // SAFETY: Filling freshly allocated vector with pattern.
             // - vec is a valid mutable slice (just allocated)
@@ -146,7 +107,6 @@ impl BumpAllocator {
             memory,
             config,
             prefetch_mgr: PrefetchManager::new(),
-            memory_ops,
             start_addr,
             end_addr,
             capacity,
@@ -455,5 +415,113 @@ impl StatisticsProvider for BumpAllocator {
 
     fn reset_statistics(&self) {
         self.stats.reset();
+    }
+}
+
+// ============================================================================
+// Sealed Internal Trait Implementation
+// ============================================================================
+
+impl crate::allocator::sealed::AllocatorInternal for BumpAllocator {
+    fn internal_checkpoint(&self) -> crate::allocator::sealed::InternalCheckpoint {
+        let offset = self.cursor.load(Ordering::Acquire);
+        let generation = self.generation.load(Ordering::Acquire);
+
+        crate::allocator::sealed::InternalCheckpoint::new(
+            offset - self.start_addr, // Relative offset
+            self.start_addr as u64,   // Chunk ID (use start address as identifier)
+            generation,
+        )
+    }
+
+    unsafe fn internal_restore(
+        &mut self,
+        checkpoint: crate::allocator::sealed::InternalCheckpoint,
+    ) -> AllocResult<()> {
+        let current_generation = self.generation.load(Ordering::Acquire);
+
+        // Validate checkpoint is not stale
+        if checkpoint.generation != current_generation {
+            return Err(AllocError::InvalidState {
+                reason: format!(
+                    "stale checkpoint: expected generation {}, got {}",
+                    current_generation, checkpoint.generation
+                ),
+            });
+        }
+
+        // Validate checkpoint is from this allocator
+        if checkpoint.chunk_id != self.start_addr as u64 {
+            return Err(AllocError::InvalidState {
+                reason: "checkpoint from different allocator".into(),
+            });
+        }
+
+        // Validate offset is within bounds
+        if checkpoint.offset > self.capacity {
+            return Err(AllocError::InvalidState {
+                reason: format!(
+                    "checkpoint offset {} exceeds capacity {}",
+                    checkpoint.offset, self.capacity
+                ),
+            });
+        }
+
+        // SAFETY: Caller guarantees no allocations after checkpoint are in use
+        // - Checkpoint validated above (correct generation, allocator, bounds)
+        // - Setting cursor to checkpoint offset is safe (within [start_addr, end_addr))
+        // - Updates stats to reflect restored state
+        let restored_addr = self.start_addr + checkpoint.offset;
+        self.cursor.store(restored_addr, Ordering::Release);
+
+        // Update stats to reflect rewound state
+        let freed_bytes = self.used();
+        if freed_bytes > checkpoint.offset {
+            self.stats
+                .record_deallocation(freed_bytes - checkpoint.offset);
+        }
+
+        Ok(())
+    }
+
+    fn internal_fragmentation(&self) -> crate::allocator::sealed::FragmentationStats {
+        // Bump allocators have zero internal fragmentation by design
+        // - All free space is contiguous (at the end)
+        // - No free list, no fragments
+        let total_free = self.available();
+        crate::allocator::sealed::FragmentationStats::calculate(
+            total_free,
+            total_free,                         // Largest block = all free space
+            if total_free > 0 { 1 } else { 0 }, // Single fragment or none
+        )
+    }
+
+    #[cfg(debug_assertions)]
+    fn internal_validate(&self) -> Result<(), &'static str> {
+        let cursor_pos = self.cursor.load(Ordering::Acquire);
+
+        // Validate cursor is within bounds
+        if cursor_pos < self.start_addr || cursor_pos > self.end_addr {
+            return Err("cursor out of bounds");
+        }
+
+        // Validate monotonicity
+        let used = cursor_pos - self.start_addr;
+        if used > self.capacity {
+            return Err("used memory exceeds capacity");
+        }
+
+        // Validate stats consistency (if enabled)
+        if let Some(stats) = self.stats.snapshot() {
+            if stats.total_bytes_deallocated > stats.total_bytes_allocated {
+                return Err("deallocated bytes exceed allocated bytes");
+            }
+        }
+
+        Ok(())
+    }
+
+    fn internal_type_name(&self) -> &'static str {
+        "BumpAllocator"
     }
 }

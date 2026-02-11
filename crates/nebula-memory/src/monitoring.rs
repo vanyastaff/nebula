@@ -5,17 +5,14 @@
 
 use core::time::Duration;
 
-#[cfg(feature = "std")]
 use std::sync::{Arc, Mutex};
 
-use nebula_error::{ErrorKind, NebulaError, kinds::SystemError};
 #[cfg(feature = "logging")]
-use nebula_log::{debug, error, info, warn};
+use nebula_log::{error, info, warn};
 use nebula_system::memory::{self, MemoryInfo, MemoryPressure};
 
 use crate::allocator::AllocatorStats;
-use crate::core::config::MemoryConfig;
-use crate::error::{MemoryError, MemoryResult};
+use crate::error::MemoryResult;
 
 /// System memory monitoring configuration
 #[derive(Debug, Clone)]
@@ -68,7 +65,6 @@ pub enum PressureAction {
 #[derive(Debug)]
 pub struct MemoryMonitor {
     config: MonitoringConfig,
-    #[cfg(feature = "std")]
     last_check: Arc<Mutex<Option<std::time::Instant>>>,
     last_pressure: MemoryPressure,
     pressure_change_count: usize,
@@ -84,7 +80,6 @@ impl MemoryMonitor {
     pub fn with_config(config: MonitoringConfig) -> Self {
         Self {
             config,
-            #[cfg(feature = "std")]
             last_check: Arc::new(Mutex::new(None)),
             last_pressure: MemoryPressure::Low,
             pressure_change_count: 0,

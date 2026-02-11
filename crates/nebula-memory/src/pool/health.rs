@@ -1,9 +1,5 @@
 //! Pool health monitoring and leak detection
 
-#[cfg(not(feature = "std"))]
-use alloc::{string::String, vec::Vec};
-
-#[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -37,7 +33,6 @@ pub struct HealthConfig {
     pub max_utilization: f64,
 
     /// Time window for rate calculations
-    #[cfg(feature = "std")]
     pub rate_window: Duration,
 }
 
@@ -48,7 +43,6 @@ impl Default for HealthConfig {
             max_leak_rate: 0.05,   // 5% leaks
             min_utilization: 0.2,  // 20% minimum
             max_utilization: 0.9,  // 90% maximum
-            #[cfg(feature = "std")]
             rate_window: Duration::from_secs(60),
         }
     }
@@ -69,7 +63,6 @@ pub struct PoolHealthMonitor {
     available_objects: AtomicUsize,
 
     // Timing
-    #[cfg(feature = "std")]
     last_check: parking_lot::Mutex<Instant>,
 }
 
@@ -85,7 +78,6 @@ impl PoolHealthMonitor {
             leaked_objects: AtomicU64::new(0),
             pool_capacity: AtomicUsize::new(capacity),
             available_objects: AtomicUsize::new(0),
-            #[cfg(feature = "std")]
             last_check: parking_lot::Mutex::new(Instant::now()),
         }
     }
@@ -206,10 +198,7 @@ impl PoolHealthMonitor {
         self.total_returns.store(0, Ordering::Relaxed);
         self.total_failures.store(0, Ordering::Relaxed);
         self.leaked_objects.store(0, Ordering::Relaxed);
-        #[cfg(feature = "std")]
-        {
-            *self.last_check.lock() = Instant::now();
-        }
+        *self.last_check.lock() = Instant::now();
     }
 }
 

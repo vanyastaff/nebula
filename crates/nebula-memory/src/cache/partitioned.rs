@@ -3,24 +3,9 @@
 //! This module provides a partitioned cache that divides the cache into
 //! multiple segments to reduce lock contention and improve concurrency.
 
-#![cfg_attr(not(feature = "std"), no_std)]
-
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(feature = "std")]
 use std::{hash::Hasher, sync::Arc, thread, time::Instant};
 
-#[cfg(feature = "std")]
 use parking_lot::RwLock;
-
-#[cfg(not(feature = "std"))]
-use {
-    alloc::{boxed::Box, string::String, sync::Arc, vec::Vec},
-    core::hash::{Hash, Hasher},
-    hashbrown::HashMap,
-    spin::RwLock,
-};
 
 use super::compute::{CacheKey, CacheResult, ComputeCache};
 use super::config::{CacheConfig, CacheMetrics};
@@ -156,18 +141,11 @@ impl PartitionedConfig {
     }
 }
 
-/// Get number of CPUs, with fallback for no-std
+/// Get number of CPUs
 fn num_cpus() -> usize {
-    #[cfg(feature = "std")]
-    {
-        thread::available_parallelism()
-            .map(std::num::NonZero::get)
-            .unwrap_or(4)
-    }
-    #[cfg(not(feature = "std"))]
-    {
-        4 // Default fallback for no-std
-    }
+    thread::available_parallelism()
+        .map(std::num::NonZero::get)
+        .unwrap_or(4)
 }
 
 /// Partition information for monitoring
@@ -178,7 +156,6 @@ pub struct PartitionInfo {
     pub capacity: usize,
     pub load_factor: f32,
     pub hit_rate: f64,
-    #[cfg(feature = "std")]
     pub metrics: Option<CacheMetrics>,
 }
 
@@ -259,7 +236,6 @@ where
     /// Configuration
     config: PartitionedConfig,
     /// Global statistics
-    #[cfg(feature = "std")]
     stats: Arc<RwLock<PartitionedStats>>,
     /// Hash ring for consistent hashing
     hash_ring: Vec<u64>,
@@ -302,13 +278,11 @@ where
         // Create hash ring for consistent hashing
         let hash_ring = Self::create_hash_ring(partition_count);
 
-        #[cfg(feature = "std")]
         let stats = Arc::new(RwLock::new(PartitionedStats::default()));
 
         Self {
             partitions,
             config,
-            #[cfg(feature = "std")]
             stats,
             hash_ring,
         }
@@ -344,8 +318,8 @@ where
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 key.hash(&mut hasher);
                 let hash = hasher.finish();
-                // Simple FNV-like transformation
-                let fnv_hash = hash.wrapping_mul(1099511628211u64);
+                // Simple FNV-like transformation (FNV prime: 1099511628211)
+                let fnv_hash = hash.wrapping_mul(1_099_511_628_211_u64);
                 (fnv_hash as usize) % self.config.partition_count
             }
             HashStrategy::Consistent => {
@@ -382,14 +356,12 @@ where
         let partition_idx = self.get_partition_index(&key);
         let partition = &self.partitions[partition_idx];
 
-        #[cfg(feature = "std")]
-        let start_time = Instant::now();
+        let _start_time = Instant::now();
 
         // Try read lock first for cache hit
         {
             let mut cache = partition.write();
             if let Some(value) = cache.get(&key) {
-                #[cfg(feature = "std")]
                 if self.config.partition_metrics {
                     let mut stats = self.stats.write();
                     stats.total_requests += 1;
@@ -405,7 +377,6 @@ where
 
         // Double-check pattern
         if let Some(value) = cache.get(&key) {
-            #[cfg(feature = "std")]
             if self.config.partition_metrics {
                 let mut stats = self.stats.write();
                 stats.total_requests += 1;
@@ -418,7 +389,6 @@ where
         // Actually compute the value
         let result = cache.get_or_compute(key, compute_fn);
 
-        #[cfg(feature = "std")]
         if self.config.partition_metrics {
             let mut stats = self.stats.write();
             stats.total_requests += 1;
@@ -438,7 +408,6 @@ where
         let mut cache = partition.write();
         let result = cache.get(key);
 
-        #[cfg(feature = "std")]
         if self.config.partition_metrics {
             let mut stats = self.stats.write();
             stats.total_requests += 1;
@@ -533,7 +502,6 @@ where
             cache.clear();
         }
 
-        #[cfg(feature = "std")]
         if self.config.partition_metrics {
             let mut stats = self.stats.write();
             *stats = PartitionedStats::default();
@@ -555,7 +523,6 @@ where
 
         let cache = self.partitions[partition_idx].read();
 
-        #[cfg(feature = "std")]
         let metrics = if self.config.partition_metrics {
             Some(cache.metrics())
         } else {
@@ -567,19 +534,9 @@ where
             size: cache.len(),
             capacity: cache.capacity(),
             load_factor: cache.load_factor(),
-            hit_rate: {
-                #[cfg(feature = "std")]
-                {
-                    metrics
-                        .as_ref()
-                        .map_or(0.0, super::config::CacheMetrics::hit_rate)
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    0.0
-                }
-            },
-            #[cfg(feature = "std")]
+            hit_rate: metrics
+                .as_ref()
+                .map_or(0.0, super::config::CacheMetrics::hit_rate),
             metrics,
         })
     }
@@ -593,7 +550,6 @@ where
     }
 
     /// Get overall cache statistics
-    #[cfg(feature = "std")]
     #[must_use]
     pub fn stats(&self) -> PartitionedStats {
         if !self.config.partition_metrics {
@@ -606,7 +562,6 @@ where
     }
 
     /// Reset all statistics
-    #[cfg(feature = "std")]
     pub fn reset_stats(&self) {
         if self.config.partition_metrics {
             let mut stats = self.stats.write();
@@ -620,7 +575,6 @@ where
     }
 
     /// Get combined cache metrics from all partitions
-    #[cfg(feature = "std")]
     #[must_use]
     pub fn metrics(&self) -> CacheMetrics {
         let mut combined = CacheMetrics::default();
@@ -635,7 +589,6 @@ where
     }
 
     /// Clean up expired entries in all partitions
-    #[cfg(feature = "std")]
     #[must_use]
     pub fn cleanup_expired(&self) -> usize {
         self.partitions
@@ -667,7 +620,6 @@ where
     }
 
     /// Perform rebalancing (simplified version)
-    #[cfg(feature = "std")]
     pub fn rebalance(&self) -> MemoryResult<usize> {
         if !self.needs_rebalancing() {
             return Ok(0);
@@ -685,7 +637,7 @@ where
             .iter()
             .min_by(|a, b| a.load_factor.partial_cmp(&b.load_factor).unwrap());
 
-        if let (Some(max_partition), Some(min_partition)) = (most_loaded, least_loaded) {
+        if let (Some(_max_partition), Some(_min_partition)) = (most_loaded, least_loaded) {
             // In a real implementation, you would migrate some keys
             // from max_partition to min_partition
 
@@ -726,7 +678,6 @@ where
     }
 
     /// Get cache efficiency report
-    #[cfg(feature = "std")]
     #[must_use]
     pub fn efficiency_report(&self) -> PartitionedEfficiencyReport {
         let stats = self.stats();
@@ -747,7 +698,6 @@ where
     }
 
     /// Generate optimization recommendations
-    #[cfg(feature = "std")]
     fn generate_recommendations(&self, stats: &PartitionedStats) -> Vec<String> {
         let mut recommendations = Vec::new();
 
@@ -787,7 +737,6 @@ where
 }
 
 /// Efficiency report for partitioned cache
-#[cfg(feature = "std")]
 #[derive(Debug, Clone)]
 pub struct PartitionedEfficiencyReport {
     pub overall_hit_rate: f64,
@@ -805,7 +754,6 @@ pub struct PartitionedEfficiencyReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::config::EvictionPolicy;
 
     #[test]
     fn test_basic_partitioned_caching() {
@@ -932,7 +880,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_statistics() {
         let config = PartitionedConfig::new(100, 4).with_partition_metrics();

@@ -3,9 +3,6 @@
 //! This module provides hierarchical configuration for all memory statistics,
 //! monitoring, and analytics components.
 
-#[cfg(not(feature = "std"))]
-use core::time::Duration;
-#[cfg(feature = "std")]
 use std::time::Duration;
 
 /// Unified configuration for all memory statistics components
@@ -56,7 +53,6 @@ pub struct TrackingConfig {
     /// Maximum history size
     pub max_history: usize,
     /// Sampling interval
-    #[cfg(feature = "std")]
     pub sampling_interval: Duration,
     /// Metrics to track
     pub tracked_metrics: Vec<TrackedMetric>,
@@ -133,7 +129,6 @@ pub struct MonitoringConfig {
     /// Enable monitoring
     pub enabled: bool,
     /// Monitoring interval
-    #[cfg(feature = "std")]
     pub interval: Duration,
     /// Collect histograms
     pub collect_histograms: bool,
@@ -153,7 +148,6 @@ pub struct AlertConfig {
     /// Allocation rate threshold
     pub allocation_rate_threshold: Option<f64>,
     /// Cooldown period between alerts
-    #[cfg(feature = "std")]
     pub cooldown: Duration,
     /// Severity levels
     pub severity_levels: Vec<AlertSeverity>,
@@ -183,7 +177,6 @@ pub struct AnalyticsConfig {
 pub struct MLConfig {
     pub model_type: MLModelType,
     pub training_window_size: usize,
-    #[cfg(feature = "std")]
     pub prediction_horizon: Duration,
     pub confidence_threshold: f64,
 }
@@ -248,7 +241,6 @@ impl core::fmt::Display for ConfigError {
     }
 }
 
-#[cfg(feature = "std")]
 impl std::error::Error for ConfigError {}
 
 // Implementation blocks with preset configurations
@@ -347,7 +339,6 @@ impl TrackingConfig {
         Self {
             level: TrackingLevel::Minimal,
             max_history: 0,
-            #[cfg(feature = "std")]
             sampling_interval: Duration::from_secs(0),
             tracked_metrics: Vec::new(),
             detailed_tracking: false,
@@ -367,7 +358,6 @@ impl TrackingConfig {
         Self {
             level: TrackingLevel::Basic,
             max_history: 1000,
-            #[cfg(feature = "std")]
             sampling_interval: Duration::from_millis(100),
             tracked_metrics: vec![
                 TrackedMetric::CurrentUsage,
@@ -391,7 +381,6 @@ impl TrackingConfig {
         Self {
             level: TrackingLevel::Detailed,
             max_history: 5000,
-            #[cfg(feature = "std")]
             sampling_interval: Duration::from_millis(50),
             tracked_metrics: vec![
                 TrackedMetric::CurrentUsage,
@@ -417,7 +406,6 @@ impl TrackingConfig {
         Self {
             level: TrackingLevel::Detailed,
             max_history: 2000,
-            #[cfg(feature = "std")]
             sampling_interval: Duration::from_millis(200),
             tracked_metrics: vec![
                 TrackedMetric::CurrentUsage,
@@ -441,7 +429,6 @@ impl TrackingConfig {
         Self {
             level: TrackingLevel::Debug,
             max_history: 10000,
-            #[cfg(feature = "std")]
             sampling_interval: Duration::from_millis(10),
             tracked_metrics: vec![
                 TrackedMetric::CurrentUsage,
@@ -565,12 +552,10 @@ impl TrackingConfig {
         }
 
         #[cfg(feature = "profiling")]
-        if self.collect_stack_traces {
-            if !(0.0..=1.0).contains(&self.profiler_sampling_rate) {
-                return Err(ConfigError::InvalidSamplingRate);
-            }
-            // Другие проверки для профилирования можно добавить здесь
+        if self.collect_stack_traces && !(0.0..=1.0).contains(&self.profiler_sampling_rate) {
+            return Err(ConfigError::InvalidSamplingRate);
         }
+        // Другие проверки для профилирования можно добавить здесь
 
         self.sampling.validate()
     }
@@ -647,7 +632,6 @@ impl MonitoringConfig {
     pub const fn disabled() -> Self {
         Self {
             enabled: false,
-            #[cfg(feature = "std")]
             interval: Duration::from_secs(0),
             collect_histograms: false,
             histogram_buckets: 0,
@@ -658,7 +642,6 @@ impl MonitoringConfig {
     pub const fn basic() -> Self {
         Self {
             enabled: true,
-            #[cfg(feature = "std")]
             interval: Duration::from_secs(1),
             collect_histograms: false,
             histogram_buckets: 0,
@@ -669,7 +652,6 @@ impl MonitoringConfig {
     pub const fn standard() -> Self {
         Self {
             enabled: true,
-            #[cfg(feature = "std")]
             interval: Duration::from_millis(500),
             collect_histograms: true,
             histogram_buckets: 50,
@@ -680,7 +662,6 @@ impl MonitoringConfig {
     pub const fn frequent() -> Self {
         Self {
             enabled: true,
-            #[cfg(feature = "std")]
             interval: Duration::from_millis(100),
             collect_histograms: true,
             histogram_buckets: 100,
@@ -691,7 +672,6 @@ impl MonitoringConfig {
     pub const fn debug() -> Self {
         Self {
             enabled: true,
-            #[cfg(feature = "std")]
             interval: Duration::from_millis(10),
             collect_histograms: true,
             histogram_buckets: 200,
@@ -718,7 +698,6 @@ impl MonitoringConfig {
             return 0;
         }
 
-        #[cfg(feature = "std")]
         let interval_score = if self.interval.as_millis() < 100 {
             3
         } else if self.interval.as_millis() < 1000 {
@@ -726,8 +705,6 @@ impl MonitoringConfig {
         } else {
             1
         };
-        #[cfg(not(feature = "std"))]
-        let interval_score = 1;
 
         let histogram_score = if self.collect_histograms { 2 } else { 0 };
         let component_score = if self.component_tracking { 1 } else { 0 };
@@ -737,7 +714,6 @@ impl MonitoringConfig {
 
     #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), ConfigError> {
-        #[cfg(feature = "std")]
         if self.enabled && self.interval.is_zero() {
             return Err(ConfigError::ZeroMonitoringInterval);
         }
@@ -754,7 +730,6 @@ impl AlertConfig {
             enabled: false,
             memory_threshold: None,
             allocation_rate_threshold: None,
-            #[cfg(feature = "std")]
             cooldown: Duration::from_secs(0),
             severity_levels: Vec::new(),
         }
@@ -765,7 +740,6 @@ impl AlertConfig {
             enabled: true,
             memory_threshold: Some(256 * 1024 * 1024), // 256MB
             allocation_rate_threshold: Some(1000.0),
-            #[cfg(feature = "std")]
             cooldown: Duration::from_secs(60),
             severity_levels: Vec::new(),
         }
@@ -776,7 +750,6 @@ impl AlertConfig {
             enabled: true,
             memory_threshold: Some(8 * 1024 * 1024 * 1024), // 8GB
             allocation_rate_threshold: Some(50000.0),
-            #[cfg(feature = "std")]
             cooldown: Duration::from_secs(300),
             severity_levels: Vec::new(),
         }
@@ -788,10 +761,10 @@ impl AlertConfig {
 
     #[must_use = "validation result must be checked"]
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if let Some(rate) = self.allocation_rate_threshold {
-            if rate <= 0.0 {
-                return Err(ConfigError::InvalidAllocationRate);
-            }
+        if let Some(rate) = self.allocation_rate_threshold
+            && rate <= 0.0
+        {
+            return Err(ConfigError::InvalidAllocationRate);
         }
         Ok(())
     }
@@ -873,7 +846,6 @@ impl MLConfig {
         Self {
             model_type: MLModelType::LinearRegression,
             training_window_size: 100,
-            #[cfg(feature = "std")]
             prediction_horizon: Duration::from_secs(300),
             confidence_threshold: 0.8,
         }
@@ -883,7 +855,6 @@ impl MLConfig {
         Self {
             model_type: MLModelType::ExponentialSmoothing,
             training_window_size: 500,
-            #[cfg(feature = "std")]
             prediction_horizon: Duration::from_secs(900),
             confidence_threshold: 0.85,
         }
@@ -893,7 +864,6 @@ impl MLConfig {
         Self {
             model_type: MLModelType::ARIMA,
             training_window_size: 2000,
-            #[cfg(feature = "std")]
             prediction_horizon: Duration::from_secs(1800),
             confidence_threshold: 0.9,
         }

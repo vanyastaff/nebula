@@ -506,7 +506,7 @@ mod tests {
         let layout = Layout::from_size_align(64, 16).unwrap();
         let ptr = unsafe { allocator.allocate(layout).unwrap() };
 
-        assert!(!ptr.as_ptr().is_null());
+        // NonNull<u8> guarantees ptr is not null by type invariant
         assert_eq!(ptr.as_ptr() as usize % 16, 0); // Check alignment
     }
 }

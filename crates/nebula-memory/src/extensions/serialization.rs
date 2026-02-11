@@ -3,20 +3,7 @@
 //! This module provides extension traits that allow integrating
 //! the memory management system with various serialization formats.
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
-use alloc::{
-    boxed::Box,
-    collections::BTreeMap,
-    string::{String, ToString},
-    sync::Arc,
-    vec,
-    vec::Vec,
-};
 use core::fmt;
-#[cfg(feature = "std")]
 use std::{
     boxed::Box,
     string::{String, ToString},
@@ -64,7 +51,7 @@ pub trait Serializer: Send + Sync {
 
     /// Deserialize data from bytes
     fn deserialize(&self, data: &[u8], type_hint: &str)
-        -> MemoryResult<Box<dyn SerializableValue>>;
+    -> MemoryResult<Box<dyn SerializableValue>>;
 }
 
 /// Trait for values that can be serialized
@@ -76,7 +63,10 @@ pub trait SerializableValue: Send + Sync {
     fn to_json(&self) -> MemoryResult<String> {
         Err(MemoryError::NotSupported {
             feature: "JSON serialization",
-            context: Some(format!("Type {} does not support JSON serialization", self.type_name())),
+            context: Some(format!(
+                "Type {} does not support JSON serialization",
+                self.type_name()
+            )),
         })
     }
 
@@ -171,7 +161,11 @@ impl SerializableValue for BooleanValue {
     }
 
     fn to_json(&self) -> MemoryResult<String> {
-        Ok(if self.0 { "true".to_string() } else { "false".to_string() })
+        Ok(if self.0 {
+            "true".to_string()
+        } else {
+            "false".to_string()
+        })
     }
 
     fn clone_value(&self) -> Box<dyn SerializableValue> {
@@ -250,13 +244,15 @@ impl Serializer for JsonSerializer {
                 } else {
                     Err(MemoryError::invalid_config("configuration error"))
                 }
-            },
+            }
             "number" => {
-                let num = json.parse::<f64>().map_err(|_| MemoryError::InvalidConfig {
-                    reason: "Invalid JSON number".to_string(),
-                })?;
+                let num = json
+                    .parse::<f64>()
+                    .map_err(|_| MemoryError::InvalidConfig {
+                        reason: "Invalid JSON number".to_string(),
+                    })?;
                 Ok(Box::new(NumberValue(num)))
-            },
+            }
             "boolean" => match json {
                 "true" => Ok(Box::new(BooleanValue(true))),
                 "false" => Ok(Box::new(BooleanValue(false))),
@@ -268,7 +264,7 @@ impl Serializer for JsonSerializer {
                 } else {
                     Err(MemoryError::invalid_config("configuration error"))
                 }
-            },
+            }
             _ => Err(MemoryError::NotSupported {
                 feature: "JSON deserialization",
                 context: Some(format!("Type {} not supported", type_hint)),
@@ -286,7 +282,9 @@ pub struct SerializationExtension {
 impl SerializationExtension {
     /// Create a new serialization extension
     pub fn new() -> Self {
-        Self { serializers: Vec::new() }
+        Self {
+            serializers: Vec::new(),
+        }
     }
 
     /// Register a serializer
@@ -296,7 +294,10 @@ impl SerializationExtension {
 
     /// Get a serializer by format
     pub fn get_serializer(&self, format: SerializationFormat) -> Option<&dyn Serializer> {
-        self.serializers.iter().find(|s| s.format() == format).map(|s| s.as_ref())
+        self.serializers
+            .iter()
+            .find(|s| s.format() == format)
+            .map(|s| s.as_ref())
     }
 
     /// Serialize a value with the specified format
@@ -365,24 +366,24 @@ impl MemoryExtension for SerializationExtension {
 pub fn global_serialization() -> Option<Arc<SerializationExtension>> {
     use crate::extensions::GlobalExtensions;
 
-    if let Some(ext) = GlobalExtensions::get("serialization") {
-        if let Some(ser_ext) = ext.as_any().downcast_ref::<SerializationExtension>() {
-            // Создаем новый экземпляр с теми же сериализаторами
-            let mut new_ext = SerializationExtension::new();
+    if let Some(ext) = GlobalExtensions::get("serialization")
+        && let Some(ser_ext) = ext.as_any().downcast_ref::<SerializationExtension>()
+    {
+        // Создаем новый экземпляр с теми же сериализаторами
+        let mut new_ext = SerializationExtension::new();
 
-            // Копируем зарегистрированные сериализаторы через вызов register_serializer
-            for serializer in &ser_ext.serializers {
-                // Регистрируем JSON сериализатор по умолчанию
-                if serializer.format() == SerializationFormat::Json {
-                    new_ext.register_serializer(JsonSerializer);
-                }
-                // Другие форматы будут недоступны, но в данном контексте
-                // это нормально, т.к. мы не можем клонировать сериализаторы
-                // напрямую
+        // Копируем зарегистрированные сериализаторы через вызов register_serializer
+        for serializer in &ser_ext.serializers {
+            // Регистрируем JSON сериализатор по умолчанию
+            if serializer.format() == SerializationFormat::Json {
+                new_ext.register_serializer(JsonSerializer);
             }
-
-            return Some(Arc::new(new_ext));
+            // Другие форматы будут недоступны, но в данном контексте
+            // это нормально, т.к. мы не можем клонировать сериализаторы
+            // напрямую
         }
+
+        return Some(Arc::new(new_ext));
     }
     None
 }
@@ -485,13 +486,24 @@ mod tests {
         let mut extension = SerializationExtension::new();
         extension.register_serializer(JsonSerializer);
 
-        assert!(extension.get_serializer(SerializationFormat::Json).is_some());
-        assert!(extension.get_serializer(SerializationFormat::Bincode).is_none());
+        assert!(
+            extension
+                .get_serializer(SerializationFormat::Json)
+                .is_some()
+        );
+        assert!(
+            extension
+                .get_serializer(SerializationFormat::Bincode)
+                .is_none()
+        );
 
         let value = StringValue("Extension test".to_string());
-        let serialized = extension.serialize(&value, SerializationFormat::Json).unwrap();
-        let deserialized =
-            extension.deserialize(&serialized, "string", SerializationFormat::Json).unwrap();
+        let serialized = extension
+            .serialize(&value, SerializationFormat::Json)
+            .unwrap();
+        let deserialized = extension
+            .deserialize(&serialized, "string", SerializationFormat::Json)
+            .unwrap();
 
         assert!(value.equals(deserialized.as_ref()));
     }

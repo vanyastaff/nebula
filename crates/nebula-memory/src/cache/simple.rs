@@ -9,7 +9,6 @@
 //! For advanced features like deduplication, circuit breaking, or rate limiting,
 //! use the decorator types in the parent module.
 
-#[cfg(feature = "std")]
 use std::{
     collections::HashMap,
     hash::Hash,
@@ -22,16 +21,20 @@ use tokio::sync::RwLock;
 
 /// A simple async cache for get-or-compute operations
 ///
+/// Values are stored as `Arc<V>` internally to avoid expensive clones on cache hits.
+/// This makes cache access extremely cheap - just incrementing a reference count.
+///
 /// # Examples
 ///
 /// ```rust
 /// use nebula_memory::cache::AsyncCache;
+/// use std::sync::Arc;
 ///
 /// #[tokio::main]
 /// async fn main() {
 ///     let cache = AsyncCache::new(100);
 ///
-///     // Get or compute a value
+///     // Get or compute a value - returns Arc<V> for cheap sharing
 ///     let value = cache.get_or_compute("key", || async {
 ///         expensive_computation().await
 ///     }).await.unwrap();
@@ -52,14 +55,14 @@ struct CacheInner<K, V> {
 }
 
 struct CacheEntry<V> {
-    value: V,
+    value: Arc<V>,
     created_at: Instant,
     last_accessed: Instant,
     access_count: u64,
 }
 
 impl<V> CacheEntry<V> {
-    fn new(value: V) -> Self {
+    fn new(value: Arc<V>) -> Self {
         let now = Instant::now();
         Self {
             value,
@@ -78,7 +81,7 @@ impl<V> CacheEntry<V> {
 impl<K, V> AsyncCache<K, V>
 where
     K: Hash + Eq + Clone + Send + Sync + 'static,
-    V: Clone + Send + Sync + 'static,
+    V: Send + Sync + 'static,
 {
     /// Create a new async cache with the specified maximum number of entries
     ///
@@ -92,7 +95,8 @@ where
     pub fn new(max_entries: usize) -> Self {
         Self {
             inner: Arc::new(RwLock::new(CacheInner {
-                entries: HashMap::with_capacity(max_entries.min(1024)),
+                // Preallocate full capacity - user specified their workload
+                entries: HashMap::with_capacity(max_entries),
             })),
             max_entries,
         }
@@ -101,64 +105,66 @@ where
     /// Get a value from the cache, or compute it if not present
     ///
     /// This is the primary API for the cache. If the key exists, the cached value
-    /// is returned immediately. Otherwise, the computation function is called,
-    /// the result is cached, and returned.
+    /// is returned immediately as an Arc (cheap ref count increment).
+    /// Otherwise, the computation function is called, the result is cached, and returned.
     ///
     /// # Examples
     ///
     /// ```rust
     /// use nebula_memory::cache::AsyncCache;
+    /// use std::sync::Arc;
     ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let cache = AsyncCache::new(100);
     ///
-    ///     let value = cache.get_or_compute("key", || async {
+    ///     let value: Arc<i32> = cache.get_or_compute("key", || async {
     ///         Ok::<_, std::io::Error>(expensive_computation().await)
     ///     }).await.unwrap();
     ///
-    ///     // Second call returns cached value immediately
+    ///     // Second call returns cached Arc (just ref count increment)
     ///     let cached = cache.get_or_compute("key", || async {
     ///         panic!("Should not compute!");
     ///     }).await.unwrap();
     ///
-    ///     assert_eq!(value, cached);
+    ///     assert_eq!(*value, *cached);
     /// }
     ///
     /// async fn expensive_computation() -> i32 { 42 }
     /// ```
-    pub async fn get_or_compute<F, Fut, E>(&self, key: K, f: F) -> Result<V, E>
+    pub async fn get_or_compute<F, Fut, E>(&self, key: K, f: F) -> Result<Arc<V>, E>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<V, E>>,
     {
-        // Fast path: read lock
+        // Fast path: read lock - just clone the Arc (cheap!)
         {
             let cache = self.inner.read().await;
             if let Some(entry) = cache.entries.get(&key) {
-                return Ok(entry.value.clone());
+                return Ok(Arc::clone(&entry.value));
             }
         }
 
         // Slow path: compute and insert
-        let value = f().await?;
+        let value = Arc::new(f().await?);
 
         {
             let mut cache = self.inner.write().await;
 
             // Evict if at capacity (simple LRU)
-            if cache.entries.len() >= self.max_entries {
-                if let Some(evict_key) = cache
+            if cache.entries.len() >= self.max_entries
+                && let Some(evict_key) = cache
                     .entries
                     .iter()
                     .min_by_key(|(_, entry)| entry.last_accessed)
                     .map(|(k, _)| k.clone())
-                {
-                    cache.entries.remove(&evict_key);
-                }
+            {
+                cache.entries.remove(&evict_key);
             }
 
-            cache.entries.insert(key, CacheEntry::new(value.clone()));
+            cache
+                .entries
+                .insert(key, CacheEntry::new(Arc::clone(&value)));
         }
 
         Ok(value)
@@ -172,6 +178,7 @@ where
     ///
     /// ```rust
     /// use nebula_memory::cache::AsyncCache;
+    /// use std::sync::Arc;
     ///
     /// #[tokio::main]
     /// async fn main() {
@@ -181,14 +188,14 @@ where
     ///
     ///     cache.insert("key", 42).await;
     ///
-    ///     assert_eq!(cache.get(&"key").await, Some(42));
+    ///     assert_eq!(cache.get(&"key").await, Some(Arc::new(42)));
     /// }
     /// ```
-    pub async fn get(&self, key: &K) -> Option<V> {
+    pub async fn get(&self, key: &K) -> Option<Arc<V>> {
         let mut cache = self.inner.write().await;
         if let Some(entry) = cache.entries.get_mut(key) {
             entry.update_access();
-            Some(entry.value.clone())
+            Some(Arc::clone(&entry.value))
         } else {
             None
         }
@@ -202,33 +209,34 @@ where
     ///
     /// ```rust
     /// use nebula_memory::cache::AsyncCache;
+    /// use std::sync::Arc;
     ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let cache = AsyncCache::new(100);
     ///
     ///     assert_eq!(cache.insert("key", 42).await, None);
-    ///     assert_eq!(cache.insert("key", 43).await, Some(42));
+    ///     assert_eq!(cache.insert("key", 43).await, Some(Arc::new(42)));
     /// }
     /// ```
-    pub async fn insert(&self, key: K, value: V) -> Option<V> {
+    pub async fn insert(&self, key: K, value: V) -> Option<Arc<V>> {
         let mut cache = self.inner.write().await;
 
         // Evict if at capacity
-        if cache.entries.len() >= self.max_entries && !cache.entries.contains_key(&key) {
-            if let Some(evict_key) = cache
+        if cache.entries.len() >= self.max_entries
+            && !cache.entries.contains_key(&key)
+            && let Some(evict_key) = cache
                 .entries
                 .iter()
                 .min_by_key(|(_, entry)| entry.last_accessed)
                 .map(|(k, _)| k.clone())
-            {
-                cache.entries.remove(&evict_key);
-            }
+        {
+            cache.entries.remove(&evict_key);
         }
 
         cache
             .entries
-            .insert(key, CacheEntry::new(value))
+            .insert(key, CacheEntry::new(Arc::new(value)))
             .map(|e| e.value)
     }
 
@@ -240,17 +248,18 @@ where
     ///
     /// ```rust
     /// use nebula_memory::cache::AsyncCache;
+    /// use std::sync::Arc;
     ///
     /// #[tokio::main]
     /// async fn main() {
     ///     let cache = AsyncCache::new(100);
     ///
     ///     cache.insert("key", 42).await;
-    ///     assert_eq!(cache.remove(&"key").await, Some(42));
+    ///     assert_eq!(cache.remove(&"key").await, Some(Arc::new(42)));
     ///     assert_eq!(cache.remove(&"key").await, None);
     /// }
     /// ```
-    pub async fn remove(&self, key: &K) -> Option<V> {
+    pub async fn remove(&self, key: &K) -> Option<Arc<V>> {
         let mut cache = self.inner.write().await;
         cache.entries.remove(key).map(|e| e.value)
     }
@@ -398,10 +407,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(v1, 42);
+        assert_eq!(*v1, 42); // Deref Arc
         assert_eq!(counter.load(Ordering::SeqCst), 1);
 
-        // Second call: cached
+        // Second call: cached (Arc clone is cheap!)
         let v2 = cache
             .get_or_compute("key", || async {
                 panic!("Should not compute!");
@@ -409,7 +418,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(v2, 42);
+        assert_eq!(*v2, 42); // Deref Arc
         assert_eq!(counter.load(Ordering::SeqCst), 1); // Not incremented
     }
 
@@ -437,10 +446,10 @@ mod tests {
 
         // Insert
         assert_eq!(cache.insert("key", 42).await, None);
-        assert_eq!(cache.insert("key", 43).await, Some(42));
+        assert_eq!(cache.insert("key", 43).await.as_deref(), Some(&42));
 
         // Get
-        assert_eq!(cache.get(&"key").await, Some(43));
+        assert_eq!(cache.get(&"key").await.as_deref(), Some(&43));
         assert_eq!(cache.get(&"missing").await, None);
 
         // Contains
@@ -448,7 +457,7 @@ mod tests {
         assert!(!cache.contains_key(&"missing").await);
 
         // Remove
-        assert_eq!(cache.remove(&"key").await, Some(43));
+        assert_eq!(cache.remove(&"key").await.as_deref(), Some(&43));
         assert_eq!(cache.remove(&"key").await, None);
 
         // Len

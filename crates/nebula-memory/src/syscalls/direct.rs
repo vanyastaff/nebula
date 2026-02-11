@@ -243,6 +243,8 @@ pub fn memory_unmap(addr: *mut u8, size: usize) -> io::Result<()> {
         use winapi::um::memoryapi::VirtualFree;
         use winapi::um::winnt::MEM_RELEASE;
 
+        let _ = size; // Used on other platforms; VirtualFree with MEM_RELEASE ignores size
+
         // SAFETY: FFI call to Windows VirtualFree. Caller guarantees addr is from VirtualAlloc.
         // MEM_RELEASE with size=0 releases entire region.
         let result = unsafe { VirtualFree(addr.cast::<winapi::ctypes::c_void>(), 0, MEM_RELEASE) };
@@ -448,6 +450,8 @@ pub fn memory_sync(addr: *mut u8, size: usize, sync_type: MemorySyncType) -> io:
     {
         use winapi::um::memoryapi::FlushViewOfFile;
 
+        let _ = sync_type; // Used on Unix; Windows FlushViewOfFile has no sync type
+
         // SAFETY: FFI call to FlushViewOfFile to flush memory to disk.
         // - addr/size should be valid mapped region (caller responsibility)
         let result = unsafe { FlushViewOfFile(addr as *const winapi::ctypes::c_void, size) };
@@ -473,7 +477,8 @@ pub fn memory_sync(addr: *mut u8, size: usize, sync_type: MemorySyncType) -> io:
 ///
 /// - `addr` must be valid for reads of `size` bytes
 /// - The memory region must remain valid for the duration of the call
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
+// Clippy false positive: function is marked unsafe, dereferencing is documented in safety contract
+#[expect(clippy::not_unsafe_ptr_arg_deref)]
 pub fn memory_prefetch(addr: *const u8, size: usize) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {

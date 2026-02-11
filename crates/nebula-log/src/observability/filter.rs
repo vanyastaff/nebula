@@ -83,6 +83,7 @@ impl EventFilter {
     }
 
     /// Check if an event passes this filter
+    #[inline]
     pub fn matches(&self, event: &dyn ObservabilityEvent) -> bool {
         match self {
             EventFilter::All => true,

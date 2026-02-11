@@ -447,10 +447,8 @@ impl OptionalStats {
 // Thread-Local Batched Statistics
 // ============================================================================
 
-#[cfg(feature = "std")]
 use std::cell::RefCell;
 
-#[cfg(feature = "std")]
 thread_local! {
     /// Thread-local statistics batch for reducing atomic contention
     static LOCAL_STATS_BATCH: RefCell<LocalStatsBatch> = RefCell::new(LocalStatsBatch::new());
@@ -460,7 +458,6 @@ thread_local! {
 ///
 /// Batches statistics updates per thread to reduce atomic operation contention.
 /// Flushes to global statistics periodically based on batch size or time.
-#[cfg(feature = "std")]
 #[derive(Debug)]
 struct LocalStatsBatch {
     allocation_count: usize,
@@ -473,7 +470,6 @@ struct LocalStatsBatch {
     last_flush: std::time::Instant,
 }
 
-#[cfg(feature = "std")]
 impl LocalStatsBatch {
     /// Batch size threshold before flushing
     const BATCH_SIZE: usize = 1000;
@@ -609,12 +605,10 @@ impl LocalStatsBatch {
 /// stats.flush(); // Force flush to global stats
 /// let snapshot = stats.snapshot();
 /// ```
-#[cfg(feature = "std")]
 pub struct BatchedStats {
     global: AtomicAllocatorStats,
 }
 
-#[cfg(feature = "std")]
 impl BatchedStats {
     /// Create new batched statistics
     #[must_use]
@@ -701,7 +695,6 @@ impl BatchedStats {
     }
 }
 
-#[cfg(feature = "std")]
 impl Default for BatchedStats {
     fn default() -> Self {
         Self::new()

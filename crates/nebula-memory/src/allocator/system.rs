@@ -21,13 +21,8 @@
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::NonNull;
-// Import System allocator - available in std or alloc crate
-#[cfg(feature = "std")]
+// Import System allocator
 use std::alloc::System;
-
-// Fallback for no_std environments without alloc
-#[cfg(not(feature = "std"))]
-compile_error!("SystemAllocator requires either 'std' or 'alloc' feature to be enabled");
 
 use super::{AllocError, AllocResult, Allocator, BulkAllocator, MemoryUsage, ThreadSafeAllocator};
 
@@ -153,19 +148,15 @@ unsafe impl Allocator for SystemAllocator {
             && old_layout.size() > 0
             && new_layout.size() > 0
         {
-            #[cfg(feature = "std")]
-            {
-                // SAFETY: Using System.realloc for same-alignment resize.
-                // - ptr was allocated by System.alloc (caller's contract)
-                // - old_layout matches original allocation (caller's contract)
-                // - Alignment unchanged (checked above)
-                // - Returns null on failure (checked below)
-                let new_ptr =
-                    unsafe { System.realloc(ptr.as_ptr(), old_layout, new_layout.size()) };
-                // Use explicit null check instead of new_unchecked
-                if let Some(non_null) = NonNull::new(new_ptr) {
-                    return Ok(NonNull::slice_from_raw_parts(non_null, new_layout.size()));
-                }
+            // SAFETY: Using System.realloc for same-alignment resize.
+            // - ptr was allocated by System.alloc (caller's contract)
+            // - old_layout matches original allocation (caller's contract)
+            // - Alignment unchanged (checked above)
+            // - Returns null on failure (checked below)
+            let new_ptr = unsafe { System.realloc(ptr.as_ptr(), old_layout, new_layout.size()) };
+            // Use explicit null check instead of new_unchecked
+            if let Some(non_null) = NonNull::new(new_ptr) {
+                return Ok(NonNull::slice_from_raw_parts(non_null, new_layout.size()));
             }
         }
 
@@ -259,7 +250,7 @@ mod tests {
         // - ptr is deallocated with same layout it was allocated with
         unsafe {
             let ptr = allocator.allocate(layout).unwrap();
-            assert!(!ptr.as_ptr().is_null());
+            // NonNull<u8> guarantees ptr is not null by type invariant
             assert_eq!(ptr.len(), layout.size());
 
             allocator.deallocate(ptr.cast(), layout);

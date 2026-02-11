@@ -4,16 +4,7 @@
 //! It focuses on the essential metrics needed for monitoring cache performance
 //! without the complexity of advanced profiling and trend analysis.
 
-#![cfg_attr(not(feature = "std"), no_std)]
-
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(feature = "std")]
 use std::sync::atomic::{AtomicU64, Ordering};
-
-#[cfg(not(feature = "std"))]
-use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Simple cache statistics with basic counters
 ///

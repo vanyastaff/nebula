@@ -5,37 +5,55 @@
 //! - **ExecutionContext**: Workflow execution scope (execution_id, workflow_id, tenant_id)
 //! - **NodeContext**: Individual node execution (node_id, action_id, resource access)
 //!
-//! Contexts use thread-local storage with RAII guards for automatic cleanup.
+//! # Async-Safe Context Propagation
 //!
-//! # Thread-Local Storage Warning
+//! When the `async` feature is enabled, contexts use `tokio::task_local!` storage
+//! and survive across `.await` points in multi-thread Tokio runtimes.
 //!
-//! All contexts are stored in **thread-local** storage. They are **not** propagated
-//! across `.await` points in async runtimes with work-stealing schedulers (e.g.,
-//! Tokio multi-thread). If a task is suspended and resumes on a different OS thread,
-//! the context will be lost.
+//! When the `async` feature is disabled, contexts use `thread_local!` storage
+//! (suitable for synchronous code or single-thread runtimes).
 //!
-//! For async context propagation, use `tracing::Span` fields or `tokio::task_local!`.
-//! The thread-local approach works correctly for:
-//! - Synchronous code
-//! - `tokio::runtime::Builder::new_current_thread()` (single-thread runtime)
-//! - Code within a single `.await`-free scope
+//! # Usage
+//!
+//! Contexts are activated via `scope()` (async) or `scope_sync()` (sync):
+//!
+//! ```rust,ignore
+//! // Async — survives .await points
+//! ExecutionContext::new("exec-1", "wf-1", "tenant-1")
+//!     .scope(async {
+//!         do_work().await;
+//!         assert!(ExecutionContext::current().is_some());
+//!     })
+//!     .await;
+//!
+//! // Sync
+//! NodeContext::new("node-1", "action-1")
+//!     .scope_sync(|| {
+//!         assert!(NodeContext::current().is_some());
+//!     });
+//! ```
 
 use std::any::{Any, TypeId};
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
-thread_local! {
-    static GLOBAL_CONTEXT: RefCell<Option<Arc<GlobalContext>>> = const { RefCell::new(None) };
-    static EXECUTION_CONTEXT: RefCell<Option<Arc<ExecutionContext>>> = const { RefCell::new(None) };
-    static NODE_CONTEXT: RefCell<Option<Arc<NodeContext>>> = const { RefCell::new(None) };
-}
+use arc_swap::ArcSwap;
+
+// ---------------------------------------------------------------------------
+// GlobalContext — ArcSwap (set-once, lock-free reads, test-resettable)
+// ---------------------------------------------------------------------------
+
+/// Global static for the application-wide context.
+static GLOBAL_CONTEXT: LazyLock<ArcSwap<Option<Arc<GlobalContext>>>> =
+    LazyLock::new(|| ArcSwap::from_pointee(None));
 
 /// Global application context
 ///
 /// Contains application-wide configuration that remains constant
 /// during the application lifecycle.
+///
+/// Unlike `ExecutionContext` and `NodeContext`, this is stored in a global
+/// `ArcSwap` — it is `Send + Sync` and does not require scoping.
 #[derive(Debug, Clone)]
 pub struct GlobalContext {
     /// Service name (e.g., "nebula-workflow")
@@ -69,40 +87,25 @@ impl GlobalContext {
         self
     }
 
-    /// Set this as the current global context, returning a guard
+    /// Initialize the global context.
     ///
-    /// When the guard is dropped, the previous global context is restored.
-    pub fn set_current(self) -> GlobalGuard {
-        let previous = GLOBAL_CONTEXT.with(|ctx| ctx.borrow_mut().replace(Arc::new(self)));
-        GlobalGuard {
-            previous,
-            _not_send: PhantomData,
-        }
+    /// Typically called once at application startup. Subsequent calls
+    /// replace the previous value.
+    pub fn init(self) {
+        GLOBAL_CONTEXT.store(Arc::new(Some(Arc::new(self))));
     }
 
     /// Get the current global context
+    #[inline]
     pub fn current() -> Option<Arc<Self>> {
-        GLOBAL_CONTEXT.with(|ctx| ctx.borrow().clone())
+        let guard = GLOBAL_CONTEXT.load();
+        (**guard).clone()
     }
 }
 
-/// RAII guard for global context
-///
-/// Restores the previous global context when dropped.
-/// This guard is `!Send` — it must not cross thread boundaries.
-#[derive(Debug)]
-pub struct GlobalGuard {
-    previous: Option<Arc<GlobalContext>>,
-    _not_send: PhantomData<*const ()>,
-}
-
-impl Drop for GlobalGuard {
-    fn drop(&mut self) {
-        GLOBAL_CONTEXT.with(|ctx| {
-            *ctx.borrow_mut() = self.previous.take();
-        });
-    }
-}
+// ---------------------------------------------------------------------------
+// ResourceMap — unchanged, already Send + Sync
+// ---------------------------------------------------------------------------
 
 /// Type-safe resource map keyed by [`TypeId`].
 ///
@@ -145,6 +148,92 @@ impl ResourceMap {
         self.inner.len()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Storage backend — task_local (async) or thread_local (no-async)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "async")]
+mod storage {
+    use super::*;
+    use std::future::Future;
+
+    tokio::task_local! {
+        static EXECUTION_CTX: Arc<ExecutionContext>;
+        static NODE_CTX: Arc<NodeContext>;
+    }
+
+    #[inline]
+    pub fn current_execution() -> Option<Arc<ExecutionContext>> {
+        EXECUTION_CTX.try_with(|ctx| ctx.clone()).ok()
+    }
+
+    #[inline]
+    pub fn current_node() -> Option<Arc<NodeContext>> {
+        NODE_CTX.try_with(|ctx| ctx.clone()).ok()
+    }
+
+    pub async fn with_execution<F: Future>(ctx: Arc<ExecutionContext>, f: F) -> F::Output {
+        EXECUTION_CTX.scope(ctx, f).await
+    }
+
+    pub async fn with_node<F: Future>(ctx: Arc<NodeContext>, f: F) -> F::Output {
+        NODE_CTX.scope(ctx, f).await
+    }
+
+    pub fn with_execution_sync<R>(ctx: Arc<ExecutionContext>, f: impl FnOnce() -> R) -> R {
+        EXECUTION_CTX.sync_scope(ctx, f)
+    }
+
+    pub fn with_node_sync<R>(ctx: Arc<NodeContext>, f: impl FnOnce() -> R) -> R {
+        NODE_CTX.sync_scope(ctx, f)
+    }
+}
+
+#[cfg(not(feature = "async"))]
+mod storage {
+    use super::*;
+    use std::cell::RefCell;
+
+    thread_local! {
+        static EXECUTION_CTX: RefCell<Option<Arc<ExecutionContext>>> =
+            const { RefCell::new(None) };
+        static NODE_CTX: RefCell<Option<Arc<NodeContext>>> =
+            const { RefCell::new(None) };
+    }
+
+    #[inline]
+    pub fn current_execution() -> Option<Arc<ExecutionContext>> {
+        EXECUTION_CTX.with(|ctx| ctx.borrow().clone())
+    }
+
+    #[inline]
+    pub fn current_node() -> Option<Arc<NodeContext>> {
+        NODE_CTX.with(|ctx| ctx.borrow().clone())
+    }
+
+    pub fn with_execution_sync<R>(ctx: Arc<ExecutionContext>, f: impl FnOnce() -> R) -> R {
+        EXECUTION_CTX.with(|cell| {
+            let prev = cell.borrow_mut().replace(ctx);
+            let result = f();
+            *cell.borrow_mut() = prev;
+            result
+        })
+    }
+
+    pub fn with_node_sync<R>(ctx: Arc<NodeContext>, f: impl FnOnce() -> R) -> R {
+        NODE_CTX.with(|cell| {
+            let prev = cell.borrow_mut().replace(ctx);
+            let result = f();
+            *cell.borrow_mut() = prev;
+            result
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ExecutionContext
+// ---------------------------------------------------------------------------
 
 /// Workflow execution context
 ///
@@ -205,39 +294,33 @@ impl ExecutionContext {
     }
 
     /// Get the current execution context
+    #[inline]
     pub fn current() -> Option<Arc<Self>> {
-        EXECUTION_CONTEXT.with(|ctx| ctx.borrow().clone())
+        storage::current_execution()
     }
 
-    /// Enter this execution context, returning a guard
+    /// Run a synchronous closure with this context active.
     ///
-    /// When the guard is dropped, the previous context is restored.
-    pub fn enter(self) -> ExecutionGuard {
-        let previous = EXECUTION_CONTEXT.with(|ctx| ctx.borrow_mut().replace(Arc::new(self)));
-        ExecutionGuard {
-            previous,
-            _not_send: PhantomData,
-        }
+    /// Nesting is supported — inner scopes shadow outer ones and restore on return.
+    pub fn scope_sync<R>(self, f: impl FnOnce() -> R) -> R {
+        storage::with_execution_sync(Arc::new(self), f)
+    }
+
+    /// Run a future with this context active.
+    ///
+    /// The context survives across `.await` points, even in multi-thread
+    /// Tokio runtimes with work-stealing.
+    ///
+    /// Nesting is supported — inner scopes shadow outer ones and restore on completion.
+    #[cfg(feature = "async")]
+    pub async fn scope<F: std::future::Future>(self, f: F) -> F::Output {
+        storage::with_execution(Arc::new(self), f).await
     }
 }
 
-/// RAII guard for execution context
-///
-/// Restores the previous execution context when dropped.
-/// This guard is `!Send` — it must not cross thread boundaries.
-#[derive(Debug)]
-pub struct ExecutionGuard {
-    previous: Option<Arc<ExecutionContext>>,
-    _not_send: PhantomData<*const ()>,
-}
-
-impl Drop for ExecutionGuard {
-    fn drop(&mut self) {
-        EXECUTION_CONTEXT.with(|ctx| {
-            *ctx.borrow_mut() = self.previous.take();
-        });
-    }
-}
+// ---------------------------------------------------------------------------
+// NodeContext
+// ---------------------------------------------------------------------------
 
 /// Node execution context
 ///
@@ -292,39 +375,33 @@ impl NodeContext {
     }
 
     /// Get the current node context
+    #[inline]
     pub fn current() -> Option<Arc<Self>> {
-        NODE_CONTEXT.with(|ctx| ctx.borrow().clone())
+        storage::current_node()
     }
 
-    /// Enter this node context, returning a guard
+    /// Run a synchronous closure with this context active.
     ///
-    /// When the guard is dropped, the previous context is restored.
-    pub fn enter(self) -> NodeGuard {
-        let previous = NODE_CONTEXT.with(|ctx| ctx.borrow_mut().replace(Arc::new(self)));
-        NodeGuard {
-            previous,
-            _not_send: PhantomData,
-        }
+    /// Nesting is supported — inner scopes shadow outer ones and restore on return.
+    pub fn scope_sync<R>(self, f: impl FnOnce() -> R) -> R {
+        storage::with_node_sync(Arc::new(self), f)
+    }
+
+    /// Run a future with this context active.
+    ///
+    /// The context survives across `.await` points, even in multi-thread
+    /// Tokio runtimes with work-stealing.
+    ///
+    /// Nesting is supported — inner scopes shadow outer ones and restore on completion.
+    #[cfg(feature = "async")]
+    pub async fn scope<F: std::future::Future>(self, f: F) -> F::Output {
+        storage::with_node(Arc::new(self), f).await
     }
 }
 
-/// RAII guard for node context
-///
-/// Restores the previous node context when dropped.
-/// This guard is `!Send` — it must not cross thread boundaries.
-#[derive(Debug)]
-pub struct NodeGuard {
-    previous: Option<Arc<NodeContext>>,
-    _not_send: PhantomData<*const ()>,
-}
-
-impl Drop for NodeGuard {
-    fn drop(&mut self) {
-        NODE_CONTEXT.with(|ctx| {
-            *ctx.borrow_mut() = self.previous.take();
-        });
-    }
-}
+// ---------------------------------------------------------------------------
+// ContextSnapshot
+// ---------------------------------------------------------------------------
 
 /// Convenience function to get all current contexts
 pub fn current_contexts() -> ContextSnapshot {
@@ -346,61 +423,51 @@ pub struct ContextSnapshot {
     pub node: Option<Arc<NodeContext>>,
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // GlobalContext tests are combined into one because GlobalContext uses a
+    // process-wide ArcSwap — parallel tests would race on the shared state.
     #[test]
     fn test_global_context() {
-        let ctx =
-            GlobalContext::new("test-service", "1.0.0", "test").with_instance_id("instance-1");
-
-        let _guard = ctx.clone().set_current();
+        // Test init + current
+        GlobalContext::new("test-service", "1.0.0", "test")
+            .with_instance_id("instance-1")
+            .init();
 
         let current = GlobalContext::current().unwrap();
         assert_eq!(current.service_name, "test-service");
         assert_eq!(current.version, "1.0.0");
         assert_eq!(current.environment, "test");
         assert_eq!(current.instance_id.as_deref(), Some("instance-1"));
+
+        // Test that init replaces the previous value
+        GlobalContext::new("service-2", "2.0", "staging").init();
+        assert_eq!(GlobalContext::current().unwrap().service_name, "service-2");
     }
 
     #[test]
-    fn test_global_context_guard_restores() {
-        // Set initial context
-        let _guard1 = GlobalContext::new("service-1", "1.0", "prod").set_current();
-        assert_eq!(GlobalContext::current().unwrap().service_name, "service-1");
-
-        {
-            let _guard2 = GlobalContext::new("service-2", "2.0", "staging").set_current();
-            assert_eq!(GlobalContext::current().unwrap().service_name, "service-2");
-        }
-
-        // After guard2 drops, service-1 should be restored
-        assert_eq!(GlobalContext::current().unwrap().service_name, "service-1");
-    }
-
-    #[test]
-    fn test_execution_context_guard() {
+    fn test_execution_context_scope() {
         let ctx1 = ExecutionContext::new("exec-1", "wf-1", "tenant-1");
         let ctx2 = ExecutionContext::new("exec-2", "wf-2", "tenant-2");
 
-        {
-            let _guard1 = ctx1.enter();
-            let current = ExecutionContext::current().unwrap();
-            assert_eq!(current.execution_id, "exec-1");
+        ctx1.scope_sync(|| {
+            assert_eq!(ExecutionContext::current().unwrap().execution_id, "exec-1");
 
-            {
-                let _guard2 = ctx2.enter();
-                let current = ExecutionContext::current().unwrap();
-                assert_eq!(current.execution_id, "exec-2");
-            }
+            ctx2.scope_sync(|| {
+                assert_eq!(ExecutionContext::current().unwrap().execution_id, "exec-2");
+            });
 
-            // After guard2 drops, ctx1 should be restored
-            let current = ExecutionContext::current().unwrap();
-            assert_eq!(current.execution_id, "exec-1");
-        }
+            // After inner scope, ctx1 is restored
+            assert_eq!(ExecutionContext::current().unwrap().execution_id, "exec-1");
+        });
 
-        // After guard1 drops, no context should be set
+        // Outside all scopes, no context
         assert!(ExecutionContext::current().is_none());
     }
 
@@ -411,59 +478,54 @@ mod tests {
             value: String,
         }
 
-        let resource = TestResource {
+        let ctx = NodeContext::new("node-1", "test.action").with_resource(TestResource {
             value: "test-value".to_string(),
-        };
+        });
 
-        let ctx = NodeContext::new("node-1", "test.action").with_resource(resource.clone());
+        ctx.scope_sync(|| {
+            let current = NodeContext::current().unwrap();
+            let retrieved = current.get_resource::<TestResource>().unwrap();
+            assert_eq!(retrieved.value, "test-value");
 
-        let retrieved = ctx.get_resource::<TestResource>().unwrap();
-        assert_eq!(*retrieved, resource);
-
-        // Non-existent resource should return None
-        assert!(ctx.get_resource::<String>().is_none());
+            // Non-existent resource should return None
+            assert!(current.get_resource::<String>().is_none());
+        });
     }
 
     #[test]
-    fn test_node_context_guard() {
+    fn test_node_context_scope() {
         let ctx1 = NodeContext::new("node-1", "action-1");
         let ctx2 = NodeContext::new("node-2", "action-2");
 
-        {
-            let _guard1 = ctx1.enter();
-            let current = NodeContext::current().unwrap();
-            assert_eq!(current.node_id, "node-1");
+        ctx1.scope_sync(|| {
+            assert_eq!(NodeContext::current().unwrap().node_id, "node-1");
 
-            {
-                let _guard2 = ctx2.enter();
-                let current = NodeContext::current().unwrap();
-                assert_eq!(current.node_id, "node-2");
-            }
+            ctx2.scope_sync(|| {
+                assert_eq!(NodeContext::current().unwrap().node_id, "node-2");
+            });
 
-            let current = NodeContext::current().unwrap();
-            assert_eq!(current.node_id, "node-1");
-        }
+            assert_eq!(NodeContext::current().unwrap().node_id, "node-1");
+        });
 
         assert!(NodeContext::current().is_none());
     }
 
     #[test]
     fn test_context_snapshot() {
-        let _global_guard = GlobalContext::new("test", "1.0", "dev").set_current();
-        let exec_ctx = ExecutionContext::new("exec-1", "wf-1", "tenant-1");
-        let node_ctx = NodeContext::new("node-1", "action-1");
+        GlobalContext::new("test", "1.0", "dev").init();
 
-        let _exec_guard = exec_ctx.enter();
-        let _node_guard = node_ctx.enter();
+        ExecutionContext::new("exec-1", "wf-1", "tenant-1").scope_sync(|| {
+            NodeContext::new("node-1", "action-1").scope_sync(|| {
+                let snapshot = current_contexts();
+                assert!(snapshot.global.is_some());
+                assert!(snapshot.execution.is_some());
+                assert!(snapshot.node.is_some());
 
-        let snapshot = current_contexts();
-        assert!(snapshot.global.is_some());
-        assert!(snapshot.execution.is_some());
-        assert!(snapshot.node.is_some());
-
-        assert_eq!(snapshot.global.unwrap().service_name, "test");
-        assert_eq!(snapshot.execution.unwrap().execution_id, "exec-1");
-        assert_eq!(snapshot.node.unwrap().node_id, "node-1");
+                assert_eq!(snapshot.global.unwrap().service_name, "test");
+                assert_eq!(snapshot.execution.unwrap().execution_id, "exec-1");
+                assert_eq!(snapshot.node.unwrap().node_id, "node-1");
+            });
+        });
     }
 
     #[test]
@@ -481,14 +543,90 @@ mod tests {
             secret: "secret-2".to_string(),
         });
 
-        // Resources should be isolated
-        let res1 = ctx1.get_resource::<SensitiveData>().unwrap();
-        let res2 = ctx2.get_resource::<SensitiveData>().unwrap();
+        ctx1.scope_sync(|| {
+            let current = NodeContext::current().unwrap();
+            let res = current.get_resource::<SensitiveData>().unwrap();
+            assert_eq!(res.secret, "secret-1");
+            assert!(current.get_resource::<String>().is_none());
+        });
 
-        assert_eq!(res1.secret, "secret-1");
-        assert_eq!(res2.secret, "secret-2");
+        ctx2.scope_sync(|| {
+            let current = NodeContext::current().unwrap();
+            let res = current.get_resource::<SensitiveData>().unwrap();
+            assert_eq!(res.secret, "secret-2");
+        });
+    }
 
-        // Different type should return None
-        assert!(ctx1.get_resource::<String>().is_none());
+    // Async tests — verify context survives .await in multi-thread runtime
+    #[cfg(feature = "async")]
+    mod async_tests {
+        use super::*;
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn test_execution_context_survives_await() {
+            let ctx = ExecutionContext::new("exec-async", "wf-async", "tenant-async");
+            ctx.scope(async {
+                assert_eq!(
+                    ExecutionContext::current().unwrap().execution_id,
+                    "exec-async"
+                );
+                tokio::task::yield_now().await;
+                // After potential thread migration:
+                assert_eq!(
+                    ExecutionContext::current().unwrap().execution_id,
+                    "exec-async"
+                );
+            })
+            .await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn test_node_context_survives_await() {
+            let ctx = NodeContext::new("node-async", "action-async");
+            ctx.scope(async {
+                assert_eq!(NodeContext::current().unwrap().node_id, "node-async");
+                tokio::task::yield_now().await;
+                assert_eq!(NodeContext::current().unwrap().node_id, "node-async");
+            })
+            .await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn test_nested_async_scopes() {
+            let exec = ExecutionContext::new("e1", "wf", "t");
+            exec.scope(async {
+                let node = NodeContext::new("n1", "a1");
+                node.scope(async {
+                    assert!(ExecutionContext::current().is_some());
+                    assert_eq!(NodeContext::current().unwrap().node_id, "n1");
+                    tokio::task::yield_now().await;
+                    assert_eq!(NodeContext::current().unwrap().node_id, "n1");
+                })
+                .await;
+                assert!(NodeContext::current().is_none());
+            })
+            .await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn test_concurrent_tasks_isolated() {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+            for i in 0..5 {
+                let tx = tx.clone();
+                let ctx = ExecutionContext::new(format!("exec-{i}"), "wf", "tenant");
+                tokio::spawn(ctx.scope(async move {
+                    tokio::task::yield_now().await;
+                    let current = ExecutionContext::current().unwrap();
+                    tx.send(current.execution_id.clone()).await.unwrap();
+                }));
+            }
+            drop(tx);
+            let mut ids = Vec::new();
+            while let Some(id) = rx.recv().await {
+                ids.push(id);
+            }
+            ids.sort();
+            assert_eq!(ids, vec!["exec-0", "exec-1", "exec-2", "exec-3", "exec-4"]);
+        }
     }
 }

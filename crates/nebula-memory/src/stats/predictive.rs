@@ -1,8 +1,5 @@
 //! Predictive analytics for memory usage patterns
 
-#[cfg(not(feature = "std"))]
-use alloc::{collections::VecDeque, vec::Vec};
-#[cfg(feature = "std")]
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
@@ -67,7 +64,6 @@ pub struct Prediction {
     pub confidence: f64,
     pub lower_bound: f64,
     pub upper_bound: f64,
-    #[cfg(feature = "std")]
     pub timestamp: Instant,
 }
 
@@ -104,20 +100,10 @@ impl PredictiveAnalytics {
         // Convert to time series for analysis
         let mut x_values = Vec::new();
         let mut y_values = Vec::new();
-        #[cfg(feature = "std")]
-        {
-            let start_time = self.history.front()?.timestamp;
-            for point in &self.history {
-                x_values.push(point.timestamp.duration_since(start_time).as_secs_f64());
-                y_values.push(point.value);
-            }
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            for (i, point) in self.history.iter().enumerate() {
-                x_values.push(i as f64);
-                y_values.push(point.value);
-            }
+        let start_time = self.history.front()?.timestamp;
+        for point in &self.history {
+            x_values.push(point.timestamp.duration_since(start_time).as_secs_f64());
+            y_values.push(point.value);
         }
         // Calculate linear regression
         let n = x_values.len() as f64;
@@ -192,7 +178,6 @@ impl PredictiveAnalytics {
     }
 
     /// Predict future value based on the chosen model.
-    #[cfg(feature = "std")]
     pub fn predict(&self, future_time: Duration) -> Option<Prediction> {
         match self.model {
             PredictionModel::Linear => self.predict_linear(future_time),
@@ -207,7 +192,6 @@ impl PredictiveAnalytics {
     }
 
     /// Linear prediction
-    #[cfg(feature = "std")]
     fn predict_linear(&self, future_time: Duration) -> Option<Prediction> {
         let trend = self.analyze_trend()?;
 
@@ -247,7 +231,6 @@ impl PredictiveAnalytics {
     }
 
     /// Helper to calculate standard deviation of a slice of values.
-    #[cfg(feature = "std")]
     fn calculate_std_dev_of_values(&self, values: &[f64]) -> f64 {
         if values.len() < 2 {
             return 0.0;
@@ -260,7 +243,6 @@ impl PredictiveAnalytics {
 
     /// Predict using Exponential Smoothing.
     /// Simple exponential smoothing forecast.
-    #[cfg(feature = "std")]
     fn predict_exponential_smoothing(
         &self,
         alpha: f64,
@@ -296,7 +278,6 @@ impl PredictiveAnalytics {
     }
 
     /// Predict using Moving Average.
-    #[cfg(feature = "std")]
     fn predict_moving_average(&self, window: usize, future_time: Duration) -> Option<Prediction> {
         if self.history.len() < window || window == 0 {
             return None;
@@ -336,7 +317,6 @@ impl PredictiveAnalytics {
     /// This is a highly simplified seasonal model. A real seasonal
     /// decomposition would involve more complex statistical methods (e.g.,
     /// STL decomposition).
-    #[cfg(feature = "std")]
     fn predict_seasonal(&self, period: usize, future_time: Duration) -> Option<Prediction> {
         if self.history.len() < 2 * period || period == 0 {
             // Need at least two periods
@@ -405,21 +385,10 @@ mod tests {
     use super::*;
 
     // Helper to create a DataPoint with a simulated timestamp
-    #[cfg(feature = "std")]
     fn create_data_point_at_time(value: f64, time_millis: u64) -> DataPoint {
         DataPoint {
             timestamp: Instant::now() + Duration::from_millis(time_millis), /* Relative to test
                                                                              * start */
-            value,
-            metadata: None,
-        }
-    }
-
-    // Helper to create a DataPoint without specific timestamp for no_std tests
-    #[cfg(not(feature = "std"))]
-    fn create_data_point(value: f64) -> DataPoint {
-        DataPoint {
-            // No timestamp in no_std
             value,
             metadata: None,
         }
@@ -440,30 +409,15 @@ mod tests {
         let max_history = 3;
         let mut analytics = PredictiveAnalytics::new(model, max_history);
 
-        #[cfg(feature = "std")]
-        {
-            analytics.add_data_point(create_data_point_at_time(10.0, 10));
-            analytics.add_data_point(create_data_point_at_time(20.0, 20));
-            analytics.add_data_point(create_data_point_at_time(30.0, 30));
-            assert_eq!(analytics.history.len(), 3);
-            assert_eq!(analytics.history.front().unwrap().value, 10.0);
+        analytics.add_data_point(create_data_point_at_time(10.0, 10));
+        analytics.add_data_point(create_data_point_at_time(20.0, 20));
+        analytics.add_data_point(create_data_point_at_time(30.0, 30));
+        assert_eq!(analytics.history.len(), 3);
+        assert_eq!(analytics.history.front().unwrap().value, 10.0);
 
-            analytics.add_data_point(create_data_point_at_time(40.0, 40));
-            assert_eq!(analytics.history.len(), 3); // Max history maintained
-            assert_eq!(analytics.history.front().unwrap().value, 20.0); // Oldest removed
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            analytics.add_data_point(create_data_point(10.0));
-            analytics.add_data_point(create_data_point(20.0));
-            analytics.add_data_point(create_data_point(30.0));
-            assert_eq!(analytics.history.len(), 3);
-            assert_eq!(analytics.history.front().unwrap().value, 10.0);
-
-            analytics.add_data_point(create_data_point(40.0));
-            assert_eq!(analytics.history.len(), 3); // Max history maintained
-            assert_eq!(analytics.history.front().unwrap().value, 20.0); // Oldest removed
-        }
+        analytics.add_data_point(create_data_point_at_time(40.0, 40));
+        assert_eq!(analytics.history.len(), 3); // Max history maintained
+        assert_eq!(analytics.history.front().unwrap().value, 20.0); // Oldest removed
     }
 
     #[test]
@@ -472,78 +426,63 @@ mod tests {
         let max_history = 10;
         let mut analytics = PredictiveAnalytics::new(model, max_history);
 
-        #[cfg(feature = "std")]
-        {
-            // Создаем линейные данные с бóльшими интервалами, чтобы избежать волатильности
-            analytics.add_data_point(create_data_point_at_time(10.0, 100));
-            analytics.add_data_point(create_data_point_at_time(20.0, 200));
-            analytics.add_data_point(create_data_point_at_time(30.0, 300));
-            analytics.add_data_point(create_data_point_at_time(40.0, 400));
-            analytics.add_data_point(create_data_point_at_time(50.0, 500));
-            let trend = analytics.analyze_trend().unwrap();
+        // Создаем линейные данные с бóльшими интервалами, чтобы избежать волатильности
+        analytics.add_data_point(create_data_point_at_time(10.0, 100));
+        analytics.add_data_point(create_data_point_at_time(20.0, 200));
+        analytics.add_data_point(create_data_point_at_time(30.0, 300));
+        analytics.add_data_point(create_data_point_at_time(40.0, 400));
+        analytics.add_data_point(create_data_point_at_time(50.0, 500));
+        let trend = analytics.analyze_trend().unwrap();
 
-            // Проверяем, что наклон положительный
-            assert!(trend.slope > 0.0);
-            // Проверяем тип тренда - должен быть Growing или Volatile
-            // Вывод может меняться в зависимости от конкретных временных меток
-            assert!(
-                trend.trend_type == TrendType::Growing || trend.trend_type == TrendType::Volatile,
-                "Ожидался тип тренда Growing или Volatile, получен {:?}",
-                trend.trend_type
-            );
+        // Проверяем, что наклон положительный
+        assert!(trend.slope > 0.0);
+        // Проверяем тип тренда - должен быть Growing или Volatile
+        // Вывод может меняться в зависимости от конкретных временных меток
+        assert!(
+            trend.trend_type == TrendType::Growing || trend.trend_type == TrendType::Volatile,
+            "Ожидался тип тренда Growing или Volatile, получен {:?}",
+            trend.trend_type
+        );
 
-            // Тест "стабильного" тренда
-            // Используем очень близкие значения, чтобы обеспечить очень маленький наклон
-            analytics.history.clear();
-            analytics.add_data_point(create_data_point_at_time(100.00, 100));
-            analytics.add_data_point(create_data_point_at_time(100.01, 200));
-            analytics.add_data_point(create_data_point_at_time(100.00, 300));
-            analytics.add_data_point(create_data_point_at_time(100.02, 400));
-            let trend_stable = analytics.analyze_trend().unwrap();
+        // Тест "стабильного" тренда
+        // Используем очень близкие значения, чтобы обеспечить очень маленький наклон
+        analytics.history.clear();
+        analytics.add_data_point(create_data_point_at_time(100.00, 100));
+        analytics.add_data_point(create_data_point_at_time(100.01, 200));
+        analytics.add_data_point(create_data_point_at_time(100.00, 300));
+        analytics.add_data_point(create_data_point_at_time(100.02, 400));
+        let trend_stable = analytics.analyze_trend().unwrap();
 
-            // Учитываем, что тип тренда может быть как Stable, так и Growing из-за
-            // небольших различий в вычислениях между запусками
-            assert!(
-                trend_stable.trend_type == TrendType::Stable
-                    || trend_stable.trend_type == TrendType::Growing,
-                "Ожидался тип тренда Stable или Growing, получен {:?}",
-                trend_stable.trend_type
-            );
+        // Учитываем, что тип тренда может быть как Stable, так и Growing из-за
+        // небольших различий в вычислениях между запусками
+        assert!(
+            trend_stable.trend_type == TrendType::Stable
+                || trend_stable.trend_type == TrendType::Growing,
+            "Ожидался тип тренда Stable или Growing, получен {:?}",
+            trend_stable.trend_type
+        );
 
-            // Shrinking trend
-            analytics.history.clear();
-            analytics.add_data_point(create_data_point_at_time(100.0, 100));
-            analytics.add_data_point(create_data_point_at_time(90.0, 200));
-            analytics.add_data_point(create_data_point_at_time(80.0, 300));
-            analytics.add_data_point(create_data_point_at_time(70.0, 400));
-            analytics.add_data_point(create_data_point_at_time(60.0, 500));
-            let trend_shrinking = analytics.analyze_trend().unwrap();
-            assert_eq!(trend_shrinking.trend_type, TrendType::Shrinking);
+        // Shrinking trend
+        analytics.history.clear();
+        analytics.add_data_point(create_data_point_at_time(100.0, 100));
+        analytics.add_data_point(create_data_point_at_time(90.0, 200));
+        analytics.add_data_point(create_data_point_at_time(80.0, 300));
+        analytics.add_data_point(create_data_point_at_time(70.0, 400));
+        analytics.add_data_point(create_data_point_at_time(60.0, 500));
+        let trend_shrinking = analytics.analyze_trend().unwrap();
+        assert_eq!(trend_shrinking.trend_type, TrendType::Shrinking);
 
-            // Volatile trend - четко определенный волатильный тренд
-            analytics.history.clear();
-            analytics.add_data_point(create_data_point_at_time(10.0, 100));
-            analytics.add_data_point(create_data_point_at_time(100.0, 200));
-            analytics.add_data_point(create_data_point_at_time(20.0, 300));
-            analytics.add_data_point(create_data_point_at_time(90.0, 400));
-            let trend_volatile = analytics.analyze_trend().unwrap();
-            assert_eq!(trend_volatile.trend_type, TrendType::Volatile);
-        }
-        #[cfg(not(feature = "std"))]
-        {
-            analytics.add_data_point(create_data_point(10.0));
-            analytics.add_data_point(create_data_point(20.0));
-            analytics.add_data_point(create_data_point(30.0));
-            let trend = analytics.analyze_trend().unwrap();
-            assert!((trend.slope - 10.0).abs() < 0.001); // Slope with x values 0,1,2 for 10,20,30
-            assert!((trend.intercept - 10.0).abs() < 0.001);
-            assert!((trend.r_squared - 1.0).abs() < 0.001);
-            assert_eq!(trend.trend_type, TrendType::Growing);
-        }
+        // Volatile trend - четко определенный волатильный тренд
+        analytics.history.clear();
+        analytics.add_data_point(create_data_point_at_time(10.0, 100));
+        analytics.add_data_point(create_data_point_at_time(100.0, 200));
+        analytics.add_data_point(create_data_point_at_time(20.0, 300));
+        analytics.add_data_point(create_data_point_at_time(90.0, 400));
+        let trend_volatile = analytics.analyze_trend().unwrap();
+        assert_eq!(trend_volatile.trend_type, TrendType::Volatile);
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_predict_linear() {
         let model = PredictionModel::Linear;
         let max_history = 10;
@@ -608,7 +547,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_predict_exponential_smoothing() {
         let model = PredictionModel::ExponentialSmoothing { alpha: 0.5 };
         let max_history = 10;
@@ -641,7 +579,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_predict_moving_average() {
         let model = PredictionModel::MovingAverage { window: 3 };
         let max_history = 10;
@@ -680,7 +617,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn test_predict_seasonal() {
         let model = PredictionModel::Seasonal { period: 2 }; // Период 2
         let max_history = 10;

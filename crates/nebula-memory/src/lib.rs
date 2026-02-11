@@ -8,7 +8,6 @@
 //! - Memory arenas for fast allocation/deallocation
 //! - Multi-level caching systems
 //! - Memory usage tracking and optimization
-//! - Lock-free data structures for high concurrency
 //!
 //! ## Quick Start
 //!
@@ -33,28 +32,24 @@
 //! - `pool`: Object pooling system
 //! - `cache`: Multi-level caching
 //! - `stats`: Memory usage statistics
-//! - `streaming`: Streaming data optimizations
 //! - `logging`: Integration with nebula-log
 //! - `full`: Enable all features
 //!
 //! ## Architecture
 //!
 //! nebula-memory follows the Nebula ecosystem patterns:
-//! - Consistent error handling via [`nebula_error`]
-//! - Structured logging via [`nebula_log`]
-//! - System integration via [`nebula_system`]
+//! - Standalone error handling via [`error`] module
+//! - Optional structured logging via `nebula-log` (feature: `logging`)
+//! - System integration via `nebula-system`
 //! - Performance monitoring and metrics
 
-#![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![allow(incomplete_features)]
-#![allow(dead_code)]
-#![allow(unused_variables)]
 #![warn(clippy::all)]
+#![warn(clippy::perf)]
+#![warn(clippy::pedantic)]
 #![warn(rust_2018_idioms)]
-
-#[cfg(not(feature = "std"))]
-extern crate alloc;
+#![allow(clippy::module_name_repetitions)]
+#![allow(clippy::must_use_candidate)]
 
 // Error types
 pub mod error;
@@ -74,7 +69,10 @@ pub mod budget;
 #[cfg_attr(docsrs, doc(cfg(feature = "cache")))]
 pub mod cache;
 pub mod core;
-#[cfg(all(feature = "std", feature = "monitoring"))]
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod extensions;
+#[cfg(feature = "monitoring")]
 #[cfg_attr(docsrs, doc(cfg(feature = "monitoring")))]
 pub mod monitoring;
 #[cfg(feature = "pool")]
@@ -88,30 +86,9 @@ pub mod stats;
 pub mod syscalls;
 pub mod utils;
 
-// Core functionality - foundational types and traits
-
-// Memory allocators - the heart of nebula-memory
-
-// Utility functions and helpers
-
 // Re-export core types for convenience
 pub use crate::core::MemoryConfig;
 pub use crate::error::{MemoryError, MemoryResult, Result};
-
-// Core features that depend on allocators
-
-// Advanced features
-
-// Async support
-
-// Streaming module not yet implemented
-// #[cfg(feature = "streaming")]
-// #[cfg_attr(docsrs, doc(cfg(feature = "streaming")))]
-// pub mod streaming;
-
-// Low-level system calls for allocators
-
-// System integration
 
 // Public API exports
 pub mod prelude {
@@ -128,7 +105,7 @@ pub mod prelude {
     pub use crate::allocator::{
         AllocError, AllocResult, Allocator, GlobalAllocatorManager, TypedAllocator,
     };
-    #[cfg(all(feature = "std", feature = "monitoring"))]
+    #[cfg(feature = "monitoring")]
     pub use crate::allocator::{MonitoredAllocator, MonitoredConfig};
 
     #[cfg(feature = "arena")]
@@ -143,7 +120,7 @@ pub mod prelude {
     #[cfg(feature = "budget")]
     pub use crate::budget::{BudgetConfig, BudgetMetrics, BudgetState, MemoryBudget};
 
-    #[cfg(all(feature = "std", feature = "monitoring"))]
+    #[cfg(feature = "monitoring")]
     pub use crate::monitoring::{IntegratedStats, MemoryMonitor, MonitoringConfig, PressureAction};
 
     // Utility traits for safe arithmetic

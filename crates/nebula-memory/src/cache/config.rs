@@ -3,15 +3,7 @@
 //! This module provides configuration options for various cache implementations
 //! in the nebula-memory crate.
 
-#![cfg_attr(not(feature = "std"), no_std)]
-
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(feature = "std")]
 use std::time::Duration;
-#[cfg(not(feature = "std"))]
-use {alloc::string::String, core::time::Duration};
 
 use crate::error::{MemoryError, MemoryResult};
 
@@ -51,8 +43,7 @@ pub struct CacheConfig {
     pub load_factor: f32,
     /// Enable automatic cleanup of expired entries
     pub auto_cleanup: bool,
-    /// Cleanup interval for expired entries (std only)
-    #[cfg(feature = "std")]
+    /// Cleanup interval for expired entries
     pub cleanup_interval: Option<Duration>,
 }
 
@@ -66,7 +57,6 @@ impl Default for CacheConfig {
             initial_capacity: None,
             load_factor: 0.75,
             auto_cleanup: false,
-            #[cfg(feature = "std")]
             cleanup_interval: None,
         }
     }
@@ -124,8 +114,7 @@ impl CacheConfig {
         self
     }
 
-    /// Set cleanup interval for expired entries (std only)
-    #[cfg(feature = "std")]
+    /// Set cleanup interval for expired entries
     #[must_use = "builder methods must be chained or built"]
     pub fn with_cleanup_interval(mut self, interval: Duration) -> Self {
         self.cleanup_interval = Some(interval);
@@ -154,7 +143,6 @@ impl CacheConfig {
     }
 
     /// Preset configuration for time-sensitive caching
-    #[cfg(feature = "std")]
     #[must_use]
     pub fn for_time_sensitive(max_entries: usize, ttl: Duration) -> Self {
         Self::new(max_entries)
@@ -163,15 +151,6 @@ impl CacheConfig {
             .with_metrics()
             .with_auto_cleanup()
             .with_cleanup_interval(Duration::from_secs(ttl.as_secs() / 4))
-    }
-
-    /// Preset configuration for no-std environments
-    #[cfg(not(feature = "std"))]
-    pub fn for_embedded(max_entries: usize) -> Self {
-        Self::new(max_entries)
-            .with_policy(EvictionPolicy::LRU)
-            .with_load_factor(0.60)
-            .with_initial_capacity(max_entries / 8)
     }
 
     /// Validate the configuration
@@ -184,7 +163,6 @@ impl CacheConfig {
             return Err(MemoryError::invalid_config("configuration error"));
         }
 
-        #[cfg(feature = "std")]
         if let Some(ttl) = self.ttl
             && ttl.as_nanos() == 0
         {
@@ -197,7 +175,6 @@ impl CacheConfig {
             return Err(MemoryError::invalid_config("configuration error"));
         }
 
-        #[cfg(feature = "std")]
         if let Some(cleanup_interval) = self.cleanup_interval {
             if cleanup_interval.as_nanos() == 0 {
                 return Err(MemoryError::invalid_config("configuration error"));
@@ -571,7 +548,6 @@ mod tests {
         assert!(memory_constrained.is_optimized_for_scenario(CacheScenario::MemoryConstrained));
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_time_sensitive_config() {
         let ttl = Duration::from_secs(300);

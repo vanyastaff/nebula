@@ -42,7 +42,7 @@ pub mod observability;
 // Public API
 pub use builder::{LoggerBuilder, LoggerGuard};
 pub use config::{Config, Format, Level, Rolling, WriterConfig};
-pub use layer::context::{Context, ContextGuard, Fields};
+pub use layer::context::{Context, Fields};
 pub use timing::{Timed, Timer, TimerGuard};
 
 // Re-export core types

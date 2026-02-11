@@ -4,7 +4,6 @@
 
 use core::fmt;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-#[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 
 /// Core memory statistics tracked atomically
@@ -21,7 +20,6 @@ pub struct MemoryStats {
     pub(crate) total_deallocated_bytes: AtomicUsize, // Total ever deallocated
 
     // Timing for allocations
-    #[cfg(feature = "std")]
     pub(crate) total_allocation_time_nanos: AtomicU64,
 
     // Operation stats (for caches, pools, etc.)
@@ -35,7 +33,6 @@ pub struct MemoryStats {
     pub(crate) oom_errors: AtomicU64,
 
     // Timing metadata
-    #[cfg(feature = "std")]
     pub(crate) created_at: Instant,
 }
 
@@ -49,7 +46,6 @@ impl MemoryStats {
             peak_allocated: AtomicUsize::new(0),
             total_allocated_bytes: AtomicUsize::new(0),
             total_deallocated_bytes: AtomicUsize::new(0),
-            #[cfg(feature = "std")]
             total_allocation_time_nanos: AtomicU64::new(0),
             operations: AtomicU64::new(0),
             hits: AtomicU64::new(0),
@@ -57,7 +53,6 @@ impl MemoryStats {
             evictions: AtomicU64::new(0),
             allocation_failures: AtomicU64::new(0),
             oom_errors: AtomicU64::new(0),
-            #[cfg(feature = "std")]
             created_at: Instant::now(),
         }
     }
@@ -86,7 +81,6 @@ impl MemoryStats {
     }
 
     /// Record allocation timing
-    #[cfg(feature = "std")]
     #[inline]
     pub fn record_allocation_time(&self, duration: Duration) {
         self.total_allocation_time_nanos
@@ -165,7 +159,6 @@ impl MemoryStats {
         self.total_deallocated_bytes.load(Ordering::Relaxed)
     }
 
-    #[cfg(feature = "std")]
     #[inline]
     pub fn total_allocation_time_nanos(&self) -> u64 {
         self.total_allocation_time_nanos.load(Ordering::Relaxed)
@@ -181,7 +174,6 @@ impl MemoryStats {
         }
     }
 
-    #[cfg(feature = "std")]
     pub fn elapsed(&self) -> Duration {
         self.created_at.elapsed()
     }
@@ -194,7 +186,6 @@ impl MemoryStats {
         self.peak_allocated.store(0, Ordering::Relaxed);
         self.total_allocated_bytes.store(0, Ordering::Relaxed);
         self.total_deallocated_bytes.store(0, Ordering::Relaxed);
-        #[cfg(feature = "std")]
         self.total_allocation_time_nanos.store(0, Ordering::Relaxed);
         self.operations.store(0, Ordering::Relaxed);
         self.hits.store(0, Ordering::Relaxed);
@@ -213,7 +204,6 @@ impl MemoryStats {
             peak_allocated: self.peak_allocated(),
             total_allocated_bytes: self.total_allocated_bytes(),
             total_deallocated_bytes: self.total_deallocated_bytes(),
-            #[cfg(feature = "std")]
             total_allocation_time_nanos: self.total_allocation_time_nanos(),
             operations: self.operations.load(Ordering::Relaxed),
             hits: self.hits.load(Ordering::Relaxed),
@@ -222,9 +212,7 @@ impl MemoryStats {
             allocation_failures: self.allocation_failures.load(Ordering::Relaxed),
             oom_errors: self.oom_errors.load(Ordering::Relaxed),
             hit_rate: self.hit_rate(),
-            #[cfg(feature = "std")]
             elapsed_secs: self.elapsed().as_secs_f64(),
-            #[cfg(feature = "std")]
             timestamp: Instant::now(),
         }
     }
@@ -248,7 +236,6 @@ pub struct MemoryMetrics {
     pub total_deallocated_bytes: usize,
 
     // Timing
-    #[cfg(feature = "std")]
     pub total_allocation_time_nanos: u64,
 
     // Operation metrics
@@ -265,9 +252,7 @@ pub struct MemoryMetrics {
     pub hit_rate: f64,
 
     // Timing metadata
-    #[cfg(feature = "std")]
     pub elapsed_secs: f64,
-    #[cfg(feature = "std")]
     pub timestamp: Instant,
 }
 
@@ -282,7 +267,6 @@ impl MemoryMetrics {
     }
 
     /// Calculate allocation rate (allocs per second)
-    #[cfg(feature = "std")]
     pub fn allocation_rate(&self) -> f64 {
         if self.elapsed_secs == 0.0 {
             0.0
@@ -301,7 +285,6 @@ impl MemoryMetrics {
     }
 
     /// Calculate average allocation latency
-    #[cfg(feature = "std")]
     pub fn avg_allocation_latency_nanos(&self) -> f64 {
         if self.allocations == 0 {
             0.0
@@ -325,7 +308,6 @@ impl Default for MemoryMetrics {
             peak_allocated: 0,
             total_allocated_bytes: 0,
             total_deallocated_bytes: 0,
-            #[cfg(feature = "std")]
             total_allocation_time_nanos: 0,
             operations: 0,
             hits: 0,
@@ -334,9 +316,7 @@ impl Default for MemoryMetrics {
             allocation_failures: 0,
             oom_errors: 0,
             hit_rate: 0.0,
-            #[cfg(feature = "std")]
             elapsed_secs: 0.0,
-            #[cfg(feature = "std")]
             timestamp: Instant::now(),
         }
     }
@@ -358,16 +338,13 @@ impl fmt::Display for MemoryMetrics {
             writeln!(f, "  OOM Errors: {}", self.oom_errors)?;
         }
 
-        #[cfg(feature = "std")]
-        {
-            if self.elapsed_secs > 0.0 {
-                writeln!(f, "  Alloc Rate: {:.2} ops/sec", self.allocation_rate())?;
-                writeln!(
-                    f,
-                    "  Avg Latency: {:.2} ns",
-                    self.avg_allocation_latency_nanos()
-                )?;
-            }
+        if self.elapsed_secs > 0.0 {
+            writeln!(f, "  Alloc Rate: {:.2} ops/sec", self.allocation_rate())?;
+            writeln!(
+                f,
+                "  Avg Latency: {:.2} ns",
+                self.avg_allocation_latency_nanos()
+            )?;
         }
 
         Ok(())
