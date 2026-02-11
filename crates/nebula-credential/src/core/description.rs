@@ -47,17 +47,16 @@ pub struct CredentialDescription {
 
     /// Optional documentation URL
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub documentation_url: Option<String>
-
-    /// Parameter definitions - what fields this credential type requires
-    ///
-    /// Uses paramdef::Schema for type-safe parameter definitions.
-    ///
-    /// Example for GitHub OAuth2:
-    /// - client_id: String (required)
-    /// - client_secret: SecretString (required, sensitive)
-    /// - scopes: Array<String> (optional)
-    /// pub properties: Schema, /// Disable till i update paramdef create enable serde
+    pub documentation_url: Option<String>,
+    // Parameter definitions - what fields this credential type requires
+    //
+    // Uses paramdef::Schema for type-safe parameter definitions.
+    //
+    // Example for GitHub OAuth2:
+    // - client_id: String (required)
+    // - client_secret: SecretString (required, sensitive)
+    // - scopes: Array<String> (optional)
+    // pub properties: Schema, // Disable till i update paramdef create enable serde
 }
 
 impl CredentialDescription {
@@ -126,7 +125,7 @@ impl CredentialDescriptionBuilder {
     ///
     /// # Errors
     ///
-    /// Returns an error if required fields (key, name, description, properties) are not set
+    /// Returns an error if required fields (key, name, description) are not set
     pub fn build(self) -> Result<CredentialDescription, String> {
         Ok(CredentialDescription {
             key: self.key.ok_or("key is required")?,
@@ -135,7 +134,7 @@ impl CredentialDescriptionBuilder {
             icon: self.icon,
             icon_url: self.icon_url,
             documentation_url: self.documentation_url,
-            properties: self.properties.ok_or("properties is required")?,
+            // properties: self.properties.ok_or("properties is required")?,
         })
     }
 }

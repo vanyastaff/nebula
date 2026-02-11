@@ -87,17 +87,14 @@
 //! }
 //! ```
 
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::core::{CredentialId, CredentialMetadata};
+use crate::traits::TestableCredential;
 
 use super::error::{RotationError, RotationResult};
 use tokio::time::timeout;
-
-// Import traits from traits/ module (source of truth)
-use crate::traits::{RotatableCredential, TestableCredential};
 
 /// Context for credential testing
 #[derive(Debug, Clone)]

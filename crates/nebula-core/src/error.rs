@@ -513,6 +513,7 @@ impl CoreError {
 pub type CoreResult<T> = Result<T, CoreError>;
 
 /// Extension trait for adding context to errors
+#[allow(clippy::result_large_err)]
 pub trait ErrorContext<T> {
     /// Add context to an error
     fn with_context<C>(self, _context: C) -> CoreResult<T>
@@ -520,6 +521,7 @@ pub trait ErrorContext<T> {
         C: fmt::Display + Send + Sync + 'static;
 }
 
+#[allow(clippy::result_large_err)]
 impl<T> ErrorContext<T> for CoreResult<T> {
     fn with_context<C>(self, _context: C) -> CoreResult<T>
     where
