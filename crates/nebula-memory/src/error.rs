@@ -13,6 +13,7 @@ use nebula_log::{error, warn};
 // ============================================================================
 
 /// Memory management errors
+#[must_use = "errors should be handled"]
 #[non_exhaustive]
 #[derive(Error, Debug, Clone)]
 pub enum MemoryError {

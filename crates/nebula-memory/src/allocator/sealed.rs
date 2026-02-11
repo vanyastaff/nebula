@@ -98,9 +98,6 @@ impl InternalCheckpoint {
             generation,
         }
     }
-
-    /// Special checkpoint representing initial state
-    pub(crate) const INITIAL: Self = Self::new(0, 0, 0);
 }
 
 // ============================================================================

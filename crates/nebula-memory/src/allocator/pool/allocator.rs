@@ -17,7 +17,6 @@
 //! - `free_count` tracks free blocks for O(1) queries
 
 use core::alloc::Layout;
-use core::cell::UnsafeCell;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
@@ -25,37 +24,8 @@ use super::{PoolConfig, PoolStats};
 use crate::allocator::{
     AllocError, AllocResult, Allocator, AllocatorStats, MemoryUsage, Resettable, StatisticsProvider,
 };
+use crate::core::SyncUnsafeCell;
 use crate::utils::{Backoff, align_up, atomic_max, is_power_of_two};
-
-/// Thread-safe wrapper for memory buffer with interior mutability
-#[repr(transparent)]
-struct SyncUnsafeCell<T: ?Sized>(UnsafeCell<T>);
-
-// SAFETY: SyncUnsafeCell<T> is Sync even though UnsafeCell<T> is not.
-// - All access to memory buffer goes through atomic free list (CAS)
-// - Allocated blocks are exclusively owned by allocator
-// - Free blocks only accessed via free list pointer chase
-// - AcqRel ordering synchronizes free list updates between threads
-// - No overlapping access: allocated blocks disjoint from free list
-unsafe impl<T: ?Sized> Sync for SyncUnsafeCell<T> {}
-
-// SAFETY: SyncUnsafeCell<T> is Send if T is Send.
-// - Wrapper is repr(transparent), same layout as UnsafeCell<T>
-// - T: Send bound ensures inner value can move between threads
-// - No thread-local state in wrapper
-unsafe impl<T: ?Sized + Send> Send for SyncUnsafeCell<T> {}
-
-impl<T> SyncUnsafeCell<T> {
-    fn new(value: T) -> Self {
-        Self(UnsafeCell::new(value))
-    }
-}
-
-impl<T: ?Sized> SyncUnsafeCell<T> {
-    fn get(&self) -> *mut T {
-        self.0.get()
-    }
-}
 
 /// Pool allocator for fixed-size blocks
 ///
@@ -72,7 +42,13 @@ impl<T: ?Sized> SyncUnsafeCell<T> {
 ///
 /// Free blocks are linked together in a singly-linked list.
 pub struct PoolAllocator {
-    /// Owned memory buffer containing all blocks with interior mutability
+    /// Owned memory buffer containing all blocks with interior mutability.
+    ///
+    /// This field is never directly accessed but must be kept for RAII - it owns the
+    /// memory allocation and automatically deallocates it when the allocator is dropped.
+    /// All access goes through raw pointers derived from `start_addr` and validated
+    /// through the free list atomic operations.
+    #[allow(dead_code)]
     memory: Box<SyncUnsafeCell<[u8]>>,
 
     /// Size of each individual block
@@ -83,9 +59,6 @@ pub struct PoolAllocator {
 
     /// Total number of blocks in the pool
     block_count: usize,
-
-    /// Total capacity for convenience
-    capacity: usize,
 
     /// Head of the free list (atomic for thread safety)
     free_head: AtomicPtr<FreeBlock>,
@@ -190,7 +163,6 @@ impl PoolAllocator {
             block_size: aligned_block_size,
             block_align,
             block_count,
-            capacity: total_size,
             free_head: AtomicPtr::new(ptr::null_mut()),
             free_count: AtomicUsize::new(0),
             start_addr,

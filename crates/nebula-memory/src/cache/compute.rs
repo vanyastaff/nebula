@@ -483,75 +483,9 @@ where
     }
 }
 
-// Thread-safe wrapper
-pub struct ThreadSafeComputeCache<K, V>
-where
-    K: CacheKey,
-    V: Clone,
-{
-    inner: Arc<Mutex<ComputeCache<K, V>>>,
-}
-
-impl<K, V> ThreadSafeComputeCache<K, V>
-where
-    K: CacheKey,
-    V: Clone,
-{
-    pub fn new(max_entries: usize) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(ComputeCache::new(max_entries))),
-        }
-    }
-
-    pub fn with_config(config: CacheConfig) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(ComputeCache::with_config(config))),
-        }
-    }
-
-    pub fn get_or_compute<F>(&self, key: K, compute_fn: F) -> CacheResult<V>
-    where
-        F: FnOnce() -> Result<V, MemoryError>,
-    {
-        let mut cache = self.inner.lock();
-        cache.get_or_compute(key, compute_fn)
-    }
-
-    pub fn get(&self, key: &K) -> Option<V> {
-        let mut cache = self.inner.lock();
-        cache.get(key)
-    }
-
-    pub fn insert(&self, key: K, value: V) -> CacheResult<()> {
-        let mut cache = self.inner.lock();
-        cache.insert(key, value)
-    }
-
-    pub fn contains_key(&self, key: &K) -> bool {
-        let cache = self.inner.lock();
-        cache.contains_key(key)
-    }
-
-    pub fn remove(&self, key: &K) -> Option<V> {
-        let mut cache = self.inner.lock();
-        cache.remove(key)
-    }
-
-    pub fn len(&self) -> usize {
-        let cache = self.inner.lock();
-        cache.len()
-    }
-
-    pub fn clear(&self) {
-        let mut cache = self.inner.lock();
-        cache.clear();
-    }
-
-    pub fn metrics(&self) -> CacheMetrics {
-        let cache = self.inner.lock();
-        cache.metrics()
-    }
-}
+// Note: For thread-safe compute caching, use the `concurrent` module with DashMap-based caches
+// which provide lock-free concurrent access. The Arc<Mutex<ComputeCache>> pattern has been
+// removed as it's not idiomatic Rust and creates unnecessary contention.
 
 #[cfg(test)]
 mod tests {
@@ -629,16 +563,5 @@ mod tests {
         // After error, key should not be cached
         let result = cache.get_or_compute("error".to_string(), || Ok(42));
         assert_eq!(result.unwrap(), 42);
-    }
-
-    #[test]
-    fn test_thread_safe_cache() {
-        let cache = ThreadSafeComputeCache::<String, usize>::new(10);
-
-        let result = cache.get_or_compute("key1".to_string(), || Ok(42));
-        assert_eq!(result.unwrap(), 42);
-
-        assert!(cache.contains_key(&"key1".to_string()));
-        assert_eq!(cache.get(&"key1".to_string()), Some(42));
     }
 }

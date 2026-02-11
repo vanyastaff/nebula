@@ -20,7 +20,6 @@
 //! - Individual deallocation not supported (no-op)
 
 use core::alloc::Layout;
-use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
@@ -37,36 +36,8 @@ use crate::allocator::{
     StatisticsProvider, ThreadSafeAllocator,
 };
 
+use crate::core::SyncUnsafeCell;
 use crate::utils::{Backoff, MemoryOps, PrefetchManager, align_up, atomic_max, cache_line_size};
-
-/// Thread-safe wrapper for memory buffer with interior mutability
-#[repr(transparent)]
-struct SyncUnsafeCell<T: ?Sized>(UnsafeCell<T>);
-
-// SAFETY: SyncUnsafeCell<T> is Sync even though UnsafeCell<T> is not.
-// - All mutable access goes through atomic cursor (compare_exchange)
-// - CAS success guarantees exclusive access to allocated range
-// - No overlapping mutable references (disjoint memory regions)
-// - AcqRel ordering synchronizes cursor updates between threads
-unsafe impl<T: ?Sized> Sync for SyncUnsafeCell<T> {}
-
-// SAFETY: SyncUnsafeCell<T> is Send if T is Send.
-// - Wrapper is repr(transparent), same layout as UnsafeCell<T>
-// - T: Send bound ensures inner value can move between threads
-// - No thread-local state in wrapper
-unsafe impl<T: ?Sized + Send> Send for SyncUnsafeCell<T> {}
-
-impl<T> SyncUnsafeCell<T> {
-    fn new(value: T) -> Self {
-        Self(UnsafeCell::new(value))
-    }
-}
-
-impl<T: ?Sized> SyncUnsafeCell<T> {
-    fn get(&self) -> *mut T {
-        self.0.get()
-    }
-}
 
 /// Production-ready bump allocator
 pub struct BumpAllocator {
@@ -74,7 +45,6 @@ pub struct BumpAllocator {
     memory: Box<SyncUnsafeCell<[u8]>>,
     config: BumpConfig,
     prefetch_mgr: PrefetchManager,
-    memory_ops: MemoryOps,
     start_addr: usize,
     end_addr: usize,
     capacity: usize,
@@ -93,7 +63,6 @@ impl BumpAllocator {
 
         let mut vec = vec![0u8; capacity];
 
-        let memory_ops = MemoryOps::new();
         if let Some(pattern) = config.alloc_pattern {
             // SAFETY: Filling freshly allocated vector with pattern.
             // - vec is a valid mutable slice (just allocated)
@@ -138,7 +107,6 @@ impl BumpAllocator {
             memory,
             config,
             prefetch_mgr: PrefetchManager::new(),
-            memory_ops,
             start_addr,
             end_addr,
             capacity,

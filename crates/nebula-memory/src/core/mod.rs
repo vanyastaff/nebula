@@ -5,10 +5,15 @@
 //! - Configuration structures
 //! - Base traits for memory management
 //! - Common types and constants
+//! - Internal synchronization primitives
 
 pub mod config;
+pub(crate) mod sync_cell;
 pub mod traits;
 pub mod types;
+
+// Re-export sync_cell for internal use
+pub(crate) use sync_cell::SyncUnsafeCell;
 
 // Re-export commonly used items
 pub use crate::error::{MemoryError, MemoryResult};

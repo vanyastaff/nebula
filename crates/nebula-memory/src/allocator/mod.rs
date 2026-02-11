@@ -32,7 +32,7 @@ pub use stack::{StackAllocator, StackConfig, StackFrame, StackMarker};
 pub use stats::BatchedStats;
 pub use stats::{AllocatorStats, AtomicAllocatorStats, OptionalStats, StatisticsProvider};
 pub use system::SystemAllocator;
-pub use tracked::TrackedAllocator;
+pub use tracked::{TrackExt, TrackedAllocator};
 pub use traits::{
     Allocator, BasicMemoryUsage, BulkAllocator, MemoryUsage, Resettable, ThreadSafeAllocator,
     TypedAllocator,

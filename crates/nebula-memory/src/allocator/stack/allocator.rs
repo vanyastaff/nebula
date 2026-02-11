@@ -32,7 +32,6 @@
 //! - Relaxed: Statistics updates (ordering not critical)
 
 use core::alloc::Layout;
-use core::cell::UnsafeCell;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
@@ -40,35 +39,8 @@ use super::{StackConfig, StackMarker};
 use crate::allocator::{
     AllocError, AllocResult, Allocator, AllocatorStats, MemoryUsage, Resettable, StatisticsProvider,
 };
+use crate::core::SyncUnsafeCell;
 use crate::utils::{Backoff, align_up, atomic_max};
-
-/// Thread-safe wrapper for memory buffer with interior mutability
-#[repr(transparent)]
-struct SyncUnsafeCell<T: ?Sized>(UnsafeCell<T>);
-
-// SAFETY: SyncUnsafeCell provides interior mutability with external synchronization.
-// - UnsafeCell allows shared mutation via raw pointers
-// - Atomic top pointer ensures allocations don't overlap
-// - CAS operations provide exclusive access to allocated ranges
-// - repr(transparent) ensures same layout as UnsafeCell<T>
-unsafe impl<T: ?Sized> Sync for SyncUnsafeCell<T> {}
-
-// SAFETY: SyncUnsafeCell can be sent between threads if T: Send.
-// - Wraps UnsafeCell<T>, inherits Send requirement from T
-// - No thread-local state or thread-specific invariants
-unsafe impl<T: ?Sized + Send> Send for SyncUnsafeCell<T> {}
-
-impl<T> SyncUnsafeCell<T> {
-    fn new(value: T) -> Self {
-        Self(UnsafeCell::new(value))
-    }
-}
-
-impl<T: ?Sized> SyncUnsafeCell<T> {
-    fn get(&self) -> *mut T {
-        self.0.get()
-    }
-}
 
 /// Stack allocator that supports LIFO allocation and deallocation
 ///
@@ -84,7 +56,13 @@ impl<T: ?Sized> SyncUnsafeCell<T> {
 ///
 /// Deallocations must happen in reverse order: alloc3, then alloc2, then alloc1.
 pub struct StackAllocator {
-    /// Owned memory buffer with interior mutability
+    /// Owned memory buffer with interior mutability.
+    ///
+    /// This field is never directly accessed but must be kept for RAII - it owns the
+    /// memory allocation and automatically deallocates it when the allocator is dropped.
+    /// All access goes through raw pointers derived from `start_addr` and validated
+    /// through the atomic top pointer.
+    #[allow(dead_code)]
     memory: Box<SyncUnsafeCell<[u8]>>,
 
     /// Configuration
