@@ -28,8 +28,6 @@
 //! }
 //! ```
 
-#![cfg(feature = "async")]
-
 pub mod arena;
 pub mod pool;
 

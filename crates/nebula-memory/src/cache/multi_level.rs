@@ -4,28 +4,15 @@
 //! similar to CPU caches (L1, L2, L3), where each level has different
 //! performance characteristics.
 
-#![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::excessive_nesting)]
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(feature = "std")]
 use std::{
     collections::HashMap,
     sync::Arc,
     time::{Duration, Instant},
 };
 
-#[cfg(feature = "std")]
 use parking_lot::{Mutex, RwLock};
-
-#[cfg(not(feature = "std"))]
-use {
-    alloc::{boxed::Box, string::String, sync::Arc, vec::Vec},
-    hashbrown::HashMap,
-    spin::{Mutex, RwLock},
-};
 
 use super::compute::{CacheKey, CacheResult, ComputeCache};
 use super::config::{CacheConfig, CacheMetrics};
@@ -69,11 +56,9 @@ pub trait CacheLevel<K, V>: Send + Sync {
     }
 
     /// Get the metrics for this cache level
-    #[cfg(feature = "std")]
     fn metrics(&self) -> Option<CacheMetrics>;
 
     /// Reset metrics for this cache level
-    #[cfg(feature = "std")]
     fn reset_metrics(&self);
 
     /// Warm up the cache with key-value pairs
@@ -88,7 +73,6 @@ pub trait CacheLevel<K, V>: Send + Sync {
     }
 
     /// Clean up expired entries (if supported)
-    #[cfg(feature = "std")]
     fn cleanup_expired(&self) -> usize {
         0
     }
@@ -141,12 +125,10 @@ pub struct MultiLevelStats {
     /// Number of demotions between levels
     pub demotions: usize,
     /// Total compute time for cache misses
-    #[cfg(feature = "std")]
     pub compute_time_ns: u64,
     /// Cache efficiency by level
     pub level_efficiency: Vec<f64>,
     /// Average response time by level
-    #[cfg(feature = "std")]
     pub avg_response_time_ns: Vec<u64>,
 }
 
@@ -160,10 +142,8 @@ impl MultiLevelStats {
             misses: 0,
             promotions: 0,
             demotions: 0,
-            #[cfg(feature = "std")]
             compute_time_ns: 0,
             level_efficiency: vec![0.0; level_count],
-            #[cfg(feature = "std")]
             avg_response_time_ns: vec![0; level_count],
         }
     }
@@ -248,14 +228,10 @@ impl MultiLevelStats {
         self.misses = 0;
         self.promotions = 0;
         self.demotions = 0;
-        #[cfg(feature = "std")]
-        {
-            self.compute_time_ns = 0;
-        }
+        self.compute_time_ns = 0;
         for eff in &mut self.level_efficiency {
             *eff = 0.0;
         }
-        #[cfg(feature = "std")]
         for time in &mut self.avg_response_time_ns {
             *time = 0;
         }
@@ -317,7 +293,6 @@ pub struct MultiLevelConfig {
     /// Enable background cleanup
     pub background_cleanup: bool,
     /// Cleanup interval for expired entries
-    #[cfg(feature = "std")]
     pub cleanup_interval: Option<Duration>,
     /// Maximum number of items to promote per operation
     pub max_promotions_per_op: usize,
@@ -334,7 +309,6 @@ impl Default for MultiLevelConfig {
             demotion_policy: DemotionPolicy::default(),
             track_stats: false,
             background_cleanup: false,
-            #[cfg(feature = "std")]
             cleanup_interval: None,
             max_promotions_per_op: 3,
             write_through: true,
@@ -379,7 +353,6 @@ impl MultiLevelConfig {
     }
 
     /// Set cleanup interval
-    #[cfg(feature = "std")]
     #[must_use = "builder methods must be chained or built"]
     pub fn with_cleanup_interval(mut self, interval: Duration) -> Self {
         self.cleanup_interval = Some(interval);
@@ -421,7 +394,6 @@ where
     /// Cache statistics
     stats: Arc<RwLock<MultiLevelStats>>,
     /// Background cleanup handle
-    #[cfg(feature = "std")]
     _cleanup_handle: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -439,7 +411,6 @@ where
             config: MultiLevelConfig::default(),
             access_counts: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(RwLock::new(MultiLevelStats::new(level_count))),
-            #[cfg(feature = "std")]
             _cleanup_handle: None,
         }
     }
@@ -453,11 +424,9 @@ where
             config,
             access_counts: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(RwLock::new(MultiLevelStats::new(level_count))),
-            #[cfg(feature = "std")]
             _cleanup_handle: None,
         };
 
-        #[cfg(feature = "std")]
         if cache.config.background_cleanup {
             cache.start_background_cleanup();
         }
@@ -466,10 +435,9 @@ where
     }
 
     /// Start background cleanup thread
-    #[cfg(feature = "std")]
     fn start_background_cleanup(&mut self) {
-        if let Some(interval) = self.config.cleanup_interval {
-            let levels_clone = self
+        if let Some(_interval) = self.config.cleanup_interval {
+            let _levels_clone = self
                 .levels
                 .iter()
                 .map(|level| level.name().to_string())
@@ -483,7 +451,6 @@ where
 
     /// Get a value from the cache, trying each level in order
     pub fn get(&self, key: &K) -> Option<V> {
-        #[cfg(feature = "std")]
         let start_time = Instant::now();
 
         if self.config.track_stats {
@@ -499,14 +466,11 @@ where
                     let mut stats = self.stats.write();
                     stats.level_hits[level_idx] += 1;
 
-                    #[cfg(feature = "std")]
-                    {
-                        let response_time = start_time.elapsed().as_nanos() as u64;
-                        if level_idx < stats.avg_response_time_ns.len() {
-                            // Simple moving average
-                            stats.avg_response_time_ns[level_idx] =
-                                u64::midpoint(stats.avg_response_time_ns[level_idx], response_time);
-                        }
+                    let response_time = start_time.elapsed().as_nanos() as u64;
+                    if level_idx < stats.avg_response_time_ns.len() {
+                        // Simple moving average
+                        stats.avg_response_time_ns[level_idx] =
+                            u64::midpoint(stats.avg_response_time_ns[level_idx], response_time);
                     }
                 }
 
@@ -546,12 +510,10 @@ where
         }
 
         // Compute the value
-        #[cfg(feature = "std")]
         let start_time = Instant::now();
 
         let value = compute_fn()?;
 
-        #[cfg(feature = "std")]
         if self.config.track_stats {
             let compute_time = start_time.elapsed().as_nanos() as u64;
             let mut stats = self.stats.write();
@@ -680,20 +642,7 @@ where
             let mut stats = self.stats.read().clone();
 
             // Update efficiency metrics
-            let level_metrics: Vec<_> = self
-                .levels
-                .iter()
-                .map(|level| {
-                    #[cfg(feature = "std")]
-                    {
-                        level.metrics()
-                    }
-                    #[cfg(not(feature = "std"))]
-                    {
-                        None
-                    }
-                })
-                .collect();
+            let level_metrics: Vec<_> = self.levels.iter().map(|level| level.metrics()).collect();
 
             stats.update_efficiency(&level_metrics);
             stats
@@ -710,7 +659,6 @@ where
         }
 
         // Reset level metrics
-        #[cfg(feature = "std")]
         for level in &self.levels {
             level.reset_metrics();
         }
@@ -729,7 +677,6 @@ where
     }
 
     /// Clean up expired entries in all levels
-    #[cfg(feature = "std")]
     #[must_use]
     pub fn cleanup_expired(&self) -> usize {
         self.levels
@@ -992,13 +939,11 @@ where
         cache.load_factor()
     }
 
-    #[cfg(feature = "std")]
     fn metrics(&self) -> Option<CacheMetrics> {
         let cache = self.cache.lock();
         Some(cache.metrics())
     }
 
-    #[cfg(feature = "std")]
     fn reset_metrics(&self) {
         let cache = self.cache.lock();
         cache.reset_metrics();
@@ -1020,7 +965,6 @@ where
         true // ComputeCache supports TTL
     }
 
-    #[cfg(feature = "std")]
     fn cleanup_expired(&self) -> usize {
         let mut cache = self.cache.lock();
         cache.cleanup_expired()

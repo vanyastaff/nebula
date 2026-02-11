@@ -29,7 +29,6 @@
 
 use core::ptr;
 use core::sync::atomic::{Ordering, compiler_fence, fence};
-#[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 
 use crate::allocator::{AllocError, AllocResult};
@@ -148,13 +147,11 @@ pub fn is_aligned_ptr<T>(ptr: *const T, alignment: usize) -> bool {
 /// assert_eq!(format_bytes(1536), "1.50 KB");
 /// assert_eq!(format_bytes(1048576), "1.00 MB");
 /// ```
-#[cfg(feature = "std")]
 pub use nebula_system::utils::format_bytes_usize as format_bytes;
 
 /// Format duration into human-readable string
 ///
 /// Re-exported from nebula-system for consistency.
-#[cfg(feature = "std")]
 pub use nebula_system::utils::format_duration;
 
 /// Format percentage
@@ -294,7 +291,7 @@ pub unsafe fn copy_aligned_simd(dst: *mut u8, src: *const u8, len: usize) {
 #[inline]
 #[cfg(all(feature = "simd", target_arch = "x86_64", not(target_feature = "avx2")))]
 pub unsafe fn copy_aligned_simd(dst: *mut u8, src: *const u8, len: usize) {
-    ptr::copy_nonoverlapping(src, dst, len);
+    unsafe { ptr::copy_nonoverlapping(src, dst, len) };
 }
 
 /// SIMD-optimized memory copy (fallback for non-x86_64)
@@ -444,14 +441,12 @@ pub unsafe fn compare_simd(a: *const u8, b: *const u8, len: usize) -> bool {
 }
 
 /// Timer for performance measurements
-#[cfg(feature = "std")]
 #[derive(Debug)]
 pub struct Timer {
     start: Instant,
     name: &'static str,
 }
 
-#[cfg(feature = "std")]
 impl Timer {
     #[inline]
     #[must_use]
@@ -473,7 +468,6 @@ impl Timer {
     }
 }
 
-#[cfg(feature = "std")]
 impl Drop for Timer {
     fn drop(&mut self) {
         self.print();
@@ -781,10 +775,7 @@ impl Backoff {
         if self.current < 8 {
             self.spin();
         } else {
-            #[cfg(feature = "std")]
             std::thread::yield_now();
-            #[cfg(not(feature = "std"))]
-            core::hint::spin_loop();
         }
     }
 }
@@ -864,7 +855,6 @@ impl Default for PrefetchManager {
 }
 
 /// Performance measurement utilities
-#[cfg(feature = "std")]
 pub mod perf {
     use super::*;
 
@@ -956,7 +946,6 @@ mod tests {
 
     // Test for cache_line_size is now in nebula-system
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_perf_utils() {
         let (result, duration) = perf::measure_time(|| {

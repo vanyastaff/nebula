@@ -3,9 +3,6 @@
 //! This module provides functionality for capturing, storing, and comparing
 //! memory state snapshots for debugging and analysis purposes.
 
-#[cfg(not(feature = "std"))]
-use alloc::{collections::BTreeMap as HashMap, format, string::String, vec::Vec};
-#[cfg(feature = "std")]
 use std::{collections::HashMap, time::Instant};
 
 use super::memory_stats::MemoryMetrics;
@@ -31,7 +28,6 @@ pub struct MemorySnapshot {
     /// Unique snapshot identifier
     pub id: u64,
     /// When the snapshot was taken
-    #[cfg(feature = "std")]
     pub timestamp: Instant,
     /// Core memory metrics
     pub metrics: MemoryMetrics,
@@ -105,7 +101,6 @@ impl MemorySnapshot {
     pub fn new(id: u64, metrics: MemoryMetrics) -> Self {
         Self {
             id,
-            #[cfg(feature = "std")]
             timestamp: Instant::now(),
             metrics,
             components: Vec::new(),
@@ -116,7 +111,6 @@ impl MemorySnapshot {
     }
 
     /// Create a snapshot with timestamp
-    #[cfg(feature = "std")]
     pub fn new_with_timestamp(id: u64, metrics: MemoryMetrics, timestamp: Instant) -> Self {
         Self {
             id,
@@ -200,6 +194,7 @@ impl MemorySnapshot {
     }
 
     /// Format as human-readable text
+    #[allow(clippy::excessive_nesting)]
     fn format_text(&self) -> String {
         let mut output = format!(
             "Memory Snapshot #{}\n\
@@ -207,10 +202,7 @@ impl MemorySnapshot {
             self.id
         );
 
-        #[cfg(feature = "std")]
-        {
-            output.push_str(&format!("Timestamp: {:?}\n", self.timestamp));
-        }
+        output.push_str(&format!("Timestamp: {:?}\n", self.timestamp));
 
         if !self.tags.is_empty() {
             output.push_str(&format!("Tags: {}\n", self.tags.join(", ")));
@@ -234,7 +226,6 @@ impl MemorySnapshot {
             utils::format_percentage(self.metrics.fragmentation_ratio())
         ));
 
-        #[cfg(feature = "std")]
         if self.metrics.elapsed_secs > 0.0 {
             output.push_str(&format!(
                 "  Allocation Rate: {:.2} allocs/sec\n",
@@ -327,10 +318,7 @@ impl MemorySnapshot {
         json.push_str("{\n");
         json.push_str(&format!("  \"id\": {},\n", self.id));
 
-        #[cfg(feature = "std")]
-        {
-            json.push_str(&format!("  \"timestamp\": \"{:?}\",\n", self.timestamp));
-        }
+        json.push_str(&format!("  \"timestamp\": \"{:?}\",\n", self.timestamp));
 
         if !self.tags.is_empty() {
             json.push_str("  \"tags\": [");
@@ -423,7 +411,7 @@ impl MemorySnapshot {
             first = false;
         }
         json.push_str("\n  }\n");
-        json.push_str("}");
+        json.push('}');
 
         Ok(json)
     }
@@ -469,7 +457,6 @@ impl MemorySnapshot {
         SnapshotDiff {
             from_id: self.id,
             to_id: other.id,
-            #[cfg(feature = "std")]
             time_delta: other.timestamp.duration_since(self.timestamp),
             metrics_diff,
             component_diffs,
@@ -577,7 +564,6 @@ impl ComponentDetail {
 pub struct SnapshotDiff {
     pub from_id: u64,
     pub to_id: u64,
-    #[cfg(feature = "std")]
     pub time_delta: std::time::Duration,
     pub metrics_diff: MetricsDiff,
     pub component_diffs: Vec<ComponentDiff>,
@@ -646,13 +632,10 @@ impl SnapshotDiff {
             self.from_id, self.to_id
         );
 
-        #[cfg(feature = "std")]
-        {
-            output.push_str(&format!(
-                "Time Delta: {}\n",
-                utils::format_duration(self.time_delta)
-            ));
-        }
+        output.push_str(&format!(
+            "Time Delta: {}\n",
+            utils::format_duration(self.time_delta)
+        ));
 
         // Overall metrics changes
         output.push_str("\nOverall Changes:\n");
@@ -728,7 +711,7 @@ impl SnapshotDiff {
 /// Helper function to format byte deltas
 fn format_bytes_delta(delta: i64) -> String {
     let sign = if delta >= 0 { "+" } else { "" };
-    format!("{}{}", sign, utils::format_bytes(delta.abs() as usize))
+    format!("{}{}", sign, utils::format_bytes(delta.unsigned_abs() as usize))
 }
 
 #[cfg(test)]
@@ -740,10 +723,7 @@ mod tests {
         metrics.current_allocated = current;
         metrics.peak_allocated = peak;
         metrics.allocations = allocs;
-        #[cfg(feature = "std")]
-        {
-            metrics.timestamp = std::time::Instant::now();
-        }
+        metrics.timestamp = std::time::Instant::now();
         metrics
     }
 
@@ -817,7 +797,6 @@ mod tests {
         );
         snapshot1.add_component(comp1);
 
-        #[cfg(feature = "std")]
         std::thread::sleep(std::time::Duration::from_millis(10));
 
         let metrics2 = create_test_metrics(1200, 1600, 15);

@@ -3,17 +3,9 @@
 //! This module provides a `RealTimeMonitor` that samples and reports
 //! live memory statistics at a configured interval, including alert detection.
 
-#[cfg(not(feature = "std"))]
-use alloc::string::String;
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
-#[cfg(feature = "std")]
 use parking_lot::RwLock;
-#[cfg(feature = "std")]
 use std::sync::Arc;
-#[cfg(feature = "std")]
 use std::thread::{self, JoinHandle};
-#[cfg(feature = "std")]
 use std::time::Instant;
 
 use super::config::{AlertConfig, HistogramConfig, MonitoringConfig};
@@ -23,7 +15,6 @@ use crate::error::{MemoryError, MemoryResult};
 
 /// Represents a single active memory alert.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg(feature = "std")]
 pub struct MemoryAlert {
     pub name: String,  // Name of the alert (e.g., "High Memory Usage")
     pub level: String, // Severity level (e.g., "Critical", "Warning")
@@ -35,7 +26,6 @@ pub struct MemoryAlert {
 
 /// Represents the current live data being monitored.
 #[derive(Debug, Clone)]
-#[cfg(feature = "std")]
 pub struct RealTimeData {
     pub timestamp: Instant,
     pub metrics: MemoryMetrics,
@@ -50,7 +40,6 @@ pub struct RealTimeData {
 /// This monitor runs a background thread to periodically sample
 /// `MemoryStats` and store recent `RealTimeData`. It also
 /// checks for and reports `MemoryAlert` instances.
-#[cfg(feature = "std")]
 pub struct RealTimeMonitor {
     config: MonitoringConfig,
     alert_config: AlertConfig, // New: Alert configuration
@@ -72,7 +61,6 @@ pub struct RealTimeMonitor {
     last_alert_triggered: Arc<RwLock<std::collections::HashMap<String, Instant>>>,
 }
 
-#[cfg(feature = "std")]
 impl RealTimeMonitor {
     /// Creates a new `RealTimeMonitor` instance.
     ///
@@ -115,6 +103,7 @@ impl RealTimeMonitor {
     ///
     /// If monitoring is already enabled or the configuration does not allow it,
     /// this method does nothing.
+    #[allow(clippy::excessive_nesting)]
     pub fn start(&mut self) -> MemoryResult<()> {
         if !self.config.enabled || self.monitor_handle.is_some() {
             // Already started or disabled
@@ -155,19 +144,18 @@ impl RealTimeMonitor {
                 let current_metrics = monitored_stats.metrics(); // Get current snapshot from atomic stats
 
                 let mut current_histogram_data = None;
-                if collect_histograms {
-                    if let Some(hist) = histogram_arc.write().as_mut() {
+                if collect_histograms
+                    && let Some(hist) = histogram_arc.write().as_mut() {
                         current_histogram_data = Some(hist.export());
                     }
-                }
 
                 let mut active_alerts: Vec<MemoryAlert> = Vec::new();
                 if alert_enabled {
                     let mut last_triggered = last_alert_triggered_arc.write(); // Acquire write lock for alerts
 
                     // Check global memory threshold
-                    if let Some(mem_threshold) = alert_memory_threshold {
-                        if current_metrics.current_allocated as u64 >= mem_threshold {
+                    if let Some(mem_threshold) = alert_memory_threshold
+                        && current_metrics.current_allocated as u64 >= mem_threshold {
                             if let Some(last_time) = last_triggered.get("High Memory Usage") {
                                 if now.duration_since(*last_time) < alert_cooldown {
                                     // Still in cooldown period, skip alert
@@ -198,7 +186,6 @@ impl RealTimeMonitor {
                                 last_triggered.insert("High Memory Usage".to_string(), now);
                             }
                         }
-                    }
 
                     // Check global allocation rate threshold
                     if let Some(rate_threshold) = alert_allocation_rate_threshold {
@@ -394,7 +381,6 @@ impl RealTimeMonitor {
 }
 
 // Ensure the monitor thread is stopped when the RealTimeMonitor is dropped.
-#[cfg(feature = "std")]
 impl Drop for RealTimeMonitor {
     fn drop(&mut self) {
         self.stop();
@@ -421,7 +407,6 @@ mod tests {
         stats.peak_allocated.store(0, Ordering::Relaxed);
         stats.total_allocated_bytes.store(0, Ordering::Relaxed);
         stats.total_deallocated_bytes.store(0, Ordering::Relaxed);
-        #[cfg(feature = "std")]
         stats
             .total_allocation_time_nanos
             .store(0, Ordering::Relaxed);

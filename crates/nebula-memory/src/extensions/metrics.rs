@@ -3,14 +3,8 @@
 //! This module provides extension traits that allow integrating
 //! the memory management system with various metrics and monitoring systems.
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
-#[cfg(feature = "std")]
 use std::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 
 use crate::error::MemoryResult;
@@ -279,7 +273,10 @@ pub struct MetricsExtension {
 impl MetricsExtension {
     /// Create a new metrics extension with the specified reporter
     pub fn new(reporter: impl MetricsReporter + 'static) -> Self {
-        Self { reporter: Box::new(reporter), metrics: BTreeMap::new() }
+        Self {
+            reporter: Box::new(reporter),
+            metrics: BTreeMap::new(),
+        }
     }
 
     /// Register a metric with this extension
@@ -358,7 +355,6 @@ impl MemoryExtension for MetricsExtension {
 }
 
 /// Create a debug metrics reporter that prints metrics to stdout
-#[cfg(feature = "std")]
 pub fn create_debug_metrics_reporter() -> impl MetricsReporter {
     struct DebugMetricsReporter;
 

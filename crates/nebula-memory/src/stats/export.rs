@@ -1,13 +1,7 @@
 //! Statistics export formats (JSON, Prometheus, etc.)
 
-#[cfg(not(feature = "std"))]
-use alloc::{format, string::String, vec::Vec};
-
 use super::collector::GlobalStats;
 use super::memory_stats::MemoryMetrics;
-
-#[cfg(feature = "stats")]
-use super::histogram::{MemoryHistogram, Percentile};
 
 /// Export format for statistics
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -315,15 +309,16 @@ mod tests {
             peak_allocated: 1000,
             total_allocated_bytes: 1000,
             total_deallocated_bytes: 500,
-            #[cfg(feature = "std")]
             total_allocation_time_nanos: 0,
             operations: 0,
             hits: 0,
             misses: 0,
             evictions: 0,
             allocation_failures: 2,
-            #[cfg(feature = "std")]
-            last_reset: std::time::Instant::now(),
+            oom_errors: 0,
+            hit_rate: 0.0,
+            elapsed_secs: 0.0,
+            timestamp: std::time::Instant::now(),
         };
 
         let json = metrics.to_json();

@@ -4,21 +4,9 @@
 //! extending the memory management functionality without modifying the core
 //! codebase.
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
-use alloc::{
-    collections::BTreeMap,
-    string::{String, ToString},
-    sync::Arc,
-    vec::Vec,
-};
 use core::any::{Any, TypeId};
 use core::fmt::Debug;
-#[cfg(feature = "std")]
 use parking_lot::RwLock;
-#[cfg(feature = "std")]
 use std::{
     collections::BTreeMap,
     string::{String, ToString},
@@ -27,8 +15,6 @@ use std::{
 };
 
 use crate::error::{MemoryError, MemoryResult};
-#[cfg(not(feature = "std"))]
-use crate::lockfree::RwLock;
 
 pub mod async_support;
 /// Specialized extension modules
@@ -125,15 +111,13 @@ impl ExtensionRegistry {
             let mut type_registry = self.type_registry.write();
             let type_ids_to_remove: Vec<TypeId> = type_registry
                 .iter()
-                .filter_map(
-                    |(type_id, ext_name)| {
-                        if ext_name == name {
-                            Some(*type_id)
-                        } else {
-                            None
-                        }
-                    },
-                )
+                .filter_map(|(type_id, ext_name)| {
+                    if ext_name == name {
+                        Some(*type_id)
+                    } else {
+                        None
+                    }
+                })
                 .collect();
 
             for type_id in type_ids_to_remove {
@@ -142,7 +126,10 @@ impl ExtensionRegistry {
 
             Ok(())
         } else {
-            Err(MemoryError::NotFound(format!("Extension with name '{}' not found", name)))
+            Err(MemoryError::NotFound(format!(
+                "Extension with name '{}' not found",
+                name
+            )))
         }
     }
 
@@ -182,20 +169,34 @@ impl ExtensionRegistry {
     /// Find extensions by category
     pub fn find_by_category(&self, category: &str) -> Vec<Arc<dyn MemoryExtension>> {
         let extensions = self.extensions.read();
-        extensions.values().filter(|ext| ext.category() == category).cloned().collect()
+        extensions
+            .values()
+            .filter(|ext| ext.category() == category)
+            .cloned()
+            .collect()
     }
 
     /// Find extensions by tag
     pub fn find_by_tag(&self, tag: &str) -> Vec<Arc<dyn MemoryExtension>> {
         let extensions = self.extensions.read();
-        extensions.values().filter(|ext| ext.tags().contains(&tag)).cloned().collect()
+        extensions
+            .values()
+            .filter(|ext| ext.tags().contains(&tag))
+            .cloned()
+            .collect()
     }
 
     /// Find extensions using a predicate function
     pub fn find<F>(&self, predicate: F) -> Vec<Arc<dyn MemoryExtension>>
-    where F: Fn(&Arc<dyn MemoryExtension>) -> bool {
+    where
+        F: Fn(&Arc<dyn MemoryExtension>) -> bool,
+    {
         let extensions = self.extensions.read();
-        extensions.values().filter(|ext| predicate(ext)).cloned().collect()
+        extensions
+            .values()
+            .filter(|ext| predicate(ext))
+            .cloned()
+            .collect()
     }
 
     /// Check if an extension is registered
@@ -216,53 +217,24 @@ pub struct GlobalExtensions;
 impl GlobalExtensions {
     fn registry() -> &'static ExtensionRegistry {
         // Use a static variable to store the global registry
-        #[cfg(feature = "std")]
-        {
-            use std::sync::Once;
-            static mut REGISTRY: Option<ExtensionRegistry> = None;
-            static INIT: Once = Once::new();
+        use std::sync::Once;
+        static mut REGISTRY: Option<ExtensionRegistry> = None;
+        static INIT: Once = Once::new();
 
-            // SAFETY: Singleton pattern using Once for thread-safe initialization.
-            // - call_once guarantees REGISTRY initialized exactly once
-            // - No races: call_once blocks other threads until initialization completes
-            // - After initialization, REGISTRY is only read (never written)
-            // - unreachable!() branch never executes (call_once guarantees initialization)
-            unsafe {
-                INIT.call_once(|| {
-                    REGISTRY = Some(ExtensionRegistry::new());
-                });
+        // SAFETY: Singleton pattern using Once for thread-safe initialization.
+        // - call_once guarantees REGISTRY initialized exactly once
+        // - No races: call_once blocks other threads until initialization completes
+        // - After initialization, REGISTRY is only read (never written)
+        // - unreachable!() branch never executes (call_once guarantees initialization)
+        unsafe {
+            INIT.call_once(|| {
+                REGISTRY = Some(ExtensionRegistry::new());
+            });
 
-                // Access the static variable
-                match &REGISTRY {
-                    Some(registry) => registry,
-                    None => unreachable!("REGISTRY should be initialized via INIT.call_once"),
-                }
-            }
-        }
-
-        #[cfg(not(feature = "std"))]
-        {
-            use core::sync::atomic::{AtomicBool, Ordering};
-            static mut REGISTRY: Option<ExtensionRegistry> = None;
-            static INITIALIZED: AtomicBool = AtomicBool::new(false);
-
-            // SAFETY: No-std singleton using atomic flag for initialization.
-            // - Acquire/Release ordering ensures visibility of REGISTRY write
-            // - Single-threaded no_std context (no races)
-            // - After initialization, REGISTRY only read (never written again)
-            // - Acquire load sees all writes before Release store
-            // - unreachable!() branch never executes (initialization always runs first)
-            unsafe {
-                if !INITIALIZED.load(Ordering::Acquire) {
-                    REGISTRY = Some(ExtensionRegistry::new());
-                    INITIALIZED.store(true, Ordering::Release);
-                }
-
-                // Access the static variable
-                match &REGISTRY {
-                    Some(registry) => registry,
-                    None => unreachable!("REGISTRY should be initialized"),
-                }
+            // Access the static variable
+            match &REGISTRY {
+                Some(registry) => registry,
+                None => unreachable!("REGISTRY should be initialized via INIT.call_once"),
             }
         }
     }
@@ -304,7 +276,9 @@ impl GlobalExtensions {
 
     /// Find global extensions using a predicate function
     pub fn find<F>(predicate: F) -> Vec<Arc<dyn MemoryExtension>>
-    where F: Fn(&Arc<dyn MemoryExtension>) -> bool {
+    where
+        F: Fn(&Arc<dyn MemoryExtension>) -> bool,
+    {
         Self::registry().find(predicate)
     }
 
@@ -371,14 +345,7 @@ macro_rules! impl_memory_extension {
             }
 
             fn tags(&self) -> Vec<&str> {
-                #[cfg(feature = "std")]
-                {
-                    vec![$($tag),*]
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    ::alloc::vec![$($tag),*]
-                }
+                vec![$($tag),*]
             }
 
             fn as_any(&self) -> &dyn ::core::any::Any {

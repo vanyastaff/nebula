@@ -16,10 +16,6 @@
 //! - `PooledValue::pool()`: Dereferences `NonNull` (safe while pool exists)
 //! - Send implementation: Safe if T: Send (pool pointer not shared)
 
-#[cfg(not(feature = "std"))]
-use alloc::boxed::Box;
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
@@ -346,7 +342,7 @@ impl<T: Poolable> ObjectPool<T> {
         }
 
         #[cfg(feature = "stats")]
-        if self.objects.len() > 0 {
+        if !self.objects.is_empty() {
             self.stats
                 .update_memory(self.objects.iter().map(|o| o.memory_usage()).sum());
         }

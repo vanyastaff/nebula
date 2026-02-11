@@ -19,14 +19,6 @@
 //! - Checkpoints validated by generation counter
 //! - Individual deallocation not supported (no-op)
 
-#![cfg_attr(not(feature = "std"), no_std)]
-
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, vec, vec::Vec};
-
 use core::alloc::Layout;
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;

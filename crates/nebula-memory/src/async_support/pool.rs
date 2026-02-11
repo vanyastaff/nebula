@@ -71,10 +71,12 @@ impl<T: Poolable> AsyncPool<T> {
     where
         F: Fn() -> T + Send + Sync + 'static,
     {
-        let mut config = PoolConfig::default();
-        config.initial_capacity = capacity;
-        config.max_capacity = Some(capacity * 2);
-        config.validate_on_return = true;
+        let config = PoolConfig {
+            initial_capacity: capacity,
+            max_capacity: Some(capacity * 2),
+            validate_on_return: true,
+            ..Default::default()
+        };
 
         Self::with_config(config, factory)
     }
@@ -124,11 +126,10 @@ impl<T: Poolable> AsyncPool<T> {
         }
 
         // Create new object if under max capacity
-        if let Some(max_cap) = inner.config.max_capacity {
-            if inner.total_created >= max_cap {
+        if let Some(max_cap) = inner.config.max_capacity
+            && inner.total_created >= max_cap {
                 return Err(MemoryError::pool_exhausted("pool", 0));
             }
-        }
 
         let obj = (inner.factory)();
         inner.total_created += 1;
@@ -159,11 +160,10 @@ impl<T: Poolable> AsyncPool<T> {
         }
 
         // Create new if possible
-        if let Some(max_cap) = inner.config.max_capacity {
-            if inner.total_created >= max_cap {
+        if let Some(max_cap) = inner.config.max_capacity
+            && inner.total_created >= max_cap {
                 return None;
             }
-        }
 
         let obj = (inner.factory)();
         inner.total_created += 1;

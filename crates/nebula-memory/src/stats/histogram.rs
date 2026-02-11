@@ -1,8 +1,5 @@
 //! Memory allocation histograms and distribution analysis
 
-#[cfg(not(feature = "std"))]
-use alloc::{string::String, vec::Vec};
-
 use super::{HistogramConfig, utils}; // Assuming 'utils' is in the same super module
 
 /// Memory allocation histogram
@@ -121,14 +118,12 @@ impl MemoryHistogram {
         }
 
         // If value is exactly the max of the last bucket, or outside all but the last
-        if !found {
-            if let Some(last) = self.buckets.last_mut() {
-                if value >= last.max {
+        if !found
+            && let Some(last) = self.buckets.last_mut()
+                && value >= last.max {
                     // Equal to max is still within last bucket
                     last.count += 1;
                 }
-            }
-        }
     }
 
     /// Calculate mean
@@ -247,7 +242,7 @@ impl MemoryHistogram {
                     utils::format_bytes(p.value as usize)
                 ));
             }
-            output.push_str("\n");
+            output.push('\n');
         }
 
         output

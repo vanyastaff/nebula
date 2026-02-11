@@ -9,8 +9,6 @@
 //! - [`TypedArena<T>`]: Type-safe arena for homogeneous allocations
 //! - [`LocalArena`]: Thread-local arena for maximum performance
 //! - [`CrossThreadArena`]: Arena that can be moved between threads (exclusive access)
-//! - [`StreamingArena`]: Arena optimized for streaming/sequential allocation patterns
-//! - [`CompressedArena`]: Arena with transparent compression support
 
 // Arena allocators intentionally use interior mutability patterns
 #![allow(clippy::mut_from_ref)]
@@ -31,13 +29,6 @@ mod stats;
 mod thread_safe;
 mod typed;
 
-// Optional features
-#[cfg(feature = "streaming")]
-mod streaming;
-
-#[cfg(feature = "compression")]
-mod compressed;
-
 // Macros for convenient arena usage
 #[macro_use]
 mod macros;
@@ -47,8 +38,6 @@ pub use macros::StrictArena;
 
 pub use self::allocator::{ArenaAllocator, ArenaBackedVec};
 pub use self::arena::{Arena, ArenaRef, ArenaRefMut, Position};
-#[cfg(feature = "compression")]
-pub use self::compressed::{CompressedArena, CompressionLevel, CompressionStats};
 pub use self::cross_thread::{
     CrossThreadArena, CrossThreadArenaBuilder, CrossThreadArenaGuard, CrossThreadArenaRef,
 };
@@ -58,8 +47,6 @@ pub use self::local::{
 };
 pub use self::scope::{ArenaGuard, ArenaScope};
 pub use self::stats::{ArenaStats, ArenaStatsSnapshot};
-#[cfg(feature = "streaming")]
-pub use self::streaming::{StreamCheckpoint, StreamOptions, StreamingArena, StreamingArenaRef};
 pub use self::thread_safe::{ThreadSafeArena, ThreadSafeArenaRef};
 pub use self::typed::{TypedArena, TypedArenaRef};
 // Re-export macros at crate level
@@ -419,18 +406,6 @@ pub fn new_thread_safe_arena_with_config(config: ArenaConfig) -> ThreadSafeArena
 #[must_use]
 pub fn new_cross_thread_arena() -> CrossThreadArena {
     CrossThreadArena::new(ArenaConfig::default())
-}
-
-/// Creates new compressed arena
-#[cfg(feature = "compression")]
-pub fn new_compressed_arena(block_size: usize, level: CompressionLevel) -> CompressedArena {
-    CompressedArena::new(block_size, level)
-}
-
-/// Creates new streaming arena
-#[cfg(feature = "streaming")]
-pub fn new_streaming_arena<T>(options: StreamOptions) -> StreamingArena<T> {
-    StreamingArena::new(options)
 }
 
 // Performance hints

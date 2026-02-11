@@ -1,13 +1,8 @@
 //! Priority-based object pool
 
-#[cfg(not(feature = "std"))]
-use alloc::boxed::Box;
-#[cfg(not(feature = "std"))]
-use alloc::collections::BinaryHeap;
 use core::cmp::Ordering as CmpOrdering;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
-#[cfg(feature = "std")]
 use std::collections::BinaryHeap;
 
 #[cfg(feature = "stats")]

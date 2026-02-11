@@ -5,20 +5,7 @@
 //! a baseline and can be useful for specific workloads where access patterns are
 //! unpredictable or for testing purposes.
 
-#![cfg_attr(not(feature = "std"), no_std)]
-
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(feature = "std")]
 use std::{collections::HashSet, marker::PhantomData};
-
-#[cfg(not(feature = "std"))]
-use {
-    alloc::{boxed::Box, vec::Vec},
-    core::{hash::Hash, marker::PhantomData},
-    hashbrown::HashSet,
-};
 
 use rand::Rng;
 

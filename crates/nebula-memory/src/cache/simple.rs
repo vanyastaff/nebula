@@ -9,7 +9,6 @@
 //! For advanced features like deduplication, circuit breaking, or rate limiting,
 //! use the decorator types in the parent module.
 
-#[cfg(feature = "std")]
 use std::{
     collections::HashMap,
     hash::Hash,
@@ -147,8 +146,8 @@ where
             let mut cache = self.inner.write().await;
 
             // Evict if at capacity (simple LRU)
-            if cache.entries.len() >= self.max_entries {
-                if let Some(evict_key) = cache
+            if cache.entries.len() >= self.max_entries
+                && let Some(evict_key) = cache
                     .entries
                     .iter()
                     .min_by_key(|(_, entry)| entry.last_accessed)
@@ -156,7 +155,6 @@ where
                 {
                     cache.entries.remove(&evict_key);
                 }
-            }
 
             cache.entries.insert(key, CacheEntry::new(value.clone()));
         }
@@ -215,8 +213,8 @@ where
         let mut cache = self.inner.write().await;
 
         // Evict if at capacity
-        if cache.entries.len() >= self.max_entries && !cache.entries.contains_key(&key) {
-            if let Some(evict_key) = cache
+        if cache.entries.len() >= self.max_entries && !cache.entries.contains_key(&key)
+            && let Some(evict_key) = cache
                 .entries
                 .iter()
                 .min_by_key(|(_, entry)| entry.last_accessed)
@@ -224,7 +222,6 @@ where
             {
                 cache.entries.remove(&evict_key);
             }
-        }
 
         cache
             .entries

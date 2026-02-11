@@ -1,20 +1,8 @@
-#![cfg_attr(not(feature = "std"), no_std)]
 pub mod fifo;
 pub mod lfu;
 pub mod lru;
 pub mod random;
 pub mod ttl;
-
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(not(feature = "std"))]
-use {
-    alloc::{boxed::Box, vec::Vec},
-    core::hash::Hash,
-    core::time::Duration,
-    hashbrown::HashMap,
-};
 
 use super::CacheEntry;
 
@@ -80,13 +68,10 @@ mod tests {
         let random = RandomPolicy::<String, usize>::new();
         assert_eq!(random.name(), "Random");
 
-        #[cfg(feature = "std")]
-        {
-            let ttl: TtlPolicy<String> = TtlPolicy::new(std::time::Duration::from_secs(60));
-            assert_eq!(
-                <TtlPolicy<String> as EvictionPolicy<String, ()>>::name(&ttl),
-                "TTL"
-            );
-        }
+        let ttl: TtlPolicy<String> = TtlPolicy::new(std::time::Duration::from_secs(60));
+        assert_eq!(
+            <TtlPolicy<String> as EvictionPolicy<String, ()>>::name(&ttl),
+            "TTL"
+        );
     }
 }

@@ -3,23 +3,11 @@
 //! This module provides an implementation of the TTL cache eviction policy,
 //! which evicts entries that have expired based on their time-to-live.
 
-#![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::excessive_nesting)]
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(feature = "std")]
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
-};
-
-#[cfg(not(feature = "std"))]
-use {
-    alloc::vec::Vec,
-    core::{hash::Hash, time::Duration},
-    hashbrown::HashMap,
 };
 
 use super::{EvictionEntry, EvictionPolicy, VictimSelector};
@@ -35,7 +23,6 @@ where
     /// Custom TTLs for specific keys
     custom_ttls: HashMap<K, Duration>,
     /// Insertion times for entries
-    #[cfg(feature = "std")]
     insertion_times: HashMap<K, Instant>,
 }
 
@@ -49,7 +36,6 @@ where
         Self {
             default_ttl,
             custom_ttls: HashMap::new(),
-            #[cfg(feature = "std")]
             insertion_times: HashMap::new(),
         }
     }
@@ -70,14 +56,10 @@ where
     /// Clear all cached data
     pub fn clear(&mut self) {
         self.custom_ttls.clear();
-        #[cfg(feature = "std")]
-        {
-            self.insertion_times.clear();
-        }
+        self.insertion_times.clear();
     }
 
     /// Check if an entry has expired
-    #[cfg(feature = "std")]
     fn is_expired(&self, key: &K) -> bool {
         if let Some(insertion_time) = self.insertion_times.get(key) {
             let ttl = self.get_ttl(key);
@@ -88,7 +70,6 @@ where
     }
 
     /// Record insertion time for a key
-    #[cfg(feature = "std")]
     fn record_insertion_time(&mut self, key: &K) {
         self.insertion_times.insert(key.clone(), Instant::now());
     }
@@ -104,39 +85,35 @@ where
             return None;
         }
 
-        #[cfg(feature = "std")]
-        {
-            let now = Instant::now();
+        let now = Instant::now();
 
-            // Сначала ищем просроченные записи
-            let mut oldest_key = None;
-            let mut oldest_time = now;
+        // Сначала ищем просроченные записи
+        let mut oldest_key = None;
+        let mut oldest_time = now;
 
-            for &(key, _) in entries {
-                if let Some(insert_time) = self.insertion_times.get(key) {
-                    let ttl = self.custom_ttls.get(key).unwrap_or(&self.default_ttl);
+        for &(key, _) in entries {
+            if let Some(insert_time) = self.insertion_times.get(key) {
+                let ttl = self.custom_ttls.get(key).unwrap_or(&self.default_ttl);
 
-                    // Проверяем, истек ли срок действия
-                    if now.duration_since(*insert_time) >= *ttl {
-                        return Some(key.clone());
-                    }
-
-                    // Запоминаем самую старую запись для возможного использования позже
-                    if *insert_time < oldest_time {
-                        oldest_time = *insert_time;
-                        oldest_key = Some(key.clone());
-                    }
+                // Проверяем, истек ли срок действия
+                if now.duration_since(*insert_time) >= *ttl {
+                    return Some(key.clone());
                 }
-            }
 
-            // Если нашли хотя бы одну запись с временем вставки, возвращаем самую старую
-            if let Some(key) = oldest_key {
-                return Some(key);
+                // Запоминаем самую старую запись для возможного использования позже
+                if *insert_time < oldest_time {
+                    oldest_time = *insert_time;
+                    oldest_key = Some(key.clone());
+                }
             }
         }
 
-        // Если нет просроченных записей или не поддерживается std,
-        // возвращаем None (требуется внешнее решение о вытеснении)
+        // Если нашли хотя бы одну запись с временем вставки, возвращаем самую старую
+        if let Some(key) = oldest_key {
+            return Some(key);
+        }
+
+        // Если нет просроченных записей, возвращаем None
         None
     }
 }
@@ -151,21 +128,13 @@ where
     }
 
     fn record_insertion(&mut self, key: &K, _entry: &CacheEntry<V>) {
-        #[cfg(feature = "std")]
-        {
-            // Запоминаем время вставки
-            self.insertion_times.insert(key.clone(), Instant::now());
-        }
+        // Запоминаем время вставки
+        self.insertion_times.insert(key.clone(), Instant::now());
     }
 
     fn record_removal(&mut self, key: &K) {
-        #[cfg(feature = "std")]
-        {
-            // Удаляем информацию о времени вставки
-            self.insertion_times.remove(key);
-        }
-        #[cfg(not(feature = "std"))]
-        let _ = key;
+        // Удаляем информацию о времени вставки
+        self.insertion_times.remove(key);
     }
 
     fn as_victim_selector(&self) -> &dyn VictimSelector<K, V> {
@@ -178,7 +147,6 @@ where
 }
 
 #[cfg(test)]
-#[cfg(feature = "std")]
 mod tests {
     use std::thread;
 

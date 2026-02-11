@@ -8,11 +8,7 @@
 
 use core::fmt;
 
-#[cfg(feature = "std")]
 use std::time::Duration;
-
-#[cfg(not(feature = "std"))]
-use core::time::Duration;
 
 use crate::error::{MemoryError, MemoryResult};
 
@@ -737,7 +733,6 @@ impl Default for StatsConfig {
 
 impl MemoryConfig {
     /// Load configuration from environment variables
-    #[cfg(feature = "std")]
     pub fn from_env() -> MemoryResult<Self> {
         let mut config = Self::default();
 

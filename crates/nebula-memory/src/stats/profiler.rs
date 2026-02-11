@@ -4,21 +4,13 @@
 //! memory allocation and deallocation events, attributing them to their
 //! call sites to help identify memory hotspots and leaks.
 
-#[cfg(not(feature = "std"))]
-use alloc::string::String; // For fallback `AllocationSite` without backtrace
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
-#[cfg(feature = "std")]
 use std::collections::HashMap;
-#[cfg(feature = "std")]
 use std::sync::Arc;
-#[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 
-#[cfg(all(feature = "std", feature = "profiling"))]
-// Backtrace requires std AND profiling feature
+#[cfg(feature = "profiling")]
+// Backtrace requires profiling feature
 use backtrace::Backtrace;
-#[cfg(feature = "std")]
 use parking_lot::RwLock; // Prefer parking_lot for better performance
 
 use super::config::{TrackingConfig, TrackingLevel};
@@ -31,7 +23,7 @@ pub struct AllocationSite {
     pub file: String,
     pub line: u32,
     pub function: String,
-    #[cfg(all(feature = "std", feature = "profiling"))] // Stack trace only with std and profiling
+    #[cfg(feature = "profiling")] // Stack trace only with std and profiling
     pub stack_trace: Option<Vec<String>>,
 }
 
@@ -39,7 +31,7 @@ impl AllocationSite {
     /// Captures the current allocation site and optionally its stack trace.
     /// This is a simplified example; a real implementation might use
     /// `backtrace` or custom macros for more precise and efficient capture.
-    #[cfg(all(feature = "std", feature = "profiling"))] // Requires std and profiling feature
+    #[cfg(feature = "profiling")] // Requires std and profiling feature
     pub fn capture_current(config: &TrackingConfig) -> Self {
         let mut file = "unknown_file".to_string();
         let mut line = 0;
@@ -56,7 +48,7 @@ impl AllocationSite {
                 .skip(frames_to_skip)
                 .take(config.max_stack_depth)
                 .filter_map(|frame| {
-                    frame.symbols().first().and_then(|symbol| {
+                    frame.symbols().first().map(|symbol| {
                         let symbol_name = symbol
                             .name()
                             .and_then(|n| n.as_str())
@@ -66,13 +58,13 @@ impl AllocationSite {
                             (Some(f), None) => format!(" ({})", f.display()),
                             _ => String::new(),
                         };
-                        Some(format!("{}{}", symbol_name, file_line))
+                        format!("{}{}", symbol_name, file_line)
                     })
                 })
                 .collect();
 
-            if let Some(frame) = bt.frames().get(frames_to_skip) {
-                if let Some(symbol) = frame.symbols().first() {
+            if let Some(frame) = bt.frames().get(frames_to_skip)
+                && let Some(symbol) = frame.symbols().first() {
                     file = symbol
                         .filename()
                         .and_then(|p| p.to_str())
@@ -85,7 +77,6 @@ impl AllocationSite {
                         .unwrap_or("unknown_function")
                         .to_string();
                 }
-            }
             stack_trace = Some(filtered_frames);
         }
 
@@ -100,7 +91,7 @@ impl AllocationSite {
     /// A simplified constructor for testing or when `Backtrace` is not desired.
     /// This version handles the `stack_trace` field for compilation without
     /// `profiling` feature.
-    #[cfg(not(all(feature = "std", feature = "profiling")))] // Used when std or profiling is NOT enabled
+    #[cfg(not(feature = "profiling"))] // Used when std or profiling is NOT enabled
     pub fn new_manual(file: &str, line: u32, function: &str) -> Self {
         AllocationSite {
             file: file.to_string(),
@@ -111,7 +102,7 @@ impl AllocationSite {
     /// A simplified constructor for testing or when `Backtrace` is not desired.
     /// This version handles the `stack_trace` field for compilation with
     /// `profiling` feature.
-    #[cfg(all(feature = "std", feature = "profiling"))] // Used when std AND profiling are enabled
+    #[cfg(feature = "profiling")] // Used when std AND profiling are enabled
     pub fn new_manual(file: &str, line: u32, function: &str) -> Self {
         AllocationSite {
             file: file.to_string(),
@@ -125,7 +116,6 @@ impl AllocationSite {
 
 /// Aggregated statistics for a specific allocation site.
 #[derive(Debug, Clone, Default)]
-#[cfg(feature = "std")] // ProfileEntry relies on Duration and HashMap (std)
 pub struct ProfileEntry {
     pub total_allocations: u64,
     pub total_allocated_bytes: usize,
@@ -144,7 +134,6 @@ pub struct ProfileEntry {
     pub max_allocation_latency_nanos: u128,
 }
 
-#[cfg(feature = "std")]
 impl ProfileEntry {
     pub fn new() -> Self {
         Self {
@@ -210,7 +199,6 @@ impl ProfileEntry {
 
 /// A snapshot of the current profiling data.
 #[derive(Debug, Clone)]
-#[cfg(feature = "std")]
 pub struct ProfileSnapshot {
     /// Map of allocation sites to their aggregated profile entries.
     pub entries: HashMap<AllocationSite, ProfileEntry>,
@@ -221,7 +209,6 @@ pub struct ProfileSnapshot {
 }
 
 /// The main memory profiler.
-#[cfg(feature = "std")]
 pub struct MemoryProfiler {
     tracking_config: TrackingConfig,
     // Using `Arc<RwLock<...>>` to allow multiple parts of the memory system
@@ -229,11 +216,9 @@ pub struct MemoryProfiler {
     profiling_data: Arc<RwLock<HashMap<AllocationSite, ProfileEntry>>>,
     total_profiler_sampled: u64, /* Keep track of how many allocations were considered for
                                   * profiling */
-    #[cfg(feature = "std")]
     start_time: Instant, // Tracks when profiling began or was last reset
 }
 
-#[cfg(feature = "std")]
 impl MemoryProfiler {
     /// Creates a new `MemoryProfiler` instance.
     pub fn new(config: TrackingConfig) -> Self {
@@ -287,15 +272,15 @@ impl MemoryProfiler {
             if self.tracking_config.profiler_sampling_rate >= 1.0
                 || (self.tracking_config.profiler_sampling_rate > 0.0 && should_sample)
             {
-                #[cfg(all(feature = "std", feature = "profiling"))]
+                #[cfg(feature = "profiling")]
                 let site = self.capture_allocation_site();
 
-                #[cfg(not(all(feature = "std", feature = "profiling")))]
+                #[cfg(not(feature = "profiling"))]
                 let site = AllocationSite::new_manual("unknown", 0, "unknown_function");
 
                 let mut data = self.profiling_data.write();
                 data.entry(site)
-                    .or_insert_with(ProfileEntry::new)
+                    .or_default()
                     .record_allocation(size, latency);
 
                 self.total_profiler_sampled += 1;
@@ -311,7 +296,7 @@ impl MemoryProfiler {
     }
 
     /// Captures allocation site with stack trace based on config
-    #[cfg(all(feature = "std", feature = "profiling"))]
+    #[cfg(feature = "profiling")]
     fn capture_allocation_site(&self) -> AllocationSite {
         let mut file = "unknown_file".to_string();
         let mut line = 0;
@@ -349,8 +334,8 @@ impl MemoryProfiler {
                 .collect();
 
             // Get file and line info from the first frame
-            if let Some(frame) = bt.frames().get(frames_to_skip) {
-                if let Some(symbol) = frame.symbols().first() {
+            if let Some(frame) = bt.frames().get(frames_to_skip)
+                && let Some(symbol) = frame.symbols().first() {
                     if let Some(filename) = symbol.filename() {
                         file = filename.display().to_string();
                     }
@@ -359,7 +344,6 @@ impl MemoryProfiler {
                         function = name.to_string();
                     }
                 }
-            }
 
             stack_trace = Some(filtered_frames);
         }
@@ -456,7 +440,7 @@ impl MemoryProfiler {
                 count: entry.total_allocations,
                 total_size: entry.total_allocated_bytes as u64,
                 average_size: entry.avg_allocation_size(),
-                #[cfg(all(feature = "std", feature = "profiling"))]
+                #[cfg(feature = "profiling")]
                 stack_trace: site.stack_trace.clone(),
             })
             .collect();
@@ -515,7 +499,7 @@ impl MemoryProfiler {
             },
         ];
 
-        for (site, entry) in &snapshot.entries {
+        for entry in snapshot.entries.values() {
             // For histogram, we consider each allocation event, not just the site total
             // This is a simplification; ideally, you'd iterate individual recorded
             // allocations if `detailed_tracking` implies storing individual
@@ -565,7 +549,7 @@ impl MemoryProfiler {
                 count: 1,                        /* Represents one 'largest' observed allocation,
                                                   * not total count at site */
                 location: format!("{}:{}:{}", site.file, site.line, site.function),
-                #[cfg(all(feature = "std", feature = "profiling"))]
+                #[cfg(feature = "profiling")]
                 stack_trace: site.stack_trace.clone(),
             })
             .collect();
@@ -578,7 +562,6 @@ impl MemoryProfiler {
 
 /// Profiling report generated by `MemoryProfiler`.
 #[derive(Debug, Clone)]
-#[cfg(feature = "std")]
 pub struct ProfileReport {
     pub duration: Option<Duration>,
     pub total_sampled: u64, /* Total allocations processed by the profiler logic (after size
@@ -592,19 +575,17 @@ pub struct ProfileReport {
 /// Represents an allocation "hot spot" - a code location
 /// responsible for a significant amount of memory allocation.
 #[derive(Debug, Clone)]
-#[cfg(feature = "std")]
 pub struct HotSpot {
     pub location: String, // e.g., "file.rs:line:function_name"
     pub count: u64,       // Total allocations from this site
     pub total_size: u64,  // Total bytes allocated from this site
     pub average_size: f64,
-    #[cfg(all(feature = "std", feature = "profiling"))]
+    #[cfg(feature = "profiling")]
     pub stack_trace: Option<Vec<String>>,
 }
 
 /// Represents a bucket in the memory allocation size histogram.
 #[derive(Debug, Clone)]
-#[cfg(feature = "std")]
 pub struct SizeBucket {
     pub min_size: usize,
     pub max_size: usize,
@@ -614,13 +595,12 @@ pub struct SizeBucket {
 
 /// Information about a specific allocation (e.g., one of the largest).
 #[derive(Debug, Clone)]
-#[cfg(feature = "std")]
 pub struct AllocationInfo {
     pub size: usize, // Size of this specific allocation
     pub count: u64,  /* This could be 1 for individual, or sum if aggregated by specific
                       * criteria */
     pub location: String, // Location where this allocation was made
-    #[cfg(all(feature = "std", feature = "profiling"))]
+    #[cfg(feature = "profiling")]
     pub stack_trace: Option<Vec<String>>,
 }
 
@@ -645,10 +625,9 @@ mod tests {
         TrackingConfig {
             detailed_tracking,
             level,
-            max_history: 0, // Не важно для тестов профайлера
-            #[cfg(feature = "std")]
-            sampling_interval: Duration::ZERO, // Не важно для тестов профайлера
-            tracked_metrics: Vec::new(), // Не важно для тестов профайлера
+            max_history: 0,                       // Не важно для тестов профайлера
+            sampling_interval: Duration::ZERO,    // Не важно для тестов профайлера
+            tracked_metrics: Vec::new(),          // Не важно для тестов профайлера
             sampling: SamplingConfig::disabled(), // Не важно для тестов профайлера
             collect_stack_traces,
             profiler_sampling_rate,
@@ -662,10 +641,9 @@ mod tests {
         TrackingConfig {
             detailed_tracking,
             level,
-            max_history: 0, // Не важно для тестов профайлера
-            #[cfg(feature = "std")]
-            sampling_interval: Duration::ZERO, // Не важно для тестов профайлера
-            tracked_metrics: Vec::new(), // Не важно для тестов профайлера
+            max_history: 0,                       // Не важно для тестов профайлера
+            sampling_interval: Duration::ZERO,    // Не важно для тестов профайлера
+            tracked_metrics: Vec::new(),          // Не важно для тестов профайлера
             sampling: SamplingConfig::disabled(), // Не важно для тестов профайлера
         }
     }
@@ -939,7 +917,6 @@ mod tests {
                 peak_allocated: 1950,
                 total_allocated_bytes: 1950,
                 total_deallocated_bytes: 0,
-                #[cfg(feature = "std")]
                 total_allocation_time_nanos: 0,
                 operations: 0,
                 hits: 0,
@@ -948,9 +925,7 @@ mod tests {
                 allocation_failures: 0,
                 oom_errors: 0,
                 hit_rate: 0.0,
-                #[cfg(feature = "std")]
                 elapsed_secs: 1.0,
-                #[cfg(feature = "std")]
                 timestamp: std::time::Instant::now(),
             };
 
@@ -971,7 +946,7 @@ mod tests {
             assert_eq!(hotspot_a.count, 3);
             assert_eq!(hotspot_a.total_size, 100 + 200 + 150); // 450 байт
             assert!((hotspot_a.average_size - (450.0 / 3.0)).abs() < 0.01);
-            #[cfg(all(feature = "std", feature = "profiling"))]
+            #[cfg(feature = "profiling")]
             assert!(hotspot_a.stack_trace.is_some());
 
             // Находим горячее место func_b
@@ -983,7 +958,7 @@ mod tests {
             assert_eq!(hotspot_b.count, 2);
             assert_eq!(hotspot_b.total_size, 500 + 1000); // 1500 байт
             assert!((hotspot_b.average_size - (1500.0 / 2.0)).abs() < 0.01);
-            #[cfg(all(feature = "std", feature = "profiling"))]
+            #[cfg(feature = "profiling")]
             assert!(hotspot_b.stack_trace.is_some());
 
             // Проверяем самые большие аллокации (должны быть отсортированы по размеру по

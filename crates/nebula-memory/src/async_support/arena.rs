@@ -114,6 +114,7 @@ pub struct AsyncArena {
     max_concurrent: usize,
 }
 
+#[allow(clippy::arc_with_non_send_sync)]
 impl AsyncArena {
     /// Create new async arena with default configuration
     pub fn new() -> Self {
@@ -133,8 +134,10 @@ impl AsyncArena {
 
     /// Create new async arena with capacity and concurrency limits
     pub fn with_capacity(capacity: usize, max_concurrent: usize) -> Self {
-        let mut config = ArenaConfig::default();
-        config.initial_size = capacity;
+        let config = ArenaConfig {
+            initial_size: capacity,
+            ..Default::default()
+        };
 
         Self {
             arena: Arc::new(RwLock::new(Arena::new(config))),

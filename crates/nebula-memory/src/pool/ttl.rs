@@ -15,13 +15,9 @@
 //! - Send implementation: Safe if T: Send (pool pointer not shared)
 //! - Pool pointer remains valid (lifetime tied to `get()` borrow)
 
-#[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
-#[cfg(feature = "std")]
 use std::collections::VecDeque;
-#[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "stats")]
@@ -43,7 +39,6 @@ use crate::error::{MemoryError, MemoryResult};
 /// // Pool with 30-second TTL
 /// let mut pool = TtlPool::new(100, Duration::from_secs(30), || Vec::<u8>::with_capacity(1024));
 /// ```
-#[cfg(feature = "std")]
 pub struct TtlPool<T: Poolable> {
     objects: VecDeque<TtlWrapper<T>>,
     factory: Box<dyn Fn() -> T>,
@@ -56,13 +51,11 @@ pub struct TtlPool<T: Poolable> {
     stats: PoolStats,
 }
 
-#[cfg(feature = "std")]
 struct TtlWrapper<T> {
     value: T,
     created_at: Instant,
 }
 
-#[cfg(feature = "std")]
 impl<T: Poolable> TtlPool<T> {
     /// Create new TTL pool
     pub fn new<F>(capacity: usize, ttl: Duration, factory: F) -> Self
@@ -274,13 +267,11 @@ impl<T: Poolable> TtlPool<T> {
 }
 
 /// RAII wrapper for TTL pooled values
-#[cfg(feature = "std")]
 pub struct TtlPooledValue<T: Poolable> {
     value: ManuallyDrop<T>,
     pool: *mut TtlPool<T>,
 }
 
-#[cfg(feature = "std")]
 impl<T: Poolable> TtlPooledValue<T> {
     /// Detach value from pool
     pub fn detach(mut self) -> T {
@@ -294,7 +285,6 @@ impl<T: Poolable> TtlPooledValue<T> {
     }
 }
 
-#[cfg(feature = "std")]
 impl<T: Poolable> Deref for TtlPooledValue<T> {
     type Target = T;
 
@@ -303,14 +293,12 @@ impl<T: Poolable> Deref for TtlPooledValue<T> {
     }
 }
 
-#[cfg(feature = "std")]
 impl<T: Poolable> DerefMut for TtlPooledValue<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
     }
 }
 
-#[cfg(feature = "std")]
 impl<T: Poolable> Drop for TtlPooledValue<T> {
     fn drop(&mut self) {
         // SAFETY: Returning object to TTL pool.
@@ -331,23 +319,9 @@ impl<T: Poolable> Drop for TtlPooledValue<T> {
 // - T: Send ensures value can be safely sent
 // - Pool pointer used only for returning (no concurrent access)
 // - Drop on destination thread safely returns object to pool
-#[cfg(feature = "std")]
 unsafe impl<T: Poolable + Send> Send for TtlPooledValue<T> {}
 
-// No-std stub
-#[cfg(not(feature = "std"))]
-pub struct TtlPool<T: Poolable> {
-    _phantom: core::marker::PhantomData<T>,
-}
-
-#[cfg(not(feature = "std"))]
-impl<T: Poolable> TtlPool<T> {
-    pub fn new<F>(_capacity: usize, _ttl: Duration, _factory: F) -> Self {
-        panic!("TTL pool requires std feature");
-    }
-}
-
-#[cfg(all(test, feature = "std"))]
+#[cfg(test)]
 mod tests {
     use std::thread;
 

@@ -5,7 +5,7 @@
 
 // Core allocator types
 mod manager;
-#[cfg(all(feature = "std", feature = "monitoring"))]
+#[cfg(feature = "monitoring")]
 mod monitored;
 mod stats;
 mod system;
@@ -17,10 +17,6 @@ pub mod bump;
 pub mod pool;
 pub mod stack;
 
-// Optional modules
-#[cfg(feature = "compression")]
-pub mod compressed;
-
 // Re-exports for convenience
 pub use bump::BumpAllocator;
 #[cfg(feature = "stats")]
@@ -29,10 +25,9 @@ pub use pool::{PoolAllocator, PoolBox, PoolConfig};
 
 pub use crate::error::{AllocError, AllocResult};
 pub use manager::{AllocatorId, AllocatorManager, GlobalAllocatorManager};
-#[cfg(all(feature = "std", feature = "monitoring"))]
+#[cfg(feature = "monitoring")]
 pub use monitored::{MonitoredAllocator, MonitoredConfig};
 pub use stack::{StackAllocator, StackConfig, StackFrame, StackMarker};
-#[cfg(feature = "std")]
 pub use stats::BatchedStats;
 pub use stats::{AllocatorStats, AtomicAllocatorStats, OptionalStats, StatisticsProvider};
 pub use system::SystemAllocator;
@@ -42,8 +37,6 @@ pub use traits::{
     TypedAllocator,
 };
 
-#[cfg(feature = "compression")]
-pub use compressed::{CompressedBump, CompressedPool};
 #[cfg(test)]
 mod tests {
     use super::*;

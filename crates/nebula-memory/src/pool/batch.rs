@@ -14,9 +14,6 @@
 //! - Send implementation: Safe if T: Send (allocator pointer not shared)
 //! - Allocator pointer valid (created from &mut in `get_batch`)
 
-#[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, vec::Vec};
-
 #[cfg(feature = "stats")]
 use super::PoolStats;
 use super::{ObjectPool, PoolConfig, Poolable};
@@ -107,7 +104,7 @@ impl<T: Poolable> BatchAllocator<T> {
         let mut objects = Vec::with_capacity(count);
 
         #[cfg(feature = "stats")]
-        let mut created = 0;
+        let _created = 0;
 
         // Try to get as many as possible from pool
         for _ in 0..count {
@@ -333,10 +330,7 @@ impl<T: Poolable> Drop for Batch<T> {
 
 impl<T: Poolable> IntoIterator for Batch<T> {
     type Item = T;
-    #[cfg(feature = "std")]
     type IntoIter = std::vec::IntoIter<T>;
-    #[cfg(not(feature = "std"))]
-    type IntoIter = alloc::vec::IntoIter<T>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.into_vec().into_iter()

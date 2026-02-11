@@ -4,24 +4,12 @@
 //! with advanced features like frequency aging, adaptive frequency tracking, and
 //! efficient data structures for large-scale caching scenarios.
 
-#![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::excessive_nesting)]
 
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(feature = "std")]
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     marker::PhantomData,
     time::{Duration, Instant},
-};
-
-#[cfg(not(feature = "std"))]
-use {
-    alloc::{collections::BTreeMap, vec::Vec},
-    core::{hash::Hash, marker::PhantomData, time::Duration},
-    hashbrown::HashMap,
 };
 
 use crate::cache::{CacheEntry, CacheKey};
@@ -122,7 +110,6 @@ struct FrequencyDistribution {
 #[derive(Debug, Clone)]
 struct AccessRecord {
     /// Timestamp of access
-    #[cfg(feature = "std")]
     timestamp: Instant,
     /// Access count
     count: u64,
@@ -163,14 +150,12 @@ where
     /// Access order for tie-breaking (LRU)
     access_order: VecDeque<K>,
     /// Access history for time-based modes
-    #[cfg(feature = "std")]
     access_history: HashMap<K, VecDeque<AccessRecord>>,
     /// Size information for size-based tie-breaking
     key_sizes: HashMap<K, usize>,
     /// Frequency histogram for analysis
     frequency_histogram: HashMap<u64, usize>,
     /// Last aging timestamp
-    #[cfg(feature = "std")]
     last_aging: Instant,
     /// Total access count for adaptive algorithms
     total_accesses: u64,
@@ -201,11 +186,9 @@ where
             frequency_buckets: BTreeMap::new(),
             min_frequency: 1,
             access_order: VecDeque::new(),
-            #[cfg(feature = "std")]
             access_history: HashMap::new(),
             key_sizes: HashMap::new(),
             frequency_histogram: HashMap::new(),
-            #[cfg(feature = "std")]
             last_aging: Instant::now(),
             total_accesses: 0,
             access_pattern: AccessPattern::default(),
@@ -292,7 +275,6 @@ where
         }
 
         // Perform aging if needed
-        #[cfg(feature = "std")]
         if self.config.enable_aging && self.should_perform_aging() {
             self.perform_aging();
         }
@@ -302,7 +284,7 @@ where
     }
 
     /// Record insertion of a new key
-    pub fn record_insertion(&mut self, key: &K, entry: &CacheEntry<V>, size_hint: Option<usize>) {
+    pub fn record_insertion(&mut self, key: &K, _entry: &CacheEntry<V>, size_hint: Option<usize>) {
         // Initialize frequency
         self.frequencies.insert(key.clone(), 1);
 
@@ -321,7 +303,6 @@ where
         self.access_order.push_back(key.clone());
 
         // Initialize access history for time-based modes
-        #[cfg(feature = "std")]
         if matches!(
             self.config.frequency_mode,
             FrequencyMode::SlidingWindow | FrequencyMode::Adaptive
@@ -345,7 +326,6 @@ where
         }
 
         // Remove from access history
-        #[cfg(feature = "std")]
         self.access_history.remove(key);
 
         // Update minimum frequency if necessary
@@ -437,11 +417,8 @@ where
         self.min_frequency = 1;
         self.total_accesses = 0;
 
-        #[cfg(feature = "std")]
-        {
-            self.access_history.clear();
-            self.last_aging = Instant::now();
-        }
+        self.access_history.clear();
+        self.last_aging = Instant::now();
     }
 
     /// Update access order for LRU tie-breaking
@@ -496,7 +473,6 @@ where
     }
 
     /// Record windowed access (sliding window mode)
-    #[cfg(feature = "std")]
     fn record_windowed_access(&mut self, key: &K) {
         let now = Instant::now();
         let cutoff = now.checked_sub(self.config.time_window).unwrap();
@@ -566,7 +542,7 @@ where
     /// Simple hash function for probabilistic operations
     fn simple_hash(&self, key: &K) -> u64
     where
-        K: core::hash::Hash,
+        K: std::hash::Hash,
     {
         use std::collections::hash_map::RandomState;
         use std::hash::BuildHasher;
@@ -617,19 +593,17 @@ where
     }
 
     /// Update bucket links for efficient traversal
-    fn update_bucket_links(&mut self, frequency: u64) {
+    fn update_bucket_links(&mut self, _frequency: u64) {
         // This is a simplified implementation
         // In a full implementation, you'd maintain a proper doubly-linked structure
     }
 
     /// Check if aging should be performed
-    #[cfg(feature = "std")]
     fn should_perform_aging(&self) -> bool {
         self.last_aging.elapsed() >= self.config.aging_interval
     }
 
     /// Perform frequency aging
-    #[cfg(feature = "std")]
     fn perform_aging(&mut self) {
         self.last_aging = Instant::now();
 

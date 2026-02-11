@@ -1,7 +1,6 @@
 //! Statistics tracking for object pools
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-#[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 
 /// Statistics for pool operations
@@ -32,12 +31,9 @@ pub struct PoolStats {
     #[cfg(feature = "adaptive")]
     pub(crate) memory_saved: AtomicUsize,
 
-    // Timing (only with std)
-    #[cfg(feature = "std")]
+    // Timing
     pub(crate) created_at: Instant,
-    #[cfg(feature = "std")]
     pub(crate) last_get: AtomicU64, // Stored as micros since creation
-    #[cfg(feature = "std")]
     pub(crate) last_return: AtomicU64,
 }
 
@@ -55,11 +51,8 @@ impl Default for PoolStats {
             total_created: AtomicUsize::new(0),
             memory_usage: AtomicUsize::new(0),
             peak_memory: AtomicUsize::new(0),
-            #[cfg(feature = "std")]
             created_at: Instant::now(),
-            #[cfg(feature = "std")]
             last_get: AtomicU64::new(0),
-            #[cfg(feature = "std")]
             last_return: AtomicU64::new(0),
             #[cfg(feature = "adaptive")]
             compression_attempts: AtomicU64::new(0),
@@ -76,11 +69,8 @@ impl PoolStats {
     pub(crate) fn record_get(&self) {
         self.gets.fetch_add(1, Ordering::Relaxed);
 
-        #[cfg(feature = "std")]
-        {
-            let micros = self.created_at.elapsed().as_micros() as u64;
-            self.last_get.store(micros, Ordering::Relaxed);
-        }
+        let micros = self.created_at.elapsed().as_micros() as u64;
+        self.last_get.store(micros, Ordering::Relaxed);
     }
 
     /// Record a cache hit
@@ -106,11 +96,8 @@ impl PoolStats {
     pub(crate) fn record_return(&self) {
         self.returns.fetch_add(1, Ordering::Relaxed);
 
-        #[cfg(feature = "std")]
-        {
-            let micros = self.created_at.elapsed().as_micros() as u64;
-            self.last_return.store(micros, Ordering::Relaxed);
-        }
+        let micros = self.created_at.elapsed().as_micros() as u64;
+        self.last_return.store(micros, Ordering::Relaxed);
     }
 
     /// Record object destruction
@@ -239,13 +226,11 @@ impl PoolStats {
     }
 
     /// Get uptime duration
-    #[cfg(feature = "std")]
     pub fn uptime(&self) -> Duration {
         self.created_at.elapsed()
     }
 
     /// Get time since last get
-    #[cfg(feature = "std")]
     pub fn time_since_last_get(&self) -> Option<Duration> {
         let last_micros = self.last_get.load(Ordering::Relaxed);
         if last_micros == 0 {
@@ -294,7 +279,6 @@ pub struct PoolStatsSnapshot {
     pub compression_success_rate: f64,
     #[cfg(feature = "adaptive")]
     pub memory_saved: usize,
-    #[cfg(feature = "std")]
     pub uptime: Duration,
 }
 
@@ -316,7 +300,6 @@ impl From<&PoolStats> for PoolStatsSnapshot {
             compression_success_rate: stats.compression_success_rate(),
             #[cfg(feature = "adaptive")]
             memory_saved: stats.memory_saved.load(Ordering::Relaxed),
-            #[cfg(feature = "std")]
             uptime: stats.uptime(),
         }
     }
@@ -345,7 +328,6 @@ impl core::fmt::Display for PoolStatsSnapshot {
             self.memory_usage, self.peak_memory
         )?;
 
-        #[cfg(feature = "std")]
         writeln!(f, "  Uptime: {:?}", self.uptime)?;
 
         #[cfg(feature = "adaptive")]

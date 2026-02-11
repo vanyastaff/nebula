@@ -4,22 +4,9 @@
 //! in the order they were inserted. This is useful for scenarios where
 //! temporal freshness matters more than access frequency.
 
-#![cfg_attr(not(feature = "std"), no_std)]
-
-#[cfg(not(feature = "std"))]
-extern crate alloc;
-
-#[cfg(feature = "std")]
 use std::{
     collections::{HashMap, VecDeque},
     marker::PhantomData,
-};
-
-#[cfg(not(feature = "std"))]
-use {
-    alloc::{boxed::Box, collections::VecDeque, vec::Vec},
-    core::{hash::Hash, marker::PhantomData},
-    hashbrown::HashMap,
 };
 
 use crate::cache::compute::{CacheEntry, CacheKey};

@@ -15,16 +15,9 @@
 //! - Send implementation: Safe if T: Send (pool pointer not shared)
 //! - Pool pointer remains valid (Arc keeps pool alive)
 
-#[cfg(not(feature = "std"))]
-use alloc::{
-    boxed::Box,
-    sync::{Arc, Weak},
-    vec::Vec,
-};
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
 use parking_lot::Mutex;
-#[cfg(feature = "std")]
 use std::sync::{Arc, Weak};
 
 #[cfg(feature = "stats")]
@@ -100,9 +93,9 @@ impl<T: Poolable> HierarchicalPool<T> {
         // Get factory from parent
         let child = Arc::new(Mutex::new(Self {
             local: ObjectPool::new(capacity, || {
-                // This is a placeholder - actual implementation would need
-                // to share the factory function properly
-                panic!("Child pool factory not implemented in this example")
+                unreachable!(
+                    "Child pool factory should not be called directly; objects are borrowed from parent pool"
+                )
             }),
             parent: Some(parent_clone),
             children: Vec::new(),
