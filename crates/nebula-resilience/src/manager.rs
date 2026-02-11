@@ -30,6 +30,8 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 
+use tracing::{debug, warn};
+
 use crate::{
     ResilienceError, ResilienceResult,
     core::categories::{Category, ServiceCategory},
@@ -509,6 +511,12 @@ impl ResilienceManager {
             None
         };
 
+        debug!(
+            service = %context.service_name,
+            operation = %context.operation_name,
+            "Starting resilient execution"
+        );
+
         // Execute with retry if configured
         let result = if let Some(ref retry_config) = policy.retry {
             self.execute_with_retry(context, operation, retry_config, policy.timeout)
@@ -524,6 +532,23 @@ impl ResilienceManager {
                 Ok(_) => breaker.record_success().await,
                 Err(_e) => breaker.record_failure().await,
             }
+        }
+
+        let elapsed = context.elapsed();
+        match &result {
+            Ok(_) => debug!(
+                service = %context.service_name,
+                operation = %context.operation_name,
+                elapsed_ms = elapsed.as_millis() as u64,
+                "Resilient execution succeeded"
+            ),
+            Err(e) => warn!(
+                service = %context.service_name,
+                operation = %context.operation_name,
+                elapsed_ms = elapsed.as_millis() as u64,
+                error = %e,
+                "Resilient execution failed"
+            ),
         }
 
         result
@@ -555,7 +580,15 @@ impl ResilienceManager {
                     break;
                 }
                 Err(e) if Self::should_retry(&e) => {
+                    debug!(
+                        service = %context.service_name,
+                        operation = %context.operation_name,
+                        attempt = context.attempt,
+                        error = %e,
+                        "Retrying after transient failure"
+                    );
                     last_error = Some(e);
+                    context.next_attempt();
 
                     // Calculate delay for next attempt
                     if let Some(delay) = retry_config.delay_for_attempt(attempt) {

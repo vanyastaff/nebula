@@ -40,7 +40,7 @@ pub use hooks::{
 };
 
 // Metrics
-pub use hooks::{HookAdapter, Metric, ObservabilityHookExt, metrics};
+pub use hooks::{Metric, metrics};
 
 // Pattern spans
 pub use spans::{PatternCategory, PatternSpanGuard};

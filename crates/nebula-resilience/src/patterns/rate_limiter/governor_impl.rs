@@ -65,6 +65,18 @@ impl GovernorRateLimiter {
         }
     }
 
+    /// Returns the configured rate per second.
+    #[must_use]
+    pub const fn rate_per_second(&self) -> f64 {
+        self.rate_per_second
+    }
+
+    /// Returns the configured burst capacity.
+    #[must_use]
+    pub const fn burst_capacity(&self) -> u32 {
+        self.burst_capacity
+    }
+
     /// Create with custom quota for advanced use cases
     #[must_use]
     pub fn with_quota(quota: Quota) -> Self {

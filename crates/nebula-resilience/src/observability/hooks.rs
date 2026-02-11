@@ -306,40 +306,6 @@ pub mod metrics {
 }
 
 // =============================================================================
-// TYPED HOOK TRAIT
-// =============================================================================
-
-/// observability hook for specific event categories.
-pub trait ObservabilityHookExt<C: EventCategory>: Send + Sync {
-    /// Handle a typed event.
-    fn on_typed_event(&self, event: &Event<C>);
-}
-
-/// Adapter to convert `ObservabilityHookExt` to `ObservabilityHook`.
-///
-/// This adapter bridges the gap between typed and untyped hook interfaces,
-/// allowing category-specific hooks to be used in generic contexts.
-pub struct HookAdapter<C: EventCategory, H: ObservabilityHookExt<C>> {
-    /// The wrapped hook implementation
-    ///
-    /// Reserved for future implementation where the adapter will delegate
-    /// to the typed hook after event deserialization and type checking.
-    hook: H,
-    /// Phantom data to track the event category at compile time
-    _category: PhantomData<C>,
-}
-
-impl<C: EventCategory, H: ObservabilityHookExt<C>> HookAdapter<C, H> {
-    /// Create a new adapter.
-    pub const fn new(hook: H) -> Self {
-        Self {
-            hook,
-            _category: PhantomData,
-        }
-    }
-}
-
-// =============================================================================
 // ORIGINAL IMPLEMENTATION (with enhancements)
 // =============================================================================
 
