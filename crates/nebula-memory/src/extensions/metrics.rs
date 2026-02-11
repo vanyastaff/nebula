@@ -415,19 +415,19 @@ pub fn create_debug_metrics_reporter() -> impl MetricsReporter {
 pub fn global_metrics() -> Option<Arc<MetricsExtension>> {
     use crate::extensions::GlobalExtensions;
 
-    if let Some(ext) = GlobalExtensions::get("metrics") {
-        if let Some(metrics_ext) = ext.as_any().downcast_ref::<MetricsExtension>() {
-            // Создаем новую обертку для репортера с использованием Arc
-            let reporter: Arc<dyn MetricsReporter + 'static> = Arc::new(NoopMetricsReporter);
+    if let Some(ext) = GlobalExtensions::get("metrics")
+        && let Some(metrics_ext) = ext.as_any().downcast_ref::<MetricsExtension>()
+    {
+        // Создаем новую обертку для репортера с использованием Arc
+        let reporter: Arc<dyn MetricsReporter + 'static> = Arc::new(NoopMetricsReporter);
 
-            // Создаем новый экземпляр с новым репортером, который делегирует вызовы
-            let reporter_wrapper = DelegatingReporter { inner: reporter };
+        // Создаем новый экземпляр с новым репортером, который делегирует вызовы
+        let reporter_wrapper = DelegatingReporter { inner: reporter };
 
-            return Some(Arc::new(MetricsExtension {
-                reporter: Box::new(reporter_wrapper),
-                metrics: metrics_ext.metrics.clone(),
-            }));
-        }
+        return Some(Arc::new(MetricsExtension {
+            reporter: Box::new(reporter_wrapper),
+            metrics: metrics_ext.metrics.clone(),
+        }));
     }
     None
 }

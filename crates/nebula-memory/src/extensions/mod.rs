@@ -83,10 +83,9 @@ impl ExtensionRegistry {
 
         // Check for duplicate extension name
         if self.extensions.read().contains_key(&name) {
-            return Err(MemoryError::InvalidOperation(format!(
-                "Extension with name '{}' is already registered",
-                name
-            )));
+            return Err(MemoryError::InvalidOperation {
+                reason: format!("Extension with name '{}' is already registered", name),
+            });
         }
 
         // Call extension's registration hook
@@ -126,10 +125,9 @@ impl ExtensionRegistry {
 
             Ok(())
         } else {
-            Err(MemoryError::NotFound(format!(
-                "Extension with name '{}' not found",
-                name
-            )))
+            Err(MemoryError::NotFound {
+                reason: format!("Extension with name '{}' not found", name),
+            })
         }
     }
 
@@ -216,27 +214,12 @@ pub struct GlobalExtensions;
 
 impl GlobalExtensions {
     fn registry() -> &'static ExtensionRegistry {
-        // Use a static variable to store the global registry
-        use std::sync::Once;
-        static mut REGISTRY: Option<ExtensionRegistry> = None;
-        static INIT: Once = Once::new();
+        // Use OnceLock for thread-safe lazy initialization (Rust 2024)
+        use std::sync::OnceLock;
+        static REGISTRY: OnceLock<ExtensionRegistry> = OnceLock::new();
 
-        // SAFETY: Singleton pattern using Once for thread-safe initialization.
-        // - call_once guarantees REGISTRY initialized exactly once
-        // - No races: call_once blocks other threads until initialization completes
-        // - After initialization, REGISTRY is only read (never written)
-        // - unreachable!() branch never executes (call_once guarantees initialization)
-        unsafe {
-            INIT.call_once(|| {
-                REGISTRY = Some(ExtensionRegistry::new());
-            });
-
-            // Access the static variable
-            match &REGISTRY {
-                Some(registry) => registry,
-                None => unreachable!("REGISTRY should be initialized via INIT.call_once"),
-            }
-        }
+        // Initialize on first access
+        REGISTRY.get_or_init(ExtensionRegistry::new)
     }
 
     /// Register a global extension

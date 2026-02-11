@@ -219,7 +219,7 @@ mod tests {
         let key1 = "key1".to_string();
         let key2 = "key2".to_string();
         let key3 = "key3".to_string();
-        let entries: Vec<EvictionEntry<String, i32>> =
+        let entries: Vec<EvictionEntry<'_, String, i32>> =
             vec![(&key1, &entry), (&key2, &entry), (&key3, &entry)];
 
         // Manually track insertion order
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn test_empty_selection() {
         let policy = FifoPolicy::<String, i32>::new();
-        let entries: Vec<EvictionEntry<String, i32>> = vec![];
+        let entries: Vec<EvictionEntry<'_, String, i32>> = vec![];
 
         let victim = policy.as_victim_selector().select_victim(&entries);
         assert!(victim.is_none());

@@ -754,7 +754,6 @@ pub struct PartitionedEfficiencyReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::config::EvictionPolicy;
 
     #[test]
     fn test_basic_partitioned_caching() {

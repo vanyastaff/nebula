@@ -67,6 +67,9 @@ pub mod budget;
 #[cfg_attr(docsrs, doc(cfg(feature = "cache")))]
 pub mod cache;
 pub mod core;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod extensions;
 #[cfg(feature = "monitoring")]
 #[cfg_attr(docsrs, doc(cfg(feature = "monitoring")))]
 pub mod monitoring;

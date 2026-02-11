@@ -220,12 +220,12 @@ pub fn create_console_logger() -> impl MemoryLogger {
 
             if !event.data.is_empty() {
                 message.push_str(" {");
-                for (i, (key, value)) in event.data.iter().enumerate() {
-                    if i > 0 {
-                        message.push_str(", ");
-                    }
-                    message.push_str(&format!("{}={}", key, value));
-                }
+                let data_parts: Vec<String> = event
+                    .data
+                    .iter()
+                    .map(|(key, value)| format!("{}={}", key, value))
+                    .collect();
+                message.push_str(&data_parts.join(", "));
                 message.push('}');
             }
 
@@ -243,19 +243,19 @@ pub fn create_console_logger() -> impl MemoryLogger {
 pub fn global_logger() -> Option<Arc<LoggingExtension>> {
     use crate::extensions::GlobalExtensions;
 
-    if let Some(ext) = GlobalExtensions::get("logging") {
-        if let Some(logging_ext) = ext.as_any().downcast_ref::<LoggingExtension>() {
-            // Создаем новое расширение с тем же уровнем логирования
-            // Так как мы не можем клонировать исходный логгер, используем NoopLogger
-            // В реальном приложении лучше использовать фабрику логгеров, чтобы создавать
-            // клоны
-            let logger_wrapper = NoopLogger;
+    if let Some(ext) = GlobalExtensions::get("logging")
+        && let Some(logging_ext) = ext.as_any().downcast_ref::<LoggingExtension>()
+    {
+        // Создаем новое расширение с тем же уровнем логирования
+        // Так как мы не можем клонировать исходный логгер, используем NoopLogger
+        // В реальном приложении лучше использовать фабрику логгеров, чтобы создавать
+        // клоны
+        let logger_wrapper = NoopLogger;
 
-            return Some(Arc::new(LoggingExtension {
-                logger: Box::new(logger_wrapper),
-                min_level: logging_ext.min_level,
-            }));
-        }
+        return Some(Arc::new(LoggingExtension {
+            logger: Box::new(logger_wrapper),
+            min_level: logging_ext.min_level,
+        }));
     }
     None
 }

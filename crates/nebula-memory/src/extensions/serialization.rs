@@ -366,24 +366,24 @@ impl MemoryExtension for SerializationExtension {
 pub fn global_serialization() -> Option<Arc<SerializationExtension>> {
     use crate::extensions::GlobalExtensions;
 
-    if let Some(ext) = GlobalExtensions::get("serialization") {
-        if let Some(ser_ext) = ext.as_any().downcast_ref::<SerializationExtension>() {
-            // Создаем новый экземпляр с теми же сериализаторами
-            let mut new_ext = SerializationExtension::new();
+    if let Some(ext) = GlobalExtensions::get("serialization")
+        && let Some(ser_ext) = ext.as_any().downcast_ref::<SerializationExtension>()
+    {
+        // Создаем новый экземпляр с теми же сериализаторами
+        let mut new_ext = SerializationExtension::new();
 
-            // Копируем зарегистрированные сериализаторы через вызов register_serializer
-            for serializer in &ser_ext.serializers {
-                // Регистрируем JSON сериализатор по умолчанию
-                if serializer.format() == SerializationFormat::Json {
-                    new_ext.register_serializer(JsonSerializer);
-                }
-                // Другие форматы будут недоступны, но в данном контексте
-                // это нормально, т.к. мы не можем клонировать сериализаторы
-                // напрямую
+        // Копируем зарегистрированные сериализаторы через вызов register_serializer
+        for serializer in &ser_ext.serializers {
+            // Регистрируем JSON сериализатор по умолчанию
+            if serializer.format() == SerializationFormat::Json {
+                new_ext.register_serializer(JsonSerializer);
             }
-
-            return Some(Arc::new(new_ext));
+            // Другие форматы будут недоступны, но в данном контексте
+            // это нормально, т.к. мы не можем клонировать сериализаторы
+            // напрямую
         }
+
+        return Some(Arc::new(new_ext));
     }
     None
 }

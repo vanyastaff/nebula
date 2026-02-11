@@ -73,6 +73,20 @@ pub enum MemoryError {
 
     #[error("Initialization failed: {reason}")]
     InitializationFailed { reason: String },
+
+    // --- Feature Support Errors ---
+    #[error("Feature not supported: {feature}{}", context.as_ref().map(|c| format!(" ({})", c)).unwrap_or_default())]
+    NotSupported {
+        feature: &'static str,
+        context: Option<String>,
+    },
+
+    // --- General Errors ---
+    #[error("Operation not found: {reason}")]
+    NotFound { reason: String },
+
+    #[error("Invalid operation: {reason}")]
+    InvalidOperation { reason: String },
 }
 
 impl MemoryError {
@@ -85,6 +99,7 @@ impl MemoryError {
                 | Self::ArenaExhausted { .. }
                 | Self::CacheOverflow { .. }
                 | Self::BudgetExceeded { .. }
+                | Self::CacheMiss { .. }
         )
     }
 
@@ -108,6 +123,9 @@ impl MemoryError {
             Self::ConcurrentAccess { .. } => "MEM:SYSTEM:CONCURRENT",
             Self::InvalidState { .. } => "MEM:SYSTEM:STATE",
             Self::InitializationFailed { .. } => "MEM:SYSTEM:INIT",
+            Self::NotSupported { .. } => "MEM:FEATURE:UNSUPPORTED",
+            Self::NotFound { .. } => "MEM:NOT_FOUND",
+            Self::InvalidOperation { .. } => "MEM:INVALID_OP",
         }
     }
 

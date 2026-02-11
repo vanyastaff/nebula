@@ -271,14 +271,14 @@ impl MemoryExtension for AsyncExtension {
 pub fn global_async() -> Option<Arc<AsyncExtension>> {
     use crate::extensions::GlobalExtensions;
 
-    if let Some(ext) = GlobalExtensions::get("async") {
-        if let Some(async_ext) = ext.as_any().downcast_ref::<AsyncExtension>() {
-            // Создаем новый экземпляр с теми же параметрами
-            return Some(Arc::new(AsyncExtension {
-                enabled: async_ext.enabled,
-                executor_name: async_ext.executor_name.clone(),
-            }));
-        }
+    if let Some(ext) = GlobalExtensions::get("async")
+        && let Some(async_ext) = ext.as_any().downcast_ref::<AsyncExtension>()
+    {
+        // Создаем новый экземпляр с теми же параметрами
+        return Some(Arc::new(AsyncExtension {
+            enabled: async_ext.enabled,
+            executor_name: async_ext.executor_name.clone(),
+        }));
     }
     None
 }
