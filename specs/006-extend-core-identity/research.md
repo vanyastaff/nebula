@@ -2,6 +2,7 @@
 
 **Feature**: 006-extend-core-identity  
 **Date**: 2026-02-05  
+**Updated**: 2026-02-10  
 **Phase**: 0 (Research & Resolution)
 
 ## Overview
@@ -12,88 +13,83 @@ This document analyzes existing patterns in `nebula-core` and establishes design
 
 ## 1. ID Type Pattern Analysis
 
-### Existing Pattern (from `crates/nebula-core/src/id.rs`)
+### Evolution: domain-key 0.1.1 → 0.2.1
 
-**String-based IDs** (WorkflowId, NodeId, UserId, TenantId, ActionId, ResourceId):
+**Previous approach (domain-key 0.1.1)** — all IDs used `Key<D>` (SmartString-based):
 ```rust
-pub struct WorkflowId(String);
+define_domain!(UserIdDomain, "user-id");
+key_type!(UserId, UserIdDomain);  // type UserId = Key<UserIdDomain>
 
-impl WorkflowId {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
-    
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-    
-    pub fn into_string(self) -> String {
-        self.0
-    }
-}
-
-impl Default for WorkflowId {
-    fn default() -> Self {
-        Self::new("") // Note: Empty default for some types
-    }
-}
-
-// Trait implementations:
-// - Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize
-// - Display (formats as underlying string)
-// - From<String>, From<&str>
+let id = UserId::new(uuid.to_string()).unwrap();  // UUID → String → SmartString
+id.as_str()  // returns &str
 ```
 
-**UUID-based IDs** (ExecutionId, CredentialId):
+Problems with this approach:
+- **Not Copy**: requires `.clone()` for passing around
+- **~24+ bytes**: SmartString overhead vs 16 bytes for raw UUID
+- **String round-trip**: `Uuid → String → SmartString` on creation, `SmartString → String → Uuid` on extraction
+- **No UUID validation**: accepts any string, not just valid UUIDs
+
+**New approach (domain-key 0.2.1)** — IDs use `Uuid<D>` (native uuid::Uuid wrapper):
 ```rust
-pub struct ExecutionId(Uuid);
+define_uuid!(ProjectIdDomain => ProjectId);  // type ProjectId = Uuid<ProjectIdDomain>
 
-impl ExecutionId {
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-    
-    pub fn from_uuid(uuid: Uuid) -> Self {
-        Self(uuid)
-    }
-    
-    pub fn as_uuid(&self) -> &Uuid {
-        &self.0
-    }
-}
-
-impl From<Uuid> for ExecutionId {
-    fn from(uuid: Uuid) -> Self {
-        Self(uuid)
-    }
-}
+let id = ProjectId::v4();       // random UUID, no string allocation
+let id = ProjectId::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
+id.get()    // returns uuid::Uuid
 ```
 
-### Decision: String-based IDs for Identity Types
+Benefits:
+- **Copy**: 16 bytes, stack-allocated, zero-cost pass-by-value
+- **Native UUID**: no string conversion overhead
+- **Validated**: only valid UUIDs accepted at parse time
+- **Rich trait set**: `Copy`, `Clone`, `Eq`, `Ord`, `Hash`, `Serialize`, `Deserialize`, `Display`, `FromStr`
+- **Domain separation**: `ProjectId` and `UserId` are incompatible types at compile time
 
-**Chosen**: ProjectId, RoleId, OrganizationId will be String-based
+### Decision: UUID-based IDs via domain-key 0.2.1
+
+**Chosen**: All entity IDs use `define_uuid!` macro (UUID-based, `Copy`, 16 bytes)
 
 **Rationale**:
-1. **Human readability**: Project IDs like "acme-corp-prod" are more debuggable than UUIDs
-2. **External system integration**: Many enterprise systems use string identifiers
-3. **Consistency**: UserId and TenantId are already string-based
-4. **Flexibility**: Supports both human-readable slugs and generated UUIDs as strings
+1. **Copy semantics**: IDs are passed around constantly — `Copy` eliminates `.clone()` noise
+2. **Compact**: 16 bytes vs 24+ bytes (SmartString) — better cache locality
+3. **Security**: Random UUIDs prevent enumeration attacks on resource endpoints
+4. **Consistency**: All ID types share the same `Uuid<D>` base — uniform API
+5. **Validation**: Only valid UUIDs accepted — no "empty string" or "invalid format" bugs
+6. **Performance**: No string allocation on creation (`v4()` directly), no parsing overhead
 
 **Alternatives Considered**:
-- **UUID-based IDs**: Rejected - less readable, harder to type in CLI/UI
-- **u64-based IDs**: Rejected - limited by range, harder to migrate from external systems
-- **Composite IDs** (e.g., OrganizationId + ProjectId): Rejected - too complex, violates YAGNI
+- **String-based IDs** (`Key<D>` / `key_type!`): Rejected — unnecessary heap allocation for what are always UUIDs; human-readable names belong in separate fields
+- **`Id<D>` (NonZeroU64)**: Rejected — 64-bit range is insufficient for distributed systems, no standard encoding
+- **Manual newtype wrappers**: Rejected — domain-key provides all needed traits + validation for free
 
-**Implementation Template**:
+**String keys remain for non-ID use cases**:
 ```rust
-pub struct ProjectId(String);
-pub struct RoleId(String);
-pub struct OrganizationId(String);
+// keys.rs — these stay on key_type! (SmartString-based)
+define_domain!(ParameterDomain, "parameter");
+key_type!(ParameterKey, ParameterDomain);   // human-readable parameter names
 
-// Same methods as WorkflowId: new(), as_str(), into_string()
-// Same traits: Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display
-// Same From impls: From<String>, From<&str>
+define_domain!(CredentialDomain, "credential");
+key_type!(CredentialKey, CredentialDomain);  // human-readable credential keys
 ```
+
+### Migration scope
+
+All existing ID types in `id.rs` must be migrated from `key_type!` to `define_uuid!`:
+
+| Type | Before (0.1.1) | After (0.2.1) |
+|------|----------------|---------------|
+| `UserId` | `Key<UserIdDomain>` (SmartString) | `Uuid<UserIdDomain>` (uuid::Uuid, Copy) |
+| `TenantId` | `Key<TenantIdDomain>` | `Uuid<TenantIdDomain>` |
+| `ExecutionId` | `Key<ExecutionIdDomain>` | `Uuid<ExecutionIdDomain>` |
+| `WorkflowId` | `Key<WorkflowIdDomain>` | `Uuid<WorkflowIdDomain>` |
+| `NodeId` | `Key<NodeIdDomain>` | `Uuid<NodeIdDomain>` |
+| `ActionId` | `Key<ActionIdDomain>` | `Uuid<ActionIdDomain>` |
+| `ResourceId` | `Key<ResourceIdDomain>` | `Uuid<ResourceIdDomain>` |
+| `CredentialId` | `Key<CredentialIdDomain>` | `Uuid<CredentialIdDomain>` |
+| **`ProjectId`** | *(new)* | `Uuid<ProjectIdDomain>` |
+| **`RoleId`** | *(new)* | `Uuid<RoleIdDomain>` |
+| **`OrganizationId`** | *(new)* | `Uuid<OrganizationIdDomain>` |
 
 ---
 
@@ -324,12 +320,12 @@ if role_scope == RoleScope::Global {
 
 ### JSON Format
 
-**ID Types**: Serialize as plain strings
+**ID Types**: Serialize as UUID strings (delegated to `uuid` crate by `domain-key`):
 ```json
 {
-  "project_id": "acme-corp-prod",
-  "role_id": "role:admin",
-  "organization_id": "acme-corp"
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "role_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+  "organization_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 }
 ```
 
@@ -341,18 +337,18 @@ if role_scope == RoleScope::Global {
 }
 ```
 
-**Scope**: Serialize as formatted strings
+**Scope**: Serialize as formatted strings (Display impl)
 ```json
 {
-  "scope": "project:acme-corp-prod"
+  "scope": "project:550e8400-e29b-41d4-a716-446655440000"
 }
 ```
 
 **Rationale**:
-- Human-readable
-- Easy to debug
-- Consistent with existing patterns
-- Matches n8n's approach (reviewed in context)
+- UUID strings are standardized (RFC 4122) and universally parseable
+- `domain-key` delegates serialization to `uuid` crate for efficiency
+- Easy to debug — standard UUID format is widely recognized
+- Consistent with REST API best practices for resource identifiers
 
 ---
 
@@ -360,12 +356,14 @@ if role_scope == RoleScope::Global {
 
 ### Test Categories
 
-1. **ID Type Tests** (per type: ProjectId, RoleId, OrganizationId):
-   - Creation: `new()`, `from()` conversions
-   - Accessors: `as_str()`, `into_string()`
-   - Equality: PartialEq, Hash
-   - Display: format!("{}", id)
-   - Serialization: JSON round-trip
+1. **ID Type Tests** (per type: ProjectId, RoleId, OrganizationId + migrated existing types):
+   - Creation: `v4()`, `nil()`, `parse()`, `from_bytes()`
+   - Accessors: `get()`, `as_bytes()`, `domain()`, `is_nil()`
+   - Copy semantics: verify both copies usable after assignment
+   - Equality: PartialEq, Ord, Hash
+   - Display: `format!("{}", id)` outputs UUID string
+   - Serialization: JSON round-trip (UUID string format)
+   - Domain separation: verify `ProjectId` != `UserId` at type level
 
 2. **Scope Hierarchy Tests**:
    - Containment matrix verification (30+ combinations)
@@ -385,10 +383,11 @@ if role_scope == RoleScope::Global {
 
 ### Test Coverage Goals
 
-- 100% of public methods
-- All containment relationships
-- Edge cases: empty strings, special characters
+- 100% of public methods on new types
+- All containment relationships in scope matrix
+- Edge cases: nil UUIDs, parsing invalid strings
 - Negative cases: type mismatches (compile-time verification)
+- Migration verification: all existing ID types work with new `Uuid<D>` API
 
 ---
 
@@ -396,32 +395,35 @@ if role_scope == RoleScope::Global {
 
 ### Changes Made
 
-1. **ScopeLevel enum**: 2 new variants added
-2. **New ID types**: 3 new types (no changes to existing)
-3. **New enums**: 2 new types (no changes to existing)
-4. **Prelude exports**: 5 new exports (no changes to existing)
+1. **domain-key upgrade**: 0.1.1 → 0.2.1 (breaking: `Key<D>` API changes, `Display` format changed)
+2. **All ID types migrated**: `key_type!` → `define_uuid!` (breaking: API surface changes)
+3. **ScopeLevel enum**: 2 new variants added (additive)
+4. **New ID types**: 3 new types: ProjectId, RoleId, OrganizationId (additive)
+5. **New enums**: 2 new types: ProjectType, RoleScope (additive)
+6. **Prelude exports**: 5+ new exports (additive)
 
-### Backward Compatibility Verification
+### Breaking Changes (acceptable in pre-1.0)
 
-**Existing code patterns that MUST work**:
-```rust
-// Existing code using old scope variants
-let scope = ScopeLevel::Global;
-let workflow_scope = ScopeLevel::Workflow(WorkflowId::new("test"));
+**ID type API changes**:
 
-// Existing ID types unchanged
-let execution_id = ExecutionId::new();
-let user_id = UserId::new("user-123");
+| Before (key_type!) | After (define_uuid!) | Migration |
+|---------------------|----------------------|-----------|
+| `UserId::new("...").unwrap()` | `UserId::v4()` or `UserId::parse("...").unwrap()` | Update call sites |
+| `id.as_str()` | `id.get()` (returns `uuid::Uuid`) or `id.to_string()` | Update accessors |
+| `id.clone()` | just `id` (Copy) | Remove `.clone()` calls |
+| `From<String>` | `TryFrom<String>` | Handle parse errors |
+| Not Copy | Copy | Simplifies code |
 
-// Existing containment checks
-assert!(workflow_scope.is_contained_in(&ScopeLevel::Global));
-```
+**Affected crates**: Any crate using `nebula-core` ID types must update usage patterns. Currently:
+- `nebula-credential` — uses its own `CredentialId` (independent, not affected)
+- Other crates — check `cargo check --workspace` after migration
 
-**Mitigation**:
-- Enum is non-exhaustive friendly (match with catch-all)
-- No method signature changes
-- Only additive changes
-- Existing tests run unchanged
+### Mitigation
+
+- Pre-1.0 project — breaking changes are acceptable
+- All changes are mechanical (find/replace patterns)
+- `cargo check --workspace` catches all breakage at compile time
+- Migration simplifies code (Copy eliminates clone noise)
 
 ---
 
@@ -429,11 +431,14 @@ assert!(workflow_scope.is_contained_in(&ScopeLevel::Global));
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| ID type base | String | Human-readable, flexible, consistent with UserId/TenantId |
+| ID type base | `domain-key` 0.2.1 `Uuid<D>` | Copy, 16 bytes, validated, uniform API across all IDs |
+| domain-key version | 0.2.1 with `uuid-v4` feature | Provides `define_uuid!` macro, `v4()` generation |
+| Existing ID migration | All `key_type!` → `define_uuid!` | Consistency — all entity IDs are UUID-based |
+| String keys | Keep `key_type!` for ParameterKey, CredentialKey | Human-readable names, not entity identifiers |
 | Scope hierarchy | Static containment | Simple, testable, authorization is separate concern |
 | Enum Copy trait | Yes | Small enums, hot path performance |
-| Serialization | snake_case strings | Human-readable, debuggable |
-| Breaking changes | None | Pure additive changes |
+| Serialization | UUID strings (IDs), snake_case strings (enums) | RFC 4122 standard, debuggable |
+| Breaking changes | Accepted (pre-1.0) | Mechanical migration, simplifies code |
 | Test strategy | Inline tests + matrix | Fast feedback, comprehensive coverage |
 
 ---
@@ -443,13 +448,19 @@ assert!(workflow_scope.is_contained_in(&ScopeLevel::Global));
 ### Resolved
 
 ✅ **Q1**: Should ProjectId be UUID or String?  
-**A**: String - provides flexibility for human-readable IDs and external system integration
+**A**: UUID via `domain-key` 0.2.1 `Uuid<D>` — provides Copy semantics, 16-byte compact representation, validated format, and uniform API. Human-readable names are separate fields in higher-level structs.
 
 ✅ **Q2**: How to handle Workflow-to-Project relationships in scope?  
 **A**: Static containment - runtime relationships managed by higher layers
 
 ✅ **Q3**: Should enums be Copy?  
 **A**: Yes - small enums benefit from Copy in hot paths
+
+✅ **Q4**: Should existing ID types be migrated to `define_uuid!`?  
+**A**: Yes — consistency across all entity IDs. Pre-1.0, breaking changes are acceptable. Migration is mechanical.
+
+✅ **Q5**: What about ParameterKey and CredentialKey?  
+**A**: Stay on `key_type!` (SmartString-based). These are human-readable keys, not entity identifiers.
 
 ### No Open Questions
 

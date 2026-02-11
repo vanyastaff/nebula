@@ -2,6 +2,7 @@
 
 **Feature**: 006-extend-core-identity  
 **Date**: 2026-02-05  
+**Updated**: 2026-02-10  
 **Phase**: 1 (Design & Contracts)
 
 ## Overview
@@ -12,133 +13,86 @@ This document defines the exact type signatures, trait implementations, and rela
 
 ## 1. ID Type Definitions
 
-### 1.1 ProjectId
+All entity ID types use `domain-key` 0.2.1 `Uuid<D>` — a typed UUID wrapper providing compile-time domain separation, `Copy` semantics, and 16-byte compact storage.
 
-**Purpose**: Type-safe identifier for projects (personal or team workspaces).
+### 1.1 New ID Types (ProjectId, RoleId, OrganizationId)
 
-**Definition**:
+**Definition** (in `id.rs`):
 ```rust
-/// Unique identifier for a project (personal or team workspace)
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ProjectId(String);
+use domain_key::define_uuid;
+
+// New identity types
+define_uuid!(ProjectIdDomain => ProjectId);
+define_uuid!(RoleIdDomain => RoleId);
+define_uuid!(OrganizationIdDomain => OrganizationId);
 ```
 
-**Methods**:
+Each `define_uuid!` generates:
+- A domain marker struct (e.g., `ProjectIdDomain`)
+- A type alias: `pub type ProjectId = Uuid<ProjectIdDomain>`
+
+**API surface** (provided automatically by `domain-key`):
 ```rust
-impl ProjectId {
-    /// Create a new project ID from a string
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use nebula_core::ProjectId;
-    ///
-    /// let id = ProjectId::new("acme-corp-prod");
-    /// assert_eq!(id.as_str(), "acme-corp-prod");
-    /// ```
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
-    
-    /// Get the underlying string as a slice
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use nebula_core::ProjectId;
-    ///
-    /// let id = ProjectId::new("test-project");
-    /// assert_eq!(id.as_str(), "test-project");
-    /// ```
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-    
-    /// Convert into the owned string
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use nebula_core::ProjectId;
-    ///
-    /// let id = ProjectId::new("test");
-    /// let string = id.into_string();
-    /// assert_eq!(string, "test");
-    /// ```
-    pub fn into_string(self) -> String {
-        self.0
-    }
-}
+// Creation
+let id = ProjectId::v4();                    // random UUID (requires uuid-v4 feature)
+let id = ProjectId::nil();                   // zero-valued UUID
+let id = ProjectId::parse("550e8400-...").unwrap();  // from string
+let id = ProjectId::new(uuid);              // from uuid::Uuid
+let id = ProjectId::from_bytes([0u8; 16]);  // from bytes
+
+// Access
+id.get()        // -> uuid::Uuid
+id.as_bytes()   // -> &[u8; 16]
+id.domain()     // -> &'static str ("ProjectId")
+id.is_nil()     // -> bool
+
+// Traits (all provided by domain-key):
+// Copy, Clone, Debug, Display, FromStr
+// PartialEq, Eq, PartialOrd, Ord, Hash
+// Serialize, Deserialize (with serde feature)
+// From<uuid::Uuid>, From<[u8; 16]>, Into<uuid::Uuid>
+// TryFrom<&str>, TryFrom<String>
+// AsRef<uuid::Uuid>, Default
 ```
 
-**Trait Implementations**:
+### 1.2 Migrated Existing ID Types
+
+All existing `key_type!` definitions in `id.rs` are replaced with `define_uuid!`:
+
 ```rust
-impl fmt::Display for ProjectId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+use domain_key::define_uuid;
 
-impl From<String> for ProjectId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
+// Migrated from key_type! (Key<D>, SmartString) to define_uuid! (Uuid<D>, uuid::Uuid)
+define_uuid!(UserIdDomain => UserId);
+define_uuid!(TenantIdDomain => TenantId);
+define_uuid!(ExecutionIdDomain => ExecutionId);
+define_uuid!(WorkflowIdDomain => WorkflowId);
+define_uuid!(NodeIdDomain => NodeId);
+define_uuid!(ActionIdDomain => ActionId);
+define_uuid!(ResourceIdDomain => ResourceId);
+define_uuid!(CredentialIdDomain => CredentialId);
 
-impl From<&str> for ProjectId {
-    fn from(s: &str) -> Self {
-        Self(s.to_string())
-    }
-}
+// New types
+define_uuid!(ProjectIdDomain => ProjectId);
+define_uuid!(RoleIdDomain => RoleId);
+define_uuid!(OrganizationIdDomain => OrganizationId);
 ```
 
----
+### 1.3 String-based Keys (unchanged)
 
-### 1.2 RoleId
+`keys.rs` retains `key_type!` for human-readable string keys:
 
-**Purpose**: Type-safe identifier for roles (global, project-level, resource-level).
-
-**Definition**:
 ```rust
-/// Unique identifier for a role
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct RoleId(String);
+use domain_key::{define_domain, key_type};
+
+define_domain!(ParameterDomain, "parameter");
+key_type!(ParameterKey, ParameterDomain);   // Key<D> — SmartString
+
+define_domain!(CredentialDomain, "credential");
+key_type!(CredentialKey, CredentialDomain);  // Key<D> — SmartString
 ```
 
-**Methods**: Same as ProjectId
-```rust
-impl RoleId {
-    pub fn new(id: impl Into<String>) -> Self { Self(id.into()) }
-    pub fn as_str(&self) -> &str { &self.0 }
-    pub fn into_string(self) -> String { self.0 }
-}
-```
-
-**Trait Implementations**: Same as ProjectId (Display, From<String>, From<&str>)
-
----
-
-### 1.3 OrganizationId
-
-**Purpose**: Type-safe identifier for organizations (collection of projects).
-
-**Definition**:
-```rust
-/// Unique identifier for an organization
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct OrganizationId(String);
-```
-
-**Methods**: Same as ProjectId
-```rust
-impl OrganizationId {
-    pub fn new(id: impl Into<String>) -> Self { Self(id.into()) }
-    pub fn as_str(&self) -> &str { &self.0 }
-    pub fn into_string(self) -> String { self.0 }
-}
-```
-
-**Trait Implementations**: Same as ProjectId (Display, From<String>, From<&str>)
+These are not entity identifiers — they represent human-readable parameter/credential names.
 
 ---
 
@@ -182,7 +136,7 @@ impl ScopeLevel {
     /// ```
     /// use nebula_core::{ScopeLevel, OrganizationId};
     ///
-    /// let scope = ScopeLevel::Organization(OrganizationId::new("acme"));
+    /// let scope = ScopeLevel::Organization(OrganizationId::v4());
     /// assert!(scope.is_organization());
     /// assert!(!scope.is_project());
     /// ```
@@ -197,7 +151,7 @@ impl ScopeLevel {
     /// ```
     /// use nebula_core::{ScopeLevel, ProjectId};
     ///
-    /// let scope = ScopeLevel::Project(ProjectId::new("proj-123"));
+    /// let scope = ScopeLevel::Project(ProjectId::v4());
     /// assert!(scope.is_project());
     /// assert!(!scope.is_organization());
     /// ```
@@ -212,8 +166,8 @@ impl ScopeLevel {
     /// ```
     /// use nebula_core::{ScopeLevel, OrganizationId};
     ///
-    /// let org_id = OrganizationId::new("acme");
-    /// let scope = ScopeLevel::Organization(org_id.clone());
+    /// let org_id = OrganizationId::v4();
+    /// let scope = ScopeLevel::Organization(org_id);
     /// assert_eq!(scope.organization_id(), Some(&org_id));
     ///
     /// let global = ScopeLevel::Global;
@@ -233,8 +187,8 @@ impl ScopeLevel {
     /// ```
     /// use nebula_core::{ScopeLevel, ProjectId};
     ///
-    /// let project_id = ProjectId::new("proj-123");
-    /// let scope = ScopeLevel::Project(project_id.clone());
+    /// let project_id = ProjectId::v4();
+    /// let scope = ScopeLevel::Project(project_id);
     /// assert_eq!(scope.project_id(), Some(&project_id));
     ///
     /// let global = ScopeLevel::Global;
@@ -262,8 +216,8 @@ impl ScopeLevel {
     /// ```
     /// use nebula_core::{ScopeLevel, ProjectId, OrganizationId};
     ///
-    /// let org_scope = ScopeLevel::Organization(OrganizationId::new("acme"));
-    /// let project_scope = ScopeLevel::Project(ProjectId::new("proj-123"));
+    /// let org_scope = ScopeLevel::Organization(OrganizationId::v4());
+    /// let project_scope = ScopeLevel::Project(ProjectId::v4());
     ///
     /// // Project is contained in Organization
     /// assert!(project_scope.is_contained_in(&org_scope));
@@ -317,7 +271,7 @@ impl ScopeLevel {
     /// ```
     /// use nebula_core::{ScopeLevel, OrganizationId, ProjectId};
     ///
-    /// let org = ScopeLevel::Organization(OrganizationId::new("acme"));
+    /// let org = ScopeLevel::Organization(OrganizationId::v4());
     /// assert_eq!(org.parent(), Some(ScopeLevel::Global));
     ///
     /// let global = ScopeLevel::Global;
@@ -333,7 +287,7 @@ impl ScopeLevel {
             // Similar for Workflow -> Project relationship
             ScopeLevel::Workflow(_) => None,
             ScopeLevel::Execution(_) => None,
-            ScopeLevel::Action(exec_id, _) => Some(ScopeLevel::Execution(exec_id.clone())),
+            ScopeLevel::Action(exec_id, _) => Some(ScopeLevel::Execution(*exec_id)),
         }
     }
 }
@@ -363,7 +317,7 @@ impl ScopeLevel {
     ///
     /// let global = ScopeLevel::Global;
     /// let org_child = global.child(ChildScopeType::Organization(
-    ///     OrganizationId::new("acme")
+    ///     OrganizationId::v4()
     /// ));
     /// assert!(org_child.is_some());
     /// assert!(org_child.unwrap().is_organization());
@@ -383,7 +337,7 @@ impl ScopeLevel {
                 Some(ScopeLevel::Execution(exec_id))
             }
             (ScopeLevel::Execution(exec_id), ChildScopeType::Action(node_id)) => {
-                Some(ScopeLevel::Action(exec_id.clone(), node_id))
+                Some(ScopeLevel::Action(*exec_id, node_id))
             }
             _ => None,
         }
@@ -515,10 +469,10 @@ crates/nebula-core/src/
 // nebula-core/src/lib.rs
 pub mod prelude {
     pub use super::{
-        // Existing exports
-        CoreError, CredentialId, ExecutionId, HasContext, Identifiable, NodeId, Result, 
+        // Existing exports (now Uuid<D> based)
+        CoreError, CredentialId, ExecutionId, HasContext, Identifiable, NodeId, Result,
         ScopeLevel, Scoped, TenantId, UserId, WorkflowId,
-        
+
         // New exports for identity system
         OrganizationId,
         ProjectId,
@@ -526,6 +480,9 @@ pub mod prelude {
         RoleId,
         RoleScope,
     };
+
+    // Re-export domain-key error type for parse errors
+    pub use domain_key::UuidParseError;
 
     pub use crate::keys::*;
 }
@@ -538,9 +495,12 @@ pub mod prelude {
 ### Dependency Graph
 
 ```
-ProjectId ──────────┐
-RoleId ─────────────┼──> ScopeLevel (uses in enum variants)
-OrganizationId ─────┘
+domain-key 0.2.1 (uuid-v4 feature)
+    │
+    ├─> define_uuid! ─── ProjectId, RoleId, OrganizationId ──┐
+    │                     UserId, TenantId, ... (migrated)     ├──> ScopeLevel (enum variants)
+    │                                                          ┘
+    └─> key_type! ────── ParameterKey, CredentialKey (unchanged)
 
 ProjectType ───> (independent, used by nebula-project)
 RoleScope ─────> (independent, used by nebula-rbac)
@@ -550,20 +510,22 @@ RoleScope ─────> (independent, used by nebula-rbac)
 
 ```
 1. Developer imports from nebula_core::prelude
-2. Creates type-safe IDs: ProjectId, RoleId, OrganizationId
+2. Creates type-safe IDs: ProjectId::v4(), UserId::v4()
 3. Uses in ScopeLevel for resource isolation: ScopeLevel::Project(project_id)
-4. Higher-layer crates (nebula-project, nebula-rbac) use these types
+4. IDs are Copy — pass freely without .clone()
+5. Higher-layer crates (nebula-project, nebula-rbac) use these types
 ```
 
 ---
 
 ## 6. Validation Rules
 
-### ID Types
-- ✅ Accept any non-empty string (validation is responsibility of higher layers)
-- ✅ Support empty string (for default/placeholder cases)
-- ✅ UTF-8 encoded (Rust String guarantee)
-- ❌ No format restrictions at this layer
+### ID Types (Uuid<D>)
+- ✅ Only valid RFC 4122 UUIDs accepted (enforced by `domain-key` at parse time)
+- ✅ `v4()` generates cryptographically random UUIDs
+- ✅ `nil()` provides zero-valued default (all zeros)
+- ✅ `parse()` returns `Result` for invalid inputs
+- ✅ 16 bytes, `Copy`, stack-allocated
 
 ### Scope Hierarchy
 - ✅ Static containment relationships (no runtime authorization)
@@ -577,29 +539,29 @@ RoleScope ─────> (independent, used by nebula-rbac)
 
 ---
 
-## 7. Backward Compatibility
+## 7. Breaking Changes & Migration
 
-### Unchanged Types
-- ExecutionId
-- WorkflowId
-- NodeId
-- UserId
-- TenantId
-- ActionId
-- ResourceId
-- CredentialId
+### Migrated Types (API changed)
+All entity ID types migrated from `key_type!` (SmartString) to `define_uuid!` (uuid::Uuid):
+- `UserId`, `TenantId`, `ExecutionId`, `WorkflowId`, `NodeId`, `ActionId`, `ResourceId`, `CredentialId`
+
+**API changes**:
+| Before | After |
+|--------|-------|
+| `Id::new("...").unwrap()` | `Id::v4()` or `Id::parse("...").unwrap()` |
+| `id.as_str()` | `id.to_string()` or `id.get()` |
+| `id.clone()` | just `id` (Copy) |
+
+### Unchanged
 - All traits (Scoped, HasContext, Identifiable)
+- ScopeLevel variant semantics (containment logic)
+- String-based keys (ParameterKey, CredentialKey)
 
-### Unchanged Behavior
-- Existing ScopeLevel variants work identically
-- Existing containment checks unchanged
-- Existing tests pass without modification
-
-### Additive Changes Only
-- New enum variants in ScopeLevel (non-breaking)
-- New ID types (no conflicts)
-- New methods on ScopeLevel (non-breaking)
-- New prelude exports (non-breaking)
+### Additive Changes
+- New ScopeLevel variants: `Organization`, `Project`
+- New ID types: `ProjectId`, `RoleId`, `OrganizationId`
+- New enums: `ProjectType`, `RoleScope`
+- New prelude exports
 
 ---
 

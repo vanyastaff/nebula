@@ -2,6 +2,7 @@
 
 **Feature Branch**: `006-extend-core-identity`  
 **Created**: 2026-02-05  
+**Updated**: 2026-02-10  
 **Status**: Draft  
 **Input**: Extend nebula-core with identity and multi-tenancy types for identity management and multi-tenancy system support
 
@@ -17,10 +18,11 @@ A Nebula developer needs to create a new project management feature and requires
 
 **Acceptance Scenarios**:
 
-1. **Given** a developer imports `ProjectId` from `nebula_core`, **When** they create a new `ProjectId::new("project-123")`, **Then** the ID is created successfully and has type `ProjectId` (not `String`)
+1. **Given** a developer imports `ProjectId` from `nebula_core`, **When** they create a new `ProjectId::v4()`, **Then** the ID is created successfully and has type `ProjectId` (not `Uuid` or `String`)
 2. **Given** a developer has both `ProjectId` and `UserId`, **When** they attempt to pass a `ProjectId` where `UserId` is expected, **Then** the compiler rejects the code with a type error
-3. **Given** a developer creates a `ProjectId`, **When** they serialize it to JSON, **Then** it serializes as a plain string value
-4. **Given** a developer deserializes JSON containing a project ID, **When** they parse it into `ProjectId`, **Then** it successfully creates a typed `ProjectId` instance
+3. **Given** a developer creates a `ProjectId`, **When** they serialize it to JSON, **Then** it serializes as a UUID string value
+4. **Given** a developer deserializes JSON containing a project UUID, **When** they parse it into `ProjectId`, **Then** it successfully creates a typed `ProjectId` instance
+5. **Given** a developer creates a `ProjectId`, **When** they copy it to another variable, **Then** both variables are usable (ProjectId is `Copy`)
 
 ---
 
@@ -75,23 +77,25 @@ A Nebula developer implementing project management needs to differentiate betwee
 ### Edge Cases
 
 - What happens when a developer creates deeply nested scopes (Organization > Project > Workflow > Execution > Action)? **Answer**: The containment hierarchy should correctly identify that Global contains Organization, Organization contains Project, etc.
-- How does the system handle comparing IDs of different types (ProjectId vs UserId)? **Answer**: The Rust type system prevents this at compile time due to newtype wrappers.
-- What happens when serializing/deserializing IDs with special characters or empty strings? **Answer**: String-based IDs accept any valid UTF-8 string; validation is the responsibility of higher-level code.
+- How does the system handle comparing IDs of different types (ProjectId vs UserId)? **Answer**: The Rust type system prevents this at compile time — `domain-key` Uuid types with different domains are incompatible types.
+- What happens when serializing/deserializing IDs with invalid UUIDs? **Answer**: `Uuid<D>::parse()` returns `Result<Self, UuidParseError>` — invalid strings are rejected at parse time.
 - How does the system handle creating ScopeLevel parent/child relationships? **Answer**: The `parent()` and `child()` methods return `Option<ScopeLevel>` to handle cases where no parent/child exists.
+- What happens when a developer copies an ID? **Answer**: All UUID-based IDs are `Copy` (16 bytes, stack-allocated) — no clone needed.
 
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
-**ID Types (id.rs)**:
+**ID Types (id.rs)** — using `domain-key` 0.2.1 `Uuid<D>` typed wrappers:
 
-- **FR-001**: System MUST provide a `ProjectId` newtype wrapper around `String` for type-safe project identification
-- **FR-002**: System MUST provide a `RoleId` newtype wrapper around `String` for type-safe role identification  
-- **FR-003**: System MUST provide an `OrganizationId` newtype wrapper around `String` for type-safe organization identification
-- **FR-004**: All ID types MUST implement `new(impl Into<String>)`, `as_str()`, and `into_string()` methods
-- **FR-005**: All ID types MUST implement `Debug`, `Clone`, `PartialEq`, `Eq`, `Hash`, `Serialize`, `Deserialize`, `Display` traits
-- **FR-006**: All ID types MUST support `From<String>` and `From<&str>` conversions
-- **FR-007**: All ID types MUST display as their underlying string value when using the `Display` trait
+- **FR-001**: System MUST provide a `ProjectId` type via `define_uuid!` macro for type-safe project identification (UUID-based, 16 bytes, `Copy`)
+- **FR-002**: System MUST provide a `RoleId` type via `define_uuid!` macro for type-safe role identification (UUID-based, 16 bytes, `Copy`)
+- **FR-003**: System MUST provide an `OrganizationId` type via `define_uuid!` macro for type-safe organization identification (UUID-based, 16 bytes, `Copy`)
+- **FR-004**: All ID types MUST support `v4()` for random generation, `parse(&str)` for string parsing, `nil()` for zero-value, and `get()` to extract inner `uuid::Uuid`
+- **FR-005**: All ID types MUST implement `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`, `Serialize`, `Deserialize`, `Display`, `FromStr` traits (provided by `domain-key`)
+- **FR-006**: All ID types MUST support `From<uuid::Uuid>`, `From<[u8; 16]>`, `TryFrom<&str>`, `TryFrom<String>` conversions
+- **FR-007**: All ID types MUST display as their underlying UUID string value when using the `Display` trait
+- **FR-007a**: All existing ID types (`UserId`, `TenantId`, `ExecutionId`, `WorkflowId`, `NodeId`, `ActionId`, `ResourceId`, `CredentialId`) MUST be migrated from `key_type!` (string-based) to `define_uuid!` (UUID-based) for consistency
 
 **Scope System (scope.rs)**:
 
@@ -118,19 +122,20 @@ A Nebula developer implementing project management needs to differentiate betwee
 **Module Exports (lib.rs)**:
 
 - **FR-024**: System MUST export `ProjectId`, `RoleId`, `OrganizationId` from the prelude module
+- **FR-024a**: System MUST re-export `domain_key::UuidParseError` from the prelude module for downstream parse error handling
 - **FR-025**: System MUST export `ProjectType`, `RoleScope` from the prelude module
 
-**Backwards Compatibility**:
+**Migration & Compatibility**:
 
-- **FR-026**: Existing `ScopeLevel` variants (`Global`, `Workflow`, `Execution`, `Action`) MUST continue to work unchanged
-- **FR-027**: Existing ID types (`UserId`, `TenantId`, `ExecutionId`, etc.) MUST continue to work unchanged
-- **FR-028**: Existing code using `nebula-core` MUST compile without modifications (only additive changes)
+- **FR-026**: Existing `ScopeLevel` variant **semantics** (containment logic for `Global`, `Workflow`, `Execution`, `Action`) MUST be preserved after migration
+- **FR-027**: All existing ID **type names** (`UserId`, `TenantId`, `ExecutionId`, etc.) MUST be preserved; API changes from `Key<D>` to `Uuid<D>` are acceptable (pre-1.0 breaking change)
+- **FR-028**: After migration, all workspace crates MUST compile and all tests MUST pass (`cargo check --workspace` and `cargo test --workspace` exit with code 0)
 
 ### Key Entities
 
-- **ProjectId**: Represents a unique identifier for a project (personal or team workspace); string-based for flexibility with external systems
-- **RoleId**: Represents a unique identifier for a role (global, project-level, or resource-level); string-based to support both built-in and custom roles
-- **OrganizationId**: Represents a unique identifier for an organization (collection of projects); string-based for enterprise integration
+- **ProjectId**: Represents a unique identifier for a project (personal or team workspace); UUID-based via `domain-key` `Uuid<D>` for type safety, `Copy` semantics, and compact 16-byte representation
+- **RoleId**: Represents a unique identifier for a role (global, project-level, or resource-level); UUID-based for consistency and security (no guessable string identifiers)
+- **OrganizationId**: Represents a unique identifier for an organization (collection of projects); UUID-based for consistency with all other ID types
 - **ScopeLevel**: Represents resource lifecycle and isolation boundaries; now includes Organization and Project levels in the hierarchy
 - **ProjectType**: Distinguishes between Personal (single-user) and Team (multi-user) projects
 - **RoleScope**: Defines where a role applies (Global instance-wide, Project-specific, Credential access, Workflow access)
@@ -141,8 +146,8 @@ A Nebula developer implementing project management needs to differentiate betwee
 
 - **SC-001**: All new ID types successfully prevent mixing different identifier types at compile time (verified by attempting to pass wrong ID type and receiving compiler error)
 - **SC-002**: Scope containment checks correctly identify hierarchical relationships in 100% of test cases (Organization > Project > Workflow > Execution > Action)
-- **SC-003**: All existing nebula-core tests continue to pass without modification (`cargo test -p nebula-core` exits with code 0)
-- **SC-004**: All existing crates using nebula-core compile without changes (`cargo check --workspace` exits with code 0)
+- **SC-003**: All nebula-core tests pass after migration updates (`cargo test -p nebula-core` exits with code 0)
+- **SC-004**: All workspace crates compile after call-site migration (`cargo check --workspace` exits with code 0)
 - **SC-005**: New types successfully serialize to and deserialize from JSON with 100% data fidelity
 - **SC-006**: Code compiles with zero clippy warnings (`cargo clippy -p nebula-core -- -D warnings` exits with code 0)
 - **SC-007**: All public types and methods have complete rustdoc documentation (`cargo doc -p nebula-core` generates docs without warnings)
@@ -151,21 +156,23 @@ A Nebula developer implementing project management needs to differentiate betwee
 ## Technical Constraints *(mandatory)*
 
 - Must use Rust 2024 Edition (MSRV: 1.92)
-- No new external dependencies (only existing: `serde`, `uuid`, `thiserror`)
+- Upgrade `domain-key` dependency from 0.1.1 to 0.2.1 with `uuid-v4` feature enabled
+- All ID types must use `domain-key` `define_uuid!` macro (UUID-based, `Copy`, 16 bytes)
+- String-based keys (`ParameterKey`, `CredentialKey`) remain on `key_type!` macro (unchanged)
 - Must follow existing code patterns and style in nebula-core
-- All ID types must use same pattern as existing types (newtype wrapper, same trait implementations)
 - Enum variants must be non-exhaustive-friendly (tests should not break if new variants added)
-- Changes must be purely additive (no breaking changes to existing API)
+- Existing ID types must be migrated from `key_type!` to `define_uuid!` for API consistency
 
 ## Assumptions *(mandatory)*
 
-- Project IDs will be string-based rather than UUID-based to support human-readable identifiers and external system integration
-- Role IDs will be string-based to support both built-in roles ("global:admin") and custom role UUIDs
+- All ID types (ProjectId, RoleId, OrganizationId, and existing types) use UUID-based identifiers via `domain-key` 0.2.1 `Uuid<D>` for type safety, `Copy` semantics, and 16-byte compact representation
+- Human-readable names (project slugs, role labels) are separate fields in higher-level structs, not embedded in IDs
 - Organization feature is optional for Phase 1 but types are added now to avoid future breaking changes
 - Scope containment is based on hierarchical relationships, not runtime validation of actual project/organization membership
-- Empty strings are valid ID values (validation is responsibility of higher-level code like nebula-project)
+- `Uuid<D>::nil()` provides a zero-valued default; actual validation of non-nil IDs is responsibility of higher-level code
 - The `parent()` method for Execution and Workflow scopes returns None because the relationship requires runtime context (execution belongs to workflow, which belongs to project)
 - The existing codebase does not currently use Organization or Project scope levels, so adding them is purely additive
+- Migrating existing ID types from `key_type!` to `define_uuid!` is a breaking change to the API surface but is acceptable within the current development phase (pre-1.0)
 
 ## Dependencies
 
@@ -181,7 +188,8 @@ A Nebula developer implementing project management needs to differentiate betwee
 
 ## Security Considerations *(if applicable)*
 
-- ID types prevent accidental cross-contamination of identifiers (e.g., using a project ID where a user ID is expected)
+- ID types prevent accidental cross-contamination of identifiers (e.g., using a project ID where a user ID is expected) — enforced at compile time by `domain-key` `Uuid<D>` phantom type parameter
+- UUID-based IDs are unpredictable (v4 random), preventing enumeration attacks on resource identifiers
 - Scope hierarchy enforces proper isolation boundaries for multi-tenant architecture
 - Type safety ensures that scope containment checks cannot be bypassed through string manipulation
 - No sensitive data is stored in core types (IDs are opaque identifiers only)
@@ -191,4 +199,5 @@ A Nebula developer implementing project management needs to differentiate betwee
 - Roadmap: `docs/roadmaps/identity-multi-tenancy-roadmap.md` (Milestone 1.0)
 - Existing nebula-core implementation: `crates/nebula-core/src/`
 - Architecture documentation: `docs/nebula-architecture-final.md`
+- `domain-key` 0.2.1: https://crates.io/crates/domain-key — typed UUID/ID/Key system
 - n8n multi-tenancy research (context for design decisions)

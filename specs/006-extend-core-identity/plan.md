@@ -1,21 +1,21 @@
 # Implementation Plan: Extend nebula-core with Identity and Multi-Tenancy Types
 
-**Branch**: `006-extend-core-identity` | **Date**: 2026-02-05 | **Spec**: [spec.md](./spec.md)
+**Branch**: `006-extend-core-identity` | **Date**: 2026-02-05 | **Updated**: 2026-02-10 | **Spec**: [spec.md](./spec.md)
 **Input**: Feature specification from `/specs/006-extend-core-identity/spec.md`
 
 ## Summary
 
-Extend the existing `nebula-core` crate with new type-safe identifiers (`ProjectId`, `RoleId`, `OrganizationId`), enhanced scope hierarchy for multi-tenant isolation (Organization > Project > Workflow > Execution > Action), and RBAC foundational types (`ProjectType`, `RoleScope`). This is purely additive infrastructure that enables future identity and multi-tenancy features while maintaining backward compatibility with all existing code.
+Extend the existing `nebula-core` crate with new type-safe identifiers (`ProjectId`, `RoleId`, `OrganizationId`), enhanced scope hierarchy for multi-tenant isolation (Organization > Project > Workflow > Execution > Action), and RBAC foundational types (`ProjectType`, `RoleScope`). Additionally, migrate all existing ID types from `domain-key` 0.1.1 `key_type!` (SmartString-based) to `domain-key` 0.2.1 `define_uuid!` (UUID-based, `Copy`, 16 bytes) for consistency and performance.
 
-**Technical Approach**: Follow existing patterns in `nebula-core` for ID types (newtype wrappers with trait implementations), extend `ScopeLevel` enum with new variants, add Copy-able enums for RBAC, and update prelude exports. All changes are compile-time type system extensions with zero runtime overhead.
+**Technical Approach**: Upgrade `domain-key` to 0.2.1 with `uuid-v4` feature. Replace all `key_type!` / `define_domain!` ID definitions with `define_uuid!` macro. This gives all entity IDs: `Copy` semantics, 16-byte UUID storage, validated format, and uniform API. Extend `ScopeLevel` enum with new variants, add Copy-able enums for RBAC, and update prelude exports. String-based keys (`ParameterKey`, `CredentialKey`) remain on `key_type!`.
 
 ## Technical Context
 
 **Language/Version**: Rust 2024 Edition (MSRV: 1.92)
 **Primary Dependencies**: 
-- `serde` v1.0 (already present) - for ID serialization
-- `uuid` v1.0 (already present) - currently used by ExecutionId pattern
-No new dependencies required.
+- `domain-key` 0.2.1 with `serde` + `uuid-v4` features (upgrade from 0.1.1)
+- `serde` v1.0 (already present) - for serialization
+- `uuid` v1.0 (already present) - used internally by domain-key Uuid<D>
 
 **Storage**: N/A (this feature only adds types, no persistence logic)
 **Testing**: `cargo test -p nebula-core`, unit tests for each new type, scope containment tests
@@ -23,20 +23,23 @@ No new dependencies required.
 **Project Type**: Extension to existing `nebula-core` crate (Core layer of 16-crate workspace)
 
 **Performance Goals**: 
-- Zero runtime overhead (all types are zero-cost abstractions)
+- All entity IDs are `Copy` (16 bytes, stack-allocated, zero heap allocation)
 - Copy-able enums for hot path usage (no allocations)
-- String-based IDs incur heap allocation on creation (acceptable for identifiers)
+- No string round-trip for UUID creation (`v4()` directly)
 
 **Constraints**: 
-- Must maintain 100% backward compatibility (only additive changes)
-- Must not break any existing tests in workspace
-- Must follow existing patterns exactly (same traits, same structure)
+- Must upgrade `domain-key` from 0.1.1 to 0.2.1
+- Migrating existing ID types from `key_type!` to `define_uuid!` is a breaking API change (acceptable pre-1.0)
+- Must follow existing code patterns and style in nebula-core
+- Must fix all compilation errors in workspace after migration
 
 **Scale/Scope**: 
-- 3 new ID types (ProjectId, RoleId, OrganizationId)
+- Upgrade domain-key dependency (Cargo.toml)
+- Migrate 8 existing ID types from `key_type!` to `define_uuid!`
+- Add 3 new ID types (ProjectId, RoleId, OrganizationId) via `define_uuid!`
 - 2 new ScopeLevel variants (Organization, Project)
 - 2 new enums (ProjectType, RoleScope)
-- ~300 lines of code total (following existing patterns)
+- Fix all call sites in workspace that use old `Key<D>` API
 
 ## Constitution Check
 
@@ -44,11 +47,11 @@ No new dependencies required.
 
 Verify compliance with `.specify/memory/constitution.md` principles:
 
-- [x] **Type Safety First**: Feature is entirely about adding type-safe newtypes (ProjectId, RoleId, etc.) and enums (ProjectType, RoleScope). All domain identifiers use newtype patterns. No String-based identifiers exposed in public API.
+- [x] **Type Safety First**: Feature uses `domain-key` 0.2.1 `Uuid<D>` for compile-time domain separation. All entity IDs are UUID-based with phantom type parameters preventing mixing. `Copy` semantics eliminate `.clone()` noise.
 - [x] **Isolated Error Handling**: No errors introduced (types don't have error conditions). Future error handling will use existing `CoreError` from nebula-core.
 - [x] **Test-Driven Development**: Test strategy defined - write tests for each ID type (creation, conversion, Display), scope containment hierarchy, and serialization before implementing.
 - [x] **Async Discipline**: N/A - no async code in this feature (pure type definitions)
-- [x] **Modular Architecture**: Extends existing `nebula-core` crate (Core layer). No new dependencies, no layer violations. Future crates (nebula-user, nebula-project) will depend on these types.
+- [x] **Modular Architecture**: Extends existing `nebula-core` crate (Core layer). Existing dependency upgraded (domain-key 0.1.1 → 0.2.1); no new crate dependencies added. Future crates (nebula-user, nebula-project) will depend on these types.
 - [x] **Observability**: N/A - no runtime behavior to observe (compile-time types only)
 - [x] **Simplicity**: Feature adds necessary types for identity system without premature abstractions. Each type has clear, single purpose. No speculative features.
 - [x] **Rust API Guidelines**: All types follow rustdoc conventions, standard naming (snake_case/PascalCase), include examples. Quality gates (fmt, clippy, doc) will run after implementation.
@@ -74,13 +77,14 @@ specs/006-extend-core-identity/
 crates/
 └── nebula-core/          # EXISTING crate - will be modified
     ├── src/
-    │   ├── lib.rs        # Add exports to prelude
-    │   ├── id.rs         # Add: ProjectId, RoleId, OrganizationId
+    │   ├── lib.rs        # Update prelude exports, re-export UuidParseError
+    │   ├── id.rs         # Migrate all key_type! → define_uuid!, add 3 new types
+    │   ├── keys.rs       # Unchanged (ParameterKey, CredentialKey stay on key_type!)
     │   ├── scope.rs      # Extend: ScopeLevel enum with Organization, Project
     │   └── types.rs      # Add: ProjectType, RoleScope enums
     ├── tests/
-    │   └── (existing)    # No new test files needed (use inline tests)
-    └── Cargo.toml        # No changes (no new dependencies)
+    │   └── (inline)      # Update existing tests for new Uuid<D> API
+    └── Cargo.toml        # Upgrade domain-key to 0.2.1, add uuid-v4 feature
 ```
 
 **Structure Decision**: 
@@ -119,14 +123,14 @@ All principles followed without exceptions. Feature adds necessary type safety i
    - Output: Pattern for ProjectType and RoleScope
 
 4. **Naming Convention Verification**: Check against Rust API Guidelines
-   - Verify: `ProjectId::new()`, `as_str()`, `into_string()` match existing patterns
+   - Verify: `ProjectId::v4()`, `parse()`, `get()` follow `domain-key` `Uuid<D>` API
    - Verify: enum variant names follow PascalCase
    - Output: Naming checklist
 
 **Outputs**: 
 - `research.md` with all patterns documented
 - Design decisions for scope containment logic
-- Justification for string-based IDs vs UUID-based
+- Justification for `Uuid<D>` over `Key<D>` documented in research.md
 
 ---
 
@@ -138,22 +142,22 @@ All principles followed without exceptions. Feature adds necessary type safety i
 
 **Outputs**: `data-model.md` with:
 
-1. **ID Type Definitions**:
+1. **ID Type Definitions** (using `domain-key` 0.2.1 `define_uuid!`):
 ```rust
-// Template (following ExecutionId, WorkflowId patterns)
-pub struct ProjectId(String);
-pub struct RoleId(String);  
-pub struct OrganizationId(String);
+use domain_key::define_uuid;
 
-// Methods (same for all three):
-impl ProjectId {
-    pub fn new(id: impl Into<String>) -> Self;
-    pub fn as_str(&self) -> &str;
-    pub fn into_string(self) -> String;
-}
+// All entity IDs — UUID-based, Copy, 16 bytes
+define_uuid!(ProjectIdDomain => ProjectId);
+define_uuid!(RoleIdDomain => RoleId);
+define_uuid!(OrganizationIdDomain => OrganizationId);
 
-// Traits: Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Display
-// From<String>, From<&str>
+// Existing IDs migrated from key_type! to define_uuid!
+define_uuid!(UserIdDomain => UserId);
+define_uuid!(TenantIdDomain => TenantId);
+// ... etc for all 8 existing types
+
+// API: v4(), nil(), parse(), get(), as_bytes(), domain(), is_nil()
+// Traits: Copy, Clone, Debug, Display, FromStr, Eq, Ord, Hash, Serialize, Deserialize
 ```
 
 2. **Scope Hierarchy Extension**:
@@ -206,27 +210,29 @@ pub enum RoleScope {
 **Outputs**: `quickstart.md` with usage examples:
 
 ```rust
-// Example 1: Creating type-safe IDs
+// Example 1: Creating type-safe IDs (UUID-based, Copy)
 use nebula_core::{ProjectId, RoleId, OrganizationId};
 
-let project_id = ProjectId::new("project-123");
-let role_id = RoleId::new("role:admin");
-let org_id = OrganizationId::new("acme-corp");
+let project_id = ProjectId::v4();       // random UUID
+let role_id = RoleId::v4();
+let org_id = OrganizationId::v4();
+
+// Copy — no .clone() needed
+let copy = project_id;
+assert_eq!(project_id, copy);
 
 // Type safety prevents mixing:
 fn process_project(id: ProjectId) { /* ... */ }
 // process_project(role_id); // Compile error!
 
 // Example 2: Scope-based isolation
-use nebula_core::{ScopeLevel, ProjectId};
+use nebula_core::{ScopeLevel, ProjectId, ExecutionId};
 
-let project_scope = ScopeLevel::Project(ProjectId::new("proj-a"));
-let execution_scope = ScopeLevel::Execution(ExecutionId::new());
+let project_scope = ScopeLevel::Project(ProjectId::v4());
+let execution_scope = ScopeLevel::Execution(ExecutionId::v4());
 
 // Check containment for resource isolation
-if project_scope.is_contained_in(&ScopeLevel::Global) {
-    println!("Project is within global scope");
-}
+assert!(execution_scope.is_contained_in(&project_scope));
 
 // Example 3: RBAC types
 use nebula_core::{ProjectType, RoleScope};
@@ -261,14 +267,17 @@ This will update `CLAUDE.md` with:
 **Note**: This phase is executed by `/speckit.tasks`, not `/speckit.plan`.
 
 Tasks will be generated based on:
-- Add 3 ID types to `id.rs` (following ExecutionId pattern)
+- Upgrade `domain-key` to 0.2.1 with `uuid-v4` feature in Cargo.toml
+- Migrate 8 existing ID types from `key_type!` to `define_uuid!` in `id.rs`
+- Add 3 new ID types via `define_uuid!` in `id.rs`
+- Fix all compilation errors across workspace (call sites using old API)
 - Extend `ScopeLevel` enum in `scope.rs` (2 variants + 6 methods)
 - Add 2 enums to `types.rs`
-- Update `lib.rs` prelude exports (5 new types)
-- Write tests for each new type (~10 test functions)
+- Update `lib.rs` prelude exports
+- Write tests for new and migrated types
 - Update module documentation
 
-**Estimated tasks**: 8-10 independent tasks suitable for parallel implementation.
+**Estimated tasks**: 10-15 tasks (migration adds complexity vs pure additive).
 
 ---
 
@@ -284,7 +293,7 @@ Tasks will be generated based on:
 - [ ] data-model.md complete with all type signatures
 - [ ] quickstart.md has runnable examples
 - [ ] Agent context updated
-- [ ] No breaking changes to existing API
+- [ ] Migration changes documented; all call sites identified
 
 ### Phase 2 Completion (verified by /speckit.tasks)
 - [ ] All code follows existing patterns exactly
@@ -301,9 +310,10 @@ Tasks will be generated based on:
 
 | Risk | Impact | Mitigation | Status |
 |------|--------|------------|--------|
-| Breaking existing code | HIGH | Only additive changes, enum is non-exhaustive friendly | ✅ Mitigated |
+| domain-key 0.2.1 API breaking changes | HIGH | Pre-1.0 project, mechanical migration, `cargo check --workspace` catches all | 📋 Planned |
+| Other crates using old ID API | HIGH | Fix all call sites after migration, compile-time verification | 📋 Planned |
 | Scope containment bugs | MEDIUM | Comprehensive test matrix for all combinations | 📋 Planned |
-| Inconsistent patterns | MEDIUM | Strict adherence to existing ID type template | 📋 Planned |
+| domain-key 0.2.1 compatibility issues | MEDIUM | Published crate by project author, tested before upgrading | 📋 Planned |
 | Missing exports in prelude | LOW | Verify with quickstart examples | 📋 Planned |
 | Circular dependencies | LOW | All types in core layer, no new crate dependencies | ✅ Mitigated |
 
@@ -331,7 +341,7 @@ Tasks will be generated based on:
 5. ✅ Zero clippy warnings
 6. ✅ Documentation builds and includes examples
 7. ✅ Quickstart examples compile and run
-8. ✅ No breaking changes to public API
+8. ✅ All type names preserved; API migrated to `Uuid<D>` (pre-1.0 breaking change accepted)
 
 ---
 
