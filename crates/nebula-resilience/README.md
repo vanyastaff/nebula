@@ -1,390 +1,230 @@
-# Nebula Resilience
+# nebula-resilience
 
-Production-ready resilience patterns for Rust applications, fully integrated with the Nebula ecosystem.
+Production-ready resilience patterns for Rust with compile-time configuration validation via const generics and typestate patterns.
 
-## Overview
+## Patterns
 
-`nebula-resilience` provides comprehensive resilience patterns including circuit breakers, retries, timeouts, bulkheads, rate limiting, and more. It's designed to work seamlessly with other Nebula crates for configuration management, logging, and value handling.
-
-## Key Features
-
-### 🛡️ Resilience Patterns
-- **Circuit Breaker**: Automatic failure detection and recovery
-- **Retry**: Configurable retry strategies with backoff
-- **Timeout**: Operation timeouts with context
-- **Bulkhead**: Resource isolation and concurrency control
-- **Rate Limiting**: Multiple rate limiting algorithms
-- **Fallback**: Graceful degradation strategies
-- **Hedge**: Reduce tail latency with parallel requests
-
-### 🔧 Ecosystem Integration
-- **Configuration**: Built on `nebula-config` for flexible configuration management
-- **Logging**: Structured logging with `nebula-log`
-- **Dynamic Values**: Runtime configuration using `nebula-value`
-
-### 📊 Advanced Features
-- **Policy Composition**: Combine multiple patterns
-- **Hot Configuration Reload**: Update settings without restarts
-- **Metrics Collection**: Built-in observability
-- **Async/Await Support**: First-class async support
+| Pattern | Description |
+|---------|-------------|
+| **Circuit Breaker** | Failure detection with automatic recovery (Closed / Open / HalfOpen states) |
+| **Retry** | Configurable strategies with backoff, jitter, and retry conditions |
+| **Timeout** | Operation timeouts backed by `tokio::time::timeout` |
+| **Bulkhead** | Concurrency isolation via semaphore-based permits |
+| **Rate Limiter** | Token bucket, leaky bucket, sliding window, adaptive, and Governor-backed |
+| **Fallback** | Graceful degradation with fallback chains |
+| **Hedge** | Tail-latency reduction via parallel speculative requests |
 
 ## Quick Start
 
-Add to your `Cargo.toml`:
-
 ```toml
 [dependencies]
-nebula-resilience = "0.1.0"
-nebula-log = "0.1.0"  # For logging
-tokio = { version = "1.0", features = ["full"] }
+nebula-resilience = { path = "crates/nebula-resilience" }
+tokio = { version = "1", features = ["full"] }
 ```
-
-## Basic Usage
 
 ```rust
 use nebula_resilience::prelude::*;
 
 #[tokio::main]
-async fn main() -> ConfigResult<()> {
-    // Initialize logging
-    nebula_log::auto_init()?;
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Compile-time validated circuit breaker: 5 failures, 30s reset
+    let breaker = CircuitBreaker::<5, 30_000>::new(
+        CircuitBreakerConfig::new().with_half_open_limit(3),
+    )?;
 
-    // Create a resilience policy
-    let policy = ResiliencePolicy::named("my-service")
-        .with_timeout(Duration::from_secs(10))
-        .with_retry(RetryStrategy::exponential(3, Duration::from_millis(100)))
-        .with_circuit_breaker(CircuitBreakerConfig::default());
+    // Exponential retry: max 3 attempts
+    let retry = exponential_retry::<3>()?;
 
-    // Execute operations with resilience
-    let result = policy.execute(|| async {
-        // Your operation here
-        Ok("Success!")
-    }).await?;
+    let result = breaker.execute(|| async {
+        retry.execute_resilient(|| async {
+            Ok::<_, ResilienceError>("success")
+        }).await
+    }).await;
 
-    info!(result = %result, "Operation completed");
+    println!("{result:?}");
     Ok(())
 }
 ```
 
-## Best Practices
+## Circuit Breaker
 
-1. **Use Presets**: Start with predefined configurations for common scenarios
-2. **Structured Logging**: Always initialize `nebula-log` for observability
-3. **Hot Reload**: Use `DynamicConfig` for runtime configuration updates
-4. **Error Classification**: Leverage automatic error classification for retry decisions
-5. **Policy Composition**: Combine patterns for comprehensive resilience
-6. **Metrics**: Enable metrics collection for monitoring and alerting
+Const-generic configuration validated at compile time. Three preset aliases are provided:
+
+```rust
+use nebula_resilience::prelude::*;
+
+// Presets
+let _fast   = FastCircuitBreaker::default();     // 3 failures, 10s reset
+let _std    = StandardCircuitBreaker::default();  // 5 failures, 30s reset
+let _slow   = SlowCircuitBreaker::default();     // 10 failures, 60s reset
+
+// Custom
+let breaker = CircuitBreaker::<7, 20_000>::new(
+    CircuitBreakerConfig::new()
+        .with_half_open_limit(2)
+        .with_min_operations(10),
+)?;
+
+let result = breaker.execute(|| async {
+    Ok::<_, ResilienceError>("ok")
+}).await;
+```
+
+A fast-path atomic state check avoids acquiring the inner lock on the hot path when the breaker is closed.
+
+## Retry
+
+Backoff policies (`ExponentialBackoff`, `LinearBackoff`, `FixedDelay`, `CustomBackoff`) combine with retry conditions (`ConservativeCondition`, `AggressiveCondition`, `TimeBasedCondition`) through const generics:
+
+```rust
+use nebula_resilience::prelude::*;
+
+// Convenience constructors
+let _standard   = exponential_retry::<3>()?;   // StandardRetry
+let _quick      = fixed_retry::<50, 2>()?;     // QuickRetry
+let _aggressive = aggressive_retry::<5>()?;    // AggressiveRetry
+
+// Custom configuration
+let config = RetryConfig::new(
+    ExponentialBackoff::<100, 20, 5000>::default(),
+    ConservativeCondition::<3>::new(),
+).with_jitter(JitterPolicy::Equal);
+
+let strategy = RetryStrategy::new(config)?;
+
+let (value, stats) = strategy.execute(|| async {
+    Ok::<_, ResilienceError>("done")
+}).await?;
+
+println!("attempts: {}", stats.attempts);
+```
+
+## Bulkhead
+
+Semaphore-based concurrency isolation. Permits are RAII — dropping a permit releases the semaphore slot synchronously.
+
+```rust
+use nebula_resilience::prelude::*;
+
+let bulkhead = Bulkhead::new(BulkheadConfig {
+    max_concurrent: 10,
+    max_wait: Duration::from_secs(5),
+});
+
+let permit = bulkhead.acquire().await?;
+// ... do work ...
+drop(permit); // slot released
+```
+
+## Rate Limiter
+
+Five implementations behind the `RateLimiter` trait:
+
+```rust
+use nebula_resilience::{TokenBucket, LeakyBucket, SlidingWindow, AdaptiveRateLimiter, RateLimiter};
+
+let tb = TokenBucket::new(100.0, 100);       // 100 req/s, burst 100
+let lb = LeakyBucket::new(50.0, 50);         // 50 req/s, capacity 50
+let sw = SlidingWindow::new(1000, 60);        // 1000 req per 60s window
+let adaptive = AdaptiveRateLimiter::new(100.0, 10.0, 500.0); // min/max bounds
+```
+
+## Fallback
+
+```rust
+use nebula_resilience::{FallbackStrategy, ValueFallback};
+
+let fallback = ValueFallback::new("default response".to_string());
+let value = fallback.fallback(&nebula_resilience::ResilienceError::Timeout {
+    duration: std::time::Duration::from_secs(5),
+}).await;
+```
+
+## Hedge
+
+Speculative execution to cut tail latency:
+
+```rust
+use nebula_resilience::{HedgeConfig, HedgeExecutor};
+use std::time::Duration;
+
+let hedge = HedgeExecutor::new(HedgeConfig {
+    delay: Duration::from_millis(100),
+    max_extra_requests: 1,
+});
+
+let result = hedge.execute(|| async {
+    Ok::<_, nebula_resilience::ResilienceError>("fast path")
+}).await;
+```
+
+## Policy Composition
+
+Compose patterns into a layered resilience chain:
+
+```rust
+use nebula_resilience::{ResilienceChain, ResilienceLayer, LayerBuilder};
+use std::time::Duration;
+
+let chain = LayerBuilder::new()
+    .timeout(Duration::from_secs(10))
+    .retry_exponential(3, Duration::from_millis(100))
+    .build();
+```
+
+Or use `ResilienceManager` for per-service policy management with built-in metrics:
+
+```rust
+use nebula_resilience::prelude::*;
+
+let manager = ResilienceManager::new();
+// Register service-level policies, collect metrics, etc.
+```
+
+## Type Safety Features
+
+- **Const generics** — configuration like failure thresholds and delays validated at compile time
+- **Typestate pattern** — circuit breaker states (Closed, Open, HalfOpen) tracked in the type system
+- **Sealed traits** — controlled extensibility for backoff and condition traits
+- **Phantom types** — zero-cost state markers with no runtime overhead
+
+## Lint Policy
+
+The crate enforces strict linting:
+
+```rust
+#![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::perf)]
+#![warn(missing_docs)]
+#![deny(unsafe_code)]
+```
 
 ## Examples
 
-See the `examples/` directory for complete examples:
+| Example | Description |
+|---------|-------------|
+| `circuit_breaker_demo` | Circuit breaker states and recovery |
+| `retry_manager_demo` | Retry strategies with manager |
+| `rate_limiter_demo` | Rate limiter algorithms |
+| `bulkhead_timeout_demo` | Bulkhead with timeout composition |
+| `pattern_composition` | Composing multiple patterns |
+| `ecosystem_integration` | Full Nebula ecosystem integration |
+| `dynamic_config_builder` | Runtime configuration with hot reload |
+| `observability_demo` | Metrics and observability hooks |
+| `simple_manager` | Minimal manager usage |
+| `simple_macros_demo` | Helper macro usage |
 
-- `ecosystem_integration.rs` - Full ecosystem integration demo
+```bash
+cargo run -p nebula-resilience --example circuit_breaker_demo
+```
+
+## Benchmarks
+
+```bash
+cargo bench -p nebula-resilience
+```
+
+Four benchmark suites: `circuit_breaker`, `retry`, `rate_limiter`, `manager`.
 
 ## License
 
 Licensed under either of Apache License, Version 2.0 or MIT license at your option.
-
-Resilience patterns for the Nebula workflow engine, providing robust error handling, retry mechanisms, circuit breakers, and bulkhead patterns.
-
-## Features
-
-- **Timeout Management**: Configurable timeouts for all I/O operations
-- **Retry Strategies**: Exponential backoff with jitter and circuit breaker integration
-- **Circuit Breakers**: Automatic failure detection and recovery
-- **Bulkheads**: Resource isolation and parallelism limits
-- **Resilience Policies**: Configurable resilience strategies per operation type
-
-## Quick Start
-
-```rust
-use nebula_resilience::{
-    timeout, retry, circuit_breaker, bulkhead,
-    ResiliencePolicy, ResilienceBuilder
-};
-
-// Simple timeout wrapper
-let result = timeout(Duration::from_secs(30), async_operation()).await;
-
-// With retry and circuit breaker
-let policy = ResiliencePolicy::default()
-    .with_timeout(Duration::from_secs(10))
-    .with_retry(3, Duration::from_secs(1))
-    .with_circuit_breaker(5, Duration::from_secs(60));
-
-let result = policy.execute(async_operation()).await;
-
-// Bulkhead for resource isolation
-let bulkhead = bulkhead::Bulkhead::new(10);
-let result = bulkhead.execute(async_operation()).await;
-```
-
-## Core Components
-
-### Timeout
-
-The timeout module provides wrappers for async operations with configurable timeouts:
-
-```rust
-use nebula_resilience::timeout;
-use std::time::Duration;
-
-// Basic timeout
-let result = timeout(Duration::from_secs(30), async_operation()).await;
-
-// Create timeout-aware future without executing
-let timeout_future = timeout::with_timeout(Duration::from_secs(10), async_operation());
-```
-
-### Retry
-
-Retry strategies with exponential backoff and jitter:
-
-```rust
-use nebula_resilience::retry::{RetryStrategy, retry};
-
-let strategy = RetryStrategy::new(3, Duration::from_secs(1))
-    .with_max_delay(Duration::from_secs(30))
-    .with_jitter(0.1);
-
-let result = retry(strategy, || async_operation()).await;
-```
-
-### Circuit Breaker
-
-Automatic failure detection and recovery:
-
-```rust
-use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
-
-let config = CircuitBreakerConfig {
-    failure_threshold: 5,
-    reset_timeout: Duration::from_secs(60),
-    half_open_max_operations: 3,
-    count_timeouts: true,
-};
-
-let circuit_breaker = CircuitBreaker::with_config(config);
-let result = circuit_breaker.execute(async_operation()).await;
-```
-
-### Bulkhead
-
-Resource isolation and parallelism limits:
-
-```rust
-use nebula_resilience::bulkhead::Bulkhead;
-
-let bulkhead = Bulkhead::new(10); // Max 10 concurrent operations
-let result = bulkhead.execute(async_operation()).await;
-
-// With timeout
-let result = bulkhead.execute_with_timeout(
-    Duration::from_secs(30),
-    async_operation()
-).await;
-```
-
-### Resilience Policy
-
-Unified policy combining multiple resilience patterns:
-
-```rust
-use nebula_resilience::{ResiliencePolicy, ResilienceBuilder};
-
-let policy = ResilienceBuilder::new()
-    .timeout(Duration::from_secs(10))
-    .retry(3, Duration::from_secs(1))
-    .circuit_breaker(5, Duration::from_secs(60))
-    .bulkhead(20)
-    .build();
-
-let result = policy.execute(async_operation()).await;
-```
-
-## Predefined Policies
-
-Common resilience policies for different operation types:
-
-```rust
-use nebula_resilience::policies;
-
-// Database operations
-let db_policy = policies::database();
-
-// HTTP API calls
-let http_policy = policies::http_api();
-
-// File operations
-let file_policy = policies::file_operations();
-
-// Long-running operations
-let long_policy = policies::long_running();
-
-// Critical operations (minimal resilience)
-let critical_policy = policies::critical();
-```
-
-## Error Handling
-
-All resilience operations return `ResilienceResult<T>` which can contain:
-
-- `ResilienceError::Timeout` - Operation exceeded timeout
-- `ResilienceError::CircuitBreakerOpen` - Circuit breaker is open
-- `ResilienceError::BulkheadFull` - Bulkhead is at capacity
-- `ResilienceError::RetryLimitExceeded` - All retry attempts failed
-- `ResilienceError::Cancelled` - Operation was cancelled
-- `ResilienceError::InvalidConfig` - Invalid configuration
-
-```rust
-use nebula_resilience::ResilienceError;
-
-match result {
-    Ok(value) => println!("Success: {:?}", value),
-    Err(ResilienceError::Timeout { duration }) => {
-        println!("Operation timed out after {:?}", duration);
-    }
-    Err(ResilienceError::CircuitBreakerOpen { state }) => {
-        println!("Circuit breaker is open: {}", state);
-    }
-    Err(e) => println!("Other error: {:?}", e),
-}
-```
-
-## Configuration
-
-### Retry Strategy
-
-```rust
-let strategy = RetryStrategy::new(3, Duration::from_secs(1))
-    .with_max_delay(Duration::from_secs(30))
-    .with_jitter(0.1)
-    .without_exponential();
-```
-
-### Circuit Breaker
-
-```rust
-let config = CircuitBreakerConfig {
-    failure_threshold: 5,           // Open after 5 failures
-    reset_timeout: Duration::from_secs(60),  // Wait 60s before half-open
-    half_open_max_operations: 3,    // Allow 3 operations in half-open
-    count_timeouts: true,           // Count timeouts as failures
-};
-```
-
-### Bulkhead
-
-```rust
-let bulkhead = BulkheadBuilder::new(10)
-    .with_max_queue_size(50)
-    .with_reject_when_full(true)
-    .build();
-```
-
-## Best Practices
-
-1. **Always use timeouts** for I/O operations to prevent indefinite blocking
-2. **Configure retry strategies** based on error characteristics (retryable vs terminal)
-3. **Use circuit breakers** for external dependencies that can fail repeatedly
-4. **Apply bulkheads** to limit resource consumption and prevent cascading failures
-5. **Combine patterns** using resilience policies for comprehensive protection
-6. **Monitor and adjust** resilience parameters based on production metrics
-
-## Examples
-
-### Database Operation with Full Resilience
-
-```rust
-use nebula_resilience::policies;
-
-async fn save_user(user: User) -> Result<(), Error> {
-    let policy = policies::database();
-    
-    policy.execute(|| async {
-        // Database operation here
-        db.save_user(&user).await
-    }).await.map_err(|e| Error::Resilience(e))?
-}
-```
-
-### HTTP API Call with Custom Policy
-
-```rust
-use nebula_resilience::{ResilienceBuilder, ResiliencePolicy};
-
-async fn call_external_api() -> Result<ApiResponse, Error> {
-    let policy = ResilienceBuilder::new()
-        .timeout(Duration::from_secs(15))
-        .retry(2, Duration::from_secs(2))
-        .circuit_breaker(3, Duration::from_secs(30))
-        .bulkhead(25)
-        .build();
-    
-    policy.execute(|| async {
-        // HTTP request here
-        http_client.get("/api/data").await
-    }).await.map_err(|e| Error::Resilience(e))?
-}
-```
-
-### File Processing with Bulkhead
-
-```rust
-use nebula_resilience::bulkhead::Bulkhead;
-
-async fn process_files(files: Vec<PathBuf>) -> Result<Vec<ProcessedFile>, Error> {
-    let bulkhead = Bulkhead::new(5); // Max 5 concurrent file operations
-    
-    let mut handles = Vec::new();
-    for file in files {
-        let bulkhead = bulkhead.clone();
-        let handle = tokio::spawn(async move {
-            bulkhead.execute(|| async {
-                // File processing logic here
-                process_single_file(&file).await
-            }).await
-        });
-        handles.push(handle);
-    }
-    
-    // Collect results
-    let mut results = Vec::new();
-    for handle in handles {
-        let result = handle.await??;
-        results.push(result);
-    }
-    
-    Ok(results)
-}
-```
-
-## Testing
-
-The crate includes comprehensive tests for all resilience patterns:
-
-```bash
-# Run all tests
-cargo test
-
-# Run tests with output
-cargo test -- --nocapture
-
-# Run specific test
-cargo test test_circuit_breaker_failure_threshold
-```
-
-## Contributing
-
-When contributing to the resilience crate:
-
-1. Follow Rust naming conventions
-2. Add comprehensive tests for new functionality
-3. Use structured logging with tracing
-4. Ensure all async operations handle cancellation properly
-5. Add documentation for public APIs
-6. Follow the established error handling patterns
-
-## License
-
-This crate is part of the Nebula workflow engine and is licensed under the same terms.
