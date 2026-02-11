@@ -44,7 +44,6 @@ fn main() {
     println!("\n2. Execution context (like opening a tracing span):");
     {
         let exec = ExecutionContext::new("exec-001", "workflow-order", "tenant-123").with_resource(
-            "LoggerResource",
             LoggerResource::new()
                 .with_sentry_dsn("https://execution@sentry.io/project")
                 .with_tag("execution_id", "exec-001")
@@ -58,7 +57,6 @@ fn main() {
         println!("\n3. Nested node context (child span - inherits execution resources):");
         {
             let node = NodeContext::new("node-payment", "validate-card").with_resource(
-                "LoggerResource",
                 LoggerResource::new()
                     .with_webhook("https://hooks.slack.com/payment-team")
                     .with_tag("node_id", "node-payment")
@@ -76,7 +74,6 @@ fn main() {
             println!("\n4. Deeper nesting - another action (inherits both parent spans):");
             {
                 let action = NodeContext::new("node-payment", "charge-card").with_resource(
-                    "LoggerResource",
                     LoggerResource::new()
                         .with_log_level(LogLevel::Debug) // Override log level
                         .with_tag("retry_count", "0"),
@@ -119,14 +116,14 @@ fn main() {
         "
 // Open node span ONCE
 let node = NodeContext::new(\"payment-node\", \"\")
-    .with_resource(\"LoggerResource\", node_level_logger); // ← For ALL actions
+    .with_resource(node_level_logger); // ← For ALL actions
 
 let _node_guard = node.enter();
 
 // Action 1: Inherits node resources
 {{
     let action1 = NodeContext::new(\"payment-node\", \"validate\")
-        .with_resource(\"LoggerResource\", LoggerResource::new()
+        .with_resource(LoggerResource::new()
             .with_tag(\"action\", \"validate\")
         );
     let _g = action1.enter();
@@ -137,7 +134,7 @@ let _node_guard = node.enter();
 // Action 2: Different override
 {{
     let action2 = NodeContext::new(\"payment-node\", \"charge\")
-        .with_resource(\"LoggerResource\", LoggerResource::new()
+        .with_resource(LoggerResource::new()
             .with_webhook(\"https://different-webhook.com\") // Override!
             .with_tag(\"action\", \"charge\")
         );

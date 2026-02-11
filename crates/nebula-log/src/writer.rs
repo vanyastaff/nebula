@@ -43,7 +43,7 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
                     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
                     let prefix = path.file_name().ok_or_else(|| {
                         use crate::core::LogError;
-                        LogError::configuration_error(format!(
+                        LogError::Config(format!(
                             "Invalid file path (no filename): '{}'",
                             path.display()
                         ))
@@ -54,7 +54,7 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
                     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
                     let prefix = path.file_name().ok_or_else(|| {
                         use crate::core::LogError;
-                        LogError::configuration_error(format!(
+                        LogError::Config(format!(
                             "Invalid file path (no filename): '{}'",
                             path.display()
                         ))
@@ -63,8 +63,9 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
                 }
                 Some(Rolling::Size(_)) => {
                     use crate::core::LogError;
-                    return Err(LogError::configuration_error(
-                        "Size-based rolling is not yet implemented. Use Daily or Hourly.",
+                    return Err(LogError::Config(
+                        "Size-based rolling is not yet implemented. Use Daily or Hourly."
+                            .to_string(),
                     ));
                 }
                 _ => tracing_appender::rolling::never(".", path),
@@ -82,13 +83,13 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
         WriterConfig::Multi(writers) => {
             // For now, use the first writer
             // TODO(feature): Implement proper multi-writer with fanout or tee functionality
-            if writers.is_empty() {
+            let [first, ..] = writers.as_slice() else {
                 use crate::core::LogError;
-                return Err(LogError::configuration_error(
-                    "Multi writer needs at least one writer",
+                return Err(LogError::Config(
+                    "Multi writer needs at least one writer".to_string(),
                 ));
-            }
-            return make_writer(&writers[0]);
+            };
+            return make_writer(first);
         }
     };
 

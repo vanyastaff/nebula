@@ -24,7 +24,8 @@ async fn main() -> Result<()> {
 
 async fn handle_user_request(user_id: String) -> Result<()> {
     // Set request-specific context
-    let ctx = Context::current()
+    let ctx = (*Context::current())
+        .clone()
         .with_request_id(format!("req-{}", uuid::Uuid::new_v4()))
         .with_user_id(&user_id);
 
@@ -49,4 +50,5 @@ fn process_user_data() {
         request_id = ?ctx.request_id,
         "Processing user data"
     );
+    // Note: ctx is Arc<Context> — field access works transparently via Deref.
 }

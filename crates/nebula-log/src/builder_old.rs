@@ -1,8 +1,7 @@
 //! Logger builder implementation
 
 // External dependencies
-use parking_lot::Mutex;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 // Internal crates
@@ -78,7 +77,7 @@ impl LoggerBuilder {
         // Create the filter
         let filter = EnvFilter::try_new(&self.config.level).map_err(|e| {
             use crate::core::LogError;
-            LogError::filter_parsing_error(format!("{}: {}", &self.config.level, e))
+            LogError::Filter(format!("{}: {}", &self.config.level, e))
         })?;
 
         // Get writer for the format layer
@@ -514,18 +513,21 @@ impl ReloadHandle {
     pub fn reload(&self, filter: &str) -> LogResult<()> {
         use crate::core::LogError;
         let new_filter = EnvFilter::try_new(filter)
-            .map_err(|e| LogError::filter_parsing_error(format!("{}: {}", filter, e)))?;
-        self.filter.reload(new_filter).map_err(|e| {
-            LogError::configuration_error(format!("Failed to reload filter: {e}"))
-        })?;
-        *self.current_filter.lock() = filter.to_string();
+            .map_err(|e| LogError::Filter(format!("{}: {}", filter, e)))?;
+        self.filter
+            .reload(new_filter)
+            .map_err(|e| LogError::Config(format!("Failed to reload filter: {e}")))?;
+        *self.current_filter.lock().expect("filter lock poisoned") = filter.to_string();
         Ok(())
     }
 
     /// Get the current filter string
     #[allow(dead_code)]
     pub fn current_filter(&self) -> String {
-        self.current_filter.lock().clone()
+        self.current_filter
+            .lock()
+            .expect("filter lock poisoned")
+            .clone()
     }
 }
 

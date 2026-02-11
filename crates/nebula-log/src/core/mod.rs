@@ -5,7 +5,7 @@
 //! ## Core Components
 //!
 //! ### [`error`] - Error handling
-//! Unified error handling using [`NebulaError`] for all logging operations.
+//! Unified error handling using [`LogError`] for all logging operations.
 //! Provides structured error types for configuration, IO, and filter errors.
 //!
 //! ### [`result`] - Result types

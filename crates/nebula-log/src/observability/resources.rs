@@ -36,6 +36,7 @@ impl Default for NotificationPrefs {
 
 /// Notification severity levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum NotificationSeverity {
     /// Informational notifications
     Info,
@@ -71,9 +72,9 @@ pub enum NotificationSeverity {
 ///     .with_sentry_dsn("https://key@sentry.io/project")
 ///     .with_webhook("https://hooks.slack.com/services/...");
 ///
-/// // Attach to node context (isolated, secure)
+/// // Attach to node context (isolated, secure) — typed by TypeId, no string key
 /// let ctx = NodeContext::new("my-node", "http.request")
-///     .with_resource("LoggerResource", logger);
+///     .with_resource(logger);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggerResource {
@@ -101,6 +102,7 @@ pub struct LoggerResource {
 
 /// Serializable log level wrapper
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum LogLevel {
     /// Trace level
     Trace,

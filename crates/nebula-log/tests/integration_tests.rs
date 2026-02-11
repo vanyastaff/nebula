@@ -7,17 +7,16 @@ use nebula_log::observability::{
     shutdown_hooks,
 };
 use nebula_log::{info, warn};
-use parking_lot::Mutex;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 
 // Serialization lock for tests using global state
-static TEST_LOCK: once_cell::sync::Lazy<Mutex<()>> = once_cell::sync::Lazy::new(|| Mutex::new(()));
+static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 /// Test that observability hooks integrate with standard logging
 #[test]
 fn test_observability_with_logging() {
-    let _guard = TEST_LOCK.lock();
+    let _guard = TEST_LOCK.lock().unwrap();
     shutdown_hooks();
 
     // Initialize logging for test (using default config)
@@ -49,7 +48,7 @@ fn test_observability_with_logging() {
 /// Test that multiple hooks fire on the same event
 #[test]
 fn test_multiple_hooks_same_event() {
-    let _guard = TEST_LOCK.lock();
+    let _guard = TEST_LOCK.lock().unwrap();
     shutdown_hooks();
 
     let count1 = Arc::new(AtomicUsize::new(0));
@@ -93,7 +92,7 @@ fn test_multiple_hooks_same_event() {
 fn test_concurrent_registration() {
     use std::thread;
 
-    let _guard = TEST_LOCK.lock();
+    let _guard = TEST_LOCK.lock().unwrap();
     shutdown_hooks();
 
     // Spawn multiple threads registering hooks concurrently
@@ -129,7 +128,7 @@ fn test_concurrent_registration() {
 /// Test operation tracker RAII behavior
 #[test]
 fn test_operation_tracker_raii() {
-    let _guard = TEST_LOCK.lock();
+    let _guard = TEST_LOCK.lock().unwrap();
     shutdown_hooks();
 
     let completed_count = Arc::new(AtomicUsize::new(0));
@@ -165,7 +164,7 @@ fn test_operation_tracker_raii() {
 /// Test hook shutdown cleanup
 #[test]
 fn test_hook_shutdown_cleanup() {
-    let _guard = TEST_LOCK.lock();
+    let _guard = TEST_LOCK.lock().unwrap();
     shutdown_hooks();
 
     let shutdown_count = Arc::new(AtomicUsize::new(0));
@@ -186,7 +185,7 @@ fn test_hook_shutdown_cleanup() {
 /// Test high-frequency event emission
 #[test]
 fn test_high_frequency_events() {
-    let _guard = TEST_LOCK.lock();
+    let _guard = TEST_LOCK.lock().unwrap();
     shutdown_hooks();
 
     let count = Arc::new(AtomicUsize::new(0));
@@ -212,7 +211,7 @@ fn test_high_frequency_events() {
 /// Test empty event (minimal data)
 #[test]
 fn test_empty_event() {
-    let _guard = TEST_LOCK.lock();
+    let _guard = TEST_LOCK.lock().unwrap();
     shutdown_hooks();
 
     let count = Arc::new(AtomicUsize::new(0));
@@ -232,7 +231,7 @@ fn test_empty_event() {
 /// Test very long event names
 #[test]
 fn test_long_event_name() {
-    let _guard = TEST_LOCK.lock();
+    let _guard = TEST_LOCK.lock().unwrap();
     shutdown_hooks();
 
     let count = Arc::new(AtomicUsize::new(0));

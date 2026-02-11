@@ -70,7 +70,7 @@ macro_rules! measure {
 #[macro_export]
 macro_rules! with_context {
     ($($key:ident = $value:expr),* $(,)?) => {{
-        let ctx = $crate::Context::current()
+        let ctx = (*$crate::Context::current()).clone()
             $(.with_field(stringify!($key), $value))*;
         ctx.set_current()
     }};

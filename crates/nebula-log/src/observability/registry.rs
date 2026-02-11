@@ -5,134 +5,99 @@
 
 use super::hooks::{ObservabilityEvent, ObservabilityHook};
 use arc_swap::ArcSwap;
-use once_cell::sync::Lazy;
-use parking_lot::Mutex;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
-/// Global registry for observability hooks
+/// Hook list stored inside [`ArcSwap`] for lock-free reads.
 ///
-/// This registry maintains a collection of hooks and dispatches
-/// events to all registered hooks.
-///
-/// # Thread Safety
-///
-/// The registry uses `arc_swap::ArcSwap` for lock-free reads during event emission.
-/// Writes (registration/shutdown) use a mutex for coordination.
-///
-/// # Performance
-///
-/// Event emission is lock-free - multiple threads can emit events concurrently
-/// without contention. This is critical for high-throughput systems.
-#[derive(Clone)]
-pub struct ObservabilityRegistry {
-    hooks: Arc<Vec<Arc<dyn ObservabilityHook>>>,
-}
+/// The outer `Arc<Vec<...>>` is managed by `ArcSwap`, and each hook is
+/// individually `Arc`-wrapped so hooks can be shared across registry snapshots.
+type HookList = Vec<Arc<dyn ObservabilityHook>>;
 
-impl ObservabilityRegistry {
-    /// Create a new empty registry
-    fn new() -> Self {
-        Self {
-            hooks: Arc::new(Vec::new()),
+/// Emit an event to a hook list.
+///
+/// Calls `on_event()` on each registered hook with the provided event.
+/// If a hook panics, the panic is caught and logged, and other hooks
+/// continue to receive events.
+///
+/// # Panic Safety
+///
+/// Hooks **must** be internally panic-safe. If a hook panics while holding
+/// internal locks (e.g., a `Mutex`), those locks will be poisoned. The
+/// registry catches the panic and continues dispatching to remaining hooks,
+/// but the panicked hook's internal state may be corrupted. Consider wrapping
+/// fallible hook internals in `catch_unwind` or using lock-free data structures.
+fn emit_to_hooks(hooks: &HookList, event: &dyn ObservabilityEvent) {
+    for hook in hooks.iter() {
+        // No Arc::clone needed — we borrow through the slice reference,
+        // which is kept alive by the ArcSwap guard for the duration of emit.
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            hook.on_event(event);
+        }));
+
+        if let Err(panic_info) = result {
+            tracing::error!(
+                event_name = event.name(),
+                hook_type = std::any::type_name::<dyn ObservabilityHook>(),
+                panic = ?panic_info,
+                "Hook panicked while processing event"
+            );
         }
     }
+}
 
-    /// Register a new hook
-    ///
-    /// The hook's `initialize()` method will be called immediately.
-    /// If initialization panics, the panic is caught and logged.
-    fn register(&self, hook: Arc<dyn ObservabilityHook>) -> Self {
-        // Catch panics during initialization to prevent system crash
-        let hook_clone = Arc::clone(&hook);
-        let result = panic::catch_unwind(AssertUnwindSafe(move || {
-            hook_clone.initialize();
+/// Initialize a hook, catching panics.
+///
+/// Returns `true` if initialization succeeded, `false` if the hook panicked.
+fn try_initialize_hook(hook: &dyn ObservabilityHook) -> bool {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        hook.initialize();
+    }));
+
+    if let Err(panic_info) = result {
+        tracing::error!(
+            hook_type = std::any::type_name::<dyn ObservabilityHook>(),
+            panic = ?panic_info,
+            "Hook initialization panicked"
+        );
+        return false;
+    }
+
+    true
+}
+
+/// Shutdown all hooks in a list, catching panics.
+fn shutdown_hooks_list(hooks: &HookList) {
+    for hook in hooks.iter() {
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            hook.shutdown();
         }));
 
         if let Err(panic_info) = result {
             tracing::error!(
                 hook_type = std::any::type_name::<dyn ObservabilityHook>(),
                 panic = ?panic_info,
-                "Hook initialization panicked"
+                "Hook panicked during shutdown"
             );
-            // Don't register hooks that panic during initialization
-            return self.clone();
         }
-
-        // Create new registry with added hook
-        let mut new_hooks = (*self.hooks).clone();
-        new_hooks.push(hook);
-        Self {
-            hooks: Arc::new(new_hooks),
-        }
-    }
-
-    /// Emit an event to all registered hooks
-    ///
-    /// Calls `on_event()` on each registered hook with the provided event.
-    /// If a hook panics, the panic is caught and logged, and other hooks continue to receive events.
-    pub fn emit(&self, event: &dyn ObservabilityEvent) {
-        for hook in self.hooks.iter() {
-            let hook_clone = Arc::clone(hook);
-            // SAFETY: We use AssertUnwindSafe because we're catching the panic
-            // and logging it. Event emission should never crash the system.
-            let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                hook_clone.on_event(event);
-            }));
-
-            if let Err(panic_info) = result {
-                tracing::error!(
-                    event_name = event.name(),
-                    hook_type = std::any::type_name::<dyn ObservabilityHook>(),
-                    panic = ?panic_info,
-                    "Hook panicked while processing event"
-                );
-            }
-        }
-    }
-
-    /// Shutdown all hooks
-    ///
-    /// Calls `shutdown()` on each hook and returns an empty registry.
-    /// If a hook panics during shutdown, the panic is caught and logged.
-    fn shutdown(&self) -> Self {
-        for hook in self.hooks.iter() {
-            let hook_clone = Arc::clone(hook);
-            let result = panic::catch_unwind(AssertUnwindSafe(move || {
-                hook_clone.shutdown();
-            }));
-
-            if let Err(panic_info) = result {
-                tracing::error!(
-                    hook_type = std::any::type_name::<dyn ObservabilityHook>(),
-                    panic = ?panic_info,
-                    "Hook panicked during shutdown"
-                );
-            }
-        }
-        Self::new()
-    }
-
-    /// Get the number of registered hooks
-    pub fn hook_count(&self) -> usize {
-        self.hooks.len()
     }
 }
 
-/// Global static registry instance using ArcSwap for lock-free reads
+/// Global static hook list using ArcSwap for lock-free reads.
 ///
 /// # Performance Characteristics
 ///
 /// - **Emit (read)**: Lock-free, zero contention across threads
 /// - **Register/Shutdown (write)**: Mutex-coordinated, infrequent operations
 ///
-/// This design optimizes for the common case (emit) at the expense of rare operations (register).
-static REGISTRY: Lazy<ArcSwap<ObservabilityRegistry>> =
-    Lazy::new(|| ArcSwap::from_pointee(ObservabilityRegistry::new()));
+/// This design optimizes for the common case (emit) at the expense of
+/// rare operations (register).
+static HOOKS: LazyLock<ArcSwap<HookList>> = LazyLock::new(|| ArcSwap::from_pointee(Vec::new()));
 
-/// Mutex for coordinating write operations (register/shutdown)
-static WRITE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+/// Mutex for coordinating write operations (register/shutdown).
+static WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-/// Register a global observability hook
+/// Register a global observability hook.
 ///
 /// The hook will receive all events emitted via [`emit_event`].
 ///
@@ -140,6 +105,11 @@ static WRITE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 ///
 /// This is a write operation that requires acquiring a mutex.
 /// It's designed for infrequent calls (during initialization).
+///
+/// # Panic Safety
+///
+/// The hook's `initialize()` method is called immediately. If it panics,
+/// the panic is caught, logged, and the hook is **not** registered.
 ///
 /// # Example
 ///
@@ -151,13 +121,20 @@ static WRITE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 /// register_hook(Arc::new(hook));
 /// ```
 pub fn register_hook(hook: Arc<dyn ObservabilityHook>) {
-    let _guard = WRITE_LOCK.lock();
-    let current = REGISTRY.load();
-    let new_registry = current.register(hook);
-    REGISTRY.store(Arc::new(new_registry));
+    let _guard = WRITE_LOCK.lock().expect("registry write lock poisoned");
+
+    // Initialize the hook; skip registration if it panics
+    if !try_initialize_hook(&*hook) {
+        return;
+    }
+
+    let current = HOOKS.load();
+    let mut new_hooks = (**current).clone();
+    new_hooks.push(hook);
+    HOOKS.store(Arc::new(new_hooks));
 }
 
-/// Emit an event to all registered hooks
+/// Emit an event to all registered hooks.
 ///
 /// All registered hooks will receive this event via their `on_event()` method.
 ///
@@ -183,12 +160,11 @@ pub fn register_hook(hook: Arc<dyn ObservabilityHook>) {
 /// emit_event(&MyEvent);
 /// ```
 pub fn emit_event(event: &dyn ObservabilityEvent) {
-    // Lock-free read via ArcSwap
-    let registry = REGISTRY.load();
-    registry.emit(event);
+    let hooks = HOOKS.load();
+    emit_to_hooks(&hooks, event);
 }
 
-/// Shutdown all registered hooks
+/// Shutdown all registered hooks.
 ///
 /// Calls `shutdown()` on each hook and clears the registry.
 /// This should typically be called during application shutdown.
@@ -206,16 +182,16 @@ pub fn emit_event(event: &dyn ObservabilityEvent) {
 /// shutdown_hooks();
 /// ```
 pub fn shutdown_hooks() {
-    let _guard = WRITE_LOCK.lock();
-    let current = REGISTRY.load();
-    let new_registry = current.shutdown();
-    REGISTRY.store(Arc::new(new_registry));
+    let _guard = WRITE_LOCK.lock().expect("registry write lock poisoned");
+    let current = HOOKS.load();
+    shutdown_hooks_list(&current);
+    HOOKS.store(Arc::new(Vec::new()));
 }
 
 /// Get the number of registered hooks (for testing)
-#[doc(hidden)]
-pub fn hook_count() -> usize {
-    REGISTRY.load().hook_count()
+#[cfg(test)]
+fn hook_count() -> usize {
+    HOOKS.load().len()
 }
 
 #[cfg(test)]
@@ -225,7 +201,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Serialize all tests to prevent interference via global state
-    static TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+    static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     struct TestEvent {
         name: String,
@@ -249,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_registry_basic() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = TEST_LOCK.lock().unwrap();
 
         // Clean up any hooks from previous tests
         shutdown_hooks();
@@ -277,7 +253,7 @@ mod tests {
 
     #[test]
     fn test_multiple_hooks() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = TEST_LOCK.lock().unwrap();
         shutdown_hooks();
 
         let count1 = Arc::new(AtomicUsize::new(0));
@@ -310,7 +286,7 @@ mod tests {
     fn test_thread_safety() {
         use std::thread;
 
-        let _guard = TEST_LOCK.lock();
+        let _guard = TEST_LOCK.lock().unwrap();
         shutdown_hooks();
 
         let count = Arc::new(AtomicUsize::new(0));
@@ -360,7 +336,7 @@ mod tests {
 
     #[test]
     fn test_panic_safety() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = TEST_LOCK.lock().unwrap();
 
         // Clear any existing hooks
         shutdown_hooks();
@@ -414,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_panic_during_initialization() {
-        let _guard = TEST_LOCK.lock();
+        let _guard = TEST_LOCK.lock().unwrap();
         shutdown_hooks();
 
         let initial_count = hook_count();

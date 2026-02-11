@@ -3,96 +3,37 @@
 //! Like `tracing` spans, observability contexts can be nested.
 //! This module provides utilities for merging resources from parent spans.
 
-use super::context::{ExecutionContext, GlobalContext, NodeContext};
+use super::context::{ExecutionContext, NodeContext};
 use super::resources::LoggerResource;
 
 /// Get merged LoggerResource from all active contexts (span-like)
 ///
 /// Merges resources in this order (lower overrides higher):
-/// 1. Global context (if set)
-/// 2. Execution context (if active)
-/// 3. Node context (if active)
+/// 1. Execution context (if active)
+/// 2. Node context (if active)
 ///
 /// This mimics `tracing` span behavior where child spans inherit parent attributes.
-///
-/// # Example
-///
-/// ```rust
-/// use nebula_log::observability::*;
-///
-/// // Global context: account-level Sentry
-/// GlobalContext::new("nebula", "1.0", "prod")
-///     .with_resource("LoggerResource", LoggerResource::new()
-///         .with_sentry_dsn("https://global@sentry.io/project")
-///         .with_tag("account_id", "acc-123")
-///     )
-///     .set_current();
-///
-/// // Execution context: add webhook
-/// let exec = ExecutionContext::new("exec-1", "wf-1", "tenant-1")
-///     .with_resource("LoggerResource", LoggerResource::new()
-///         .with_webhook("https://hooks.slack.com/...")
-///         .with_tag("execution_id", "exec-1")
-///     );
-///
-/// let _exec_guard = exec.enter();
-///
-/// // Node context: override log level
-/// let node = NodeContext::new("node-1", "action-1")
-///     .with_resource("LoggerResource", LoggerResource::new()
-///         .with_log_level(LogLevel::Debug)
-///         .with_tag("node_id", "node-1")
-///     );
-///
-/// let _node_guard = node.enter();
-///
-/// // Get merged resource (has ALL settings from all spans!)
-/// let merged = get_current_logger_resource().unwrap();
-/// // - Sentry from Global
-/// // - Webhook from Execution
-/// // - Log level from Node
-/// // - Tags from ALL three levels (accumulated)
-/// ```
 pub fn get_current_logger_resource() -> Option<LoggerResource> {
     let mut base = LoggerResource::default();
     let mut found_any = false;
 
-    // 1. Merge from Global context (lowest priority)
-    if let Some(global) = GlobalContext::current()
-        && let Some(resource) = get_resource_from_any(&global.as_ref())
-    {
-        base = merge_logger_resources(base, resource);
-        found_any = true;
-    }
-
-    // 2. Merge from Execution context (medium priority)
+    // 1. Merge from Execution context (lower priority)
     if let Some(exec) = ExecutionContext::current()
-        && let Some(logger) = exec
-            .resources
-            .get("LoggerResource")
-            .and_then(|r| r.clone().downcast::<LoggerResource>().ok())
+        && let Some(logger) = exec.resources.get::<LoggerResource>()
     {
         base = merge_logger_resources(base, (*logger).clone());
         found_any = true;
     }
 
-    // 3. Merge from Node context (highest priority)
+    // 2. Merge from Node context (highest priority)
     if let Some(node) = NodeContext::current()
-        && let Some(logger) = node.get_resource::<LoggerResource>("LoggerResource")
+        && let Some(logger) = node.get_resource::<LoggerResource>()
     {
         base = merge_logger_resources(base, (*logger).clone());
         found_any = true;
     }
 
     if found_any { Some(base) } else { None }
-}
-
-/// Helper to get LoggerResource from GlobalContext (which doesn't have resources field yet)
-/// This is a temporary bridge - GlobalContext could also have resources in the future
-fn get_resource_from_any<T>(_ctx: &T) -> Option<LoggerResource> {
-    // TODO: GlobalContext doesn't have resources yet
-    // For now, return None - can be added later if needed
-    None
 }
 
 /// Merge two LoggerResources (second overrides first)
@@ -163,7 +104,6 @@ mod tests {
     fn test_span_like_merging() {
         // Execution context: Sentry + tag
         let exec = ExecutionContext::new("exec-1", "wf-1", "tenant-1").with_resource(
-            "LoggerResource",
             LoggerResource::new()
                 .with_sentry_dsn("https://exec@sentry.io/project")
                 .with_tag("execution_id", "exec-1"),
@@ -173,7 +113,6 @@ mod tests {
 
         // Node context: webhook + tag
         let node = NodeContext::new("node-1", "action-1").with_resource(
-            "LoggerResource",
             LoggerResource::new()
                 .with_webhook("https://hooks.slack.com/...")
                 .with_tag("node_id", "node-1"),
@@ -200,18 +139,14 @@ mod tests {
     #[test]
     fn test_override_sentry() {
         // Execution: default Sentry
-        let exec = ExecutionContext::new("exec-1", "wf-1", "tenant-1").with_resource(
-            "LoggerResource",
-            LoggerResource::new().with_sentry_dsn("https://exec@sentry.io/project"),
-        );
+        let exec = ExecutionContext::new("exec-1", "wf-1", "tenant-1")
+            .with_resource(LoggerResource::new().with_sentry_dsn("https://exec@sentry.io/project"));
 
         let _exec_guard = exec.enter();
 
         // Node: override with different Sentry
-        let node = NodeContext::new("node-1", "action-1").with_resource(
-            "LoggerResource",
-            LoggerResource::new().with_sentry_dsn("https://node@sentry.io/other"),
-        );
+        let node = NodeContext::new("node-1", "action-1")
+            .with_resource(LoggerResource::new().with_sentry_dsn("https://node@sentry.io/other"));
 
         let _node_guard = node.enter();
 
@@ -231,7 +166,6 @@ mod tests {
     #[test]
     fn test_single_context() {
         let exec = ExecutionContext::new("exec-1", "wf-1", "tenant-1").with_resource(
-            "LoggerResource",
             LoggerResource::new()
                 .with_sentry_dsn("https://test@sentry.io/project")
                 .with_tag("test", "value"),

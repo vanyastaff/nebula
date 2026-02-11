@@ -8,14 +8,14 @@ pub trait LogResultExt<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`LogError::InternalError`] with the provided message
+    /// Returns [`LogError::Internal`] with the provided message
     fn or_log_error<S: Into<String>>(self, msg: S) -> LogResult<T>;
 
     /// Add logging context to error
     ///
     /// # Errors
     ///
-    /// Returns [`LogError::InternalError`] with context prepended to error message
+    /// Returns [`LogError::Internal`] with context prepended to error message
     fn with_log_context<S: Into<String>, F>(self, f: F) -> LogResult<T>
     where
         F: FnOnce() -> S;
@@ -40,7 +40,7 @@ where
     E: std::error::Error,
 {
     fn or_log_error<S: Into<String>>(self, msg: S) -> LogResult<T> {
-        self.map_err(|_| LogError::internal_error(msg))
+        self.map_err(|_| LogError::Internal(msg.into()))
     }
 
     fn with_log_context<S: Into<String>, F>(self, f: F) -> LogResult<T>
@@ -49,13 +49,13 @@ where
     {
         self.map_err(|e| {
             let ctx = f().into();
-            LogError::internal_error(format!("{ctx}: {e}"))
+            LogError::Internal(format!("{ctx}: {e}"))
         })
     }
 
     fn with_component(self, component: impl Into<String>) -> LogResult<T> {
         self.map_err(|e| {
-            LogError::internal_error(format!(
+            LogError::Internal(format!(
                 "Logging operation failed in component {}: {}",
                 component.into(),
                 e
@@ -65,7 +65,7 @@ where
 
     fn with_operation(self, operation: impl Into<String>) -> LogResult<T> {
         self.map_err(|e| {
-            LogError::internal_error(format!(
+            LogError::Internal(format!(
                 "Logging operation {} failed: {}",
                 operation.into(),
                 e
@@ -80,14 +80,14 @@ pub trait LogIoResultExt {
     ///
     /// # Errors
     ///
-    /// Returns log writer error with custom message prepended
+    /// Returns log IO error with custom message prepended
     fn or_log_error<S: Into<String>>(self, msg: S) -> LogResult<()>;
 
     /// Add logging context to IO error
     ///
     /// # Errors
     ///
-    /// Returns log writer error with context prepended
+    /// Returns log IO error with context prepended
     fn with_log_context<S: Into<String>, F>(self, f: F) -> LogResult<()>
     where
         F: FnOnce() -> S;
@@ -112,7 +112,7 @@ impl LogIoResultExt for Result<(), std::io::Error> {
     fn or_log_error<S: Into<String>>(self, msg: S) -> LogResult<()> {
         self.map_err(|e| {
             let msg = msg.into();
-            LogError::io_error(format!("{msg}: {e}"))
+            LogError::Io(format!("{msg}: {e}"))
         })
     }
 
@@ -122,13 +122,13 @@ impl LogIoResultExt for Result<(), std::io::Error> {
     {
         self.map_err(|e| {
             let ctx = f().into();
-            LogError::io_error(format!("{ctx}: {e}"))
+            LogError::Io(format!("{ctx}: {e}"))
         })
     }
 
     fn with_component(self, component: impl Into<String>) -> LogResult<()> {
         self.map_err(|e| {
-            LogError::io_error(format!(
+            LogError::Io(format!(
                 "IO operation failed in component {}: {e}",
                 component.into()
             ))
@@ -136,9 +136,7 @@ impl LogIoResultExt for Result<(), std::io::Error> {
     }
 
     fn with_operation(self, operation: impl Into<String>) -> LogResult<()> {
-        self.map_err(|e| {
-            LogError::io_error(format!("IO operation {} failed: {e}", operation.into()))
-        })
+        self.map_err(|e| LogError::Io(format!("IO operation {} failed: {e}", operation.into())))
     }
 }
 
@@ -154,7 +152,7 @@ mod tests {
 
         assert!(log_result.is_err());
         let error = log_result.unwrap_err();
-        assert!(matches!(error, LogError::IoError(_)));
+        assert!(matches!(error, LogError::Io(_)));
     }
 
     #[test]
@@ -164,6 +162,6 @@ mod tests {
 
         assert!(log_result.is_err());
         let error = log_result.unwrap_err();
-        assert!(matches!(error, LogError::IoError(_)));
+        assert!(matches!(error, LogError::Io(_)));
     }
 }

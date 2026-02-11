@@ -25,6 +25,7 @@ use crate::{
 };
 
 /// Logger builder
+#[derive(Debug)]
 pub struct LoggerBuilder {
     config: Config,
 }
@@ -33,6 +34,7 @@ pub struct LoggerBuilder {
 ///
 /// This guard ensures that all logging infrastructure stays alive for the lifetime
 /// of the guard. When dropped, the logger will be properly shut down.
+#[derive(Debug)]
 pub struct LoggerGuard {
     /// RAII guard - field must exist even if never accessed directly
     /// to keep file guards and other resources alive
@@ -49,6 +51,31 @@ pub(crate) struct Inner {
     /// RAII guard for root span - intentionally prefixed with _ to indicate it's never accessed
     #[allow(clippy::used_underscore_binding)]
     pub(crate) _root_span_guard: Option<tracing::span::EnteredSpan>,
+}
+
+impl std::fmt::Debug for Inner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Inner").finish_non_exhaustive()
+    }
+}
+
+/// Helper macro to build and init the subscriber for a given format layer.
+/// Avoids repeating the same `Registry + filter + fmt + fields + sentry` chain.
+/// The FieldsLayer is only added when fields are non-empty (avoids a no-op layer).
+macro_rules! init_subscriber {
+    ($filter_layer:expr, $fmt_layer:expr, $fields:expr) => {{
+        let fields = $fields.clone();
+        if fields.is_empty() {
+            let subscriber = Registry::default().with($filter_layer).with($fmt_layer);
+            attach_sentry!(subscriber).init();
+        } else {
+            let subscriber = Registry::default()
+                .with($filter_layer)
+                .with($fmt_layer)
+                .with(crate::layer::fields::FieldsLayer::new(fields));
+            attach_sentry!(subscriber).init();
+        }
+    }};
 }
 
 impl LoggerBuilder {
@@ -79,7 +106,7 @@ impl LoggerBuilder {
         // Create the filter
         let filter = EnvFilter::try_new(&self.config.level).map_err(|e| {
             use crate::core::LogError;
-            LogError::filter_parsing_error(format!("{}: {}", &self.config.level, e))
+            LogError::Filter(format!("{}: {}", &self.config.level, e))
         })?;
 
         // Get writer for the format layer
@@ -100,20 +127,19 @@ impl LoggerBuilder {
         telemetry::init_telemetry(&mut inner);
 
         // Build subscriber based on format
-        // Using match to handle different format types with dedicated methods
-        match (self.config.reloadable, self.config.format) {
-            (true, Format::Pretty) => {
-                self.build_with_reload_pretty(filter_layer, writer, &mut inner)
+        match self.config.format {
+            Format::Pretty => {
+                let fmt_layer = create_fmt_layer!(pretty, &self.config.display, writer);
+                init_subscriber!(filter_layer, fmt_layer, self.config.fields);
             }
-            (true, Format::Compact | Format::Logfmt) => {
-                self.build_with_reload_compact(filter_layer, writer, &mut inner);
+            Format::Compact | Format::Logfmt => {
+                let fmt_layer = create_fmt_layer!(compact, &self.config.display, writer);
+                init_subscriber!(filter_layer, fmt_layer, self.config.fields);
             }
-            (true, Format::Json) => self.build_with_reload_json(filter_layer, writer, &mut inner),
-            (false, Format::Pretty) => self.build_static_pretty(filter_layer, writer),
-            (false, Format::Compact | Format::Logfmt) => {
-                self.build_static_compact(filter_layer, writer);
+            Format::Json => {
+                let fmt_layer = create_json_layer!(&self.config.display, writer);
+                init_subscriber!(filter_layer, fmt_layer, self.config.fields);
             }
-            (false, Format::Json) => self.build_static_json(filter_layer, writer),
         }
 
         // Create root span with global fields
@@ -132,97 +158,6 @@ impl LoggerBuilder {
         Ok(LoggerGuard {
             inner: Some(Box::new(inner)),
         })
-    }
-
-    // Reloadable variants - now simplified with macros
-
-    fn build_with_reload_pretty(
-        &self,
-        filter_layer: Box<dyn tracing_subscriber::layer::Layer<Registry> + Send + Sync + 'static>,
-        writer: tracing_subscriber::fmt::writer::BoxMakeWriter,
-        _inner: &mut Inner,
-    ) {
-        let fmt_layer = create_fmt_layer!(pretty, &self.config.display, writer);
-
-        let subscriber = Registry::default().with(filter_layer).with(fmt_layer).with(
-            crate::layer::fields::FieldsLayer::new(self.config.fields.clone()),
-        );
-
-        attach_sentry!(subscriber).init();
-    }
-
-    fn build_with_reload_compact(
-        &self,
-        filter_layer: Box<dyn tracing_subscriber::layer::Layer<Registry> + Send + Sync + 'static>,
-        writer: tracing_subscriber::fmt::writer::BoxMakeWriter,
-        _inner: &mut Inner,
-    ) {
-        let fmt_layer = create_fmt_layer!(compact, &self.config.display, writer);
-
-        let subscriber = Registry::default().with(filter_layer).with(fmt_layer).with(
-            crate::layer::fields::FieldsLayer::new(self.config.fields.clone()),
-        );
-
-        attach_sentry!(subscriber).init();
-    }
-
-    fn build_with_reload_json(
-        &self,
-        filter_layer: Box<dyn tracing_subscriber::layer::Layer<Registry> + Send + Sync + 'static>,
-        writer: tracing_subscriber::fmt::writer::BoxMakeWriter,
-        _inner: &mut Inner,
-    ) {
-        let fmt_layer = create_json_layer!(&self.config.display, writer);
-
-        let subscriber = Registry::default().with(filter_layer).with(fmt_layer).with(
-            crate::layer::fields::FieldsLayer::new(self.config.fields.clone()),
-        );
-
-        attach_sentry!(subscriber).init();
-    }
-
-    // Static (non-reloadable) variants - simplified with macros
-
-    fn build_static_pretty(
-        &self,
-        filter_layer: Box<dyn tracing_subscriber::layer::Layer<Registry> + Send + Sync + 'static>,
-        writer: tracing_subscriber::fmt::writer::BoxMakeWriter,
-    ) {
-        let fmt_layer = create_fmt_layer!(pretty, &self.config.display, writer);
-
-        let subscriber = Registry::default().with(filter_layer).with(fmt_layer).with(
-            crate::layer::fields::FieldsLayer::new(self.config.fields.clone()),
-        );
-
-        attach_sentry!(subscriber).init();
-    }
-
-    fn build_static_compact(
-        &self,
-        filter_layer: Box<dyn tracing_subscriber::layer::Layer<Registry> + Send + Sync + 'static>,
-        writer: tracing_subscriber::fmt::writer::BoxMakeWriter,
-    ) {
-        let fmt_layer = create_fmt_layer!(compact, &self.config.display, writer);
-
-        let subscriber = Registry::default().with(filter_layer).with(fmt_layer).with(
-            crate::layer::fields::FieldsLayer::new(self.config.fields.clone()),
-        );
-
-        attach_sentry!(subscriber).init();
-    }
-
-    fn build_static_json(
-        &self,
-        filter_layer: Box<dyn tracing_subscriber::layer::Layer<Registry> + Send + Sync + 'static>,
-        writer: tracing_subscriber::fmt::writer::BoxMakeWriter,
-    ) {
-        let fmt_layer = create_json_layer!(&self.config.display, writer);
-
-        let subscriber = Registry::default().with(filter_layer).with(fmt_layer).with(
-            crate::layer::fields::FieldsLayer::new(self.config.fields.clone()),
-        );
-
-        attach_sentry!(subscriber).init();
     }
 }
 

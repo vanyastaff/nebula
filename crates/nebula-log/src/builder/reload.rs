@@ -1,6 +1,6 @@
 //! Reload logic for runtime filter changes
 
-use parking_lot::Mutex;
+use arc_swap::ArcSwap;
 use std::sync::Arc;
 use tracing_subscriber::{EnvFilter, Registry, layer::Layer};
 
@@ -12,9 +12,9 @@ pub struct ReloadHandle {
     /// Filter reload handle - used by public reload() method
     #[allow(dead_code)]
     filter: tracing_subscriber::reload::Handle<EnvFilter, Registry>,
-    /// Current filter string - used by public current_filter() method
+    /// Current filter string — lock-free reads via ArcSwap
     #[allow(dead_code)]
-    current_filter: Arc<Mutex<String>>,
+    current_filter: Arc<ArcSwap<String>>,
 }
 
 impl ReloadHandle {
@@ -26,18 +26,18 @@ impl ReloadHandle {
     pub fn reload(&self, filter: &str) -> LogResult<()> {
         use crate::core::LogError;
         let new_filter = EnvFilter::try_new(filter)
-            .map_err(|e| LogError::filter_parsing_error(format!("{}: {}", filter, e)))?;
+            .map_err(|e| LogError::Filter(format!("{}: {}", filter, e)))?;
         self.filter
             .reload(new_filter)
-            .map_err(|e| LogError::configuration_error(format!("Failed to reload filter: {e}")))?;
-        *self.current_filter.lock() = filter.to_string();
+            .map_err(|e| LogError::Config(format!("Failed to reload filter: {e}")))?;
+        self.current_filter.store(Arc::new(filter.to_string()));
         Ok(())
     }
 
     /// Get the current filter string
     #[allow(dead_code)]
-    pub fn current_filter(&self) -> String {
-        self.current_filter.lock().clone()
+    pub fn current_filter(&self) -> Arc<String> {
+        self.current_filter.load_full()
     }
 }
 
@@ -58,7 +58,7 @@ pub(super) fn create_filter_layer(
         let (layer, handle) = tracing_subscriber::reload::Layer::new(filter);
         let reload_handle = ReloadHandle {
             filter: handle,
-            current_filter: Arc::new(Mutex::new(level_str.to_string())),
+            current_filter: Arc::new(ArcSwap::from_pointee(level_str.to_string())),
         };
         (Box::new(layer), Some(reload_handle))
     } else {

@@ -1,11 +1,16 @@
 //! Context management for structured logging
+//!
+//! # Thread-Local Storage
+//!
+//! Contexts are stored in thread-local storage and are **not** propagated across
+//! `.await` points in async runtimes with work-stealing (e.g., Tokio multi-thread).
+//! For async context propagation, use `tracing::Span` fields instead.
 
-// Standard library
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
-// External dependencies
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 /// Thread-local context for structured logging
@@ -56,17 +61,20 @@ impl Context {
     #[must_use]
     pub fn set_current(self) -> ContextGuard {
         CONTEXT.with(|ctx| {
-            let old = ctx.write().clone();
-            *ctx.write() = self;
-            ContextGuard { old: Some(old) }
+            let old = ctx.borrow().clone();
+            *ctx.borrow_mut() = Arc::new(self);
+            ContextGuard {
+                old: Some(old),
+                _not_send: PhantomData,
+            }
         })
     }
 
-    /// Get current context
+    /// Get current context (cheap `Arc::clone`, no deep copy)
     #[inline]
     #[must_use]
-    pub fn current() -> Self {
-        CONTEXT.with(|ctx| ctx.read().clone())
+    pub fn current() -> Arc<Self> {
+        CONTEXT.with(|ctx| Arc::clone(&ctx.borrow()))
     }
 
     /// Run a closure with this context
@@ -77,19 +85,25 @@ impl Context {
 }
 
 thread_local! {
-    static CONTEXT: Arc<RwLock<Context>> = Arc::new(RwLock::new(Context::default()));
+    static CONTEXT: RefCell<Arc<Context>> = RefCell::new(Arc::new(Context::default()));
 }
 
 /// RAII guard that restores previous context on drop
+///
+/// This guard is `!Send` because it references thread-local storage.
+/// Sending it across threads would restore context on the wrong thread.
+#[derive(Debug)]
 pub struct ContextGuard {
-    old: Option<Context>,
+    old: Option<Arc<Context>>,
+    /// Explicit `!Send` marker — thread-local guards must not cross threads
+    _not_send: PhantomData<*const ()>,
 }
 
 impl Drop for ContextGuard {
     fn drop(&mut self) {
         if let Some(old) = self.old.take() {
             CONTEXT.with(|ctx| {
-                *ctx.write() = old;
+                *ctx.borrow_mut() = old;
             });
         }
     }

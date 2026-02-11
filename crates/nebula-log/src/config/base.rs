@@ -34,6 +34,7 @@ pub struct Config {
 /// Output format
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum Format {
     /// Human-readable with colors and indentation
     Pretty,
@@ -48,6 +49,7 @@ pub enum Format {
 /// Log level
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum Level {
     /// Trace level
     Trace,

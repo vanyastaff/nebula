@@ -41,17 +41,17 @@
 //! ```
 
 pub mod context;
-pub mod events;
-pub mod filter;
-pub mod hooks;
-pub mod registry;
-pub mod resources;
-pub mod span;
+mod events;
+mod filter;
+mod hooks;
+mod registry;
+mod resources;
+mod span;
 
 // Re-export main types
 pub use context::{
-    ContextSnapshot, ExecutionContext, ExecutionGuard, GlobalContext, NodeContext, NodeGuard,
-    ResourceMap, current_contexts,
+    ContextSnapshot, ExecutionContext, ExecutionGuard, GlobalContext, GlobalGuard, NodeContext,
+    NodeGuard, ResourceMap, current_contexts,
 };
 pub use events::{OperationCompleted, OperationFailed, OperationStarted, OperationTracker};
 pub use filter::{EventFilter, FilteredHook};

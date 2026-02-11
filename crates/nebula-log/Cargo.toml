@@ -50,8 +50,6 @@ tracing-opentelemetry = { workspace = true, optional = true }
 time = { version = "0.3", features = ["macros", "formatting"] }
 
 # Utilities
-once_cell = { workspace = true }
-parking_lot = { workspace = true }
 pin-project = "1.1"
 arc-swap = { workspace = true }
 

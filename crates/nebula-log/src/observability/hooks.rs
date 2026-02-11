@@ -109,6 +109,7 @@ pub trait ObservabilityHook: Send + Sync {
 /// let hook = LoggingHook::new(tracing::Level::INFO);
 /// register_hook(Arc::new(hook));
 /// ```
+#[derive(Debug)]
 pub struct LoggingHook {
     level: tracing::Level,
 }
@@ -125,43 +126,20 @@ impl ObservabilityHook for LoggingHook {
         let event_name = event.name();
         let event_data = event.data();
 
-        match self.level {
-            tracing::Level::ERROR => {
-                if let Some(data) = event_data {
-                    tracing::error!(event = event_name, data = ?data, "observability event");
-                } else {
-                    tracing::error!(event = event_name, "observability event");
+        // Use a helper macro to avoid duplicating the 5-level match twice
+        macro_rules! log_at_level {
+            ($level:expr, $name:expr, $data:expr) => {
+                match $level {
+                    tracing::Level::ERROR => tracing::error!(event = $name, data = ?$data, "observability event"),
+                    tracing::Level::WARN => tracing::warn!(event = $name, data = ?$data, "observability event"),
+                    tracing::Level::INFO => tracing::info!(event = $name, data = ?$data, "observability event"),
+                    tracing::Level::DEBUG => tracing::debug!(event = $name, data = ?$data, "observability event"),
+                    tracing::Level::TRACE => tracing::trace!(event = $name, data = ?$data, "observability event"),
                 }
-            }
-            tracing::Level::WARN => {
-                if let Some(data) = event_data {
-                    tracing::warn!(event = event_name, data = ?data, "observability event");
-                } else {
-                    tracing::warn!(event = event_name, "observability event");
-                }
-            }
-            tracing::Level::INFO => {
-                if let Some(data) = event_data {
-                    tracing::info!(event = event_name, data = ?data, "observability event");
-                } else {
-                    tracing::info!(event = event_name, "observability event");
-                }
-            }
-            tracing::Level::DEBUG => {
-                if let Some(data) = event_data {
-                    tracing::debug!(event = event_name, data = ?data, "observability event");
-                } else {
-                    tracing::debug!(event = event_name, "observability event");
-                }
-            }
-            tracing::Level::TRACE => {
-                if let Some(data) = event_data {
-                    tracing::trace!(event = event_name, data = ?data, "observability event");
-                } else {
-                    tracing::trace!(event = event_name, "observability event");
-                }
-            }
+            };
         }
+
+        log_at_level!(self.level, event_name, event_data);
     }
 }
 
@@ -180,6 +158,7 @@ impl ObservabilityHook for LoggingHook {
 /// register_hook(Arc::new(hook));
 /// ```
 #[cfg(feature = "observability")]
+#[derive(Debug, Default)]
 pub struct MetricsHook;
 
 #[cfg(feature = "observability")]
@@ -187,13 +166,6 @@ impl MetricsHook {
     /// Create a new metrics hook
     pub fn new() -> Self {
         Self
-    }
-}
-
-#[cfg(feature = "observability")]
-impl Default for MetricsHook {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -209,8 +181,8 @@ impl ObservabilityHook for MetricsHook {
 /// Resource-aware hook that can access node-scoped resources
 ///
 /// This trait extends [`ObservabilityHook`] to provide access to the current
-/// [`NodeContext`] and its resources. This allows hooks to access per-node
-/// configuration like [`LoggerResource`].
+/// [`super::context::NodeContext`] and its resources. This allows hooks to access per-node
+/// configuration like [`super::resources::LoggerResource`].
 ///
 /// # Security
 ///
@@ -230,10 +202,8 @@ impl ObservabilityHook for MetricsHook {
 /// impl ResourceAwareHook for NotificationHook {
 ///     fn on_event_with_context(&self, event: &dyn ObservabilityEvent, ctx: Option<Arc<NodeContext>>) {
 ///         if let Some(ctx) = ctx {
-///             // Access LoggerResource from node context (if attached)
-///             if let Some(logger) = ctx.get_resource::<LoggerResource>("LoggerResource") {
+///             if let Some(logger) = ctx.get_resource::<LoggerResource>() {
 ///                 if let Some(webhook) = logger.webhook_url() {
-///                     // Send notification to webhook
 ///                     println!("Sending to webhook: {}", webhook);
 ///                 }
 ///             }
@@ -244,8 +214,8 @@ impl ObservabilityHook for MetricsHook {
 pub trait ResourceAwareHook: Send + Sync {
     /// Called when an event occurs, with access to node context
     ///
-    /// The `ctx` parameter contains the current [`NodeContext`] if available.
-    /// Use [`NodeContext::get_resource`] to access node-scoped resources.
+    /// The `ctx` parameter contains the current node context if available.
+    /// Use `NodeContext::get_resource` to access node-scoped resources.
     fn on_event_with_context(
         &self,
         event: &dyn ObservabilityEvent,
@@ -261,7 +231,7 @@ pub trait ResourceAwareHook: Send + Sync {
 
 /// Adapter to use a [`ResourceAwareHook`] as an [`ObservabilityHook`]
 ///
-/// This wrapper automatically fetches the current [`NodeContext`] and
+/// This wrapper automatically fetches the current node context and
 /// passes it to the resource-aware hook.
 pub struct ResourceAwareAdapter<H: ResourceAwareHook> {
     inner: H,

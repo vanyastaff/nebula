@@ -134,6 +134,7 @@ impl ObservabilityEvent for OperationFailed {
 ///     tracker.success(); // Emits OperationCompleted
 /// } // If success() not called, emits OperationFailed on drop
 /// ```
+#[derive(Debug)]
 pub struct OperationTracker {
     operation: String,
     start: std::time::Instant,
@@ -163,37 +164,36 @@ impl OperationTracker {
     ///
     /// Emits `OperationCompleted` event.
     pub fn success(mut self) {
+        self.completed = true;
         let duration = self.start.elapsed();
         let event = OperationCompleted {
-            operation: self.operation.clone(),
+            operation: std::mem::take(&mut self.operation),
             duration,
         };
         super::emit_event(&event);
-        self.completed = true;
     }
 
     /// Mark the operation as failed with an error message
     ///
     /// Emits `OperationFailed` event.
     pub fn fail(mut self, error: impl Into<String>) {
+        self.completed = true;
         let duration = self.start.elapsed();
         let event = OperationFailed {
-            operation: self.operation.clone(),
+            operation: std::mem::take(&mut self.operation),
             error: error.into(),
             duration,
         };
         super::emit_event(&event);
-        self.completed = true;
     }
 }
 
 impl Drop for OperationTracker {
     fn drop(&mut self) {
         if !self.completed {
-            // Operation was not explicitly marked as success or fail
             let duration = self.start.elapsed();
             let event = OperationFailed {
-                operation: self.operation.clone(),
+                operation: std::mem::take(&mut self.operation),
                 error: "operation dropped without completion".to_string(),
                 duration,
             };

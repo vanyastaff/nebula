@@ -72,6 +72,7 @@ impl Timer {
 }
 
 /// RAII guard for automatic timing
+#[derive(Debug)]
 pub struct TimerGuard {
     timer: Option<Timer>,
 }
@@ -99,7 +100,7 @@ pub trait Timed: Sized {
     fn timed(self, name: impl Into<String>) -> TimedFuture<Self> {
         TimedFuture {
             inner: self,
-            timer: Timer::new(name),
+            timer: Some(Timer::new(name)),
         }
     }
 }
@@ -111,7 +112,7 @@ impl<F> Timed for F where F: Future {}
 pub struct TimedFuture<F> {
     #[pin]
     inner: F,
-    timer: Timer,
+    timer: Option<Timer>,
 }
 
 impl<F: Future> Future for TimedFuture<F> {
@@ -121,10 +122,10 @@ impl<F: Future> Future for TimedFuture<F> {
         let this = self.project();
         let result = this.inner.poll(cx);
 
-        if result.is_ready() {
-            let elapsed = this.timer.start.elapsed();
-            let ms = elapsed.as_millis();
-            tracing::info!(name = %this.timer.name, ms, "Future completed");
+        if result.is_ready()
+            && let Some(timer) = this.timer.take()
+        {
+            timer.complete();
         }
 
         result

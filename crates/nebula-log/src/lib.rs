@@ -7,7 +7,7 @@
 //! ```rust
 //! use nebula_log::prelude::*;
 //!
-//! fn main() -> Result<()> {
+//! fn main() -> LogResult<()> {
 //!     // Auto-detect best configuration
 //!     nebula_log::auto_init()?;
 //!

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 #[derive(Default)]
+#[non_exhaustive]
 pub enum WriterConfig {
     /// Write to stderr
     #[default]
@@ -31,6 +32,7 @@ pub enum WriterConfig {
 /// File rolling strategy
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum Rolling {
     /// Never roll files
     Never,

@@ -10,6 +10,7 @@ use std::collections::HashSet;
 /// Hooks can use filters to only process events they care about,
 /// reducing overhead and improving performance.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum EventFilter {
     /// Allow all events
     All,
@@ -19,7 +20,11 @@ pub enum EventFilter {
     Exact(String),
     /// Filter by multiple event names
     Set(HashSet<String>),
-    /// Custom predicate function (not cloneable, so stored as String for display)
+    /// Custom predicate using a bare function pointer.
+    ///
+    /// Only `fn` pointers are supported (not closures with captured state).
+    /// This ensures `EventFilter` remains `Clone + Send + Sync`.
+    /// For closures that capture state, wrap the filter in a custom hook instead.
     Custom(fn(&dyn ObservabilityEvent) -> bool),
     /// Combine multiple filters with AND logic
     And(Vec<EventFilter>),
@@ -92,6 +97,9 @@ impl EventFilter {
     }
 }
 
+/// Default filter that allows all events (static, avoids temporary references).
+static ALLOW_ALL: EventFilter = EventFilter::All;
+
 /// Trait for hooks that support event filtering
 ///
 /// Implements a default filter that allows all events.
@@ -100,7 +108,7 @@ pub trait FilteredHook {
     ///
     /// Override this method to provide custom filtering logic.
     fn filter(&self) -> &EventFilter {
-        &EventFilter::All
+        &ALLOW_ALL
     }
 
     /// Check if this hook should process an event

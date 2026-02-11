@@ -38,7 +38,7 @@ impl ResourceAwareHook for WebhookNotificationHook {
     fn on_event_with_context(&self, event: &dyn ObservabilityEvent, ctx: Option<Arc<NodeContext>>) {
         if let Some(ctx) = ctx {
             // Access LoggerResource from node context (if attached)
-            if let Some(logger) = ctx.get_resource::<LoggerResource>("LoggerResource") {
+            if let Some(logger) = ctx.get_resource::<LoggerResource>() {
                 if let Some(webhook) = logger.webhook_url() {
                     // In a real implementation, this would send an HTTP POST
                     println!(
@@ -84,7 +84,7 @@ fn main() {
     println!("1. Setting up global context...");
     let global_ctx =
         GlobalContext::new("nebula-workflow", "0.1.0", "production").with_instance_id("worker-1");
-    global_ctx.set_current();
+    let _global_guard = global_ctx.set_current();
     println!(
         "   ✓ Global context set: {} v{}\n",
         "nebula-workflow", "0.1.0"
@@ -148,8 +148,7 @@ fn main() {
             .with_tag("tenant_id", "tenant-123");
 
         // Attach LoggerResource to node context (SECURE: scoped to this node only)
-        let node_ctx = NodeContext::new("node-payment", "payment.process")
-            .with_resource("LoggerResource", logger);
+        let node_ctx = NodeContext::new("node-payment", "payment.process").with_resource(logger);
 
         let _node_guard = node_ctx.enter();
 
@@ -167,8 +166,7 @@ fn main() {
             .with_webhook("https://different-webhook.com/tenant456")
             .with_tag("tenant_id", "tenant-456");
 
-        let node_ctx = NodeContext::new("node-inventory", "inventory.check")
-            .with_resource("LoggerResource", logger);
+        let node_ctx = NodeContext::new("node-inventory", "inventory.check").with_resource(logger);
 
         let _node_guard = node_ctx.enter();
 
