@@ -6,6 +6,7 @@
 debug/
 target/
 **/target/
+.claude
 
 # Cargo lock file (for libraries, should be committed for binaries)
 # Cargo.lock
