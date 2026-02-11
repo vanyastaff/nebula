@@ -3428,12 +3428,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
-name = "lz4_flex"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab6473172471198271ff72e9379150e9dfd70d8e533e0752a27e515b48dd375e"
-
-[[package]]
 name = "mach2"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3891,6 +3885,8 @@ dependencies = [
 name = "nebula-memory"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
  "backtrace",
  "cfg-if",
  "chrono",
@@ -3903,7 +3899,6 @@ dependencies = [
  "hashbrown 0.16.1",
  "heapless",
  "libc",
- "lz4_flex",
  "nebula-core",
  "nebula-log",
  "nebula-system",
@@ -3914,6 +3909,8 @@ dependencies = [
  "spin 0.10.0",
  "thiserror 2.0.17",
  "tokio",
+ "tokio-util",
+ "tracing",
  "winapi",
 ]
 
@@ -3927,7 +3924,6 @@ dependencies = [
  "fastrand",
  "futures",
  "governor",
- "heapless",
  "humantime-serde",
  "nebula-config",
  "nebula-core",

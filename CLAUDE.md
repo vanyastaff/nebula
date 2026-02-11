@@ -158,6 +158,8 @@ async fn test_async() {
 - Rust 2024 Edition (MSRV: 1.92) + Tokio async runtime, async-trait, serde, thiserror, chrono (005-refactor-traits-validation)
 - N/A (pure refactoring) (005-refactor-traits-validation)
 - N/A (this feature only adds types, no persistence logic) (006-extend-core-identity)
+- Rust 2024 Edition (MSRV: 1.92) + nebula-core, nebula-system, nebula-log (optional), thiserror, parking_lot, crossbeam-queue, hashbrown, dashmap, tokio (optional), winapi (Windows) (007-memory-prerelease)
+- N/A (in-memory allocators) (007-memory-prerelease)
 
 ## Recent Changes
 - 001-credential-core-abstractions: Added Rust 2024 Edition (MSRV: 1.92)
