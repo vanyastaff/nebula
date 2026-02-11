@@ -173,7 +173,10 @@ impl MetricsHook {
 impl ObservabilityHook for MetricsHook {
     fn on_event(&self, event: &dyn ObservabilityEvent) {
         // Increment counter for this event type
-        let metric_name = format!("nebula.events.{}", event.name());
+        let event_name = event.name();
+        let mut metric_name = String::with_capacity(15 + event_name.len());
+        metric_name.push_str("nebula.events.");
+        metric_name.push_str(event_name);
         crate::metrics::counter!(metric_name).increment(1);
     }
 }

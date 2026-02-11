@@ -12,7 +12,7 @@ repository.workspace = true
 # Internal dependencies
 
 # Async runtime (optional)
-tokio = { version = "1", features = ["time", "sync"], optional = true }
+tokio = { version = "1", features = ["time", "sync", "rt"], optional = true }
 
 # Core tracing
 tracing = "0.1.41"

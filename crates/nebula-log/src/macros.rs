@@ -66,12 +66,18 @@ macro_rules! measure {
     }};
 }
 
-/// Set context fields for current scope
+/// Build a context with additional fields from the current context.
+///
+/// Returns a [`Context`] — use `.scope(future)` or `.scope_sync(closure)` to activate it.
+///
+/// ```rust,ignore
+/// let ctx = with_context!(request_id = "req-123", user_id = "user-456");
+/// ctx.scope(async { /* context active here */ }).await;
+/// ```
 #[macro_export]
 macro_rules! with_context {
     ($($key:ident = $value:expr),* $(,)?) => {{
-        let ctx = (*$crate::Context::current()).clone()
-            $(.with_field(stringify!($key), $value))*;
-        ctx.set_current()
+        (*$crate::Context::current()).clone()
+            $(.with_field(stringify!($key), $value))*
     }};
 }
