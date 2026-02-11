@@ -8,10 +8,11 @@
 //! - GovernorRateLimiter throughput (GCRA)
 //! - Comparison between different algorithms
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::{
     AdaptiveRateLimiter, LeakyBucket, RateLimiter, ResilienceError, SlidingWindow, TokenBucket,
 };
+use std::hint::black_box;
 use std::sync::Arc;
 
 fn rate_limiter_acquire(c: &mut Criterion) {
@@ -127,6 +128,7 @@ fn rate_limiter_current_rate(c: &mut Criterion) {
     group.finish();
 }
 
+#[expect(clippy::excessive_nesting)]
 fn rate_limiter_contention(c: &mut Criterion) {
     let mut group = c.benchmark_group("rate_limiter/contention");
     group.sample_size(50); // Reduce sample size for concurrency tests

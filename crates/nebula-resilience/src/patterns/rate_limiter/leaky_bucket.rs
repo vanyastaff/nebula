@@ -46,6 +46,7 @@ impl LeakyBucket {
 
         let leaked = (elapsed * self.leak_rate) as usize;
         *level = level.saturating_sub(leaked);
+        drop(level);
         *last_leak = now;
     }
 }
@@ -58,8 +59,10 @@ impl RateLimiter for LeakyBucket {
         let mut level = self.level.lock().await;
         if *level < self.capacity {
             *level += 1;
+            drop(level);
             Ok(())
         } else {
+            drop(level);
             Err(ResilienceError::RateLimitExceeded {
                 retry_after: Some(Duration::from_secs_f64(1.0 / self.leak_rate)),
                 limit: self.capacity as f64,

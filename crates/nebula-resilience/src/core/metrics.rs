@@ -106,7 +106,7 @@ pub(super) struct Metric {
 }
 
 impl Metric {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             count: AtomicU64::new(0),
             sum: AtomicU64::new(0.0_f64.to_bits()),
@@ -135,6 +135,10 @@ impl Metric {
 
         // Update min — compare actual float values, not bit patterns
         let mut current_min = self.min.load(Ordering::Relaxed);
+        #[expect(
+            clippy::while_float,
+            reason = "CAS loop on f64 bits requires float comparison for retry"
+        )]
         while value < f64::from_bits(current_min) {
             match self.min.compare_exchange_weak(
                 current_min,
@@ -149,6 +153,10 @@ impl Metric {
 
         // Update max — compare actual float values, not bit patterns
         let mut current_max = self.max.load(Ordering::Relaxed);
+        #[expect(
+            clippy::while_float,
+            reason = "CAS loop on f64 bits requires float comparison for retry"
+        )]
         while value > f64::from_bits(current_max) {
             match self.max.compare_exchange_weak(
                 current_max,

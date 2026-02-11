@@ -10,6 +10,7 @@ use nebula_resilience::{
 use std::time::{Duration, Instant};
 
 #[tokio::main]
+#[expect(clippy::excessive_nesting)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🚦 Rate Limiter Pattern Demo");
     println!("============================");

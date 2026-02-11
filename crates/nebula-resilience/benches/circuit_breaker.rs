@@ -6,8 +6,9 @@
 //! - execute() with successful operations
 //! - execute() with failures triggering circuit open
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::{CircuitBreaker, CircuitBreakerConfig, ResilienceError};
+use std::hint::black_box;
 use std::time::Duration;
 
 fn circuit_breaker_closed_execute(c: &mut Criterion) {
@@ -75,6 +76,7 @@ fn circuit_breaker_can_execute(c: &mut Criterion) {
     group.finish();
 }
 
+#[expect(clippy::excessive_nesting)]
 fn circuit_breaker_state_transitions(c: &mut Criterion) {
     let mut group = c.benchmark_group("circuit_breaker/transitions");
 

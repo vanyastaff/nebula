@@ -182,7 +182,7 @@ impl<C: EventCategory> Event<C> {
 
     /// Set duration.
     #[must_use]
-    pub fn with_duration(mut self, duration: Duration) -> Self {
+    pub const fn with_duration(mut self, duration: Duration) -> Self {
         self.duration = Some(duration);
         self
     }
@@ -221,7 +221,7 @@ impl<C: EventCategory> Event<C> {
 
     /// Check if this is an error event.
     #[must_use]
-    pub fn is_error(&self) -> bool {
+    pub const fn is_error(&self) -> bool {
         self.error.is_some()
     }
 }
@@ -324,7 +324,7 @@ pub struct HookAdapter<C: EventCategory, H: ObservabilityHookExt<C>> {
 
 impl<C: EventCategory, H: ObservabilityHookExt<C>> HookAdapter<C, H> {
     /// Create a new adapter.
-    pub fn new(hook: H) -> Self {
+    pub const fn new(hook: H) -> Self {
         Self {
             hook,
             _category: PhantomData,
@@ -566,7 +566,7 @@ pub struct LoggingHook {
 impl LoggingHook {
     /// Create a new logging hook
     #[must_use]
-    pub fn new(level: LogLevel) -> Self {
+    pub const fn new(level: LogLevel) -> Self {
         Self { level }
     }
 }

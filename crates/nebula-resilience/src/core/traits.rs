@@ -208,7 +208,7 @@ pub trait HealthCheck: Send + Sync {
 }
 
 /// Standard health status
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "HealthStatus should be checked and acted upon"]
 pub enum HealthStatus {
     /// Fully operational
@@ -300,7 +300,7 @@ pub mod circuit_states {
 
         /// Record a success in this state
         #[must_use]
-        pub fn with_success(mut self) -> Self {
+        pub const fn with_success(mut self) -> Self {
             self.metadata.success_count += 1;
             self
         }
@@ -320,29 +320,29 @@ pub mod circuit_states {
 
     /// Closed -> Open transition
     impl StateTransition<Closed, Open> for TypestateCircuitState<Open> {
-        fn transition(from: TypestateCircuitState<Closed>) -> TypestateCircuitState<Open> {
-            TypestateCircuitState::new(from.metadata.failure_count, 0)
+        fn transition(from: TypestateCircuitState<Closed>) -> Self {
+            Self::new(from.metadata.failure_count, 0)
         }
     }
 
     /// Open -> `HalfOpen` transition
     impl StateTransition<Open, HalfOpen> for TypestateCircuitState<HalfOpen> {
-        fn transition(from: TypestateCircuitState<Open>) -> TypestateCircuitState<HalfOpen> {
-            TypestateCircuitState::new(from.metadata.failure_count, 0)
+        fn transition(from: TypestateCircuitState<Open>) -> Self {
+            Self::new(from.metadata.failure_count, 0)
         }
     }
 
     /// `HalfOpen` -> Closed transition
     impl StateTransition<HalfOpen, Closed> for TypestateCircuitState<Closed> {
-        fn transition(from: TypestateCircuitState<HalfOpen>) -> TypestateCircuitState<Closed> {
-            TypestateCircuitState::new(0, from.metadata.success_count)
+        fn transition(from: TypestateCircuitState<HalfOpen>) -> Self {
+            Self::new(0, from.metadata.success_count)
         }
     }
 
     /// `HalfOpen` -> Open transition
     impl StateTransition<HalfOpen, Open> for TypestateCircuitState<Open> {
-        fn transition(from: TypestateCircuitState<HalfOpen>) -> TypestateCircuitState<Open> {
-            TypestateCircuitState::new(from.metadata.failure_count + 1, 0)
+        fn transition(from: TypestateCircuitState<HalfOpen>) -> Self {
+            Self::new(from.metadata.failure_count + 1, 0)
         }
     }
 }
@@ -387,7 +387,7 @@ where
     }
 
     /// Get the inner configuration (guaranteed to be valid)
-    pub fn get(&self) -> &T {
+    pub const fn get(&self) -> &T {
         &self.inner
     }
 
@@ -419,7 +419,7 @@ impl sealed::Sealed for super::super::patterns::bulkhead::Bulkhead {}
 
 /// Default implementation of Retryable for `ResilienceError`
 impl<const MAX_ATTEMPTS: usize> Retryable<MAX_ATTEMPTS> for ResilienceError {
-    type Error = ResilienceError;
+    type Error = Self;
 
     fn is_retryable(&self) -> bool {
         self.is_retryable()
@@ -430,17 +430,21 @@ impl<const MAX_ATTEMPTS: usize> Retryable<MAX_ATTEMPTS> for ResilienceError {
     }
 
     fn retry_delay(&self, attempt: usize) -> Option<Duration> {
-        if let Some(retry_after) = self.retry_after() {
-            Some(retry_after)
-        } else if attempt >= MAX_ATTEMPTS {
-            None
-        } else {
-            // Exponential backoff with jitter
-            let base_delay = Duration::from_millis(100);
-            let exp_delay = base_delay * (1 << attempt.min(10));
-            let jitter = Duration::from_millis(fastrand::u64(0..=exp_delay.as_millis() as u64));
-            Some(exp_delay + jitter)
-        }
+        self.retry_after().map_or_else(
+            || {
+                if attempt >= MAX_ATTEMPTS {
+                    None
+                } else {
+                    // Exponential backoff with jitter
+                    let base_delay = Duration::from_millis(100);
+                    let exp_delay = base_delay * (1 << attempt.min(10));
+                    let jitter =
+                        Duration::from_millis(fastrand::u64(0..=exp_delay.as_millis() as u64));
+                    Some(exp_delay + jitter)
+                }
+            },
+            Some,
+        )
     }
 }
 
@@ -461,19 +465,19 @@ impl<const DEFAULT_MS: u64> Default for TimeoutConfig<DEFAULT_MS> {
 impl<const DEFAULT_MS: u64> TimeoutConfig<DEFAULT_MS> {
     /// Create new timeout configuration
     #[must_use]
-    pub fn new(timeout_ms: u64) -> Self {
+    pub const fn new(timeout_ms: u64) -> Self {
         Self { timeout_ms }
     }
 
     /// Get timeout as Duration
     #[must_use]
-    pub fn as_duration(&self) -> Duration {
+    pub const fn as_duration(&self) -> Duration {
         Duration::from_millis(self.timeout_ms)
     }
 
     /// Check if timeout is reasonable
     #[must_use]
-    pub fn is_reasonable(&self) -> bool {
+    pub const fn is_reasonable(&self) -> bool {
         self.timeout_ms > 0 && self.timeout_ms < 300_000 // Max 5 minutes
     }
 }
@@ -502,7 +506,7 @@ impl<const DEFAULT_MS: u64> Config for TimeoutConfig<DEFAULT_MS> {
 }
 
 /// Timeout validation error
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeoutValidationError {
     /// Error message describing the validation failure
     pub message: &'static str,
@@ -537,8 +541,8 @@ mod tests {
 
     #[test]
     fn test_const_timeout_creation() {
-        let _valid_timeout: TimeoutConfig<5000> = timeout::<5000>();
-        assert!(_valid_timeout.is_reasonable());
+        let valid_timeout: TimeoutConfig<5000> = timeout::<5000>();
+        assert!(valid_timeout.is_reasonable());
     }
 
     #[test]

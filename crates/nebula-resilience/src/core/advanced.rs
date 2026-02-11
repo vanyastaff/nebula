@@ -194,7 +194,7 @@ impl PolicyBuilder<Complete> {
     /// This method is only available when the builder is in `Complete` state,
     /// ensuring all required configurations are set at compile time.
     #[must_use]
-    pub fn build(self) -> ComposedPolicy {
+    pub const fn build(self) -> ComposedPolicy {
         ComposedPolicy {
             retry_attempts: self.retry_attempts.unwrap(),
             retry_base_delay_ms: self.retry_base_delay_ms.unwrap(),

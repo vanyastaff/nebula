@@ -41,7 +41,7 @@ pub struct HedgeExecutor {
 impl HedgeExecutor {
     /// Create new hedge executor
     #[must_use]
-    pub fn new(config: HedgeConfig) -> Self {
+    pub const fn new(config: HedgeConfig) -> Self {
         Self { config }
     }
 
@@ -138,7 +138,7 @@ impl AdaptiveHedgeExecutor {
 
     /// Set target percentile for hedge delay calculation
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_target_percentile(mut self, percentile: f64) -> Self {
+    pub const fn with_target_percentile(mut self, percentile: f64) -> Self {
         self.target_percentile = percentile;
         self
     }
@@ -226,7 +226,7 @@ pub struct BimodalHedgeExecutor {
 impl BimodalHedgeExecutor {
     /// Create new bimodal hedge executor
     #[must_use]
-    pub fn new(
+    pub const fn new(
         fast_threshold: Duration,
         fast_config: HedgeConfig,
         slow_config: HedgeConfig,

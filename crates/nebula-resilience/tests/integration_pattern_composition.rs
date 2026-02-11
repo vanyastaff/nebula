@@ -72,6 +72,7 @@ async fn test_circuit_breaker_opens_after_failures() {
 /// Test: Timeout with Bulkhead
 /// Scenario: Multiple operations, some timeout, bulkhead limits concurrency
 #[tokio::test]
+#[expect(clippy::excessive_nesting)]
 async fn test_timeout_with_bulkhead() {
     let bulkhead = Arc::new(Bulkhead::with_config(BulkheadConfig {
         max_concurrency: 2,

@@ -54,7 +54,7 @@ pub enum ResilienceError {
         /// Number of attempts made
         attempts: usize,
         /// Last error encountered
-        last_error: Option<Box<ResilienceError>>,
+        last_error: Option<Box<Self>>,
     },
 
     /// Fallback operation failed
@@ -63,7 +63,7 @@ pub enum ResilienceError {
         /// Reason for fallback failure
         reason: String,
         /// Original error that triggered fallback
-        original_error: Option<Box<ResilienceError>>,
+        original_error: Option<Box<Self>>,
     },
 
     /// Operation was cancelled
@@ -195,7 +195,7 @@ impl ResilienceError {
     }
 
     /// Create a bulkhead full error
-    pub fn bulkhead_full(max_concurrency: usize) -> Self {
+    pub const fn bulkhead_full(max_concurrency: usize) -> Self {
         Self::BulkheadFull {
             max_concurrency,
             queued: 0, // Default
@@ -203,7 +203,10 @@ impl ResilienceError {
     }
 
     /// Create a retry limit exceeded error with cause
-    pub fn retry_limit_exceeded_with_cause(attempts: usize, last_error: Option<Box<Self>>) -> Self {
+    pub const fn retry_limit_exceeded_with_cause(
+        attempts: usize,
+        last_error: Option<Box<Self>>,
+    ) -> Self {
         Self::RetryLimitExceeded {
             attempts,
             last_error,
@@ -212,7 +215,7 @@ impl ResilienceError {
 
     /// Classify the error for decision making
     #[must_use]
-    pub fn classify(&self) -> ErrorClass {
+    pub const fn classify(&self) -> ErrorClass {
         match self {
             Self::Timeout { .. } => ErrorClass::Transient,
             Self::CircuitBreakerOpen { .. }
@@ -234,7 +237,7 @@ impl ResilienceError {
 
     /// Check if the error is retryable
     #[must_use]
-    pub fn is_retryable(&self) -> bool {
+    pub const fn is_retryable(&self) -> bool {
         matches!(
             self.classify(),
             ErrorClass::Transient | ErrorClass::ResourceExhaustion
@@ -243,7 +246,7 @@ impl ResilienceError {
 
     /// Check if the error is terminal
     #[must_use]
-    pub fn is_terminal(&self) -> bool {
+    pub const fn is_terminal(&self) -> bool {
         matches!(
             self.classify(),
             ErrorClass::Permanent | ErrorClass::Configuration
@@ -252,7 +255,7 @@ impl ResilienceError {
 
     /// Get retry delay hint if available
     #[must_use]
-    pub fn retry_after(&self) -> Option<Duration> {
+    pub const fn retry_after(&self) -> Option<Duration> {
         match self {
             Self::RateLimitExceeded { retry_after, .. }
             | Self::CircuitBreakerOpen { retry_after, .. } => *retry_after,
@@ -307,8 +310,7 @@ mod tests {
         let display = error.to_string();
         assert!(
             display.contains("5s"),
-            "Expected duration in display: {}",
-            display
+            "Expected duration in display: {display}",
         );
     }
 

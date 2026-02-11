@@ -72,7 +72,7 @@ async fn test_manager_concurrent_registration() {
         let manager = Arc::clone(&manager);
 
         let handle = tokio::spawn(async move {
-            let service_name = format!("service-{}", i);
+            let service_name = format!("service-{i}");
             let policy = PolicyBuilder::new()
                 .with_timeout(Duration::from_secs(1))
                 .build();
@@ -152,6 +152,7 @@ async fn test_manager_operation_isolation() {
 
 /// Test: Circuit breaker state transitions under concurrent load
 #[tokio::test]
+#[expect(clippy::excessive_nesting)]
 async fn test_circuit_breaker_concurrent_transitions() {
     // Circuit breaker with 5 failure threshold, 500ms reset
     let circuit_breaker = Arc::new(CircuitBreaker::<5, 500>::with_defaults().unwrap());
@@ -166,16 +167,14 @@ async fn test_circuit_breaker_concurrent_transitions() {
 
         let handle = tokio::spawn(async move {
             let failure_count_clone = Arc::clone(&failure_count);
-            let result = cb
-                .execute(|| {
-                    let failure_count = Arc::clone(&failure_count_clone);
-                    async move {
-                        failure_count.fetch_add(1, Ordering::SeqCst);
-                        Err::<(), _>(ResilienceError::custom("Concurrent failure"))
-                    }
-                })
-                .await;
-            result
+            cb.execute(|| {
+                let failure_count = Arc::clone(&failure_count_clone);
+                async move {
+                    failure_count.fetch_add(1, Ordering::SeqCst);
+                    Err::<(), _>(ResilienceError::custom("Concurrent failure"))
+                }
+            })
+            .await
         });
 
         handles.push(handle);

@@ -169,15 +169,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start a blocking operation
     let blocking_bulkhead = combined_bulkhead.clone();
     let blocking_task = tokio::spawn(async move {
-        let result = blocking_bulkhead
+        blocking_bulkhead
             .execute(|| async {
                 println!("    🔒 Blocking operation started");
                 sleep(Duration::from_secs(1)).await;
                 println!("    🔓 Blocking operation completed");
                 Ok::<String, ResilienceError>("Blocking operation".to_string())
             })
-            .await;
-        result
+            .await
     });
 
     // Give blocking operation time to start

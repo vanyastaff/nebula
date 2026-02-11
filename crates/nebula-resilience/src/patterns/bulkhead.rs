@@ -84,7 +84,7 @@ impl Bulkhead {
 
     /// Get the maximum concurrency limit
     #[must_use]
-    pub fn max_concurrency(&self) -> usize {
+    pub const fn max_concurrency(&self) -> usize {
         self.config.max_concurrency
     }
 
@@ -155,10 +155,7 @@ impl Bulkhead {
 
         let result = tokio_timeout(timeout, operation()).await;
 
-        match result {
-            Ok(inner_result) => inner_result,
-            Err(_) => Err(ResilienceError::timeout(timeout)),
-        }
+        result.unwrap_or_else(|_| Err(ResilienceError::timeout(timeout)))
     }
 
     /// Get bulkhead statistics
@@ -231,14 +228,14 @@ impl BulkheadBuilder {
 
     /// Set the maximum queue size
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_queue_size(mut self, queue_size: usize) -> Self {
+    pub const fn with_queue_size(mut self, queue_size: usize) -> Self {
         self.config.queue_size = queue_size;
         self
     }
 
     /// Set the timeout for acquiring permits
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+    pub const fn with_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
         self.config.timeout = timeout;
         self
     }
@@ -322,6 +319,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(clippy::excessive_nesting)]
     async fn test_bulkhead_concurrency_limit() {
         use tokio::task::JoinSet;
 

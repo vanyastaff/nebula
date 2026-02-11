@@ -6,8 +6,10 @@
 //! - execute() overhead with different policy combinations
 //! - Concurrent access patterns
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use nebula_resilience::prelude::PolicyBuilder;
 use nebula_resilience::{ResilienceError, ResilienceManager, ResiliencePolicy};
+use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -66,7 +68,7 @@ fn manager_service_registration(c: &mut Criterion) {
             let counter = Arc::clone(&counter);
             async move {
                 let count = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let service_name = format!("service-{}", count);
+                let service_name = format!("service-{count}");
                 manager.register_service(service_name, ResiliencePolicy::default());
             }
         });
@@ -74,7 +76,7 @@ fn manager_service_registration(c: &mut Criterion) {
 
     // Benchmark: Unregister service (DashMap remove)
     group.bench_function("unregister_service", |b| {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _rt = tokio::runtime::Runtime::new().unwrap();
         let manager = ResilienceManager::with_defaults();
 
         b.iter_batched(
@@ -136,15 +138,10 @@ fn manager_execute_overhead(c: &mut Criterion) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let manager = ResilienceManager::with_defaults();
 
-        let retry_config = nebula_resilience::patterns::retry::RetryConfig::new(
-            nebula_resilience::patterns::retry::FixedDelay::<100>::default(),
-            nebula_resilience::patterns::retry::ConservativeCondition::<3>::new(),
-        );
-        let retry_strategy =
-            nebula_resilience::patterns::retry::RetryStrategy::new(retry_config).unwrap();
-        let policy = ResiliencePolicy::default()
+        let policy = PolicyBuilder::new()
             .with_timeout(Duration::from_secs(5))
-            .with_retry(retry_strategy);
+            .with_retry_fixed(3, Duration::from_millis(100))
+            .build();
         manager.register_service("api", policy);
 
         b.to_async(&rt).iter(|| async {
@@ -160,6 +157,7 @@ fn manager_execute_overhead(c: &mut Criterion) {
     group.finish();
 }
 
+#[expect(clippy::excessive_nesting)]
 fn manager_concurrent_access(c: &mut Criterion) {
     let mut group = c.benchmark_group("manager/concurrent_access");
     group.sample_size(50); // Reduce sample size for concurrency tests
@@ -225,7 +223,7 @@ fn manager_metrics_collection(c: &mut Criterion) {
                 let manager = ResilienceManager::with_defaults();
 
                 for i in 0..num_services {
-                    manager.register_service(format!("service-{}", i), ResiliencePolicy::default());
+                    manager.register_service(format!("service-{i}"), ResiliencePolicy::default());
                 }
 
                 b.to_async(&rt)
@@ -236,11 +234,10 @@ fn manager_metrics_collection(c: &mut Criterion) {
 
     // Benchmark: list_services (now synchronous!)
     group.bench_function("list_services_100", |b| {
-        let rt = tokio::runtime::Runtime::new().unwrap();
         let manager = ResilienceManager::with_defaults();
 
         for i in 0..100 {
-            manager.register_service(format!("service-{}", i), ResiliencePolicy::default());
+            manager.register_service(format!("service-{i}"), ResiliencePolicy::default());
         }
 
         b.iter(|| {

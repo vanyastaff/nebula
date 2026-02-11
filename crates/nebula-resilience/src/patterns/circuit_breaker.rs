@@ -92,7 +92,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
 
     /// Create new configuration with validation
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         // Trigger compile-time validation
         let () = Self::VALID;
 
@@ -107,26 +107,26 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
 
     /// Get failure threshold (compile-time constant)
     #[must_use]
-    pub fn failure_threshold(&self) -> usize {
+    pub const fn failure_threshold(&self) -> usize {
         FAILURE_THRESHOLD
     }
 
     /// Get reset timeout (compile-time constant)
     #[must_use]
-    pub fn reset_timeout(&self) -> Duration {
+    pub const fn reset_timeout(&self) -> Duration {
         Duration::from_millis(RESET_TIMEOUT_MS)
     }
 
     /// Builder methods
     #[must_use]
-    pub fn with_half_open_limit(mut self, limit: usize) -> Self {
+    pub const fn with_half_open_limit(mut self, limit: usize) -> Self {
         self.half_open_max_operations = limit;
         self
     }
 
     /// Set the minimum number of operations required before circuit can open
     #[must_use]
-    pub fn with_min_operations(mut self, min_operations: usize) -> Self {
+    pub const fn with_min_operations(mut self, min_operations: usize) -> Self {
         self.min_operations = min_operations;
         self
     }
@@ -290,18 +290,18 @@ impl State {
     /// Convert state to atomic representation
     const fn to_atomic(self) -> u8 {
         match self {
-            State::Closed => 0,
-            State::Open => 1,
-            State::HalfOpen => 2,
+            Self::Closed => 0,
+            Self::Open => 1,
+            Self::HalfOpen => 2,
         }
     }
 
     /// Convert atomic representation to state
     const fn from_atomic(value: u8) -> Option<Self> {
         match value {
-            0 => Some(State::Closed),
-            1 => Some(State::Open),
-            2 => Some(State::HalfOpen),
+            0 => Some(Self::Closed),
+            1 => Some(Self::Open),
+            2 => Some(Self::HalfOpen),
             _ => None,
         }
     }
@@ -445,6 +445,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
                 let inner = self.inner.read().await;
                 if matches!(inner.state, State::Open) {
                     let elapsed = Instant::now().duration_since(inner.last_state_change);
+                    drop(inner);
                     let timeout_duration = Duration::from_millis(RESET_TIMEOUT_MS);
                     if elapsed < timeout_duration {
                         // Use unwrap_or to handle potential clock skew safely
@@ -657,6 +658,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
             State::Open => {
                 let inner = self.inner.read().await;
                 let elapsed = Instant::now().duration_since(inner.last_state_change);
+                drop(inner);
                 let timeout_duration = Duration::from_millis(RESET_TIMEOUT_MS);
                 let retry_after = if elapsed < timeout_duration {
                     // Use unwrap_or to handle potential clock skew safely
@@ -751,19 +753,19 @@ pub type SlowCircuitBreaker = CircuitBreaker<10, 60_000>;
 
 /// Helper functions for creating common configurations
 #[must_use]
-pub fn fast_config() -> CircuitBreakerConfig<3, 10_000> {
+pub const fn fast_config() -> CircuitBreakerConfig<3, 10_000> {
     CircuitBreakerConfig::new().with_half_open_limit(2)
 }
 
 /// Create a standard circuit breaker configuration
 #[must_use]
-pub fn standard_config() -> CircuitBreakerConfig<5, 30_000> {
+pub const fn standard_config() -> CircuitBreakerConfig<5, 30_000> {
     CircuitBreakerConfig::new()
 }
 
 /// Create a slow/conservative circuit breaker configuration
 #[must_use]
-pub fn slow_config() -> CircuitBreakerConfig<10, 60_000> {
+pub const fn slow_config() -> CircuitBreakerConfig<10, 60_000> {
     CircuitBreakerConfig::new().with_min_operations(20)
 }
 
@@ -784,10 +786,10 @@ mod tests {
     fn test_state_types_are_consistent() {
         use crate::core::traits::circuit_states::{Closed, HalfOpen, Open};
 
-        // Verify the phantom type states exist and work
-        let _closed: std::marker::PhantomData<Closed> = std::marker::PhantomData;
-        let _open: std::marker::PhantomData<Open> = std::marker::PhantomData;
-        let _half_open: std::marker::PhantomData<HalfOpen> = std::marker::PhantomData;
+        // Verify the phantom type states exist and produce valid PhantomData markers
+        let _ = std::marker::PhantomData::<Closed>;
+        let _ = std::marker::PhantomData::<Open>;
+        let _ = std::marker::PhantomData::<HalfOpen>;
     }
 
     #[tokio::test]
@@ -806,7 +808,7 @@ mod tests {
 
         for i in 0..10 {
             let result = breaker
-                .execute(|| async { Ok::<_, ResilienceError>(format!("success {}", i)) })
+                .execute(|| async { Ok::<_, ResilienceError>(format!("success {i}")) })
                 .await;
             assert!(result.is_ok());
         }
@@ -845,7 +847,7 @@ mod tests {
         }
 
         let stats = breaker.stats().await;
-        println!("Final stats: {:?}", stats);
+        println!("Final stats: {stats:?}");
 
         // At minimum, operations should have been attempted
         assert!(stats.total_operations > 0);
@@ -878,7 +880,7 @@ mod tests {
 
         // Should either succeed or be in a valid state for recovery
         let stats = breaker.stats().await;
-        println!("Recovery stats: {:?}", stats);
+        println!("Recovery stats: {stats:?}");
 
         // The important thing is that we can make progress
         assert!(stats.total_operations > 0);
@@ -906,7 +908,7 @@ mod tests {
         let operation_count = window.get_operation_count();
 
         assert_eq!(operation_count, 0);
-        assert_eq!(failure_rate, 0.0);
+        assert!(failure_rate.abs() < f64::EPSILON);
     }
 
     #[tokio::test]

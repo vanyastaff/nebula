@@ -367,12 +367,12 @@ impl DurationExt for Duration {
     fn with_jitter(self, factor: f64) -> Duration {
         let random = fastrand::f64();
         let jitter_amount = self.as_secs_f64() * factor * random;
-        Duration::from_secs_f64(self.as_secs_f64() + jitter_amount)
+        Self::from_secs_f64(self.as_secs_f64() + jitter_amount)
     }
 
     #[inline]
     fn multiply(self, factor: f64) -> Duration {
-        Duration::from_secs_f64(self.as_secs_f64() * factor)
+        Self::from_secs_f64(self.as_secs_f64() * factor)
     }
 }
 

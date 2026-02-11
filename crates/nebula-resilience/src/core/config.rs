@@ -26,10 +26,8 @@ pub trait ResilienceConfig: Send + Sync + Serialize + for<'de> Deserialize<'de> 
     /// Convert to nebula-value for dynamic configuration
     fn to_value(&self) -> nebula_value::Value {
         // Serialize to JSON then convert using From trait (infallible conversion)
-        match serde_json::to_value(self) {
-            Ok(json_val) => nebula_value::Value::from(json_val),
-            Err(_) => nebula_value::Value::Null,
-        }
+        serde_json::to_value(self)
+            .map_or_else(|_| nebula_value::Value::Null, nebula_value::Value::from)
     }
 
     /// Create from nebula-value
@@ -174,7 +172,7 @@ impl ResilienceConfigManager {
 
     /// Create from existing nebula config
     #[must_use]
-    pub fn from_config(config: NebulaConfig) -> Self {
+    pub const fn from_config(config: NebulaConfig) -> Self {
         Self { config }
     }
 

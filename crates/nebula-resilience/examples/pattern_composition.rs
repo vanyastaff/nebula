@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::main]
+#[expect(clippy::excessive_nesting)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Pattern Composition Examples ===\n");
 

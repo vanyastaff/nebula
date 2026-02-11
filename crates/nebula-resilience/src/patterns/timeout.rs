@@ -186,7 +186,7 @@ mod tests {
             ResilienceError::Custom { message, .. } => {
                 assert!(message.contains("operation failed"));
             }
-            other => panic!("Expected Custom error, got: {:?}", other),
+            other => panic!("Expected Custom error, got: {other:?}"),
         }
     }
 
@@ -203,7 +203,7 @@ mod tests {
             ResilienceError::Timeout { duration, .. } => {
                 assert_eq!(duration, Duration::from_millis(10));
             }
-            other => panic!("Expected Timeout error, got: {:?}", other),
+            other => panic!("Expected Timeout error, got: {other:?}"),
         }
     }
 }

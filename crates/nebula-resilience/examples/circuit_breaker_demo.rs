@@ -8,6 +8,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 #[tokio::main]
+#[expect(clippy::excessive_nesting)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🔌 Circuit Breaker Pattern Demo");
     println!("================================");

@@ -80,6 +80,7 @@ impl AdaptiveRateLimiter {
         let mut state = self.state.lock().await;
         state.success_count += 1;
         self.adjust_rate_locked(&mut state);
+        drop(state);
     }
 
     /// Record error
@@ -87,6 +88,7 @@ impl AdaptiveRateLimiter {
         let mut state = self.state.lock().await;
         state.error_count += 1;
         self.adjust_rate_locked(&mut state);
+        drop(state);
     }
 }
 

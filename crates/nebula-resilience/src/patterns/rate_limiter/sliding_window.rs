@@ -48,6 +48,7 @@ impl SlidingWindow {
                 break;
             }
         }
+        drop(requests);
     }
 }
 
@@ -59,6 +60,7 @@ impl RateLimiter for SlidingWindow {
         let mut requests = self.requests.lock().await;
         if requests.len() < self.max_requests {
             requests.push_back(Instant::now());
+            drop(requests);
             Ok(())
         } else {
             // Calculate retry after based on oldest request
@@ -67,6 +69,7 @@ impl RateLimiter for SlidingWindow {
                     .checked_sub(oldest.elapsed())
                     .unwrap_or(Duration::from_millis(1))
             });
+            drop(requests);
 
             Err(ResilienceError::RateLimitExceeded {
                 retry_after: Some(retry_after),

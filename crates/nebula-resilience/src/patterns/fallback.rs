@@ -49,13 +49,13 @@ pub struct ValueFallback<T: Clone + Send + Sync> {
 
 impl<T: Clone + Send + Sync> ValueFallback<T> {
     /// Create new value fallback.
-    pub fn new(value: T) -> Self {
+    pub const fn new(value: T) -> Self {
         Self { value }
     }
 
     /// Returns a reference to the fallback value.
     #[must_use]
-    pub fn value(&self) -> &T {
+    pub const fn value(&self) -> &T {
         &self.value
     }
 }
@@ -83,7 +83,7 @@ where
     Fut: Future<Output = ResilienceResult<T>> + Send,
 {
     /// Create new function fallback
-    pub fn new(function: F) -> Self {
+    pub const fn new(function: F) -> Self {
         Self {
             function,
             _phantom: std::marker::PhantomData,
@@ -128,7 +128,7 @@ impl<T: Clone + Send + Sync> CacheFallback<T> {
 
     /// Set TTL for cached value
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_ttl(mut self, ttl: std::time::Duration) -> Self {
+    pub const fn with_ttl(mut self, ttl: std::time::Duration) -> Self {
         self.ttl = Some(ttl);
         self
     }

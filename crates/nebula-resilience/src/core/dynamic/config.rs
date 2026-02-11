@@ -68,7 +68,7 @@ impl DynamicConfig {
     }
 
     /// Merge with another dynamic configuration
-    pub fn merge(&mut self, other: &DynamicConfig) -> ConfigResult<()> {
+    pub fn merge(&mut self, other: &Self) -> ConfigResult<()> {
         self.values = self.values.merge(&other.values);
         // Update timestamp when configuration changes
         self.last_updated = Some(current_timestamp());

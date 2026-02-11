@@ -194,7 +194,7 @@ pub struct ServiceMetrics<S: Service> {
 
 impl<S: Service> ServiceMetrics<S> {
     /// Get service name.
-    pub fn service_name(&self) -> &'static str {
+    pub const fn service_name(&self) -> &'static str {
         S::NAME
     }
 
@@ -257,42 +257,46 @@ impl PolicyBuilder {
 
     /// Set timeout
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
 
     /// Set retry strategy with exponential backoff
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_retry_exponential(mut self, max_attempts: usize, base_delay: Duration) -> Self {
+    pub const fn with_retry_exponential(
+        mut self,
+        max_attempts: usize,
+        base_delay: Duration,
+    ) -> Self {
         self.retry = Some(RetryPolicyConfig::exponential(max_attempts, base_delay));
         self
     }
 
     /// Set retry strategy with fixed delay
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_retry_fixed(mut self, max_attempts: usize, delay: Duration) -> Self {
+    pub const fn with_retry_fixed(mut self, max_attempts: usize, delay: Duration) -> Self {
         self.retry = Some(RetryPolicyConfig::fixed(max_attempts, delay));
         self
     }
 
     /// Set retry configuration directly
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_retry(mut self, config: RetryPolicyConfig) -> Self {
+    pub const fn with_retry(mut self, config: RetryPolicyConfig) -> Self {
         self.retry = Some(config);
         self
     }
 
     /// Set circuit breaker configuration
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_circuit_breaker(mut self, config: CircuitBreakerConfig) -> Self {
+    pub const fn with_circuit_breaker(mut self, config: CircuitBreakerConfig) -> Self {
         self.circuit_breaker = Some(config);
         self
     }
 
     /// Set bulkhead configuration
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_bulkhead(mut self, config: BulkheadConfig) -> Self {
+    pub const fn with_bulkhead(mut self, config: BulkheadConfig) -> Self {
         self.bulkhead = Some(config);
         self
     }
@@ -315,7 +319,7 @@ impl PolicyBuilder {
 /// Tracks execution metadata for observability and metrics collection.
 /// Fields are preserved for future logging/metrics integration.
 #[derive(Debug)]
-pub(crate) struct UnTypedExecutionContext {
+pub struct UnTypedExecutionContext {
     /// Name of the service being executed
     pub service_name: String,
     /// Name of the operation being performed (for metrics/logging)
@@ -341,7 +345,7 @@ impl UnTypedExecutionContext {
 
     /// Increment attempt counter (for retry tracking)
     #[allow(dead_code)]
-    pub(crate) fn next_attempt(&mut self) {
+    pub(crate) const fn next_attempt(&mut self) {
         self.attempt += 1;
     }
 
@@ -561,7 +565,7 @@ impl ResilienceManager {
     }
 
     /// Check if error is retryable
-    fn should_retry(error: &ResilienceError) -> bool {
+    const fn should_retry(error: &ResilienceError) -> bool {
         error.is_retryable()
     }
 
@@ -767,6 +771,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(clippy::excessive_nesting)]
     async fn test_retry_on_failure() {
         let manager = ResilienceManager::with_defaults();
         let policy = PolicyBuilder::new()
@@ -868,10 +873,10 @@ mod tests {
     #[test]
     fn test_typed_operation_id() {
         assert_eq!(QueryOperation::name(), "query");
-        assert!(QueryOperation::IDEMPOTENT);
+        const { assert!(QueryOperation::IDEMPOTENT) };
 
         assert_eq!(WriteOperation::name(), "write");
-        assert!(!WriteOperation::IDEMPOTENT);
+        const { assert!(!WriteOperation::IDEMPOTENT) };
     }
 
     #[test]

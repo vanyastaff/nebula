@@ -70,7 +70,7 @@ impl TokenBucket {
 
     /// Set burst size
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_burst(mut self, burst_size: usize) -> Self {
+    pub const fn with_burst(mut self, burst_size: usize) -> Self {
         self.burst_size = burst_size;
         self
     }
@@ -85,6 +85,7 @@ impl TokenBucket {
 
         let tokens_to_add = elapsed * self.refill_rate;
         *tokens = (*tokens + tokens_to_add).min(self.capacity as f64);
+        drop(tokens);
         *last_refill = now;
     }
 }
@@ -97,8 +98,10 @@ impl RateLimiter for TokenBucket {
         let mut tokens = self.tokens.lock().await;
         if *tokens >= 1.0 {
             *tokens -= 1.0;
+            drop(tokens);
             Ok(())
         } else {
+            drop(tokens);
             Err(ResilienceError::RateLimitExceeded {
                 retry_after: Some(Duration::from_secs_f64(1.0 / self.refill_rate)),
                 limit: self.refill_rate,

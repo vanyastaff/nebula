@@ -40,7 +40,7 @@ impl Default for RetryPolicyConfig {
 
 impl RetryPolicyConfig {
     /// Create exponential backoff configuration
-    pub fn exponential(max_attempts: usize, base_delay: Duration) -> Self {
+    pub const fn exponential(max_attempts: usize, base_delay: Duration) -> Self {
         Self {
             max_attempts,
             base_delay_ms: base_delay.as_millis() as u64,
@@ -51,7 +51,7 @@ impl RetryPolicyConfig {
     }
 
     /// Create fixed delay configuration
-    pub fn fixed(max_attempts: usize, delay: Duration) -> Self {
+    pub const fn fixed(max_attempts: usize, delay: Duration) -> Self {
         Self {
             max_attempts,
             base_delay_ms: delay.as_millis() as u64,
@@ -250,70 +250,70 @@ impl ResiliencePolicy {
 
     /// Set priority
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_priority(mut self, priority: u32) -> Self {
+    pub const fn with_priority(mut self, priority: u32) -> Self {
         self.metadata.priority = priority;
         self
     }
 
     /// Set timeout
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
 
     /// Set retry strategy
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_retry(mut self, config: RetryPolicyConfig) -> Self {
+    pub const fn with_retry(mut self, config: RetryPolicyConfig) -> Self {
         self.retry = Some(config);
         self
     }
 
     /// Set circuit breaker
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_circuit_breaker(mut self, config: CircuitBreakerConfig) -> Self {
+    pub const fn with_circuit_breaker(mut self, config: CircuitBreakerConfig) -> Self {
         self.circuit_breaker = Some(config);
         self
     }
 
     /// Set bulkhead
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_bulkhead(mut self, config: BulkheadConfig) -> Self {
+    pub const fn with_bulkhead(mut self, config: BulkheadConfig) -> Self {
         self.bulkhead = Some(config);
         self
     }
 
     /// Remove timeout
     #[must_use = "builder methods must be chained or built"]
-    pub fn without_timeout(mut self) -> Self {
+    pub const fn without_timeout(mut self) -> Self {
         self.timeout = None;
         self
     }
 
     /// Remove retry
     #[must_use = "builder methods must be chained or built"]
-    pub fn without_retry(mut self) -> Self {
+    pub const fn without_retry(mut self) -> Self {
         self.retry = None;
         self
     }
 
     /// Remove circuit breaker
     #[must_use = "builder methods must be chained or built"]
-    pub fn without_circuit_breaker(mut self) -> Self {
+    pub const fn without_circuit_breaker(mut self) -> Self {
         self.circuit_breaker = None;
         self
     }
 
     /// Remove bulkhead
     #[must_use = "builder methods must be chained or built"]
-    pub fn without_bulkhead(mut self) -> Self {
+    pub const fn without_bulkhead(mut self) -> Self {
         self.bulkhead = None;
         self
     }
 
     /// Check if policy has any resilience patterns enabled
     #[must_use]
-    pub fn is_enabled(&self) -> bool {
+    pub const fn is_enabled(&self) -> bool {
         self.timeout.is_some()
             || self.retry.is_some()
             || self.circuit_breaker.is_some()
@@ -325,15 +325,13 @@ impl ResiliencePolicy {
     pub fn max_execution_time(&self) -> Option<Duration> {
         let base_timeout = self.timeout.unwrap_or(Duration::from_secs(60));
 
-        if let Some(retry) = &self.retry {
+        self.retry.as_ref().map_or(Some(base_timeout), |retry| {
             let retry_time: Duration = (0..retry.max_attempts)
                 .filter_map(|attempt| retry.delay_for_attempt(attempt))
                 .sum();
 
             Some(base_timeout * retry.max_attempts as u32 + retry_time)
-        } else {
-            Some(base_timeout)
-        }
+        })
     }
 
     /// Merge with another policy (other takes precedence)

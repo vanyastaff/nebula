@@ -6,14 +6,15 @@
 //! - retry() function overhead
 //! - Impact of max_attempts on performance
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::{
     ResilienceError,
     patterns::retry::{
         BackoffPolicy, ConservativeCondition, ExponentialBackoff, FixedDelay, JitterPolicy,
-        LinearBackoff, RetryConfig, RetryStrategy, retry,
+        LinearBackoff, RetryCondition, RetryConfig, RetryStrategy,
     },
 };
+use std::hint::black_box;
 use std::time::Duration;
 
 fn retry_strategy_creation(c: &mut Criterion) {
@@ -108,11 +109,18 @@ fn retry_successful_operation(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("fixed_delay", max_attempts),
             &max_attempts,
-            |b, &max_attempts| {
+            |b, &_max_attempts| {
                 let rt = tokio::runtime::Runtime::new().unwrap();
+                let strategy = RetryStrategy::with_policy(
+                    FixedDelay::<100>::default(),
+                    ConservativeCondition::<3>::new(),
+                )
+                .unwrap();
 
                 b.to_async(&rt).iter(|| async {
-                    let result = retry(|| async { Ok::<_, ResilienceError>(black_box(42)) }).await;
+                    let result = strategy
+                        .execute(|| async { Ok::<_, ResilienceError>(black_box(42)) })
+                        .await;
                     black_box(result)
                 });
             },
@@ -122,6 +130,7 @@ fn retry_successful_operation(c: &mut Criterion) {
     group.finish();
 }
 
+#[expect(clippy::excessive_nesting)]
 fn retry_with_failures(c: &mut Criterion) {
     let mut group = c.benchmark_group("retry/with_failures");
     group.sample_size(30); // Reduce sample size since this involves actual retries
@@ -133,21 +142,29 @@ fn retry_with_failures(c: &mut Criterion) {
             &max_attempts,
             |b, &max_attempts| {
                 let rt = tokio::runtime::Runtime::new().unwrap();
+                let strategy = RetryStrategy::with_policy(
+                    FixedDelay::<1>::default(),
+                    ConservativeCondition::<5>::new(),
+                )
+                .unwrap();
 
                 b.to_async(&rt).iter(|| {
+                    let strategy_ref = &strategy;
                     let mut attempt_count = 0;
                     async move {
-                        let result = retry(|| {
-                            attempt_count += 1;
-                            async move {
-                                if attempt_count < max_attempts {
-                                    Err(ResilienceError::custom("fail"))
-                                } else {
-                                    Ok::<_, ResilienceError>(black_box(42))
+                        let result = strategy_ref
+                            .execute(|| {
+                                attempt_count += 1;
+                                let count = attempt_count;
+                                async move {
+                                    if count < max_attempts {
+                                        Err(ResilienceError::custom("fail"))
+                                    } else {
+                                        Ok::<_, ResilienceError>(black_box(42))
+                                    }
                                 }
-                            }
-                        })
-                        .await;
+                            })
+                            .await;
                         black_box(result)
                     }
                 });
@@ -158,6 +175,7 @@ fn retry_with_failures(c: &mut Criterion) {
     group.finish();
 }
 
+#[expect(clippy::excessive_nesting)]
 fn retry_backoff_comparison(c: &mut Criterion) {
     let mut group = c.benchmark_group("retry/backoff_comparison");
     group.sample_size(30);
@@ -166,60 +184,58 @@ fn retry_backoff_comparison(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     group.bench_function("exponential_backoff", |b| {
-        let exp_config = RetryConfig::new(
+        let strategy = RetryStrategy::with_policy(
             ExponentialBackoff::<1, 20, 100>::default(), // Small delays for benchmarking
             ConservativeCondition::<5>::new(),
         )
-        .with_jitter(JitterPolicy::None);
-        let strategy = RetryStrategy::new(exp_config).unwrap();
+        .unwrap();
 
         b.to_async(&rt).iter(|| {
-            let strategy = strategy.clone();
+            let strategy_ref = &strategy;
             let mut attempt_count = 0;
             async move {
-                let (result, _stats) = strategy
+                let result = strategy_ref
                     .execute(|| {
                         attempt_count += 1;
+                        let count = attempt_count;
                         async move {
-                            if attempt_count < 5 {
+                            if count < 5 {
                                 Err(ResilienceError::custom("fail"))
                             } else {
                                 Ok::<_, ResilienceError>(42)
                             }
                         }
                     })
-                    .await
-                    .unwrap();
+                    .await;
                 black_box(result)
             }
         });
     });
 
     group.bench_function("linear_backoff", |b| {
-        let linear_config = RetryConfig::new(
+        let strategy = RetryStrategy::with_policy(
             LinearBackoff::<1, 10>::default(), // Small delays for benchmarking
             ConservativeCondition::<5>::new(),
         )
-        .with_jitter(JitterPolicy::None);
-        let strategy = RetryStrategy::new(linear_config).unwrap();
+        .unwrap();
 
         b.to_async(&rt).iter(|| {
-            let strategy = strategy.clone();
+            let strategy_ref = &strategy;
             let mut attempt_count = 0;
             async move {
-                let (result, _stats) = strategy
+                let result = strategy_ref
                     .execute(|| {
                         attempt_count += 1;
+                        let count = attempt_count;
                         async move {
-                            if attempt_count < 5 {
+                            if count < 5 {
                                 Err(ResilienceError::custom("fail"))
                             } else {
                                 Ok::<_, ResilienceError>(42)
                             }
                         }
                     })
-                    .await
-                    .unwrap();
+                    .await;
                 black_box(result)
             }
         });
@@ -235,25 +251,25 @@ fn retry_jitter_calculation(c: &mut Criterion) {
 
     group.bench_function("no_jitter", |b| {
         b.iter(|| {
-            black_box(JitterPolicy::None.apply(base_delay));
+            black_box(JitterPolicy::None.apply(base_delay, None));
         });
     });
 
     group.bench_function("full_jitter", |b| {
         b.iter(|| {
-            black_box(JitterPolicy::Full.apply(base_delay));
+            black_box(JitterPolicy::Full.apply(base_delay, None));
         });
     });
 
     group.bench_function("equal_jitter", |b| {
         b.iter(|| {
-            black_box(JitterPolicy::Equal.apply(base_delay));
+            black_box(JitterPolicy::Equal.apply(base_delay, None));
         });
     });
 
     group.bench_function("decorrelated_jitter", |b| {
         b.iter(|| {
-            black_box(JitterPolicy::Decorrelated.apply(base_delay));
+            black_box(JitterPolicy::Decorrelated.apply(base_delay, None));
         });
     });
 
@@ -268,19 +284,19 @@ fn retry_error_classification(c: &mut Criterion) {
     // Benchmark: Check if error should be retried
     group.bench_function("transient_error", |b| {
         let error = ResilienceError::timeout(Duration::from_secs(1));
-        b.iter(|| black_box(conservative.should_retry(&error, 1)));
+        b.iter(|| black_box(conservative.should_retry(&error, 1, Duration::ZERO)));
     });
 
     group.bench_function("terminal_error", |b| {
         let error = ResilienceError::InvalidConfig {
             message: "permanent failure".to_string(),
         };
-        b.iter(|| black_box(conservative.should_retry(&error, 1)));
+        b.iter(|| black_box(conservative.should_retry(&error, 1, Duration::ZERO)));
     });
 
     group.bench_function("custom_retryable_error", |b| {
         let error = ResilienceError::custom("retryable failure");
-        b.iter(|| black_box(conservative.should_retry(&error, 1)));
+        b.iter(|| black_box(conservative.should_retry(&error, 1, Duration::ZERO)));
     });
 
     group.finish();

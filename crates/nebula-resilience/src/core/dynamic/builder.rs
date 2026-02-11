@@ -49,19 +49,19 @@ impl DynamicConfigBuilder {
 
     /// Start building retry configuration
     #[must_use]
-    pub fn retry(self) -> RetryConfigBuilder {
+    pub const fn retry(self) -> RetryConfigBuilder {
         RetryConfigBuilder::new(self)
     }
 
     /// Start building circuit breaker configuration
     #[must_use]
-    pub fn circuit_breaker(self) -> CircuitBreakerConfigBuilder {
+    pub const fn circuit_breaker(self) -> CircuitBreakerConfigBuilder {
         CircuitBreakerConfigBuilder::new(self)
     }
 
     /// Start building bulkhead configuration
     #[must_use]
-    pub fn bulkhead(self) -> BulkheadConfigBuilder {
+    pub const fn bulkhead(self) -> BulkheadConfigBuilder {
         BulkheadConfigBuilder::new(self)
     }
 
@@ -87,7 +87,7 @@ pub struct RetryConfigBuilder {
 }
 
 impl RetryConfigBuilder {
-    fn new(parent: DynamicConfigBuilder) -> Self {
+    const fn new(parent: DynamicConfigBuilder) -> Self {
         Self {
             parent,
             max_attempts: None,
@@ -100,7 +100,7 @@ impl RetryConfigBuilder {
     /// # Type Safety
     /// Only accepts `usize`, preventing runtime type errors.
     #[must_use]
-    pub fn max_attempts(mut self, attempts: usize) -> Self {
+    pub const fn max_attempts(mut self, attempts: usize) -> Self {
         self.max_attempts = Some(attempts);
         self
     }
@@ -110,7 +110,7 @@ impl RetryConfigBuilder {
     /// # Type Safety
     /// Only accepts `Duration`, preventing runtime type errors.
     #[must_use]
-    pub fn base_delay(mut self, delay: Duration) -> Self {
+    pub const fn base_delay(mut self, delay: Duration) -> Self {
         self.base_delay = Some(delay);
         self
     }
@@ -166,7 +166,7 @@ pub struct CircuitBreakerConfigBuilder {
 }
 
 impl CircuitBreakerConfigBuilder {
-    fn new(parent: DynamicConfigBuilder) -> Self {
+    const fn new(parent: DynamicConfigBuilder) -> Self {
         Self {
             parent,
             failure_threshold: None,
@@ -177,21 +177,21 @@ impl CircuitBreakerConfigBuilder {
 
     /// Set failure threshold before opening circuit
     #[must_use]
-    pub fn failure_threshold(mut self, threshold: usize) -> Self {
+    pub const fn failure_threshold(mut self, threshold: usize) -> Self {
         self.failure_threshold = Some(threshold);
         self
     }
 
     /// Set timeout before attempting to close circuit
     #[must_use]
-    pub fn reset_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn reset_timeout(mut self, timeout: Duration) -> Self {
         self.reset_timeout = Some(timeout);
         self
     }
 
     /// Set maximum operations allowed in half-open state
     #[must_use]
-    pub fn half_open_max_operations(mut self, max_ops: usize) -> Self {
+    pub const fn half_open_max_operations(mut self, max_ops: usize) -> Self {
         self.half_open_max_operations = Some(max_ops);
         self
     }
@@ -255,7 +255,7 @@ pub struct BulkheadConfigBuilder {
 }
 
 impl BulkheadConfigBuilder {
-    fn new(parent: DynamicConfigBuilder) -> Self {
+    const fn new(parent: DynamicConfigBuilder) -> Self {
         Self {
             parent,
             max_concurrency: None,
@@ -266,21 +266,21 @@ impl BulkheadConfigBuilder {
 
     /// Set maximum concurrent operations
     #[must_use]
-    pub fn max_concurrency(mut self, max: usize) -> Self {
+    pub const fn max_concurrency(mut self, max: usize) -> Self {
         self.max_concurrency = Some(max);
         self
     }
 
     /// Set queue size for waiting operations
     #[must_use]
-    pub fn queue_size(mut self, size: usize) -> Self {
+    pub const fn queue_size(mut self, size: usize) -> Self {
         self.queue_size = Some(size);
         self
     }
 
     /// Set timeout for acquiring bulkhead permit
     #[must_use]
-    pub fn timeout(mut self, timeout: Duration) -> Self {
+    pub const fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }

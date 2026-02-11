@@ -252,7 +252,7 @@ pub struct CustomBackoff {
 impl CustomBackoff {
     /// Create new custom backoff with delays
     #[must_use]
-    pub fn new(delays: Vec<Duration>, default_delay: Duration) -> Self {
+    pub const fn new(delays: Vec<Duration>, default_delay: Duration) -> Self {
         Self {
             delays,
             default_delay,
@@ -325,14 +325,17 @@ impl JitterPolicy {
             }
             Self::Decorrelated => {
                 let base = delay.as_millis() as u64;
-                if let Some(prev) = previous_delay {
-                    let prev_millis = prev.as_millis() as u64;
-                    let upper = (prev_millis * 3).max(base);
-                    Duration::from_millis(fastrand::u64(base..=upper))
-                } else {
-                    // First attempt, use equal jitter
-                    Self::Equal.apply(delay, None)
-                }
+                previous_delay.map_or_else(
+                    || {
+                        // First attempt, use equal jitter
+                        Self::Equal.apply(delay, None)
+                    },
+                    |prev| {
+                        let prev_millis = prev.as_millis() as u64;
+                        let upper = (prev_millis * 3).max(base);
+                        Duration::from_millis(fastrand::u64(base..=upper))
+                    },
+                )
             }
         }
     }
@@ -577,7 +580,7 @@ pub struct RetryConfig<B: BackoffPolicy, C> {
 
 impl<B: BackoffPolicy, C> RetryConfig<B, C> {
     /// Create new retry configuration
-    pub fn new(backoff: B, condition: C) -> Self {
+    pub const fn new(backoff: B, condition: C) -> Self {
         Self {
             backoff,
             condition,
@@ -587,13 +590,13 @@ impl<B: BackoffPolicy, C> RetryConfig<B, C> {
     }
 
     /// Set jitter policy
-    pub fn with_jitter(mut self, jitter: JitterPolicy) -> Self {
+    pub const fn with_jitter(mut self, jitter: JitterPolicy) -> Self {
         self.jitter = jitter;
         self
     }
 
     /// Set maximum total duration
-    pub fn with_max_duration(mut self, duration: Duration) -> Self {
+    pub const fn with_max_duration(mut self, duration: Duration) -> Self {
         self.max_total_duration = Some(duration);
         self
     }
@@ -736,13 +739,11 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
                     }
 
                     // Calculate delay for next attempt
-                    let base_delay = if let Some(custom_delay) =
-                        self.config.condition.custom_delay(&error, attempt)
-                    {
-                        custom_delay
-                    } else {
-                        self.config.backoff.calculate_delay(attempt)
-                    };
+                    let base_delay = self
+                        .config
+                        .condition
+                        .custom_delay(&error, attempt)
+                        .unwrap_or_else(|| self.config.backoff.calculate_delay(attempt));
 
                     let jittered_delay = self.config.jitter.apply(base_delay, previous_delay);
                     attempt_delays.push(jittered_delay);
@@ -777,7 +778,7 @@ impl<B: BackoffPolicy, C> RetryStrategy<B, C> {
     }
 
     /// Get configuration
-    pub fn config(&self) -> &RetryConfig<B, C> {
+    pub const fn config(&self) -> &RetryConfig<B, C> {
         &self.config
     }
 }
@@ -994,7 +995,7 @@ mod tests {
                 assert!(stats.succeeded);
                 assert_eq!(counter.load(Ordering::Relaxed), 3);
             }
-            Err(_) => panic!("Expected success after retries"),
+            Err(e) => panic!("Expected success after retries, got: {e:?}"),
         }
     }
 
@@ -1053,22 +1054,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_helper_functions() {
-        let _standard: Result<
+        let standard: Result<
             RetryStrategy<ExponentialBackoff<100, 20>, ConservativeCondition<3>>,
             ConfigError,
         > = exponential_retry::<3>();
 
-        let _quick: Result<RetryStrategy<FixedDelay<50>, ConservativeCondition<2>>, ConfigError> =
+        let quick: Result<RetryStrategy<FixedDelay<50>, ConservativeCondition<2>>, ConfigError> =
             fixed_retry::<50, 2>();
 
-        let _aggressive: Result<
+        let aggressive: Result<
             RetryStrategy<ExponentialBackoff<50, 15>, AggressiveCondition<5>>,
             ConfigError,
         > = aggressive_retry::<5>();
 
-        assert!(_standard.is_ok());
-        assert!(_quick.is_ok());
-        assert!(_aggressive.is_ok());
+        assert!(standard.is_ok());
+        assert!(quick.is_ok());
+        assert!(aggressive.is_ok());
     }
 
     #[tokio::test]

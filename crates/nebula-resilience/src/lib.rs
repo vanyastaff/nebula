@@ -137,7 +137,7 @@
 //! - **Sealed Traits**: Controlled API extensibility
 //! - **Typestate Pattern**: Compile-time state machine correctness
 
-#![warn(clippy::all, clippy::pedantic)]
+#![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::perf)]
 // Pedantic lints suppressed crate-wide — expect will warn if no longer needed
 #![expect(
     clippy::module_name_repetitions,

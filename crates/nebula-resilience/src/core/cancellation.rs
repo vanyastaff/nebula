@@ -64,7 +64,7 @@ impl CancellationContext {
 
     /// Get the cancellation token
     #[must_use]
-    pub fn token(&self) -> &CancellationToken {
+    pub const fn token(&self) -> &CancellationToken {
         &self.token
     }
 
@@ -121,16 +121,19 @@ impl CancellationContext {
     {
         tokio::select! {
             result = tokio::time::timeout(timeout, operation()) => {
-                if let Ok(op_result) = result {
-                    tracing::debug!("Operation completed within timeout");
-                    op_result
-                } else {
-                    tracing::warn!(?timeout, "Operation timed out");
-                    Err(ResilienceError::Timeout {
-                        duration: timeout,
-                        context: Some("Operation exceeded timeout".to_string()),
-                    })
-                }
+                result.map_or_else(
+                    |_| {
+                        tracing::warn!(?timeout, "Operation timed out");
+                        Err(ResilienceError::Timeout {
+                            duration: timeout,
+                            context: Some("Operation exceeded timeout".to_string()),
+                        })
+                    },
+                    |op_result| {
+                        tracing::debug!("Operation completed within timeout");
+                        op_result
+                    },
+                )
             }
             () = self.token.cancelled() => {
                 tracing::info!("Operation cancelled before timeout");
@@ -259,7 +262,7 @@ impl ShutdownCoordinator {
 
     /// Get the master cancellation token
     #[must_use]
-    pub fn token(&self) -> &CancellationToken {
+    pub const fn token(&self) -> &CancellationToken {
         &self.master_token
     }
 }
@@ -333,7 +336,7 @@ mod tests {
         if let Err(ResilienceError::Timeout { .. }) = result {
             // Expected timeout
         } else {
-            panic!("Expected timeout error, got: {:?}", result);
+            panic!("Expected timeout error, got: {result:?}");
         }
     }
 
@@ -389,7 +392,7 @@ mod tests {
         if let Err(ResilienceError::Cancelled { .. }) = result {
             // Expected
         } else {
-            panic!("Expected cancellation error, got: {:?}", result);
+            panic!("Expected cancellation error, got: {result:?}");
         }
     }
 }

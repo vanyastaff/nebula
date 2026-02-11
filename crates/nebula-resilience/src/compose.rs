@@ -95,7 +95,7 @@ pub trait LayerStack<T>: Send + Sync {
 // =============================================================================
 
 /// Terminal layer that just executes the operation
-pub(crate) struct TerminalLayer;
+pub struct TerminalLayer;
 
 #[async_trait::async_trait]
 impl<T: Send + 'static> LayerStack<T> for TerminalLayer {
@@ -105,7 +105,7 @@ impl<T: Send + 'static> LayerStack<T> for TerminalLayer {
 }
 
 /// A composed stack of resilience layers
-pub(crate) struct ComposedStack<T> {
+pub struct ComposedStack<T> {
     layer: Arc<dyn ResilienceLayer<T> + Send + Sync>,
     next: Arc<dyn LayerStack<T> + Send + Sync>,
 }
@@ -118,12 +118,12 @@ impl<T: Send + 'static> LayerStack<T> for ComposedStack<T> {
 }
 
 /// Timeout layer
-pub(crate) struct TimeoutLayer {
+pub struct TimeoutLayer {
     duration: Duration,
 }
 
 impl TimeoutLayer {
-    pub(crate) fn new(duration: Duration) -> Self {
+    pub(crate) const fn new(duration: Duration) -> Self {
         Self { duration }
     }
 }
@@ -135,13 +135,14 @@ impl<T: Send + 'static> ResilienceLayer<T> for TimeoutLayer {
         operation: BoxedOperation<T>,
         next: Arc<dyn LayerStack<T> + Send + Sync>,
     ) -> ResilienceResult<T> {
-        match timeout(self.duration, next.execute(operation)).await {
-            Ok(result) => result,
-            Err(_) => Err(ResilienceError::Timeout {
-                duration: self.duration,
-                context: Some("Layer timeout".to_string()),
-            }),
-        }
+        timeout(self.duration, next.execute(operation))
+            .await
+            .unwrap_or_else(|_| {
+                Err(ResilienceError::Timeout {
+                    duration: self.duration,
+                    context: Some("Layer timeout".to_string()),
+                })
+            })
     }
 
     fn name(&self) -> &'static str {
@@ -150,12 +151,12 @@ impl<T: Send + 'static> ResilienceLayer<T> for TimeoutLayer {
 }
 
 /// Retry layer using `RetryPolicyConfig`
-pub(crate) struct RetryLayer {
+pub struct RetryLayer {
     config: RetryPolicyConfig,
 }
 
 impl RetryLayer {
-    pub(crate) fn new(config: RetryPolicyConfig) -> Self {
+    pub(crate) const fn new(config: RetryPolicyConfig) -> Self {
         Self { config }
     }
 }
@@ -204,12 +205,12 @@ impl<T: Send + 'static> ResilienceLayer<T> for RetryLayer {
 }
 
 /// Circuit breaker layer
-pub(crate) struct CircuitBreakerLayer {
+pub struct CircuitBreakerLayer {
     circuit_breaker: Arc<CircuitBreaker>,
 }
 
 impl CircuitBreakerLayer {
-    pub(crate) fn new(circuit_breaker: Arc<CircuitBreaker>) -> Self {
+    pub(crate) const fn new(circuit_breaker: Arc<CircuitBreaker>) -> Self {
         Self { circuit_breaker }
     }
 }
@@ -239,12 +240,12 @@ impl<T: Send + 'static> ResilienceLayer<T> for CircuitBreakerLayer {
 }
 
 /// Bulkhead layer
-pub(crate) struct BulkheadLayer {
+pub struct BulkheadLayer {
     bulkhead: Arc<Bulkhead>,
 }
 
 impl BulkheadLayer {
-    pub(crate) fn new(bulkhead: Arc<Bulkhead>) -> Self {
+    pub(crate) const fn new(bulkhead: Arc<Bulkhead>) -> Self {
         Self { bulkhead }
     }
 }
@@ -405,6 +406,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(clippy::excessive_nesting)]
     async fn test_retry_with_timeout() {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
