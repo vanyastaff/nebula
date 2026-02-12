@@ -109,23 +109,21 @@ impl PollingWatcher {
         let mut interval_timer = tokio::time::interval(interval);
         interval_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        // Initial scan to populate cache
+        // Initial scan to populate cache (collect all metadata first, then lock once)
+        let mut initial_entries = Vec::new();
         for source in &sources {
             match source {
                 ConfigSource::File(path) | ConfigSource::FileAuto(path) => {
                     if let Some(metadata) = Self::get_file_metadata(path).await {
-                        let mut cache = metadata_cache.write().await;
-                        cache.insert(path.clone(), metadata);
+                        initial_entries.push((path.clone(), metadata));
                     }
                 }
                 ConfigSource::Directory(dir) => {
                     if let Ok(mut entries) = tokio::fs::read_dir(dir).await {
-                        let mut cache = metadata_cache.write().await;
-
                         while let Ok(Some(entry)) = entries.next_entry().await {
                             let path = entry.path();
                             if let Some(metadata) = Self::get_file_metadata(&path).await {
-                                cache.insert(path, metadata);
+                                initial_entries.push((path, metadata));
                             }
                         }
                     }
@@ -133,27 +131,37 @@ impl PollingWatcher {
                 _ => {}
             }
         }
+        if !initial_entries.is_empty() {
+            let mut cache = metadata_cache.write().await;
+            for (path, metadata) in initial_entries {
+                cache.insert(path, metadata);
+            }
+        }
 
         while watching.load(Ordering::Relaxed) {
             interval_timer.tick().await;
 
-            for source in &sources {
-                match source {
-                    ConfigSource::File(path) | ConfigSource::FileAuto(path) => {
-                        self.check_file_changes(path, source, &callback, &metadata_cache)
-                            .await;
+            // Check all sources concurrently per tick
+            type BoxFut<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
+            let check_futures: Vec<BoxFut<'_>> = sources
+                .iter()
+                .filter_map(|source| -> Option<BoxFut<'_>> {
+                    match source {
+                        ConfigSource::File(path) | ConfigSource::FileAuto(path) => Some(Box::pin(
+                            self.check_file_changes(path, source, &callback, &metadata_cache),
+                        )),
+                        ConfigSource::Directory(dir) => Some(Box::pin(
+                            self.check_directory_changes(dir, source, &callback, &metadata_cache),
+                        )),
+                        _ => None,
                     }
-                    ConfigSource::Directory(dir) => {
-                        self.check_directory_changes(dir, source, &callback, &metadata_cache)
-                            .await;
-                    }
-                    _ => {}
-                }
-            }
+                })
+                .collect();
+            futures::future::join_all(check_futures).await;
         }
     }
 
-    /// Check for file changes
+    /// Check for file changes (read lock first, write lock only on change)
     async fn check_file_changes(
         &self,
         path: &PathBuf,
@@ -162,38 +170,41 @@ impl PollingWatcher {
         cache: &Arc<RwLock<HashMap<PathBuf, FileMetadata>>>,
     ) {
         let current_metadata = Self::get_file_metadata(path).await;
-        let mut cache = cache.write().await;
 
-        match (cache.get(path), current_metadata) {
-            (Some(old), Some(new)) if Self::has_changed(old, &new) => {
-                // File modified
-                let event = ConfigWatchEvent::new(ConfigWatchEventType::Modified, source.clone())
-                    .with_path(path.clone());
-
-                callback(event);
-                cache.insert(path.clone(), new);
+        // Read lock to detect if change occurred
+        let change = {
+            let cache_read = cache.read().await;
+            match (cache_read.get(path), &current_metadata) {
+                (Some(old), Some(new)) if Self::has_changed(old, new) => {
+                    Some(ConfigWatchEventType::Modified)
+                }
+                (Some(_), None) => Some(ConfigWatchEventType::Deleted),
+                (None, Some(_)) => Some(ConfigWatchEventType::Created),
+                _ => None,
             }
-            (Some(_), None) => {
-                // File deleted
-                let event = ConfigWatchEvent::new(ConfigWatchEventType::Deleted, source.clone())
-                    .with_path(path.clone());
+        };
 
-                callback(event);
-                cache.remove(path);
-            }
-            (None, Some(new)) => {
-                // File created
-                let event = ConfigWatchEvent::new(ConfigWatchEventType::Created, source.clone())
-                    .with_path(path.clone());
+        // Write lock only when we need to update
+        if let Some(event_type) = change {
+            let event =
+                ConfigWatchEvent::new(event_type.clone(), source.clone()).with_path(path.clone());
+            callback(event);
 
-                callback(event);
-                cache.insert(path.clone(), new);
+            let mut cache_write = cache.write().await;
+            match event_type {
+                ConfigWatchEventType::Deleted => {
+                    cache_write.remove(path);
+                }
+                _ => {
+                    if let Some(metadata) = current_metadata {
+                        cache_write.insert(path.clone(), metadata);
+                    }
+                }
             }
-            _ => {}
         }
     }
 
-    /// Check for directory changes
+    /// Check for directory changes (scan before locking, minimize lock scope)
     async fn check_directory_changes(
         &self,
         dir: &PathBuf,
@@ -201,68 +212,75 @@ impl PollingWatcher {
         callback: &Arc<dyn Fn(ConfigWatchEvent) + Send + Sync>,
         cache: &Arc<RwLock<HashMap<PathBuf, FileMetadata>>>,
     ) {
-        let mut current_files = HashMap::new();
-
-        // Scan directory
+        // Collect directory entries, then fetch all metadata concurrently
+        let mut paths = Vec::new();
         if let Ok(mut entries) = tokio::fs::read_dir(dir).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
-                let path = entry.path();
-                if let Some(metadata) = Self::get_file_metadata(&path).await {
-                    current_files.insert(path, metadata);
-                }
+                paths.push(entry.path());
             }
         }
-
-        let mut cache = cache.write().await;
-
-        // Check for changes
-        for (path, new_metadata) in &current_files {
-            if !path.starts_with(dir) {
-                continue;
-            }
-
-            match cache.get(path) {
-                Some(old) if Self::has_changed(old, new_metadata) => {
-                    // File modified
-                    let event =
-                        ConfigWatchEvent::new(ConfigWatchEventType::Modified, source.clone())
-                            .with_path(path.clone());
-
-                    callback(event);
-                }
-                None => {
-                    // File created
-                    let event =
-                        ConfigWatchEvent::new(ConfigWatchEventType::Created, source.clone())
-                            .with_path(path.clone());
-
-                    callback(event);
-                }
-                _ => {}
-            }
-        }
-
-        // Check for deletions
-        let paths_in_dir: Vec<_> = cache
-            .keys()
-            .filter(|p| p.starts_with(dir))
-            .cloned()
+        let metadata_results =
+            futures::future::join_all(paths.iter().map(Self::get_file_metadata)).await;
+        let mut current_files: HashMap<_, _> = paths
+            .into_iter()
+            .zip(metadata_results)
+            .filter_map(|(path, meta)| meta.map(|m| (path, m)))
             .collect();
 
-        for path in paths_in_dir {
-            if !current_files.contains_key(&path) {
-                // File deleted
-                let event = ConfigWatchEvent::new(ConfigWatchEventType::Deleted, source.clone())
-                    .with_path(path.clone());
+        // Collect events under read lock
+        let events: Vec<(PathBuf, ConfigWatchEventType)> = {
+            let cache_read = cache.read().await;
 
-                callback(event);
-                cache.remove(&path);
+            let mut events = Vec::new();
+
+            // Check for modifications and creations
+            for (path, new_metadata) in &current_files {
+                if !path.starts_with(dir) {
+                    continue;
+                }
+                match cache_read.get(path) {
+                    Some(old) if Self::has_changed(old, new_metadata) => {
+                        events.push((path.clone(), ConfigWatchEventType::Modified));
+                    }
+                    None => {
+                        events.push((path.clone(), ConfigWatchEventType::Created));
+                    }
+                    _ => {}
+                }
             }
+
+            // Check for deletions
+            for path in cache_read.keys() {
+                if path.starts_with(dir) && !current_files.contains_key(path) {
+                    events.push((path.clone(), ConfigWatchEventType::Deleted));
+                }
+            }
+
+            events
+        };
+
+        // Fire callbacks outside any lock
+        for (path, event_type) in &events {
+            let event =
+                ConfigWatchEvent::new(event_type.clone(), source.clone()).with_path(path.clone());
+            callback(event);
         }
 
-        // Update cache with current state
-        for (path, metadata) in current_files {
-            cache.insert(path, metadata);
+        // Update cache under write lock only if there were changes
+        if !events.is_empty() {
+            let mut cache_write = cache.write().await;
+            for (path, event_type) in events {
+                match event_type {
+                    ConfigWatchEventType::Deleted => {
+                        cache_write.remove(&path);
+                    }
+                    _ => {
+                        if let Some(metadata) = current_files.remove(&path) {
+                            cache_write.insert(path, metadata);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -318,13 +336,19 @@ impl ConfigWatcher for PollingWatcher {
         // Mark as not watching
         self.watching.store(false, Ordering::Relaxed);
 
-        // Cancel the task
-        {
+        // Wait for the polling task to exit (it checks `watching` flag each tick)
+        let handle = {
             let mut task_handle = self.task_handle.write().await;
-            if let Some(handle) = task_handle.take() {
-                handle.abort();
-                // Wait a bit for graceful shutdown
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            task_handle.take()
+        };
+        if let Some(handle) = handle {
+            // The task will exit on next interval tick when it sees watching == false.
+            // Use a timeout to avoid waiting indefinitely if the task is stuck.
+            match tokio::time::timeout(self.interval * 2, handle).await {
+                Ok(_) => {}
+                Err(_) => {
+                    nebula_log::warn!("Polling task did not exit within timeout");
+                }
             }
         }
 

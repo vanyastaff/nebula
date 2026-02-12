@@ -2,7 +2,7 @@
 
 mod composite;
 mod env;
-mod file;
+pub(crate) mod file;
 
 pub use composite::CompositeLoader;
 pub use env::EnvLoader;

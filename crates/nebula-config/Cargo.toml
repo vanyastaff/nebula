@@ -17,6 +17,7 @@ publish = false
 async-trait = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 
 # Errors
 thiserror = { workspace = true }
@@ -33,13 +34,10 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 # Time and utilities
-chrono = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
 regex = { workspace = true }
 uuid = { workspace = true }
 dashmap = { workspace = true }
 
 # Internal crates
 nebula-log = { path = "../nebula-log" }
-nebula-value = { path = "../nebula-value" }
-
-

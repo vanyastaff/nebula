@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 /// Schema-based validator
-#[derive(Debug, Clone)]
 pub struct SchemaValidator {
     /// JSON schema
     schema: Value,
@@ -13,6 +12,29 @@ pub struct SchemaValidator {
     allow_additional: bool,
     /// Whether to coerce types when possible
     coerce_types: bool,
+    /// Cache for compiled regex patterns (avoids recompilation on every validation)
+    regex_cache: std::sync::Mutex<std::collections::HashMap<String, regex::Regex>>,
+}
+
+impl Clone for SchemaValidator {
+    fn clone(&self) -> Self {
+        Self {
+            schema: self.schema.clone(),
+            allow_additional: self.allow_additional,
+            coerce_types: self.coerce_types,
+            regex_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+}
+
+impl std::fmt::Debug for SchemaValidator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SchemaValidator")
+            .field("schema", &self.schema)
+            .field("allow_additional", &self.allow_additional)
+            .field("coerce_types", &self.coerce_types)
+            .finish()
+    }
 }
 
 impl SchemaValidator {
@@ -22,6 +44,7 @@ impl SchemaValidator {
             schema,
             allow_additional: true,
             coerce_types: false,
+            regex_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -123,13 +146,10 @@ impl SchemaValidator {
 
     /// Validate type constraint
     fn validate_type(&self, data: &Value, type_val: &Value, path: &str) -> ConfigResult<()> {
-        let types = if let Some(type_str) = type_val.as_str() {
-            vec![type_str.to_string()]
+        let types: Vec<&str> = if let Some(type_str) = type_val.as_str() {
+            vec![type_str]
         } else if let Some(type_arr) = type_val.as_array() {
-            type_arr
-                .iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
+            type_arr.iter().filter_map(|v| v.as_str()).collect()
         } else {
             return Ok(());
         };
@@ -337,22 +357,33 @@ impl SchemaValidator {
             ));
         }
 
-        // Check pattern
+        // Check pattern (with compiled regex cache)
         if let Some(pattern) = schema_obj.get("pattern")
             && let Some(pattern_str) = pattern.as_str()
         {
-            match regex::Regex::new(pattern_str) {
-                Ok(re) => {
-                    if !re.is_match(s) {
-                        return Err(ConfigError::validation_error(
-                            format!("String at '{}' must match pattern '{}'", path, pattern_str),
-                            Some(path.to_string()),
-                        ));
+            let matches = {
+                let mut cache = self.regex_cache.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(re) = cache.get(pattern_str) {
+                    Some(re.is_match(s))
+                } else {
+                    match regex::Regex::new(pattern_str) {
+                        Ok(re) => {
+                            let result = re.is_match(s);
+                            cache.insert(pattern_str.to_string(), re);
+                            Some(result)
+                        }
+                        Err(_) => {
+                            nebula_log::warn!("Invalid regex pattern in schema: {}", pattern_str);
+                            None
+                        }
                     }
                 }
-                Err(_) => {
-                    nebula_log::warn!("Invalid regex pattern in schema: {}", pattern_str);
-                }
+            };
+            if matches == Some(false) {
+                return Err(ConfigError::validation_error(
+                    format!("String at '{}' must match pattern '{}'", path, pattern_str),
+                    Some(path.to_string()),
+                ));
             }
         }
 
@@ -481,42 +512,40 @@ impl SchemaValidator {
         ))
     }
 
-    /// Get JSON type name
-    fn get_json_type(&self, value: &Value) -> String {
+    /// Get JSON type name (zero-alloc)
+    fn get_json_type(&self, value: &Value) -> &'static str {
         match value {
-            Value::Null => "null".to_string(),
-            Value::Bool(_) => "boolean".to_string(),
-            Value::Number(_) => "number".to_string(),
-            Value::String(_) => "string".to_string(),
-            Value::Array(_) => "array".to_string(),
-            Value::Object(_) => "object".to_string(),
+            Value::Null => "null",
+            Value::Bool(_) => "boolean",
+            Value::Number(_) => "number",
+            Value::String(_) => "string",
+            Value::Array(_) => "array",
+            Value::Object(_) => "object",
         }
     }
 
-    /// Check if value can be coerced to target types
-    fn can_coerce(&self, value: &Value, target_types: &[String]) -> bool {
+    /// Check if value can be coerced to target types (no String allocation for comparison)
+    fn can_coerce(&self, value: &Value, target_types: &[&str]) -> bool {
         match value {
             Value::String(s) => {
                 // String to number
-                if target_types.contains(&"number".to_string()) && s.parse::<f64>().is_ok() {
+                if target_types.contains(&"number") && s.parse::<f64>().is_ok() {
                     return true;
                 }
                 // String to boolean
-                if target_types.contains(&"boolean".to_string())
+                if target_types.contains(&"boolean")
                     && (s.eq_ignore_ascii_case("true") || s.eq_ignore_ascii_case("false"))
                 {
                     return true;
                 }
             }
             Value::Number(_) => {
-                // Number to string
-                if target_types.contains(&"string".to_string()) {
+                if target_types.contains(&"string") {
                     return true;
                 }
             }
             Value::Bool(_) => {
-                // Boolean to string
-                if target_types.contains(&"string".to_string()) {
+                if target_types.contains(&"string") {
                     return true;
                 }
             }

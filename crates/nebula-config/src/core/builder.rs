@@ -1,5 +1,6 @@
 //! Configuration builder
 
+use super::config::merge_json;
 use super::{Config, ConfigError, ConfigResult, ConfigSource};
 use crate::loaders::CompositeLoader;
 use crate::{ConfigLoader, ConfigValidator, ConfigWatcher};
@@ -149,8 +150,8 @@ impl ConfigBuilder {
             sources.insert(0, ConfigSource::Default);
         }
 
-        // Sort sources by priority (higher priority first for loading)
-        sources.sort_by_key(|s| s.priority());
+        // Sort sources by priority (higher number = lower priority, loaded first so higher overrides)
+        sources.sort_by_key(|s| std::cmp::Reverse(s.priority()));
 
         // Load initial configuration
         let mut merged_data = serde_json::Value::Object(serde_json::Map::new());
@@ -165,13 +166,16 @@ impl ConfigBuilder {
             merged_data = defaults;
         }
 
-        // Load from all sources
-        for source in &sources {
-            if matches!(source, ConfigSource::Default) {
-                continue; // Already handled defaults
-            }
+        // Load all sources concurrently, then merge in priority order
+        let loadable: Vec<_> = sources
+            .iter()
+            .filter(|s| !matches!(s, ConfigSource::Default))
+            .collect();
+        let load_results =
+            futures::future::join_all(loadable.iter().map(|source| loader.load(source))).await;
 
-            match loader.load(source).await {
+        for (source, result) in loadable.iter().zip(load_results) {
+            match result {
                 Ok(data) => {
                     nebula_log::debug!(
                         action = "source_loaded",
@@ -180,17 +184,7 @@ impl ConfigBuilder {
                         "Successfully loaded configuration from source"
                     );
 
-                    // Create temporary config for merging
-                    let temp_config = Config::new(
-                        serde_json::Value::Object(serde_json::Map::new()),
-                        vec![],
-                        Arc::clone(&loader),
-                        None,
-                        None,
-                        false,
-                    );
-
-                    temp_config.merge_values(&mut merged_data, data)?;
+                    merge_json(&mut merged_data, data)?;
                 }
                 Err(e) => {
                     if self.fail_on_missing || !source.is_optional() {
@@ -230,26 +224,29 @@ impl ConfigBuilder {
 
         // Start auto-reload if interval is set
         if let Some(interval) = self.auto_reload_interval {
-            Self::start_auto_reload(Arc::new(config.clone()), interval).await;
+            let token = config.cancel_token().clone();
+            let config_arc = Arc::new(config.clone());
+            tokio::spawn(async move {
+                let mut interval_timer = tokio::time::interval(interval);
+                interval_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+                loop {
+                    tokio::select! {
+                        _ = token.cancelled() => {
+                            nebula_log::debug!("Auto-reload task cancelled");
+                            break;
+                        }
+                        _ = interval_timer.tick() => {
+                            if let Err(e) = config_arc.reload().await {
+                                nebula_log::error!("Auto-reload failed: {}", e);
+                            }
+                        }
+                    }
+                }
+            });
         }
 
         Ok(config)
-    }
-
-    /// Start auto-reload task
-    async fn start_auto_reload(config: Arc<Config>, interval: std::time::Duration) {
-        tokio::spawn(async move {
-            let mut interval_timer = tokio::time::interval(interval);
-            interval_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-            loop {
-                interval_timer.tick().await;
-
-                if let Err(e) = config.reload().await {
-                    nebula_log::error!("Auto-reload failed: {}", e);
-                }
-            }
-        });
     }
 }
 

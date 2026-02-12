@@ -68,27 +68,6 @@ impl FileWatcher {
         self
     }
 
-    /// Convert notify event to config watch event
-    ///
-    /// TODO: Use this helper in file watching implementation to convert
-    /// raw notify events to `ConfigWatchEvent` with proper categorization.
-    #[allow(dead_code)]
-    fn convert_event(&self, event: &Event, source: &ConfigSource) -> Option<ConfigWatchEvent> {
-        let event_type = match event.kind {
-            EventKind::Create(_) => ConfigWatchEventType::Created,
-            EventKind::Modify(_) => ConfigWatchEventType::Modified,
-            EventKind::Remove(_) => ConfigWatchEventType::Deleted,
-            EventKind::Other => {
-                return None; // Skip unknown events
-            }
-            _ => ConfigWatchEventType::Other("Unknown".to_string()),
-        };
-
-        let path = event.paths.first().cloned();
-
-        Some(ConfigWatchEvent::new(event_type, source.clone()).with_path(path.unwrap_or_default()))
-    }
-
     /// Start the event processing task
     async fn start_event_processor(&self, mut rx: mpsc::Receiver<ConfigWatchEvent>) {
         let callback = Arc::clone(&self.callback);

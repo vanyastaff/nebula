@@ -90,7 +90,6 @@ pub mod prelude {
 
     // Re-export nebula ecosystem types for convenience
     pub use nebula_log::{debug, error, info, warn};
-    pub use nebula_value::Value as NebulaValue;
 
     // Traits
     pub use crate::core::{
@@ -197,247 +196,24 @@ pub mod utils {
         }
 
         let mut iter = values.into_iter();
-        let mut result = if let Some(v) = iter.next() {
-            v
-        } else {
-            // Defensive fallback: should be unreachable due to the is_empty() guard above
-            serde_json::Value::Object(serde_json::Map::new())
-        };
-        let temp_config = crate::Config::new(
-            serde_json::Value::Object(serde_json::Map::new()),
-            vec![],
-            std::sync::Arc::new(crate::loaders::CompositeLoader::default()),
-            None,
-            None,
-            false,
-        );
+        let mut result = iter
+            .next()
+            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
         for value in iter {
-            temp_config.merge_values(&mut result, value)?;
+            crate::core::config::merge_json(&mut result, value)?;
         }
 
         Ok(result)
     }
 
-    /// Load configuration from a string based on format
+    /// Load configuration from a string based on format.
+    /// Delegates to the shared parsers in `loaders::file`.
     pub fn parse_config_string(
         content: &str,
         format: crate::ConfigFormat,
     ) -> ConfigResult<serde_json::Value> {
-        match format {
-            crate::ConfigFormat::Json => serde_json::from_str(content).map_err(Into::into),
-            crate::ConfigFormat::Toml => toml::from_str::<toml::Value>(content)?
-                .try_into()
-                .map_err(|e| {
-                    ConfigError::parse_error(
-                        std::path::PathBuf::from("string"),
-                        format!("TOML conversion error: {}", e),
-                    )
-                }),
-            crate::ConfigFormat::Yaml => {
-                // Parse YAML using yaml_rust2 and convert to JSON
-                use yaml_rust2::YamlLoader;
-                let docs = YamlLoader::load_from_str(content).map_err(|e| {
-                    ConfigError::parse_error(
-                        std::path::PathBuf::from("string"),
-                        format!("YAML parse error: {e:?}"),
-                    )
-                })?;
-                if docs.is_empty() {
-                    return Ok(serde_json::Value::Null);
-                }
-                fn yaml_to_json(yaml: &yaml_rust2::Yaml) -> ConfigResult<serde_json::Value> {
-                    use yaml_rust2::Yaml;
-                    Ok(match yaml {
-                        Yaml::Real(s) | Yaml::String(s) => {
-                            if let Ok(num) = s.parse::<f64>() {
-                                if let Some(json_num) = serde_json::Number::from_f64(num) {
-                                    serde_json::Value::Number(json_num)
-                                } else {
-                                    serde_json::Value::String(s.clone())
-                                }
-                            } else {
-                                serde_json::Value::String(s.clone())
-                            }
-                        }
-                        Yaml::Integer(i) => serde_json::Value::Number(serde_json::Number::from(*i)),
-                        Yaml::Boolean(b) => serde_json::Value::Bool(*b),
-                        Yaml::Array(arr) => {
-                            let mut json_arr = Vec::new();
-                            for item in arr {
-                                json_arr.push(yaml_to_json(item)?);
-                            }
-                            serde_json::Value::Array(json_arr)
-                        }
-                        Yaml::Hash(hash) => {
-                            let mut json_obj = serde_json::Map::new();
-                            for (key, value) in hash {
-                                let key_str = match key {
-                                    Yaml::String(s) => s.clone(),
-                                    Yaml::Integer(i) => i.to_string(),
-                                    _ => {
-                                        return Err(ConfigError::parse_error(
-                                            std::path::PathBuf::from("string"),
-                                            "Invalid key type in YAML hash",
-                                        ));
-                                    }
-                                };
-                                json_obj.insert(key_str, yaml_to_json(value)?);
-                            }
-                            serde_json::Value::Object(json_obj)
-                        }
-                        Yaml::Null => serde_json::Value::Null,
-                        Yaml::BadValue => {
-                            return Err(ConfigError::parse_error(
-                                std::path::PathBuf::from("string"),
-                                "Bad YAML value encountered",
-                            ));
-                        }
-                        Yaml::Alias(_) => {
-                            return Err(ConfigError::parse_error(
-                                std::path::PathBuf::from("string"),
-                                "Unsupported YAML type",
-                            ));
-                        }
-                    })
-                }
-                yaml_to_json(&docs[0])
-            }
-            crate::ConfigFormat::Ini => {
-                // Inline INI parser mirroring FileLoader behavior
-                let mut result = serde_json::Map::new();
-                let mut current_section: Option<String> = None;
-                for (line_num, line) in content.lines().enumerate() {
-                    let line = line.trim();
-                    if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
-                        continue;
-                    }
-                    if line.starts_with('[') && line.ends_with(']') {
-                        current_section = Some(line[1..line.len() - 1].to_string());
-                        if let Some(section) = &current_section {
-                            result.entry(section.clone()).or_insert_with(|| {
-                                serde_json::Value::Object(serde_json::Map::new())
-                            });
-                        }
-                        continue;
-                    }
-                    if let Some(eq_pos) = line.find('=') {
-                        let key = line[..eq_pos].trim();
-                        let mut value = line[eq_pos + 1..].trim();
-                        // Remove quotes if present
-                        if (value.starts_with('"') && value.ends_with('"'))
-                            || (value.starts_with('\'') && value.ends_with('\''))
-                        {
-                            value = &value[1..value.len() - 1];
-                        }
-                        // Parse value similar to FileLoader::parse_ini_value
-                        let parsed_value = if value.eq_ignore_ascii_case("true") {
-                            serde_json::Value::Bool(true)
-                        } else if value.eq_ignore_ascii_case("false") {
-                            serde_json::Value::Bool(false)
-                        } else if let Ok(int_val) = value.parse::<i64>() {
-                            serde_json::Value::Number(serde_json::Number::from(int_val))
-                        } else if let Ok(float_val) = value.parse::<f64>() {
-                            if let Some(num) = serde_json::Number::from_f64(float_val) {
-                                serde_json::Value::Number(num)
-                            } else {
-                                serde_json::Value::String(value.to_string())
-                            }
-                        } else {
-                            serde_json::Value::String(value.to_string())
-                        };
-                        if let Some(ref section) = current_section {
-                            if let Some(serde_json::Value::Object(section_obj)) =
-                                result.get_mut(section)
-                            {
-                                section_obj.insert(key.to_string(), parsed_value);
-                            }
-                        } else {
-                            result.insert(key.to_string(), parsed_value);
-                        }
-                    } else {
-                        return Err(ConfigError::parse_error(
-                            std::path::PathBuf::from("string"),
-                            format!("Invalid INI format at line {}", line_num + 1),
-                        ));
-                    }
-                }
-                Ok(serde_json::Value::Object(result))
-            }
-            crate::ConfigFormat::Properties => {
-                let mut result = serde_json::Map::new();
-                // Helpers to insert dot-notation keys
-                fn parse_value(v: &str) -> serde_json::Value {
-                    // Reuse same parsing rules as INI values
-                    if v.eq_ignore_ascii_case("true") {
-                        return serde_json::Value::Bool(true);
-                    }
-                    if v.eq_ignore_ascii_case("false") {
-                        return serde_json::Value::Bool(false);
-                    }
-                    if let Ok(int_val) = v.parse::<i64>() {
-                        return serde_json::Value::Number(serde_json::Number::from(int_val));
-                    }
-                    if let Ok(float_val) = v.parse::<f64>()
-                        && let Some(num) = serde_json::Number::from_f64(float_val)
-                    {
-                        return serde_json::Value::Number(num);
-                    }
-                    serde_json::Value::String(v.to_string())
-                }
-                fn insert_property(
-                    obj: &mut serde_json::Map<String, serde_json::Value>,
-                    key: &str,
-                    value: &str,
-                ) {
-                    let parts: Vec<&str> = key.split('.').collect();
-                    fn insert_recursive(
-                        obj: &mut serde_json::Map<String, serde_json::Value>,
-                        parts: &[&str],
-                        value: &str,
-                    ) {
-                        if parts.is_empty() {
-                            return;
-                        }
-                        if parts.len() == 1 {
-                            obj.insert(parts[0].to_string(), parse_value(value));
-                            return;
-                        }
-                        let entry = obj
-                            .entry(parts[0].to_string())
-                            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-                        if let serde_json::Value::Object(map) = entry {
-                            insert_recursive(map, &parts[1..], value);
-                        } else {
-                            *entry = serde_json::Value::Object(serde_json::Map::new());
-                            if let serde_json::Value::Object(map) = entry {
-                                insert_recursive(map, &parts[1..], value);
-                            }
-                        }
-                    }
-                    insert_recursive(obj, &parts, value);
-                }
-                for (line_num, line) in content.lines().enumerate() {
-                    let line = line.trim();
-                    if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
-                        continue;
-                    }
-                    let separator_pos = line.find('=').or_else(|| line.find(':'));
-                    if let Some(pos) = separator_pos {
-                        let key = line[..pos].trim();
-                        let value = line[pos + 1..].trim();
-                        insert_property(&mut result, key, value);
-                    } else {
-                        return Err(ConfigError::parse_error(
-                            std::path::PathBuf::from("string"),
-                            format!("Invalid properties format at line {}", line_num + 1),
-                        ));
-                    }
-                }
-                Ok(serde_json::Value::Object(result))
-            }
-            _ => Err(ConfigError::format_not_supported(format.to_string())),
-        }
+        crate::loaders::file::parse_content(content, format, std::path::Path::new("string"))
     }
 }
 

@@ -3,11 +3,11 @@
 use super::{ConfigError, ConfigResult, ConfigSource, SourceMetadata};
 use super::{ConfigLoader, ConfigValidator, ConfigWatcher};
 use dashmap::DashMap;
-use nebula_value::Value as NebulaValue;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 /// Main configuration container
 #[derive(Clone)]
@@ -32,6 +32,9 @@ pub struct Config {
 
     /// Hot reload enabled
     hot_reload: bool,
+
+    /// Cancellation token for background tasks (auto-reload, etc.)
+    cancel_token: CancellationToken,
 }
 
 impl Config {
@@ -52,7 +55,13 @@ impl Config {
             validator,
             watcher,
             hot_reload,
+            cancel_token: CancellationToken::new(),
         }
+    }
+
+    /// Get the cancellation token for background tasks
+    pub(crate) fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel_token
     }
 
     /// Get entire configuration as typed value
@@ -61,7 +70,7 @@ impl Config {
         T: DeserializeOwned,
     {
         let data = self.data.read().await;
-        serde_json::from_value(data.clone()).map_err(|e| {
+        T::deserialize(&*data).map_err(|e| {
             ConfigError::type_error(e.to_string(), std::any::type_name::<T>(), "JSON value")
         })
     }
@@ -73,7 +82,7 @@ impl Config {
     {
         let data = self.data.read().await;
         let value = self.get_nested_value(&data, path)?;
-        serde_json::from_value(value.clone()).map_err(|e| {
+        T::deserialize(value).map_err(|e| {
             ConfigError::type_error(e.to_string(), std::any::type_name::<T>(), "JSON value")
         })
     }
@@ -148,35 +157,40 @@ impl Config {
     }
 
     /// Reload configuration from all sources
+    ///
+    /// Sources are loaded **concurrently** for maximum throughput,
+    /// then merged in priority order (pre-sorted at construction time).
     pub async fn reload(&self) -> ConfigResult<()> {
         nebula_log::info!(
             "Reloading configuration from {} sources",
             self.sources.len()
         );
 
+        // Load all sources concurrently
+        let loader = &self.loader;
+        let load_futures = self.sources.iter().map(|source| async move {
+            let data = loader.load(source).await;
+            let metadata = loader.metadata(source).await.ok();
+            (source, data, metadata)
+        });
+        let results = futures::future::join_all(load_futures).await;
+
+        // Merge in priority order (sources are pre-sorted at construction time)
         let mut merged_data = serde_json::Value::Object(serde_json::Map::new());
-
-        // Load from all sources in priority order (reverse order)
-        let mut sources = self.sources.clone();
-        sources.sort_by_key(|s| std::cmp::Reverse(s.priority()));
-
-        for source in &sources {
-            match self.loader.load(source).await {
+        for (source, result, metadata) in results {
+            match result {
                 Ok(data) => {
                     nebula_log::debug!("Loaded configuration from source: {}", source);
 
-                    // Update metadata
-                    if let Ok(metadata) = self.loader.metadata(source).await {
+                    if let Some(metadata) = metadata {
                         self.metadata.insert(source.clone(), metadata);
                     }
 
-                    // Merge data
-                    self.merge_values(&mut merged_data, data)?;
+                    merge_json(&mut merged_data, data)?;
                 }
                 Err(e) => {
                     nebula_log::warn!("Failed to load from source {}: {}", source, e);
 
-                    // Decide whether to fail or continue based on source type
                     if !source.is_optional() {
                         return Err(e);
                     }
@@ -202,7 +216,7 @@ impl Config {
 
     /// Get source metadata
     pub fn get_metadata(&self, source: &ConfigSource) -> Option<SourceMetadata> {
-        self.metadata.get(source).map(|entry| entry.clone())
+        self.metadata.get(source).map(|entry| entry.value().clone())
     }
 
     /// Get all source metadata
@@ -237,6 +251,9 @@ impl Config {
 
     /// Stop watching for configuration changes
     pub async fn stop_watching(&self) -> ConfigResult<()> {
+        // Cancel background tasks (auto-reload, etc.)
+        self.cancel_token.cancel();
+
         if let Some(watcher) = &self.watcher {
             nebula_log::info!("Stopping configuration watcher");
             watcher.stop_watching().await?;
@@ -250,7 +267,7 @@ impl Config {
         self.watcher.as_ref().is_some_and(|w| w.is_watching())
     }
 
-    /// Get nested value from JSON using dot notation
+    /// Get nested value from JSON using dot notation (zero-alloc path traversal)
     fn get_nested_value<'a>(
         &self,
         value: &'a serde_json::Value,
@@ -260,13 +277,12 @@ impl Config {
             return Ok(value);
         }
 
-        let parts: Vec<&str> = path.split('.').collect();
         let mut current = value;
 
-        for (i, part) in parts.iter().enumerate() {
+        for part in path.split('.') {
             match current {
                 serde_json::Value::Object(obj) => {
-                    current = obj.get(*part).ok_or_else(|| {
+                    current = obj.get(part).ok_or_else(|| {
                         ConfigError::path_error(format!("Key '{part}' not found"), path.to_string())
                     })?;
                 }
@@ -285,18 +301,10 @@ impl Config {
                     })?;
                 }
                 _ => {
-                    let remaining_path = parts[i..].join(".");
                     return Err(ConfigError::path_error(
                         format!(
-                            "Cannot index into {} with '{}'",
-                            match current {
-                                serde_json::Value::Null => "null",
-                                serde_json::Value::Bool(_) => "boolean",
-                                serde_json::Value::Number(_) => "number",
-                                serde_json::Value::String(_) => "string",
-                                _ => "value",
-                            },
-                            remaining_path
+                            "Cannot index into {} with '{part}'",
+                            json_type_name(current),
                         ),
                         path.to_string(),
                     ));
@@ -319,52 +327,48 @@ impl Config {
             return Ok(());
         }
 
-        let parts: Vec<&str> = path.split('.').collect();
-        let mut current = value;
+        // Split into parent path and final key to avoid Vec allocation
+        let (parent_path, final_key) = match path.rsplit_once('.') {
+            Some((parent, key)) => (Some(parent), key),
+            None => (None, path),
+        };
 
-        // Navigate to the parent of the target key
-        for part in &parts[..parts.len() - 1] {
-            match current {
-                serde_json::Value::Object(obj) => {
-                    current = obj
-                        .entry(part.to_string())
-                        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-                }
-                serde_json::Value::Array(arr) => {
-                    let index: usize = part.parse().map_err(|_| {
-                        ConfigError::path_error(
-                            format!("Invalid array index '{part}'"),
-                            path.to_string(),
-                        )
-                    })?;
-
-                    // Extend array if necessary
-                    while arr.len() <= index {
-                        arr.push(serde_json::Value::Null);
+        // Navigate to the parent
+        let current = if let Some(parent_path) = parent_path {
+            let mut current = &mut *value;
+            for part in parent_path.split('.') {
+                match current {
+                    serde_json::Value::Object(obj) => {
+                        current = obj
+                            .entry(part.to_string())
+                            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
                     }
-
-                    current = &mut arr[index];
-                }
-                _ => {
-                    return Err(ConfigError::path_error(
-                        format!(
-                            "Cannot navigate into {} type",
-                            match current {
-                                serde_json::Value::Null => "null",
-                                serde_json::Value::Bool(_) => "boolean",
-                                serde_json::Value::Number(_) => "number",
-                                serde_json::Value::String(_) => "string",
-                                _ => "value",
-                            }
-                        ),
-                        path.to_string(),
-                    ));
+                    serde_json::Value::Array(arr) => {
+                        let index: usize = part.parse().map_err(|_| {
+                            ConfigError::path_error(
+                                format!("Invalid array index '{part}'"),
+                                path.to_string(),
+                            )
+                        })?;
+                        while arr.len() <= index {
+                            arr.push(serde_json::Value::Null);
+                        }
+                        current = &mut arr[index];
+                    }
+                    _ => {
+                        return Err(ConfigError::path_error(
+                            format!("Cannot navigate into {} type", json_type_name(current)),
+                            path.to_string(),
+                        ));
+                    }
                 }
             }
-        }
+            current
+        } else {
+            value
+        };
 
         // Set the final value
-        let final_key = parts[parts.len() - 1];
         match current {
             serde_json::Value::Object(obj) => {
                 obj.insert(final_key.to_string(), new_value);
@@ -376,26 +380,14 @@ impl Config {
                         path.to_string(),
                     )
                 })?;
-
-                // Extend array if necessary
                 while arr.len() <= index {
                     arr.push(serde_json::Value::Null);
                 }
-
                 arr[index] = new_value;
             }
             _ => {
                 return Err(ConfigError::path_error(
-                    format!(
-                        "Cannot set value in {} type",
-                        match current {
-                            serde_json::Value::Null => "null",
-                            serde_json::Value::Bool(_) => "boolean",
-                            serde_json::Value::Number(_) => "number",
-                            serde_json::Value::String(_) => "string",
-                            _ => "value",
-                        }
-                    ),
+                    format!("Cannot set value in {} type", json_type_name(current)),
                     path.to_string(),
                 ));
             }
@@ -404,48 +396,33 @@ impl Config {
         Ok(())
     }
 
-    /// Merge two JSON values
+    /// Merge two JSON values (delegates to free function)
     pub(crate) fn merge_values(
         &self,
         target: &mut serde_json::Value,
         source: serde_json::Value,
     ) -> ConfigResult<()> {
-        match (target, source) {
-            (serde_json::Value::Object(target_obj), serde_json::Value::Object(source_obj)) => {
-                for (key, value) in source_obj {
-                    if let Some(existing) = target_obj.get_mut(&key) {
-                        self.merge_values(existing, value)?;
-                    } else {
-                        target_obj.insert(key, value);
-                    }
-                }
-            }
-            (target, source) => {
-                *target = source;
-            }
-        }
-        Ok(())
+        merge_json(target, source)
     }
 
     // ==================== Dynamic Value Integration ====================
 
     /// Get entire configuration as dynamic value
-    pub async fn as_value(&self) -> NebulaValue {
+    pub async fn as_value(&self) -> serde_json::Value {
         let data = self.data.read().await;
-        json_to_value(&data)
+        data.clone()
     }
 
     /// Get configuration value by path as dynamic value
-    pub async fn get_value(&self, path: &str) -> ConfigResult<NebulaValue> {
+    pub async fn get_value(&self, path: &str) -> ConfigResult<serde_json::Value> {
         let data = self.data.read().await;
         let json_value = self.get_nested_value(&data, path)?;
-        Ok(json_to_value(json_value))
+        Ok(json_value.clone())
     }
 
     /// Set configuration value from dynamic value
-    pub async fn set_value(&self, path: &str, value: NebulaValue) -> ConfigResult<()> {
-        let json_value = value_to_json(value)?;
-        self.set_json_path(path, json_value).await
+    pub async fn set_value(&self, path: &str, value: serde_json::Value) -> ConfigResult<()> {
+        self.set_json_path(path, value).await
     }
 
     /// Set configuration value by path with JSON value
@@ -462,7 +439,7 @@ impl Config {
     {
         let data = self.data.read().await;
         let json_value = self.get_nested_value(&data, path)?;
-        serde_json::from_value(json_value.clone()).map_err(|e| {
+        T::deserialize(json_value).map_err(|e| {
             ConfigError::type_error(
                 format!("Failed to deserialize: {e}"),
                 std::any::type_name::<T>(),
@@ -487,133 +464,96 @@ impl Config {
     }
 
     /// Get all configuration as flat key-value map
-    pub async fn flatten(&self) -> HashMap<String, NebulaValue> {
+    pub async fn flatten(&self) -> HashMap<String, serde_json::Value> {
         let value = self.as_value().await;
-        flatten_value("", &value)
+        let mut map = HashMap::new();
+        flatten_into("", &value, &mut map);
+        map
     }
 
     /// Merge configuration from dynamic value
-    pub async fn merge(&self, value: NebulaValue) -> ConfigResult<()> {
-        let json_value = value_to_json(value)?;
+    pub async fn merge(&self, value: serde_json::Value) -> ConfigResult<()> {
         let mut data = self.data.write().await;
-        self.merge_values(&mut data, json_value)
+        self.merge_values(&mut data, value)
     }
 }
 
-/// Convert serde_json::Value to NebulaValue
-fn json_to_value(json: &serde_json::Value) -> NebulaValue {
-    match json {
-        serde_json::Value::Null => NebulaValue::Null,
-        serde_json::Value::Bool(b) => NebulaValue::boolean(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                NebulaValue::integer(i)
-            } else if let Some(f) = n.as_f64() {
-                NebulaValue::float(f)
-            } else {
-                NebulaValue::Null
+/// Get human-readable type name for a JSON value (zero-alloc)
+fn json_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+/// Merge two JSON values (free function, no allocations beyond the merge itself)
+pub(crate) fn merge_json(
+    target: &mut serde_json::Value,
+    source: serde_json::Value,
+) -> ConfigResult<()> {
+    match (target, source) {
+        (serde_json::Value::Object(target_obj), serde_json::Value::Object(source_obj)) => {
+            for (key, value) in source_obj {
+                if let Some(existing) = target_obj.get_mut(&key) {
+                    merge_json(existing, value)?;
+                } else {
+                    target_obj.insert(key, value);
+                }
             }
         }
-        serde_json::Value::String(s) => NebulaValue::text(s.clone()),
-        serde_json::Value::Array(arr) => {
-            // Recursively convert each JSON value to NebulaValue
-            let items: Vec<NebulaValue> = arr.iter().map(json_to_value).collect();
-            NebulaValue::Array(nebula_value::Array::from(items))
+        (target, source) => {
+            *target = source;
         }
+    }
+    Ok(())
+}
+
+/// Flatten serde_json::Value into a map with dot-notation keys
+fn flatten_into(
+    prefix: &str,
+    value: &serde_json::Value,
+    map: &mut HashMap<String, serde_json::Value>,
+) {
+    match value {
         serde_json::Value::Object(obj) => {
-            let mut map = nebula_value::Object::new();
-            for (k, v) in obj {
-                // Recursively convert JSON values to NebulaValues
-                map = map.insert(k.clone(), json_to_value(v));
-            }
-            NebulaValue::Object(map)
-        }
-    }
-}
-
-/// Convert NebulaValue to serde_json::Value
-fn value_to_json(value: NebulaValue) -> ConfigResult<serde_json::Value> {
-    match value {
-        NebulaValue::Null => Ok(serde_json::Value::Null),
-        NebulaValue::Boolean(b) => Ok(serde_json::Value::Bool(b)),
-        NebulaValue::Integer(i) => Ok(serde_json::Value::Number(i.value().into())),
-        NebulaValue::Float(f) => serde_json::Number::from_f64(f.value())
-            .map(serde_json::Value::Number)
-            .ok_or_else(|| {
-                ConfigError::type_error("Invalid float value", "valid float", "NaN/Infinity")
-            }),
-        NebulaValue::Text(t) => Ok(serde_json::Value::String(t.to_string())),
-        NebulaValue::Array(arr) => {
-            // Recursively convert NebulaValues to JSON values
-            let items: Vec<serde_json::Value> = arr
-                .iter()
-                .map(|v| value_to_json(v.clone()))
-                .collect::<ConfigResult<Vec<_>>>()?;
-            Ok(serde_json::Value::Array(items))
-        }
-        NebulaValue::Object(obj) => {
-            let mut map = serde_json::Map::new();
-            for (k, v) in obj.entries() {
-                // Recursively convert NebulaValues to JSON values
-                map.insert(k.clone(), value_to_json(v.clone())?);
-            }
-            Ok(serde_json::Value::Object(map))
-        }
-        _ => Err(ConfigError::type_error(
-            "Unsupported NebulaValue type for JSON conversion",
-            "basic types",
-            "complex type",
-        )),
-    }
-}
-
-/// Flatten NebulaValue into a map with dot-notation keys
-fn flatten_value(prefix: &str, value: &NebulaValue) -> HashMap<String, NebulaValue> {
-    let mut map = HashMap::new();
-
-    match value {
-        NebulaValue::Object(obj) => {
-            for (key, val) in obj.entries() {
+            for (key, val) in obj {
                 let full_key = if prefix.is_empty() {
                     key.clone()
                 } else {
                     format!("{prefix}.{key}")
                 };
-
-                // val is already NebulaValue
-                let nested = flatten_value(&full_key, val);
-                map.extend(nested);
+                flatten_into(&full_key, val, map);
             }
         }
-        NebulaValue::Array(arr) => {
+        serde_json::Value::Array(arr) => {
             for (index, val) in arr.iter().enumerate() {
                 let full_key = if prefix.is_empty() {
                     index.to_string()
                 } else {
                     format!("{prefix}[{index}]")
                 };
-
-                // val is already NebulaValue from iter()
-                let nested = flatten_value(&full_key, val);
-                map.extend(nested);
+                flatten_into(&full_key, val, map);
             }
         }
         _ => {
             map.insert(prefix.to_string(), value.clone());
         }
     }
-
-    map
 }
 
 // Cleanup on drop
 impl Drop for Config {
     fn drop(&mut self) {
-        // Try to stop watching if possible
+        // Cancel all background tasks (auto-reload, etc.)
+        self.cancel_token.cancel();
+
         if let Some(watcher) = &self.watcher
             && watcher.is_watching()
         {
-            // We can't await in drop, so we just log
             nebula_log::debug!("Config dropped while still watching");
         }
     }
