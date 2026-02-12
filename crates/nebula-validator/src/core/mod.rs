@@ -137,38 +137,6 @@ pub mod prelude {
 }
 
 // ============================================================================
-// VERSION INFO
-// ============================================================================
-
-/// The version of the validator core.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Returns the version string.
-#[must_use]
-pub fn version() -> &'static str {
-    VERSION
-}
-
-// ============================================================================
-// FEATURE FLAGS INFO
-// ============================================================================
-
-/// Returns information about enabled features.
-#[must_use]
-pub fn features() -> Features {
-    Features {
-        serde_support: cfg!(feature = "serde"),
-    }
-}
-
-/// Information about enabled features.
-#[derive(Debug, Clone, Copy)]
-pub struct Features {
-    /// Whether serde serialization is enabled.
-    pub serde_support: bool,
-}
-
-// ============================================================================
 // UTILITIES
 // ============================================================================
 
@@ -200,18 +168,18 @@ where
 /// ```rust,ignore
 /// use nebula_validator::core::validate_with_all;
 ///
-/// let result = validate_with_all("hello", vec![
+/// let result = validate_with_all("hello", &[
 ///     &min_length(3),
 ///     &max_length(10),
 /// ])?;
 /// ```
-pub fn validate_with_all<V>(value: &V::Input, validators: Vec<&V>) -> Result<(), ValidationErrors>
+pub fn validate_with_all<V>(value: &V::Input, validators: &[&V]) -> Result<(), ValidationErrors>
 where
     V: Validate + ?Sized,
 {
     let mut errors = ValidationErrors::new();
 
-    for validator in &validators {
+    for validator in validators {
         if let Err(e) = validator.validate(value) {
             errors.add(e);
         }
@@ -231,12 +199,12 @@ where
 /// ```rust,ignore
 /// use nebula_validator::core::validate_with_any;
 ///
-/// let result = validate_with_any("hello", vec![
+/// let result = validate_with_any("hello", &[
 ///     &exact_length(5),
 ///     &exact_length(10),
 /// ])?;
 /// ```
-pub fn validate_with_any<V>(value: &V::Input, validators: Vec<&V>) -> Result<(), ValidationErrors>
+pub fn validate_with_any<V>(value: &V::Input, validators: &[&V]) -> Result<(), ValidationErrors>
 where
     V: Validate + ?Sized,
 {
@@ -272,19 +240,6 @@ pub type ValidationResultMulti<T> = Result<T, ValidationErrors>;
 mod core_tests {
     use super::*;
 
-    #[test]
-    fn test_version() {
-        let v = version();
-        assert!(!v.is_empty());
-    }
-
-    #[test]
-    fn test_features() {
-        let features = features();
-        // At least one feature should be enabled in tests
-        assert!(features.serde_support);
-    }
-
     // Simple test validator for testing utilities
     struct AlwaysValid;
 
@@ -314,7 +269,7 @@ mod core_tests {
 
     #[test]
     fn test_validate_with_all_success() {
-        let result = validate_with_all("test", vec![&AlwaysValid, &AlwaysValid]);
+        let result = validate_with_all("test", &[&AlwaysValid, &AlwaysValid]);
         assert!(result.is_ok());
     }
 
@@ -322,7 +277,7 @@ mod core_tests {
     fn test_validate_with_all_failure() {
         let valid = AlwaysValid;
         let fails = AlwaysFails;
-        let validators: Vec<&dyn Validate<Input = str>> = vec![&valid, &fails];
+        let validators: &[&dyn Validate<Input = str>] = &[&valid, &fails];
         let result = validate_with_all("test", validators);
         assert!(result.is_err());
     }
@@ -331,14 +286,14 @@ mod core_tests {
     fn test_validate_with_any_success() {
         let valid = AlwaysValid;
         let fails = AlwaysFails;
-        let validators: Vec<&dyn Validate<Input = str>> = vec![&fails, &valid];
+        let validators: &[&dyn Validate<Input = str>] = &[&fails, &valid];
         let result = validate_with_any("test", validators);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_with_any_all_fail() {
-        let result = validate_with_any("test", vec![&AlwaysFails, &AlwaysFails]);
+        let result = validate_with_any("test", &[&AlwaysFails, &AlwaysFails]);
         assert!(result.is_err());
     }
 }

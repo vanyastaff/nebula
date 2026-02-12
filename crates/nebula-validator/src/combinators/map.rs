@@ -5,14 +5,19 @@ use crate::core::{Validate, ValidationError, ValidatorMetadata};
 /// Maps the output of a successful validation.
 ///
 /// **Deprecated**: Since all validators now return `Result<(), ValidationError>`,
-/// this combinator simply delegates to the inner validator.
+/// this combinator simply delegates to the inner validator. Use the inner
+/// validator directly instead.
+#[deprecated(
+    since = "0.1.0",
+    note = "All validators now return Result<(), ValidationError>; this combinator is a no-op. Use the inner validator directly."
+)]
 #[derive(Debug, Clone, Copy)]
 pub struct Map<V, F> {
     pub(crate) validator: V,
-    #[allow(dead_code)]
     pub(crate) mapper: F,
 }
 
+#[allow(deprecated)]
 impl<V, F> Map<V, F> {
     pub fn new(validator: V, mapper: F) -> Self {
         Self { validator, mapper }
@@ -31,6 +36,7 @@ impl<V, F> Map<V, F> {
     }
 }
 
+#[allow(deprecated)]
 impl<V, F> Validate for Map<V, F>
 where
     V: Validate,
@@ -57,6 +63,7 @@ where
     }
 }
 
+#[allow(deprecated)]
 pub fn map<V, F, O>(validator: V, mapper: F) -> Map<V, F>
 where
     V: Validate,
@@ -65,10 +72,12 @@ where
     Map::new(validator, mapper)
 }
 
+#[allow(deprecated)]
 pub fn map_to<V, O: Clone>(validator: V, value: O) -> Map<V, impl Fn(()) -> O> {
     Map::new(validator, move |_| value.clone())
 }
 
+#[allow(deprecated)]
 pub fn map_unit<V>(validator: V) -> Map<V, impl Fn(())>
 where
     V: Validate,
@@ -77,6 +86,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

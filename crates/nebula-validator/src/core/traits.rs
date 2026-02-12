@@ -298,10 +298,12 @@ pub trait ValidateExt: Validate + Sized {
     /// let validator = MinLength { min: 5 }.map(|_| "Valid!");
     /// assert_eq!(validator.validate("hello").unwrap(), "Valid!");
     /// ```
+    #[allow(deprecated)]
     fn map<F, O>(self, f: F) -> Map<Self, F>
     where
         F: Fn(()) -> O,
     {
+        #[allow(deprecated)]
         Map::new(self, f)
     }
 
@@ -391,6 +393,7 @@ impl<T: Validate> ValidateExt for T {}
 
 pub use crate::combinators::and::And;
 pub use crate::combinators::cached::Cached;
+#[allow(deprecated)]
 pub use crate::combinators::map::Map;
 pub use crate::combinators::not::Not;
 pub use crate::combinators::optional::Optional;

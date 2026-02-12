@@ -13,10 +13,11 @@ pub use size::{
 };
 
 // Re-export element validators
+#[allow(deprecated)]
 pub use elements::{
     All, Any, AtLeastCount, AtMostCount, ContainsAll, ContainsAny, ContainsElement, Count, First,
-    Last, None, Nth, Sorted, SortedDescending, Unique, all, any, at_least_count, at_most_count,
-    contains_all, contains_any, contains_element, count, first, last, none, nth, sorted,
+    Last, NoneOf, Nth, Sorted, SortedDescending, Unique, all, any, at_least_count, at_most_count,
+    contains_all, contains_any, contains_element, count, first, last, none, none_of, nth, sorted,
     sorted_descending, unique,
 };
 

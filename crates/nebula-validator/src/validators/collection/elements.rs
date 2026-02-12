@@ -40,7 +40,7 @@ where
     crate::validator_metadata!(
         "All",
         "Validates that all elements pass",
-        complexity = Constant,
+        complexity = Linear,
         tags = ["collection", "elements"]
     );
 }
@@ -87,7 +87,7 @@ where
     crate::validator_metadata!(
         "Any",
         "Validates that at least one element passes",
-        complexity = Constant,
+        complexity = Linear,
         tags = ["collection", "elements"]
     );
 }
@@ -133,7 +133,7 @@ where
     crate::validator_metadata!(
         "ContainsElement",
         "Validates that collection contains a specific element",
-        complexity = Constant,
+        complexity = Linear,
         tags = ["collection", "elements"]
     );
 }
@@ -174,7 +174,7 @@ where
     crate::validator_metadata!(
         "Unique",
         "Validates that all elements are unique",
-        complexity = Constant,
+        complexity = Linear,
         tags = ["collection", "elements"]
     );
 }
@@ -195,18 +195,18 @@ where
 
 /// Validates that no elements satisfy a condition.
 #[derive(Debug, Clone)]
-pub struct None<V> {
+pub struct NoneOf<V> {
     /// The validator that no element should pass.
     pub validator: V,
 }
 
-impl<V> None<V> {
+impl<V> NoneOf<V> {
     pub fn new(validator: V) -> Self {
         Self { validator }
     }
 }
 
-impl<V, T> Validate for None<V>
+impl<V, T> Validate for NoneOf<V>
 where
     V: Validate<Input = T>,
 {
@@ -225,16 +225,25 @@ where
     }
 
     crate::validator_metadata!(
-        "None",
+        "NoneOf",
         "Validates that no elements satisfy the condition",
-        complexity = Constant,
+        complexity = Linear,
         tags = ["collection", "elements"]
     );
 }
 
 /// Creates a validator that checks that no elements satisfy a condition.
-pub fn none<V>(validator: V) -> None<V> {
-    None::new(validator)
+pub fn none_of<V>(validator: V) -> NoneOf<V> {
+    NoneOf::new(validator)
+}
+
+/// Creates a validator that checks that no elements satisfy a condition.
+#[deprecated(
+    since = "0.1.0",
+    note = "renamed to `none_of` to avoid shadowing std::option::None"
+)]
+pub fn none<V>(validator: V) -> NoneOf<V> {
+    NoneOf::new(validator)
 }
 
 // ============================================================================
@@ -289,7 +298,7 @@ where
     crate::validator_metadata!(
         "Count",
         "Validates that exactly N elements satisfy a condition",
-        complexity = Constant,
+        complexity = Linear,
         tags = ["collection", "elements"]
     );
 }
@@ -348,7 +357,7 @@ where
     crate::validator_metadata!(
         "AtLeastCount",
         "Validates that at least N elements satisfy a condition",
-        complexity = Constant,
+        complexity = Linear,
         tags = ["collection", "elements"]
     );
 }
@@ -407,7 +416,7 @@ where
     crate::validator_metadata!(
         "AtMostCount",
         "Validates that at most N elements satisfy a condition",
-        complexity = Constant,
+        complexity = Linear,
         tags = ["collection", "elements"]
     );
 }
@@ -446,7 +455,7 @@ where
                 ValidationError::new("first", "First element failed validation")
                     .with_nested_error(e)
             }),
-            Option::None => Err(ValidationError::new("first", "Collection is empty")),
+            None => Err(ValidationError::new("first", "Collection is empty")),
         }
     }
 
@@ -491,7 +500,7 @@ where
             Some(last) => self.validator.validate(last).map_err(|e| {
                 ValidationError::new("last", "Last element failed validation").with_nested_error(e)
             }),
-            Option::None => Err(ValidationError::new("last", "Collection is empty")),
+            None => Err(ValidationError::new("last", "Collection is empty")),
         }
     }
 
@@ -542,7 +551,7 @@ where
                 )
                 .with_nested_error(e)
             }),
-            Option::None => Err(ValidationError::new(
+            None => Err(ValidationError::new(
                 "nth",
                 format!(
                     "Index {} out of bounds for collection of size {}",
@@ -597,7 +606,7 @@ where
     crate::validator_metadata!(
         "Sorted",
         "Validates that a collection is sorted in ascending order",
-        complexity = Constant,
+        complexity = Linear,
         tags = ["collection", "order"]
     );
 }
@@ -644,7 +653,7 @@ where
     crate::validator_metadata!(
         "SortedDescending",
         "Validates that a collection is sorted in descending order",
-        complexity = Constant,
+        complexity = Linear,
         tags = ["collection", "order"]
     );
 }
@@ -698,7 +707,7 @@ where
     crate::validator_metadata!(
         "ContainsAll",
         "Validates that collection contains all specified elements",
-        complexity = Constant,
+        complexity = Linear,
         tags = ["collection", "elements"]
     );
 }
@@ -749,7 +758,7 @@ where
     crate::validator_metadata!(
         "ContainsAny",
         "Validates that collection contains at least one specified element",
-        complexity = Constant,
+        complexity = Linear,
         tags = ["collection", "elements"]
     );
 }
@@ -786,8 +795,8 @@ mod tests {
     }
 
     #[test]
-    fn test_none() {
-        let validator = none(positive::<i32>());
+    fn test_none_of() {
+        let validator = none_of(positive::<i32>());
         assert!(validator.validate(&[-1, -2, -3]).is_ok());
         assert!(validator.validate(&[-1, 2, -3]).is_err());
     }

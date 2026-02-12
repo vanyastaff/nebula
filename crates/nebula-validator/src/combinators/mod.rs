@@ -106,6 +106,7 @@ pub use each::{Each, each, each_fail_fast};
 pub use error::CombinatorError;
 pub use field::{Field, FieldError, FieldValidateExt, MultiField, field, named_field};
 pub use lazy::{Lazy, lazy};
+#[allow(deprecated)]
 pub use map::{Map, map, map_to, map_unit};
 pub use message::{WithCode, WithMessage, with_code, with_message};
 pub use nested::{
@@ -142,6 +143,7 @@ pub use when::{When, when};
 ///     .or(exact_length(0));
 /// ```
 pub mod prelude {
+    #[allow(deprecated)]
     pub use super::{
         And, AndAll, Cached, Each, Field, FieldValidateExt, Lazy, Map, Not, Optional, Or, OrAny,
         Unless, When, WithCode, WithMessage, and, and_all, cached, each, each_fail_fast, field,
@@ -343,6 +345,7 @@ mod integration_tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_map_with_and() {
         let validator = MinLength { min: 5 }
             .and(MaxLength { max: 10 })

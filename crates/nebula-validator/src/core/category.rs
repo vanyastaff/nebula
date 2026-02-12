@@ -140,19 +140,20 @@ pub trait CompositeValidator: Validate + sealed::Sealed {
 // Sealed Implementations for Combinators
 // ============================================================================
 
+#[allow(deprecated)]
 use crate::combinators::{And, Cached, Map, Not, Optional, Or, When};
 
 impl<A, B> sealed::Sealed for And<A, B>
 where
     A: Validate,
-    B: Validate<Input = A::Input, Error = A::Error>,
+    B: Validate<Input = A::Input>,
 {
 }
 
 impl<A, B> CompositeValidator for And<A, B>
 where
     A: Validate,
-    B: Validate<Input = A::Input, Error = A::Error>,
+    B: Validate<Input = A::Input>,
 {
     fn validator_count(&self) -> usize {
         2
@@ -162,14 +163,14 @@ where
 impl<A, B> sealed::Sealed for Or<A, B>
 where
     A: Validate,
-    B: Validate<Input = A::Input, Output = A::Output, Error = A::Error>,
+    B: Validate<Input = A::Input>,
 {
 }
 
 impl<A, B> CompositeValidator for Or<A, B>
 where
     A: Validate,
-    B: Validate<Input = A::Input, Output = A::Output, Error = A::Error>,
+    B: Validate<Input = A::Input>,
 {
     fn validator_count(&self) -> usize {
         2
@@ -212,12 +213,13 @@ where
     }
 }
 
+#[allow(deprecated)]
 impl<V, F> sealed::Sealed for Map<V, F> where V: Validate {}
 
-impl<V, F, O> CompositeValidator for Map<V, F>
+#[allow(deprecated)]
+impl<V, F> CompositeValidator for Map<V, F>
 where
     V: Validate,
-    F: Fn(V::Output) -> O,
 {
     fn validator_count(&self) -> usize {
         1
@@ -228,8 +230,6 @@ impl<V> sealed::Sealed for Cached<V>
 where
     V: Validate,
     V::Input: std::hash::Hash + Eq,
-    V::Output: Clone + Send + Sync + 'static,
-    V::Error: Clone + Send + Sync + 'static,
 {
 }
 
@@ -237,8 +237,6 @@ impl<V> CompositeValidator for Cached<V>
 where
     V: Validate,
     V::Input: std::hash::Hash + Eq,
-    V::Output: Clone + Send + Sync + 'static,
-    V::Error: Clone + Send + Sync + 'static,
 {
     fn validator_count(&self) -> usize {
         1
@@ -252,7 +250,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{ValidationError, ValidateExt};
+    use crate::core::{ValidateExt, ValidationError};
 
     struct TestStringValidator;
 

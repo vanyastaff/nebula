@@ -254,24 +254,21 @@ mod tests {
     fn test_str_identity() {
         let s: &str = "hello";
         let output = s.as_validatable().unwrap();
-        let result: &str = output.borrow();
-        assert_eq!(result, "hello");
+        assert_eq!(output, "hello");
     }
 
     #[test]
     fn test_string_to_str() {
         let s = String::from("hello");
         let output = s.as_validatable().unwrap();
-        let result: &str = output.borrow();
-        assert_eq!(result, "hello");
+        assert_eq!(output, "hello");
     }
 
     #[test]
     fn test_i64_identity() {
         let n: i64 = 42;
         let output: i64 = AsValidatable::<i64>::as_validatable(&n).unwrap();
-        let result: &i64 = output.borrow();
-        assert_eq!(*result, 42);
+        assert_eq!(output, 42);
     }
 
     #[test]
@@ -285,8 +282,7 @@ mod tests {
     fn test_vec_to_slice() {
         let v = vec![1, 2, 3];
         let output = v.as_validatable().unwrap();
-        let result: &[i32] = output.borrow();
-        assert_eq!(result, &[1, 2, 3]);
+        assert_eq!(output, &[1, 2, 3]);
     }
 
     #[test]
@@ -295,13 +291,11 @@ mod tests {
 
         let borrowed: Cow<str> = Cow::Borrowed("hello");
         let output = borrowed.as_validatable().unwrap();
-        let result: &str = output.borrow();
-        assert_eq!(result, "hello");
+        assert_eq!(output, "hello");
 
         let owned: Cow<str> = Cow::Owned(String::from("world"));
         let output = owned.as_validatable().unwrap();
-        let result: &str = output.borrow();
-        assert_eq!(result, "world");
+        assert_eq!(output, "world");
     }
 
     #[test]
