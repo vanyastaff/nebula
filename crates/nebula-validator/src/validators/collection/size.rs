@@ -2,7 +2,7 @@
 //!
 //! This module provides validators for checking the size of collections.
 
-use crate::core::{ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationError, ValidatorMetadata};
 use std::marker::PhantomData;
 
 // ============================================================================
@@ -16,7 +16,7 @@ pub struct MinSize<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validator for MinSize<T>
+impl<T> Validate for MinSize<T>
 where
     T: Clone,
 {
@@ -50,7 +50,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::collection::min_size;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = min_size::<i32>(3);
 /// assert!(validator.validate(&vec![1, 2, 3]).is_ok());
@@ -78,7 +78,7 @@ pub struct MaxSize<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validator for MaxSize<T>
+impl<T> Validate for MaxSize<T>
 where
     T: Clone,
 {
@@ -112,7 +112,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::collection::max_size;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = max_size::<i32>(3);
 /// assert!(validator.validate(&vec![1, 2, 3]).is_ok());
@@ -140,7 +140,7 @@ pub struct ExactSize<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validator for ExactSize<T>
+impl<T> Validate for ExactSize<T>
 where
     T: Clone,
 {
@@ -174,7 +174,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::collection::exact_size;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = exact_size::<i32>(3);
 /// assert!(validator.validate(&vec![1, 2, 3]).is_ok());
@@ -202,7 +202,7 @@ pub struct NotEmptyCollection<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validator for NotEmptyCollection<T>
+impl<T> Validate for NotEmptyCollection<T>
 where
     T: Clone,
 {
@@ -232,7 +232,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::collection::not_empty_collection;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = not_empty_collection::<i32>();
 /// assert!(validator.validate(&vec![1]).is_ok());
@@ -260,7 +260,7 @@ pub struct SizeRange<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validator for SizeRange<T>
+impl<T> Validate for SizeRange<T>
 where
     T: Clone,
 {
@@ -297,7 +297,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::collection::size_range;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = size_range::<i32>(2, 4);
 /// assert!(validator.validate(&vec![1, 2]).is_ok());

@@ -1,6 +1,7 @@
 //! UNLESS combinator - inverse conditional validation
 
-use crate::core::{ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use std::borrow::Cow;
 
 // ============================================================================
 // UNLESS COMBINATOR
@@ -14,7 +15,7 @@ use crate::core::{ValidationError, Validator, ValidatorMetadata};
 ///
 /// ```rust,ignore
 /// use nebula_validator::combinators::Unless;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// // Skip validation for admin users
 /// let validator = Unless::new(
@@ -61,9 +62,9 @@ impl<V, C> Unless<V, C> {
     }
 }
 
-impl<V, C> Validator for Unless<V, C>
+impl<V, C> Validate for Unless<V, C>
 where
-    V: Validator,
+    V: Validate,
     C: Fn(&V::Input) -> bool,
 {
     type Input = V::Input;
@@ -82,15 +83,15 @@ where
         let inner_meta = self.validator.metadata();
 
         ValidatorMetadata {
-            name: format!("Unless({})", inner_meta.name),
-            description: Some(format!("Skip {} when condition is true", inner_meta.name)),
+            name: format!("Unless({})", inner_meta.name).into(),
+            description: Some(format!("Skip {} when condition is true", inner_meta.name).into()),
             complexity: inner_meta.complexity,
             cacheable: false, // Condition makes caching unreliable
             estimated_time: inner_meta.estimated_time,
             tags: {
                 let mut tags = inner_meta.tags;
-                tags.push("combinator".to_string());
-                tags.push("conditional".to_string());
+                tags.push(Cow::Borrowed("combinator"));
+                tags.push("conditional".into());
                 tags
             },
             version: inner_meta.version,
@@ -104,7 +105,7 @@ where
 /// Validation is skipped when `condition` returns true.
 pub fn unless<V, C>(validator: V, condition: C) -> Unless<V, C>
 where
-    V: Validator,
+    V: Validate,
     C: Fn(&V::Input) -> bool,
 {
     Unless::new(validator, condition)
@@ -122,7 +123,7 @@ mod tests {
         min: usize,
     }
 
-    impl Validator for MinLength {
+    impl Validate for MinLength {
         type Input = str;
 
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -181,7 +182,7 @@ mod tests {
         let meta = validator.metadata();
 
         assert!(meta.name.contains("Unless"));
-        assert!(meta.tags.contains(&"conditional".to_string()));
+        assert!(meta.tags.contains(&"conditional".into()));
         assert!(!meta.cacheable);
     }
 }

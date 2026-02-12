@@ -24,7 +24,7 @@
 //! }
 //! ```
 
-use crate::core::Validator;
+use crate::core::Validate;
 
 // ============================================================================
 // Sealed module - prevents external implementations
@@ -51,7 +51,7 @@ mod sealed {
 /// - `Regex`, `Pattern` - pattern matching
 /// - `Email`, `Url`, `Uuid` - format validation
 /// - `Contains`, `StartsWith`, `EndsWith` - content checks
-pub trait StringValidator: Validator + sealed::Sealed {
+pub trait StringValidator: Validate + sealed::Sealed {
     /// Returns the category name for this validator.
     fn category() -> &'static str {
         "string"
@@ -75,7 +75,7 @@ pub trait StringValidator: Validator + sealed::Sealed {
 /// - `InRange`, `Min`, `Max` - range constraints
 /// - `Positive`, `Negative`, `NonZero` - sign constraints
 /// - `Even`, `Odd`, `MultipleOf` - mathematical properties
-pub trait NumericValidator: Validator + sealed::Sealed {
+pub trait NumericValidator: Validate + sealed::Sealed {
     /// Returns the category name for this validator.
     fn category() -> &'static str {
         "numeric"
@@ -99,7 +99,7 @@ pub trait NumericValidator: Validator + sealed::Sealed {
 /// - `MinSize`, `MaxSize`, `ExactSize` - size constraints
 /// - `NonEmpty`, `AllElements`, `AnyElement` - element checks
 /// - `UniqueElements`, `SortedElements` - structural checks
-pub trait CollectionValidator: Validator + sealed::Sealed {
+pub trait CollectionValidator: Validate + sealed::Sealed {
     /// Returns the category name for this validator.
     fn category() -> &'static str {
         "collection"
@@ -124,7 +124,7 @@ pub trait CollectionValidator: Validator + sealed::Sealed {
 /// - `Or<A, B>` - at least one validator must pass
 /// - `Not<V>` - validator must fail
 /// - `When<V, C>` - conditional validation
-pub trait CompositeValidator: Validator + sealed::Sealed {
+pub trait CompositeValidator: Validate + sealed::Sealed {
     /// Returns the category name for this validator.
     fn category() -> &'static str {
         "composite"
@@ -144,15 +144,15 @@ use crate::combinators::{And, Cached, Map, Not, Optional, Or, When};
 
 impl<A, B> sealed::Sealed for And<A, B>
 where
-    A: Validator,
-    B: Validator<Input = A::Input, Error = A::Error>,
+    A: Validate,
+    B: Validate<Input = A::Input, Error = A::Error>,
 {
 }
 
 impl<A, B> CompositeValidator for And<A, B>
 where
-    A: Validator,
-    B: Validator<Input = A::Input, Error = A::Error>,
+    A: Validate,
+    B: Validate<Input = A::Input, Error = A::Error>,
 {
     fn validator_count(&self) -> usize {
         2
@@ -161,24 +161,24 @@ where
 
 impl<A, B> sealed::Sealed for Or<A, B>
 where
-    A: Validator,
-    B: Validator<Input = A::Input, Output = A::Output, Error = A::Error>,
+    A: Validate,
+    B: Validate<Input = A::Input, Output = A::Output, Error = A::Error>,
 {
 }
 
 impl<A, B> CompositeValidator for Or<A, B>
 where
-    A: Validator,
-    B: Validator<Input = A::Input, Output = A::Output, Error = A::Error>,
+    A: Validate,
+    B: Validate<Input = A::Input, Output = A::Output, Error = A::Error>,
 {
     fn validator_count(&self) -> usize {
         2
     }
 }
 
-impl<V: Validator> sealed::Sealed for Not<V> {}
+impl<V: Validate> sealed::Sealed for Not<V> {}
 
-impl<V: Validator> CompositeValidator for Not<V> {
+impl<V: Validate> CompositeValidator for Not<V> {
     fn validator_count(&self) -> usize {
         1
     }
@@ -186,14 +186,14 @@ impl<V: Validator> CompositeValidator for Not<V> {
 
 impl<V, C> sealed::Sealed for When<V, C>
 where
-    V: Validator,
+    V: Validate,
     C: Fn(&V::Input) -> bool,
 {
 }
 
 impl<V, C> CompositeValidator for When<V, C>
 where
-    V: Validator,
+    V: Validate,
     C: Fn(&V::Input) -> bool,
 {
     fn validator_count(&self) -> usize {
@@ -201,22 +201,22 @@ where
     }
 }
 
-impl<V, T> sealed::Sealed for Optional<V> where V: Validator<Input = T> {}
+impl<V, T> sealed::Sealed for Optional<V> where V: Validate<Input = T> {}
 
 impl<V, T> CompositeValidator for Optional<V>
 where
-    V: Validator<Input = T>,
+    V: Validate<Input = T>,
 {
     fn validator_count(&self) -> usize {
         1
     }
 }
 
-impl<V, F> sealed::Sealed for Map<V, F> where V: Validator {}
+impl<V, F> sealed::Sealed for Map<V, F> where V: Validate {}
 
 impl<V, F, O> CompositeValidator for Map<V, F>
 where
-    V: Validator,
+    V: Validate,
     F: Fn(V::Output) -> O,
 {
     fn validator_count(&self) -> usize {
@@ -226,7 +226,7 @@ where
 
 impl<V> sealed::Sealed for Cached<V>
 where
-    V: Validator,
+    V: Validate,
     V::Input: std::hash::Hash + Eq,
     V::Output: Clone + Send + Sync + 'static,
     V::Error: Clone + Send + Sync + 'static,
@@ -235,7 +235,7 @@ where
 
 impl<V> CompositeValidator for Cached<V>
 where
-    V: Validator,
+    V: Validate,
     V::Input: std::hash::Hash + Eq,
     V::Output: Clone + Send + Sync + 'static,
     V::Error: Clone + Send + Sync + 'static,
@@ -252,11 +252,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{ValidationError, ValidatorExt};
+    use crate::core::{ValidationError, ValidateExt};
 
     struct TestStringValidator;
 
-    impl Validator for TestStringValidator {
+    impl Validate for TestStringValidator {
         type Input = str;
 
         fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {

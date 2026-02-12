@@ -2,7 +2,7 @@
 //!
 //! Validates date and time strings in ISO 8601 format.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // DATETIME VALIDATOR
@@ -20,7 +20,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 ///
 /// ```
 /// use nebula_validator::validators::DateTime;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = DateTime::new();
 ///
@@ -287,7 +287,7 @@ impl Default for DateTime {
     }
 }
 
-impl Validator for DateTime {
+impl Validate for DateTime {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -363,7 +363,7 @@ impl Validator for DateTime {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "DateTime".to_string(),
+            name: "DateTime".into(),
             description: Some(format!(
                 "Validates ISO 8601 date/time strings (date-only: {}, timezone: {}, milliseconds: {})",
                 if self.allow_date_only {
@@ -381,17 +381,17 @@ impl Validator for DateTime {
                 } else {
                     "not allowed"
                 }
-            )),
+            ).into()),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(10)),
             tags: vec![
-                "text".to_string(),
-                "datetime".to_string(),
-                "iso8601".to_string(),
+                "text".into(),
+                "datetime".into(),
+                "iso8601".into(),
             ],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }

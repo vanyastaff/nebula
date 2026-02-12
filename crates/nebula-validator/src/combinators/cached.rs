@@ -4,7 +4,8 @@
 //! Useful for expensive validators that may be called multiple times with
 //! the same input.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -32,7 +33,7 @@ use std::sync::Arc;
 /// - Cache persists for the lifetime of the validator
 pub struct Cached<V>
 where
-    V: Validator,
+    V: Validate,
 {
     pub(crate) validator: V,
     pub(crate) cache: Arc<moka::sync::Cache<u64, CachedResult>>,
@@ -46,7 +47,7 @@ const DEFAULT_CACHE_CAPACITY: u64 = 1000;
 
 impl<V> Cached<V>
 where
-    V: Validator,
+    V: Validate,
 {
     /// Creates a new CACHED combinator with default capacity (1000 entries).
     pub fn new(validator: V) -> Self {
@@ -125,9 +126,9 @@ impl CacheStats {
 // VALIDATOR IMPLEMENTATION
 // ============================================================================
 
-impl<V> Validator for Cached<V>
+impl<V> Validate for Cached<V>
 where
-    V: Validator,
+    V: Validate,
     V::Input: Hash,
 {
     type Input = V::Input;
@@ -155,16 +156,16 @@ where
         let inner_meta = self.validator.metadata();
 
         ValidatorMetadata {
-            name: format!("Cached({})", inner_meta.name),
-            description: Some(format!("Cached {}", inner_meta.name)),
+            name: format!("Cached({})", inner_meta.name).into(),
+            description: Some(format!("Cached {}", inner_meta.name).into()),
             complexity: ValidationComplexity::Constant, // O(1) after first call
             cacheable: false,                           // Already cached!
             estimated_time: None,                       // Depends on cache hit/miss
             tags: {
                 let mut tags = inner_meta.tags;
-                tags.push("combinator".to_string());
-                tags.push("cached".to_string());
-                tags.push("performance".to_string());
+                tags.push(Cow::Borrowed("combinator"));
+                tags.push("cached".into());
+                tags.push("performance".into());
                 tags
             },
             version: inner_meta.version,
@@ -187,7 +188,7 @@ fn compute_hash<T: Hash + ?Sized>(value: &T) -> u64 {
 /// Creates a CACHED combinator from a validator.
 pub fn cached<V>(validator: V) -> Cached<V>
 where
-    V: Validator,
+    V: Validate,
     V::Input: Hash,
 {
     Cached::new(validator)
@@ -207,7 +208,7 @@ mod tests {
         call_count: Arc<AtomicUsize>,
     }
 
-    impl Validator for CountingValidator {
+    impl Validate for CountingValidator {
         type Input = str;
 
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -333,7 +334,7 @@ mod tests {
         assert!(meta.name.contains("Cached"));
         assert_eq!(meta.complexity, ValidationComplexity::Constant);
         assert!(!meta.cacheable); // Already cached
-        assert!(meta.tags.contains(&"cached".to_string()));
+        assert!(meta.tags.contains(&"cached".into()));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //!
 //! Validates MAC addresses in various formats (colon, hyphen, dot notation).
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // MAC ADDRESS VALIDATOR
@@ -20,7 +20,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 ///
 /// ```
 /// use nebula_validator::validators::MacAddress;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = MacAddress::new();
 ///
@@ -189,7 +189,7 @@ impl Default for MacAddress {
     }
 }
 
-impl Validator for MacAddress {
+impl Validate for MacAddress {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -244,21 +244,16 @@ impl Validator for MacAddress {
         }
 
         ValidatorMetadata {
-            name: "MacAddress".to_string(),
-            description: Some(format!(
-                "Validates MAC addresses (formats: {})",
-                formats.join(", ")
-            )),
+            name: "MacAddress".into(),
+            description: Some(
+                format!("Validates MAC addresses (formats: {})", formats.join(", ")).into(),
+            ),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(10)),
-            tags: vec![
-                "network".to_string(),
-                "mac".to_string(),
-                "hardware".to_string(),
-            ],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["network".into(), "mac".into(), "hardware".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }

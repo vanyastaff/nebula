@@ -12,54 +12,30 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-# Async and concurrency
+# Async
 async-trait = { workspace = true }
-dashmap = { workspace = true }
-futures = { workspace = true }
+
+# Caching
 moka = { version = "0.12", features = ["sync"] }
-tokio = { workspace = true, features = ["sync", "time"] }
 
 # Data formats
 base64 = { workspace = true }
 regex = { workspace = true }
 url = { workspace = true }
-
-# Internal crates
-nebula-log = { path = "../nebula-log" }
-
-# Randomness
-rand = { workspace = true }
+uuid = { workspace = true, features = ["v4", "serde"] }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
-# Time and IDs
-chrono = { workspace = true, features = ["serde"] }
-uuid = { workspace = true, features = ["v4", "serde"] }
-
-# Builder patterns
-bon = { workspace = true }
-
-# Email validation - using regex for now
-# email-validator = "0.2"
-
-# IP address validation - using std for now
-# std-net = "0.1"
-
 [features]
-# Feature flags
 default = ["full"]
-# Async support
-async = ["tokio/full"]
-# Optional subsystems
+async = []
 caching = []
-cache = ["caching"]  # Alias for backwards compatibility
+cache = ["caching"]
 performance = []
 registry = []
-# Serde serialization support (enables extra serde impls)
 serde = []
-# Convenience umbrella
 full = ["async", "caching", "registry", "performance", "serde"]
 
 [dev-dependencies]

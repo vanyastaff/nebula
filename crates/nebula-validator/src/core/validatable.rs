@@ -246,136 +246,10 @@ impl AsValidatable<f64> for i32 {
     }
 }
 
-// ============================================================================
-// NEBULA-VALUE IMPLEMENTATIONS
-// ============================================================================
-
-#[cfg(feature = "value")]
-mod value_impl {
-    use super::*;
-
-    impl AsValidatable<str> for nebula_value::Value {
-        type Output<'a>
-            = &'a str
-        where
-            Self: 'a;
-
-        #[inline]
-        fn as_validatable(&self) -> Result<&str, ValidationError> {
-            self.as_str().ok_or_else(|| {
-                ValidationError::new(
-                    "type_mismatch",
-                    format!("Expected string, got {}", self.kind().name()),
-                )
-            })
-        }
-    }
-
-    impl AsValidatable<i64> for nebula_value::Value {
-        type Output<'a> = i64;
-
-        #[inline]
-        fn as_validatable(&self) -> Result<i64, ValidationError> {
-            self.to_integer().map_err(|e| {
-                ValidationError::new("type_mismatch", format!("Cannot convert to integer: {e}"))
-            })
-        }
-    }
-
-    impl AsValidatable<f64> for nebula_value::Value {
-        type Output<'a> = f64;
-
-        #[inline]
-        fn as_validatable(&self) -> Result<f64, ValidationError> {
-            self.to_float().map_err(|e| {
-                ValidationError::new("type_mismatch", format!("Cannot convert to float: {e}"))
-            })
-        }
-    }
-
-    impl AsValidatable<bool> for nebula_value::Value {
-        type Output<'a> = bool;
-
-        #[inline]
-        fn as_validatable(&self) -> Result<bool, ValidationError> {
-            Ok(self.to_boolean())
-        }
-    }
-
-    impl AsValidatable<nebula_value::Array> for nebula_value::Value {
-        type Output<'a>
-            = &'a nebula_value::Array
-        where
-            Self: 'a;
-
-        #[inline]
-        fn as_validatable(&self) -> Result<&nebula_value::Array, ValidationError> {
-            self.as_array().ok_or_else(|| {
-                ValidationError::new(
-                    "type_mismatch",
-                    format!("Expected array, got {}", self.kind().name()),
-                )
-            })
-        }
-    }
-
-    impl AsValidatable<nebula_value::Object> for nebula_value::Value {
-        type Output<'a>
-            = &'a nebula_value::Object
-        where
-            Self: 'a;
-
-        #[inline]
-        fn as_validatable(&self) -> Result<&nebula_value::Object, ValidationError> {
-            self.as_object().ok_or_else(|| {
-                ValidationError::new(
-                    "type_mismatch",
-                    format!("Expected object, got {}", self.kind().name()),
-                )
-            })
-        }
-    }
-
-    /// AsValidatable for Value to slice of Values.
-    ///
-    /// This enables collection validators to work with Value arrays.
-    /// Note: Returns a Vec because im::Vector doesn't expose contiguous slice.
-    impl AsValidatable<[nebula_value::Value]> for nebula_value::Value {
-        type Output<'a>
-            = Vec<nebula_value::Value>
-        where
-            Self: 'a;
-
-        #[inline]
-        fn as_validatable(&self) -> Result<Vec<nebula_value::Value>, ValidationError> {
-            let arr = self.as_array().ok_or_else(|| {
-                ValidationError::new(
-                    "type_mismatch",
-                    format!("Expected array, got {}", self.kind().name()),
-                )
-            })?;
-            Ok(arr.iter().cloned().collect())
-        }
-    }
-
-    /// AsValidatable for Array to slice of Values.
-    impl AsValidatable<[nebula_value::Value]> for nebula_value::Array {
-        type Output<'a>
-            = Vec<nebula_value::Value>
-        where
-            Self: 'a;
-
-        #[inline]
-        fn as_validatable(&self) -> Result<Vec<nebula_value::Value>, ValidationError> {
-            Ok(self.iter().cloned().collect())
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Validator;
+    use crate::core::Validate;
 
     #[test]
     fn test_str_identity() {
@@ -433,13 +307,13 @@ mod tests {
 
     #[test]
     fn test_validate_any_with_string_validator() {
-        use crate::core::{ValidationError, Validator};
+        use crate::core::{Validate, ValidationError};
 
         struct MinLength {
             min: usize,
         }
 
-        impl Validator for MinLength {
+        impl Validate for MinLength {
             type Input = str;
 
             fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -472,13 +346,13 @@ mod tests {
 
     #[test]
     fn test_validate_any_with_numeric_validator() {
-        use crate::core::{ValidationError, Validator};
+        use crate::core::{Validate, ValidationError};
 
         struct MinValue {
             min: i64,
         }
 
-        impl Validator for MinValue {
+        impl Validate for MinValue {
             type Input = i64;
 
             fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -505,120 +379,5 @@ mod tests {
 
         // Works with u8
         assert!(validator.validate_any(&42u8).is_ok());
-    }
-}
-
-#[cfg(all(test, feature = "value"))]
-mod value_tests {
-    use super::*;
-    use crate::core::Validator;
-
-    #[test]
-    fn test_value_to_str() {
-        let value = nebula_value::Value::text("hello");
-        let result: Result<&str, _> = AsValidatable::<str>::as_validatable(&value);
-        assert_eq!(result.unwrap(), "hello");
-    }
-
-    #[test]
-    fn test_value_to_str_wrong_type() {
-        let value = nebula_value::Value::integer(42);
-        let result: Result<&str, _> = AsValidatable::<str>::as_validatable(&value);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_value_to_i64() {
-        let value = nebula_value::Value::integer(42);
-        let result: Result<i64, _> = AsValidatable::<i64>::as_validatable(&value);
-        assert_eq!(result.unwrap(), 42);
-    }
-
-    #[test]
-    fn test_value_to_f64() {
-        let value = nebula_value::Value::float(3.14);
-        let result: Result<f64, _> = AsValidatable::<f64>::as_validatable(&value);
-        assert!((result.unwrap() - 3.14).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_value_to_bool() {
-        let value = nebula_value::Value::Boolean(true);
-        let result: Result<bool, _> = AsValidatable::<bool>::as_validatable(&value);
-        assert!(result.unwrap());
-    }
-
-    #[test]
-    fn test_value_to_array() {
-        let arr = nebula_value::Array::from_iter([
-            nebula_value::Value::integer(1),
-            nebula_value::Value::integer(2),
-        ]);
-        let value = nebula_value::Value::Array(arr);
-        let result: Result<&nebula_value::Array, _> =
-            AsValidatable::<nebula_value::Array>::as_validatable(&value);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 2);
-    }
-
-    #[test]
-    fn test_value_to_array_wrong_type() {
-        let value = nebula_value::Value::text("not an array");
-        let result: Result<&nebula_value::Array, _> =
-            AsValidatable::<nebula_value::Array>::as_validatable(&value);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_value_to_object() {
-        let obj = nebula_value::Object::from_iter([(
-            "name".to_string(),
-            nebula_value::Value::text("Alice"),
-        )]);
-        let value = nebula_value::Value::Object(obj);
-        let result: Result<&nebula_value::Object, _> =
-            AsValidatable::<nebula_value::Object>::as_validatable(&value);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_value_to_slice() {
-        let arr = nebula_value::Array::from_iter([
-            nebula_value::Value::integer(1),
-            nebula_value::Value::integer(2),
-            nebula_value::Value::integer(3),
-        ]);
-        let value = nebula_value::Value::Array(arr);
-        let result: Result<Vec<nebula_value::Value>, _> =
-            AsValidatable::<[nebula_value::Value]>::as_validatable(&value);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().len(), 3);
-    }
-
-    #[test]
-    fn test_validate_value_with_string_validator() {
-        use crate::validators::string::min_length;
-
-        let validator = min_length(3);
-        let value = nebula_value::Value::text("hello");
-
-        // Value implements AsValidatable<str>, so validate_any works
-        assert!(validator.validate_any(&value).is_ok());
-
-        let short_value = nebula_value::Value::text("hi");
-        assert!(validator.validate_any(&short_value).is_err());
-    }
-
-    #[test]
-    fn test_validate_value_with_numeric_validator() {
-        use crate::validators::numeric::min;
-
-        let validator = min(10.0f64);
-        let value = nebula_value::Value::float(25.0);
-
-        assert!(validator.validate_any(&value).is_ok());
-
-        let small_value = nebula_value::Value::float(5.0);
-        assert!(validator.validate_any(&small_value).is_err());
     }
 }

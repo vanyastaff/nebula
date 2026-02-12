@@ -1,8 +1,36 @@
 //! String length validators
 //!
 //! This module provides validators for checking string length constraints.
+//! By default, length is measured in Unicode scalar values (chars).
+//! Use the `.bytes()` constructor for byte-length counting when performance
+//! is critical and the input is known to be ASCII.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+
+// ============================================================================
+// LENGTH MODE
+// ============================================================================
+
+/// How to count string length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum LengthMode {
+    /// Count bytes (fastest, ASCII-only correct).
+    Bytes,
+    /// Count Unicode scalar values (correct for all text).
+    #[default]
+    Chars,
+}
+
+impl LengthMode {
+    /// Measures the length of a string according to this mode.
+    #[inline]
+    fn measure(self, input: &str) -> usize {
+        match self {
+            LengthMode::Bytes => input.len(),
+            LengthMode::Chars => input.chars().count(),
+        }
+    }
+}
 
 // ============================================================================
 // MIN LENGTH
@@ -23,37 +51,52 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 pub struct MinLength {
     /// Minimum required length (inclusive).
     pub min: usize,
+    /// How to count length.
+    pub mode: LengthMode,
 }
 
 impl MinLength {
-    /// Creates a new minimum length validator.
+    /// Creates a new minimum length validator (counts Unicode chars by default).
     #[must_use]
     pub fn new(min: usize) -> Self {
-        Self { min }
+        Self {
+            min,
+            mode: LengthMode::Chars,
+        }
+    }
+
+    /// Creates a minimum length validator that counts bytes.
+    #[must_use]
+    pub fn bytes(min: usize) -> Self {
+        Self {
+            min,
+            mode: LengthMode::Bytes,
+        }
     }
 }
 
-impl Validator for MinLength {
+impl Validate for MinLength {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        if input.len() >= self.min {
+        let len = self.mode.measure(input);
+        if len >= self.min {
             Ok(())
         } else {
-            Err(ValidationError::min_length("", self.min, input.len()))
+            Err(ValidationError::min_length("", self.min, len))
         }
     }
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "MinLength".to_string(),
-            description: Some(format!("String must be at least {} characters", self.min)),
+            name: "MinLength".into(),
+            description: Some(format!("String must be at least {} characters", self.min).into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["string".to_string(), "length".to_string()],
+            tags: vec!["string".into(), "length".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -92,37 +135,52 @@ pub fn min_length(min: usize) -> MinLength {
 pub struct MaxLength {
     /// Maximum allowed length (inclusive).
     pub max: usize,
+    /// How to count length.
+    pub mode: LengthMode,
 }
 
 impl MaxLength {
-    /// Creates a new maximum length validator.
+    /// Creates a new maximum length validator (counts Unicode chars by default).
     #[must_use]
     pub fn new(max: usize) -> Self {
-        Self { max }
+        Self {
+            max,
+            mode: LengthMode::Chars,
+        }
+    }
+
+    /// Creates a maximum length validator that counts bytes.
+    #[must_use]
+    pub fn bytes(max: usize) -> Self {
+        Self {
+            max,
+            mode: LengthMode::Bytes,
+        }
     }
 }
 
-impl Validator for MaxLength {
+impl Validate for MaxLength {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        if input.len() <= self.max {
+        let len = self.mode.measure(input);
+        if len <= self.max {
             Ok(())
         } else {
-            Err(ValidationError::max_length("", self.max, input.len()))
+            Err(ValidationError::max_length("", self.max, len))
         }
     }
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "MaxLength".to_string(),
-            description: Some(format!("String must be at most {} characters", self.max)),
+            name: "MaxLength".into(),
+            description: Some(format!("String must be at most {} characters", self.max).into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["string".to_string(), "length".to_string()],
+            tags: vec!["string".into(), "length".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -153,21 +211,36 @@ pub fn max_length(max: usize) -> MaxLength {
 pub struct ExactLength {
     /// Required exact length.
     pub length: usize,
+    /// How to count length.
+    pub mode: LengthMode,
 }
 
 impl ExactLength {
-    /// Creates a new exact length validator.
+    /// Creates a new exact length validator (counts Unicode chars by default).
     #[must_use]
     pub fn new(length: usize) -> Self {
-        Self { length }
+        Self {
+            length,
+            mode: LengthMode::Chars,
+        }
+    }
+
+    /// Creates an exact length validator that counts bytes.
+    #[must_use]
+    pub fn bytes(length: usize) -> Self {
+        Self {
+            length,
+            mode: LengthMode::Bytes,
+        }
     }
 }
 
-impl Validator for ExactLength {
+impl Validate for ExactLength {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        if input.len() == self.length {
+        let len = self.mode.measure(input);
+        if len == self.length {
             Ok(())
         } else {
             Err(ValidationError::new(
@@ -175,20 +248,20 @@ impl Validator for ExactLength {
                 format!("String must be exactly {} characters", self.length),
             )
             .with_param("expected", self.length.to_string())
-            .with_param("actual", input.len().to_string()))
+            .with_param("actual", len.to_string()))
         }
     }
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "ExactLength".to_string(),
-            description: Some(format!("String must be exactly {} characters", self.length)),
+            name: "ExactLength".into(),
+            description: Some(format!("String must be exactly {} characters", self.length).into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["string".to_string(), "length".to_string()],
+            tags: vec!["string".into(), "length".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -223,10 +296,12 @@ pub struct LengthRange {
     pub min: usize,
     /// Maximum length (inclusive).
     pub max: usize,
+    /// How to count length.
+    pub mode: LengthMode,
 }
 
 impl LengthRange {
-    /// Creates a new length range validator.
+    /// Creates a new length range validator (counts Unicode chars by default).
     ///
     /// # Panics
     ///
@@ -234,15 +309,30 @@ impl LengthRange {
     #[must_use]
     pub fn new(min: usize, max: usize) -> Self {
         assert!(min <= max, "min must be <= max");
-        Self { min, max }
+        Self {
+            min,
+            max,
+            mode: LengthMode::Chars,
+        }
+    }
+
+    /// Creates a length range validator that counts bytes.
+    #[must_use]
+    pub fn bytes(min: usize, max: usize) -> Self {
+        assert!(min <= max, "min must be <= max");
+        Self {
+            min,
+            max,
+            mode: LengthMode::Bytes,
+        }
     }
 }
 
-impl Validator for LengthRange {
+impl Validate for LengthRange {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        let len = input.len();
+        let len = self.mode.measure(input);
         if len >= self.min && len <= self.max {
             Ok(())
         } else {
@@ -261,21 +351,20 @@ impl Validator for LengthRange {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "LengthRange".to_string(),
-            description: Some(format!(
-                "String must be between {} and {} characters",
-                self.min, self.max
-            )),
+            name: "LengthRange".into(),
+            description: Some(
+                format!(
+                    "String must be between {} and {} characters",
+                    self.min, self.max
+                )
+                .into(),
+            ),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec![
-                "string".to_string(),
-                "length".to_string(),
-                "range".to_string(),
-            ],
+            tags: vec!["string".into(), "length".into(), "range".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -306,7 +395,7 @@ pub fn length_range(min: usize, max: usize) -> LengthRange {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NotEmpty;
 
-impl Validator for NotEmpty {
+impl Validate for NotEmpty {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -322,14 +411,14 @@ impl Validator for NotEmpty {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "NotEmpty".to_string(),
-            description: Some("String must not be empty".to_string()),
+            name: "NotEmpty".into(),
+            description: Some("String must not be empty".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["string".to_string(), "length".to_string()],
+            tags: vec!["string".into(), "length".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -467,28 +556,30 @@ mod tests {
         assert_eq!(meta.name, "MinLength");
         assert!(meta.description.is_some());
         assert_eq!(meta.complexity, ValidationComplexity::Constant);
-        assert!(meta.tags.contains(&"string".to_string()));
+        assert!(meta.tags.contains(&"string".into()));
     }
 
     #[test]
     fn test_unicode_handling() {
-        // Emoji and multi-byte characters
-        // Note: MinLength uses byte length (.len()), not character count
+        // Default mode counts Unicode chars, not bytes
         let validator = MinLength::new(5);
-        assert!(validator.validate("hello").is_ok()); // 5 bytes
-        assert!(validator.validate("👋🌍").is_ok()); // 8 bytes >= 5
+        assert!(validator.validate("hello").is_ok()); // 5 chars
+        assert!(validator.validate("👋🌍").is_err()); // 2 chars < 5
 
-        // Demonstrate byte vs character count difference
-        assert_eq!("👋🌍".len(), 8); // bytes
-        assert_eq!("👋🌍".chars().count(), 2); // characters
+        // Bytes mode counts raw bytes
+        let byte_validator = MinLength::bytes(5);
+        assert!(byte_validator.validate("👋🌍").is_ok()); // 8 bytes >= 5
 
-        // Test that short byte strings fail
-        assert!(validator.validate("hi").is_err()); // 2 bytes < 5
+        // Demonstrate the difference
+        assert_eq!("héllo".chars().count(), 5); // 5 chars
+        assert_eq!("héllo".len(), 6); // 6 bytes (é = 2 bytes)
+        assert!(MinLength::new(5).validate("héllo").is_ok()); // char count
+        assert!(MinLength::bytes(6).validate("héllo").is_ok()); // byte count
     }
 
     #[test]
     fn test_composition() {
-        use crate::core::ValidatorExt;
+        use crate::core::ValidateExt;
 
         // Compose length validators
         let validator = min_length(5).and(max_length(10));

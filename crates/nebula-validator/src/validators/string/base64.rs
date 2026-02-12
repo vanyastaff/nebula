@@ -2,7 +2,7 @@
 //!
 //! Validates that a string is properly encoded in Base64 format.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // BASE64 VALIDATOR
@@ -20,7 +20,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 ///
 /// ```
 /// use nebula_validator::validators::Base64;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = Base64::new();
 ///
@@ -119,7 +119,7 @@ impl Default for Base64 {
     }
 }
 
-impl Validator for Base64 {
+impl Validate for Base64 {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -225,31 +225,30 @@ impl Validator for Base64 {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Base64".to_string(),
-            description: Some(format!(
-                "Validates Base64 strings (alphabet: {:?}, padding: {}, whitespace: {})",
-                self.alphabet,
-                if self.require_padding {
-                    "required"
-                } else {
-                    "optional"
-                },
-                if self.allow_whitespace {
-                    "allowed"
-                } else {
-                    "not allowed"
-                }
-            )),
+            name: "Base64".into(),
+            description: Some(
+                format!(
+                    "Validates Base64 strings (alphabet: {:?}, padding: {}, whitespace: {})",
+                    self.alphabet,
+                    if self.require_padding {
+                        "required"
+                    } else {
+                        "optional"
+                    },
+                    if self.allow_whitespace {
+                        "allowed"
+                    } else {
+                        "not allowed"
+                    }
+                )
+                .into(),
+            ),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(5)),
-            tags: vec![
-                "text".to_string(),
-                "base64".to_string(),
-                "encoding".to_string(),
-            ],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["text".into(), "base64".into(), "encoding".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }

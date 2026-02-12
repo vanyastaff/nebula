@@ -1,6 +1,6 @@
 //! Nullable validators
 
-use crate::core::{ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationError, ValidatorMetadata};
 use std::marker::PhantomData;
 
 // ============================================================================
@@ -13,7 +13,7 @@ pub struct Required<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validator for Required<T> {
+impl<T> Validate for Required<T> {
     type Input = Option<T>;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {

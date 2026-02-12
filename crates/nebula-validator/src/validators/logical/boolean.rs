@@ -1,6 +1,6 @@
 //! Boolean validators
 
-use crate::core::{ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // IS TRUE
@@ -10,7 +10,7 @@ use crate::core::{ValidationError, Validator, ValidatorMetadata};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IsTrue;
 
-impl Validator for IsTrue {
+impl Validate for IsTrue {
     type Input = bool;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -41,7 +41,7 @@ pub const fn is_true() -> IsTrue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IsFalse;
 
-impl Validator for IsFalse {
+impl Validate for IsFalse {
     type Input = bool;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {

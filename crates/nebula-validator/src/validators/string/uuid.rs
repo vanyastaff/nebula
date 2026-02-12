@@ -2,7 +2,7 @@
 //!
 //! Validates Universally Unique Identifiers (UUIDs) in standard format.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // UUID VALIDATOR
@@ -24,7 +24,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 ///
 /// ```
 /// use nebula_validator::validators::string::Uuid;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = Uuid::new();
 ///
@@ -132,7 +132,7 @@ impl Default for Uuid {
     }
 }
 
-impl Validator for Uuid {
+impl Validate for Uuid {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -234,27 +234,26 @@ impl Validator for Uuid {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Uuid".to_string(),
-            description: Some(format!(
-                "Validates RFC 4122 UUIDs (version: {:?}, braces: {})",
-                self.specific_version
-                    .map_or("any".to_string(), |v| v.to_string()),
-                if self.allow_braces {
-                    "allowed"
-                } else {
-                    "not allowed"
-                }
-            )),
+            name: "Uuid".into(),
+            description: Some(
+                format!(
+                    "Validates RFC 4122 UUIDs (version: {:?}, braces: {})",
+                    self.specific_version
+                        .map_or("any".to_string(), |v| v.to_string()),
+                    if self.allow_braces {
+                        "allowed"
+                    } else {
+                        "not allowed"
+                    }
+                )
+                .into(),
+            ),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(5)),
-            tags: vec![
-                "text".to_string(),
-                "uuid".to_string(),
-                "identifier".to_string(),
-            ],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["text".into(), "uuid".into(), "identifier".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }

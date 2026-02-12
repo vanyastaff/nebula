@@ -2,7 +2,7 @@
 //!
 //! Validators for checking string content and patterns.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // REGEX VALIDATOR
@@ -37,7 +37,7 @@ impl MatchesRegex {
     }
 }
 
-impl Validator for MatchesRegex {
+impl Validate for MatchesRegex {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -54,18 +54,14 @@ impl Validator for MatchesRegex {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "MatchesRegex".to_string(),
-            description: Some(format!("Must match: {}", self.pattern.as_str())),
+            name: "MatchesRegex".into(),
+            description: Some(format!("Must match: {}", self.pattern.as_str()).into()),
             complexity: ValidationComplexity::Expensive,
             cacheable: true,
             estimated_time: None,
-            tags: vec![
-                "string".to_string(),
-                "regex".to_string(),
-                "pattern".to_string(),
-            ],
+            tags: vec!["string".into(), "regex".into(), "pattern".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -105,7 +101,7 @@ impl Default for Email {
     }
 }
 
-impl Validator for Email {
+impl Validate for Email {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -118,18 +114,14 @@ impl Validator for Email {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Email".to_string(),
-            description: Some("Valid email address".to_string()),
+            name: "Email".into(),
+            description: Some("Valid email address".into()),
             complexity: ValidationComplexity::Expensive,
             cacheable: true,
             estimated_time: None,
-            tags: vec![
-                "string".to_string(),
-                "email".to_string(),
-                "format".to_string(),
-            ],
+            tags: vec!["string".into(), "email".into(), "format".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -165,7 +157,7 @@ impl Default for Url {
     }
 }
 
-impl Validator for Url {
+impl Validate for Url {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -178,18 +170,14 @@ impl Validator for Url {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Url".to_string(),
-            description: Some("Valid URL".to_string()),
+            name: "Url".into(),
+            description: Some("Valid URL".into()),
             complexity: ValidationComplexity::Expensive,
             cacheable: true,
             estimated_time: None,
-            tags: vec![
-                "string".to_string(),
-                "url".to_string(),
-                "format".to_string(),
-            ],
+            tags: vec!["string".into(), "url".into(), "format".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }

@@ -1,6 +1,7 @@
 //! EACH combinator - validates each element of a collection
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use std::borrow::Cow;
 
 // ============================================================================
 // EACH COMBINATOR
@@ -15,7 +16,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 ///
 /// ```rust,ignore
 /// use nebula_validator::combinators::Each;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = Each::new(MinLength { min: 3 });
 ///
@@ -70,9 +71,9 @@ impl<V> Each<V> {
     }
 }
 
-impl<V, T> Validator for Each<V>
+impl<V, T> Validate for Each<V>
 where
-    V: Validator<Input = T>,
+    V: Validate<Input = T>,
 {
     type Input = [T];
 
@@ -128,23 +129,26 @@ where
         let inner_meta = self.inner.metadata();
 
         ValidatorMetadata {
-            name: format!("Each({})", inner_meta.name),
-            description: Some(format!(
-                "Validates each element with {}{}",
-                inner_meta.name,
-                if self.fail_fast { " (fail-fast)" } else { "" }
-            )),
+            name: format!("Each({})", inner_meta.name).into(),
+            description: Some(
+                format!(
+                    "Validates each element with {}{}",
+                    inner_meta.name,
+                    if self.fail_fast { " (fail-fast)" } else { "" }
+                )
+                .into(),
+            ),
             complexity: ValidationComplexity::Linear,
             cacheable: inner_meta.cacheable,
             estimated_time: None,
             tags: {
                 let mut tags = inner_meta.tags;
-                tags.push("combinator".to_string());
-                tags.push("collection".to_string());
+                tags.push(Cow::Borrowed("combinator"));
+                tags.push("collection".into());
                 tags
             },
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -166,11 +170,11 @@ pub fn each_fail_fast<V>(validator: V) -> Each<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Validator;
+    use crate::core::Validate;
 
     struct Positive;
 
-    impl Validator for Positive {
+    impl Validate for Positive {
         type Input = i32;
 
         fn validate(&self, input: &i32) -> Result<(), ValidationError> {
@@ -242,6 +246,6 @@ mod tests {
         let meta = validator.metadata();
 
         assert!(meta.name.contains("Each"));
-        assert!(meta.tags.contains(&"collection".to_string()));
+        assert!(meta.tags.contains(&"collection".into()));
     }
 }

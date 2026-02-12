@@ -1,6 +1,6 @@
 //! Numeric property validators
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 use std::fmt::Display;
 use std::marker::PhantomData;
 
@@ -14,7 +14,7 @@ pub struct Positive<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validator for Positive<T>
+impl<T> Validate for Positive<T>
 where
     T: PartialOrd + Default + Display,
 {
@@ -44,7 +44,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::numeric::positive;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = positive();
 /// assert!(validator.validate(&5).is_ok());
@@ -71,7 +71,7 @@ pub struct Negative<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validator for Negative<T>
+impl<T> Validate for Negative<T>
 where
     T: PartialOrd + Default + Display,
 {
@@ -101,7 +101,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::numeric::negative;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = negative();
 /// assert!(validator.validate(&-5).is_ok());
@@ -128,7 +128,7 @@ pub struct Even<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validator for Even<T>
+impl<T> Validate for Even<T>
 where
     T: Copy + std::ops::Rem<Output = T> + PartialEq + From<u8>,
 {
@@ -155,7 +155,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::numeric::even;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = even();
 /// assert!(validator.validate(&4).is_ok());
@@ -182,7 +182,7 @@ pub struct Odd<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validator for Odd<T>
+impl<T> Validate for Odd<T>
 where
     T: Copy + std::ops::Rem<Output = T> + PartialEq + From<u8>,
 {
@@ -209,7 +209,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::numeric::odd;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = odd();
 /// assert!(validator.validate(&3).is_ok());
@@ -237,7 +237,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::numeric::non_zero;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = non_zero();
 /// assert!(validator.validate(&5).is_ok());
@@ -249,7 +249,7 @@ pub struct NonZero<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validator for NonZero<T>
+impl<T> Validate for NonZero<T>
 where
     T: PartialEq + Default + Display,
 {
@@ -265,14 +265,14 @@ where
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "NonZero".to_string(),
-            description: Some("Value must not be zero".to_string()),
+            name: "NonZero".into(),
+            description: Some("Value must not be zero".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "property".to_string()],
+            tags: vec!["numeric".into(), "property".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -298,7 +298,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::numeric::power_of_two;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = power_of_two();
 /// assert!(validator.validate(&1_u32).is_ok());
@@ -311,7 +311,7 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct PowerOfTwo;
 
-impl Validator for PowerOfTwo {
+impl Validate for PowerOfTwo {
     type Input = u32;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -327,14 +327,14 @@ impl Validator for PowerOfTwo {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "PowerOfTwo".to_string(),
-            description: Some("Value must be a power of two".to_string()),
+            name: "PowerOfTwo".into(),
+            description: Some("Value must be a power of two".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "property".to_string()],
+            tags: vec!["numeric".into(), "property".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -349,7 +349,7 @@ pub fn power_of_two() -> PowerOfTwo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct PowerOfTwoU64;
 
-impl Validator for PowerOfTwoU64 {
+impl Validate for PowerOfTwoU64 {
     type Input = u64;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -365,14 +365,14 @@ impl Validator for PowerOfTwoU64 {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "PowerOfTwoU64".to_string(),
-            description: Some("Value must be a power of two".to_string()),
+            name: "PowerOfTwoU64".into(),
+            description: Some("Value must be a power of two".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "property".to_string()],
+            tags: vec!["numeric".into(), "property".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }

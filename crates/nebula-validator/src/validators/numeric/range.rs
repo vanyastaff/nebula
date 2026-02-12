@@ -1,6 +1,6 @@
 //! Numeric range validators
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 use std::fmt::Display;
 
 // ============================================================================
@@ -20,7 +20,7 @@ impl<T> Min<T> {
     }
 }
 
-impl<T> Validator for Min<T>
+impl<T> Validate for Min<T>
 where
     T: PartialOrd + Display + Copy,
 {
@@ -40,14 +40,14 @@ where
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Min".to_string(),
-            description: Some(format!("Value must be >= {}", self.min)),
+            name: "Min".into(),
+            description: Some(format!("Value must be >= {}", self.min).into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "range".to_string()],
+            tags: vec!["numeric".into(), "range".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -73,7 +73,7 @@ impl<T> Max<T> {
     }
 }
 
-impl<T> Validator for Max<T>
+impl<T> Validate for Max<T>
 where
     T: PartialOrd + Display + Copy,
 {
@@ -93,14 +93,14 @@ where
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Max".to_string(),
-            description: Some(format!("Value must be <= {}", self.max)),
+            name: "Max".into(),
+            description: Some(format!("Value must be <= {}", self.max).into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "range".to_string()],
+            tags: vec!["numeric".into(), "range".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -128,7 +128,7 @@ impl<T> InRange<T> {
     }
 }
 
-impl<T> Validator for InRange<T>
+impl<T> Validate for InRange<T>
 where
     T: PartialOrd + Display + Copy,
 {
@@ -146,17 +146,16 @@ where
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "InRange".to_string(),
-            description: Some(format!(
-                "Value must be between {} and {}",
-                self.min, self.max
-            )),
+            name: "InRange".into(),
+            description: Some(
+                format!("Value must be between {} and {}", self.min, self.max).into(),
+            ),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "range".to_string()],
+            tags: vec!["numeric".into(), "range".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -175,7 +174,7 @@ pub fn in_range<T>(min: T, max: T) -> InRange<T> {
 ///
 /// ```
 /// use nebula_validator::validators::numeric::greater_than;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = greater_than(5);
 /// assert!(validator.validate(&6).is_ok());
@@ -196,7 +195,7 @@ impl<T> GreaterThan<T> {
     }
 }
 
-impl<T> Validator for GreaterThan<T>
+impl<T> Validate for GreaterThan<T>
 where
     T: PartialOrd + Display + Copy,
 {
@@ -217,14 +216,14 @@ where
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "GreaterThan".to_string(),
-            description: Some(format!("Value must be > {}", self.bound)),
+            name: "GreaterThan".into(),
+            description: Some(format!("Value must be > {}", self.bound).into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "range".to_string()],
+            tags: vec!["numeric".into(), "range".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -248,7 +247,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::numeric::less_than;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = less_than(10);
 /// assert!(validator.validate(&9).is_ok());
@@ -269,7 +268,7 @@ impl<T> LessThan<T> {
     }
 }
 
-impl<T> Validator for LessThan<T>
+impl<T> Validate for LessThan<T>
 where
     T: PartialOrd + Display + Copy,
 {
@@ -290,14 +289,14 @@ where
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "LessThan".to_string(),
-            description: Some(format!("Value must be < {}", self.bound)),
+            name: "LessThan".into(),
+            description: Some(format!("Value must be < {}", self.bound).into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "range".to_string()],
+            tags: vec!["numeric".into(), "range".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -321,7 +320,7 @@ where
 ///
 /// ```
 /// use nebula_validator::validators::numeric::exclusive_range;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = exclusive_range(0, 10);
 /// assert!(validator.validate(&5).is_ok());
@@ -344,7 +343,7 @@ impl<T> ExclusiveRange<T> {
     }
 }
 
-impl<T> Validator for ExclusiveRange<T>
+impl<T> Validate for ExclusiveRange<T>
 where
     T: PartialOrd + Display + Copy,
 {
@@ -369,14 +368,14 @@ where
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "ExclusiveRange".to_string(),
-            description: Some(format!("Value must be in ({}, {})", self.min, self.max)),
+            name: "ExclusiveRange".into(),
+            description: Some(format!("Value must be in ({}, {})", self.min, self.max).into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "range".to_string()],
+            tags: vec!["numeric".into(), "range".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }

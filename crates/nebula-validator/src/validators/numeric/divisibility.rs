@@ -1,6 +1,6 @@
 //! Divisibility validators
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 use std::fmt::Display;
 use std::ops::Rem;
 
@@ -14,7 +14,7 @@ use std::ops::Rem;
 ///
 /// ```
 /// use nebula_validator::validators::numeric::divisible_by;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = divisible_by(3);
 /// assert!(validator.validate(&9).is_ok());
@@ -35,7 +35,7 @@ impl<T> DivisibleBy<T> {
     }
 }
 
-impl<T> Validator for DivisibleBy<T>
+impl<T> Validate for DivisibleBy<T>
 where
     T: Copy + Rem<Output = T> + PartialEq + Default + Display,
 {
@@ -56,14 +56,14 @@ where
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "DivisibleBy".to_string(),
-            description: Some(format!("Value must be divisible by {}", self.divisor)),
+            name: "DivisibleBy".into(),
+            description: Some(format!("Value must be divisible by {}", self.divisor).into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "divisibility".to_string()],
+            tags: vec!["numeric".into(), "divisibility".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -133,7 +133,7 @@ mod tests {
     fn test_error_params() {
         let validator = divisible_by(3);
         let err = validator.validate(&7).unwrap_err();
-        assert_eq!(err.params.get("divisor"), Some(&"3".to_string()));
-        assert_eq!(err.params.get("actual"), Some(&"7".to_string()));
+        assert_eq!(err.param("divisor"), Some("3"));
+        assert_eq!(err.param("actual"), Some("7"));
     }
 }

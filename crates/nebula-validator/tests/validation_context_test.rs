@@ -42,7 +42,7 @@ fn test_context_parent() {
     let mut parent = ValidationContext::new();
     parent.insert("parent_key", 100usize);
 
-    let mut child = ValidationContext::with_parent(parent);
+    let mut child = ValidationContext::with_parent(std::sync::Arc::new(parent));
     child.insert("child_key", 200usize);
 
     assert_eq!(child.get::<usize>("child_key"), Some(&200));
@@ -277,13 +277,13 @@ fn test_nested_field_paths() {
 fn test_child_context() {
     let mut parent = ValidationContext::new();
     parent.push_field("parent");
+    parent.insert("key", 42usize);
 
-    let child = parent.child();
+    let (_parent_arc, child) = parent.child();
 
     // Child should inherit field path
     assert_eq!(child.field_path(), "parent");
 
-    // Child context creates a new context with parent reference
-    // Note: Due to limitations of Box<dyn Any>, data is not copied from parent
-    // Use with_parent() for hierarchical data access
+    // Child can look up parent data through Arc reference — no data loss
+    assert_eq!(child.get::<usize>("key"), Some(&42));
 }

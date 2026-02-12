@@ -1,6 +1,8 @@
 //! MESSAGE combinator - custom error messages
 
-use crate::core::{ValidationError, Validator, ValidatorMetadata};
+use std::borrow::Cow;
+
+use crate::core::{Validate, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // WITH MESSAGE COMBINATOR
@@ -14,7 +16,7 @@ use crate::core::{ValidationError, Validator, ValidatorMetadata};
 ///
 /// ```rust,ignore
 /// use nebula_validator::combinators::WithMessage;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = WithMessage::new(
 ///     MinLength { min: 8 },
@@ -64,15 +66,18 @@ impl<V> WithMessage<V> {
     }
 }
 
-impl<V> Validator for WithMessage<V>
+impl<V> Validate for WithMessage<V>
 where
-    V: Validator,
+    V: Validate,
 {
     type Input = V::Input;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         self.inner.validate(input).map_err(|original| {
-            let code = self.code.clone().unwrap_or_else(|| original.code.clone());
+            let code = self
+                .code
+                .clone()
+                .map_or_else(|| original.code.clone(), Cow::Owned);
 
             ValidationError::new(code, self.message.clone()).with_nested_error(original)
         })
@@ -82,8 +87,8 @@ where
         let inner_meta = self.inner.metadata();
 
         ValidatorMetadata {
-            name: format!("WithMessage({})", inner_meta.name),
-            description: Some(self.message.clone()),
+            name: format!("WithMessage({})", inner_meta.name).into(),
+            description: Some(self.message.clone().into()),
             complexity: inner_meta.complexity,
             cacheable: inner_meta.cacheable,
             estimated_time: inner_meta.estimated_time,
@@ -111,7 +116,7 @@ pub fn with_message<V>(validator: V, message: impl Into<String>) -> WithMessage<
 ///
 /// ```rust,ignore
 /// use nebula_validator::combinators::WithCode;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = WithCode::new(MinLength { min: 8 }, "ERR_PASSWORD_TOO_SHORT");
 ///
@@ -149,9 +154,9 @@ impl<V> WithCode<V> {
     }
 }
 
-impl<V> Validator for WithCode<V>
+impl<V> Validate for WithCode<V>
 where
-    V: Validator,
+    V: Validate,
 {
     type Input = V::Input;
 
@@ -184,7 +189,7 @@ mod tests {
         min: usize,
     }
 
-    impl Validator for MinLength {
+    impl Validate for MinLength {
         type Input = str;
 
         fn validate(&self, input: &str) -> Result<(), ValidationError> {

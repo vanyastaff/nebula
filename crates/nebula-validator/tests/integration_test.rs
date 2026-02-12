@@ -3,7 +3,7 @@
 //! These tests verify the public API works correctly
 
 use nebula_validator::combinators::and::and;
-use nebula_validator::core::Validator;
+use nebula_validator::core::Validate;
 use nebula_validator::validators::string::{max_length, min_length};
 
 #[test]

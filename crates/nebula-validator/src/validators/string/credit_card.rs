@@ -2,7 +2,7 @@
 //!
 //! Validates credit card numbers for format and checksum.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // CREDIT CARD VALIDATOR
@@ -20,7 +20,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 ///
 /// ```
 /// use nebula_validator::validators::string::CreditCard;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = CreditCard::new();
 ///
@@ -278,7 +278,7 @@ impl Default for CreditCard {
     }
 }
 
-impl Validator for CreditCard {
+impl Validate for CreditCard {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -330,26 +330,29 @@ impl Validator for CreditCard {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "CreditCard".to_string(),
-            description: Some(format!(
-                "Validates credit card numbers with Luhn checksum (separators: {})",
-                if self.allow_separators {
-                    "allowed"
-                } else {
-                    "not allowed"
-                }
-            )),
+            name: "CreditCard".into(),
+            description: Some(
+                format!(
+                    "Validates credit card numbers with Luhn checksum (separators: {})",
+                    if self.allow_separators {
+                        "allowed"
+                    } else {
+                        "not allowed"
+                    }
+                )
+                .into(),
+            ),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(5)),
             tags: vec![
-                "text".to_string(),
-                "credit_card".to_string(),
-                "payment".to_string(),
-                "luhn".to_string(),
+                "text".into(),
+                "credit_card".into(),
+                "payment".into(),
+                "luhn".into(),
             ],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }
@@ -534,8 +537,8 @@ mod tests {
             let validator = CreditCard::new();
             let metadata = validator.metadata();
             assert_eq!(metadata.name, "CreditCard");
-            assert!(metadata.tags.contains(&"credit_card".to_string()));
-            assert!(metadata.tags.contains(&"luhn".to_string()));
+            assert!(metadata.tags.contains(&"credit_card".into()));
+            assert!(metadata.tags.contains(&"luhn".into()));
         }
     }
 }

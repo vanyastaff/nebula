@@ -53,7 +53,7 @@ pub use nebula_validator_derive::*;
 ///
 /// This macro generates a complete validator implementation including:
 /// - Struct definition
-/// - Validator trait implementation
+/// - Validate trait implementation
 /// - Metadata generation
 /// - Error handling
 ///
@@ -127,7 +127,7 @@ macro_rules! validator {
             )*
         }
 
-        impl $crate::core::Validator for $name {
+        impl $crate::core::Validate for $name {
             type Input = $input_ty;
 
             fn validate(&self, $input: &Self::Input) -> Result<(), ValidationError> {
@@ -150,7 +150,7 @@ macro_rules! validator {
                     estimated_time: None,
                     tags: vec![],
                     version: None,
-                    custom: std::collections::HashMap::new(),
+                    custom: Vec::new(),
                 }
             }
         }
@@ -250,7 +250,7 @@ macro_rules! validator_fn {
             }
         }
 
-        impl $crate::core::Validator for $name {
+        impl $crate::core::Validate for $name {
             type Input = $input_ty;
 
             fn validate(&self, $input: &Self::Input) -> Result<(), ValidationError> {
@@ -300,7 +300,7 @@ macro_rules! validator_const {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub struct $name;
 
-        impl $crate::core::Validator for $name {
+        impl $crate::core::Validate for $name {
             type Input = $input_ty;
 
             fn validate(&self, $input: &Self::Input) -> Result<(), ValidationError> {
@@ -382,7 +382,7 @@ macro_rules! any_of {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Validator, ValidationError};
+    use crate::core::{Validate, ValidationError};
 
     validator! {
         struct TestMinLength {
@@ -469,7 +469,7 @@ mod tests {
         struct ExactLength {
             length: usize,
         }
-        impl Validator for ExactLength {
+        impl Validate for ExactLength {
             type Input = str;
             fn validate(&self, input: &str) -> Result<(), ValidationError> {
                 if input.len() == self.length {

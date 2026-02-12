@@ -1,6 +1,6 @@
 //! Collection element validators
 
-use crate::core::{ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationError, ValidatorMetadata};
 use std::collections::HashSet;
 use std::hash::Hash;
 
@@ -21,9 +21,9 @@ impl<V> All<V> {
     }
 }
 
-impl<V, T> Validator for All<V>
+impl<V, T> Validate for All<V>
 where
-    V: Validator<Input = T>,
+    V: Validate<Input = T>,
 {
     type Input = [T];
 
@@ -65,9 +65,9 @@ impl<V> Any<V> {
     }
 }
 
-impl<V, T> Validator for Any<V>
+impl<V, T> Validate for Any<V>
 where
-    V: Validator<Input = T>,
+    V: Validate<Input = T>,
 {
     type Input = [T];
 
@@ -111,7 +111,7 @@ impl<T> ContainsElement<T> {
     }
 }
 
-impl<T> Validator for ContainsElement<T>
+impl<T> Validate for ContainsElement<T>
 where
     T: PartialEq,
 {
@@ -149,7 +149,7 @@ pub struct Unique<T> {
     _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T> Validator for Unique<T>
+impl<T> Validate for Unique<T>
 where
     T: Hash + Eq,
 {
@@ -202,9 +202,9 @@ impl<V> None<V> {
     }
 }
 
-impl<V, T> Validator for None<V>
+impl<V, T> Validate for None<V>
 where
-    V: Validator<Input = T>,
+    V: Validate<Input = T>,
 {
     type Input = [T];
 
@@ -254,9 +254,9 @@ impl<V> Count<V> {
     }
 }
 
-impl<V, T> Validator for Count<V>
+impl<V, T> Validate for Count<V>
 where
-    V: Validator<Input = T>,
+    V: Validate<Input = T>,
 {
     type Input = [T];
 
@@ -312,9 +312,9 @@ impl<V> AtLeastCount<V> {
     }
 }
 
-impl<V, T> Validator for AtLeastCount<V>
+impl<V, T> Validate for AtLeastCount<V>
 where
-    V: Validator<Input = T>,
+    V: Validate<Input = T>,
 {
     type Input = [T];
 
@@ -370,9 +370,9 @@ impl<V> AtMostCount<V> {
     }
 }
 
-impl<V, T> Validator for AtMostCount<V>
+impl<V, T> Validate for AtMostCount<V>
 where
-    V: Validator<Input = T>,
+    V: Validate<Input = T>,
 {
     type Input = [T];
 
@@ -426,9 +426,9 @@ impl<V> First<V> {
     }
 }
 
-impl<V, T> Validator for First<V>
+impl<V, T> Validate for First<V>
 where
-    V: Validator<Input = T>,
+    V: Validate<Input = T>,
 {
     type Input = [T];
 
@@ -471,9 +471,9 @@ impl<V> Last<V> {
     }
 }
 
-impl<V, T> Validator for Last<V>
+impl<V, T> Validate for Last<V>
 where
-    V: Validator<Input = T>,
+    V: Validate<Input = T>,
 {
     type Input = [T];
 
@@ -517,9 +517,9 @@ impl<V> Nth<V> {
     }
 }
 
-impl<V, T> Validator for Nth<V>
+impl<V, T> Validate for Nth<V>
 where
-    V: Validator<Input = T>,
+    V: Validate<Input = T>,
 {
     type Input = [T];
 
@@ -565,7 +565,7 @@ pub struct Sorted<T> {
     _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T> Validator for Sorted<T>
+impl<T> Validate for Sorted<T>
 where
     T: PartialOrd,
 {
@@ -611,7 +611,7 @@ pub struct SortedDescending<T> {
     _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T> Validator for SortedDescending<T>
+impl<T> Validate for SortedDescending<T>
 where
     T: PartialOrd,
 {
@@ -664,7 +664,7 @@ impl<T> ContainsAll<T> {
     }
 }
 
-impl<T> Validator for ContainsAll<T>
+impl<T> Validate for ContainsAll<T>
 where
     T: PartialEq,
 {
@@ -714,7 +714,7 @@ impl<T> ContainsAny<T> {
     }
 }
 
-impl<T> Validator for ContainsAny<T>
+impl<T> Validate for ContainsAny<T>
 where
     T: PartialEq,
 {

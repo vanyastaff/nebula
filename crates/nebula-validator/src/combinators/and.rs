@@ -1,6 +1,7 @@
 //! AND combinator - logical conjunction of validators
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use std::borrow::Cow;
 
 /// Combines two validators with logical AND.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,10 +28,10 @@ impl<L, R> And<L, R> {
     }
 }
 
-impl<L, R> Validator for And<L, R>
+impl<L, R> Validate for And<L, R>
 where
-    L: Validator,
-    R: Validator<Input = L::Input>,
+    L: Validate,
+    R: Validate<Input = L::Input>,
 {
     type Input = L::Input;
 
@@ -47,34 +48,33 @@ where
         let cacheable = left_meta.cacheable && right_meta.cacheable;
 
         ValidatorMetadata {
-            name: format!("And({}, {})", left_meta.name, right_meta.name),
-            description: Some(format!(
-                "Both {} and {} must pass",
-                left_meta.name, right_meta.name
-            )),
+            name: format!("And({}, {})", left_meta.name, right_meta.name).into(),
+            description: Some(
+                format!("Both {} and {} must pass", left_meta.name, right_meta.name).into(),
+            ),
             complexity,
             cacheable,
             estimated_time: None,
             tags: {
                 let mut tags = left_meta.tags;
                 tags.extend(right_meta.tags);
-                tags.push("combinator".to_string());
+                tags.push(Cow::Borrowed("combinator"));
                 tags
             },
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
 
 impl<L, R> And<L, R>
 where
-    L: Validator,
-    R: Validator<Input = L::Input>,
+    L: Validate,
+    R: Validate<Input = L::Input>,
 {
     pub fn and<V>(self, other: V) -> And<Self, V>
     where
-        V: Validator<Input = L::Input>,
+        V: Validate<Input = L::Input>,
     {
         And::new(self, other)
     }
@@ -82,8 +82,8 @@ where
 
 pub fn and<L, R>(left: L, right: R) -> And<L, R>
 where
-    L: Validator,
-    R: Validator<Input = L::Input>,
+    L: Validate,
+    R: Validate<Input = L::Input>,
 {
     And::new(left, right)
 }
@@ -91,7 +91,7 @@ where
 #[must_use]
 pub fn and_all<V>(validators: Vec<V>) -> AndAll<V>
 where
-    V: Validator,
+    V: Validate,
 {
     AndAll { validators }
 }
@@ -101,9 +101,9 @@ pub struct AndAll<V> {
     validators: Vec<V>,
 }
 
-impl<V> Validator for AndAll<V>
+impl<V> Validate for AndAll<V>
 where
-    V: Validator,
+    V: Validate,
 {
     type Input = V::Input;
 
@@ -127,17 +127,14 @@ where
         }
 
         ValidatorMetadata {
-            name: format!("AndAll(count={})", self.validators.len()),
-            description: Some(format!(
-                "All {} validators must pass",
-                self.validators.len()
-            )),
+            name: format!("AndAll(count={})", self.validators.len()).into(),
+            description: Some(format!("All {} validators must pass", self.validators.len()).into()),
             complexity,
             cacheable,
             estimated_time: None,
             tags,
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -145,13 +142,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::traits::ValidatorExt;
+    use crate::core::traits::ValidateExt;
 
     struct MinLength {
         min: usize,
     }
 
-    impl Validator for MinLength {
+    impl Validate for MinLength {
         type Input = str;
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
             if input.len() >= self.min {
@@ -166,7 +163,7 @@ mod tests {
         max: usize,
     }
 
-    impl Validator for MaxLength {
+    impl Validate for MaxLength {
         type Input = str;
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
             if input.len() <= self.max {

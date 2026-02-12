@@ -1,6 +1,7 @@
 //! OR combinator - logical disjunction of validators
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use std::borrow::Cow;
 
 /// Combines two validators with logical OR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,10 +28,10 @@ impl<L, R> Or<L, R> {
     }
 }
 
-impl<L, R> Validator for Or<L, R>
+impl<L, R> Validate for Or<L, R>
 where
-    L: Validator,
-    R: Validator<Input = L::Input>,
+    L: Validate,
+    R: Validate<Input = L::Input>,
 {
     type Input = L::Input;
 
@@ -57,34 +58,33 @@ where
         let cacheable = left_meta.cacheable && right_meta.cacheable;
 
         ValidatorMetadata {
-            name: format!("Or({}, {})", left_meta.name, right_meta.name),
-            description: Some(format!(
-                "Either {} or {} must pass",
-                left_meta.name, right_meta.name
-            )),
+            name: format!("Or({}, {})", left_meta.name, right_meta.name).into(),
+            description: Some(
+                format!("Either {} or {} must pass", left_meta.name, right_meta.name).into(),
+            ),
             complexity,
             cacheable,
             estimated_time: None,
             tags: {
                 let mut tags = left_meta.tags;
                 tags.extend(right_meta.tags);
-                tags.push("combinator".to_string());
+                tags.push(Cow::Borrowed("combinator"));
                 tags
             },
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
 
 impl<L, R> Or<L, R>
 where
-    L: Validator,
-    R: Validator<Input = L::Input>,
+    L: Validate,
+    R: Validate<Input = L::Input>,
 {
     pub fn or<V>(self, other: V) -> Or<Self, V>
     where
-        V: Validator<Input = L::Input>,
+        V: Validate<Input = L::Input>,
     {
         Or::new(self, other)
     }
@@ -92,8 +92,8 @@ where
 
 pub fn or<L, R>(left: L, right: R) -> Or<L, R>
 where
-    L: Validator,
-    R: Validator<Input = L::Input>,
+    L: Validate,
+    R: Validate<Input = L::Input>,
 {
     Or::new(left, right)
 }
@@ -101,7 +101,7 @@ where
 #[must_use]
 pub fn or_any<V>(validators: Vec<V>) -> OrAny<V>
 where
-    V: Validator,
+    V: Validate,
 {
     OrAny { validators }
 }
@@ -111,9 +111,9 @@ pub struct OrAny<V> {
     validators: Vec<V>,
 }
 
-impl<V> Validator for OrAny<V>
+impl<V> Validate for OrAny<V>
 where
-    V: Validator,
+    V: Validate,
 {
     type Input = V::Input;
 
@@ -150,17 +150,20 @@ where
         }
 
         ValidatorMetadata {
-            name: format!("OrAny(count={})", self.validators.len()),
-            description: Some(format!(
-                "At least one of {} validators must pass",
-                self.validators.len()
-            )),
+            name: format!("OrAny(count={})", self.validators.len()).into(),
+            description: Some(
+                format!(
+                    "At least one of {} validators must pass",
+                    self.validators.len()
+                )
+                .into(),
+            ),
             complexity,
             cacheable,
             estimated_time: None,
             tags,
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -168,13 +171,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::traits::ValidatorExt;
+    use crate::core::traits::ValidateExt;
 
     struct ExactLength {
         length: usize,
     }
 
-    impl Validator for ExactLength {
+    impl Validate for ExactLength {
         type Input = str;
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
             if input.len() == self.length {

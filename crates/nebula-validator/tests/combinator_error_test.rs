@@ -119,5 +119,5 @@ fn test_field_error_with_conversion() {
 
     let ve: ValidationError = error.into();
     assert_eq!(ve.code, "field_validation_failed");
-    assert_eq!(ve.field, Some("user.email".to_string()));
+    assert_eq!(ve.field.as_deref(), Some("user.email"));
 }

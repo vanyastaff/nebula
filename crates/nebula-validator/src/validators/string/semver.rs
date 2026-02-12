@@ -2,7 +2,7 @@
 //!
 //! Validates version strings according to the Semantic Versioning specification.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // SEMVER VALIDATOR
@@ -21,7 +21,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 ///
 /// ```
 /// use nebula_validator::validators::string::Semver;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = Semver::new();
 ///
@@ -178,7 +178,7 @@ impl Default for Semver {
     }
 }
 
-impl Validator for Semver {
+impl Validate for Semver {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -270,35 +270,34 @@ impl Validator for Semver {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Semver".to_string(),
-            description: Some(format!(
-                "Validates Semantic Versioning 2.0.0 (v prefix: {}, prerelease: {}, build: {})",
-                if self.allow_v_prefix {
-                    "allowed"
-                } else {
-                    "not allowed"
-                },
-                if self.require_prerelease {
-                    "required"
-                } else {
-                    "optional"
-                },
-                if self.require_build {
-                    "required"
-                } else {
-                    "optional"
-                },
-            )),
+            name: "Semver".into(),
+            description: Some(
+                format!(
+                    "Validates Semantic Versioning 2.0.0 (v prefix: {}, prerelease: {}, build: {})",
+                    if self.allow_v_prefix {
+                        "allowed"
+                    } else {
+                        "not allowed"
+                    },
+                    if self.require_prerelease {
+                        "required"
+                    } else {
+                        "optional"
+                    },
+                    if self.require_build {
+                        "required"
+                    } else {
+                        "optional"
+                    },
+                )
+                .into(),
+            ),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(5)),
-            tags: vec![
-                "text".to_string(),
-                "semver".to_string(),
-                "version".to_string(),
-            ],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["text".into(), "semver".into(), "version".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }
@@ -469,8 +468,8 @@ mod tests {
             let validator = Semver::new();
             let metadata = validator.metadata();
             assert_eq!(metadata.name, "Semver");
-            assert!(metadata.tags.contains(&"semver".to_string()));
-            assert!(metadata.tags.contains(&"version".to_string()));
+            assert!(metadata.tags.contains(&"semver".into()));
+            assert!(metadata.tags.contains(&"version".into()));
         }
     }
 }

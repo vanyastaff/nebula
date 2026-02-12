@@ -1,6 +1,6 @@
 //! Collection structure validators (for maps)
 
-use crate::core::{ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationError, ValidatorMetadata};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -26,7 +26,7 @@ impl<K, V> HasKey<K, V> {
     }
 }
 
-impl<K, V> Validator for HasKey<K, V>
+impl<K, V> Validate for HasKey<K, V>
 where
     K: Hash + Eq,
 {

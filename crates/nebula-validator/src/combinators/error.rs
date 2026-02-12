@@ -258,7 +258,7 @@ where
                     format!("Field validation failed: {error}"),
                 );
                 if let Some(name) = field_name {
-                    ve = ve.with_field(&name);
+                    ve = ve.with_field(name);
                 }
                 ve
             }
@@ -281,7 +281,7 @@ where
                 ve = ve.with_nested(nested);
                 ve
             }
-            CombinatorError::Custom { code, message } => ValidationError::new(&code, message),
+            CombinatorError::Custom { code, message } => ValidationError::new(code, message),
         }
     }
 }

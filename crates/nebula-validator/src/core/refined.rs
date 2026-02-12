@@ -3,9 +3,9 @@
 //! This module provides the `Refined<T, V>` type, which wraps a value
 //! and guarantees at compile-time that it has been validated.
 
-use crate::core::{ValidationError, Validator};
+use crate::core::{Validate, ValidationError};
 use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 
 // ============================================================================
 // REFINED TYPE
@@ -29,7 +29,7 @@ pub struct Refined<T, V> {
 
 impl<T, V> Refined<T, V>
 where
-    V: Validator,
+    V: Validate,
     T: std::borrow::Borrow<V::Input>,
 {
     /// Creates a new refined type by validating the value.
@@ -77,33 +77,12 @@ impl<T, V> Refined<T, V> {
         &self.value
     }
 
-    /// Returns a mutable reference to the inner value.
-    ///
-    /// Be careful not to modify the value in a way that would violate
-    /// the validator's constraints.
-    pub fn get_mut(&mut self) -> &mut T {
-        &mut self.value
-    }
-
-    /// Maps the refined value to a different type.
-    ///
-    /// The mapping function preserves the validation guarantee.
-    pub fn map<U, F>(self, f: F) -> Refined<U, V>
-    where
-        F: FnOnce(T) -> U,
-    {
-        Refined {
-            value: f(self.value),
-            _validator: PhantomData,
-        }
-    }
-
-    /// Attempts to map the refined value, re-validating the result.
+    /// Maps the refined value, re-validating the result.
     #[must_use = "mapped value must be used"]
     pub fn try_map<U, F>(self, f: F, validator: &V) -> Result<Refined<U, V>, ValidationError>
     where
         F: FnOnce(T) -> U,
-        V: Validator<Input = U>,
+        V: Validate<Input = U>,
     {
         let new_value = f(self.value);
         Refined::new(new_value, validator)
@@ -116,7 +95,7 @@ impl<T, V> Refined<T, V> {
     #[must_use = "refined value must be used"]
     pub fn refine<V2>(self, validator: &V2) -> Result<Refined<T, V2>, ValidationError>
     where
-        V2: Validator,
+        V2: Validate,
         T: std::borrow::Borrow<V2::Input>,
     {
         Refined::new(self.value, validator)
@@ -129,7 +108,7 @@ impl<T, V> Refined<T, V> {
     pub fn try_from_ref(value: &T, validator: &V) -> Result<Self, ValidationError>
     where
         T: Clone,
-        V: Validator<Input = T>,
+        V: Validate<Input = T>,
     {
         validator.validate(value)?;
         Ok(Self {
@@ -151,21 +130,9 @@ impl<T, V> Deref for Refined<T, V> {
     }
 }
 
-impl<T, V> DerefMut for Refined<T, V> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.value
-    }
-}
-
 impl<T, V> AsRef<T> for Refined<T, V> {
     fn as_ref(&self) -> &T {
         &self.value
-    }
-}
-
-impl<T, V> AsMut<T> for Refined<T, V> {
-    fn as_mut(&mut self) -> &mut T {
-        &mut self.value
     }
 }
 
@@ -196,7 +163,7 @@ where
 impl<'de, T, V> serde::Deserialize<'de> for Refined<T, V>
 where
     T: serde::Deserialize<'de>,
-    V: Validator<Input = T> + Default,
+    V: Validate<Input = T> + Default,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -239,7 +206,7 @@ mod tests {
         min: usize,
     }
 
-    impl Validator for MinLength {
+    impl Validate for MinLength {
         type Input = str;
 
         fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -282,14 +249,6 @@ mod tests {
     }
 
     #[test]
-    fn test_refined_map() {
-        let validator = MinLength { min: 5 };
-        let refined = Refined::new("hello".to_string(), &validator).unwrap();
-        let length = refined.map(|s| s.len());
-        assert_eq!(length.into_inner(), 5);
-    }
-
-    #[test]
     fn test_refined_type_safety() {
         let validator = MinLength { min: 5 };
         let refined = Refined::new("hello".to_string(), &validator).unwrap();
@@ -307,7 +266,7 @@ mod tests {
             max: usize,
         }
 
-        impl Validator for MaxLength {
+        impl Validate for MaxLength {
             type Input = str;
 
             fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {

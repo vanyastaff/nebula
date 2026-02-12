@@ -1,4 +1,4 @@
-//! Validator metadata for introspection and optimization
+//! Validate metadata for introspection and optimization
 //!
 //! This module provides metadata types that validators can expose to enable:
 //! - Runtime introspection
@@ -6,6 +6,8 @@
 //! - Documentation generation
 //! - UI generation
 
+use std::borrow::Cow;
+use std::fmt;
 use std::time::Duration;
 
 // ============================================================================
@@ -14,31 +16,15 @@ use std::time::Duration;
 
 /// Metadata about a validator for introspection and optimization.
 ///
-/// This information can be used to:
-/// - Generate documentation
-/// - Optimize validation order (cheap validators first)
-/// - Build user interfaces
-/// - Cache validation results
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::core::{ValidatorMetadata, ValidationComplexity};
-///
-/// let metadata = ValidatorMetadata::builder()
-///     .name("MinLength")
-///     .description("Validates minimum string length")
-///     .complexity(ValidationComplexity::Constant)
-///     .cacheable(true)
-///     .build();
-/// ```
+/// Uses `Cow<'static, str>` for zero-allocation when metadata is static
+/// (the common case for built-in validators).
 #[derive(Debug, Clone)]
 pub struct ValidatorMetadata {
     /// Human-readable name of the validator.
-    pub name: String,
+    pub name: Cow<'static, str>,
 
     /// Optional description of what the validator does.
-    pub description: Option<String>,
+    pub description: Option<Cow<'static, str>>,
 
     /// Computational complexity of the validation.
     pub complexity: ValidationComplexity,
@@ -50,26 +36,26 @@ pub struct ValidatorMetadata {
     pub estimated_time: Option<Duration>,
 
     /// Tags for categorization.
-    pub tags: Vec<String>,
+    pub tags: Vec<Cow<'static, str>>,
 
     /// Version of the validator (for tracking changes).
-    pub version: Option<String>,
+    pub version: Option<Cow<'static, str>>,
 
-    /// Additional custom metadata.
-    pub custom: std::collections::HashMap<String, String>,
+    /// Additional custom metadata as key-value pairs.
+    pub custom: Vec<(Cow<'static, str>, Cow<'static, str>)>,
 }
 
 impl Default for ValidatorMetadata {
     fn default() -> Self {
         Self {
-            name: "Unknown".to_string(),
+            name: Cow::Borrowed("Unknown"),
             description: None,
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
             tags: Vec::new(),
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -77,12 +63,12 @@ impl Default for ValidatorMetadata {
 impl ValidatorMetadata {
     /// Creates a new metadata builder.
     #[must_use]
-    pub fn builder() -> ValidatorMetadataBuilder {
-        ValidatorMetadataBuilder::default()
+    pub fn builder() -> ValidatorMetadataBuilderuilder {
+        ValidatorMetadataBuilderuilder::default()
     }
 
     /// Creates simple metadata with just a name.
-    pub fn simple(name: impl Into<String>) -> Self {
+    pub fn simple(name: impl Into<Cow<'static, str>>) -> Self {
         Self {
             name: name.into(),
             ..Default::default()
@@ -90,7 +76,10 @@ impl ValidatorMetadata {
     }
 
     /// Creates metadata with name and description.
-    pub fn with_description(name: impl Into<String>, description: impl Into<String>) -> Self {
+    pub fn with_description(
+        name: impl Into<Cow<'static, str>>,
+        description: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Self {
             name: name.into(),
             description: Some(description.into()),
@@ -100,17 +89,62 @@ impl ValidatorMetadata {
 
     /// Adds a tag to the metadata.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
+    pub fn with_tag(mut self, tag: impl Into<Cow<'static, str>>) -> Self {
         self.tags.push(tag.into());
         self
     }
 
     /// Adds custom metadata.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_custom(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.custom.insert(key.into(), value.into());
+    pub fn with_custom(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        value: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        self.custom.push((key.into(), value.into()));
         self
     }
+}
+
+// ============================================================================
+// METADATA MACRO
+// ============================================================================
+
+/// Generates a `metadata()` method for validator implementations.
+///
+/// Reduces the ~15 lines of boilerplate per validator to a single macro call.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_validator::validator_metadata;
+///
+/// impl Validate for MinLength {
+///     type Input = str;
+///     fn validate(&self, input: &str) -> Result<(), ValidationError> { /* ... */ }
+///     validator_metadata!("MinLength", "Validates minimum string length",
+///         complexity = Constant, tags = ["string", "length"]);
+/// }
+/// ```
+#[macro_export]
+macro_rules! validator_metadata {
+    ($name:expr, $desc:expr, complexity = $c:ident, tags = [$($tag:expr),* $(,)?]) => {
+        fn metadata(&self) -> $crate::core::ValidatorMetadata {
+            $crate::core::ValidatorMetadata {
+                name: ::std::borrow::Cow::Borrowed($name),
+                description: Some(::std::borrow::Cow::Borrowed($desc)),
+                complexity: $crate::core::ValidationComplexity::$c,
+                cacheable: true,
+                estimated_time: None,
+                tags: vec![$(::std::borrow::Cow::Borrowed($tag)),*],
+                version: None,
+                custom: Vec::new(),
+            }
+        }
+    };
+    ($name:expr, $desc:expr, complexity = $c:ident) => {
+        $crate::validator_metadata!($name, $desc, complexity = $c, tags = []);
+    };
 }
 
 // ============================================================================
@@ -120,42 +154,19 @@ impl ValidatorMetadata {
 /// Computational complexity classification for validators.
 ///
 /// This helps optimize validation order by running cheap validators first.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::core::ValidationComplexity;
-///
-/// // O(1) - checking if a value is null
-/// let complexity = ValidationComplexity::Constant;
-///
-/// // O(n) - checking string length
-/// let complexity = ValidationComplexity::Linear;
-///
-/// // O(n²) or async operations - regex, database checks
-/// let complexity = ValidationComplexity::Expensive;
-/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum ValidationComplexity {
     /// O(1) - constant time operations.
-    ///
-    /// Examples: null checks, type checks, simple comparisons
     #[default]
     Constant,
 
     /// O(n) - linear time operations.
-    ///
-    /// Examples: string length checks, array size checks
     Linear,
 
     /// O(n log n) - logarithmic operations.
-    ///
-    /// Examples: sorted array checks
     Logarithmic,
 
     /// O(n²) or worse, or involves I/O.
-    ///
-    /// Examples: regex matching, database lookups, API calls
     Expensive,
 }
 
@@ -179,7 +190,7 @@ impl ValidationComplexity {
 }
 
 impl fmt::Display for ValidationComplexity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Constant => write!(f, "O(1)"),
             Self::Linear => write!(f, "O(n)"),
@@ -189,36 +200,34 @@ impl fmt::Display for ValidationComplexity {
     }
 }
 
-use std::fmt;
-
 // ============================================================================
 // METADATA BUILDER
 // ============================================================================
 
 /// Builder for creating validator metadata.
 #[derive(Default)]
-pub struct ValidatorMetadataBuilder {
-    name: Option<String>,
-    description: Option<String>,
+pub struct ValidatorMetadataBuilderuilder {
+    name: Option<Cow<'static, str>>,
+    description: Option<Cow<'static, str>>,
     complexity: ValidationComplexity,
     cacheable: bool,
     estimated_time: Option<Duration>,
-    tags: Vec<String>,
-    version: Option<String>,
-    custom: std::collections::HashMap<String, String>,
+    tags: Vec<Cow<'static, str>>,
+    version: Option<Cow<'static, str>>,
+    custom: Vec<(Cow<'static, str>, Cow<'static, str>)>,
 }
 
-impl ValidatorMetadataBuilder {
+impl ValidatorMetadataBuilderuilder {
     /// Sets the validator name.
     #[must_use = "builder methods must be chained or built"]
-    pub fn name(mut self, name: impl Into<String>) -> Self {
+    pub fn name(mut self, name: impl Into<Cow<'static, str>>) -> Self {
         self.name = Some(name.into());
         self
     }
 
     /// Sets the description.
     #[must_use = "builder methods must be chained or built"]
-    pub fn description(mut self, description: impl Into<String>) -> Self {
+    pub fn description(mut self, description: impl Into<Cow<'static, str>>) -> Self {
         self.description = Some(description.into());
         self
     }
@@ -246,29 +255,33 @@ impl ValidatorMetadataBuilder {
 
     /// Adds a tag.
     #[must_use = "builder methods must be chained or built"]
-    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+    pub fn tag(mut self, tag: impl Into<Cow<'static, str>>) -> Self {
         self.tags.push(tag.into());
         self
     }
 
     /// Adds multiple tags.
     #[must_use = "builder methods must be chained or built"]
-    pub fn tags(mut self, tags: Vec<String>) -> Self {
+    pub fn tags(mut self, tags: Vec<Cow<'static, str>>) -> Self {
         self.tags.extend(tags);
         self
     }
 
     /// Sets the version.
     #[must_use = "builder methods must be chained or built"]
-    pub fn version(mut self, version: impl Into<String>) -> Self {
+    pub fn version(mut self, version: impl Into<Cow<'static, str>>) -> Self {
         self.version = Some(version.into());
         self
     }
 
     /// Adds custom metadata.
     #[must_use = "builder methods must be chained or built"]
-    pub fn custom(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.custom.insert(key.into(), value.into());
+    pub fn custom(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        value: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        self.custom.push((key.into(), value.into()));
         self
     }
 
@@ -276,7 +289,7 @@ impl ValidatorMetadataBuilder {
     #[must_use]
     pub fn build(self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: self.name.unwrap_or_else(|| "Unknown".to_string()),
+            name: self.name.unwrap_or(Cow::Borrowed("Unknown")),
             description: self.description,
             complexity: self.complexity,
             cacheable: self.cacheable,
@@ -293,8 +306,6 @@ impl ValidatorMetadataBuilder {
 // ============================================================================
 
 /// Metadata for a registered validator in the registry.
-///
-/// This extends `ValidatorMetadata` with registry-specific information.
 #[derive(Debug, Clone)]
 pub struct RegisteredValidatorMetadata {
     /// The base metadata.
@@ -348,8 +359,6 @@ impl RegisteredValidatorMetadata {
 // ============================================================================
 
 /// Runtime statistics for a validator.
-///
-/// Useful for performance monitoring and optimization.
 #[derive(Debug, Clone, Default)]
 pub struct ValidatorStatistics {
     /// Total number of validations performed.
@@ -428,7 +437,7 @@ impl ValidatorStatistics {
 
 impl fmt::Display for ValidatorStatistics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Validator Statistics:")?;
+        writeln!(f, "Validate Statistics:")?;
         writeln!(f, "  Total validations: {}", self.total_validations)?;
         writeln!(
             f,
@@ -476,7 +485,7 @@ mod tests {
             .build();
 
         assert_eq!(metadata.name, "TestValidator");
-        assert_eq!(metadata.description, Some("A test validator".to_string()));
+        assert_eq!(metadata.description.as_deref(), Some("A test validator"));
         assert_eq!(metadata.complexity, ValidationComplexity::Linear);
         assert!(metadata.cacheable);
         assert_eq!(metadata.tags.len(), 2);
@@ -502,7 +511,12 @@ mod tests {
         assert_eq!(stats.total_validations, 3);
         assert_eq!(stats.successful_validations, 2);
         assert_eq!(stats.failed_validations, 1);
-        // Use approximate comparison for floating point
         assert!((stats.success_rate() - 200.0 / 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_zero_alloc_metadata() {
+        let metadata = ValidatorMetadata::simple("MinLength");
+        assert!(matches!(metadata.name, Cow::Borrowed(_)));
     }
 }

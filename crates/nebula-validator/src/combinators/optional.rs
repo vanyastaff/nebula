@@ -1,6 +1,7 @@
 //! OPTIONAL combinator - validates Option types
 
-use crate::core::{ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use std::borrow::Cow;
 
 /// Makes a validator work with Option types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,9 +23,9 @@ impl<V> Optional<V> {
     }
 }
 
-impl<V, T> Validator for Optional<V>
+impl<V, T> Validate for Optional<V>
 where
-    V: Validator<Input = T>,
+    V: Validate<Input = T>,
 {
     type Input = Option<T>;
 
@@ -39,15 +40,15 @@ where
         let inner_meta = self.inner.metadata();
 
         ValidatorMetadata {
-            name: format!("Optional({})", inner_meta.name),
-            description: Some(format!("Optional {}", inner_meta.name)),
+            name: format!("Optional({})", inner_meta.name).into(),
+            description: Some(format!("Optional {}", inner_meta.name).into()),
             complexity: inner_meta.complexity,
             cacheable: inner_meta.cacheable,
             estimated_time: inner_meta.estimated_time,
             tags: {
                 let mut tags = inner_meta.tags;
-                tags.push("combinator".to_string());
-                tags.push("optional".to_string());
+                tags.push(Cow::Borrowed("combinator"));
+                tags.push("optional".into());
                 tags
             },
             version: inner_meta.version,
@@ -63,13 +64,13 @@ pub fn optional<V>(validator: V) -> Optional<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Validator;
+    use crate::core::Validate;
 
     struct MinLength {
         min: usize,
     }
 
-    impl Validator for MinLength {
+    impl Validate for MinLength {
         type Input = String;
         fn validate(&self, input: &String) -> Result<(), ValidationError> {
             if input.len() >= self.min {

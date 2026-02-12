@@ -1,4 +1,4 @@
-//! Validator combinators for composition
+//! Validate combinators for composition
 //!
 //! This module provides combinator types that allow composing validators
 //! in powerful ways. Combinators follow functional programming principles
@@ -104,12 +104,12 @@ pub use and::{And, AndAll, and, and_all};
 pub use cached::{CacheStats, Cached, cached};
 pub use each::{Each, each, each_fail_fast};
 pub use error::CombinatorError;
-pub use field::{Field, FieldError, FieldValidatorExt, MultiField, field, named_field};
+pub use field::{Field, FieldError, FieldValidateExt, MultiField, field, named_field};
 pub use lazy::{Lazy, lazy};
 pub use map::{Map, map, map_to, map_unit};
 pub use message::{WithCode, WithMessage, with_code, with_message};
 pub use nested::{
-    CollectionNested, NestedValidator, OptionalNested, Validatable, collection_nested,
+    CollectionNested, NestedValidate, OptionalNested, Validatable, collection_nested,
     custom_nested, nested_validator, optional_nested,
 };
 pub use not::{Not, not};
@@ -143,7 +143,7 @@ pub use when::{When, when};
 /// ```
 pub mod prelude {
     pub use super::{
-        And, AndAll, Cached, Each, Field, FieldValidatorExt, Lazy, Map, Not, Optional, Or, OrAny,
+        And, AndAll, Cached, Each, Field, FieldValidateExt, Lazy, Map, Not, Optional, Or, OrAny,
         Unless, When, WithCode, WithMessage, and, and_all, cached, each, each_fail_fast, field,
         lazy, map, map_to, named_field, not, optional, or, or_any, unless, when, with_code,
         with_message,
@@ -161,10 +161,10 @@ pub mod prelude {
 #[cfg(test)]
 mod laws {
     use super::*;
-    use crate::core::{ValidationError, Validator};
+    use crate::core::{Validate, ValidationError};
 
     struct AlwaysValid;
-    impl Validator for AlwaysValid {
+    impl Validate for AlwaysValid {
         type Input = str;
         fn validate(&self, _: &str) -> Result<(), ValidationError> {
             Ok(())
@@ -172,7 +172,7 @@ mod laws {
     }
 
     struct AlwaysFails;
-    impl Validator for AlwaysFails {
+    impl Validate for AlwaysFails {
         type Input = str;
         fn validate(&self, _: &str) -> Result<(), ValidationError> {
             Err(ValidationError::new("fail", "Always fails"))
@@ -258,13 +258,13 @@ mod laws {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::core::{ValidationError, Validator, ValidatorExt};
+    use crate::core::{Validate, ValidateExt, ValidationError};
 
     struct MinLength {
         min: usize,
     }
 
-    impl Validator for MinLength {
+    impl Validate for MinLength {
         type Input = String;
 
         fn validate(&self, input: &String) -> Result<(), ValidationError> {
@@ -280,7 +280,7 @@ mod integration_tests {
         max: usize,
     }
 
-    impl Validator for MaxLength {
+    impl Validate for MaxLength {
         type Input = String;
 
         fn validate(&self, input: &String) -> Result<(), ValidationError> {
@@ -365,7 +365,7 @@ mod integration_tests {
             counter: Arc<AtomicUsize>,
         }
 
-        impl Validator for Counting {
+        impl Validate for Counting {
             type Input = String;
 
             fn validate(&self, _: &String) -> Result<(), ValidationError> {
@@ -397,7 +397,7 @@ mod integration_tests {
 mod doc_tests {
     //! These tests verify that documentation examples compile and work.
 
-    use crate::core::{ValidationError, Validator, ValidatorExt};
+    use crate::core::{Validate, ValidateExt, ValidationError};
 
     #[test]
     fn test_readme_example() {
@@ -408,7 +408,7 @@ mod doc_tests {
             max: usize,
         }
 
-        impl Validator for MinLength {
+        impl Validate for MinLength {
             type Input = String;
             fn validate(&self, input: &String) -> Result<(), ValidationError> {
                 if input.len() >= self.min {
@@ -419,7 +419,7 @@ mod doc_tests {
             }
         }
 
-        impl Validator for MaxLength {
+        impl Validate for MaxLength {
             type Input = String;
             fn validate(&self, input: &String) -> Result<(), ValidationError> {
                 if input.len() <= self.max {

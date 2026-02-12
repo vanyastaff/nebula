@@ -3,7 +3,7 @@
 //! This module provides optimization for validator chains to improve
 //! performance by reordering validators and applying fusion rules.
 
-use crate::core::{ValidationComplexity, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidatorMetadata};
 
 // ============================================================================
 // VALIDATOR CHAIN OPTIMIZER
@@ -72,7 +72,7 @@ impl ValidatorChainOptimizer {
     }
 
     /// Analyzes a validator chain and suggests optimizations.
-    pub fn analyze<V: Validator>(&self, validator: &V) -> OptimizationReport {
+    pub fn analyze<V: Validate>(&self, validator: &V) -> OptimizationReport {
         let metadata = validator.metadata();
 
         OptimizationReport {
@@ -107,7 +107,7 @@ impl ValidatorChainOptimizer {
             );
         }
 
-        if metadata.tags.contains(&"async".to_string()) {
+        if metadata.tags.contains(&"async".into()) {
             recommendations
                 .push("Async validator. Consider batching or parallelization".to_string());
         }
@@ -116,7 +116,7 @@ impl ValidatorChainOptimizer {
     }
 
     /// Analyzes a validator with runtime statistics.
-    pub fn analyze_with_stats<V: Validator>(
+    pub fn analyze_with_stats<V: Validate>(
         &self,
         validator: &V,
         stats: &ValidatorStats,
@@ -167,7 +167,7 @@ impl ValidatorChainOptimizer {
     #[must_use]
     pub fn optimize_chain<V>(&self, validators: Vec<V>) -> Vec<V>
     where
-        V: Validator,
+        V: Validate,
     {
         if !self.reorder_by_complexity || validators.is_empty() {
             return validators;
@@ -190,7 +190,7 @@ impl ValidatorChainOptimizer {
     #[must_use]
     pub fn optimize_chain_with_stats<V>(&self, validators: Vec<(V, ValidatorStats)>) -> Vec<V>
     where
-        V: Validator,
+        V: Validate,
     {
         if validators.is_empty() {
             return Vec::new();
@@ -275,7 +275,7 @@ impl OptimizationReport {
 // ============================================================================
 
 /// Helper trait for comparing validators based on optimization criteria.
-pub trait ValidatorOrdering: Validator {
+pub trait ValidatorOrdering: Validate {
     /// Returns the optimization priority score (lower = run earlier).
     fn optimization_priority(&self) -> i32 {
         let metadata = self.metadata();
@@ -283,12 +283,12 @@ pub trait ValidatorOrdering: Validator {
     }
 
     /// Checks if this validator should run before another.
-    fn should_run_before<V: Validator>(&self, other: &V) -> bool {
+    fn should_run_before<V: Validate>(&self, other: &V) -> bool {
         self.optimization_priority() < other.optimization_priority()
     }
 }
 
-impl<T: Validator> ValidatorOrdering for T {}
+impl<T: Validate> ValidatorOrdering for T {}
 
 // ============================================================================
 // OPTIMIZATION STRATEGIES
@@ -339,14 +339,16 @@ impl OptimizationStrategy {
             Self::FailFast => {
                 let selectivity_a = meta_a
                     .custom
-                    .get("selectivity_score")
-                    .and_then(|v| v.parse::<f64>().ok())
+                    .iter()
+                    .find(|(k, _)| k == "selectivity_score")
+                    .and_then(|(_, v)| v.parse::<f64>().ok())
                     .unwrap_or(0.0);
 
                 let selectivity_b = meta_b
                     .custom
-                    .get("selectivity_score")
-                    .and_then(|v| v.parse::<f64>().ok())
+                    .iter()
+                    .find(|(k, _)| k == "selectivity_score")
+                    .and_then(|(_, v)| v.parse::<f64>().ok())
                     .unwrap_or(0.0);
 
                 if selectivity_a == selectivity_b {
@@ -453,7 +455,7 @@ mod tests {
         let optimizer = ValidatorChainOptimizer::new();
 
         let cheap = ValidatorMetadata {
-            name: "Cheap".to_string(),
+            name: "Cheap".into(),
             description: None,
             complexity: ValidationComplexity::Constant,
             cacheable: true,
@@ -464,7 +466,7 @@ mod tests {
         };
 
         let expensive = ValidatorMetadata {
-            name: "Expensive".to_string(),
+            name: "Expensive".into(),
             description: None,
             complexity: ValidationComplexity::Expensive,
             cacheable: true,
@@ -483,7 +485,7 @@ mod tests {
         let strategy = OptimizationStrategy::ComplexityBased;
 
         let cheap = ValidatorMetadata {
-            name: "Cheap".to_string(),
+            name: "Cheap".into(),
             description: None,
             complexity: ValidationComplexity::Constant,
             cacheable: false,
@@ -494,7 +496,7 @@ mod tests {
         };
 
         let expensive = ValidatorMetadata {
-            name: "Expensive".to_string(),
+            name: "Expensive".into(),
             description: None,
             complexity: ValidationComplexity::Linear,
             cacheable: false,

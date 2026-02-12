@@ -2,7 +2,7 @@
 //!
 //! Validators for special floating-point properties like NaN, infinity, and precision.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // FINITE
@@ -14,7 +14,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 ///
 /// ```
 /// use nebula_validator::validators::numeric::finite;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = finite();
 /// assert!(validator.validate(&3.14_f64).is_ok());
@@ -24,7 +24,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Finite;
 
-impl Validator for Finite {
+impl Validate for Finite {
     type Input = f64;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -42,14 +42,14 @@ impl Validator for Finite {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Finite".to_string(),
-            description: Some("Value must be finite (not NaN or infinity)".to_string()),
+            name: "Finite".into(),
+            description: Some("Value must be finite (not NaN or infinity)".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "float".to_string()],
+            tags: vec!["numeric".into(), "float".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -68,7 +68,7 @@ pub fn finite() -> Finite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct FiniteF32;
 
-impl Validator for FiniteF32 {
+impl Validate for FiniteF32 {
     type Input = f32;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -86,14 +86,14 @@ impl Validator for FiniteF32 {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "FiniteF32".to_string(),
-            description: Some("Value must be finite (not NaN or infinity)".to_string()),
+            name: "FiniteF32".into(),
+            description: Some("Value must be finite (not NaN or infinity)".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "float".to_string()],
+            tags: vec!["numeric".into(), "float".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -116,7 +116,7 @@ pub fn finite_f32() -> FiniteF32 {
 ///
 /// ```
 /// use nebula_validator::validators::numeric::not_nan;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = not_nan();
 /// assert!(validator.validate(&3.14_f64).is_ok());
@@ -126,7 +126,7 @@ pub fn finite_f32() -> FiniteF32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct NotNaN;
 
-impl Validator for NotNaN {
+impl Validate for NotNaN {
     type Input = f64;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -139,14 +139,14 @@ impl Validator for NotNaN {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "NotNaN".to_string(),
-            description: Some("Value must not be NaN".to_string()),
+            name: "NotNaN".into(),
+            description: Some("Value must not be NaN".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "float".to_string()],
+            tags: vec!["numeric".into(), "float".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -165,7 +165,7 @@ pub fn not_nan() -> NotNaN {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct NotNaNF32;
 
-impl Validator for NotNaNF32 {
+impl Validate for NotNaNF32 {
     type Input = f32;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -178,14 +178,14 @@ impl Validator for NotNaNF32 {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "NotNaNF32".to_string(),
-            description: Some("Value must not be NaN".to_string()),
+            name: "NotNaNF32".into(),
+            description: Some("Value must not be NaN".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "float".to_string()],
+            tags: vec!["numeric".into(), "float".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -206,7 +206,7 @@ pub fn not_nan_f32() -> NotNaNF32 {
 ///
 /// ```
 /// use nebula_validator::validators::numeric::decimal_places;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = decimal_places(2);
 /// assert!(validator.validate(&3.14_f64).is_ok());
@@ -228,7 +228,7 @@ impl DecimalPlaces {
     }
 }
 
-impl Validator for DecimalPlaces {
+impl Validate for DecimalPlaces {
     type Input = f64;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -261,21 +261,20 @@ impl Validator for DecimalPlaces {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "DecimalPlaces".to_string(),
-            description: Some(format!(
-                "Value must have at most {} decimal place(s)",
-                self.max_places
-            )),
+            name: "DecimalPlaces".into(),
+            description: Some(
+                format!(
+                    "Value must have at most {} decimal place(s)",
+                    self.max_places
+                )
+                .into(),
+            ),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec![
-                "numeric".to_string(),
-                "float".to_string(),
-                "precision".to_string(),
-            ],
+            tags: vec!["numeric".into(), "float".into(), "precision".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }

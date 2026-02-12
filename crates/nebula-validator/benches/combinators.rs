@@ -7,7 +7,7 @@
 //! - Nested compositions
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use nebula_validator::core::{TypedValidator, ValidatorExt};
+use nebula_validator::core::{Validate, ValidateExt};
 use nebula_validator::validators::string::*;
 
 // ============================================================================
@@ -78,7 +78,7 @@ fn bench_or_combinator(c: &mut Criterion) {
     });
 
     group.bench_function("four_options_success_last", |b| {
-        b.iter(|| validator_multi.validate(black_box("a".repeat(20))))
+        b.iter(|| validator_multi.validate(black_box(&*"a".repeat(20))))
     });
 
     group.bench_function("four_options_all_fail", |b| {
@@ -127,7 +127,7 @@ fn bench_map_combinator(c: &mut Criterion) {
 fn bench_when_combinator(c: &mut Criterion) {
     let mut group = c.benchmark_group("when_combinator");
 
-    let validator = min_length(10).when(|s: &&str| s.starts_with("long"));
+    let validator = min_length(10).when(|s: &str| s.starts_with("long"));
 
     group.bench_function("condition_true_valid", |b| {
         b.iter(|| validator.validate(black_box("longstring123")))
@@ -145,20 +145,38 @@ fn bench_when_combinator(c: &mut Criterion) {
 }
 
 fn bench_optional_combinator(c: &mut Criterion) {
+    use nebula_validator::core::{ValidationError, ValidatorMetadata};
+
+    // Wrapper with sized Input type for Optional compatibility
+    struct SizedMinLength(usize);
+    impl Validate for SizedMinLength {
+        type Input = String;
+        fn validate(&self, input: &String) -> Result<(), ValidationError> {
+            if input.len() >= self.0 {
+                Ok(())
+            } else {
+                Err(ValidationError::new("min_length", "too short"))
+            }
+        }
+        fn metadata(&self) -> ValidatorMetadata {
+            ValidatorMetadata::default()
+        }
+    }
+
     let mut group = c.benchmark_group("optional_combinator");
 
-    let validator = min_length(5).optional();
+    let validator = SizedMinLength(5).optional();
 
     group.bench_function("some_valid", |b| {
-        b.iter(|| validator.validate(black_box(&Some("hello world"))))
+        b.iter(|| validator.validate(black_box(&Some("hello world".to_string()))))
     });
 
     group.bench_function("some_invalid", |b| {
-        b.iter(|| validator.validate(black_box(&Some("hi"))))
+        b.iter(|| validator.validate(black_box(&Some("hi".to_string()))))
     });
 
     group.bench_function("none", |b| {
-        b.iter(|| validator.validate(black_box(&None::<&str>)))
+        b.iter(|| validator.validate(black_box(&None::<String>)))
     });
 
     group.finish();

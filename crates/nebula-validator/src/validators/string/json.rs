@@ -4,7 +4,7 @@
 
 #![allow(clippy::excessive_nesting)]
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // JSON VALIDATOR
@@ -29,7 +29,7 @@ const DEFAULT_MAX_DEPTH: usize = 128;
 ///
 /// ```
 /// use nebula_validator::validators::Json;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = Json::new();
 ///
@@ -509,7 +509,7 @@ impl Default for Json {
     }
 }
 
-impl Validator for Json {
+impl Validate for Json {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -518,22 +518,25 @@ impl Validator for Json {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Json".to_string(),
-            description: Some(format!(
-                "Validates JSON strings (primitives: {}, max depth: {})",
-                if self.allow_primitives {
-                    "allowed"
-                } else {
-                    "objects/arrays only"
-                },
-                self.max_depth
-            )),
+            name: "Json".into(),
+            description: Some(
+                format!(
+                    "Validates JSON strings (primitives: {}, max depth: {})",
+                    if self.allow_primitives {
+                        "allowed"
+                    } else {
+                        "objects/arrays only"
+                    },
+                    self.max_depth
+                )
+                .into(),
+            ),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(10)),
-            tags: vec!["text".to_string(), "json".to_string(), "format".to_string()],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["text".into(), "json".into(), "format".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }

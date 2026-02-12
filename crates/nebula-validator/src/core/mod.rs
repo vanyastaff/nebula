@@ -2,7 +2,7 @@
 //!
 //! This module contains the fundamental building blocks of the validation system:
 //!
-//! - **Traits**: `Validator`, `AsyncValidator`, `ValidatorExt`
+//! - **Traits**: `Validate`, `AsyncValidate`, `ValidateExt`
 //! - **Errors**: `ValidationError`, `ValidationErrors`
 //! - **Metadata**: `ValidatorMetadata`, `ValidationComplexity`, `ValidatorStatistics`
 //! - **Refined Types**: `Refined<T, V>` for compile-time validation guarantees
@@ -17,11 +17,11 @@
 //! Validators are generic over their input type, providing compile-time guarantees:
 //!
 //! ```rust,ignore
-//! use nebula_validator::core::Validator;
+//! use nebula_validator::core::Validate;
 //!
 //! struct MinLength { min: usize }
 //!
-//! impl Validator for MinLength {
+//! impl Validate for MinLength {
 //!     type Input = str;  // Only validates strings
 //!
 //!     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -105,12 +105,12 @@ pub mod validatable;
 pub use context::{ContextualValidator, ValidationContext, ValidationContextBuilder};
 pub use error::{ErrorSeverity, ValidationError, ValidationErrors};
 pub use metadata::{
-    RegisteredValidatorMetadata, ValidationComplexity, ValidatorMetadata, ValidatorMetadataBuilder,
-    ValidatorStatistics,
+    RegisteredValidatorMetadata, ValidationComplexity, ValidatorMetadata,
+    ValidatorMetadataBuilderuilder, ValidatorStatistics,
 };
 pub use refined::Refined;
-pub use state::{Parameter, ParameterBuilder, Unvalidated, Validated, ValidationGroup};
-pub use traits::{AsyncValidator, Validator, ValidatorExt};
+pub use state::{Parameter, ParameterBuilder, Unvalidated, Validated};
+pub use traits::{AsyncValidate, Validate, ValidateExt};
 pub use validatable::AsValidatable;
 
 // ============================================================================
@@ -129,10 +129,10 @@ pub use validatable::AsValidatable;
 /// ```
 pub mod prelude {
     pub use super::{
-        AsValidatable, AsyncValidator, ContextualValidator, ErrorSeverity, Parameter,
-        ParameterBuilder, Refined, Unvalidated, Validated, ValidationComplexity, ValidationContext,
-        ValidationContextBuilder, ValidationError, ValidationErrors, Validator, ValidatorExt,
-        ValidatorMetadata,
+        AsValidatable, AsyncValidate, ContextualValidator, ErrorSeverity, Parameter,
+        ParameterBuilder, Refined, Unvalidated, Validate, ValidateExt, Validated,
+        ValidationComplexity, ValidationContext, ValidationContextBuilder, ValidationError,
+        ValidationErrors, ValidatorMetadata,
     };
 }
 
@@ -194,7 +194,7 @@ pub struct Features {
 #[must_use = "validation result must be checked"]
 pub fn validate_value<V>(value: &V::Input, validator: &V) -> Result<(), ValidationError>
 where
-    V: Validator,
+    V: Validate,
 {
     validator.validate(value)
 }
@@ -215,7 +215,7 @@ where
 /// ```
 pub fn validate_with_all<V>(value: &V::Input, validators: Vec<&V>) -> Result<(), ValidationErrors>
 where
-    V: Validator + ?Sized,
+    V: Validate + ?Sized,
 {
     let mut errors = ValidationErrors::new();
 
@@ -246,7 +246,7 @@ where
 /// ```
 pub fn validate_with_any<V>(value: &V::Input, validators: Vec<&V>) -> Result<(), ValidationErrors>
 where
-    V: Validator + ?Sized,
+    V: Validate + ?Sized,
 {
     let mut errors = ValidationErrors::new();
 
@@ -296,7 +296,7 @@ mod core_tests {
     // Simple test validator for testing utilities
     struct AlwaysValid;
 
-    impl Validator for AlwaysValid {
+    impl Validate for AlwaysValid {
         type Input = str;
 
         fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {
@@ -306,7 +306,7 @@ mod core_tests {
 
     struct AlwaysFails;
 
-    impl Validator for AlwaysFails {
+    impl Validate for AlwaysFails {
         type Input = str;
 
         fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {
@@ -330,7 +330,7 @@ mod core_tests {
     fn test_validate_with_all_failure() {
         let valid = AlwaysValid;
         let fails = AlwaysFails;
-        let validators: Vec<&dyn Validator<Input = str>> = vec![&valid, &fails];
+        let validators: Vec<&dyn Validate<Input = str>> = vec![&valid, &fails];
         let result = validate_with_all("test", validators);
         assert!(result.is_err());
     }
@@ -339,7 +339,7 @@ mod core_tests {
     fn test_validate_with_any_success() {
         let valid = AlwaysValid;
         let fails = AlwaysFails;
-        let validators: Vec<&dyn Validator<Input = str>> = vec![&fails, &valid];
+        let validators: Vec<&dyn Validate<Input = str>> = vec![&fails, &valid];
         let result = validate_with_any("test", validators);
         assert!(result.is_ok());
     }

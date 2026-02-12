@@ -1,6 +1,6 @@
 //! Port number validator (1-65535).
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // PORT VALIDATOR
@@ -12,7 +12,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 ///
 /// ```
 /// use nebula_validator::validators::Port;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = Port::new();
 ///
@@ -93,7 +93,7 @@ impl Default for Port {
     }
 }
 
-impl Validator for Port {
+impl Validate for Port {
     type Input = u16;
 
     fn validate(&self, input: &u16) -> Result<(), ValidationError> {
@@ -133,27 +133,27 @@ impl Validator for Port {
     }
 
     fn metadata(&self) -> ValidatorMetadata {
-        let mut tags = vec!["network".to_string(), "port".to_string()];
+        let mut tags = vec!["network".into(), "port".into()];
 
         if self.allow_well_known {
-            tags.push("well-known".to_string());
+            tags.push("well-known".into());
         }
         if self.allow_registered {
-            tags.push("registered".to_string());
+            tags.push("registered".into());
         }
         if self.allow_dynamic {
-            tags.push("dynamic".to_string());
+            tags.push("dynamic".into());
         }
 
         ValidatorMetadata {
-            name: "Port".to_string(),
-            description: Some("Validates TCP/UDP port numbers (1-65535)".to_string()),
+            name: "Port".into(),
+            description: Some("Validates TCP/UDP port numbers (1-65535)".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_nanos(100)),
             tags,
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }

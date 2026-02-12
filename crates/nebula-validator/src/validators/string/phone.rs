@@ -2,7 +2,7 @@
 //!
 //! Validates phone numbers with flexible format support.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // PHONE NUMBER VALIDATOR
@@ -19,7 +19,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 ///
 /// ```
 /// use nebula_validator::validators::string::Phone;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// // E.164 format (strict)
 /// let e164 = Phone::e164();
@@ -239,7 +239,7 @@ impl Default for Phone {
     }
 }
 
-impl Validator for Phone {
+impl Validate for Phone {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -259,28 +259,27 @@ impl Validator for Phone {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Phone".to_string(),
-            description: Some(format!(
-                "Validates phone numbers ({:?} mode, {}-{} digits{})",
-                self.mode,
-                self.min_digits,
-                self.max_digits,
-                if self.require_country_code {
-                    ", country code required"
-                } else {
-                    ""
-                }
-            )),
+            name: "Phone".into(),
+            description: Some(
+                format!(
+                    "Validates phone numbers ({:?} mode, {}-{} digits{})",
+                    self.mode,
+                    self.min_digits,
+                    self.max_digits,
+                    if self.require_country_code {
+                        ", country code required"
+                    } else {
+                        ""
+                    }
+                )
+                .into(),
+            ),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(3)),
-            tags: vec![
-                "text".to_string(),
-                "phone".to_string(),
-                "contact".to_string(),
-            ],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["text".into(), "phone".into(), "contact".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }
@@ -436,7 +435,7 @@ mod tests {
             let validator = Phone::e164();
             let metadata = validator.metadata();
             assert_eq!(metadata.name, "Phone");
-            assert!(metadata.tags.contains(&"phone".to_string()));
+            assert!(metadata.tags.contains(&"phone".into()));
         }
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! Validates that a string is a valid slug (lowercase letters, numbers, hyphens).
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // SLUG VALIDATOR
@@ -25,7 +25,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 ///
 /// ```
 /// use nebula_validator::validators::Slug;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = Slug::new();
 ///
@@ -97,7 +97,7 @@ impl Default for Slug {
     }
 }
 
-impl Validator for Slug {
+impl Validate for Slug {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -166,17 +166,20 @@ impl Validator for Slug {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Slug".to_string(),
-            description: Some(format!(
-                "Validates URL-friendly slugs (length: {}-{}, consecutive hyphens: {})",
-                self.min_length, self.max_length, self.allow_consecutive_hyphens
-            )),
+            name: "Slug".into(),
+            description: Some(
+                format!(
+                    "Validates URL-friendly slugs (length: {}-{}, consecutive hyphens: {})",
+                    self.min_length, self.max_length, self.allow_consecutive_hyphens
+                )
+                .into(),
+            ),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(5)),
-            tags: vec!["text".to_string(), "url".to_string(), "slug".to_string()],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["text".into(), "url".into(), "slug".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }

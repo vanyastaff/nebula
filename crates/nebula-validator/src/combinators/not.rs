@@ -1,6 +1,7 @@
 //! NOT combinator - logical negation of validators
 
-use crate::core::{ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use std::borrow::Cow;
 
 /// Inverts a validator with logical NOT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,9 +23,9 @@ impl<V> Not<V> {
     }
 }
 
-impl<V> Validator for Not<V>
+impl<V> Validate for Not<V>
 where
-    V: Validator,
+    V: Validate,
 {
     type Input = V::Input;
 
@@ -42,15 +43,15 @@ where
         let inner_meta = self.inner.metadata();
 
         ValidatorMetadata {
-            name: format!("Not({})", inner_meta.name),
-            description: Some(format!("{} must NOT pass", inner_meta.name)),
+            name: format!("Not({})", inner_meta.name).into(),
+            description: Some(format!("{} must NOT pass", inner_meta.name).into()),
             complexity: inner_meta.complexity,
             cacheable: inner_meta.cacheable,
             estimated_time: inner_meta.estimated_time,
             tags: {
                 let mut tags = inner_meta.tags;
-                tags.push("combinator".to_string());
-                tags.push("negation".to_string());
+                tags.push(Cow::Borrowed("combinator"));
+                tags.push(Cow::Borrowed("negation"));
                 tags
             },
             version: inner_meta.version,
@@ -66,13 +67,13 @@ pub fn not<V>(validator: V) -> Not<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::traits::ValidatorExt;
+    use crate::core::traits::ValidateExt;
 
     struct Contains {
         substring: &'static str,
     }
 
-    impl Validator for Contains {
+    impl Validate for Contains {
         type Input = str;
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
             if input.contains(self.substring) {

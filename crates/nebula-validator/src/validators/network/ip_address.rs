@@ -2,7 +2,7 @@
 //!
 //! Validates IP addresses using Rust's standard library `std::net`.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
@@ -16,7 +16,7 @@ use std::str::FromStr;
 ///
 /// ```
 /// use nebula_validator::validators::IpAddress;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = IpAddress::new();
 ///
@@ -96,7 +96,7 @@ impl Default for IpAddress {
     }
 }
 
-impl Validator for IpAddress {
+impl Validate for IpAddress {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -122,17 +122,20 @@ impl Validator for IpAddress {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "IpAddress".to_string(),
-            description: Some(format!(
-                "Validates IP addresses (IPv4: {}, IPv6: {})",
-                self.allow_v4, self.allow_v6
-            )),
+            name: "IpAddress".into(),
+            description: Some(
+                format!(
+                    "Validates IP addresses (IPv4: {}, IPv6: {})",
+                    self.allow_v4, self.allow_v6
+                )
+                .into(),
+            ),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(5)),
-            tags: vec!["network".to_string(), "ip".to_string()],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["network".into(), "ip".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }
@@ -145,7 +148,7 @@ impl Validator for IpAddress {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Ipv4;
 
-impl Validator for Ipv4 {
+impl Validate for Ipv4 {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -160,14 +163,14 @@ impl Validator for Ipv4 {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Ipv4".to_string(),
-            description: Some("Validates IPv4 addresses".to_string()),
+            name: "Ipv4".into(),
+            description: Some("Validates IPv4 addresses".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(3)),
-            tags: vec!["network".to_string(), "ipv4".to_string()],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["network".into(), "ipv4".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }
@@ -180,7 +183,7 @@ impl Validator for Ipv4 {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Ipv6;
 
-impl Validator for Ipv6 {
+impl Validate for Ipv6 {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -195,14 +198,14 @@ impl Validator for Ipv6 {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Ipv6".to_string(),
-            description: Some("Validates IPv6 addresses".to_string()),
+            name: "Ipv6".into(),
+            description: Some("Validates IPv6 addresses".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(4)),
-            tags: vec!["network".to_string(), "ipv6".to_string()],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["network".into(), "ipv6".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }

@@ -7,7 +7,7 @@
 //! - Unicode handling
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use nebula_validator::core::TypedValidator;
+use nebula_validator::core::Validate;
 use nebula_validator::validators::string::*;
 
 // ============================================================================
@@ -335,7 +335,7 @@ fn bench_unicode_handling(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_composition(c: &mut Criterion) {
-    use nebula_validator::core::ValidatorExt;
+    use nebula_validator::core::ValidateExt;
 
     let mut group = c.benchmark_group("composition");
 
@@ -375,7 +375,7 @@ fn bench_composition(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_early_termination(c: &mut Criterion) {
-    use nebula_validator::core::ValidatorExt;
+    use nebula_validator::core::ValidateExt;
 
     let mut group = c.benchmark_group("early_termination");
 
@@ -388,7 +388,7 @@ fn bench_early_termination(c: &mut Criterion) {
 
     // Fail on second validator
     group.bench_function("fail_second", |b| {
-        b.iter(|| validator.validate(black_box("a".repeat(30)))) // Too long
+        b.iter(|| validator.validate(black_box(&*"a".repeat(30)))) // Too long
     });
 
     // Fail on third validator
@@ -409,7 +409,7 @@ fn bench_early_termination(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_username_validation(c: &mut Criterion) {
-    use nebula_validator::core::ValidatorExt;
+    use nebula_validator::core::ValidateExt;
 
     let mut group = c.benchmark_group("username_validation");
 

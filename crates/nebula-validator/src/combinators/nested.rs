@@ -2,7 +2,7 @@
 //!
 //! This module provides validators for nested structs and complex field types.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 use std::marker::PhantomData;
 
 // ============================================================================
@@ -11,12 +11,12 @@ use std::marker::PhantomData;
 
 /// Validates a nested struct by calling its validation method.
 #[derive(Debug, Clone)]
-pub struct NestedValidator<T, F> {
+pub struct NestedValidate<T, F> {
     validate_fn: F,
     _phantom: PhantomData<fn(&T)>,
 }
 
-impl<T, F> NestedValidator<T, F> {
+impl<T, F> NestedValidate<T, F> {
     /// Creates a new nested validator from a validation function.
     pub fn new(validate_fn: F) -> Self {
         Self {
@@ -26,7 +26,7 @@ impl<T, F> NestedValidator<T, F> {
     }
 }
 
-impl<T, F> Validator for NestedValidator<T, F>
+impl<T, F> Validate for NestedValidate<T, F>
 where
     F: Fn(&T) -> Result<(), ValidationError>,
 {
@@ -38,14 +38,14 @@ where
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "NestedValidator".to_string(),
-            description: Some("Validates nested struct by calling its validate method".to_string()),
+            name: "NestedValidate".into(),
+            description: Some("Validates nested struct by calling its validate method".into()),
             complexity: ValidationComplexity::Linear,
             cacheable: false,
             estimated_time: None,
-            tags: vec!["nested".to_string(), "composite".to_string()],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["nested".into(), "composite".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }
@@ -66,19 +66,19 @@ pub trait Validatable {
 
 /// Creates a nested validator for types that implement `Validatable`.
 #[must_use]
-pub fn nested_validator<T>() -> NestedValidator<T, impl Fn(&T) -> Result<(), ValidationError>>
+pub fn nested_validator<T>() -> NestedValidate<T, impl Fn(&T) -> Result<(), ValidationError>>
 where
     T: Validatable,
 {
-    NestedValidator::new(|input: &T| input.validate())
+    NestedValidate::new(|input: &T| input.validate())
 }
 
 /// Creates a nested validator with a custom validation function.
-pub fn custom_nested<T, F>(validate_fn: F) -> NestedValidator<T, F>
+pub fn custom_nested<T, F>(validate_fn: F) -> NestedValidate<T, F>
 where
     F: Fn(&T) -> Result<(), ValidationError>,
 {
-    NestedValidator::new(validate_fn)
+    NestedValidate::new(validate_fn)
 }
 
 // ============================================================================
@@ -88,19 +88,19 @@ where
 /// Validates optional nested fields.
 #[derive(Debug, Clone)]
 pub struct OptionalNested<T, F> {
-    validator: NestedValidator<T, F>,
+    validator: NestedValidate<T, F>,
 }
 
 impl<T, F> OptionalNested<T, F> {
     /// Creates a new optional nested validator.
     pub fn new(validate_fn: F) -> Self {
         Self {
-            validator: NestedValidator::new(validate_fn),
+            validator: NestedValidate::new(validate_fn),
         }
     }
 }
 
-impl<T, F> Validator for OptionalNested<T, F>
+impl<T, F> Validate for OptionalNested<T, F>
 where
     F: Fn(&T) -> Result<(), ValidationError>,
 {
@@ -115,14 +115,14 @@ where
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "OptionalNested".to_string(),
-            description: Some("Validates optional nested field".to_string()),
+            name: "OptionalNested".into(),
+            description: Some("Validates optional nested field".into()),
             complexity: ValidationComplexity::Linear,
             cacheable: false,
             estimated_time: None,
-            tags: vec!["nested".to_string(), "optional".to_string()],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["nested".into(), "optional".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }
@@ -143,19 +143,19 @@ where
 /// Validates each element in a collection of nested structs.
 #[derive(Debug, Clone)]
 pub struct CollectionNested<T, F> {
-    validator: NestedValidator<T, F>,
+    validator: NestedValidate<T, F>,
 }
 
 impl<T, F> CollectionNested<T, F> {
     /// Creates a new collection nested validator.
     pub fn new(validate_fn: F) -> Self {
         Self {
-            validator: NestedValidator::new(validate_fn),
+            validator: NestedValidate::new(validate_fn),
         }
     }
 }
 
-impl<T, F> Validator for CollectionNested<T, F>
+impl<T, F> Validate for CollectionNested<T, F>
 where
     F: Fn(&T) -> Result<(), ValidationError>,
 {
@@ -175,14 +175,14 @@ where
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "CollectionNested".to_string(),
-            description: Some("Validates each element in a collection".to_string()),
+            name: "CollectionNested".into(),
+            description: Some("Validates each element in a collection".into()),
             complexity: ValidationComplexity::Linear,
             cacheable: false,
             estimated_time: None,
-            tags: vec!["nested".to_string(), "collection".to_string()],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["nested".into(), "collection".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }

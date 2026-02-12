@@ -2,7 +2,7 @@
 //!
 //! Validates IBANs according to ISO 13616 standard.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // IBAN VALIDATOR
@@ -19,7 +19,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 ///
 /// ```
 /// use nebula_validator::validators::string::Iban;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = Iban::new();
 ///
@@ -215,7 +215,7 @@ impl Default for Iban {
     }
 }
 
-impl Validator for Iban {
+impl Validate for Iban {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -294,26 +294,29 @@ impl Validator for Iban {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Iban".to_string(),
-            description: Some(format!(
-                "Validates IBAN with MOD 97-10 checksum (spaces: {})",
-                if self.allow_spaces {
-                    "allowed"
-                } else {
-                    "not allowed"
-                }
-            )),
+            name: "Iban".into(),
+            description: Some(
+                format!(
+                    "Validates IBAN with MOD 97-10 checksum (spaces: {})",
+                    if self.allow_spaces {
+                        "allowed"
+                    } else {
+                        "not allowed"
+                    }
+                )
+                .into(),
+            ),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(10)),
             tags: vec![
-                "text".to_string(),
-                "iban".to_string(),
-                "banking".to_string(),
-                "finance".to_string(),
+                "text".into(),
+                "iban".into(),
+                "banking".into(),
+                "finance".into(),
             ],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }
@@ -478,8 +481,8 @@ mod tests {
             let validator = Iban::new();
             let metadata = validator.metadata();
             assert_eq!(metadata.name, "Iban");
-            assert!(metadata.tags.contains(&"iban".to_string()));
-            assert!(metadata.tags.contains(&"banking".to_string()));
+            assert!(metadata.tags.contains(&"iban".into()));
+            assert!(metadata.tags.contains(&"banking".into()));
         }
     }
 }

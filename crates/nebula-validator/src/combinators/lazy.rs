@@ -1,6 +1,7 @@
 //! LAZY combinator - deferred validator initialization
 
-use crate::core::{ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 // ============================================================================
@@ -18,9 +19,9 @@ use std::sync::OnceLock;
 ///
 /// ```rust,ignore
 /// use nebula_validator::combinators::Lazy;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
-/// // Validator is created only when first used
+/// // Validate is created only when first used
 /// let validator = Lazy::new(|| {
 ///     println!("Creating expensive validator...");
 ///     RegexValidator::new(r"^\d{4}-\d{2}-\d{2}$").unwrap()
@@ -70,9 +71,9 @@ where
     }
 }
 
-impl<V, F> Validator for Lazy<V, F>
+impl<V, F> Validate for Lazy<V, F>
 where
-    V: Validator,
+    V: Validate,
     F: Fn() -> V,
 {
     type Input = V::Input;
@@ -87,15 +88,15 @@ where
             Some(v) => {
                 let inner_meta = v.metadata();
                 ValidatorMetadata {
-                    name: format!("Lazy({})", inner_meta.name),
+                    name: format!("Lazy({})", inner_meta.name).into(),
                     description: inner_meta.description,
                     complexity: inner_meta.complexity,
                     cacheable: inner_meta.cacheable,
                     estimated_time: inner_meta.estimated_time,
                     tags: {
                         let mut tags = inner_meta.tags;
-                        tags.push("combinator".to_string());
-                        tags.push("lazy".to_string());
+                        tags.push(Cow::Borrowed("combinator"));
+                        tags.push("lazy".into());
                         tags
                     },
                     version: inner_meta.version,
@@ -103,14 +104,14 @@ where
                 }
             }
             None => ValidatorMetadata {
-                name: "Lazy(uninitialized)".to_string(),
-                description: Some("Lazy validator not yet initialized".to_string()),
+                name: "Lazy(uninitialized)".into(),
+                description: Some("Lazy validator not yet initialized".into()),
                 complexity: crate::core::ValidationComplexity::Constant,
                 cacheable: false,
                 estimated_time: None,
-                tags: vec!["combinator".to_string(), "lazy".to_string()],
+                tags: vec!["combinator".into(), "lazy".into()],
                 version: None,
-                custom: std::collections::HashMap::new(),
+                custom: Vec::new(),
             },
         }
     }
@@ -152,7 +153,7 @@ mod tests {
         min: usize,
     }
 
-    impl Validator for MinLength {
+    impl Validate for MinLength {
         type Input = str;
 
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -261,6 +262,6 @@ mod tests {
 
         let meta = validator.metadata();
         assert!(meta.name.contains("Lazy"));
-        assert!(meta.tags.contains(&"lazy".to_string()));
+        assert!(meta.tags.contains(&"lazy".into()));
     }
 }

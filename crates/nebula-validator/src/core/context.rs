@@ -36,9 +36,10 @@
 //! }
 //! ```
 
-use crate::core::{ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationError, ValidatorMetadata};
 use std::any::Any;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 // ============================================================================
 // VALIDATION CONTEXT
@@ -53,8 +54,8 @@ pub struct ValidationContext {
     /// Named values accessible during validation.
     data: HashMap<String, Box<dyn Any + Send + Sync>>,
 
-    /// Parent context for nested validation.
-    parent: Option<Box<ValidationContext>>,
+    /// Parent context for nested validation (shared via Arc).
+    parent: Option<Arc<ValidationContext>>,
 
     /// Current field path for nested object validation.
     field_path: Vec<String>,
@@ -67,12 +68,12 @@ impl ValidationContext {
         Self::default()
     }
 
-    /// Creates a context with a parent.
+    /// Creates a context with a parent (shared via Arc).
     #[must_use]
-    pub fn with_parent(parent: ValidationContext) -> Self {
+    pub fn with_parent(parent: Arc<ValidationContext>) -> Self {
         Self {
             data: HashMap::new(),
-            parent: Some(Box::new(parent)),
+            parent: Some(parent),
             field_path: Vec::new(),
         }
     }
@@ -168,14 +169,20 @@ impl ValidationContext {
         self.field_path.clear();
     }
 
-    /// Creates a child context with this context as parent.
+    /// Converts this context into an `Arc` and creates a child context.
+    ///
+    /// The child shares the parent's data via `Arc`, so lookups traverse
+    /// up the chain without data loss.
     #[must_use]
-    pub fn child(&self) -> Self {
-        Self {
+    pub fn child(self) -> (Arc<ValidationContext>, ValidationContext) {
+        let field_path = self.field_path.clone();
+        let parent = Arc::new(self);
+        let child = ValidationContext {
             data: HashMap::new(),
-            parent: Some(Box::new(self.clone())),
-            field_path: self.field_path.clone(),
-        }
+            parent: Some(Arc::clone(&parent)),
+            field_path,
+        };
+        (parent, child)
     }
 
     /// Returns the number of items in the local context (excluding parent).
@@ -188,18 +195,6 @@ impl ValidationContext {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
-    }
-}
-
-impl Clone for ValidationContext {
-    fn clone(&self) -> Self {
-        // Note: We can't clone Box<dyn Any>, so we create a new context
-        // with the same parent and field path
-        Self {
-            data: HashMap::new(),
-            parent: self.parent.clone(),
-            field_path: self.field_path.clone(),
-        }
     }
 }
 
@@ -252,10 +247,10 @@ pub trait ContextualValidator {
 }
 
 // ============================================================================
-// ADAPTER: Validator -> ContextualValidator
+// ADAPTER: Validate -> ContextualValidator
 // ============================================================================
 
-/// Adapter that allows any `Validator` to be used as a `ContextualValidator`.
+/// Adapter that allows any `Validate` to be used as a `ContextualValidator`.
 ///
 /// This provides backward compatibility - existing validators can be used
 /// in contexts that expect `ContextualValidator`.
@@ -277,7 +272,7 @@ impl<V> ContextAdapter<V> {
 
 impl<V> ContextualValidator for ContextAdapter<V>
 where
-    V: Validator,
+    V: Validate,
 {
     type Input = V::Input;
 
@@ -330,10 +325,10 @@ impl ValidationContextBuilder {
         self
     }
 
-    /// Sets the parent context.
+    /// Sets the parent context (shared via Arc).
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_parent(mut self, parent: ValidationContext) -> Self {
-        self.context.parent = Some(Box::new(parent));
+    pub fn with_parent(mut self, parent: Arc<ValidationContext>) -> Self {
+        self.context.parent = Some(parent);
         self
     }
 
@@ -399,7 +394,7 @@ mod tests {
         let mut parent = ValidationContext::new();
         parent.insert("parent_key", 100usize);
 
-        let mut child = ValidationContext::with_parent(parent);
+        let mut child = ValidationContext::with_parent(Arc::new(parent));
         child.insert("child_key", 200usize);
 
         assert_eq!(child.get::<usize>("child_key"), Some(&200));
@@ -430,7 +425,7 @@ mod tests {
 
     struct TestValidator;
 
-    impl Validator for TestValidator {
+    impl Validate for TestValidator {
         type Input = str;
 
         fn validate(&self, input: &str) -> Result<(), ValidationError> {

@@ -2,7 +2,7 @@
 //!
 //! This module provides validators for checking string patterns and formats.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // CONTAINS
@@ -34,7 +34,7 @@ impl Contains {
     }
 }
 
-impl Validator for Contains {
+impl Validate for Contains {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -51,14 +51,14 @@ impl Validator for Contains {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Contains".to_string(),
-            description: Some(format!("String must contain '{}'", self.substring)),
+            name: "Contains".into(),
+            description: Some(format!("String must contain '{}'", self.substring).into()),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["string".to_string(), "pattern".to_string()],
+            tags: vec!["string".into(), "pattern".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -87,7 +87,7 @@ impl StartsWith {
     }
 }
 
-impl Validator for StartsWith {
+impl Validate for StartsWith {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -104,14 +104,14 @@ impl Validator for StartsWith {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "StartsWith".to_string(),
-            description: Some(format!("String must start with '{}'", self.prefix)),
+            name: "StartsWith".into(),
+            description: Some(format!("String must start with '{}'", self.prefix).into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["string".to_string(), "pattern".to_string()],
+            tags: vec!["string".into(), "pattern".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -139,7 +139,7 @@ impl EndsWith {
     }
 }
 
-impl Validator for EndsWith {
+impl Validate for EndsWith {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -156,14 +156,14 @@ impl Validator for EndsWith {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "EndsWith".to_string(),
-            description: Some(format!("String must end with '{}'", self.suffix)),
+            name: "EndsWith".into(),
+            description: Some(format!("String must end with '{}'", self.suffix).into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["string".to_string(), "pattern".to_string()],
+            tags: vec!["string".into(), "pattern".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -204,7 +204,7 @@ impl Default for Alphanumeric {
     }
 }
 
-impl Validator for Alphanumeric {
+impl Validate for Alphanumeric {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -226,14 +226,14 @@ impl Validator for Alphanumeric {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Alphanumeric".to_string(),
-            description: Some("String must be alphanumeric".to_string()),
+            name: "Alphanumeric".into(),
+            description: Some("String must be alphanumeric".into()),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["string".to_string(), "pattern".to_string()],
+            tags: vec!["string".into(), "pattern".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -275,7 +275,7 @@ impl Default for Alphabetic {
     }
 }
 
-impl Validator for Alphabetic {
+impl Validate for Alphabetic {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -295,14 +295,14 @@ impl Validator for Alphabetic {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Alphabetic".to_string(),
-            description: Some("String must contain only letters".to_string()),
+            name: "Alphabetic".into(),
+            description: Some("String must contain only letters".into()),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["string".to_string(), "pattern".to_string()],
+            tags: vec!["string".into(), "pattern".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -320,7 +320,7 @@ pub fn alphabetic() -> Alphabetic {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Numeric;
 
-impl Validator for Numeric {
+impl Validate for Numeric {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -336,14 +336,14 @@ impl Validator for Numeric {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Numeric".to_string(),
-            description: Some("String must be numeric".to_string()),
+            name: "Numeric".into(),
+            description: Some("String must be numeric".into()),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["string".to_string(), "pattern".to_string()],
+            tags: vec!["string".into(), "pattern".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -361,7 +361,7 @@ pub const fn numeric() -> Numeric {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Lowercase;
 
-impl Validator for Lowercase {
+impl Validate for Lowercase {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -394,7 +394,7 @@ pub const fn lowercase() -> Lowercase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Uppercase;
 
-impl Validator for Uppercase {
+impl Validate for Uppercase {
     type Input = str;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {

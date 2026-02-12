@@ -1,7 +1,7 @@
 //! Combinators example for nebula-validator
 
 use nebula_validator::combinators::and;
-use nebula_validator::core::Validator;
+use nebula_validator::core::Validate;
 use nebula_validator::validators::string::{max_length, min_length};
 
 fn main() {

@@ -2,8 +2,11 @@
 //!
 //! This module provides a rich, structured error type that supports
 //! nested errors, field paths, error codes, and parameterized messages.
+//!
+//! All string fields use `Cow<'static, str>` for zero-allocation in the
+//! common case of static error codes and messages.
 
-use std::collections::HashMap;
+use std::borrow::Cow;
 use std::fmt;
 
 // ============================================================================
@@ -12,11 +15,8 @@ use std::fmt;
 
 /// A structured validation error with support for nested errors and metadata.
 ///
-/// This error type is designed to be:
-/// - **Structured**: Contains error codes, field paths, and parameters
-/// - **Composable**: Supports nested errors for complex validations
-/// - **I18n-ready**: Error codes and parameters enable internationalization
-/// - **Debuggable**: Rich information for developers
+/// Uses `Cow<'static, str>` for zero-allocation when error codes and messages
+/// are known at compile time (the common case).
 ///
 /// # Examples
 ///
@@ -53,24 +53,24 @@ use std::fmt;
 pub struct ValidationError {
     /// Error code for programmatic handling and i18n.
     ///
-    /// Examples: "`min_length`", "`email_invalid`", "required"
-    pub code: String,
+    /// Examples: "min_length", "email_invalid", "required"
+    pub code: Cow<'static, str>,
 
     /// Human-readable error message in English.
     ///
     /// This is the default message. Use `code` and `params` for i18n.
-    pub message: String,
+    pub message: Cow<'static, str>,
 
     /// Optional field path for nested object validation.
     ///
     /// Examples: "user.email", "address.zipcode", "items[0].name"
-    pub field: Option<String>,
+    pub field: Option<Cow<'static, str>>,
 
     /// Parameters for the error message template.
     ///
-    /// Useful for i18n and detailed error information.
-    /// Example: `{ "min": "5", "actual": "3", "max": "20" }`
-    pub params: HashMap<String, String>,
+    /// Stored as ordered key-value pairs (typically 0-3 params).
+    /// Example: `[("min", "5"), ("actual", "3")]`
+    pub params: Vec<(Cow<'static, str>, Cow<'static, str>)>,
 
     /// Nested validation errors for complex objects.
     ///
@@ -81,7 +81,7 @@ pub struct ValidationError {
     pub severity: ErrorSeverity,
 
     /// Optional help text or suggestion for fixing the error.
-    pub help: Option<String>,
+    pub help: Option<Cow<'static, str>>,
 }
 
 /// Severity level of a validation error.
@@ -99,25 +99,23 @@ pub enum ErrorSeverity {
 impl ValidationError {
     /// Creates a new validation error with a code and message.
     ///
-    /// # Arguments
-    ///
-    /// * `code` - Error code for programmatic handling
-    /// * `message` - Human-readable error message
-    ///
     /// # Examples
     ///
     /// ```rust,ignore
     /// use nebula_validator::core::ValidationError;
     ///
+    /// // Static strings — zero allocation:
     /// let error = ValidationError::new("min_length", "String is too short");
-    /// assert_eq!(error.code, "min_length");
+    ///
+    /// // Dynamic strings — allocates only when needed:
+    /// let error = ValidationError::new("min_length", format!("Must be at least {} chars", 5));
     /// ```
-    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn new(code: impl Into<Cow<'static, str>>, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             code: code.into(),
             message: message.into(),
             field: None,
-            params: HashMap::new(),
+            params: Vec::new(),
             nested: Vec::new(),
             severity: ErrorSeverity::Error,
             help: None,
@@ -125,18 +123,8 @@ impl ValidationError {
     }
 
     /// Sets the field path for this error.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use nebula_validator::core::ValidationError;
-    ///
-    /// let error = ValidationError::new("required", "Field is required")
-    ///     .with_field("user.email");
-    /// assert_eq!(error.field.unwrap(), "user.email");
-    /// ```
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_field(mut self, field: impl Into<String>) -> Self {
+    pub fn with_field(mut self, field: impl Into<Cow<'static, str>>) -> Self {
         self.field = Some(field.into());
         self
     }
@@ -144,59 +132,17 @@ impl ValidationError {
     /// Adds a parameter to the error.
     ///
     /// Parameters are used for message templating and i18n.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use nebula_validator::core::ValidationError;
-    ///
-    /// let error = ValidationError::new("range", "Value out of range")
-    ///     .with_param("min", "0")
-    ///     .with_param("max", "100")
-    ///     .with_param("actual", "150");
-    /// ```
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_param(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.params.insert(key.into(), value.into());
-        self
-    }
-
-    /// Adds multiple parameters at once.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use nebula_validator::core::ValidationError;
-    /// use std::collections::HashMap;
-    ///
-    /// let mut params = HashMap::new();
-    /// params.insert("min".to_string(), "5".to_string());
-    /// params.insert("max".to_string(), "20".to_string());
-    ///
-    /// let error = ValidationError::new("length", "Invalid length")
-    ///     .with_params(params);
-    /// ```
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_params(mut self, params: HashMap<String, String>) -> Self {
-        self.params.extend(params);
+    pub fn with_param(
+        mut self,
+        key: impl Into<Cow<'static, str>>,
+        value: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        self.params.push((key.into(), value.into()));
         self
     }
 
     /// Adds nested validation errors.
-    ///
-    /// Used for complex object validation where multiple fields can fail.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use nebula_validator::core::ValidationError;
-    ///
-    /// let error = ValidationError::new("object", "Validation failed")
-    ///     .with_nested(vec![
-    ///         ValidationError::new("email", "Invalid email").with_field("email"),
-    ///         ValidationError::new("age", "Must be 18+").with_field("age"),
-    ///     ]);
-    /// ```
     #[must_use = "builder methods must be chained or built"]
     pub fn with_nested(mut self, errors: Vec<ValidationError>) -> Self {
         self.nested = errors;
@@ -211,15 +157,6 @@ impl ValidationError {
     }
 
     /// Sets the severity level.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use nebula_validator::core::{ValidationError, ErrorSeverity};
-    ///
-    /// let warning = ValidationError::new("deprecated", "This field is deprecated")
-    ///     .with_severity(ErrorSeverity::Warning);
-    /// ```
     #[must_use = "builder methods must be chained or built"]
     pub fn with_severity(mut self, severity: ErrorSeverity) -> Self {
         self.severity = severity;
@@ -227,19 +164,19 @@ impl ValidationError {
     }
 
     /// Adds help text or a suggestion.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use nebula_validator::core::ValidationError;
-    ///
-    /// let error = ValidationError::new("email", "Invalid email")
-    ///     .with_help("Email should be in format: user@example.com");
-    /// ```
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_help(mut self, help: impl Into<String>) -> Self {
+    pub fn with_help(mut self, help: impl Into<Cow<'static, str>>) -> Self {
         self.help = Some(help.into());
         self
+    }
+
+    /// Looks up a parameter value by key.
+    #[must_use]
+    pub fn param(&self, key: &str) -> Option<&str> {
+        self.params
+            .iter()
+            .find(|(k, _)| k.as_ref() == key)
+            .map(|(_, v)| v.as_ref())
     }
 
     /// Returns true if this error has nested errors.
@@ -273,11 +210,17 @@ impl ValidationError {
     pub fn to_json_value(&self) -> serde_json::Value {
         use serde_json::json;
 
+        let params: serde_json::Map<String, serde_json::Value> = self
+            .params
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
+            .collect();
+
         json!({
             "code": self.code,
             "message": self.message,
             "field": self.field,
-            "params": self.params,
+            "params": params,
             "severity": format!("{:?}", self.severity),
             "help": self.help,
             "nested": self.nested.iter().map(|e| e.to_json_value()).collect::<Vec<_>>(),
@@ -294,7 +237,14 @@ impl fmt::Display for ValidationError {
         }
 
         if !self.params.is_empty() {
-            write!(f, " (params: {:?})", self.params)?;
+            write!(f, " (params: [")?;
+            for (i, (k, v)) in self.params.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{k}={v}")?;
+            }
+            write!(f, "])")?;
         }
 
         if let Some(help) = &self.help {
@@ -320,48 +270,51 @@ impl std::error::Error for ValidationError {}
 
 impl ValidationError {
     /// Creates a "required" error.
-    pub fn required(field: impl Into<String>) -> Self {
+    pub fn required(field: impl Into<Cow<'static, str>>) -> Self {
         Self::new("required", "This field is required").with_field(field)
     }
 
-    /// Creates a "`min_length`" error.
-    pub fn min_length(field: impl Into<String>, min: usize, actual: usize) -> Self {
+    /// Creates a "min_length" error.
+    pub fn min_length(field: impl Into<Cow<'static, str>>, min: usize, actual: usize) -> Self {
         Self::new("min_length", format!("Must be at least {min} characters"))
             .with_field(field)
             .with_param("min", min.to_string())
             .with_param("actual", actual.to_string())
     }
 
-    /// Creates a "`max_length`" error.
-    pub fn max_length(field: impl Into<String>, max: usize, actual: usize) -> Self {
+    /// Creates a "max_length" error.
+    pub fn max_length(field: impl Into<Cow<'static, str>>, max: usize, actual: usize) -> Self {
         Self::new("max_length", format!("Must be at most {max} characters"))
             .with_field(field)
             .with_param("max", max.to_string())
             .with_param("actual", actual.to_string())
     }
 
-    /// Creates an "`invalid_format`" error.
-    pub fn invalid_format(field: impl Into<String>, expected: impl Into<String>) -> Self {
+    /// Creates an "invalid_format" error.
+    pub fn invalid_format(
+        field: impl Into<Cow<'static, str>>,
+        expected: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Self::new("invalid_format", "Invalid format")
             .with_field(field)
-            .with_param("expected", expected.into())
+            .with_param("expected", expected)
     }
 
-    /// Creates a "`type_mismatch`" error.
+    /// Creates a "type_mismatch" error.
     pub fn type_mismatch(
-        field: impl Into<String>,
-        expected: impl Into<String>,
-        actual: impl Into<String>,
+        field: impl Into<Cow<'static, str>>,
+        expected: impl Into<Cow<'static, str>>,
+        actual: impl Into<Cow<'static, str>>,
     ) -> Self {
         Self::new("type_mismatch", "Type mismatch")
             .with_field(field)
-            .with_param("expected", expected.into())
-            .with_param("actual", actual.into())
+            .with_param("expected", expected)
+            .with_param("actual", actual)
     }
 
     /// Creates a "range" error.
     pub fn out_of_range<T: fmt::Display>(
-        field: impl Into<String>,
+        field: impl Into<Cow<'static, str>>,
         min: T,
         max: T,
         actual: T,
@@ -377,7 +330,7 @@ impl ValidationError {
     }
 
     /// Creates a "custom" error with a message.
-    pub fn custom(message: impl Into<String>) -> Self {
+    pub fn custom(message: impl Into<Cow<'static, str>>) -> Self {
         Self::new("custom", message)
     }
 }
@@ -436,7 +389,7 @@ impl ValidationErrors {
     }
 
     /// Converts to a single error with nested errors.
-    pub fn into_single_error(self, message: impl Into<String>) -> ValidationError {
+    pub fn into_single_error(self, message: impl Into<Cow<'static, str>>) -> ValidationError {
         ValidationError::new("validation_errors", message).with_nested(self.errors)
     }
 
@@ -489,7 +442,7 @@ mod tests {
     #[test]
     fn test_error_with_field() {
         let error = ValidationError::new("required", "Field is required").with_field("email");
-        assert_eq!(error.field, Some("email".to_string()));
+        assert_eq!(error.field.as_deref(), Some("email"));
     }
 
     #[test]
@@ -498,8 +451,8 @@ mod tests {
             .with_param("min", "5")
             .with_param("actual", "3");
 
-        assert_eq!(error.params.get("min").unwrap(), "5");
-        assert_eq!(error.params.get("actual").unwrap(), "3");
+        assert_eq!(error.param("min"), Some("5"));
+        assert_eq!(error.param("actual"), Some("3"));
     }
 
     #[test]
@@ -533,5 +486,21 @@ mod tests {
 
         let flattened = error.flatten();
         assert_eq!(flattened.len(), 4); // root + 2 children + 1 grandchild
+    }
+
+    #[test]
+    fn test_zero_alloc_static_strings() {
+        let error = ValidationError::new("required", "This field is required");
+        // Both should be borrowed (no allocation)
+        assert!(matches!(error.code, Cow::Borrowed(_)));
+        assert!(matches!(error.message, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn test_dynamic_strings() {
+        let code = format!("error_{}", 42);
+        let error = ValidationError::new(code, "Dynamic error");
+        assert!(matches!(error.code, Cow::Owned(_)));
+        assert!(matches!(error.message, Cow::Borrowed(_)));
     }
 }

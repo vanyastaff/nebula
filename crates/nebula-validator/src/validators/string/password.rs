@@ -2,7 +2,7 @@
 //!
 //! Validates passwords against configurable complexity requirements.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // PASSWORD STRENGTH VALIDATOR
@@ -23,7 +23,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 ///
 /// ```
 /// use nebula_validator::validators::string::Password;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// // Basic validation
 /// let basic = Password::new().min_length(8);
@@ -298,7 +298,7 @@ impl Default for Password {
     }
 }
 
-impl Validator for Password {
+impl Validate for Password {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -410,21 +410,16 @@ impl Validator for Password {
         }
 
         ValidatorMetadata {
-            name: "Password".to_string(),
-            description: Some(format!(
-                "Validates password strength ({})",
-                requirements.join(", ")
-            )),
+            name: "Password".into(),
+            description: Some(
+                format!("Validates password strength ({})", requirements.join(", ")).into(),
+            ),
             complexity: ValidationComplexity::Linear,
             cacheable: false, // Passwords shouldn't be cached
             estimated_time: Some(std::time::Duration::from_micros(5)),
-            tags: vec![
-                "text".to_string(),
-                "password".to_string(),
-                "security".to_string(),
-            ],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["text".into(), "password".into(), "security".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }
@@ -582,8 +577,8 @@ mod tests {
             let metadata = validator.metadata();
             assert_eq!(metadata.name, "Password");
             assert!(!metadata.cacheable); // Passwords should not be cached
-            assert!(metadata.tags.contains(&"password".to_string()));
-            assert!(metadata.tags.contains(&"security".to_string()));
+            assert!(metadata.tags.contains(&"password".into()));
+            assert!(metadata.tags.contains(&"security".into()));
         }
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! Validators for percentage values in different formats.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // PERCENTAGE (0.0 - 1.0)
@@ -14,7 +14,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 ///
 /// ```
 /// use nebula_validator::validators::numeric::percentage;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = percentage();
 /// assert!(validator.validate(&0.0_f64).is_ok());
@@ -26,7 +26,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Percentage;
 
-impl Validator for Percentage {
+impl Validate for Percentage {
     type Input = f64;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -49,14 +49,14 @@ impl Validator for Percentage {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Percentage".to_string(),
-            description: Some("Value must be a percentage (0.0 to 1.0)".to_string()),
+            name: "Percentage".into(),
+            description: Some("Value must be a percentage (0.0 to 1.0)".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "percentage".to_string()],
+            tags: vec!["numeric".into(), "percentage".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -75,7 +75,7 @@ pub fn percentage() -> Percentage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct PercentageF32;
 
-impl Validator for PercentageF32 {
+impl Validate for PercentageF32 {
     type Input = f32;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -98,14 +98,14 @@ impl Validator for PercentageF32 {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "PercentageF32".to_string(),
-            description: Some("Value must be a percentage (0.0 to 1.0)".to_string()),
+            name: "PercentageF32".into(),
+            description: Some("Value must be a percentage (0.0 to 1.0)".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "percentage".to_string()],
+            tags: vec!["numeric".into(), "percentage".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -126,7 +126,7 @@ pub fn percentage_f32() -> PercentageF32 {
 ///
 /// ```
 /// use nebula_validator::validators::numeric::percentage_100;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = percentage_100();
 /// assert!(validator.validate(&0_i32).is_ok());
@@ -138,7 +138,7 @@ pub fn percentage_f32() -> PercentageF32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Percentage100;
 
-impl Validator for Percentage100 {
+impl Validate for Percentage100 {
     type Input = i32;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -154,14 +154,14 @@ impl Validator for Percentage100 {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Percentage100".to_string(),
-            description: Some("Value must be a percentage (0 to 100)".to_string()),
+            name: "Percentage100".into(),
+            description: Some("Value must be a percentage (0 to 100)".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "percentage".to_string()],
+            tags: vec!["numeric".into(), "percentage".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -176,7 +176,7 @@ pub fn percentage_100() -> Percentage100 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Percentage100F64;
 
-impl Validator for Percentage100F64 {
+impl Validate for Percentage100F64 {
     type Input = f64;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -199,14 +199,14 @@ impl Validator for Percentage100F64 {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Percentage100F64".to_string(),
-            description: Some("Value must be a percentage (0.0 to 100.0)".to_string()),
+            name: "Percentage100F64".into(),
+            description: Some("Value must be a percentage (0.0 to 100.0)".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: None,
-            tags: vec!["numeric".to_string(), "percentage".to_string()],
+            tags: vec!["numeric".into(), "percentage".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }

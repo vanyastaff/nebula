@@ -6,7 +6,7 @@ use nebula_validator::combinators::{
     OptimizationReport, OptimizationStrategy, ValidatorChainOptimizer, ValidatorOrdering,
     ValidatorStats,
 };
-use nebula_validator::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use nebula_validator::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 use std::time::Duration;
 
 // ============================================================================
@@ -14,7 +14,7 @@ use std::time::Duration;
 // ============================================================================
 
 struct CheapValidator;
-impl Validator for CheapValidator {
+impl Validate for CheapValidator {
     type Input = str;
 
     fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {
@@ -23,8 +23,8 @@ impl Validator for CheapValidator {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "CheapValidator".to_string(),
-            description: Some("O(1) validator".to_string()),
+            name: "CheapValidator".into(),
+            description: Some("O(1) validator".into()),
             complexity: ValidationComplexity::Constant,
             cacheable: true,
             estimated_time: Some(Duration::from_micros(10)),
@@ -36,7 +36,7 @@ impl Validator for CheapValidator {
 }
 
 struct ExpensiveValidator;
-impl Validator for ExpensiveValidator {
+impl Validate for ExpensiveValidator {
     type Input = str;
 
     fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {
@@ -45,8 +45,8 @@ impl Validator for ExpensiveValidator {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "ExpensiveValidator".to_string(),
-            description: Some("O(n²) validator".to_string()),
+            name: "ExpensiveValidator".into(),
+            description: Some("O(n²) validator".into()),
             complexity: ValidationComplexity::Expensive,
             cacheable: false,
             estimated_time: Some(Duration::from_micros(1000)),
@@ -58,7 +58,7 @@ impl Validator for ExpensiveValidator {
 }
 
 struct LinearValidator;
-impl Validator for LinearValidator {
+impl Validate for LinearValidator {
     type Input = str;
 
     fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {
@@ -67,8 +67,8 @@ impl Validator for LinearValidator {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "LinearValidator".to_string(),
-            description: Some("O(n) validator".to_string()),
+            name: "LinearValidator".into(),
+            description: Some("O(n) validator".into()),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(Duration::from_micros(100)),
@@ -79,8 +79,8 @@ impl Validator for LinearValidator {
     }
 }
 
-struct AsyncValidator;
-impl Validator for AsyncValidator {
+struct AsyncValidate;
+impl Validate for AsyncValidate {
     type Input = str;
 
     fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {
@@ -89,12 +89,12 @@ impl Validator for AsyncValidator {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "AsyncValidator".to_string(),
-            description: Some("Async I/O validator".to_string()),
+            name: "AsyncValidate".into(),
+            description: Some("Async I/O validator".into()),
             complexity: ValidationComplexity::Expensive,
             cacheable: false,
             estimated_time: Some(Duration::from_micros(5000)),
-            tags: vec!["async".to_string()],
+            tags: vec!["async".into()],
             version: None,
             custom: Default::default(),
         }
@@ -192,7 +192,7 @@ fn test_optimization_recommendations_for_expensive() {
 #[test]
 fn test_optimization_recommendations_for_async() {
     let optimizer = ValidatorChainOptimizer::new();
-    let report = optimizer.analyze(&AsyncValidator);
+    let report = optimizer.analyze(&AsyncValidate);
 
     assert!(report.is_optimization_recommended());
     let recommendations = report.recommendations;
@@ -302,7 +302,7 @@ fn test_optimization_strategy_balanced() {
 
     let cheap_cacheable = CheapValidator.metadata();
     let cheap_non_cacheable = ValidatorMetadata {
-        name: "CheapNonCacheable".to_string(),
+        name: "CheapNonCacheable".into(),
         description: None,
         complexity: ValidationComplexity::Constant,
         cacheable: false,

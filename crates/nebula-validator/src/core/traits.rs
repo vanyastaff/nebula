@@ -23,13 +23,13 @@ use std::borrow::Borrow;
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_validator::core::{Validator, ValidationError};
+/// use nebula_validator::core::{Validate, ValidationError};
 ///
 /// struct MinLength {
 ///     min: usize,
 /// }
 ///
-/// impl Validator for MinLength {
+/// impl Validate for MinLength {
 ///     type Input = str;
 ///
 ///     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -44,7 +44,7 @@ use std::borrow::Borrow;
 ///     }
 /// }
 /// ```
-pub trait Validator {
+pub trait Validate {
     /// The type of input being validated.
     ///
     /// Use `?Sized` to allow validation of unsized types like `str` and `[T]`.
@@ -75,11 +75,11 @@ pub trait Validator {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use nebula_validator::core::{Validator, ValidationError};
+    /// use nebula_validator::core::{Validate, ValidationError};
     ///
     /// struct MinLength { min: usize }
     ///
-    /// impl Validator for MinLength {
+    /// impl Validate for MinLength {
     ///     type Input = str;
     ///
     ///     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -140,14 +140,14 @@ pub trait Validator {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_validator::core::{AsyncValidator, ValidationError};
+/// use nebula_validator::core::{AsyncValidate, ValidationError};
 ///
 /// struct EmailExists {
 ///     db_pool: DatabasePool,
 /// }
 ///
 /// #[async_trait::async_trait]
-/// impl AsyncValidator for EmailExists {
+/// impl AsyncValidate for EmailExists {
 ///     type Input = str;
 ///
 ///     async fn validate_async(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -161,7 +161,7 @@ pub trait Validator {
 /// }
 /// ```
 #[async_trait::async_trait]
-pub trait AsyncValidator: Send + Sync {
+pub trait AsyncValidate: Send + Sync {
     /// The type of input being validated.
     type Input: ?Sized + Sync;
 
@@ -196,7 +196,7 @@ pub trait AsyncValidator: Send + Sync {
 /// Extension trait providing combinator methods for validators.
 ///
 /// This trait is automatically implemented for all types that implement
-/// `Validator`, providing a fluent API for composing validators.
+/// `Validate`, providing a fluent API for composing validators.
 ///
 /// # Examples
 ///
@@ -210,7 +210,7 @@ pub trait AsyncValidator: Send + Sync {
 /// assert!(validator.validate("hello").is_ok());
 /// assert!(validator.validate("hi").is_err());
 /// ```
-pub trait ValidatorExt: Validator + Sized {
+pub trait ValidateExt: Validate + Sized {
     /// Combines two validators with logical AND.
     ///
     /// Both validators must pass for the combined validator to succeed.
@@ -233,7 +233,7 @@ pub trait ValidatorExt: Validator + Sized {
     /// ```
     fn and<V>(self, other: V) -> And<Self, V>
     where
-        V: Validator<Input = Self::Input>,
+        V: Validate<Input = Self::Input>,
     {
         And::new(self, other)
     }
@@ -255,7 +255,7 @@ pub trait ValidatorExt: Validator + Sized {
     /// ```
     fn or<V>(self, other: V) -> Or<Self, V>
     where
-        V: Validator<Input = Self::Input>,
+        V: Validate<Input = Self::Input>,
     {
         Or::new(self, other)
     }
@@ -374,8 +374,8 @@ pub trait ValidatorExt: Validator + Sized {
     }
 }
 
-// Automatically implement ValidatorExt for all Validator implementations
-impl<T: Validator> ValidatorExt for T {}
+// Automatically implement ValidateExt for all Validate implementations
+impl<T: Validate> ValidateExt for T {}
 
 // ============================================================================
 // IMPORT COMBINATOR TYPES
@@ -402,7 +402,7 @@ mod tests {
     // Simple test validator
     struct AlwaysValid;
 
-    impl Validator for AlwaysValid {
+    impl Validate for AlwaysValid {
         type Input = str;
 
         fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {

@@ -1,6 +1,6 @@
 //! MAP combinator - previously transformed validation output (now deprecated)
 
-use crate::core::{ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationError, ValidatorMetadata};
 
 /// Maps the output of a successful validation.
 ///
@@ -31,9 +31,9 @@ impl<V, F> Map<V, F> {
     }
 }
 
-impl<V, F> Validator for Map<V, F>
+impl<V, F> Validate for Map<V, F>
 where
-    V: Validator,
+    V: Validate,
 {
     type Input = V::Input;
 
@@ -45,7 +45,7 @@ where
         let inner_meta = self.validator.metadata();
 
         ValidatorMetadata {
-            name: format!("Map({})", inner_meta.name),
+            name: format!("Map({})", inner_meta.name).into(),
             description: inner_meta.description,
             complexity: inner_meta.complexity,
             cacheable: inner_meta.cacheable,
@@ -59,7 +59,7 @@ where
 
 pub fn map<V, F, O>(validator: V, mapper: F) -> Map<V, F>
 where
-    V: Validator,
+    V: Validate,
     F: Fn(()) -> O,
 {
     Map::new(validator, mapper)
@@ -71,7 +71,7 @@ pub fn map_to<V, O: Clone>(validator: V, value: O) -> Map<V, impl Fn(()) -> O> {
 
 pub fn map_unit<V>(validator: V) -> Map<V, impl Fn(())>
 where
-    V: Validator,
+    V: Validate,
 {
     Map::new(validator, |_| ())
 }
@@ -81,7 +81,7 @@ mod tests {
     use super::*;
 
     struct AlwaysValid;
-    impl Validator for AlwaysValid {
+    impl Validate for AlwaysValid {
         type Input = str;
         fn validate(&self, _: &str) -> Result<(), ValidationError> {
             Ok(())
@@ -89,7 +89,7 @@ mod tests {
     }
 
     struct AlwaysFails;
-    impl Validator for AlwaysFails {
+    impl Validate for AlwaysFails {
         type Input = str;
         fn validate(&self, _: &str) -> Result<(), ValidationError> {
             Err(ValidationError::new("fail", "Always fails"))

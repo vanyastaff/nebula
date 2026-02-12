@@ -2,7 +2,7 @@
 //!
 //! Validates that a string contains only valid hexadecimal characters.
 
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // HEX VALIDATOR
@@ -19,7 +19,7 @@ use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMet
 ///
 /// ```
 /// use nebula_validator::validators::Hex;
-/// use nebula_validator::core::Validator;
+/// use nebula_validator::core::Validate;
 ///
 /// let validator = Hex::new();
 ///
@@ -132,7 +132,7 @@ impl Default for Hex {
     }
 }
 
-impl Validator for Hex {
+impl Validate for Hex {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -220,26 +220,25 @@ impl Validator for Hex {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "Hex".to_string(),
-            description: Some(format!(
-                "Validates hexadecimal strings (prefix: {}, case: {:?})",
-                if self.allow_prefix {
-                    "optional"
-                } else {
-                    "not allowed"
-                },
-                self.case_sensitive.unwrap_or(HexCase::Mixed)
-            )),
+            name: "Hex".into(),
+            description: Some(
+                format!(
+                    "Validates hexadecimal strings (prefix: {}, case: {:?})",
+                    if self.allow_prefix {
+                        "optional"
+                    } else {
+                        "not allowed"
+                    },
+                    self.case_sensitive.unwrap_or(HexCase::Mixed)
+                )
+                .into(),
+            ),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(5)),
-            tags: vec![
-                "text".to_string(),
-                "hex".to_string(),
-                "encoding".to_string(),
-            ],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["text".into(), "hex".into(), "encoding".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }
@@ -286,7 +285,7 @@ impl RequirePrefixHex {
     }
 }
 
-impl Validator for RequirePrefixHex {
+impl Validate for RequirePrefixHex {
     type Input = str;
 
     fn validate(&self, input: &str) -> Result<(), ValidationError> {
@@ -310,18 +309,14 @@ impl Validator for RequirePrefixHex {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: "RequirePrefixHex".to_string(),
-            description: Some("Validates hexadecimal strings (requires '0x' prefix)".to_string()),
+            name: "RequirePrefixHex".into(),
+            description: Some("Validates hexadecimal strings (requires '0x' prefix)".into()),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: Some(std::time::Duration::from_micros(5)),
-            tags: vec![
-                "text".to_string(),
-                "hex".to_string(),
-                "encoding".to_string(),
-            ],
-            version: Some("1.0.0".to_string()),
-            custom: std::collections::HashMap::new(),
+            tags: vec!["text".into(), "hex".into(), "encoding".into()],
+            version: Some("1.0.0".into()),
+            custom: Vec::new(),
         }
     }
 }

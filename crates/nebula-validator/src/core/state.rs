@@ -24,7 +24,7 @@
 //! let value = validated.unwrap();
 //! ```
 
-use crate::core::{ValidationError, Validator};
+use crate::core::{Validate, ValidationError};
 use std::marker::PhantomData;
 
 // ============================================================================
@@ -125,7 +125,7 @@ impl<T> Parameter<T, Unvalidated> {
     #[must_use = "validation result must be checked"]
     pub fn validate<V>(self, validator: &V) -> Result<Parameter<T, Validated<V>>, ValidationError>
     where
-        V: Validator,
+        V: Validate,
         T: std::borrow::Borrow<V::Input>,
     {
         validator.validate(self.value.borrow())?;
@@ -153,7 +153,7 @@ impl<T> Parameter<T, Unvalidated> {
         validators: Vec<&V>,
     ) -> Result<Parameter<T, Validated<V>>, ValidationError>
     where
-        V: Validator,
+        V: Validate,
         T: std::borrow::Borrow<V::Input>,
     {
         for validator in validators {
@@ -171,7 +171,7 @@ impl<T> Parameter<T, Unvalidated> {
     #[must_use = "validation result must be checked"]
     pub fn validate_in_place<V>(&self, validator: &V) -> Result<(), ValidationError>
     where
-        V: Validator,
+        V: Validate,
         T: std::borrow::Borrow<V::Input>,
     {
         validator.validate(self.value.borrow())
@@ -216,13 +216,6 @@ impl<T, V> Parameter<T, Validated<V>> {
         &self.value
     }
 
-    /// Returns a mutable reference to the validated value.
-    ///
-    /// Be careful not to modify in ways that violate validation constraints.
-    pub fn get_mut(&mut self) -> &mut T {
-        &mut self.value
-    }
-
     /// Re-validates with a different validator.
     ///
     /// Changes the validation marker to the new validator.
@@ -232,7 +225,7 @@ impl<T, V> Parameter<T, Validated<V>> {
         validator: &V2,
     ) -> Result<Parameter<T, Validated<V2>>, ValidationError>
     where
-        V2: Validator<Input = T>,
+        V2: Validate<Input = T>,
     {
         validator.validate(&self.value)?;
         Ok(Parameter {
@@ -249,7 +242,7 @@ impl<T, V> Parameter<T, Validated<V>> {
         validator: &V2,
     ) -> Result<Parameter<T, Validated<(V, V2)>>, ValidationError>
     where
-        V2: Validator<Input = T>,
+        V2: Validate<Input = T>,
     {
         validator.validate(&self.value)?;
         Ok(Parameter {
@@ -258,20 +251,7 @@ impl<T, V> Parameter<T, Validated<V>> {
         })
     }
 
-    /// Maps the value while preserving validation.
-    ///
-    /// The validation marker is preserved even though the value changes.
-    pub fn map<U, F>(self, f: F) -> Parameter<U, Validated<V>>
-    where
-        F: FnOnce(T) -> U,
-    {
-        Parameter {
-            value: f(self.value),
-            _state: PhantomData,
-        }
-    }
-
-    /// Maps and re-validates the value.
+    /// Maps the value and re-validates the result.
     pub fn map_and_revalidate<U, F, V2>(
         self,
         f: F,
@@ -279,7 +259,7 @@ impl<T, V> Parameter<T, Validated<V>> {
     ) -> Result<Parameter<U, Validated<V2>>, ValidationError>
     where
         F: FnOnce(T) -> U,
-        V2: Validator<Input = U>,
+        V2: Validate<Input = U>,
     {
         let new_value = f(self.value);
         validator.validate(&new_value)?;
@@ -357,7 +337,7 @@ impl<T> ParameterBuilder<T, Unvalidated> {
         validator: &V,
     ) -> Result<ParameterBuilder<T, Validated<V>>, ValidationError>
     where
-        V: Validator<Input = T>,
+        V: Validate<Input = T>,
     {
         let value = self.value.expect("Value must be set before validation");
         validator.validate(&value)?;
@@ -402,76 +382,12 @@ impl<T, S> std::ops::Deref for Parameter<T, S> {
     }
 }
 
-// Only allow DerefMut for validated parameters to maintain safety
-impl<T, V> std::ops::DerefMut for Parameter<T, Validated<V>> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.value
-    }
-}
-
 impl<T, S> std::fmt::Display for Parameter<T, S>
 where
     T: std::fmt::Display,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.value.fmt(f)
-    }
-}
-
-// ============================================================================
-// VALIDATION GROUPS
-// ============================================================================
-
-/// A group of parameters that must all be validated together.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// let group = ValidationGroup::new()
-///     .add(username_param)
-///     .add(email_param)
-///     .add(password_param)
-///     .validate_all()?;
-/// ```
-pub struct ValidationGroup<S = Unvalidated> {
-    params: Vec<Box<dyn std::any::Any>>,
-    _state: PhantomData<S>,
-}
-
-impl ValidationGroup<Unvalidated> {
-    /// Creates a new validation group.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            params: Vec::new(),
-            _state: PhantomData,
-        }
-    }
-
-    /// Adds a parameter to the group.
-    #[must_use = "builder methods must be chained or built"]
-    #[allow(clippy::should_implement_trait)]
-    pub fn add<T: 'static>(mut self, param: Parameter<T, Unvalidated>) -> Self {
-        self.params.push(Box::new(param));
-        self
-    }
-
-    /// Validates all parameters in the group.
-    pub fn validate_all(
-        self,
-    ) -> Result<ValidationGroup<Validated<()>>, Vec<Box<dyn std::error::Error>>> {
-        // This is a simplified version - real implementation would need to
-        // track validators and validate each parameter
-        Ok(ValidationGroup {
-            params: self.params,
-            _state: PhantomData,
-        })
-    }
-}
-
-impl Default for ValidationGroup<Unvalidated> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -488,7 +404,7 @@ mod tests {
         min: usize,
     }
 
-    impl Validator for MinLength {
+    impl Validate for MinLength {
         type Input = String;
 
         fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -558,21 +474,12 @@ mod tests {
     }
 
     #[test]
-    fn test_map_validated() {
-        let param = Parameter::new("hello".to_string());
-        let validator = MinLength { min: 5 };
-        let validated = param.validate(&validator).unwrap();
-        let length = validated.map(|s| s.len());
-        assert_eq!(length.unwrap(), 5);
-    }
-
-    #[test]
     fn test_revalidate() {
         struct MaxLength {
             max: usize,
         }
 
-        impl Validator for MaxLength {
+        impl Validate for MaxLength {
             type Input = String;
 
             fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {

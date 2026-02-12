@@ -4,7 +4,8 @@
 //! without requiring derive macros.
 
 use crate::combinators::error::CombinatorError;
-use crate::core::{ValidationComplexity, ValidationError, Validator, ValidatorMetadata};
+use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use std::borrow::Cow;
 use std::marker::PhantomData;
 
 // ============================================================================
@@ -196,9 +197,9 @@ impl From<FieldError> for ValidationError {
 // VALIDATOR IMPLEMENTATION
 // ============================================================================
 
-impl<T, U, V, F> Validator for Field<T, U, V, F>
+impl<T, U, V, F> Validate for Field<T, U, V, F>
 where
-    V: Validator<Input = U>,
+    V: Validate<Input = U>,
     F: Fn(&T) -> &U,
     U: ?Sized,
 {
@@ -217,25 +218,28 @@ where
 
         ValidatorMetadata {
             name: if let Some(name) = &self.name {
-                format!("Field('{}', {})", name, inner_meta.name)
+                format!("Field('{}', {})", name, inner_meta.name).into()
             } else {
-                format!("Field({})", inner_meta.name)
+                format!("Field({})", inner_meta.name).into()
             },
-            description: Some(format!(
-                "Validates field{} using {}",
-                self.name
-                    .as_ref()
-                    .map(|n| format!(" '{n}'"))
-                    .unwrap_or_default(),
-                inner_meta.name
-            )),
+            description: Some(
+                format!(
+                    "Validates field{} using {}",
+                    self.name
+                        .as_ref()
+                        .map(|n| format!(" '{n}'"))
+                        .unwrap_or_default(),
+                    inner_meta.name
+                )
+                .into(),
+            ),
             complexity: inner_meta.complexity,
             cacheable: inner_meta.cacheable,
             estimated_time: inner_meta.estimated_time,
             tags: {
                 let mut tags = inner_meta.tags;
-                tags.push("combinator".to_string());
-                tags.push("field".to_string());
+                tags.push(Cow::Borrowed("combinator"));
+                tags.push(Cow::Borrowed("field"));
                 tags
             },
             version: inner_meta.version,
@@ -273,7 +277,7 @@ where
 // ============================================================================
 
 /// Extension trait for creating field validators.
-pub trait FieldValidatorExt: Validator + Sized {
+pub trait FieldValidateExt: Validate + Sized {
     /// Creates a field validator for this validator.
     fn for_field<T, F>(self, name: impl Into<String>, accessor: F) -> Field<T, Self::Input, Self, F>
     where
@@ -291,7 +295,7 @@ pub trait FieldValidatorExt: Validator + Sized {
     }
 }
 
-impl<V: Validator> FieldValidatorExt for V {}
+impl<V: Validate> FieldValidateExt for V {}
 
 // ============================================================================
 // MULTI-FIELD VALIDATOR
@@ -316,7 +320,7 @@ impl<T> MultiField<T> {
     pub fn add_field<U, V, F>(mut self, name: impl Into<String>, validator: V, accessor: F) -> Self
     where
         U: ?Sized,
-        V: Validator<Input = U> + Send + Sync + 'static,
+        V: Validate<Input = U> + Send + Sync + 'static,
         F: Fn(&T) -> &U + Send + Sync + 'static,
     {
         let name = name.into();
@@ -336,7 +340,7 @@ impl<T> Default for MultiField<T> {
     }
 }
 
-impl<T> Validator for MultiField<T> {
+impl<T> Validate for MultiField<T> {
     type Input = T;
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
@@ -365,18 +369,14 @@ impl<T> Validator for MultiField<T> {
 
     fn metadata(&self) -> ValidatorMetadata {
         ValidatorMetadata {
-            name: format!("MultiField(fields={})", self.validators.len()),
-            description: Some(format!("Validates {} fields", self.validators.len())),
+            name: format!("MultiField(fields={})", self.validators.len()).into(),
+            description: Some(format!("Validates {} fields", self.validators.len()).into()),
             complexity: ValidationComplexity::Linear,
             cacheable: true,
             estimated_time: None,
-            tags: vec![
-                "combinator".to_string(),
-                "field".to_string(),
-                "multi".to_string(),
-            ],
+            tags: vec!["combinator".into(), "field".into(), "multi".into()],
             version: None,
-            custom: std::collections::HashMap::new(),
+            custom: Vec::new(),
         }
     }
 }
@@ -399,7 +399,7 @@ mod tests {
         min: u32,
     }
 
-    impl Validator for MinValue {
+    impl Validate for MinValue {
         type Input = u32;
 
         fn validate(&self, input: &u32) -> Result<(), ValidationError> {
@@ -419,7 +419,7 @@ mod tests {
         min: usize,
     }
 
-    impl Validator for MinLength {
+    impl Validate for MinLength {
         type Input = str;
 
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
