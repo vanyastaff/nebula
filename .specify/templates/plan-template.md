@@ -16,7 +16,7 @@
 **Storage**: [if applicable, e.g., in-memory, file-based, external DB or N/A]  
 **Testing**: `cargo test --workspace`, `#[tokio::test]` for async
 **Target Platform**: Cross-platform (Windows primary development, Linux/macOS support)
-**Project Type**: Workspace (16 crates organized in architectural layers)
+**Project Type**: Workspace (11 crates organized in architectural layers)
 **Performance Goals**: [domain-specific, e.g., 1000 workflows/sec, <100ms action latency or NEEDS CLARIFICATION]  
 **Constraints**: [domain-specific, e.g., <200ms p95 execution, bounded memory per execution or NEEDS CLARIFICATION]  
 **Scale/Scope**: [domain-specific, e.g., workflow complexity, concurrent executions, data volume or NEEDS CLARIFICATION]
@@ -63,11 +63,9 @@ crates/
 └── ...
 
 # Existing workspace crates by layer:
-# Core: nebula-core, nebula-value, nebula-log
-# Domain: nebula-parameter, nebula-action, nebula-expression, nebula-validator, nebula-credential
-# UI: nebula-ui, nebula-parameter-ui
+# Core: nebula-core, nebula-log
+# Domain: nebula-expression, nebula-validator, nebula-credential, nebula-action
 # System: nebula-config, nebula-memory, nebula-resilience, nebula-resource, nebula-system
-# Tooling: nebula-derive
 ```
 
 **Structure Decision**: [Document which crate(s) are affected, whether new crates are created, 
