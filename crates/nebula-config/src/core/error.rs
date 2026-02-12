@@ -378,3 +378,170 @@ impl From<notify::Error> for ConfigError {
 
 // ConfigError can be converted to other error types as needed
 // by implementing From traits in consuming crates
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_constructors_and_display() {
+        let e = ConfigError::file_not_found("/tmp/missing.json");
+        assert!(e.to_string().contains("missing.json"));
+
+        let e = ConfigError::file_read_error("/tmp/f.json", "permission denied");
+        assert!(e.to_string().contains("permission denied"));
+
+        let e = ConfigError::parse_error("/tmp/f.json", "unexpected token");
+        assert!(e.to_string().contains("unexpected token"));
+
+        let e = ConfigError::validation_error("field too short", Some("name".into()));
+        assert!(e.to_string().contains("field too short"));
+
+        let e = ConfigError::source_error("connection refused", "redis");
+        assert!(e.to_string().contains("connection refused"));
+
+        let e = ConfigError::env_var_not_found("MY_VAR");
+        assert!(e.to_string().contains("MY_VAR"));
+
+        let e = ConfigError::env_var_parse_error("PORT", "abc");
+        assert!(e.to_string().contains("PORT"));
+
+        let e = ConfigError::reload_error("source unavailable");
+        assert!(e.to_string().contains("source unavailable"));
+
+        let e = ConfigError::watch_error("inotify failed");
+        assert!(e.to_string().contains("inotify failed"));
+
+        let e = ConfigError::merge_error("conflicting keys");
+        assert!(e.to_string().contains("conflicting keys"));
+
+        let e = ConfigError::type_error("expected string", "String", "Number");
+        assert!(e.to_string().contains("expected string"));
+
+        let e = ConfigError::path_error("key not found", "a.b.c");
+        assert!(e.to_string().contains("key not found"));
+
+        let e = ConfigError::format_not_supported("xml");
+        assert!(e.to_string().contains("xml"));
+
+        let e = ConfigError::encryption_error("key expired");
+        assert!(e.to_string().contains("key expired"));
+
+        let e = ConfigError::decryption_error("invalid key");
+        assert!(e.to_string().contains("invalid key"));
+    }
+
+    #[test]
+    fn test_error_is_recoverable() {
+        assert!(ConfigError::file_not_found("/tmp/f").is_recoverable());
+        assert!(ConfigError::env_var_not_found("VAR").is_recoverable());
+        assert!(ConfigError::validation("bad").is_recoverable());
+
+        assert!(!ConfigError::parse_error("/tmp/f", "bad").is_recoverable());
+        assert!(!ConfigError::merge_error("conflict").is_recoverable());
+        assert!(!ConfigError::encryption_error("fail").is_recoverable());
+    }
+
+    #[test]
+    fn test_error_is_missing_source() {
+        assert!(ConfigError::file_not_found("/tmp/f").is_missing_source());
+        assert!(ConfigError::env_var_not_found("VAR").is_missing_source());
+
+        assert!(!ConfigError::parse_error("/tmp/f", "bad").is_missing_source());
+        assert!(!ConfigError::validation("bad").is_missing_source());
+    }
+
+    #[test]
+    fn test_error_category() {
+        assert_eq!(
+            ConfigError::file_not_found("/f").category(),
+            ErrorCategory::NotFound
+        );
+        assert_eq!(
+            ConfigError::env_var_not_found("V").category(),
+            ErrorCategory::NotFound
+        );
+        assert_eq!(
+            ConfigError::file_read_error("/f", "e").category(),
+            ErrorCategory::Io
+        );
+        assert_eq!(ConfigError::watch_error("e").category(), ErrorCategory::Io);
+        assert_eq!(
+            ConfigError::parse_error("/f", "e").category(),
+            ErrorCategory::Parse
+        );
+        assert_eq!(
+            ConfigError::env_var_parse_error("V", "x").category(),
+            ErrorCategory::Parse
+        );
+        assert_eq!(
+            ConfigError::format_not_supported("xml").category(),
+            ErrorCategory::Parse
+        );
+        assert_eq!(
+            ConfigError::validation("e").category(),
+            ErrorCategory::Validation
+        );
+        assert_eq!(
+            ConfigError::type_error("e", "a", "b").category(),
+            ErrorCategory::Validation
+        );
+        assert_eq!(
+            ConfigError::source_error("e", "o").category(),
+            ErrorCategory::Operation
+        );
+        assert_eq!(
+            ConfigError::reload_error("e").category(),
+            ErrorCategory::Operation
+        );
+        assert_eq!(
+            ConfigError::merge_error("e").category(),
+            ErrorCategory::Operation
+        );
+        assert_eq!(
+            ConfigError::path_error("e", "p").category(),
+            ErrorCategory::Operation
+        );
+        assert_eq!(
+            ConfigError::encryption_error("e").category(),
+            ErrorCategory::Security
+        );
+        assert_eq!(
+            ConfigError::decryption_error("e").category(),
+            ErrorCategory::Security
+        );
+    }
+
+    #[test]
+    fn test_error_from_conversions() {
+        // From<io::Error> - NotFound
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        let cfg_err: ConfigError = io_err.into();
+        assert!(matches!(cfg_err, ConfigError::FileNotFound { .. }));
+
+        // From<io::Error> - PermissionDenied
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "nope");
+        let cfg_err: ConfigError = io_err.into();
+        assert!(matches!(cfg_err, ConfigError::FileReadError { .. }));
+
+        // From<serde_json::Error>
+        let json_err = serde_json::from_str::<serde_json::Value>("{bad}").unwrap_err();
+        let cfg_err: ConfigError = json_err.into();
+        assert!(matches!(cfg_err, ConfigError::ParseError { .. }));
+    }
+
+    #[test]
+    fn test_error_not_found_and_internal() {
+        let e = ConfigError::not_found("file", "/tmp/f.json");
+        assert!(matches!(e, ConfigError::FileNotFound { .. }));
+
+        let e = ConfigError::not_found("env", "MY_VAR");
+        assert!(matches!(e, ConfigError::EnvVarNotFound { .. }));
+
+        let e = ConfigError::not_found("redis", "key123");
+        assert!(matches!(e, ConfigError::SourceError { .. }));
+
+        let e = ConfigError::internal("something broke");
+        assert!(matches!(e, ConfigError::SourceError { origin, .. } if origin == "internal"));
+    }
+}

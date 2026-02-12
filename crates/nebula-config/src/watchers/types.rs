@@ -92,3 +92,44 @@ impl ConfigWatchEventType {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_watch_event_builder() {
+        let event = ConfigWatchEvent::new(ConfigWatchEventType::Modified, ConfigSource::Env)
+            .with_path(PathBuf::from("/tmp/config.json"))
+            .with_metadata(serde_json::json!({"reason": "manual"}));
+
+        assert_eq!(event.event_type, ConfigWatchEventType::Modified);
+        assert_eq!(event.source, ConfigSource::Env);
+        assert_eq!(event.path, Some(PathBuf::from("/tmp/config.json")));
+        assert!(event.metadata.is_some());
+    }
+
+    #[test]
+    fn test_watch_event_type_checks() {
+        assert!(!ConfigWatchEventType::Created.is_error());
+        assert!(ConfigWatchEventType::Created.is_change());
+
+        assert!(ConfigWatchEventType::Modified.is_change());
+        assert!(ConfigWatchEventType::Deleted.is_change());
+
+        let renamed = ConfigWatchEventType::Renamed {
+            from: PathBuf::from("a"),
+            to: PathBuf::from("b"),
+        };
+        assert!(renamed.is_change());
+        assert!(!renamed.is_error());
+
+        let error = ConfigWatchEventType::Error("fail".into());
+        assert!(error.is_error());
+        assert!(!error.is_change());
+
+        let other = ConfigWatchEventType::Other("custom".into());
+        assert!(!other.is_error());
+        assert!(!other.is_change());
+    }
+}

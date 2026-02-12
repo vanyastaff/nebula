@@ -528,6 +528,219 @@ impl std::fmt::Debug for Config {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn test_config(data: serde_json::Value) -> Config {
+        Config::new(
+            data,
+            vec![ConfigSource::Default],
+            Arc::new(crate::loaders::CompositeLoader::default()),
+            None,
+            None,
+            false,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_get_and_get_all() {
+        let cfg = test_config(json!({
+            "name": "app",
+            "port": 8080,
+            "nested": {"key": "value"}
+        }));
+
+        let name: String = cfg.get("name").await.unwrap();
+        assert_eq!(name, "app");
+
+        let port: u16 = cfg.get("port").await.unwrap();
+        assert_eq!(port, 8080);
+
+        let nested_val: String = cfg.get("nested.key").await.unwrap();
+        assert_eq!(nested_val, "value");
+
+        // get_all deserializes entire config
+        #[derive(serde::Deserialize)]
+        struct AppConfig {
+            name: String,
+            port: u16,
+        }
+        let all: AppConfig = cfg.get_all().await.unwrap();
+        assert_eq!(all.name, "app");
+        assert_eq!(all.port, 8080);
+    }
+
+    #[tokio::test]
+    async fn test_get_or_and_get_or_else() {
+        let cfg = test_config(json!({"existing": "hello"}));
+
+        let val: String = cfg.get_or("existing", "default".to_string()).await;
+        assert_eq!(val, "hello");
+
+        let val: String = cfg.get_or("missing", "default".to_string()).await;
+        assert_eq!(val, "default");
+
+        let val: String = cfg.get_or_else("missing", || "computed".to_string()).await;
+        assert_eq!(val, "computed");
+    }
+
+    #[tokio::test]
+    async fn test_has_and_get_opt() {
+        let cfg = test_config(json!({"key": "value", "nested": {"a": 1}}));
+
+        assert!(cfg.has("key").await);
+        assert!(cfg.has("nested.a").await);
+        assert!(!cfg.has("missing").await);
+        assert!(!cfg.has("nested.b").await);
+
+        let some: Option<String> = cfg.get_opt("key").await;
+        assert_eq!(some, Some("value".to_string()));
+
+        let none: Option<String> = cfg.get_opt("missing").await;
+        assert_eq!(none, None);
+    }
+
+    #[tokio::test]
+    async fn test_keys() {
+        let cfg = test_config(json!({
+            "a": 1,
+            "b": 2,
+            "nested": {"x": 10, "y": 20}
+        }));
+
+        let mut root_keys = cfg.keys(None).await.unwrap();
+        root_keys.sort();
+        assert_eq!(root_keys, vec!["a", "b", "nested"]);
+
+        let mut nested_keys = cfg.keys(Some("nested")).await.unwrap();
+        nested_keys.sort();
+        assert_eq!(nested_keys, vec!["x", "y"]);
+
+        // Non-object path errors
+        assert!(cfg.keys(Some("a")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_get_raw_and_get_value() {
+        let data = json!({"key": "value", "num": 42});
+        let cfg = test_config(data.clone());
+
+        let raw_all = cfg.get_raw(None).await.unwrap();
+        assert_eq!(raw_all, data);
+
+        let raw_key = cfg.get_raw(Some("key")).await.unwrap();
+        assert_eq!(raw_key, json!("value"));
+
+        let val = cfg.get_value("num").await.unwrap();
+        assert_eq!(val, json!(42));
+    }
+
+    #[tokio::test]
+    async fn test_as_value() {
+        let data = json!({"hello": "world"});
+        let cfg = test_config(data.clone());
+        assert_eq!(cfg.as_value().await, data);
+    }
+
+    #[tokio::test]
+    async fn test_set_value_and_set_typed() {
+        let cfg = test_config(json!({"a": 1}));
+
+        cfg.set_value("b", json!("new")).await.unwrap();
+        let val: String = cfg.get("b").await.unwrap();
+        assert_eq!(val, "new");
+
+        // Set nested path (creates intermediary objects)
+        cfg.set_value("nested.deep", json!(true)).await.unwrap();
+        let val: bool = cfg.get("nested.deep").await.unwrap();
+        assert!(val);
+
+        // set_typed serializes automatically
+        cfg.set_typed("count", 42u32).await.unwrap();
+        let val: u32 = cfg.get("count").await.unwrap();
+        assert_eq!(val, 42);
+    }
+
+    #[tokio::test]
+    async fn test_flatten() {
+        let cfg = test_config(json!({
+            "server": {"host": "localhost", "port": 8080},
+            "tags": ["a", "b"]
+        }));
+
+        let flat = cfg.flatten().await;
+        assert_eq!(flat["server.host"], json!("localhost"));
+        assert_eq!(flat["server.port"], json!(8080));
+        assert_eq!(flat["tags[0]"], json!("a"));
+        assert_eq!(flat["tags[1]"], json!("b"));
+    }
+
+    #[tokio::test]
+    async fn test_merge() {
+        let cfg = test_config(json!({
+            "a": 1,
+            "nested": {"x": 10, "y": 20}
+        }));
+
+        cfg.merge(json!({
+            "b": 2,
+            "nested": {"y": 99, "z": 30}
+        }))
+        .await
+        .unwrap();
+
+        let val: i64 = cfg.get("a").await.unwrap();
+        assert_eq!(val, 1); // preserved
+        let val: i64 = cfg.get("b").await.unwrap();
+        assert_eq!(val, 2); // added
+        let val: i64 = cfg.get("nested.x").await.unwrap();
+        assert_eq!(val, 10); // preserved
+        let val: i64 = cfg.get("nested.y").await.unwrap();
+        assert_eq!(val, 99); // overwritten
+        let val: i64 = cfg.get("nested.z").await.unwrap();
+        assert_eq!(val, 30); // added
+    }
+
+    #[test]
+    fn test_json_type_name() {
+        assert_eq!(json_type_name(&json!(null)), "null");
+        assert_eq!(json_type_name(&json!(true)), "boolean");
+        assert_eq!(json_type_name(&json!(42)), "number");
+        assert_eq!(json_type_name(&json!("hi")), "string");
+        assert_eq!(json_type_name(&json!([1, 2])), "array");
+        assert_eq!(json_type_name(&json!({"a": 1})), "object");
+    }
+
+    #[test]
+    fn test_merge_json() {
+        let mut target = json!({"a": 1, "nested": {"x": 10}});
+        merge_json(&mut target, json!({"b": 2, "nested": {"y": 20}})).unwrap();
+        assert_eq!(
+            target,
+            json!({"a": 1, "b": 2, "nested": {"x": 10, "y": 20}})
+        );
+
+        // Scalar overwrite
+        let mut target2 = json!({"key": "old"});
+        merge_json(&mut target2, json!({"key": "new"})).unwrap();
+        assert_eq!(target2["key"], json!("new"));
+    }
+
+    #[test]
+    fn test_config_debug() {
+        let cfg = test_config(json!({}));
+        let debug = format!("{:?}", cfg);
+        assert!(debug.contains("Config"));
+        assert!(debug.contains("sources"));
+        assert!(debug.contains("hot_reload"));
+        assert!(debug.contains("watching"));
+        assert!(debug.contains("has_validator"));
+        assert!(debug.contains("has_watcher"));
+    }
+}
+
 // Cleanup on drop
 impl Drop for Config {
     fn drop(&mut self) {

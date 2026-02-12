@@ -575,3 +575,286 @@ impl ConfigValidator for SchemaValidator {
         Some(self.schema.clone())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::ConfigValidator;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn test_schema_new_and_from_json() {
+        let schema = json!({"type": "object"});
+        let v = SchemaValidator::new(schema.clone());
+        assert_eq!(v.schema(), Some(schema));
+
+        let v2 = SchemaValidator::from_json(r#"{"type": "string"}"#).unwrap();
+        assert_eq!(v2.schema(), Some(json!({"type": "string"})));
+
+        assert!(SchemaValidator::from_json("not valid json {{{").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_type_string() {
+        let v = SchemaValidator::new(json!({"type": "string"}));
+
+        assert!(v.validate(&json!("hello")).await.is_ok());
+        assert!(v.validate(&json!(42)).await.is_err());
+        assert!(v.validate(&json!(true)).await.is_err());
+        assert!(v.validate(&json!(null)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_type_number_and_boolean() {
+        let v_num = SchemaValidator::new(json!({"type": "number"}));
+        assert!(v_num.validate(&json!(42)).await.is_ok());
+        assert!(v_num.validate(&json!(3.14)).await.is_ok());
+        assert!(v_num.validate(&json!("hello")).await.is_err());
+
+        let v_bool = SchemaValidator::new(json!({"type": "boolean"}));
+        assert!(v_bool.validate(&json!(true)).await.is_ok());
+        assert!(v_bool.validate(&json!(false)).await.is_ok());
+        assert!(v_bool.validate(&json!(1)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_type_array_of_types() {
+        let v = SchemaValidator::new(json!({"type": ["string", "number"]}));
+        assert!(v.validate(&json!("hello")).await.is_ok());
+        assert!(v.validate(&json!(42)).await.is_ok());
+        assert!(v.validate(&json!(true)).await.is_err());
+        assert!(v.validate(&json!(null)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_type_coercion() {
+        let v = SchemaValidator::new(json!({"type": "number"})).with_coerce_types(true);
+
+        // String "42" coercible to number
+        assert!(v.validate(&json!("42")).await.is_ok());
+        // String "hello" not coercible
+        assert!(v.validate(&json!("hello")).await.is_err());
+
+        let v_bool = SchemaValidator::new(json!({"type": "boolean"})).with_coerce_types(true);
+        assert!(v_bool.validate(&json!("true")).await.is_ok());
+        assert!(v_bool.validate(&json!("FALSE")).await.is_ok());
+        assert!(v_bool.validate(&json!("maybe")).await.is_err());
+
+        // Without coercion, string "42" fails for number type
+        let v_strict = SchemaValidator::new(json!({"type": "number"}));
+        assert!(v_strict.validate(&json!("42")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_string_constraints() {
+        let v = SchemaValidator::new(json!({
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 10,
+            "pattern": "^[a-z]+$"
+        }));
+
+        assert!(v.validate(&json!("hello")).await.is_ok());
+        assert!(v.validate(&json!("ab")).await.is_err()); // too short
+        assert!(v.validate(&json!("abcdefghijk")).await.is_err()); // too long
+        assert!(v.validate(&json!("Hello")).await.is_err()); // uppercase fails pattern
+        assert!(v.validate(&json!("abc123")).await.is_err()); // digits fail pattern
+    }
+
+    #[tokio::test]
+    async fn test_validate_string_format() {
+        let v = SchemaValidator::new(json!({
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "format": "email"},
+                "url": {"type": "string", "format": "uri"},
+                "ip4": {"type": "string", "format": "ipv4"},
+                "ip6": {"type": "string", "format": "ipv6"},
+                "id": {"type": "string", "format": "uuid"},
+                "date": {"type": "string", "format": "date"},
+                "dt": {"type": "string", "format": "date-time"},
+                "time": {"type": "string", "format": "time"},
+                "host": {"type": "string", "format": "hostname"}
+            }
+        }));
+
+        let valid = json!({
+            "email": "test@example.com",
+            "url": "https://example.com",
+            "ip4": "192.168.1.1",
+            "ip6": "::1",
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "date": "2025-01-15",
+            "dt": "2025-01-15T10:30:00Z",
+            "time": "10:30:00",
+            "host": "example.com"
+        });
+        assert!(v.validate(&valid).await.is_ok());
+
+        // Invalid email
+        let bad_email = json!({"email": "not-an-email"});
+        assert!(v.validate(&bad_email).await.is_err());
+
+        // Invalid IPv4
+        let bad_ip = json!({"ip4": "999.999.999.999"});
+        assert!(v.validate(&bad_ip).await.is_err());
+
+        // Invalid UUID
+        let bad_uuid = json!({"id": "not-a-uuid"});
+        assert!(v.validate(&bad_uuid).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_number_constraints() {
+        let v = SchemaValidator::new(json!({
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+        }));
+
+        assert!(v.validate(&json!(0)).await.is_ok());
+        assert!(v.validate(&json!(50)).await.is_ok());
+        assert!(v.validate(&json!(100)).await.is_ok());
+        assert!(v.validate(&json!(-1)).await.is_err());
+        assert!(v.validate(&json!(101)).await.is_err());
+
+        // Exclusive bounds
+        let v_excl = SchemaValidator::new(json!({
+            "type": "number",
+            "minimum": 0,
+            "exclusiveMinimum": true,
+            "maximum": 100,
+            "exclusiveMaximum": true
+        }));
+        assert!(v_excl.validate(&json!(0)).await.is_err()); // exclusive
+        assert!(v_excl.validate(&json!(1)).await.is_ok());
+        assert!(v_excl.validate(&json!(100)).await.is_err()); // exclusive
+        assert!(v_excl.validate(&json!(99)).await.is_ok());
+
+        // multipleOf
+        let v_mult = SchemaValidator::new(json!({
+            "type": "number",
+            "multipleOf": 3
+        }));
+        assert!(v_mult.validate(&json!(9)).await.is_ok());
+        assert!(v_mult.validate(&json!(10)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_object_required_and_properties() {
+        let v = SchemaValidator::new(json!({
+            "type": "object",
+            "required": ["name", "age"],
+            "properties": {
+                "name": {"type": "string"},
+                "age": {"type": "number"}
+            }
+        }));
+
+        let valid = json!({"name": "Alice", "age": 30});
+        assert!(v.validate(&valid).await.is_ok());
+
+        // Missing required field
+        let missing_age = json!({"name": "Alice"});
+        assert!(v.validate(&missing_age).await.is_err());
+
+        // Wrong type for property
+        let wrong_type = json!({"name": 123, "age": 30});
+        assert!(v.validate(&wrong_type).await.is_err());
+
+        // Extra properties allowed by default
+        let extra = json!({"name": "Alice", "age": 30, "email": "a@b.com"});
+        assert!(v.validate(&extra).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_object_additional_properties() {
+        let v = SchemaValidator::new(json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            },
+            "additionalProperties": false
+        }))
+        .with_allow_additional(false);
+
+        let valid = json!({"name": "Alice"});
+        assert!(v.validate(&valid).await.is_ok());
+
+        let extra = json!({"name": "Alice", "extra": true});
+        assert!(v.validate(&extra).await.is_err());
+
+        // with_allow_additional(true) overrides
+        let v_allow = SchemaValidator::new(json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}}
+        }))
+        .with_allow_additional(true);
+        let extra2 = json!({"name": "Alice", "extra": true});
+        assert!(v_allow.validate(&extra2).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_array_constraints() {
+        // Items schema (all same type)
+        let v = SchemaValidator::new(json!({
+            "type": "array",
+            "items": {"type": "number"},
+            "minItems": 1,
+            "maxItems": 3,
+            "uniqueItems": true
+        }));
+
+        assert!(v.validate(&json!([1, 2, 3])).await.is_ok());
+        assert!(v.validate(&json!([])).await.is_err()); // minItems
+        assert!(v.validate(&json!([1, 2, 3, 4])).await.is_err()); // maxItems
+        assert!(v.validate(&json!([1, 1, 2])).await.is_err()); // uniqueItems
+        assert!(v.validate(&json!(["a"])).await.is_err()); // wrong item type
+
+        // Tuple validation
+        let v_tuple = SchemaValidator::new(json!({
+            "type": "array",
+            "items": [{"type": "string"}, {"type": "number"}]
+        }));
+        assert!(v_tuple.validate(&json!(["hello", 42])).await.is_ok());
+        assert!(v_tuple.validate(&json!([42, "hello"])).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_enum_const_ref_boolean_schema() {
+        // Enum
+        let v_enum = SchemaValidator::new(json!({"enum": ["red", "green", "blue"]}));
+        assert!(v_enum.validate(&json!("red")).await.is_ok());
+        assert!(v_enum.validate(&json!("yellow")).await.is_err());
+
+        // Const
+        let v_const = SchemaValidator::new(json!({"const": 42}));
+        assert!(v_const.validate(&json!(42)).await.is_ok());
+        assert!(v_const.validate(&json!(43)).await.is_err());
+
+        // $ref to definitions
+        let v_ref = SchemaValidator::new(json!({
+            "definitions": {
+                "port": {"type": "number", "minimum": 1, "maximum": 65535}
+            },
+            "type": "object",
+            "properties": {
+                "port": {"$ref": "#/definitions/port"}
+            }
+        }));
+        assert!(v_ref.validate(&json!({"port": 8080})).await.is_ok());
+        assert!(v_ref.validate(&json!({"port": 0})).await.is_err());
+        assert!(v_ref.validate(&json!({"port": 99999})).await.is_err());
+
+        // Unresolvable $ref
+        let v_bad_ref = SchemaValidator::new(json!({"$ref": "#/definitions/missing"}));
+        assert!(v_bad_ref.validate(&json!("anything")).await.is_err());
+
+        // Boolean schema
+        let v_true = SchemaValidator::new(json!(true));
+        assert!(v_true.validate(&json!("anything")).await.is_ok());
+
+        let v_false = SchemaValidator::new(json!(false));
+        assert!(v_false.validate(&json!("anything")).await.is_err());
+    }
+}

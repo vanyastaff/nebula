@@ -30,3 +30,20 @@ impl ConfigWatcher for NoOpWatcher {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_noop_watcher() {
+        let w = NoOpWatcher::new();
+        assert!(!w.is_watching());
+
+        w.start_watching(&[ConfigSource::Env]).await.unwrap();
+        assert!(!w.is_watching()); // still false — it's a no-op
+
+        w.stop_watching().await.unwrap();
+        assert!(!w.is_watching());
+    }
+}

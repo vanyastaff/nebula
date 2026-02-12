@@ -270,3 +270,97 @@ impl std::fmt::Debug for ConfigBuilder {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn test_builder_defaults_only() {
+        let config = ConfigBuilder::new()
+            .with_defaults_json(json!({"name": "app", "port": 8080}))
+            .build()
+            .await
+            .unwrap();
+
+        let name: String = config.get("name").await.unwrap();
+        assert_eq!(name, "app");
+        let port: u16 = config.get("port").await.unwrap();
+        assert_eq!(port, 8080);
+    }
+
+    #[tokio::test]
+    async fn test_builder_with_typed_defaults() {
+        #[derive(serde::Serialize)]
+        struct Defaults {
+            host: String,
+            port: u16,
+        }
+
+        let config = ConfigBuilder::new()
+            .with_defaults(Defaults {
+                host: "localhost".into(),
+                port: 3000,
+            })
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+
+        let host: String = config.get("host").await.unwrap();
+        assert_eq!(host, "localhost");
+    }
+
+    #[tokio::test]
+    async fn test_builder_no_sources_no_defaults_fails() {
+        let result = ConfigBuilder::new().build().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("No configuration sources"));
+    }
+
+    #[tokio::test]
+    async fn test_builder_with_validator() {
+        use crate::validators::FunctionValidator;
+
+        // Valid config passes
+        let config = ConfigBuilder::new()
+            .with_defaults_json(json!({"name": "app"}))
+            .with_validator(Arc::new(FunctionValidator::new(|data| {
+                if data.get("name").is_none() {
+                    Err(ConfigError::validation("name required"))
+                } else {
+                    Ok(())
+                }
+            })))
+            .build()
+            .await;
+        assert!(config.is_ok());
+
+        // Invalid config fails build
+        let result = ConfigBuilder::new()
+            .with_defaults_json(json!({"port": 8080}))
+            .with_validator(Arc::new(FunctionValidator::new(|data| {
+                if data.get("name").is_none() {
+                    Err(ConfigError::validation("name required"))
+                } else {
+                    Ok(())
+                }
+            })))
+            .build()
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_builder_debug() {
+        let builder = ConfigBuilder::new()
+            .with_source(ConfigSource::Env)
+            .with_hot_reload(true);
+        let debug = format!("{:?}", builder);
+        assert!(debug.contains("ConfigBuilder"));
+        assert!(debug.contains("sources"));
+        assert!(debug.contains("hot_reload"));
+    }
+}

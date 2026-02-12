@@ -160,3 +160,79 @@ impl ConfigValidator for CompositeValidator {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::validators::FunctionValidator;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn test_composite_empty_passes() {
+        let v = CompositeValidator::new();
+        assert!(v.validate(&json!({"any": "data"})).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_composite_all_pass() {
+        let v = CompositeValidator::new()
+            .add_validator(FunctionValidator::new(|_| Ok(())))
+            .add_validator(FunctionValidator::new(|_| Ok(())));
+        assert!(v.validate(&json!({})).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_composite_fail_fast() {
+        // fail_fast = true (default): stops at first error
+        let v = CompositeValidator::new()
+            .with_fail_fast(true)
+            .add_validator(FunctionValidator::new(|_| {
+                Err(crate::core::ConfigError::validation("error 1"))
+            }))
+            .add_validator(FunctionValidator::new(|_| {
+                Err(crate::core::ConfigError::validation("error 2"))
+            }));
+        let err = v.validate(&json!({})).await.unwrap_err();
+        assert!(err.to_string().contains("error 1"));
+
+        // fail_fast = false: collects all errors
+        let v2 = CompositeValidator::new()
+            .with_fail_fast(false)
+            .add_validator(FunctionValidator::new(|_| {
+                Err(crate::core::ConfigError::validation("err a"))
+            }))
+            .add_validator(FunctionValidator::new(|_| {
+                Err(crate::core::ConfigError::validation("err b"))
+            }));
+        let err = v2.validate(&json!({})).await.unwrap_err();
+        assert!(err.to_string().contains("2 errors"));
+    }
+
+    #[tokio::test]
+    async fn test_composite_schema_combination() {
+        let with_schema = FunctionValidator::with_schema(|_| Ok(()), json!({"type": "object"}));
+        let no_schema = FunctionValidator::new(|_| Ok(()));
+
+        // All have schemas → allOf
+        let v = CompositeValidator::new()
+            .add_validator(FunctionValidator::with_schema(
+                |_| Ok(()),
+                json!({"type": "object"}),
+            ))
+            .add_validator(FunctionValidator::with_schema(
+                |_| Ok(()),
+                json!({"required": ["name"]}),
+            ));
+        let schema = v.schema().unwrap();
+        assert!(schema.get("allOf").is_some());
+
+        // Mixed → None
+        let v2 = CompositeValidator::new()
+            .add_validator(with_schema)
+            .add_validator(no_schema);
+        assert!(v2.schema().is_none());
+
+        // Empty → None
+        assert!(CompositeValidator::new().schema().is_none());
+    }
+}

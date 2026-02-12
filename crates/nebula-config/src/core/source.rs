@@ -363,3 +363,135 @@ impl std::fmt::Display for ConfigFormat {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_config_source_type_checks() {
+        let file = ConfigSource::File(PathBuf::from("config.json"));
+        assert!(file.is_file_based());
+        assert!(!file.is_env_based());
+        assert!(!file.is_remote());
+        assert!(!file.is_database());
+        assert!(!file.is_key_value());
+
+        assert!(ConfigSource::FileAuto(PathBuf::from("f")).is_file_based());
+        assert!(ConfigSource::Directory(PathBuf::from("d")).is_file_based());
+
+        assert!(ConfigSource::Env.is_env_based());
+        assert!(ConfigSource::EnvWithPrefix("APP".into()).is_env_based());
+        assert!(!ConfigSource::Env.is_file_based());
+
+        assert!(ConfigSource::Remote("http://x".into()).is_remote());
+
+        let db = ConfigSource::Database {
+            url: "pg://".into(),
+            table: "t".into(),
+            key: "k".into(),
+        };
+        assert!(db.is_database());
+        assert!(!db.is_key_value());
+
+        let kv = ConfigSource::KeyValue {
+            url: "redis://".into(),
+            bucket: "b".into(),
+        };
+        assert!(kv.is_key_value());
+        assert!(!kv.is_database());
+    }
+
+    #[test]
+    fn test_config_source_optional_and_priority() {
+        assert!(ConfigSource::Env.is_optional());
+        assert!(ConfigSource::EnvWithPrefix("X".into()).is_optional());
+        assert!(ConfigSource::Default.is_optional());
+        assert!(!ConfigSource::File(PathBuf::from("f")).is_optional());
+        assert!(!ConfigSource::Remote("http://x".into()).is_optional());
+
+        assert_eq!(ConfigSource::Default.priority(), 100);
+        assert_eq!(ConfigSource::File(PathBuf::from("f")).priority(), 50);
+        assert_eq!(ConfigSource::Env.priority(), 30);
+        assert_eq!(ConfigSource::CommandLine.priority(), 20);
+        assert_eq!(ConfigSource::Remote("u".into()).priority(), 10);
+        assert_eq!(ConfigSource::Inline("x".into()).priority(), 1);
+    }
+
+    #[test]
+    fn test_config_source_name_and_display() {
+        assert_eq!(ConfigSource::Env.name(), "environment");
+        assert_eq!(ConfigSource::Default.name(), "default");
+        assert_eq!(ConfigSource::CommandLine.name(), "command line");
+        assert_eq!(ConfigSource::File(PathBuf::from("f.json")).name(), "file");
+
+        let display = format!("{}", ConfigSource::Env);
+        assert_eq!(display, "environment variables");
+
+        let display = format!("{}", ConfigSource::EnvWithPrefix("APP".into()));
+        assert!(display.contains("APP"));
+
+        let display = format!("{}", ConfigSource::File(PathBuf::from("config.json")));
+        assert!(display.contains("config.json"));
+    }
+
+    #[test]
+    fn test_config_format_extension_mime_from() {
+        assert_eq!(ConfigFormat::Json.extension(), "json");
+        assert_eq!(ConfigFormat::Toml.extension(), "toml");
+        assert_eq!(ConfigFormat::Yaml.extension(), "yml");
+        assert_eq!(ConfigFormat::Ini.extension(), "ini");
+
+        assert_eq!(ConfigFormat::Json.mime_type(), "application/json");
+        assert_eq!(ConfigFormat::Yaml.mime_type(), "application/x-yaml");
+        assert_eq!(ConfigFormat::Ini.mime_type(), "text/plain");
+
+        assert_eq!(ConfigFormat::from_extension("json"), ConfigFormat::Json);
+        assert_eq!(ConfigFormat::from_extension("yml"), ConfigFormat::Yaml);
+        assert_eq!(ConfigFormat::from_extension("yaml"), ConfigFormat::Yaml);
+        assert_eq!(ConfigFormat::from_extension("ini"), ConfigFormat::Ini);
+        assert_eq!(ConfigFormat::from_extension("cfg"), ConfigFormat::Ini);
+        assert_eq!(ConfigFormat::from_extension("tf"), ConfigFormat::Hcl);
+        assert_eq!(
+            ConfigFormat::from_extension("props"),
+            ConfigFormat::Properties
+        );
+        assert!(matches!(
+            ConfigFormat::from_extension("xyz"),
+            ConfigFormat::Unknown(_)
+        ));
+
+        assert_eq!(
+            ConfigFormat::from_path(Path::new("config.toml")),
+            ConfigFormat::Toml
+        );
+        assert!(matches!(
+            ConfigFormat::from_path(Path::new("noext")),
+            ConfigFormat::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn test_source_metadata_builder() {
+        let meta = SourceMetadata::new(ConfigSource::Default)
+            .with_version("1.0")
+            .with_checksum("abc123")
+            .with_size(1024)
+            .with_format(ConfigFormat::Json)
+            .with_encoding("utf-8")
+            .with_compression("gzip")
+            .with_encryption("aes-256")
+            .with_extra("custom", serde_json::json!("value"));
+
+        assert_eq!(meta.source, ConfigSource::Default);
+        assert_eq!(meta.version.as_deref(), Some("1.0"));
+        assert_eq!(meta.checksum.as_deref(), Some("abc123"));
+        assert_eq!(meta.size, Some(1024));
+        assert_eq!(meta.format, Some(ConfigFormat::Json));
+        assert_eq!(meta.encoding.as_deref(), Some("utf-8"));
+        assert_eq!(meta.compression.as_deref(), Some("gzip"));
+        assert_eq!(meta.encryption.as_deref(), Some("aes-256"));
+        assert_eq!(meta.extra["custom"], serde_json::json!("value"));
+    }
+}

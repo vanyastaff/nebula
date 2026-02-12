@@ -20,3 +20,18 @@ impl ConfigValidator for NoOpValidator {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn test_noop_validator_always_passes() {
+        let v = NoOpValidator::new();
+        assert!(v.validate(&json!(null)).await.is_ok());
+        assert!(v.validate(&json!({"any": "data"})).await.is_ok());
+        assert!(v.validate(&json!([1, 2, 3])).await.is_ok());
+        assert!(v.schema().is_none());
+    }
+}
