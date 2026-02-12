@@ -156,7 +156,7 @@ impl<T> Validate for Unique<T>
 where
     T: Hash + Eq,
 {
-    type Input = Vec<T>;
+    type Input = [T];
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         let mut seen = HashSet::new();

@@ -16,11 +16,8 @@ pub struct MinSize<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validate for MinSize<T>
-where
-    T: Clone,
-{
-    type Input = Vec<T>;
+impl<T> Validate for MinSize<T> {
+    type Input = [T];
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         let size = input.len();
@@ -58,10 +55,7 @@ where
 /// assert!(validator.validate(&vec![1, 2]).is_err());
 /// ```
 #[must_use]
-pub fn min_size<T>(min: usize) -> MinSize<T>
-where
-    T: Clone,
-{
+pub fn min_size<T>(min: usize) -> MinSize<T> {
     MinSize {
         min,
         _phantom: PhantomData,
@@ -79,11 +73,8 @@ pub struct MaxSize<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validate for MaxSize<T>
-where
-    T: Clone,
-{
-    type Input = Vec<T>;
+impl<T> Validate for MaxSize<T> {
+    type Input = [T];
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         let size = input.len();
@@ -121,10 +112,7 @@ where
 /// assert!(validator.validate(&vec![1, 2, 3, 4]).is_err());
 /// ```
 #[must_use]
-pub fn max_size<T>(max: usize) -> MaxSize<T>
-where
-    T: Clone,
-{
+pub fn max_size<T>(max: usize) -> MaxSize<T> {
     MaxSize {
         max,
         _phantom: PhantomData,
@@ -142,11 +130,8 @@ pub struct ExactSize<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validate for ExactSize<T>
-where
-    T: Clone,
-{
-    type Input = Vec<T>;
+impl<T> Validate for ExactSize<T> {
+    type Input = [T];
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         let actual_size = input.len();
@@ -185,10 +170,7 @@ where
 /// assert!(validator.validate(&vec![1, 2, 3, 4]).is_err());
 /// ```
 #[must_use]
-pub fn exact_size<T>(size: usize) -> ExactSize<T>
-where
-    T: Clone,
-{
+pub fn exact_size<T>(size: usize) -> ExactSize<T> {
     ExactSize {
         size,
         _phantom: PhantomData,
@@ -205,11 +187,8 @@ pub struct NotEmptyCollection<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validate for NotEmptyCollection<T>
-where
-    T: Clone,
-{
-    type Input = Vec<T>;
+impl<T> Validate for NotEmptyCollection<T> {
+    type Input = [T];
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         if input.is_empty() {
@@ -243,10 +222,7 @@ where
 /// assert!(validator.validate(&vec![]).is_err());
 /// ```
 #[must_use]
-pub fn not_empty_collection<T>() -> NotEmptyCollection<T>
-where
-    T: Clone,
-{
+pub fn not_empty_collection<T>() -> NotEmptyCollection<T> {
     NotEmptyCollection {
         _phantom: PhantomData,
     }
@@ -264,11 +240,8 @@ pub struct SizeRange<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validate for SizeRange<T>
-where
-    T: Clone,
-{
-    type Input = Vec<T>;
+impl<T> Validate for SizeRange<T> {
+    type Input = [T];
 
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         let size = input.len();
@@ -311,10 +284,7 @@ where
 /// assert!(validator.validate(&vec![1, 2, 3, 4, 5]).is_err());
 /// ```
 #[must_use]
-pub fn size_range<T>(min: usize, max: usize) -> SizeRange<T>
-where
-    T: Clone,
-{
+pub fn size_range<T>(min: usize, max: usize) -> SizeRange<T> {
     SizeRange {
         min,
         max,

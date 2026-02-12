@@ -99,6 +99,9 @@ pub mod or;
 pub mod unless;
 pub mod when;
 
+#[cfg(feature = "serde")]
+pub mod json_field;
+
 // Re-export all combinator types
 pub use and::{And, AndAll, and, and_all};
 pub use cached::{CacheStats, Cached, cached};
@@ -122,6 +125,9 @@ pub use optional::{Optional, optional};
 pub use or::{Or, OrAny, or, or_any};
 pub use unless::{Unless, unless};
 pub use when::{When, when};
+
+#[cfg(feature = "serde")]
+pub use json_field::{JsonField, json_field, json_field_optional};
 
 // TODO: Re-enable when lru crate is added as dependency
 // #[cfg(feature = "lru")]
@@ -150,6 +156,9 @@ pub mod prelude {
         lazy, map, map_to, named_field, not, optional, or, or_any, unless, when, with_code,
         with_message,
     };
+
+    #[cfg(feature = "serde")]
+    pub use super::{JsonField, json_field, json_field_optional};
 }
 
 // ============================================================================

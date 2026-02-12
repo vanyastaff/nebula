@@ -246,6 +246,127 @@ impl AsValidatable<f64> for i32 {
     }
 }
 
+// ============================================================================
+// SERDE JSON VALUE CONVERSIONS
+// ============================================================================
+
+/// Returns a human-readable type name for a JSON value.
+#[cfg(feature = "serde")]
+pub(crate) fn json_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+#[cfg(feature = "serde")]
+impl AsValidatable<str> for serde_json::Value {
+    type Output<'a>
+        = &'a str
+    where
+        Self: 'a;
+
+    #[inline]
+    fn as_validatable(&self) -> Result<&str, ValidationError> {
+        match self {
+            serde_json::Value::String(s) => Ok(s.as_str()),
+            other => Err(ValidationError::new(
+                "type_mismatch",
+                format!("Expected string, got {}", json_type_name(other)),
+            )
+            .with_param("expected", "string")
+            .with_param("actual", json_type_name(other))),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl AsValidatable<i64> for serde_json::Value {
+    type Output<'a> = i64;
+
+    #[inline]
+    fn as_validatable(&self) -> Result<i64, ValidationError> {
+        match self {
+            serde_json::Value::Number(n) => n.as_i64().ok_or_else(|| {
+                ValidationError::new("type_mismatch", format!("Expected integer, got {n}"))
+                    .with_param("expected", "integer")
+                    .with_param("actual", "number")
+            }),
+            other => Err(ValidationError::new(
+                "type_mismatch",
+                format!("Expected integer, got {}", json_type_name(other)),
+            )
+            .with_param("expected", "integer")
+            .with_param("actual", json_type_name(other))),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl AsValidatable<f64> for serde_json::Value {
+    type Output<'a> = f64;
+
+    #[inline]
+    fn as_validatable(&self) -> Result<f64, ValidationError> {
+        match self {
+            serde_json::Value::Number(n) => n.as_f64().ok_or_else(|| {
+                ValidationError::new("type_mismatch", format!("Expected number, got {n}"))
+                    .with_param("expected", "number")
+                    .with_param("actual", "number")
+            }),
+            other => Err(ValidationError::new(
+                "type_mismatch",
+                format!("Expected number, got {}", json_type_name(other)),
+            )
+            .with_param("expected", "number")
+            .with_param("actual", json_type_name(other))),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl AsValidatable<bool> for serde_json::Value {
+    type Output<'a> = bool;
+
+    #[inline]
+    fn as_validatable(&self) -> Result<bool, ValidationError> {
+        match self {
+            serde_json::Value::Bool(b) => Ok(*b),
+            other => Err(ValidationError::new(
+                "type_mismatch",
+                format!("Expected boolean, got {}", json_type_name(other)),
+            )
+            .with_param("expected", "boolean")
+            .with_param("actual", json_type_name(other))),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl AsValidatable<[serde_json::Value]> for serde_json::Value {
+    type Output<'a>
+        = &'a [serde_json::Value]
+    where
+        Self: 'a;
+
+    #[inline]
+    fn as_validatable(&self) -> Result<&[serde_json::Value], ValidationError> {
+        match self {
+            serde_json::Value::Array(arr) => Ok(arr.as_slice()),
+            other => Err(ValidationError::new(
+                "type_mismatch",
+                format!("Expected array, got {}", json_type_name(other)),
+            )
+            .with_param("expected", "array")
+            .with_param("actual", json_type_name(other))),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,5 +493,112 @@ mod tests {
 
         // Works with u8
         assert!(validator.validate_any(&42u8).is_ok());
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "serde")]
+mod serde_json_tests {
+    use super::*;
+    use crate::core::Validate;
+    use serde_json::json;
+
+    // -- str --
+
+    #[test]
+    fn value_string_as_str() {
+        let value = json!("hello");
+        let result = AsValidatable::<str>::as_validatable(&value).unwrap();
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn value_number_as_str_fails() {
+        let err = AsValidatable::<str>::as_validatable(&json!(42)).unwrap_err();
+        assert_eq!(err.code.as_ref(), "type_mismatch");
+        assert_eq!(err.param("expected"), Some("string"));
+        assert_eq!(err.param("actual"), Some("number"));
+    }
+
+    #[test]
+    fn value_null_as_str_fails() {
+        let err = AsValidatable::<str>::as_validatable(&json!(null)).unwrap_err();
+        assert_eq!(err.param("actual"), Some("null"));
+    }
+
+    // -- i64 --
+
+    #[test]
+    fn value_integer_as_i64() {
+        let result = AsValidatable::<i64>::as_validatable(&json!(42)).unwrap();
+        assert_eq!(*result.borrow(), 42i64);
+    }
+
+    #[test]
+    fn value_float_as_i64_fails() {
+        assert!(AsValidatable::<i64>::as_validatable(&json!(3.14)).is_err());
+    }
+
+    #[test]
+    fn value_string_as_i64_fails() {
+        assert!(AsValidatable::<i64>::as_validatable(&json!("42")).is_err());
+    }
+
+    // -- f64 --
+
+    #[test]
+    fn value_float_as_f64() {
+        let result = AsValidatable::<f64>::as_validatable(&json!(3.14)).unwrap();
+        assert!((result.borrow() - 3.14).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn value_integer_widens_to_f64() {
+        let result = AsValidatable::<f64>::as_validatable(&json!(42)).unwrap();
+        assert_eq!(*result.borrow(), 42.0);
+    }
+
+    #[test]
+    fn value_string_as_f64_fails() {
+        assert!(AsValidatable::<f64>::as_validatable(&json!("3.14")).is_err());
+    }
+
+    // -- bool --
+
+    #[test]
+    fn value_bool_as_bool() {
+        assert!(AsValidatable::<bool>::as_validatable(&json!(true)).unwrap());
+        assert!(!AsValidatable::<bool>::as_validatable(&json!(false)).unwrap());
+    }
+
+    #[test]
+    fn value_string_as_bool_fails() {
+        assert!(AsValidatable::<bool>::as_validatable(&json!("true")).is_err());
+    }
+
+    // -- [Value] --
+
+    #[test]
+    fn value_array_as_slice() {
+        let value = json!([1, 2, 3]);
+        let result = AsValidatable::<[serde_json::Value]>::as_validatable(&value).unwrap();
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn value_string_as_slice_fails() {
+        assert!(AsValidatable::<[serde_json::Value]>::as_validatable(&json!("not array")).is_err());
+    }
+
+    // -- validate_any integration --
+
+    #[test]
+    fn validate_any_str_validator_with_json_value() {
+        use crate::validators::string::min_length;
+
+        let validator = min_length(3);
+        assert!(validator.validate_any(&json!("hello")).is_ok());
+        assert!(validator.validate_any(&json!("hi")).is_err());
+        assert!(validator.validate_any(&json!(42)).is_err()); // type mismatch
     }
 }
