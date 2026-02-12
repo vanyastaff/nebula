@@ -38,6 +38,10 @@ tokio-test = "0.4"
 # Benchmarking
 criterion = { workspace = true }
 
+[[example]]
+name = "json_validation"
+required-features = ["serde"]
+
 [[bench]]
 name = "string_validators"
 harness = false

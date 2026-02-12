@@ -107,13 +107,15 @@ impl<V: Clone> Clone for JsonField<V> {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```
 /// use nebula_validator::combinators::json_field;
-/// use nebula_validator::validators::string::min_length;
-/// use nebula_validator::core::{Validate, ValidateExt};
+/// use nebula_validator::validators::numeric::min;
+/// use nebula_validator::core::Validate;
+/// use serde_json::json;
 ///
-/// let v = json_field("/host", min_length(1))
-///     .and(json_field("/port", min_value(1)));
+/// let v = json_field("/port", min::<i64>(1));
+/// assert!(v.validate(&json!({"port": 8080})).is_ok());
+/// assert!(v.validate(&json!({"port": 0})).is_err());
 /// ```
 pub fn json_field<V>(pointer: impl Into<Cow<'static, str>>, validator: V) -> JsonField<V> {
     JsonField::required(pointer, validator)
@@ -122,6 +124,20 @@ pub fn json_field<V>(pointer: impl Into<Cow<'static, str>>, validator: V) -> Jso
 /// Creates an optional JSON field validator.
 ///
 /// Missing paths and `null` values pass validation silently.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_validator::combinators::json_field_optional;
+/// use nebula_validator::validators::string::min_length;
+/// use nebula_validator::core::Validate;
+/// use serde_json::json;
+///
+/// let v = json_field_optional("/email", min_length(5));
+/// assert!(v.validate(&json!({"name": "Alice"})).is_ok()); // missing = ok
+/// assert!(v.validate(&json!({"email": null})).is_ok());    // null = ok
+/// assert!(v.validate(&json!({"email": "a@b.c"})).is_ok()); // valid = ok
+/// ```
 pub fn json_field_optional<V>(pointer: impl Into<Cow<'static, str>>, validator: V) -> JsonField<V> {
     JsonField::optional(pointer, validator)
 }
