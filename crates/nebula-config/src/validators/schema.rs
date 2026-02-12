@@ -1,5 +1,6 @@
 //! JSON Schema-based configuration validator
 
+use crate::core::config::json_type_name;
 use crate::core::{ConfigError, ConfigResult, ConfigValidator};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -154,7 +155,7 @@ impl SchemaValidator {
             return Ok(());
         };
 
-        let data_type = self.get_json_type(data);
+        let data_type = json_type_name(data);
 
         if !types.contains(&data_type) {
             // Try type coercion if enabled
@@ -195,9 +196,7 @@ impl SchemaValidator {
         path: &str,
     ) -> ConfigResult<()> {
         // Check required fields
-        if let Some(required) = schema_obj.get("required")
-            && let Some(required_array) = required.as_array()
-        {
+        if let Some(required_array) = schema_obj.get("required").and_then(Value::as_array) {
             for required_field in required_array {
                 if let Some(field_name) = required_field.as_str()
                     && !obj.contains_key(field_name)
@@ -211,9 +210,7 @@ impl SchemaValidator {
         }
 
         // Check properties
-        if let Some(properties) = schema_obj.get("properties")
-            && let Some(properties_obj) = properties.as_object()
-        {
+        if let Some(properties_obj) = schema_obj.get("properties").and_then(Value::as_object) {
             for (prop_name, prop_data) in obj {
                 let new_path = if path.is_empty() {
                     prop_name.clone()
@@ -241,8 +238,7 @@ impl SchemaValidator {
         }
 
         // Check property count
-        if let Some(min_props) = schema_obj.get("minProperties")
-            && let Some(min) = min_props.as_u64()
+        if let Some(min) = schema_obj.get("minProperties").and_then(Value::as_u64)
             && (obj.len() as u64) < min
         {
             return Err(ConfigError::validation_error(
@@ -251,8 +247,7 @@ impl SchemaValidator {
             ));
         }
 
-        if let Some(max_props) = schema_obj.get("maxProperties")
-            && let Some(max) = max_props.as_u64()
+        if let Some(max) = schema_obj.get("maxProperties").and_then(Value::as_u64)
             && (obj.len() as u64) > max
         {
             return Err(ConfigError::validation_error(
@@ -273,7 +268,7 @@ impl SchemaValidator {
     ) -> ConfigResult<()> {
         // Check items schema
         if let Some(items) = schema_obj.get("items") {
-            if let Some(_items_schema) = items.as_object() {
+            if items.is_object() {
                 for (i, item) in arr.iter().enumerate() {
                     let new_path = format!("{}[{}]", path, i);
                     self.validate_recursive(item, items, &new_path)?;
@@ -290,8 +285,7 @@ impl SchemaValidator {
         }
 
         // Check array length
-        if let Some(min_items) = schema_obj.get("minItems")
-            && let Some(min) = min_items.as_u64()
+        if let Some(min) = schema_obj.get("minItems").and_then(Value::as_u64)
             && (arr.len() as u64) < min
         {
             return Err(ConfigError::validation_error(
@@ -300,8 +294,7 @@ impl SchemaValidator {
             ));
         }
 
-        if let Some(max_items) = schema_obj.get("maxItems")
-            && let Some(max) = max_items.as_u64()
+        if let Some(max) = schema_obj.get("maxItems").and_then(Value::as_u64)
             && (arr.len() as u64) > max
         {
             return Err(ConfigError::validation_error(
@@ -337,8 +330,7 @@ impl SchemaValidator {
         path: &str,
     ) -> ConfigResult<()> {
         // Check length constraints
-        if let Some(min_length) = schema_obj.get("minLength")
-            && let Some(min) = min_length.as_u64()
+        if let Some(min) = schema_obj.get("minLength").and_then(Value::as_u64)
             && (s.len() as u64) < min
         {
             return Err(ConfigError::validation_error(
@@ -347,8 +339,7 @@ impl SchemaValidator {
             ));
         }
 
-        if let Some(max_length) = schema_obj.get("maxLength")
-            && let Some(max) = max_length.as_u64()
+        if let Some(max) = schema_obj.get("maxLength").and_then(Value::as_u64)
             && (s.len() as u64) > max
         {
             return Err(ConfigError::validation_error(
@@ -358,9 +349,7 @@ impl SchemaValidator {
         }
 
         // Check pattern (with compiled regex cache)
-        if let Some(pattern) = schema_obj.get("pattern")
-            && let Some(pattern_str) = pattern.as_str()
-        {
+        if let Some(pattern_str) = schema_obj.get("pattern").and_then(Value::as_str) {
             let matches = {
                 let mut cache = self.regex_cache.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(re) = cache.get(pattern_str) {
@@ -388,9 +377,7 @@ impl SchemaValidator {
         }
 
         // Check format
-        if let Some(format) = schema_obj.get("format")
-            && let Some(format_str) = format.as_str()
-        {
+        if let Some(format_str) = schema_obj.get("format").and_then(Value::as_str) {
             self.validate_string_format(s, format_str, path)?;
         }
 
@@ -407,9 +394,7 @@ impl SchemaValidator {
         let value = n.as_f64().unwrap_or(0.0);
 
         // Check minimum
-        if let Some(minimum) = schema_obj.get("minimum")
-            && let Some(min) = minimum.as_f64()
-        {
+        if let Some(min) = schema_obj.get("minimum").and_then(Value::as_f64) {
             let exclusive = schema_obj
                 .get("exclusiveMinimum")
                 .and_then(|v| v.as_bool())
@@ -433,9 +418,7 @@ impl SchemaValidator {
         }
 
         // Check maximum
-        if let Some(maximum) = schema_obj.get("maximum")
-            && let Some(max) = maximum.as_f64()
-        {
+        if let Some(max) = schema_obj.get("maximum").and_then(Value::as_f64) {
             let exclusive = schema_obj
                 .get("exclusiveMaximum")
                 .and_then(|v| v.as_bool())
@@ -455,8 +438,7 @@ impl SchemaValidator {
         }
 
         // Check multipleOf
-        if let Some(multiple_of) = schema_obj.get("multipleOf")
-            && let Some(divisor) = multiple_of.as_f64()
+        if let Some(divisor) = schema_obj.get("multipleOf").and_then(Value::as_f64)
             && divisor != 0.0
         {
             let remainder = value % divisor;
@@ -510,18 +492,6 @@ impl SchemaValidator {
             format!("Cannot resolve reference '{ref_str}' at path '{path}'"),
             Some(path.to_string()),
         ))
-    }
-
-    /// Get JSON type name (zero-alloc)
-    fn get_json_type(&self, value: &Value) -> &'static str {
-        match value {
-            Value::Null => "null",
-            Value::Bool(_) => "boolean",
-            Value::Number(_) => "number",
-            Value::String(_) => "string",
-            Value::Array(_) => "array",
-            Value::Object(_) => "object",
-        }
     }
 
     /// Check if value can be coerced to target types (no String allocation for comparison)

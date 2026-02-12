@@ -56,16 +56,6 @@ impl FileLoader {
             path.to_path_buf()
         }
     }
-
-    /// Parse configuration content based on format
-    fn parse_content(
-        &self,
-        content: &str,
-        format: ConfigFormat,
-        path: &Path,
-    ) -> ConfigResult<serde_json::Value> {
-        parse_content(content, format, path)
-    }
 }
 
 // ==================== Standalone parsing functions ====================
@@ -189,20 +179,11 @@ fn parse_ini(content: &str, path: &Path) -> ConfigResult<serde_json::Value> {
         }
 
         if line.starts_with('[') && line.ends_with(']') {
-            current_section = Some(line[1..line.len() - 1].to_string());
-            if let Some(section) = &current_section {
-                if !result.contains_key(section) {
-                    result.insert(
-                        section.clone(),
-                        serde_json::Value::Object(serde_json::Map::new()),
-                    );
-                }
-            } else {
-                return Err(ConfigError::parse_error(
-                    path,
-                    "Section header missing name",
-                ));
-            }
+            let section = line[1..line.len() - 1].to_string();
+            result
+                .entry(section.clone())
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            current_section = Some(section);
             continue;
         }
 
@@ -323,7 +304,7 @@ impl ConfigLoader for FileLoader {
                     .map_err(|e| ConfigError::file_read_error(&resolved_path, e.to_string()))?;
 
                 let format = ConfigFormat::from_path(&resolved_path);
-                self.parse_content(&content, format, &resolved_path)
+                parse_content(&content, format, &resolved_path)
             }
             ConfigSource::Directory(dir_path) => self.load_directory(dir_path).await,
             _ => Err(ConfigError::source_error(
@@ -426,7 +407,7 @@ impl FileLoader {
                 .await
                 .map_err(|e| ConfigError::file_read_error(&path, e.to_string()))?;
 
-            let value = self.parse_content(&content, format, &path)?;
+            let value = parse_content(&content, format, &path)?;
 
             // Use filename without extension as key
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 /// Configuration error type
+#[non_exhaustive]
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum ConfigError {
     /// Configuration file not found
@@ -283,9 +284,42 @@ impl ConfigError {
             }
         }
     }
+
+    /// Create a simple validation error
+    pub fn validation(message: impl Into<String>) -> Self {
+        Self::ValidationError {
+            message: message.into(),
+            field: None,
+        }
+    }
+
+    /// Create a validation error with field
+    pub fn validation_with_field(message: impl Into<String>, field: impl Into<String>) -> Self {
+        Self::ValidationError {
+            message: message.into(),
+            field: Some(field.into()),
+        }
+    }
+
+    /// Create a not found error for a generic resource
+    pub fn not_found(resource_type: impl Into<String>, resource_id: impl Into<String>) -> Self {
+        let resource_type_str = resource_type.into();
+        let resource_id_str = resource_id.into();
+        match resource_type_str.as_str() {
+            "file" => Self::file_not_found(PathBuf::from(resource_id_str)),
+            "env" => Self::env_var_not_found(resource_id_str),
+            _ => Self::source_error(format!("{resource_type_str} not found"), resource_id_str),
+        }
+    }
+
+    /// Create an internal error
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::source_error(message, "internal")
+    }
 }
 
 /// Error category for grouping errors
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCategory {
     /// Resource not found
@@ -344,38 +378,3 @@ impl From<notify::Error> for ConfigError {
 
 // ConfigError can be converted to other error types as needed
 // by implementing From traits in consuming crates
-
-/// Helper functions for creating ConfigErrors with better integration
-impl ConfigError {
-    /// Create a simple validation error
-    pub fn validation(message: impl Into<String>) -> Self {
-        Self::ValidationError {
-            message: message.into(),
-            field: None,
-        }
-    }
-
-    /// Create a validation error with field
-    pub fn validation_with_field(message: impl Into<String>, field: impl Into<String>) -> Self {
-        Self::ValidationError {
-            message: message.into(),
-            field: Some(field.into()),
-        }
-    }
-
-    /// Create a not found error for a generic resource
-    pub fn not_found(resource_type: impl Into<String>, resource_id: impl Into<String>) -> Self {
-        let resource_type_str = resource_type.into();
-        let resource_id_str = resource_id.into();
-        match resource_type_str.as_str() {
-            "file" => Self::file_not_found(PathBuf::from(resource_id_str)),
-            "env" => Self::env_var_not_found(resource_id_str),
-            _ => Self::source_error(format!("{resource_type_str} not found"), resource_id_str),
-        }
-    }
-
-    /// Create an internal error
-    pub fn internal(message: impl Into<String>) -> Self {
-        Self::source_error(message, "internal")
-    }
-}

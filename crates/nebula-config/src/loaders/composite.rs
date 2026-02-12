@@ -83,16 +83,12 @@ impl CompositeLoader {
                 Ok(value) => return Ok(value),
                 Err(e) => {
                     nebula_log::debug!("Loader failed for source {}: {}", source.name(), e);
-                    last_error = Some(e);
 
                     if self.fail_fast {
-                        return Err(last_error.unwrap_or_else(|| {
-                            ConfigError::source_error(
-                                "Loader failed without an error".to_string(),
-                                source.name(),
-                            )
-                        }));
+                        return Err(e);
                     }
+
+                    last_error = Some(e);
                 }
             }
         }

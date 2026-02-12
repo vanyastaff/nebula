@@ -88,6 +88,7 @@ impl Config {
     }
 
     /// Get configuration value by path (alias for get)
+    #[deprecated(since = "0.2.0", note = "use `get` instead")]
     pub async fn get_path<T>(&self, path: &str) -> ConfigResult<T>
     where
         T: DeserializeOwned,
@@ -396,15 +397,6 @@ impl Config {
         Ok(())
     }
 
-    /// Merge two JSON values (delegates to free function)
-    pub(crate) fn merge_values(
-        &self,
-        target: &mut serde_json::Value,
-        source: serde_json::Value,
-    ) -> ConfigResult<()> {
-        merge_json(target, source)
-    }
-
     // ==================== Dynamic Value Integration ====================
 
     /// Get entire configuration as dynamic value
@@ -420,32 +412,11 @@ impl Config {
         Ok(json_value.clone())
     }
 
-    /// Set configuration value from dynamic value
+    /// Set configuration value by path
     pub async fn set_value(&self, path: &str, value: serde_json::Value) -> ConfigResult<()> {
-        self.set_json_path(path, value).await
-    }
-
-    /// Set configuration value by path with JSON value
-    pub async fn set_json_path(&self, path: &str, value: serde_json::Value) -> ConfigResult<()> {
         let mut data = self.data.write().await;
         self.set_nested_value(&mut data, path, value)?;
         Ok(())
-    }
-
-    /// Get typed configuration with automatic deserialization
-    pub async fn get_typed<T>(&self, path: &str) -> ConfigResult<T>
-    where
-        T: DeserializeOwned,
-    {
-        let data = self.data.read().await;
-        let json_value = self.get_nested_value(&data, path)?;
-        T::deserialize(json_value).map_err(|e| {
-            ConfigError::type_error(
-                format!("Failed to deserialize: {e}"),
-                std::any::type_name::<T>(),
-                "JSON value",
-            )
-        })
     }
 
     /// Set typed configuration with automatic serialization
@@ -460,7 +431,7 @@ impl Config {
                 std::any::type_name::<T>(),
             )
         })?;
-        self.set_json_path(path, json_value).await
+        self.set_value(path, json_value).await
     }
 
     /// Get all configuration as flat key-value map
@@ -474,12 +445,12 @@ impl Config {
     /// Merge configuration from dynamic value
     pub async fn merge(&self, value: serde_json::Value) -> ConfigResult<()> {
         let mut data = self.data.write().await;
-        self.merge_values(&mut data, value)
+        merge_json(&mut data, value)
     }
 }
 
 /// Get human-readable type name for a JSON value (zero-alloc)
-fn json_type_name(value: &serde_json::Value) -> &'static str {
+pub(crate) fn json_type_name(value: &serde_json::Value) -> &'static str {
     match value {
         serde_json::Value::Null => "null",
         serde_json::Value::Bool(_) => "boolean",
@@ -542,6 +513,18 @@ fn flatten_into(
         _ => {
             map.insert(prefix.to_string(), value.clone());
         }
+    }
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("sources", &self.sources.len())
+            .field("hot_reload", &self.hot_reload)
+            .field("watching", &self.is_watching())
+            .field("has_validator", &self.validator.is_some())
+            .field("has_watcher", &self.watcher.is_some())
+            .finish()
     }
 }
 

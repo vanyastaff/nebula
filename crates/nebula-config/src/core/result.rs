@@ -143,10 +143,7 @@ impl ConfigResultAggregator {
         if self.errors.is_empty() {
             Ok(())
         } else if self.errors.len() == 1 {
-            match self.errors.into_iter().next() {
-                Some(err) => Err(err),
-                None => Ok(()),
-            }
+            Err(self.errors.into_iter().next().expect("len checked above"))
         } else {
             let message = if let Some(ctx) = self.context {
                 format!(
@@ -213,42 +210,6 @@ where
         message: "No sources provided".to_string(),
         origin: "try_sources".to_string(),
     }))
-}
-
-/// Helper for optional operations that may fail
-pub struct OptionalResult<T> {
-    result: Option<ConfigResult<T>>,
-}
-
-impl<T> OptionalResult<T> {
-    /// Create from optional result
-    pub fn new(result: Option<ConfigResult<T>>) -> Self {
-        Self { result }
-    }
-
-    /// Unwrap or return default value
-    pub fn unwrap_or(self, default: T) -> T {
-        match self.result {
-            Some(Ok(value)) => value,
-            _ => default,
-        }
-    }
-
-    /// Unwrap or compute default
-    pub fn unwrap_or_else<F>(self, f: F) -> T
-    where
-        F: FnOnce() -> T,
-    {
-        match self.result {
-            Some(Ok(value)) => value,
-            _ => f(),
-        }
-    }
-
-    /// Try to unwrap, returning None on error
-    pub fn ok(self) -> Option<T> {
-        self.result.and_then(|r| r.ok())
-    }
 }
 
 #[cfg(test)]

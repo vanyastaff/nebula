@@ -51,6 +51,7 @@ impl ConfigWatchEvent {
 }
 
 /// Configuration watch event type
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConfigWatchEventType {
     /// File or resource created

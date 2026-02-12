@@ -116,13 +116,6 @@ impl FunctionValidatorBuilder {
         })
     }
 
-    /// Set schema
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_schema(mut self, schema: serde_json::Value) -> Self {
-        self.schema = Some(schema);
-        self
-    }
-
     /// Build the validator
     pub fn build(self) -> FunctionValidator {
         let validators = self.validators;

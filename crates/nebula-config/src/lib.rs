@@ -19,8 +19,8 @@
 //!         .await?;
 //!
 //!     // Get typed configuration
-//!     let port: u16 = config.get_path("server.port").await?;
-//!     let database_url: String = config.get_path("database.url").await?;
+//!     let port: u16 = config.get("server.port").await?;
+//!     let database_url: String = config.get("database.url").await?;
 //!
 //!     Ok(())
 //! }
@@ -54,7 +54,7 @@ pub mod loaders;
 pub mod validators;
 pub mod watchers;
 
-// Re-export main types from core
+// Re-export main types from core for explicit imports (e.g. `use nebula_config::Config`)
 pub use core::{
     Config, ConfigBuilder, ConfigError, ConfigFormat, ConfigResult, ConfigResultAggregator,
     ConfigResultExt, ConfigSource, SourceMetadata, try_sources,
@@ -74,12 +74,10 @@ pub use watchers::{
     ConfigWatchEvent, ConfigWatchEventType, FileWatcher, NoOpWatcher, PollingWatcher,
 };
 
-/// Prelude module for convenient imports
+/// Prelude module for convenient glob imports (`use nebula_config::prelude::*`).
 ///
-/// # Example
-/// ```rust
-/// use nebula_config::prelude::*;
-/// ```
+/// Includes core types, traits, and common implementations.
+/// For selective imports, use the top-level re-exports instead.
 pub mod prelude {
 
     // Core types
@@ -223,9 +221,9 @@ mod tests {
 
     #[test]
     fn test_prelude_imports() {
-        // This test just ensures prelude can be imported
-        let _builder = ConfigBuilder::new();
-        assert!(true);
+        // Ensure prelude types are accessible and constructible
+        let builder = ConfigBuilder::new();
+        assert!(format!("{:?}", builder).contains("ConfigBuilder"));
     }
 
     #[tokio::test]
@@ -293,7 +291,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_path_with_arrays() {
+    async fn test_get_with_arrays() {
         use crate::prelude::*;
         use serde_json::json;
 
@@ -309,15 +307,12 @@ mod tests {
             .await
             .expect("build ok");
 
-        let name: String = config
-            .get_path("arr.1.name")
-            .await
-            .expect("should get string");
+        let name: String = config.get("arr.1.name").await.expect("should get string");
         assert_eq!(name, "b");
 
         // invalid index
         let err = config
-            .get_path::<String>("arr.x")
+            .get::<String>("arr.x")
             .await
             .expect_err("should error");
         let msg = format!("{}", err);
@@ -325,7 +320,7 @@ mod tests {
 
         // out of bounds
         let err2 = config
-            .get_path::<String>("arr.5.name")
+            .get::<String>("arr.5.name")
             .await
             .expect_err("should error");
         let msg2 = format!("{}", err2);
