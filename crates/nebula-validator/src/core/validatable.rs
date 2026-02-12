@@ -249,7 +249,6 @@ impl AsValidatable<f64> for i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Validate;
 
     #[test]
     fn test_str_identity() {

@@ -12,9 +12,6 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-# Async
-async-trait = { workspace = true }
-
 # Caching
 moka = { version = "0.12", features = ["sync"] }
 

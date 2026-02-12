@@ -5,6 +5,7 @@
 use crate::core::ValidatorMetadata;
 use crate::core::validatable::AsValidatable;
 use std::borrow::Borrow;
+use std::future::Future;
 
 // ============================================================================
 // CORE VALIDATOR TRAIT
@@ -146,21 +147,25 @@ pub trait Validate {
 ///     db_pool: DatabasePool,
 /// }
 ///
-/// #[async_trait::async_trait]
 /// impl AsyncValidate for EmailExists {
 ///     type Input = str;
 ///
-///     async fn validate_async(&self, input: &Self::Input) -> Result<(), ValidationError> {
-///         let exists = self.db_pool.check_email_exists(input).await?;
-///         if exists {
-///             Ok(())
-///         } else {
-///             Err(ValidationError::new("email_not_found", "Email does not exist"))
+///     fn validate_async(&self, input: &Self::Input)
+///         -> impl std::future::Future<Output = Result<(), ValidationError>> + Send
+///     {
+///         let input = input.to_owned();
+///         let db_pool = self.db_pool.clone();
+///         async move {
+///             let exists = db_pool.check_email_exists(&input).await?;
+///             if exists {
+///                 Ok(())
+///             } else {
+///                 Err(ValidationError::new("email_not_found", "Email does not exist"))
+///             }
 ///         }
 ///     }
 /// }
 /// ```
-#[async_trait::async_trait]
 pub trait AsyncValidate: Send + Sync {
     /// The type of input being validated.
     type Input: ?Sized + Sync;
@@ -175,8 +180,10 @@ pub trait AsyncValidate: Send + Sync {
     ///
     /// * `Ok(())` if validation succeeds
     /// * `Err(ValidationError)` if validation fails
-    async fn validate_async(&self, input: &Self::Input)
-    -> Result<(), crate::core::ValidationError>;
+    fn validate_async(
+        &self,
+        input: &Self::Input,
+    ) -> impl Future<Output = Result<(), crate::core::ValidationError>> + Send;
 
     /// Returns metadata about this validator.
     fn metadata(&self) -> ValidatorMetadata {
