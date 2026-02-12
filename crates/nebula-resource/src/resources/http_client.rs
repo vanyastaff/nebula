@@ -321,7 +321,7 @@ impl HttpClientInstance {
     {
         // Check circuit breaker before request
         if let Some(ref cb) = self.circuit_breaker {
-            if cb.is_open().await {
+            if cb.is_open() {
                 return Err(ResourceError::CircuitBreakerOpen {
                     resource_id: "http_client:1.0".to_string(),
                     retry_after_ms: None,
@@ -524,7 +524,7 @@ impl HealthCheckable for HttpClientInstance {
             // No base URL configured, check circuit breaker state
             if let Some(ref cb) = self.circuit_breaker {
                 let state = cb.state().await;
-                let is_closed = cb.is_closed().await;
+                let is_closed = cb.is_closed();
                 let mut status = HealthStatus::healthy();
                 status = status.with_metadata("circuit_state", format!("{state:?}"));
 

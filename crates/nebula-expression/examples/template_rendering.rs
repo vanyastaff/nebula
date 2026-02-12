@@ -4,7 +4,7 @@
 //! with multiple {{ }} expressions in various formats (HTML, JSON, plain text)
 
 use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
-use nebula_value::Value;
+use serde_json::Value;
 
 fn main() {
     let engine = ExpressionEngine::new();

@@ -610,8 +610,7 @@ impl<const FAILURE_THRESHOLD: usize, const RESET_TIMEOUT_MS: u64>
     /// Use this for health checks and frequent state queries.
     #[must_use]
     pub fn state_fast(&self) -> State {
-        State::from_atomic(self.atomic_state.load(Ordering::Acquire))
-            .unwrap_or(State::Closed)
+        State::from_atomic(self.atomic_state.load(Ordering::Acquire)).unwrap_or(State::Closed)
     }
 
     /// Get circuit breaker statistics
@@ -973,18 +972,18 @@ mod tests {
     #[tokio::test]
     async fn test_lock_free_state_fast() {
         let breaker = StandardCircuitBreaker::default();
-        
+
         // Test lock-free state access
         assert_eq!(breaker.state_fast(), State::Closed);
         assert!(breaker.is_closed());
         assert!(!breaker.is_open());
         assert!(!breaker.is_half_open());
-        
+
         // Verify it's truly lock-free by calling it many times rapidly
         for _ in 0..1000 {
             let _ = breaker.state_fast();
         }
-        
+
         // Should still be closed
         assert_eq!(breaker.state_fast(), State::Closed);
     }
@@ -992,11 +991,11 @@ mod tests {
     #[tokio::test]
     async fn test_state_fast_vs_stats_consistency() {
         let breaker = StandardCircuitBreaker::default();
-        
+
         // Fast state should match detailed stats state
         let fast_state = breaker.state_fast();
         let stats = breaker.stats().await;
-        
+
         assert_eq!(fast_state, stats.state);
     }
 }

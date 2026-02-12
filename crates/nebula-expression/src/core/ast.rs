@@ -2,7 +2,7 @@
 //!
 //! This module defines the AST structure for parsed expressions.
 
-use nebula_value::Value;
+use serde_json::Value;
 use std::sync::Arc;
 
 /// An expression node in the AST

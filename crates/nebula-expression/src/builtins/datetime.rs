@@ -6,7 +6,7 @@ use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
 use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Timelike, Utc};
-use nebula_value::Value;
+use serde_json::Value;
 
 /// Get current timestamp as Unix seconds
 pub fn now(
@@ -15,7 +15,7 @@ pub fn now(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     let now = Utc::now().timestamp();
-    Ok(Value::integer(now))
+    Ok(Value::Number(now.into()))
 }
 
 /// Get current date/time as ISO 8601 string
@@ -25,7 +25,7 @@ pub fn now_iso(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     let now = Utc::now();
-    Ok(Value::text(now.to_rfc3339()))
+    Ok(Value::String(now.to_rfc3339()))
 }
 
 /// Format a timestamp or date string
@@ -40,14 +40,17 @@ pub fn format_date(
 
     if args.len() >= 2 {
         let format_str = args[1].as_str().ok_or_else(|| {
-            ExpressionError::expression_type_error("string", args[1].kind().name())
+            ExpressionError::expression_type_error(
+                "string",
+                crate::value_utils::value_type_name(&args[1]),
+            )
         })?;
 
         let formatted = format_datetime(&dt, format_str)?;
-        Ok(Value::text(formatted))
+        Ok(Value::String(formatted))
     } else {
         // Default: ISO 8601
-        Ok(Value::text(dt.to_rfc3339()))
+        Ok(Value::String(dt.to_rfc3339()))
     }
 }
 
@@ -60,7 +63,7 @@ pub fn parse_date(
     check_arg_count("parse_date", args, 1)?;
 
     let dt = parse_datetime(&args[0])?;
-    Ok(Value::integer(dt.timestamp()))
+    Ok(Value::Number(dt.timestamp().into()))
 }
 
 /// Add duration to a date
@@ -72,10 +75,15 @@ pub fn date_add(
     check_arg_count("date_add", args, 3)?;
 
     let dt = parse_datetime(&args[0])?;
-    let amount = args[1].to_integer()?;
-    let unit = args[2]
-        .as_str()
-        .ok_or_else(|| ExpressionError::expression_type_error("string", args[2].kind().name()))?;
+    let amount = args[1].as_i64().ok_or_else(|| {
+        ExpressionError::type_error("integer", crate::value_utils::value_type_name(&args[1]))
+    })?;
+    let unit = args[2].as_str().ok_or_else(|| {
+        ExpressionError::expression_type_error(
+            "string",
+            crate::value_utils::value_type_name(&args[2]),
+        )
+    })?;
 
     let new_dt = match unit.to_lowercase().as_str() {
         "seconds" | "second" | "s" => dt + chrono::Duration::seconds(amount),
@@ -91,7 +99,7 @@ pub fn date_add(
         }
     };
 
-    Ok(Value::integer(new_dt.timestamp()))
+    Ok(Value::Number(new_dt.timestamp().into()))
 }
 
 /// Subtract duration from a date
@@ -103,10 +111,15 @@ pub fn date_subtract(
     check_arg_count("date_subtract", args, 3)?;
 
     let dt = parse_datetime(&args[0])?;
-    let amount = args[1].to_integer()?;
-    let unit = args[2]
-        .as_str()
-        .ok_or_else(|| ExpressionError::expression_type_error("string", args[2].kind().name()))?;
+    let amount = args[1].as_i64().ok_or_else(|| {
+        ExpressionError::type_error("integer", crate::value_utils::value_type_name(&args[1]))
+    })?;
+    let unit = args[2].as_str().ok_or_else(|| {
+        ExpressionError::expression_type_error(
+            "string",
+            crate::value_utils::value_type_name(&args[2]),
+        )
+    })?;
 
     let new_dt = match unit.to_lowercase().as_str() {
         "seconds" | "second" | "s" => dt - chrono::Duration::seconds(amount),
@@ -122,7 +135,7 @@ pub fn date_subtract(
         }
     };
 
-    Ok(Value::integer(new_dt.timestamp()))
+    Ok(Value::Number(new_dt.timestamp().into()))
 }
 
 /// Get difference between two dates in specified unit
@@ -135,9 +148,12 @@ pub fn date_diff(
 
     let dt1 = parse_datetime(&args[0])?;
     let dt2 = parse_datetime(&args[1])?;
-    let unit = args[2]
-        .as_str()
-        .ok_or_else(|| ExpressionError::expression_type_error("string", args[2].kind().name()))?;
+    let unit = args[2].as_str().ok_or_else(|| {
+        ExpressionError::expression_type_error(
+            "string",
+            crate::value_utils::value_type_name(&args[2]),
+        )
+    })?;
 
     let duration = dt1.signed_duration_since(dt2);
 
@@ -155,7 +171,7 @@ pub fn date_diff(
         }
     };
 
-    Ok(Value::integer(result))
+    Ok(Value::Number(result.into()))
 }
 
 /// Extract year from date
@@ -166,7 +182,7 @@ pub fn date_year(
 ) -> ExpressionResult<Value> {
     check_arg_count("date_year", args, 1)?;
     let dt = parse_datetime(&args[0])?;
-    Ok(Value::integer(dt.year() as i64))
+    Ok(Value::Number((dt.year() as i64).into()))
 }
 
 /// Extract month from date (1-12)
@@ -177,7 +193,7 @@ pub fn date_month(
 ) -> ExpressionResult<Value> {
     check_arg_count("date_month", args, 1)?;
     let dt = parse_datetime(&args[0])?;
-    Ok(Value::integer(dt.month() as i64))
+    Ok(Value::Number((dt.month() as i64).into()))
 }
 
 /// Extract day from date (1-31)
@@ -188,7 +204,7 @@ pub fn date_day(
 ) -> ExpressionResult<Value> {
     check_arg_count("date_day", args, 1)?;
     let dt = parse_datetime(&args[0])?;
-    Ok(Value::integer(dt.day() as i64))
+    Ok(Value::Number((dt.day() as i64).into()))
 }
 
 /// Extract hour from date (0-23)
@@ -199,7 +215,7 @@ pub fn date_hour(
 ) -> ExpressionResult<Value> {
     check_arg_count("date_hour", args, 1)?;
     let dt = parse_datetime(&args[0])?;
-    Ok(Value::integer(dt.hour() as i64))
+    Ok(Value::Number((dt.hour() as i64).into()))
 }
 
 /// Extract minute from date (0-59)
@@ -210,7 +226,7 @@ pub fn date_minute(
 ) -> ExpressionResult<Value> {
     check_arg_count("date_minute", args, 1)?;
     let dt = parse_datetime(&args[0])?;
-    Ok(Value::integer(dt.minute() as i64))
+    Ok(Value::Number((dt.minute() as i64).into()))
 }
 
 /// Extract second from date (0-59)
@@ -221,7 +237,7 @@ pub fn date_second(
 ) -> ExpressionResult<Value> {
     check_arg_count("date_second", args, 1)?;
     let dt = parse_datetime(&args[0])?;
-    Ok(Value::integer(dt.second() as i64))
+    Ok(Value::Number((dt.second() as i64).into()))
 }
 
 /// Get day of week (0=Sunday, 6=Saturday)
@@ -233,7 +249,7 @@ pub fn date_day_of_week(
     check_arg_count("date_day_of_week", args, 1)?;
     let dt = parse_datetime(&args[0])?;
     let weekday = dt.weekday().num_days_from_sunday();
-    Ok(Value::integer(weekday as i64))
+    Ok(Value::Number((weekday as i64).into()))
 }
 
 // Helper functions
@@ -241,15 +257,17 @@ pub fn date_day_of_week(
 /// Parse datetime from Value (can be timestamp or string)
 fn parse_datetime(value: &Value) -> ExpressionResult<DateTime<Utc>> {
     match value {
-        Value::Integer(i) => {
-            let timestamp = i.value();
+        Value::Number(i) => {
+            let timestamp = crate::value_utils::number_as_i64(i).ok_or_else(|| {
+                ExpressionError::expression_eval_error("Invalid timestamp: not an integer")
+            })?;
             let dt = Utc
                 .timestamp_opt(timestamp, 0)
                 .single()
                 .ok_or_else(|| ExpressionError::expression_eval_error("Invalid timestamp"))?;
             Ok(dt)
         }
-        Value::Text(s) => {
+        Value::String(s) => {
             let s = s.as_str();
 
             // Try ISO 8601 / RFC 3339 first
@@ -284,7 +302,7 @@ fn parse_datetime(value: &Value) -> ExpressionResult<DateTime<Utc>> {
         }
         _ => Err(ExpressionError::expression_type_error(
             "integer or string",
-            value.kind().name(),
+            crate::value_utils::value_type_name(value),
         )),
     }
 }

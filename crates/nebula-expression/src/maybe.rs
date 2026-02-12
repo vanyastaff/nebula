@@ -8,10 +8,10 @@ use crate::ExpressionError;
 use crate::context::EvaluationContext;
 use crate::core::ast::Expr;
 use crate::engine::ExpressionEngine;
-use nebula_value::Value;
 use once_cell::sync::OnceCell;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
 
 /// Internal structure for cached expression parsing
 #[derive(Debug)]
@@ -153,11 +153,11 @@ where
     ///
     /// ```rust
     /// use nebula_expression::{MaybeExpression, ExpressionEngine, EvaluationContext};
-    /// use nebula_value::Value;
+    /// use serde_json::Value;
     ///
     /// let engine = ExpressionEngine::new();
     /// let mut context = EvaluationContext::new();
-    /// context.set_input(Value::text("Alice"));
+    /// context.set_input(Value::String("Alice".to_string()));
     ///
     /// // Concrete value
     /// let maybe: MaybeExpression<String> = MaybeExpression::value("Bob".to_string());
@@ -186,7 +186,7 @@ where
 }
 
 impl MaybeExpression<Value> {
-    /// Resolve this maybe-expression to a nebula_value::Value
+    /// Resolve this maybe-expression to a serde_json::Value
     ///
     /// If this is a Value variant, returns the value directly.
     /// If this is an Expression variant, evaluates the expression.
@@ -233,7 +233,12 @@ impl MaybeExpression<i64> {
             Self::Value(i) => Ok(*i),
             Self::Expression(cached) => {
                 let value = engine.evaluate(&cached.source, context)?;
-                value.to_integer().map_err(Into::into)
+                value.as_i64().ok_or_else(|| {
+                    ExpressionError::type_error(
+                        "integer",
+                        crate::value_utils::value_type_name(&value),
+                    )
+                })
             }
         }
     }
@@ -250,7 +255,8 @@ impl MaybeExpression<f64> {
             Self::Value(f) => Ok(*f),
             Self::Expression(cached) => {
                 let value = engine.evaluate(&cached.source, context)?;
-                value.to_float().map_err(Into::into)
+                crate::value_utils::to_float(&value)
+                    .map_err(|e| ExpressionError::type_error("float", e))
             }
         }
     }
@@ -267,7 +273,7 @@ impl MaybeExpression<bool> {
             Self::Value(b) => Ok(*b),
             Self::Expression(cached) => {
                 let value = engine.evaluate(&cached.source, context)?;
-                Ok(value.to_boolean())
+                Ok(crate::value_utils::to_boolean(&value))
             }
         }
     }
@@ -383,7 +389,7 @@ mod tests {
     fn test_resolve_string_expression() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_input(Value::text("world"));
+        context.set_input(Value::String("world".to_string()));
 
         let maybe = MaybeExpression::expression("{{ $input }}");
         let result = maybe.resolve_as_string(&engine, &context).unwrap();

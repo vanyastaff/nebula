@@ -5,7 +5,7 @@ use crate::ExpressionError;
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
-use nebula_value::Value;
+use serde_json::Value;
 
 /// Get the length of an array
 pub fn length(
@@ -15,7 +15,7 @@ pub fn length(
 ) -> ExpressionResult<Value> {
     check_arg_count("length", args, 1)?;
     let arr = get_array_arg("length", args, 0, "array")?;
-    Ok(Value::integer(arr.len() as i64))
+    Ok(Value::Number((arr.len() as i64).into()))
 }
 
 /// Get the first element of an array
@@ -97,13 +97,18 @@ pub fn sort(
 
     // Sort the values
     elements.sort_by(|a, b| match (a, b) {
-        (Value::Integer(x), Value::Integer(y)) => x.cmp(y),
-        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
-        (Value::Text(x), Value::Text(y)) => x.cmp(y),
+        (Value::Number(x), Value::Number(y)) => {
+            let x_val = crate::value_utils::number_as_f64(x).unwrap_or(0.0);
+            let y_val = crate::value_utils::number_as_f64(y).unwrap_or(0.0);
+            x_val
+                .partial_cmp(&y_val)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }
+        (Value::String(x), Value::String(y)) => x.cmp(y),
         _ => std::cmp::Ordering::Equal,
     });
 
-    Ok(Value::Array(nebula_value::Array::from_vec(elements)))
+    Ok(Value::Array(elements))
 }
 
 /// Reverse an array
@@ -118,7 +123,7 @@ pub fn reverse(
     let mut elements: Vec<Value> = arr.iter().cloned().collect();
     elements.reverse();
 
-    Ok(Value::Array(nebula_value::Array::from_vec(elements)))
+    Ok(Value::Array(elements))
 }
 
 /// Join array elements into a string
@@ -129,18 +134,24 @@ pub fn join(
 ) -> ExpressionResult<Value> {
     check_arg_count("join", args, 2)?;
     let arr = get_array_arg("join", args, 0, "array")?;
-    let separator = args[1]
-        .as_str()
-        .ok_or_else(|| ExpressionError::expression_type_error("string", args[1].kind().name()))?;
+    let separator = args[1].as_str().ok_or_else(|| {
+        ExpressionError::expression_type_error(
+            "string",
+            crate::value_utils::value_type_name(&args[1]),
+        )
+    })?;
 
-    // Use iterator directly without intermediate Vec allocation
+    // Convert array elements to strings and join
     let result = arr
         .iter()
-        .map(|v| v.to_string())
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            _ => v.to_string(),
+        })
         .collect::<Vec<_>>()
         .join(separator);
 
-    Ok(Value::text(result))
+    Ok(Value::String(result))
 }
 
 /// Slice an array
@@ -151,9 +162,19 @@ pub fn slice(
 ) -> ExpressionResult<Value> {
     check_min_arg_count("slice", args, 2)?;
     let arr = get_array_arg("slice", args, 0, "array")?;
-    let start = args[1].to_integer()? as usize;
+    let start = args[1].as_i64().ok_or_else(|| {
+        ExpressionError::expression_type_error(
+            "integer",
+            crate::value_utils::value_type_name(&args[1]),
+        )
+    })? as usize;
     let end = if args.len() > 2 {
-        args[2].to_integer()? as usize
+        args[2].as_i64().ok_or_else(|| {
+            ExpressionError::expression_type_error(
+                "integer",
+                crate::value_utils::value_type_name(&args[2]),
+            )
+        })? as usize
     } else {
         arr.len()
     };
@@ -161,7 +182,7 @@ pub fn slice(
     let result: Vec<_> = (start..end.min(arr.len()))
         .filter_map(|i| arr.get(i).cloned())
         .collect();
-    Ok(Value::Array(nebula_value::Array::from_vec(result)))
+    Ok(Value::Array(result))
 }
 
 /// Concatenate arrays
@@ -184,7 +205,7 @@ pub fn concat(
         result.extend(arr.iter().cloned());
     }
 
-    Ok(Value::Array(nebula_value::Array::from_vec(result)))
+    Ok(Value::Array(result))
 }
 
 /// Flatten a nested array
@@ -208,5 +229,5 @@ pub fn flatten(
         })
         .collect();
 
-    Ok(Value::Array(nebula_value::Array::from_vec(result)))
+    Ok(Value::Array(result))
 }

@@ -4,7 +4,7 @@
 //! with source code context and visual highlighting.
 
 use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
-use nebula_value::Value;
+use serde_json::Value;
 
 fn main() {
     let engine = ExpressionEngine::new();

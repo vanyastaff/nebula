@@ -26,7 +26,7 @@
 
 use crate::core::config::{ConfigError, ConfigResult};
 use crate::core::dynamic::DynamicConfig;
-use nebula_value::Value;
+use serde_json::Value;
 use std::time::Duration;
 
 /// Type-safe builder for dynamic configuration

@@ -5,8 +5,8 @@
 use nebula_expression::{
     EvaluationContext, ExpressionEngine, MaybeExpression, MaybeTemplate, Template,
 };
-use nebula_value::Value;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Configuration using MaybeExpression for typed parameters
 #[derive(Debug, Serialize, Deserialize)]

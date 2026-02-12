@@ -8,7 +8,7 @@
 use nebula_expression::{
     EvaluationContext, ExpressionEngine, MaybeTemplate, Template, TemplatePart,
 };
-use nebula_value::Value;
+use serde_json::Value;
 
 fn main() {
     let engine = ExpressionEngine::new();

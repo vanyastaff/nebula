@@ -2,7 +2,7 @@
 // Run with: cargo test --release --test simple_baseline -- --nocapture --test-threads=1
 
 use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
-use nebula_value::Value;
+use serde_json::Value;
 use std::time::{Duration, Instant};
 
 const ITERATIONS: usize = 1000;

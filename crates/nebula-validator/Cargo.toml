@@ -26,7 +26,6 @@ url = { workspace = true }
 
 # Internal crates
 nebula-log = { path = "../nebula-log" }
-nebula-value = { path = "../nebula-value", optional = true }
 
 # Randomness
 rand = { workspace = true }
@@ -58,12 +57,10 @@ caching = []
 cache = ["caching"]  # Alias for backwards compatibility
 performance = []
 registry = []
-# Integration with nebula-value types
-value = ["dep:nebula-value"]
 # Serde serialization support (enables extra serde impls)
 serde = []
 # Convenience umbrella
-full = ["async", "caching", "registry", "performance", "value", "serde"]
+full = ["async", "caching", "registry", "performance", "serde"]
 
 [dev-dependencies]
 # Testing

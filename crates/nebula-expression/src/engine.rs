@@ -12,7 +12,7 @@ use crate::lexer::Lexer;
 use crate::parser::Parser;
 use nebula_log::{debug, trace};
 use nebula_memory::cache::{CacheConfig, ConcurrentComputeCache};
-use nebula_value::Value;
+use serde_json::Value;
 use std::sync::Arc;
 
 /// Expression engine with parsing and evaluation capabilities
@@ -256,7 +256,7 @@ mod tests {
         let context = EvaluationContext::new();
 
         let result = engine.evaluate("42", &context).unwrap();
-        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(42)));
+        assert_eq!(result.as_i64(), Some(42));
     }
 
     #[test]
@@ -265,7 +265,7 @@ mod tests {
         let context = EvaluationContext::new();
 
         let result = engine.evaluate("2 + 3 * 4", &context).unwrap();
-        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(14)));
+        assert_eq!(result.as_i64(), Some(14));
     }
 
     #[test]
@@ -283,7 +283,7 @@ mod tests {
         let context = EvaluationContext::new();
 
         let result = engine.evaluate("{{ 2 + 3 }}", &context).unwrap();
-        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(5)));
+        assert_eq!(result.as_i64(), Some(5));
     }
 
     #[test]
@@ -297,7 +297,7 @@ mod tests {
     fn test_render_template_simple() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_input(Value::text("World"));
+        context.set_input(Value::String("World".to_string()));
 
         let template = engine.parse_template("Hello {{ $input }}!").unwrap();
         let result = engine.render_template(&template, &context).unwrap();
@@ -308,8 +308,8 @@ mod tests {
     fn test_render_template_multiple() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_input(Value::text("Alice"));
-        context.set_execution_var("order_id", Value::integer(12345));
+        context.set_input(Value::String("Alice".to_string()));
+        context.set_execution_var("order_id", Value::Number(12345.into()));
 
         let template = engine
             .parse_template("Hello {{ $input }}! Your order #{{ $execution.order_id }} is ready.")
@@ -322,7 +322,7 @@ mod tests {
     fn test_render_template_with_functions() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_input(Value::text("john"));
+        context.set_input(Value::String("john".to_string()));
 
         let template = engine
             .parse_template("User: {{ $input | uppercase() }}, Length: {{ length($input) }}")
@@ -335,8 +335,8 @@ mod tests {
     fn test_render_template_html() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_input(Value::integer(42));
-        context.set_execution_var("name", Value::text("Alice"));
+        context.set_input(Value::Number(42.into()));
+        context.set_execution_var("name", Value::String("Alice".to_string()));
 
         let html = r#"<html>
   <h1>Welcome {{ $execution.name }}</h1>
@@ -383,12 +383,12 @@ mod tests {
         let mut context = EvaluationContext::new();
 
         // First render
-        context.set_input(Value::text("Alice"));
+        context.set_input(Value::String("Alice".to_string()));
         let result1 = engine.render_template(&template, &context).unwrap();
         assert_eq!(result1, "Hello Alice!");
 
         // Second render with different context
-        context.set_input(Value::text("Bob"));
+        context.set_input(Value::String("Bob".to_string()));
         let result2 = engine.render_template(&template, &context).unwrap();
         assert_eq!(result2, "Hello Bob!");
     }
@@ -397,7 +397,7 @@ mod tests {
     fn test_evaluate_variable() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_execution_var("id", Value::text("test-123"));
+        context.set_execution_var("id", Value::String("test-123".to_string()));
 
         let result = engine.evaluate("$execution.id", &context).unwrap();
         assert_eq!(result.as_str(), Some("test-123"));
@@ -410,11 +410,11 @@ mod tests {
 
         // First evaluation
         let result1 = engine.evaluate("2 + 3", &context).unwrap();
-        assert_eq!(result1.as_integer(), Some(nebula_value::Integer::new(5)));
+        assert_eq!(result1.as_i64(), Some(5));
 
         // Second evaluation (should use cache)
         let result2 = engine.evaluate("2 + 3", &context).unwrap();
-        assert_eq!(result2.as_integer(), Some(nebula_value::Integer::new(5)));
+        assert_eq!(result2.as_i64(), Some(5));
     }
 
     #[test]
@@ -423,10 +423,10 @@ mod tests {
         let context = EvaluationContext::new();
 
         let result = engine.evaluate("if true then 1 else 2", &context).unwrap();
-        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(1)));
+        assert_eq!(result.as_i64(), Some(1));
 
         let result = engine.evaluate("if false then 1 else 2", &context).unwrap();
-        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(2)));
+        assert_eq!(result.as_i64(), Some(2));
     }
 
     #[test]
@@ -444,7 +444,7 @@ mod tests {
     fn test_template_cache() {
         let engine = ExpressionEngine::with_cache_size(100);
         let mut context = EvaluationContext::new();
-        context.set_input(Value::text("World"));
+        context.set_input(Value::String("World".to_string()));
 
         let source = "Hello {{ $input }}!";
 
@@ -466,7 +466,7 @@ mod tests {
 
         // Test expression cache
         let result = engine.evaluate("2 + 3", &context).unwrap();
-        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(5)));
+        assert_eq!(result.as_i64(), Some(5));
 
         // Test template cache
         let template = engine.parse_template("Result: {{ 2 + 3 }}").unwrap();
@@ -487,7 +487,7 @@ mod tests {
 
         // Expression cache should still work
         let result = engine.evaluate("2 + 3", &context).unwrap();
-        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(5)));
+        assert_eq!(result.as_i64(), Some(5));
     }
 
     #[test]

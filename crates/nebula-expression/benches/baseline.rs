@@ -3,7 +3,7 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
-use nebula_value::Value;
+use serde_json::Value;
 use std::sync::Arc;
 use std::thread;
 
@@ -47,7 +47,7 @@ fn benchmark_template_render(c: &mut Criterion) {
 
     let engine = ExpressionEngine::new();
     let mut context = EvaluationContext::new();
-    context.set_input(Value::text("World"));
+    context.set_input(Value::String("World".to_string()));
 
     let simple = Template::new("Hello {{ $input }}!").unwrap();
     let complex = Template::new(
@@ -144,7 +144,7 @@ fn benchmark_context_operations(c: &mut Criterion) {
     // Create context with many variables
     let mut context = EvaluationContext::new();
     for i in 0..100 {
-        context.set_execution_var(format!("var_{}", i), Value::integer(i as i64));
+        context.set_execution_var(format!("var_{}", i), Value::Number((i as i64).into()));
     }
 
     // Clone benchmark

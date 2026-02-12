@@ -7,11 +7,10 @@ use crate::builtins::BuiltinRegistry;
 use crate::context::EvaluationContext;
 use crate::core::ast::{BinaryOp, Expr};
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
-use nebula_value::Value;
-use nebula_value::ValueRefExt;
 use parking_lot::Mutex;
 #[cfg(feature = "regex")]
 use regex::Regex;
+use serde_json::Value;
 #[cfg(feature = "regex")]
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -77,24 +76,33 @@ impl Evaluator {
             Expr::Identifier(name) => {
                 // Try to resolve as a constant or special value
                 // Optimize: use Arc<str> directly instead of converting to String
-                Ok(Value::text(name.as_ref()))
+                Ok(Value::String(name.as_ref().to_string()))
             }
 
             Expr::Negate(expr) => {
                 let val = self.eval_with_depth(expr, context, depth + 1)?;
                 match val {
-                    Value::Integer(i) => Ok(Value::integer(-i.value())),
-                    Value::Float(f) => Ok(Value::float(-f.value())),
+                    Value::Number(ref n) => {
+                        if let Some(i) = crate::value_utils::number_as_i64(n) {
+                            Ok(Value::Number((-i).into()))
+                        } else if let Some(f) = crate::value_utils::number_as_f64(n) {
+                            Ok(serde_json::json!(-f))
+                        } else {
+                            Err(ExpressionError::expression_eval_error(
+                                "Cannot negate number",
+                            ))
+                        }
+                    }
                     _ => Err(ExpressionError::expression_type_error(
                         "number",
-                        val.kind().name(),
+                        crate::value_utils::value_type_name(&val),
                     )),
                 }
             }
 
             Expr::Not(expr) => {
                 let val = self.eval_with_depth(expr, context, depth + 1)?;
-                Ok(Value::boolean(!val.to_boolean()))
+                Ok(Value::Bool(!crate::value_utils::to_boolean(&val)))
             }
 
             Expr::Binary { left, op, right } => {
@@ -159,7 +167,7 @@ impl Evaluator {
                 else_expr,
             } => {
                 let cond_val = self.eval_with_depth(condition, context, depth + 1)?;
-                if cond_val.to_boolean() {
+                if crate::value_utils::to_boolean(&cond_val) {
                     self.eval_with_depth(then_expr, context, depth + 1)
                 } else {
                     self.eval_with_depth(else_expr, context, depth + 1)
@@ -179,15 +187,14 @@ impl Evaluator {
                     .map(|e| self.eval_with_depth(e, context, depth + 1))
                     .collect();
                 let values = values?;
-                // Collect directly into Vec
-                Ok(Value::Array(nebula_value::Array::from_vec(values)))
+                Ok(Value::Array(values))
             }
 
             Expr::Object(pairs) => {
-                let mut obj = nebula_value::Object::new();
+                let mut obj = serde_json::Map::new();
                 for (key, expr) in pairs {
                     let value = self.eval_with_depth(expr, context, depth + 1)?;
-                    obj = obj.insert(key.to_string(), value.to_json());
+                    obj.insert(key.to_string(), value);
                 }
                 Ok(Value::Object(obj))
             }
@@ -208,21 +215,21 @@ impl Evaluator {
         match op {
             BinaryOp::And => {
                 let left_val = self.eval_with_depth(left, context, depth + 1)?;
-                if !left_val.to_boolean() {
+                if !crate::value_utils::to_boolean(&left_val) {
                     // Short-circuit: if left is false, don't evaluate right
-                    return Ok(Value::boolean(false));
+                    return Ok(Value::Bool(false));
                 }
                 let right_val = self.eval_with_depth(right, context, depth + 1)?;
-                Ok(Value::boolean(right_val.to_boolean()))
+                Ok(Value::Bool(crate::value_utils::to_boolean(&right_val)))
             }
             BinaryOp::Or => {
                 let left_val = self.eval_with_depth(left, context, depth + 1)?;
-                if left_val.to_boolean() {
+                if crate::value_utils::to_boolean(&left_val) {
                     // Short-circuit: if left is true, don't evaluate right
-                    return Ok(Value::boolean(true));
+                    return Ok(Value::Bool(true));
                 }
                 let right_val = self.eval_with_depth(right, context, depth + 1)?;
-                Ok(Value::boolean(right_val.to_boolean()))
+                Ok(Value::Bool(crate::value_utils::to_boolean(&right_val)))
             }
             // For all other operators, evaluate both operands
             _ => {
@@ -236,8 +243,8 @@ impl Evaluator {
                     BinaryOp::Divide => self.divide(&left_val, &right_val),
                     BinaryOp::Modulo => self.modulo(&left_val, &right_val),
                     BinaryOp::Power => self.power(&left_val, &right_val),
-                    BinaryOp::Equal => Ok(Value::boolean(left_val == right_val)),
-                    BinaryOp::NotEqual => Ok(Value::boolean(left_val != right_val)),
+                    BinaryOp::Equal => Ok(Value::Bool(left_val == right_val)),
+                    BinaryOp::NotEqual => Ok(Value::Bool(left_val != right_val)),
                     BinaryOp::LessThan => self.less_than(&left_val, &right_val),
                     BinaryOp::GreaterThan => self.greater_than(&left_val, &right_val),
                     BinaryOp::LessEqual => self.less_equal(&left_val, &right_val),
@@ -253,32 +260,39 @@ impl Evaluator {
     #[inline]
     fn add(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
-            (Value::Integer(l), Value::Integer(r)) => l
-                .value()
-                .checked_add(r.value())
-                .map(Value::integer)
-                .ok_or_else(|| {
-                    ExpressionError::expression_eval_error(format!(
-                        "Integer overflow: {} + {}",
-                        l.value(),
-                        r.value()
-                    ))
-                }),
-            (Value::Float(l), Value::Float(r)) => Ok(Value::float(l.value() + r.value())),
-            (Value::Integer(l), Value::Float(r)) => Ok(Value::float(l.value() as f64 + r.value())),
-            (Value::Float(l), Value::Integer(r)) => Ok(Value::float(l.value() + r.value() as f64)),
-            (Value::Text(l), Value::Text(r)) => {
+            (Value::Number(l), Value::Number(r)) => {
+                // Try integer addition with overflow checking
+                if let (Some(li), Some(ri)) = (l.as_i64(), r.as_i64()) {
+                    li.checked_add(ri)
+                        .map(|result| Value::Number(result.into()))
+                        .or_else(|| {
+                            // Overflow - fall back to float
+                            Some(serde_json::json!(li as f64 + ri as f64))
+                        })
+                        .ok_or_else(|| {
+                            ExpressionError::expression_eval_error("Arithmetic overflow")
+                        })
+                } else {
+                    // At least one is float
+                    let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
+                    let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                    Ok(serde_json::json!(lf + rf))
+                }
+            }
+            (Value::String(l), Value::String(r)) => {
                 // Pre-allocate exact capacity to avoid reallocations
-                let left_str = l.as_str();
-                let right_str = r.as_str();
-                let mut result = String::with_capacity(left_str.len() + right_str.len());
-                result.push_str(left_str);
-                result.push_str(right_str);
-                Ok(Value::text(result))
+                let mut result = String::with_capacity(l.len() + r.len());
+                result.push_str(l);
+                result.push_str(r);
+                Ok(Value::String(result))
             }
             _ => Err(ExpressionError::expression_type_error(
                 "number or string",
-                format!("{} and {}", left.kind().name(), right.kind().name()),
+                format!(
+                    "{} and {}",
+                    crate::value_utils::value_type_name(left),
+                    crate::value_utils::value_type_name(right)
+                ),
             )),
         }
     }
@@ -287,23 +301,28 @@ impl Evaluator {
     #[inline]
     fn subtract(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
-            (Value::Integer(l), Value::Integer(r)) => l
-                .value()
-                .checked_sub(r.value())
-                .map(Value::integer)
-                .ok_or_else(|| {
-                    ExpressionError::expression_eval_error(format!(
-                        "Integer overflow: {} - {}",
-                        l.value(),
-                        r.value()
-                    ))
-                }),
-            (Value::Float(l), Value::Float(r)) => Ok(Value::float(l.value() - r.value())),
-            (Value::Integer(l), Value::Float(r)) => Ok(Value::float(l.value() as f64 - r.value())),
-            (Value::Float(l), Value::Integer(r)) => Ok(Value::float(l.value() - r.value() as f64)),
+            (Value::Number(l), Value::Number(r)) => {
+                // Try integer subtraction with overflow checking
+                if let (Some(li), Some(ri)) = (l.as_i64(), r.as_i64()) {
+                    li.checked_sub(ri)
+                        .map(|result| Value::Number(result.into()))
+                        .or_else(|| Some(serde_json::json!(li as f64 - ri as f64)))
+                        .ok_or_else(|| {
+                            ExpressionError::expression_eval_error("Arithmetic overflow")
+                        })
+                } else {
+                    let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
+                    let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                    Ok(serde_json::json!(lf - rf))
+                }
+            }
             _ => Err(ExpressionError::expression_type_error(
                 "number",
-                format!("{} and {}", left.kind().name(), right.kind().name()),
+                format!(
+                    "{} and {}",
+                    crate::value_utils::value_type_name(left),
+                    crate::value_utils::value_type_name(right)
+                ),
             )),
         }
     }
@@ -312,23 +331,28 @@ impl Evaluator {
     #[inline]
     fn multiply(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
-            (Value::Integer(l), Value::Integer(r)) => l
-                .value()
-                .checked_mul(r.value())
-                .map(Value::integer)
-                .ok_or_else(|| {
-                    ExpressionError::expression_eval_error(format!(
-                        "Integer overflow: {} * {}",
-                        l.value(),
-                        r.value()
-                    ))
-                }),
-            (Value::Float(l), Value::Float(r)) => Ok(Value::float(l.value() * r.value())),
-            (Value::Integer(l), Value::Float(r)) => Ok(Value::float(l.value() as f64 * r.value())),
-            (Value::Float(l), Value::Integer(r)) => Ok(Value::float(l.value() * r.value() as f64)),
+            (Value::Number(l), Value::Number(r)) => {
+                // Try integer multiplication with overflow checking
+                if let (Some(li), Some(ri)) = (l.as_i64(), r.as_i64()) {
+                    li.checked_mul(ri)
+                        .map(|result| Value::Number(result.into()))
+                        .or_else(|| Some(serde_json::json!(li as f64 * ri as f64)))
+                        .ok_or_else(|| {
+                            ExpressionError::expression_eval_error("Arithmetic overflow")
+                        })
+                } else {
+                    let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
+                    let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                    Ok(serde_json::json!(lf * rf))
+                }
+            }
             _ => Err(ExpressionError::expression_type_error(
                 "number",
-                format!("{} and {}", left.kind().name(), right.kind().name()),
+                format!(
+                    "{} and {}",
+                    crate::value_utils::value_type_name(left),
+                    crate::value_utils::value_type_name(right)
+                ),
             )),
         }
     }
@@ -337,43 +361,24 @@ impl Evaluator {
     #[inline]
     fn divide(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
-            (Value::Integer(l), Value::Integer(r)) => {
-                if r.value() == 0 {
+            (Value::Number(l), Value::Number(r)) => {
+                // Always use floating point for division
+                let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
+                let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+
+                if rf == 0.0 {
                     return Err(ExpressionError::expression_division_by_zero());
                 }
-                // checked_div handles MIN / -1 overflow case
-                l.value()
-                    .checked_div(r.value())
-                    .map(Value::integer)
-                    .ok_or_else(|| {
-                        ExpressionError::expression_eval_error(format!(
-                            "Integer overflow: {} / {}",
-                            l.value(),
-                            r.value()
-                        ))
-                    })
-            }
-            (Value::Float(l), Value::Float(r)) => {
-                if r.value() == 0.0 {
-                    return Err(ExpressionError::expression_division_by_zero());
-                }
-                Ok(Value::float(l.value() / r.value()))
-            }
-            (Value::Integer(l), Value::Float(r)) => {
-                if r.value() == 0.0 {
-                    return Err(ExpressionError::expression_division_by_zero());
-                }
-                Ok(Value::float(l.value() as f64 / r.value()))
-            }
-            (Value::Float(l), Value::Integer(r)) => {
-                if r.value() == 0 {
-                    return Err(ExpressionError::expression_division_by_zero());
-                }
-                Ok(Value::float(l.value() / r.value() as f64))
+
+                Ok(serde_json::json!(lf / rf))
             }
             _ => Err(ExpressionError::expression_type_error(
                 "number",
-                format!("{} and {}", left.kind().name(), right.kind().name()),
+                format!(
+                    "{} and {}",
+                    crate::value_utils::value_type_name(left),
+                    crate::value_utils::value_type_name(right)
+                ),
             )),
         }
     }
@@ -382,15 +387,30 @@ impl Evaluator {
     #[inline]
     fn modulo(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
-            (Value::Integer(l), Value::Integer(r)) => {
-                if r.value() == 0 {
-                    return Err(ExpressionError::expression_division_by_zero());
+            (Value::Number(l), Value::Number(r)) => {
+                // Try integer modulo first
+                if let (Some(li), Some(ri)) = (l.as_i64(), r.as_i64()) {
+                    if ri == 0 {
+                        return Err(ExpressionError::expression_division_by_zero());
+                    }
+                    Ok(Value::Number((li % ri).into()))
+                } else {
+                    // Fall back to float modulo
+                    let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
+                    let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                    if rf == 0.0 {
+                        return Err(ExpressionError::expression_division_by_zero());
+                    }
+                    Ok(serde_json::json!(lf % rf))
                 }
-                Ok(Value::integer(l.value() % r.value()))
             }
             _ => Err(ExpressionError::expression_type_error(
-                "integer",
-                format!("{} and {}", left.kind().name(), right.kind().name()),
+                "number",
+                format!(
+                    "{} and {}",
+                    crate::value_utils::value_type_name(left),
+                    crate::value_utils::value_type_name(right)
+                ),
             )),
         }
     }
@@ -399,40 +419,19 @@ impl Evaluator {
     #[inline]
     fn power(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
-            (Value::Integer(l), Value::Integer(r)) => {
-                if r.value() < 0 {
-                    Ok(Value::float((l.value() as f64).powf(r.value() as f64)))
-                } else {
-                    // Limit exponent to prevent overflow and DoS
-                    // i64::MAX is ~9.2e18, so 2^63 overflows. Limit to 63.
-                    if r.value() > 63 {
-                        return Err(ExpressionError::expression_eval_error(format!(
-                            "Exponent too large: {} (max 63 for integer power)",
-                            r.value()
-                        )));
-                    }
-                    l.value()
-                        .checked_pow(r.value() as u32)
-                        .map(Value::integer)
-                        .ok_or_else(|| {
-                            ExpressionError::expression_eval_error(format!(
-                                "Integer overflow: {} ** {}",
-                                l.value(),
-                                r.value()
-                            ))
-                        })
-                }
-            }
-            (Value::Float(l), Value::Float(r)) => Ok(Value::float(l.value().powf(r.value()))),
-            (Value::Integer(l), Value::Float(r)) => {
-                Ok(Value::float((l.value() as f64).powf(r.value())))
-            }
-            (Value::Float(l), Value::Integer(r)) => {
-                Ok(Value::float(l.value().powf(r.value() as f64)))
+            (Value::Number(l), Value::Number(r)) => {
+                // Always use floating point for power operations
+                let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
+                let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                Ok(serde_json::json!(lf.powf(rf)))
             }
             _ => Err(ExpressionError::expression_type_error(
                 "number",
-                format!("{} and {}", left.kind().name(), right.kind().name()),
+                format!(
+                    "{} and {}",
+                    crate::value_utils::value_type_name(left),
+                    crate::value_utils::value_type_name(right)
+                ),
             )),
         }
     }
@@ -441,18 +440,19 @@ impl Evaluator {
     #[inline]
     fn less_than(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
-            (Value::Integer(l), Value::Integer(r)) => Ok(Value::boolean(l.value() < r.value())),
-            (Value::Float(l), Value::Float(r)) => Ok(Value::boolean(l.value() < r.value())),
-            (Value::Integer(l), Value::Float(r)) => {
-                Ok(Value::boolean((l.value() as f64) < r.value()))
+            (Value::Number(l), Value::Number(r)) => {
+                let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
+                let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                Ok(Value::Bool(lf < rf))
             }
-            (Value::Float(l), Value::Integer(r)) => {
-                Ok(Value::boolean(l.value() < (r.value() as f64)))
-            }
-            (Value::Text(l), Value::Text(r)) => Ok(Value::boolean(l.as_str() < r.as_str())),
+            (Value::String(l), Value::String(r)) => Ok(Value::Bool(l < r)),
             _ => Err(ExpressionError::expression_type_error(
                 "comparable values",
-                format!("{} and {}", left.kind().name(), right.kind().name()),
+                format!(
+                    "{} and {}",
+                    crate::value_utils::value_type_name(left),
+                    crate::value_utils::value_type_name(right)
+                ),
             )),
         }
     }
@@ -461,18 +461,19 @@ impl Evaluator {
     #[inline]
     fn greater_than(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
-            (Value::Integer(l), Value::Integer(r)) => Ok(Value::boolean(l.value() > r.value())),
-            (Value::Float(l), Value::Float(r)) => Ok(Value::boolean(l.value() > r.value())),
-            (Value::Integer(l), Value::Float(r)) => {
-                Ok(Value::boolean((l.value() as f64) > r.value()))
+            (Value::Number(l), Value::Number(r)) => {
+                let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
+                let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                Ok(Value::Bool(lf > rf))
             }
-            (Value::Float(l), Value::Integer(r)) => {
-                Ok(Value::boolean(l.value() > (r.value() as f64)))
-            }
-            (Value::Text(l), Value::Text(r)) => Ok(Value::boolean(l.as_str() > r.as_str())),
+            (Value::String(l), Value::String(r)) => Ok(Value::Bool(l > r)),
             _ => Err(ExpressionError::expression_type_error(
                 "comparable values",
-                format!("{} and {}", left.kind().name(), right.kind().name()),
+                format!(
+                    "{} and {}",
+                    crate::value_utils::value_type_name(left),
+                    crate::value_utils::value_type_name(right)
+                ),
             )),
         }
     }
@@ -480,18 +481,19 @@ impl Evaluator {
     /// Less than or equal comparison
     fn less_equal(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
-            (Value::Integer(l), Value::Integer(r)) => Ok(Value::boolean(l.value() <= r.value())),
-            (Value::Float(l), Value::Float(r)) => Ok(Value::boolean(l.value() <= r.value())),
-            (Value::Integer(l), Value::Float(r)) => {
-                Ok(Value::boolean((l.value() as f64) <= r.value()))
+            (Value::Number(l), Value::Number(r)) => {
+                let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
+                let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                Ok(Value::Bool(lf <= rf))
             }
-            (Value::Float(l), Value::Integer(r)) => {
-                Ok(Value::boolean(l.value() <= (r.value() as f64)))
-            }
-            (Value::Text(l), Value::Text(r)) => Ok(Value::boolean(l.as_str() <= r.as_str())),
+            (Value::String(l), Value::String(r)) => Ok(Value::Bool(l <= r)),
             _ => Err(ExpressionError::expression_type_error(
                 "comparable values",
-                format!("{} and {}", left.kind().name(), right.kind().name()),
+                format!(
+                    "{} and {}",
+                    crate::value_utils::value_type_name(left),
+                    crate::value_utils::value_type_name(right)
+                ),
             )),
         }
     }
@@ -499,18 +501,19 @@ impl Evaluator {
     /// Greater than or equal comparison
     fn greater_equal(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
-            (Value::Integer(l), Value::Integer(r)) => Ok(Value::boolean(l.value() >= r.value())),
-            (Value::Float(l), Value::Float(r)) => Ok(Value::boolean(l.value() >= r.value())),
-            (Value::Integer(l), Value::Float(r)) => {
-                Ok(Value::boolean((l.value() as f64) >= r.value()))
+            (Value::Number(l), Value::Number(r)) => {
+                let lf = crate::value_utils::number_as_f64(l).unwrap_or(0.0);
+                let rf = crate::value_utils::number_as_f64(r).unwrap_or(0.0);
+                Ok(Value::Bool(lf >= rf))
             }
-            (Value::Float(l), Value::Integer(r)) => {
-                Ok(Value::boolean(l.value() >= (r.value() as f64)))
-            }
-            (Value::Text(l), Value::Text(r)) => Ok(Value::boolean(l.as_str() >= r.as_str())),
+            (Value::String(l), Value::String(r)) => Ok(Value::Bool(l >= r)),
             _ => Err(ExpressionError::expression_type_error(
                 "comparable values",
-                format!("{} and {}", left.kind().name(), right.kind().name()),
+                format!(
+                    "{} and {}",
+                    crate::value_utils::value_type_name(left),
+                    crate::value_utils::value_type_name(right)
+                ),
             )),
         }
     }
@@ -523,13 +526,19 @@ impl Evaluator {
     /// - Cache size limit with eviction (MAX_REGEX_CACHE_SIZE)
     #[cfg(feature = "regex")]
     fn regex_match(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
-        let text = left
-            .as_str()
-            .ok_or_else(|| ExpressionError::expression_type_error("string", left.kind().name()))?;
+        let text = left.as_str().ok_or_else(|| {
+            ExpressionError::expression_type_error(
+                "string",
+                crate::value_utils::value_type_name(left),
+            )
+        })?;
 
-        let pattern = right
-            .as_str()
-            .ok_or_else(|| ExpressionError::expression_type_error("string", right.kind().name()))?;
+        let pattern = right.as_str().ok_or_else(|| {
+            ExpressionError::expression_type_error(
+                "string",
+                crate::value_utils::value_type_name(right),
+            )
+        })?;
 
         // ReDoS protection: check pattern length
         if pattern.len() > MAX_REGEX_PATTERN_LEN {
@@ -570,7 +579,7 @@ impl Evaluator {
         };
         drop(cache); // Release lock before is_match
 
-        Ok(Value::boolean(regex.is_match(text)))
+        Ok(Value::Bool(regex.is_match(text)))
     }
 
     /// Check if a regex pattern contains potentially dangerous constructs
@@ -646,7 +655,7 @@ impl Evaluator {
             }
             _ => Err(ExpressionError::expression_type_error(
                 "object",
-                obj.kind().name(),
+                crate::value_utils::value_type_name(obj),
             )),
         }
     }
@@ -655,7 +664,12 @@ impl Evaluator {
     fn access_index(&self, obj: &Value, index: &Value) -> ExpressionResult<Value> {
         match obj {
             Value::Array(arr) => {
-                let idx = index.to_integer()?;
+                let idx = index.as_i64().ok_or_else(|| {
+                    ExpressionError::expression_type_error(
+                        "integer",
+                        crate::value_utils::value_type_name(index),
+                    )
+                })?;
                 let len = arr.len() as i64;
                 let actual_idx = if idx < 0 { len + idx } else { idx };
 
@@ -676,7 +690,10 @@ impl Evaluator {
             }
             Value::Object(o) => {
                 let key = index.as_str().ok_or_else(|| {
-                    ExpressionError::expression_type_error("string", index.kind().name())
+                    ExpressionError::expression_type_error(
+                        "string",
+                        crate::value_utils::value_type_name(index),
+                    )
                 })?;
                 let json_val = o.get(key).ok_or_else(|| {
                     ExpressionError::expression_eval_error(format!("Key '{}' not found", key))
@@ -685,7 +702,7 @@ impl Evaluator {
             }
             _ => Err(ExpressionError::expression_type_error(
                 "array or object",
-                obj.kind().name(),
+                crate::value_utils::value_type_name(obj),
             )),
         }
     }
@@ -756,7 +773,10 @@ impl Evaluator {
         // Evaluate the array argument
         let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
         let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error("array", array_val.kind().name())
+            ExpressionError::expression_type_error(
+                "array",
+                crate::value_utils::value_type_name(&array_val),
+            )
         })?;
 
         // Extract the lambda
@@ -774,12 +794,12 @@ impl Evaluator {
         let mut result = Vec::with_capacity(array.len());
         for item in array.iter() {
             let predicate_result = self.eval_lambda(param, body, item, context)?;
-            if predicate_result.to_boolean() {
+            if crate::value_utils::to_boolean(&predicate_result) {
                 result.push(item.clone());
             }
         }
 
-        Ok(Value::Array(nebula_value::Array::from_vec(result)))
+        Ok(Value::Array(result))
     }
 
     /// Map over array elements using a lambda transformer
@@ -802,7 +822,10 @@ impl Evaluator {
         // Evaluate the array argument
         let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
         let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error("array", array_val.kind().name())
+            ExpressionError::expression_type_error(
+                "array",
+                crate::value_utils::value_type_name(&array_val),
+            )
         })?;
 
         // Extract the lambda
@@ -823,7 +846,7 @@ impl Evaluator {
             result.push(transformed);
         }
 
-        Ok(Value::Array(nebula_value::Array::from_vec(result)))
+        Ok(Value::Array(result))
     }
 
     /// Reduce array elements using a lambda accumulator
@@ -849,7 +872,10 @@ impl Evaluator {
         // Evaluate the array argument
         let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
         let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error("array", array_val.kind().name())
+            ExpressionError::expression_type_error(
+                "array",
+                crate::value_utils::value_type_name(&array_val),
+            )
         })?;
 
         // Evaluate the initial value
@@ -898,7 +924,10 @@ impl Evaluator {
 
         let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
         let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error("array", array_val.kind().name())
+            ExpressionError::expression_type_error(
+                "array",
+                crate::value_utils::value_type_name(&array_val),
+            )
         })?;
 
         let (param, body) = match &args[1] {
@@ -913,7 +942,7 @@ impl Evaluator {
 
         for item in array.iter() {
             let predicate_result = self.eval_lambda(param, body, item, context)?;
-            if predicate_result.to_boolean() {
+            if crate::value_utils::to_boolean(&predicate_result) {
                 return Ok(item.clone());
             }
         }
@@ -940,7 +969,10 @@ impl Evaluator {
 
         let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
         let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error("array", array_val.kind().name())
+            ExpressionError::expression_type_error(
+                "array",
+                crate::value_utils::value_type_name(&array_val),
+            )
         })?;
 
         let (param, body) = match &args[1] {
@@ -955,12 +987,12 @@ impl Evaluator {
 
         for item in array.iter() {
             let predicate_result = self.eval_lambda(param, body, item, context)?;
-            if !predicate_result.to_boolean() {
-                return Ok(Value::boolean(false));
+            if !crate::value_utils::to_boolean(&predicate_result) {
+                return Ok(Value::Bool(false));
             }
         }
 
-        Ok(Value::boolean(true))
+        Ok(Value::Bool(true))
     }
 
     /// Check if any element matches a predicate
@@ -982,7 +1014,10 @@ impl Evaluator {
 
         let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
         let array = array_val.as_array().ok_or_else(|| {
-            ExpressionError::expression_type_error("array", array_val.kind().name())
+            ExpressionError::expression_type_error(
+                "array",
+                crate::value_utils::value_type_name(&array_val),
+            )
         })?;
 
         let (param, body) = match &args[1] {
@@ -997,12 +1032,12 @@ impl Evaluator {
 
         for item in array.iter() {
             let predicate_result = self.eval_lambda(param, body, item, context)?;
-            if predicate_result.to_boolean() {
-                return Ok(Value::boolean(true));
+            if crate::value_utils::to_boolean(&predicate_result) {
+                return Ok(Value::Bool(true));
             }
         }
 
-        Ok(Value::boolean(false))
+        Ok(Value::Bool(false))
     }
 }
 
@@ -1020,9 +1055,9 @@ mod tests {
     fn test_eval_literal() {
         let evaluator = create_evaluator();
         let context = EvaluationContext::new();
-        let expr = Expr::Literal(Value::integer(42));
+        let expr = Expr::Literal(Value::Number(42.into()));
         let result = evaluator.eval(&expr, &context).unwrap();
-        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(42)));
+        assert_eq!(result.as_i64(), Some(42));
     }
 
     #[test]
@@ -1030,12 +1065,12 @@ mod tests {
         let evaluator = create_evaluator();
         let context = EvaluationContext::new();
         let expr = Expr::Binary {
-            left: Box::new(Expr::Literal(Value::integer(10))),
+            left: Box::new(Expr::Literal(Value::Number(10.into()))),
             op: BinaryOp::Add,
-            right: Box::new(Expr::Literal(Value::integer(5))),
+            right: Box::new(Expr::Literal(Value::Number(5.into()))),
         };
         let result = evaluator.eval(&expr, &context).unwrap();
-        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(15)));
+        assert_eq!(result.as_i64(), Some(15));
     }
 
     #[test]
@@ -1044,23 +1079,20 @@ mod tests {
         let context = EvaluationContext::new();
 
         // Create moderately nested expression (safe for both construction and evaluation)
-        let mut expr = Expr::Literal(Value::integer(1));
+        let mut expr = Expr::Literal(Value::Number(1.into()));
         for _ in 0..50 {
             // 50 levels is safe and tests recursion tracking works
             expr = Expr::Binary {
                 left: Box::new(expr),
                 op: BinaryOp::Add,
-                right: Box::new(Expr::Literal(Value::integer(1))),
+                right: Box::new(Expr::Literal(Value::Number(1.into()))),
             };
         }
 
         // Should succeed (50 << 256)
         let result = evaluator.eval(&expr, &context);
         assert!(result.is_ok(), "50-level deep expression should succeed");
-        assert_eq!(
-            result.unwrap().as_integer(),
-            Some(nebula_value::Integer::new(51))
-        );
+        assert_eq!(result.unwrap().as_i64(), Some(51));
     }
 
     #[test]
@@ -1071,12 +1103,12 @@ mod tests {
         // false && <anything> should short-circuit and not evaluate right side
         // Using a division by zero on the right to prove it's not evaluated
         let expr = Expr::Binary {
-            left: Box::new(Expr::Literal(Value::boolean(false))),
+            left: Box::new(Expr::Literal(Value::Bool(false))),
             op: BinaryOp::And,
             right: Box::new(Expr::Binary {
-                left: Box::new(Expr::Literal(Value::integer(1))),
+                left: Box::new(Expr::Literal(Value::Number(1.into()))),
                 op: BinaryOp::Divide,
-                right: Box::new(Expr::Literal(Value::integer(0))),
+                right: Box::new(Expr::Literal(Value::Number(0.into()))),
             }),
         };
 
@@ -1086,7 +1118,7 @@ mod tests {
             result.is_ok(),
             "Short-circuit should prevent division by zero"
         );
-        assert_eq!(result.unwrap().as_boolean(), Some(false));
+        assert_eq!(result.unwrap().as_bool(), Some(false));
     }
 
     #[test]
@@ -1096,12 +1128,12 @@ mod tests {
 
         // true || <anything> should short-circuit and not evaluate right side
         let expr = Expr::Binary {
-            left: Box::new(Expr::Literal(Value::boolean(true))),
+            left: Box::new(Expr::Literal(Value::Bool(true))),
             op: BinaryOp::Or,
             right: Box::new(Expr::Binary {
-                left: Box::new(Expr::Literal(Value::integer(1))),
+                left: Box::new(Expr::Literal(Value::Number(1.into()))),
                 op: BinaryOp::Divide,
-                right: Box::new(Expr::Literal(Value::integer(0))),
+                right: Box::new(Expr::Literal(Value::Number(0.into()))),
             }),
         };
 
@@ -1111,7 +1143,7 @@ mod tests {
             result.is_ok(),
             "Short-circuit should prevent division by zero"
         );
-        assert_eq!(result.unwrap().as_boolean(), Some(true));
+        assert_eq!(result.unwrap().as_bool(), Some(true));
     }
 
     #[test]
@@ -1121,13 +1153,13 @@ mod tests {
 
         // true && false should evaluate both
         let expr = Expr::Binary {
-            left: Box::new(Expr::Literal(Value::boolean(true))),
+            left: Box::new(Expr::Literal(Value::Bool(true))),
             op: BinaryOp::And,
-            right: Box::new(Expr::Literal(Value::boolean(false))),
+            right: Box::new(Expr::Literal(Value::Bool(false))),
         };
 
         let result = evaluator.eval(&expr, &context).unwrap();
-        assert_eq!(result.as_boolean(), Some(false));
+        assert_eq!(result.as_bool(), Some(false));
     }
 
     #[test]
@@ -1137,13 +1169,13 @@ mod tests {
 
         // false || true should evaluate both
         let expr = Expr::Binary {
-            left: Box::new(Expr::Literal(Value::boolean(false))),
+            left: Box::new(Expr::Literal(Value::Bool(false))),
             op: BinaryOp::Or,
-            right: Box::new(Expr::Literal(Value::boolean(true))),
+            right: Box::new(Expr::Literal(Value::Bool(true))),
         };
 
         let result = evaluator.eval(&expr, &context).unwrap();
-        assert_eq!(result.as_boolean(), Some(true));
+        assert_eq!(result.as_bool(), Some(true));
     }
 
     #[test]
@@ -1154,21 +1186,21 @@ mod tests {
 
         // First regex match - should compile and cache
         let expr1 = Expr::Binary {
-            left: Box::new(Expr::Literal(Value::text("hello world"))),
+            left: Box::new(Expr::Literal(Value::String("hello world".to_string()))),
             op: BinaryOp::RegexMatch,
-            right: Box::new(Expr::Literal(Value::text("hello.*"))),
+            right: Box::new(Expr::Literal(Value::String("hello.*".to_string()))),
         };
         let result1 = evaluator.eval(&expr1, &context).unwrap();
-        assert_eq!(result1.as_boolean(), Some(true));
+        assert_eq!(result1.as_bool(), Some(true));
 
         // Second regex match with same pattern - should use cached regex
         let expr2 = Expr::Binary {
-            left: Box::new(Expr::Literal(Value::text("hello universe"))),
+            left: Box::new(Expr::Literal(Value::String("hello universe".to_string()))),
             op: BinaryOp::RegexMatch,
-            right: Box::new(Expr::Literal(Value::text("hello.*"))),
+            right: Box::new(Expr::Literal(Value::String("hello.*".to_string()))),
         };
         let result2 = evaluator.eval(&expr2, &context).unwrap();
-        assert_eq!(result2.as_boolean(), Some(true));
+        assert_eq!(result2.as_bool(), Some(true));
 
         // Verify cache has the pattern
         assert_eq!(evaluator.regex_cache.lock().len(), 1);
@@ -1182,12 +1214,12 @@ mod tests {
         let context = EvaluationContext::new();
 
         let expr = Expr::Binary {
-            left: Box::new(Expr::Literal(Value::text("goodbye world"))),
+            left: Box::new(Expr::Literal(Value::String("goodbye world".to_string()))),
             op: BinaryOp::RegexMatch,
-            right: Box::new(Expr::Literal(Value::text("^hello"))),
+            right: Box::new(Expr::Literal(Value::String("^hello".to_string()))),
         };
         let result = evaluator.eval(&expr, &context).unwrap();
-        assert_eq!(result.as_boolean(), Some(false));
+        assert_eq!(result.as_bool(), Some(false));
     }
 
     // ReDoS protection tests
@@ -1202,9 +1234,9 @@ mod tests {
         let long_pattern = "a".repeat(MAX_REGEX_PATTERN_LEN + 1);
 
         let expr = Expr::Binary {
-            left: Box::new(Expr::Literal(Value::text("test"))),
+            left: Box::new(Expr::Literal(Value::String("test".to_string()))),
             op: BinaryOp::RegexMatch,
-            right: Box::new(Expr::Literal(Value::text(&long_pattern))),
+            right: Box::new(Expr::Literal(Value::String(long_pattern))),
         };
 
         let result = evaluator.eval(&expr, &context);
@@ -1267,9 +1299,11 @@ mod tests {
 
         // This dangerous pattern should be rejected
         let expr = Expr::Binary {
-            left: Box::new(Expr::Literal(Value::text("aaaaaaaaaaaaaaaaaaaaaaaaaaa!"))),
+            left: Box::new(Expr::Literal(Value::String(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaa!".to_string(),
+            ))),
             op: BinaryOp::RegexMatch,
-            right: Box::new(Expr::Literal(Value::text("(a+)+$"))),
+            right: Box::new(Expr::Literal(Value::String("(a+)+$".to_string()))),
         };
 
         let result = evaluator.eval(&expr, &context);
@@ -1288,9 +1322,9 @@ mod tests {
         for i in 0..MAX_REGEX_CACHE_SIZE + 10 {
             let pattern = format!("pattern_{}", i);
             let expr = Expr::Binary {
-                left: Box::new(Expr::Literal(Value::text("test"))),
+                left: Box::new(Expr::Literal(Value::String("test".to_string()))),
                 op: BinaryOp::RegexMatch,
-                right: Box::new(Expr::Literal(Value::text(&pattern))),
+                right: Box::new(Expr::Literal(Value::String(pattern))),
             };
             let _ = evaluator.eval(&expr, &context);
         }
@@ -1325,18 +1359,18 @@ mod tests {
             name: Arc::from("filter"),
             args: vec![
                 Expr::Array(vec![
-                    Expr::Literal(Value::integer(1)),
-                    Expr::Literal(Value::integer(2)),
-                    Expr::Literal(Value::integer(3)),
-                    Expr::Literal(Value::integer(4)),
-                    Expr::Literal(Value::integer(5)),
+                    Expr::Literal(Value::Number(1.into())),
+                    Expr::Literal(Value::Number(2.into())),
+                    Expr::Literal(Value::Number(3.into())),
+                    Expr::Literal(Value::Number(4.into())),
+                    Expr::Literal(Value::Number(5.into())),
                 ]),
                 Expr::Lambda {
                     param: Arc::from("x"),
                     body: Box::new(Expr::Binary {
                         left: Box::new(Expr::Variable(Arc::from("x"))),
                         op: BinaryOp::GreaterThan,
-                        right: Box::new(Expr::Literal(Value::integer(2))),
+                        right: Box::new(Expr::Literal(Value::Number(2.into()))),
                     }),
                 },
             ],
@@ -1345,18 +1379,9 @@ mod tests {
         let result = evaluator.eval(&expr, &context).unwrap();
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), 3);
-        assert_eq!(
-            arr.get(0).unwrap().as_integer(),
-            Some(nebula_value::Integer::new(3))
-        );
-        assert_eq!(
-            arr.get(1).unwrap().as_integer(),
-            Some(nebula_value::Integer::new(4))
-        );
-        assert_eq!(
-            arr.get(2).unwrap().as_integer(),
-            Some(nebula_value::Integer::new(5))
-        );
+        assert_eq!(arr.get(0).unwrap().as_i64(), Some(3));
+        assert_eq!(arr.get(1).unwrap().as_i64(), Some(4));
+        assert_eq!(arr.get(2).unwrap().as_i64(), Some(5));
     }
 
     #[test]
@@ -1369,16 +1394,16 @@ mod tests {
             name: Arc::from("map"),
             args: vec![
                 Expr::Array(vec![
-                    Expr::Literal(Value::integer(1)),
-                    Expr::Literal(Value::integer(2)),
-                    Expr::Literal(Value::integer(3)),
+                    Expr::Literal(Value::Number(1.into())),
+                    Expr::Literal(Value::Number(2.into())),
+                    Expr::Literal(Value::Number(3.into())),
                 ]),
                 Expr::Lambda {
                     param: Arc::from("x"),
                     body: Box::new(Expr::Binary {
                         left: Box::new(Expr::Variable(Arc::from("x"))),
                         op: BinaryOp::Multiply,
-                        right: Box::new(Expr::Literal(Value::integer(2))),
+                        right: Box::new(Expr::Literal(Value::Number(2.into()))),
                     }),
                 },
             ],
@@ -1387,18 +1412,9 @@ mod tests {
         let result = evaluator.eval(&expr, &context).unwrap();
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), 3);
-        assert_eq!(
-            arr.get(0).unwrap().as_integer(),
-            Some(nebula_value::Integer::new(2))
-        );
-        assert_eq!(
-            arr.get(1).unwrap().as_integer(),
-            Some(nebula_value::Integer::new(4))
-        );
-        assert_eq!(
-            arr.get(2).unwrap().as_integer(),
-            Some(nebula_value::Integer::new(6))
-        );
+        assert_eq!(arr.get(0).unwrap().as_i64(), Some(2));
+        assert_eq!(arr.get(1).unwrap().as_i64(), Some(4));
+        assert_eq!(arr.get(2).unwrap().as_i64(), Some(6));
     }
 
     #[test]
@@ -1411,11 +1427,11 @@ mod tests {
             name: Arc::from("reduce"),
             args: vec![
                 Expr::Array(vec![
-                    Expr::Literal(Value::integer(1)),
-                    Expr::Literal(Value::integer(2)),
-                    Expr::Literal(Value::integer(3)),
+                    Expr::Literal(Value::Number(1.into())),
+                    Expr::Literal(Value::Number(2.into())),
+                    Expr::Literal(Value::Number(3.into())),
                 ]),
-                Expr::Literal(Value::integer(0)),
+                Expr::Literal(Value::Number(0.into())),
                 Expr::Lambda {
                     param: Arc::from("x"),
                     body: Box::new(Expr::Binary {
@@ -1428,7 +1444,7 @@ mod tests {
         };
 
         let result = evaluator.eval(&expr, &context).unwrap();
-        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(6)));
+        assert_eq!(result.as_i64(), Some(6));
     }
 
     #[test]
@@ -1441,24 +1457,24 @@ mod tests {
             name: Arc::from("find"),
             args: vec![
                 Expr::Array(vec![
-                    Expr::Literal(Value::integer(1)),
-                    Expr::Literal(Value::integer(2)),
-                    Expr::Literal(Value::integer(3)),
-                    Expr::Literal(Value::integer(4)),
+                    Expr::Literal(Value::Number(1.into())),
+                    Expr::Literal(Value::Number(2.into())),
+                    Expr::Literal(Value::Number(3.into())),
+                    Expr::Literal(Value::Number(4.into())),
                 ]),
                 Expr::Lambda {
                     param: Arc::from("x"),
                     body: Box::new(Expr::Binary {
                         left: Box::new(Expr::Variable(Arc::from("x"))),
                         op: BinaryOp::GreaterThan,
-                        right: Box::new(Expr::Literal(Value::integer(2))),
+                        right: Box::new(Expr::Literal(Value::Number(2.into()))),
                     }),
                 },
             ],
         };
 
         let result = evaluator.eval(&expr, &context).unwrap();
-        assert_eq!(result.as_integer(), Some(nebula_value::Integer::new(3)));
+        assert_eq!(result.as_i64(), Some(3));
     }
 
     #[test]
@@ -1471,9 +1487,9 @@ mod tests {
             name: Arc::from("every"),
             args: vec![
                 Expr::Array(vec![
-                    Expr::Literal(Value::integer(2)),
-                    Expr::Literal(Value::integer(4)),
-                    Expr::Literal(Value::integer(6)),
+                    Expr::Literal(Value::Number(2.into())),
+                    Expr::Literal(Value::Number(4.into())),
+                    Expr::Literal(Value::Number(6.into())),
                 ]),
                 Expr::Lambda {
                     param: Arc::from("x"),
@@ -1481,17 +1497,17 @@ mod tests {
                         left: Box::new(Expr::Binary {
                             left: Box::new(Expr::Variable(Arc::from("x"))),
                             op: BinaryOp::Modulo,
-                            right: Box::new(Expr::Literal(Value::integer(2))),
+                            right: Box::new(Expr::Literal(Value::Number(2.into()))),
                         }),
                         op: BinaryOp::Equal,
-                        right: Box::new(Expr::Literal(Value::integer(0))),
+                        right: Box::new(Expr::Literal(Value::Number(0.into()))),
                     }),
                 },
             ],
         };
 
         let result = evaluator.eval(&expr, &context).unwrap();
-        assert_eq!(result.as_boolean(), Some(true));
+        assert_eq!(result.as_bool(), Some(true));
     }
 
     #[test]
@@ -1504,45 +1520,45 @@ mod tests {
             name: Arc::from("some"),
             args: vec![
                 Expr::Array(vec![
-                    Expr::Literal(Value::integer(1)),
-                    Expr::Literal(Value::integer(2)),
-                    Expr::Literal(Value::integer(3)),
+                    Expr::Literal(Value::Number(1.into())),
+                    Expr::Literal(Value::Number(2.into())),
+                    Expr::Literal(Value::Number(3.into())),
                 ]),
                 Expr::Lambda {
                     param: Arc::from("x"),
                     body: Box::new(Expr::Binary {
                         left: Box::new(Expr::Variable(Arc::from("x"))),
                         op: BinaryOp::GreaterThan,
-                        right: Box::new(Expr::Literal(Value::integer(2))),
+                        right: Box::new(Expr::Literal(Value::Number(2.into()))),
                     }),
                 },
             ],
         };
 
         let result = evaluator.eval(&expr, &context).unwrap();
-        assert_eq!(result.as_boolean(), Some(true));
+        assert_eq!(result.as_bool(), Some(true));
 
         // some([1, 2, 3], x => x > 5) should return false
         let expr2 = Expr::FunctionCall {
             name: Arc::from("some"),
             args: vec![
                 Expr::Array(vec![
-                    Expr::Literal(Value::integer(1)),
-                    Expr::Literal(Value::integer(2)),
-                    Expr::Literal(Value::integer(3)),
+                    Expr::Literal(Value::Number(1.into())),
+                    Expr::Literal(Value::Number(2.into())),
+                    Expr::Literal(Value::Number(3.into())),
                 ]),
                 Expr::Lambda {
                     param: Arc::from("x"),
                     body: Box::new(Expr::Binary {
                         left: Box::new(Expr::Variable(Arc::from("x"))),
                         op: BinaryOp::GreaterThan,
-                        right: Box::new(Expr::Literal(Value::integer(5))),
+                        right: Box::new(Expr::Literal(Value::Number(5.into()))),
                     }),
                 },
             ],
         };
 
         let result2 = evaluator.eval(&expr2, &context).unwrap();
-        assert_eq!(result2.as_boolean(), Some(false));
+        assert_eq!(result2.as_bool(), Some(false));
     }
 }

@@ -104,9 +104,12 @@ where
     /// Get current integrated statistics combining allocator and system metrics
     pub fn integrated_stats(&self) -> MemoryResult<IntegratedStats> {
         let allocator_stats = self.stats.snapshot();
-        let monitor = self.monitor.lock().map_err(|e| MemoryError::InitializationFailed {
-            reason: format!("Monitor lock failed: {e}"),
-        })?;
+        let monitor = self
+            .monitor
+            .lock()
+            .map_err(|e| MemoryError::InitializationFailed {
+                reason: format!("Monitor lock failed: {e}"),
+            })?;
         let monitoring_stats = monitor.get_stats();
 
         Ok(IntegratedStats::new(allocator_stats, monitoring_stats))
@@ -114,9 +117,12 @@ where
 
     /// Check if allocation should be allowed based on size and system pressure
     fn should_allow_allocation(&self, layout: Layout) -> MemoryResult<bool> {
-        let mut monitor = self.monitor.lock().map_err(|e| MemoryError::InitializationFailed {
-            reason: format!("Monitor lock failed: {e}"),
-        })?;
+        let mut monitor = self
+            .monitor
+            .lock()
+            .map_err(|e| MemoryError::InitializationFailed {
+                reason: format!("Monitor lock failed: {e}"),
+            })?;
 
         // Check if large allocation should be allowed
         if !monitor.should_allow_large_allocation(layout.size())? {

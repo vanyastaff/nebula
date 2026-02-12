@@ -15,7 +15,7 @@ use crate::context::EvaluationContext;
 use crate::core::ast::Expr;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
-use nebula_value::Value;
+use serde_json::Value;
 use std::collections::HashMap;
 
 /// Type alias for a builtin function
@@ -237,7 +237,7 @@ pub(crate) fn get_string_arg<'a>(
                 format!(
                     "Argument '{}' must be a string, got {}",
                     arg_name,
-                    args[index].kind().name()
+                    crate::value_utils::value_type_name(&args[index])
                 ),
             )
         })
@@ -250,24 +250,23 @@ pub(crate) fn get_int_arg(
     index: usize,
     arg_name: &str,
 ) -> ExpressionResult<i64> {
-    args.get(index)
-        .ok_or_else(|| {
-            ExpressionError::expression_invalid_argument(
-                func_name,
-                format!("Missing argument '{}' at position {}", arg_name, index),
-            )
-        })?
-        .to_integer()
-        .map_err(|_| {
-            ExpressionError::expression_invalid_argument(
-                func_name,
-                format!(
-                    "Argument '{}' must be an integer, got {}",
-                    arg_name,
-                    args[index].kind().name()
-                ),
-            )
-        })
+    let val = args.get(index).ok_or_else(|| {
+        ExpressionError::expression_invalid_argument(
+            func_name,
+            format!("Missing argument '{}' at position {}", arg_name, index),
+        )
+    })?;
+
+    crate::value_utils::to_integer(val).map_err(|_| {
+        ExpressionError::expression_invalid_argument(
+            func_name,
+            format!(
+                "Argument '{}' must be an integer, got {}",
+                arg_name,
+                crate::value_utils::value_type_name(val)
+            ),
+        )
+    })
 }
 
 /// Helper to get a number argument (int or float) with better error message
@@ -284,13 +283,13 @@ pub(crate) fn get_number_arg(
         )
     })?;
 
-    val.to_float().map_err(|_| {
+    crate::value_utils::to_float(val).map_err(|_| {
         ExpressionError::expression_invalid_argument(
             func_name,
             format!(
                 "Argument '{}' must be a number, got {}",
                 arg_name,
-                val.kind().name()
+                crate::value_utils::value_type_name(val)
             ),
         )
     })
@@ -302,7 +301,7 @@ pub(crate) fn get_array_arg<'a>(
     args: &'a [Value],
     index: usize,
     arg_name: &str,
-) -> ExpressionResult<&'a nebula_value::Array> {
+) -> ExpressionResult<&'a Vec<Value>> {
     args.get(index)
         .ok_or_else(|| {
             ExpressionError::expression_invalid_argument(
@@ -317,7 +316,7 @@ pub(crate) fn get_array_arg<'a>(
                 format!(
                     "Argument '{}' must be an array, got {}",
                     arg_name,
-                    args[index].kind().name()
+                    crate::value_utils::value_type_name(&args[index])
                 ),
             )
         })
@@ -329,7 +328,7 @@ pub(crate) fn get_object_arg<'a>(
     args: &'a [Value],
     index: usize,
     arg_name: &str,
-) -> ExpressionResult<&'a nebula_value::Object> {
+) -> ExpressionResult<&'a serde_json::Map<String, Value>> {
     args.get(index)
         .ok_or_else(|| {
             ExpressionError::expression_invalid_argument(
@@ -344,7 +343,7 @@ pub(crate) fn get_object_arg<'a>(
                 format!(
                     "Argument '{}' must be an object, got {}",
                     arg_name,
-                    args[index].kind().name()
+                    crate::value_utils::value_type_name(&args[index])
                 ),
             )
         })
@@ -356,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_get_string_arg_type_error() {
-        let args = vec![Value::integer(42)];
+        let args = vec![Value::Number(42.into())];
         let result = get_string_arg("test_func", &args, 0, "text");
 
         assert!(result.is_err());
@@ -364,12 +363,12 @@ mod tests {
         let msg = err.to_string();
         println!("Error message: {}", msg);
         assert!(msg.contains("Argument 'text' must be a string"));
-        assert!(msg.contains("Integer") || msg.contains("integer"));
+        assert!(msg.contains("number"));
     }
 
     #[test]
     fn test_get_int_arg_type_error() {
-        let args = vec![Value::text("hello")];
+        let args = vec![Value::String("hello".to_string())];
         let result = get_int_arg("test_func", &args, 0, "count");
 
         assert!(result.is_err());
@@ -380,18 +379,18 @@ mod tests {
 
     #[test]
     fn test_get_number_arg_accepts_int_and_float() {
-        let args_int = vec![Value::integer(42)];
+        let args_int = vec![Value::Number(42.into())];
         let result_int = get_number_arg("test_func", &args_int, 0, "value");
         assert_eq!(result_int.unwrap(), 42.0);
 
-        let args_float = vec![Value::float(3.14)];
+        let args_float = vec![serde_json::json!(3.14)];
         let result_float = get_number_arg("test_func", &args_float, 0, "value");
         assert_eq!(result_float.unwrap(), 3.14);
     }
 
     #[test]
     fn test_get_array_arg_type_error() {
-        let args = vec![Value::text("not an array")];
+        let args = vec![Value::String("not an array".to_string())];
         let result = get_array_arg("test_func", &args, 0, "items");
 
         assert!(result.is_err());

@@ -415,7 +415,7 @@ pub mod prelude {
     // Re-export nebula ecosystem for convenience
     pub use nebula_config::ConfigSource;
     pub use nebula_log::{debug, error, info, warn};
-    pub use nebula_value::Value;
+    pub use serde_json::Value;
 
     // Standard library re-exports for convenience
     pub use std::time::Duration;

@@ -46,24 +46,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Configuration loaded successfully"
     );
 
-    // Example 2: Working with NebulaValue for dynamic configuration
-    info!("=== NebulaValue Integration ===");
+    // Example 2: Working with serde_json::Value for dynamic configuration
+    info!("=== Dynamic Value Integration ===");
 
-    // Get configuration as NebulaValue
+    // Get configuration as serde_json::Value
     let app_config = config.get_value("app").await?;
     info!(
-        app_name = %app_config.get_path("name").unwrap_or(&NebulaValue::null()),
-        app_port = %app_config.get_path("port").unwrap_or(&NebulaValue::null()),
+        app_name = %app_config.get("name").unwrap_or(&serde_json::Value::Null),
+        app_port = %app_config.get("port").unwrap_or(&serde_json::Value::Null),
         "Application configuration loaded"
     );
 
-    // Set dynamic configuration using NebulaValue
-    let dynamic_value = NebulaValue::Object({
-        let obj = nebula_value::Object::new();
-        let obj = obj.insert("runtime_mode".to_string(), serde_json::json!("development"));
-        let obj = obj.insert("request_timeout".to_string(), serde_json::json!(30));
-        let obj = obj.insert("retry_count".to_string(), serde_json::json!(3));
-        obj
+    // Set dynamic configuration using serde_json::Value
+    let dynamic_value = serde_json::json!({
+        "runtime_mode": "development",
+        "request_timeout": 30,
+        "retry_count": 3
     });
 
     config.set_value("runtime", dynamic_value).await?;
@@ -74,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Dynamic configuration set"
     );
 
-    // Example 3: Typed configuration with NebulaValue serialization
+    // Example 3: Typed configuration with serde serialization
     info!("=== Typed Configuration ===");
 
     #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -121,11 +119,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match config.get::<String>("non_existent.key").await {
         Ok(value) => info!(value = %value, "Found unexpected configuration"),
         Err(err) => {
-            // ConfigError automatically converts to NebulaError
-            let nebula_error: NebulaError = err.into();
             warn!(
                 error_type = "configuration_missing",
-                error = %nebula_error,
+                error = %err,
                 "Expected configuration error occurred"
             );
         }
@@ -153,22 +149,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Example 6: Configuration merging
     info!("=== Configuration Merging ===");
 
-    let override_config = NebulaValue::Object({
-        let obj = nebula_value::Object::new();
-        let app_obj = nebula_value::Object::new();
-        let app_obj = app_obj.insert("debug".to_string(), serde_json::json!(true));
-        let app_obj = app_obj.insert("log_level".to_string(), serde_json::json!("debug"));
-        let obj = obj.insert(
-            "app".to_string(),
-            serde_json::json!(serde_json::Value::Object({
-                let mut map = serde_json::Map::new();
-                for (k, v) in app_obj.entries() {
-                    map.insert(k.clone(), v.clone());
-                }
-                map
-            })),
-        );
-        obj
+    let override_config = serde_json::json!({
+        "app": {
+            "debug": true,
+            "log_level": "debug"
+        }
     });
 
     config.merge(override_config).await?;
@@ -234,14 +219,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 1..=3 {
         sleep(Duration::from_millis(100)).await;
 
-        let dynamic_update = NebulaValue::Object({
-            let obj = nebula_value::Object::new();
-            let obj = obj.insert("iteration".to_string(), serde_json::json!(i));
-            let obj = obj.insert(
-                "timestamp".to_string(),
-                serde_json::json!(chrono::Utc::now().to_rfc3339()),
-            );
-            obj
+        let dynamic_update = serde_json::json!({
+            "iteration": i,
+            "timestamp": chrono::Utc::now().to_rfc3339()
         });
 
         config
@@ -262,7 +242,7 @@ async fn validate_config_structure(config: &Config) -> ConfigResult<()> {
 
     for field in &required_fields {
         let value = config.get_value(field).await?;
-        if matches!(value, NebulaValue::Null) {
+        if matches!(value, serde_json::Value::Null) {
             return Err(ConfigError::validation_with_field(
                 "Required field is null",
                 field.to_string(),

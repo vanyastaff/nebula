@@ -1,10 +1,10 @@
-//! Dynamic configuration support using nebula-value
+//! Dynamic configuration support using serde_json
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::config::{ConfigError, ConfigResult, ResilienceConfig};
-use nebula_value::{Object, Value};
+use serde_json::{Map, Value};
 
 /// Get current timestamp as ISO 8601 string
 fn current_timestamp() -> String {
@@ -17,8 +17,8 @@ fn current_timestamp() -> String {
 /// Dynamic configuration container that can hold any resilience configuration
 #[derive(Debug, Clone)]
 pub struct DynamicConfig {
-    /// Configuration values stored as nebula-value
-    values: Object,
+    /// Configuration values stored as serde_json::Map
+    values: Map<String, Value>,
     /// Configuration schema version for compatibility tracking
     schema_version: String,
     /// Last update timestamp for change tracking
@@ -28,7 +28,7 @@ pub struct DynamicConfig {
 impl Default for DynamicConfig {
     fn default() -> Self {
         Self {
-            values: Object::new(),
+            values: Map::new(),
             schema_version: "1.0".to_string(),
             last_updated: None,
         }
@@ -69,7 +69,10 @@ impl DynamicConfig {
 
     /// Merge with another dynamic configuration
     pub fn merge(&mut self, other: &Self) -> ConfigResult<()> {
-        self.values = self.values.merge(&other.values);
+        // Manually merge maps (serde_json::Map doesn't have a merge method)
+        for (key, value) in &other.values {
+            self.values.insert(key.clone(), value.clone());
+        }
         // Update timestamp when configuration changes
         self.last_updated = Some(current_timestamp());
         Ok(())
@@ -102,14 +105,21 @@ impl DynamicConfig {
         map
     }
 
-    fn set_nested_value(&self, obj: &Object, path: &[&str], value: Value) -> ConfigResult<Object> {
+    fn set_nested_value(
+        &self,
+        obj: &Map<String, Value>,
+        path: &[&str],
+        value: Value,
+    ) -> ConfigResult<Map<String, Value>> {
         if path.is_empty() {
             return Err(ConfigError::validation("Empty path not allowed"));
         }
 
         if path.len() == 1 {
-            // Object already stores nebula Values directly
-            Ok(obj.insert(path[0].to_string(), value))
+            // Clone the map and insert the value
+            let mut new_obj = obj.clone();
+            new_obj.insert(path[0].to_string(), value);
+            Ok(new_obj)
         } else {
             let key = path[0];
             let remaining = &path[1..];
@@ -118,12 +128,14 @@ impl DynamicConfig {
             let nested = obj
                 .get(key)
                 .cloned()
-                .unwrap_or(Value::Object(Object::new()));
+                .unwrap_or_else(|| Value::Object(Map::new()));
 
             match nested {
                 Value::Object(nested_obj) => {
                     let updated_nested = self.set_nested_value(&nested_obj, remaining, value)?;
-                    Ok(obj.insert(key.to_string(), Value::Object(updated_nested)))
+                    let mut new_obj = obj.clone();
+                    new_obj.insert(key.to_string(), Value::Object(updated_nested));
+                    Ok(new_obj)
                 }
                 _ => Err(ConfigError::validation(format!(
                     "Path '{key}' exists but is not an object"
@@ -132,7 +144,7 @@ impl DynamicConfig {
         }
     }
 
-    fn get_nested_value(&self, obj: &Object, path: &[&str]) -> ConfigResult<Value> {
+    fn get_nested_value(&self, obj: &Map<String, Value>, path: &[&str]) -> ConfigResult<Value> {
         if path.is_empty() {
             return Err(ConfigError::validation("Empty path not allowed"));
         }
@@ -155,8 +167,13 @@ impl DynamicConfig {
         }
     }
 
-    fn flatten_object(&self, obj: &Object, prefix: &str, map: &mut HashMap<String, String>) {
-        for (key, value) in obj.entries() {
+    fn flatten_object(
+        &self,
+        obj: &Map<String, Value>,
+        prefix: &str,
+        map: &mut HashMap<String, String>,
+    ) {
+        for (key, value) in obj {
             let full_key = if prefix.is_empty() {
                 key.clone()
             } else {
@@ -205,32 +222,32 @@ impl ResiliencePresets {
 
         // Circuit breaker for database
         config
-            .set_value("circuit_breaker.failure_threshold", Value::integer(5))
+            .set_value("circuit_breaker.failure_threshold", serde_json::json!(5))
             .expect("preset configuration should be valid");
         config
-            .set_value("circuit_breaker.reset_timeout", Value::text("60s"))
+            .set_value("circuit_breaker.reset_timeout", serde_json::json!("60s"))
             .expect("preset configuration should be valid");
         config
             .set_value(
                 "circuit_breaker.half_open_max_operations",
-                Value::integer(3),
+                serde_json::json!(3),
             )
             .expect("preset configuration should be valid");
 
         // Retry for database
         config
-            .set_value("retry.max_attempts", Value::integer(3))
+            .set_value("retry.max_attempts", serde_json::json!(3))
             .expect("preset configuration should be valid");
         config
-            .set_value("retry.base_delay", Value::text("100ms"))
+            .set_value("retry.base_delay", serde_json::json!("100ms"))
             .expect("preset configuration should be valid");
         config
-            .set_value("retry.max_delay", Value::text("5s"))
+            .set_value("retry.max_delay", serde_json::json!("5s"))
             .expect("preset configuration should be valid");
 
         // Timeout for database
         config
-            .set_value("timeout.duration", Value::text("30s"))
+            .set_value("timeout.duration", serde_json::json!("30s"))
             .expect("preset configuration should be valid");
 
         config
@@ -243,40 +260,40 @@ impl ResiliencePresets {
 
         // Circuit breaker for HTTP
         config
-            .set_value("circuit_breaker.failure_threshold", Value::integer(3))
+            .set_value("circuit_breaker.failure_threshold", serde_json::json!(3))
             .expect("preset configuration should be valid");
         config
-            .set_value("circuit_breaker.reset_timeout", Value::text("30s"))
+            .set_value("circuit_breaker.reset_timeout", serde_json::json!("30s"))
             .expect("preset configuration should be valid");
         config
             .set_value(
                 "circuit_breaker.half_open_max_operations",
-                Value::integer(2),
+                serde_json::json!(2),
             )
             .expect("preset configuration should be valid");
 
         // Retry for HTTP
         config
-            .set_value("retry.max_attempts", Value::integer(3))
+            .set_value("retry.max_attempts", serde_json::json!(3))
             .expect("preset configuration should be valid");
         config
-            .set_value("retry.base_delay", Value::text("1s"))
+            .set_value("retry.base_delay", serde_json::json!("1s"))
             .expect("preset configuration should be valid");
         config
-            .set_value("retry.max_delay", Value::text("10s"))
+            .set_value("retry.max_delay", serde_json::json!("10s"))
             .expect("preset configuration should be valid");
 
         // Timeout for HTTP
         config
-            .set_value("timeout.duration", Value::text("10s"))
+            .set_value("timeout.duration", serde_json::json!("10s"))
             .expect("preset configuration should be valid");
 
         // Rate limiting for HTTP
         config
-            .set_value("rate_limit.requests_per_second", Value::integer(100))
+            .set_value("rate_limit.requests_per_second", serde_json::json!(100))
             .expect("preset configuration should be valid");
         config
-            .set_value("rate_limit.burst", Value::integer(20))
+            .set_value("rate_limit.burst", serde_json::json!(20))
             .expect("preset configuration should be valid");
 
         config
@@ -291,18 +308,18 @@ impl ResiliencePresets {
 
         // Light retry for file I/O
         config
-            .set_value("retry.max_attempts", Value::integer(2))
+            .set_value("retry.max_attempts", serde_json::json!(2))
             .expect("preset configuration should be valid");
         config
-            .set_value("retry.base_delay", Value::text("500ms"))
+            .set_value("retry.base_delay", serde_json::json!("500ms"))
             .expect("preset configuration should be valid");
         config
-            .set_value("retry.max_delay", Value::text("2s"))
+            .set_value("retry.max_delay", serde_json::json!("2s"))
             .expect("preset configuration should be valid");
 
         // Generous timeout for file I/O
         config
-            .set_value("timeout.duration", Value::text("60s"))
+            .set_value("timeout.duration", serde_json::json!("60s"))
             .expect("preset configuration should be valid");
 
         config
@@ -317,10 +334,12 @@ mod tests {
     fn test_dynamic_config_basic() {
         let mut config = DynamicConfig::new();
 
-        config.set_value("test.key", Value::text("value")).unwrap();
+        config
+            .set_value("test.key", serde_json::json!("value"))
+            .unwrap();
         let retrieved = config.get_value("test.key").unwrap();
 
-        assert_eq!(retrieved, Value::text("value"));
+        assert_eq!(retrieved, serde_json::json!("value"));
     }
 
     #[test]
@@ -328,11 +347,11 @@ mod tests {
         let mut config = DynamicConfig::new();
 
         config
-            .set_value("level1.level2.key", Value::integer(42))
+            .set_value("level1.level2.key", serde_json::json!(42))
             .unwrap();
         let retrieved = config.get_value("level1.level2.key").unwrap();
 
-        assert_eq!(retrieved, Value::integer(42));
+        assert_eq!(retrieved, serde_json::json!(42));
     }
 
     #[test]
@@ -341,10 +360,10 @@ mod tests {
         let threshold = db_config
             .get_value("circuit_breaker.failure_threshold")
             .unwrap();
-        assert_eq!(threshold, Value::integer(5));
+        assert_eq!(threshold, serde_json::json!(5));
 
         let http_config = ResiliencePresets::http_api();
         let timeout = http_config.get_value("timeout.duration").unwrap();
-        assert_eq!(timeout, Value::text("10s"));
+        assert_eq!(timeout, serde_json::json!("10s"));
     }
 }

@@ -58,7 +58,18 @@
       "mcp__filesystem__search_files",
       "Skill(commit-commands:commit-push-pr)",
       "Skill(commit-commands:commit-push-pr:*)",
-      "WebFetch(domain:docs.n8n.io)"
+      "WebFetch(domain:docs.n8n.io)",
+      "WebFetch(domain:lib.rs)",
+      "WebFetch(domain:)",
+      "Skill(commit-commands:commit)",
+      "Skill(commit-commands:commit:*)",
+      "WebFetch(domain:community.n8n.io)",
+      "Bash(.specify/scripts/bash/check-prerequisites.sh:*)",
+      "Bash(test:*)",
+      "Bash(grep:*)",
+      "Bash(wc:*)",
+      "Bash(cargo doc:*)",
+      "mcp__filesystem__list_directory_with_sizes"
     ]
   }
 }

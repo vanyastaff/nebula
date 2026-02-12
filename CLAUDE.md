@@ -160,6 +160,9 @@ async fn test_async() {
 - N/A (this feature only adds types, no persistence logic) (006-extend-core-identity)
 - Rust 2024 Edition (MSRV: 1.92) + nebula-core, nebula-system, nebula-log (optional), thiserror, parking_lot, crossbeam-queue, hashbrown, dashmap, tokio (optional), winapi (Windows) (007-memory-prerelease)
 - N/A (in-memory allocators) (007-memory-prerelease)
+- Rust 2024 Edition (MSRV: 1.92) + serde_json, chrono, rust_decimal, bytes, thiserror (008-serde-value-migration)
+- N/A (value type refactoring) (008-serde-value-migration)
 
 ## Recent Changes
+- 008-serde-value-migration: Migrated from custom nebula-value to serde_json::Value (completed 2026-02-11)
 - 001-credential-core-abstractions: Added Rust 2024 Edition (MSRV: 1.92)

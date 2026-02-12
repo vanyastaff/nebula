@@ -7,7 +7,7 @@ use crate::core::ast::{BinaryOp, Expr};
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::core::span::Span;
 use crate::core::token::{Token, TokenKind};
-use nebula_value::Value;
+use serde_json::Value;
 use std::sync::Arc;
 
 /// Maximum recursion depth for parser
@@ -229,26 +229,26 @@ impl<'a> Parser<'a> {
             TokenKind::Integer(n) => {
                 let n = *n;
                 self.advance();
-                Ok(Expr::Literal(Value::integer(n)))
+                Ok(Expr::Literal(Value::Number(n.into())))
             }
             TokenKind::Float(n) => {
                 let n = *n;
                 self.advance();
-                Ok(Expr::Literal(Value::float(n)))
+                Ok(Expr::Literal(serde_json::json!(n)))
             }
             TokenKind::String(s) => {
                 let s: Arc<str> = Arc::from(*s);
                 self.advance();
-                Ok(Expr::Literal(Value::text(s.as_ref())))
+                Ok(Expr::Literal(Value::String(s.as_ref().to_string())))
             }
             TokenKind::Boolean(b) => {
                 let b = *b;
                 self.advance();
-                Ok(Expr::Literal(Value::boolean(b)))
+                Ok(Expr::Literal(Value::Bool(b)))
             }
             TokenKind::Null => {
                 self.advance();
-                Ok(Expr::Literal(Value::null()))
+                Ok(Expr::Literal(Value::Null))
             }
 
             // Variables

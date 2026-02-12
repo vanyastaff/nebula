@@ -5,7 +5,7 @@ use crate::ExpressionError;
 use crate::context::EvaluationContext;
 use crate::core::error::{ExpressionErrorExt, ExpressionResult};
 use crate::eval::Evaluator;
-use nebula_value::Value;
+use serde_json::Value;
 
 /// Get the length of a string
 pub fn length(
@@ -14,10 +14,13 @@ pub fn length(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("length", args, 1)?;
-    let s = args[0]
-        .as_str()
-        .ok_or_else(|| ExpressionError::expression_type_error("string", args[0].kind().name()))?;
-    Ok(Value::integer(s.len() as i64))
+    let s = args[0].as_str().ok_or_else(|| {
+        ExpressionError::expression_type_error(
+            "string",
+            crate::value_utils::value_type_name(&args[0]),
+        )
+    })?;
+    Ok(Value::Number((s.len() as i64).into()))
 }
 
 /// Convert string to uppercase
@@ -28,7 +31,7 @@ pub fn uppercase(
 ) -> ExpressionResult<Value> {
     check_arg_count("uppercase", args, 1)?;
     let s = get_string_arg("uppercase", args, 0, "text")?;
-    Ok(Value::text(s.to_uppercase()))
+    Ok(Value::String(s.to_uppercase()))
 }
 
 /// Convert string to lowercase
@@ -39,7 +42,7 @@ pub fn lowercase(
 ) -> ExpressionResult<Value> {
     check_arg_count("lowercase", args, 1)?;
     let s = get_string_arg("lowercase", args, 0, "text")?;
-    Ok(Value::text(s.to_lowercase()))
+    Ok(Value::String(s.to_lowercase()))
 }
 
 /// Trim whitespace from both ends of a string
@@ -50,7 +53,7 @@ pub fn trim(
 ) -> ExpressionResult<Value> {
     check_arg_count("trim", args, 1)?;
     let s = get_string_arg("trim", args, 0, "text")?;
-    Ok(Value::text(s.trim()))
+    Ok(Value::String(s.trim().to_string()))
 }
 
 /// Split a string by a delimiter
@@ -63,8 +66,11 @@ pub fn split(
     let s = get_string_arg("split", args, 0, "text")?;
     let delimiter = get_string_arg("split", args, 1, "delimiter")?;
 
-    let parts: Vec<_> = s.split(delimiter).map(Value::text).collect();
-    Ok(Value::Array(nebula_value::Array::from_vec(parts)))
+    let parts: Vec<_> = s
+        .split(delimiter)
+        .map(|s| Value::String(s.to_string()))
+        .collect();
+    Ok(Value::Array(parts))
 }
 
 /// Replace occurrences of a substring
@@ -78,7 +84,7 @@ pub fn replace(
     let from = get_string_arg("replace", args, 1, "from")?;
     let to = get_string_arg("replace", args, 2, "to")?;
 
-    Ok(Value::text(s.replace(from, to)))
+    Ok(Value::String(s.replace(from, to)))
 }
 
 /// Get a substring
@@ -102,7 +108,7 @@ pub fn substring(
         .unwrap_or(&[])
         .iter()
         .collect();
-    Ok(Value::text(result))
+    Ok(Value::String(result))
 }
 
 /// Check if string contains a substring
@@ -112,14 +118,20 @@ pub fn contains(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("contains", args, 2)?;
-    let s = args[0]
-        .as_str()
-        .ok_or_else(|| ExpressionError::expression_type_error("string", args[0].kind().name()))?;
-    let needle = args[1]
-        .as_str()
-        .ok_or_else(|| ExpressionError::expression_type_error("string", args[1].kind().name()))?;
+    let s = args[0].as_str().ok_or_else(|| {
+        ExpressionError::expression_type_error(
+            "string",
+            crate::value_utils::value_type_name(&args[0]),
+        )
+    })?;
+    let needle = args[1].as_str().ok_or_else(|| {
+        ExpressionError::expression_type_error(
+            "string",
+            crate::value_utils::value_type_name(&args[1]),
+        )
+    })?;
 
-    Ok(Value::boolean(s.contains(needle)))
+    Ok(Value::Bool(s.contains(needle)))
 }
 
 /// Check if string starts with a prefix
@@ -129,14 +141,20 @@ pub fn starts_with(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("starts_with", args, 2)?;
-    let s = args[0]
-        .as_str()
-        .ok_or_else(|| ExpressionError::expression_type_error("string", args[0].kind().name()))?;
-    let prefix = args[1]
-        .as_str()
-        .ok_or_else(|| ExpressionError::expression_type_error("string", args[1].kind().name()))?;
+    let s = args[0].as_str().ok_or_else(|| {
+        ExpressionError::expression_type_error(
+            "string",
+            crate::value_utils::value_type_name(&args[0]),
+        )
+    })?;
+    let prefix = args[1].as_str().ok_or_else(|| {
+        ExpressionError::expression_type_error(
+            "string",
+            crate::value_utils::value_type_name(&args[1]),
+        )
+    })?;
 
-    Ok(Value::boolean(s.starts_with(prefix)))
+    Ok(Value::Bool(s.starts_with(prefix)))
 }
 
 /// Check if string ends with a suffix
@@ -146,12 +164,18 @@ pub fn ends_with(
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("ends_with", args, 2)?;
-    let s = args[0]
-        .as_str()
-        .ok_or_else(|| ExpressionError::expression_type_error("string", args[0].kind().name()))?;
-    let suffix = args[1]
-        .as_str()
-        .ok_or_else(|| ExpressionError::expression_type_error("string", args[1].kind().name()))?;
+    let s = args[0].as_str().ok_or_else(|| {
+        ExpressionError::expression_type_error(
+            "string",
+            crate::value_utils::value_type_name(&args[0]),
+        )
+    })?;
+    let suffix = args[1].as_str().ok_or_else(|| {
+        ExpressionError::expression_type_error(
+            "string",
+            crate::value_utils::value_type_name(&args[1]),
+        )
+    })?;
 
-    Ok(Value::boolean(s.ends_with(suffix)))
+    Ok(Value::Bool(s.ends_with(suffix)))
 }

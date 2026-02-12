@@ -24,14 +24,14 @@
 //!
 //! ```
 //! use nebula_expression::{ExpressionEngine, EvaluationContext};
-//! use nebula_value::Value;
+//! use serde_json::Value;
 //!
 //! // Create an engine
 //! let engine = ExpressionEngine::new();
 //! let mut context = EvaluationContext::new();
 //!
 //! // Evaluate an expression
-//! context.set_execution_var("id", Value::text("exec-123"));
+//! context.set_execution_var("id", Value::String("exec-123".to_string()));
 //! let result = engine.evaluate("$execution.id", &context).unwrap();
 //! assert_eq!(result.as_str(), Some("exec-123"));
 //! ```
@@ -135,6 +135,7 @@ pub mod error;
 pub mod error_formatter;
 pub mod maybe;
 pub mod template;
+pub mod value_utils;
 
 // Internal modules - not part of stable public API
 // These are exposed for advanced use cases but may change between versions
@@ -167,8 +168,8 @@ pub use template::{Position, TemplatePart};
 // Re-export error types
 pub use error::{ExpressionError, ExpressionErrorExt, ExpressionResult};
 
-// Re-export nebula types for convenience
-pub use nebula_value::Value;
+// Re-export serde_json types for convenience
+pub use serde_json::Value;
 
 /// Prelude module for convenient imports
 pub mod prelude {

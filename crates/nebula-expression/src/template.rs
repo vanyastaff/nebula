@@ -414,7 +414,7 @@ impl From<&str> for MaybeTemplate {
 mod tests {
     use super::*;
     use crate::ExpressionEngine;
-    use nebula_value::Value;
+    use serde_json::Value;
 
     #[test]
     fn test_template_parse_static_only() {
@@ -444,7 +444,7 @@ mod tests {
     fn test_template_render_simple() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_input(Value::text("World"));
+        context.set_input(Value::String("World".to_string()));
 
         let template = Template::new("Hello {{ $input }}!").unwrap();
         let result = template.render(&engine, &context).unwrap();
@@ -455,7 +455,7 @@ mod tests {
     fn test_template_render_multiple() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_input(Value::integer(5));
+        context.set_input(Value::Number(5.into()));
 
         let template = Template::new("{{ $input }} * 2 = {{ $input * 2 }}").unwrap();
         let result = template.render(&engine, &context).unwrap();
@@ -466,7 +466,7 @@ mod tests {
     fn test_template_render_with_functions() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_input(Value::text("hello"));
+        context.set_input(Value::String("hello".to_string()));
 
         let template = Template::new("{{ $input | uppercase() }}").unwrap();
         let result = template.render(&engine, &context).unwrap();
@@ -485,7 +485,7 @@ mod tests {
     fn test_template_multiline() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_input(Value::text("Alice"));
+        context.set_input(Value::String("Alice".to_string()));
 
         let template = Template::new(
             r#"Line 1: {{ $input }}
@@ -525,7 +525,7 @@ Line 3: Done"#,
     fn test_maybe_template_resolve() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_input(Value::text("World"));
+        context.set_input(Value::String("World".to_string()));
 
         let template = MaybeTemplate::from_string("Hello {{ $input }}!");
         let result = template.resolve(&engine, &context).unwrap();
@@ -557,7 +557,7 @@ Line 3: Done"#,
     fn test_whitespace_control_left() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_input(Value::text("World"));
+        context.set_input(Value::String("World".to_string()));
 
         // {{- strips whitespace to the left
         let template = Template::new("Hello   {{- $input }}!").unwrap();
@@ -569,7 +569,7 @@ Line 3: Done"#,
     fn test_whitespace_control_right() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_input(Value::text("Hello"));
+        context.set_input(Value::String("Hello".to_string()));
 
         // -}} strips whitespace to the right
         let template = Template::new("{{ $input -}}   World!").unwrap();
@@ -581,7 +581,7 @@ Line 3: Done"#,
     fn test_whitespace_control_both() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_input(Value::text("X"));
+        context.set_input(Value::String("X".to_string()));
 
         // {{- and -}} strip both sides
         let template = Template::new("A   {{- $input -}}   B").unwrap();
@@ -593,7 +593,7 @@ Line 3: Done"#,
     fn test_whitespace_control_multiline() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_input(Value::text("Content"));
+        context.set_input(Value::String("Content".to_string()));
 
         let template = Template::new("<div>\n    {{- $input -}}\n</div>").unwrap();
 
@@ -605,7 +605,7 @@ Line 3: Done"#,
     fn test_whitespace_control_html() {
         let engine = ExpressionEngine::new();
         let mut context = EvaluationContext::new();
-        context.set_input(Value::text("Title"));
+        context.set_input(Value::String("Title".to_string()));
 
         // {{- strips whitespace before, -}} strips whitespace after
         let template = Template::new("<html><title>{{- $input -}}</title></html>").unwrap();

@@ -17,7 +17,6 @@ categories = ["template-engine", "parser-implementations"]
 nebula-core = { path = "../nebula-core" }
 nebula-log = { path = "../nebula-log" }
 nebula-memory = { path = "../nebula-memory", default-features = true, features = ["cache"] }
-nebula-value = { path = "../nebula-value", features = ["temporal", "serde"] }
 
 # Error handling
 thiserror = { workspace = true }
@@ -27,7 +26,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 regex = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v4"], optional = true }
-chrono = { workspace = true, optional = true }
+chrono = { workspace = true }
 parking_lot = { workspace = true }
 once_cell = { workspace = true }
 
@@ -43,7 +42,7 @@ harness = false
 default = ["cache", "regex", "datetime", "uuid"]
 cache = ["nebula-memory/cache"]
 regex = ["dep:regex"]
-datetime = ["dep:chrono", "nebula-value/temporal"]
+datetime = []
 uuid = ["dep:uuid"]
 # Full feature set
 full = ["cache", "regex", "datetime", "uuid"]

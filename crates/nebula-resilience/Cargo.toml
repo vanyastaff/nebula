@@ -35,7 +35,6 @@ tracing = { workspace = true }
 nebula-config = { path = "../nebula-config" }
 nebula-core = { path = "../nebula-core" }
 nebula-log = { path = "../nebula-log" }
-nebula-value = { path = "../nebula-value", features = ["serde"] }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }

@@ -10,7 +10,7 @@ use thiserror::Error;
 
 /// Expression evaluation and parsing errors
 #[non_exhaustive]
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Debug)]
 pub enum ExpressionError {
     /// Syntax error in expression
     #[error("Expression syntax error: {message}")]
@@ -66,6 +66,14 @@ pub enum ExpressionError {
     /// Internal error
     #[error("Internal error: {message}")]
     Internal { message: String },
+
+    /// JSON error
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    /// Invalid date format error
+    #[error("Invalid date format: {0}")]
+    InvalidDate(#[from] chrono::format::ParseError),
 }
 
 impl ExpressionError {
@@ -85,6 +93,8 @@ impl ExpressionError {
             Self::Validation { .. } => "EXPR:VALIDATION",
             Self::NotFound { .. } => "EXPR:NOT_FOUND",
             Self::Internal { .. } => "EXPR:INTERNAL",
+            Self::Json(_) => "EXPR:JSON",
+            Self::InvalidDate(_) => "EXPR:INVALID_DATE",
         }
     }
 
@@ -92,7 +102,7 @@ impl ExpressionError {
     pub fn is_retryable(&self) -> bool {
         // Expression errors are generally not retryable
         // Only internal errors might benefit from retry
-        matches!(self, Self::Internal { .. })
+        matches!(self, Self::Internal { .. } | Self::Json(_))
     }
 
     // ============================================================================
@@ -189,25 +199,6 @@ impl ExpressionError {
 // ============================================================================
 // External Error Conversions
 // ============================================================================
-
-/// Convert from nebula_value::ValueError
-impl From<nebula_value::ValueError> for ExpressionError {
-    fn from(error: nebula_value::ValueError) -> Self {
-        ExpressionError::EvalError {
-            message: error.to_string(),
-        }
-    }
-}
-
-/// Convert from nebula_value::ConversionError
-impl From<nebula_value::ConversionError> for ExpressionError {
-    fn from(error: nebula_value::ConversionError) -> Self {
-        ExpressionError::TypeError {
-            expected: "compatible type".to_string(),
-            actual: error.to_string(),
-        }
-    }
-}
 
 /// Convert from nebula_memory::MemoryError
 impl From<nebula_memory::MemoryError> for ExpressionError {

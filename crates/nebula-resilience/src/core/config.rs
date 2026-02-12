@@ -23,21 +23,19 @@ pub trait ResilienceConfig: Send + Sync + Serialize + for<'de> Deserialize<'de> 
     where
         Self: Sized;
 
-    /// Convert to nebula-value for dynamic configuration
-    fn to_value(&self) -> nebula_value::Value {
-        // Serialize to JSON then convert using From trait (infallible conversion)
-        serde_json::to_value(self)
-            .map_or_else(|_| nebula_value::Value::Null, nebula_value::Value::from)
+    /// Convert to serde_json::Value for dynamic configuration
+    fn to_value(&self) -> serde_json::Value {
+        // Serialize to JSON (infallible conversion)
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
     }
 
-    /// Create from nebula-value
-    fn from_value(value: &nebula_value::Value) -> ConfigResult<Self>
+    /// Create from serde_json::Value
+    fn from_value(value: &serde_json::Value) -> ConfigResult<Self>
     where
         Self: Sized,
     {
-        // Convert using From trait (idiomatic Rust), then deserialize
-        let json_val: serde_json::Value = value.clone().into();
-        serde_json::from_value(json_val)
+        // Deserialize directly from serde_json::Value
+        serde_json::from_value(value.clone())
             .map_err(|e| ConfigError::validation(format!("Failed to deserialize config: {e}")))
     }
 }

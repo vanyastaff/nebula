@@ -6,7 +6,9 @@
 //! - Batch validation
 
 use nebula_credential::prelude::*;
+use nebula_credential::rotation::{PeriodicConfig, RotationPolicy};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -24,7 +26,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = encrypt(&key, b"my-secret-password")?;
 
     let mut metadata = CredentialMetadata::new();
-    metadata.rotation_policy = Some(RotationPolicy { interval_days: 30 });
+    metadata.rotation_policy = Some(RotationPolicy::Periodic(PeriodicConfig::new(
+        Duration::from_secs(30 * 24 * 3600), // 30 days
+        Duration::from_secs(24 * 3600),      // 24 hours
+        false,                               // enable_jitter
+    )?));
 
     manager.store(&id, data, metadata, &context).await?;
     println!("   ✓ Credential stored with rotation policy\n");
@@ -75,7 +81,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let cred_data = encrypt(&key, format!("secret-{}", cred_name).as_bytes())?;
 
         let mut meta = CredentialMetadata::new();
-        meta.rotation_policy = Some(RotationPolicy { interval_days: 90 });
+        meta.rotation_policy = Some(RotationPolicy::Periodic(PeriodicConfig::new(
+            Duration::from_secs(90 * 24 * 3600), // 90 days
+            Duration::from_secs(24 * 3600),      // 24 hours
+            false,                               // enable_jitter
+        )?));
 
         manager.store(&cred_id, cred_data, meta, &context).await?;
     }

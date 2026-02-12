@@ -3,8 +3,7 @@
 //! This module provides the context in which expressions are evaluated,
 //! including access to $node, $execution, $workflow, and $input variables.
 
-use nebula_value::Value;
-use nebula_value::ValueRefExt;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -27,8 +26,8 @@ impl EvaluationContext {
         Self {
             nodes: HashMap::new(),
             execution_vars: HashMap::new(),
-            workflow: Arc::new(Value::object_empty()),
-            input: Arc::new(Value::object_empty()),
+            workflow: Arc::new(Value::Object(serde_json::Map::new())),
+            input: Arc::new(Value::Object(serde_json::Map::new())),
         }
     }
 
@@ -84,17 +83,17 @@ impl EvaluationContext {
         match name {
             "node" => {
                 // Return an object containing all nodes
-                let mut obj = nebula_value::Object::new();
+                let mut obj = serde_json::Map::new();
                 for (key, value) in &self.nodes {
-                    obj = obj.insert(key.to_string(), value.to_json());
+                    obj.insert(key.to_string(), (**value).clone());
                 }
                 Some(Value::Object(obj))
             }
             "execution" => {
                 // Return an object containing all execution variables
-                let mut obj = nebula_value::Object::new();
+                let mut obj = serde_json::Map::new();
                 for (key, value) in &self.execution_vars {
-                    obj = obj.insert(key.to_string(), value.to_json());
+                    obj.insert(key.to_string(), (**value).clone());
                 }
                 Some(Value::Object(obj))
             }
@@ -164,10 +163,10 @@ impl EvaluationContextBuilder {
             execution_vars: self.execution_vars,
             workflow: self
                 .workflow
-                .unwrap_or_else(|| Arc::new(Value::object_empty())),
+                .unwrap_or_else(|| Arc::new(Value::Object(serde_json::Map::new()))),
             input: self
                 .input
-                .unwrap_or_else(|| Arc::new(Value::object_empty())),
+                .unwrap_or_else(|| Arc::new(Value::Object(serde_json::Map::new()))),
         }
     }
 }
@@ -186,17 +185,17 @@ mod tests {
     #[test]
     fn test_set_and_get_node_data() {
         let mut ctx = EvaluationContext::new();
-        ctx.set_node_data("node1", Value::text("test"));
+        ctx.set_node_data("node1", Value::String("test".to_string()));
         assert_eq!(ctx.get_node_data("node1").unwrap().as_str(), Some("test"));
     }
 
     #[test]
     fn test_builder() {
         let ctx = EvaluationContext::builder()
-            .node("node1", Value::text("test"))
-            .execution_var("id", Value::text("exec-123"))
-            .workflow(Value::text("workflow-1"))
-            .input(Value::integer(42))
+            .node("node1", Value::String("test".to_string()))
+            .execution_var("id", Value::String("exec-123".to_string()))
+            .workflow(Value::String("workflow-1".to_string()))
+            .input(Value::Number(42.into()))
             .build();
 
         assert_eq!(ctx.get_node_data("node1").unwrap().as_str(), Some("test"));
@@ -209,7 +208,7 @@ mod tests {
     #[test]
     fn test_resolve_variable() {
         let mut ctx = EvaluationContext::new();
-        ctx.set_execution_var("id", Value::text("exec-123"));
+        ctx.set_execution_var("id", Value::String("exec-123".to_string()));
 
         let exec = ctx.resolve_variable("execution").unwrap();
         assert!(exec.is_object());
