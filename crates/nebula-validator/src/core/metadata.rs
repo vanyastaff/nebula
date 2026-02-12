@@ -63,8 +63,8 @@ impl Default for ValidatorMetadata {
 impl ValidatorMetadata {
     /// Creates a new metadata builder.
     #[must_use]
-    pub fn builder() -> ValidatorMetadataBuilderuilder {
-        ValidatorMetadataBuilderuilder::default()
+    pub fn builder() -> ValidatorMetadataBuilder {
+        ValidatorMetadataBuilder::default()
     }
 
     /// Creates simple metadata with just a name.
@@ -206,7 +206,7 @@ impl fmt::Display for ValidationComplexity {
 
 /// Builder for creating validator metadata.
 #[derive(Default)]
-pub struct ValidatorMetadataBuilderuilder {
+pub struct ValidatorMetadataBuilder {
     name: Option<Cow<'static, str>>,
     description: Option<Cow<'static, str>>,
     complexity: ValidationComplexity,
@@ -217,7 +217,7 @@ pub struct ValidatorMetadataBuilderuilder {
     custom: Vec<(Cow<'static, str>, Cow<'static, str>)>,
 }
 
-impl ValidatorMetadataBuilderuilder {
+impl ValidatorMetadataBuilder {
     /// Sets the validator name.
     #[must_use = "builder methods must be chained or built"]
     pub fn name(mut self, name: impl Into<Cow<'static, str>>) -> Self {

@@ -1,6 +1,6 @@
 //! Collection element validators
 
-use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use crate::core::{Validate, ValidationError};
 use std::collections::HashSet;
 use std::hash::Hash;
 
@@ -37,11 +37,12 @@ where
         Ok(())
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("All")
-            .with_tag("collection")
-            .with_tag("elements")
-    }
+    crate::validator_metadata!(
+        "All",
+        "Validates that all elements pass",
+        complexity = Constant,
+        tags = ["collection", "elements"]
+    );
 }
 
 pub fn all<V>(validator: V) -> All<V> {
@@ -83,11 +84,12 @@ where
         ))
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("Any")
-            .with_tag("collection")
-            .with_tag("elements")
-    }
+    crate::validator_metadata!(
+        "Any",
+        "Validates that at least one element passes",
+        complexity = Constant,
+        tags = ["collection", "elements"]
+    );
 }
 
 pub fn any<V>(validator: V) -> Any<V> {
@@ -128,11 +130,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("ContainsElement")
-            .with_tag("collection")
-            .with_tag("elements")
-    }
+    crate::validator_metadata!(
+        "ContainsElement",
+        "Validates that collection contains a specific element",
+        complexity = Constant,
+        tags = ["collection", "elements"]
+    );
 }
 
 pub fn contains_element<T>(element: T) -> ContainsElement<T> {
@@ -168,11 +171,12 @@ where
         Ok(())
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("Unique")
-            .with_tag("collection")
-            .with_tag("elements")
-    }
+    crate::validator_metadata!(
+        "Unique",
+        "Validates that all elements are unique",
+        complexity = Constant,
+        tags = ["collection", "elements"]
+    );
 }
 
 #[must_use]
@@ -220,11 +224,12 @@ where
         Ok(())
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("None")
-            .with_tag("collection")
-            .with_tag("elements")
-    }
+    crate::validator_metadata!(
+        "None",
+        "Validates that no elements satisfy the condition",
+        complexity = Constant,
+        tags = ["collection", "elements"]
+    );
 }
 
 /// Creates a validator that checks that no elements satisfy a condition.
@@ -281,11 +286,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("Count")
-            .with_tag("collection")
-            .with_tag("elements")
-    }
+    crate::validator_metadata!(
+        "Count",
+        "Validates that exactly N elements satisfy a condition",
+        complexity = Constant,
+        tags = ["collection", "elements"]
+    );
 }
 
 /// Creates a validator that checks exactly N elements satisfy a condition.
@@ -339,11 +345,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("AtLeastCount")
-            .with_tag("collection")
-            .with_tag("elements")
-    }
+    crate::validator_metadata!(
+        "AtLeastCount",
+        "Validates that at least N elements satisfy a condition",
+        complexity = Constant,
+        tags = ["collection", "elements"]
+    );
 }
 
 /// Creates a validator that checks at least N elements satisfy a condition.
@@ -397,11 +404,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("AtMostCount")
-            .with_tag("collection")
-            .with_tag("elements")
-    }
+    crate::validator_metadata!(
+        "AtMostCount",
+        "Validates that at most N elements satisfy a condition",
+        complexity = Constant,
+        tags = ["collection", "elements"]
+    );
 }
 
 /// Creates a validator that checks at most N elements satisfy a condition.
@@ -442,11 +450,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("First")
-            .with_tag("collection")
-            .with_tag("elements")
-    }
+    crate::validator_metadata!(
+        "First",
+        "Validates the first element of a collection",
+        complexity = Constant,
+        tags = ["collection", "elements"]
+    );
 }
 
 /// Creates a validator that checks the first element.
@@ -486,11 +495,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("Last")
-            .with_tag("collection")
-            .with_tag("elements")
-    }
+    crate::validator_metadata!(
+        "Last",
+        "Validates the last element of a collection",
+        complexity = Constant,
+        tags = ["collection", "elements"]
+    );
 }
 
 /// Creates a validator that checks the last element.
@@ -543,11 +553,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("Nth")
-            .with_tag("collection")
-            .with_tag("elements")
-    }
+    crate::validator_metadata!(
+        "Nth",
+        "Validates the nth element of a collection",
+        complexity = Constant,
+        tags = ["collection", "elements"]
+    );
 }
 
 /// Creates a validator that checks the nth element.
@@ -583,11 +594,12 @@ where
         Ok(())
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("Sorted")
-            .with_tag("collection")
-            .with_tag("order")
-    }
+    crate::validator_metadata!(
+        "Sorted",
+        "Validates that a collection is sorted in ascending order",
+        complexity = Constant,
+        tags = ["collection", "order"]
+    );
 }
 
 /// Creates a validator that checks if a collection is sorted ascending.
@@ -629,11 +641,12 @@ where
         Ok(())
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("SortedDescending")
-            .with_tag("collection")
-            .with_tag("order")
-    }
+    crate::validator_metadata!(
+        "SortedDescending",
+        "Validates that a collection is sorted in descending order",
+        complexity = Constant,
+        tags = ["collection", "order"]
+    );
 }
 
 /// Creates a validator that checks if a collection is sorted descending.
@@ -682,11 +695,12 @@ where
         Ok(())
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("ContainsAll")
-            .with_tag("collection")
-            .with_tag("elements")
-    }
+    crate::validator_metadata!(
+        "ContainsAll",
+        "Validates that collection contains all specified elements",
+        complexity = Constant,
+        tags = ["collection", "elements"]
+    );
 }
 
 /// Creates a validator that checks if a collection contains all specified elements.
@@ -732,11 +746,12 @@ where
         ))
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("ContainsAny")
-            .with_tag("collection")
-            .with_tag("elements")
-    }
+    crate::validator_metadata!(
+        "ContainsAny",
+        "Validates that collection contains at least one specified element",
+        complexity = Constant,
+        tags = ["collection", "elements"]
+    );
 }
 
 /// Creates a validator that checks if a collection contains any of the specified elements.

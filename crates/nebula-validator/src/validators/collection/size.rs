@@ -2,7 +2,7 @@
 //!
 //! This module provides validators for checking the size of collections.
 
-use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use crate::core::{Validate, ValidationError};
 use std::marker::PhantomData;
 
 // ============================================================================
@@ -37,11 +37,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("MinSize")
-            .with_tag("collection")
-            .with_tag("size")
-    }
+    crate::validator_metadata!(
+        "MinSize",
+        "Validates minimum collection size",
+        complexity = Constant,
+        tags = ["collection", "size"]
+    );
 }
 
 /// Creates a validator that checks if a collection has at least a minimum size.
@@ -99,11 +100,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("MaxSize")
-            .with_tag("collection")
-            .with_tag("size")
-    }
+    crate::validator_metadata!(
+        "MaxSize",
+        "Validates maximum collection size",
+        complexity = Constant,
+        tags = ["collection", "size"]
+    );
 }
 
 /// Creates a validator that checks if a collection has at most a maximum size.
@@ -161,11 +163,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("ExactSize")
-            .with_tag("collection")
-            .with_tag("size")
-    }
+    crate::validator_metadata!(
+        "ExactSize",
+        "Validates exact collection size",
+        complexity = Constant,
+        tags = ["collection", "size"]
+    );
 }
 
 /// Creates a validator that checks if a collection has an exact size.
@@ -219,11 +222,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("NotEmptyCollection")
-            .with_tag("collection")
-            .with_tag("size")
-    }
+    crate::validator_metadata!(
+        "NotEmptyCollection",
+        "Validates that a collection is not empty",
+        complexity = Constant,
+        tags = ["collection", "size"]
+    );
 }
 
 /// Creates a validator that checks if a collection is not empty.
@@ -284,11 +288,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("SizeRange")
-            .with_tag("collection")
-            .with_tag("size")
-    }
+    crate::validator_metadata!(
+        "SizeRange",
+        "Validates that collection size is within a range",
+        complexity = Constant,
+        tags = ["collection", "size"]
+    );
 }
 
 /// Creates a validator that checks if a collection size is within a range.

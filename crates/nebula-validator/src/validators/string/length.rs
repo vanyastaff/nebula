@@ -303,28 +303,30 @@ pub struct LengthRange {
 impl LengthRange {
     /// Creates a new length range validator (counts Unicode chars by default).
     ///
-    /// # Panics
-    ///
-    /// Panics if `min > max`.
-    #[must_use]
-    pub fn new(min: usize, max: usize) -> Self {
-        assert!(min <= max, "min must be <= max");
-        Self {
+    /// Returns an error if `min > max`.
+    pub fn new(min: usize, max: usize) -> Result<Self, ValidationError> {
+        if min > max {
+            return Err(ValidationError::new("invalid_range", "min must be <= max"));
+        }
+        Ok(Self {
             min,
             max,
             mode: LengthMode::Chars,
-        }
+        })
     }
 
     /// Creates a length range validator that counts bytes.
-    #[must_use]
-    pub fn bytes(min: usize, max: usize) -> Self {
-        assert!(min <= max, "min must be <= max");
-        Self {
+    ///
+    /// Returns an error if `min > max`.
+    pub fn bytes(min: usize, max: usize) -> Result<Self, ValidationError> {
+        if min > max {
+            return Err(ValidationError::new("invalid_range", "min must be <= max"));
+        }
+        Ok(Self {
             min,
             max,
             mode: LengthMode::Bytes,
-        }
+        })
     }
 }
 
@@ -370,8 +372,7 @@ impl Validate for LengthRange {
 }
 
 /// Creates a length range validator.
-#[must_use]
-pub fn length_range(min: usize, max: usize) -> LengthRange {
+pub fn length_range(min: usize, max: usize) -> Result<LengthRange, ValidationError> {
     LengthRange::new(min, max)
 }
 
@@ -496,34 +497,33 @@ mod tests {
 
     #[test]
     fn test_length_range_valid() {
-        let validator = LengthRange::new(5, 10);
+        let validator = LengthRange::new(5, 10).unwrap();
         assert!(validator.validate("hello").is_ok());
         assert!(validator.validate("helloworld").is_ok());
     }
 
     #[test]
     fn test_length_range_too_short() {
-        let validator = LengthRange::new(5, 10);
+        let validator = LengthRange::new(5, 10).unwrap();
         assert!(validator.validate("hi").is_err());
     }
 
     #[test]
     fn test_length_range_too_long() {
-        let validator = LengthRange::new(5, 10);
+        let validator = LengthRange::new(5, 10).unwrap();
         assert!(validator.validate("verylongstring").is_err());
     }
 
     #[test]
     fn test_length_range_boundaries() {
-        let validator = LengthRange::new(5, 10);
+        let validator = LengthRange::new(5, 10).unwrap();
         assert!(validator.validate("hello").is_ok()); // min
         assert!(validator.validate("helloworld").is_ok()); // max
     }
 
     #[test]
-    #[should_panic(expected = "min must be <= max")]
     fn test_length_range_invalid() {
-        LengthRange::new(10, 5);
+        assert!(LengthRange::new(10, 5).is_err());
     }
 
     #[test]
@@ -544,7 +544,7 @@ mod tests {
         assert!(min_length(5).validate("hello").is_ok());
         assert!(max_length(10).validate("hello").is_ok());
         assert!(exact_length(5).validate("hello").is_ok());
-        assert!(length_range(5, 10).validate("hello").is_ok());
+        assert!(length_range(5, 10).unwrap().validate("hello").is_ok());
         assert!(not_empty().validate("hello").is_ok());
     }
 

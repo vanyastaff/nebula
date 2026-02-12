@@ -1,6 +1,6 @@
 //! Nullable validators
 
-use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use crate::core::{Validate, ValidationError};
 use std::marker::PhantomData;
 
 // ============================================================================
@@ -24,11 +24,12 @@ impl<T> Validate for Required<T> {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("Required")
-            .with_tag("logical")
-            .with_tag("nullable")
-    }
+    crate::validator_metadata!(
+        "Required",
+        "Value is required",
+        complexity = Constant,
+        tags = ["logical", "nullable"]
+    );
 }
 
 #[must_use]

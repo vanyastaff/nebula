@@ -94,7 +94,7 @@ fn bench_exact_length(c: &mut Criterion) {
 
 fn bench_length_range(c: &mut Criterion) {
     let mut group = c.benchmark_group("length_range");
-    let validator = length_range(5, 20);
+    let validator = length_range(5, 20).unwrap();
 
     group.bench_function("valid_middle", |b| {
         b.iter(|| validator.validate(black_box("hello world")))

@@ -41,10 +41,6 @@
 //! }, "Length must be between 5 and 20");
 //! ```
 
-// Re-export derive macros if available
-#[cfg(feature = "derive")]
-pub use nebula_validator_derive::*;
-
 // ============================================================================
 // VALIDATOR MACRO
 // ============================================================================
@@ -194,7 +190,10 @@ macro_rules! validate {
         if $predicate(&value) {
             Ok(())
         } else {
-            Err($crate::core::ValidationError::new("validation_failed", $message))
+            Err($crate::core::ValidationError::new(
+                "validation_failed",
+                $message,
+            ))
         }
     }};
 
@@ -480,10 +479,7 @@ mod tests {
             }
         }
 
-        let validator = any_of![
-            ExactLength { length: 5 },
-            ExactLength { length: 10 }
-        ];
+        let validator = any_of![ExactLength { length: 5 }, ExactLength { length: 10 }];
         assert!(validator.validate("hello").is_ok());
         assert!(validator.validate("helloworld").is_ok());
         assert!(validator.validate("hi").is_err());

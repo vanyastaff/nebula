@@ -29,14 +29,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 [features]
-default = ["full"]
-async = []
-caching = []
-cache = ["caching"]
-performance = []
-registry = []
+default = ["serde"]
 serde = []
-full = ["async", "caching", "registry", "performance", "serde"]
 
 [dev-dependencies]
 # Testing

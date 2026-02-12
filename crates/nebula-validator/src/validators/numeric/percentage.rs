@@ -2,7 +2,7 @@
 //!
 //! Validators for percentage values in different formats.
 
-use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{Validate, ValidationError};
 
 // ============================================================================
 // PERCENTAGE (0.0 - 1.0)
@@ -47,18 +47,12 @@ impl Validate for Percentage {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "Percentage".into(),
-            description: Some("Value must be a percentage (0.0 to 1.0)".into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "percentage".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
+    crate::validator_metadata!(
+        "Percentage",
+        "Value must be a percentage (0.0 to 1.0)",
+        complexity = Constant,
+        tags = ["numeric", "percentage"]
+    );
 }
 
 /// Creates a validator that checks if a value is a valid percentage (0.0 to 1.0).
@@ -96,18 +90,12 @@ impl Validate for PercentageF32 {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "PercentageF32".into(),
-            description: Some("Value must be a percentage (0.0 to 1.0)".into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "percentage".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
+    crate::validator_metadata!(
+        "PercentageF32",
+        "Value must be a percentage (0.0 to 1.0)",
+        complexity = Constant,
+        tags = ["numeric", "percentage"]
+    );
 }
 
 /// Creates a validator that checks if an f32 is a valid percentage (0.0 to 1.0).
@@ -152,18 +140,12 @@ impl Validate for Percentage100 {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "Percentage100".into(),
-            description: Some("Value must be a percentage (0 to 100)".into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "percentage".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
+    crate::validator_metadata!(
+        "Percentage100",
+        "Value must be a percentage (0 to 100)",
+        complexity = Constant,
+        tags = ["numeric", "percentage"]
+    );
 }
 
 /// Creates a validator that checks if an integer is a valid percentage (0 to 100).
@@ -197,18 +179,12 @@ impl Validate for Percentage100F64 {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "Percentage100F64".into(),
-            description: Some("Value must be a percentage (0.0 to 100.0)".into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "percentage".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
+    crate::validator_metadata!(
+        "Percentage100F64",
+        "Value must be a percentage (0.0 to 100.0)",
+        complexity = Constant,
+        tags = ["numeric", "percentage"]
+    );
 }
 
 /// Creates a validator that checks if an f64 is a valid percentage (0.0 to 100.0).

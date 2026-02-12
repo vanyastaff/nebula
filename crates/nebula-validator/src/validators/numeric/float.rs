@@ -40,18 +40,12 @@ impl Validate for Finite {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "Finite".into(),
-            description: Some("Value must be finite (not NaN or infinity)".into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "float".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
+    crate::validator_metadata!(
+        "Finite",
+        "Value must be finite (not NaN or infinity)",
+        complexity = Constant,
+        tags = ["numeric", "float"]
+    );
 }
 
 /// Creates a validator that checks if a float is finite.
@@ -84,18 +78,12 @@ impl Validate for FiniteF32 {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "FiniteF32".into(),
-            description: Some("Value must be finite (not NaN or infinity)".into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "float".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
+    crate::validator_metadata!(
+        "FiniteF32",
+        "Value must be finite (not NaN or infinity)",
+        complexity = Constant,
+        tags = ["numeric", "float"]
+    );
 }
 
 /// Creates a validator that checks if an f32 is finite.
@@ -137,18 +125,12 @@ impl Validate for NotNaN {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "NotNaN".into(),
-            description: Some("Value must not be NaN".into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "float".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
+    crate::validator_metadata!(
+        "NotNaN",
+        "Value must not be NaN",
+        complexity = Constant,
+        tags = ["numeric", "float"]
+    );
 }
 
 /// Creates a validator that checks if a float is not NaN.
@@ -176,18 +158,12 @@ impl Validate for NotNaNF32 {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "NotNaNF32".into(),
-            description: Some("Value must not be NaN".into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "float".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
+    crate::validator_metadata!(
+        "NotNaNF32",
+        "Value must not be NaN",
+        complexity = Constant,
+        tags = ["numeric", "float"]
+    );
 }
 
 /// Creates a validator that checks if an f32 is not NaN.

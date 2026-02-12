@@ -105,8 +105,8 @@ pub mod validatable;
 pub use context::{ContextualValidator, ValidationContext, ValidationContextBuilder};
 pub use error::{ErrorSeverity, ValidationError, ValidationErrors};
 pub use metadata::{
-    RegisteredValidatorMetadata, ValidationComplexity, ValidatorMetadata,
-    ValidatorMetadataBuilderuilder, ValidatorStatistics,
+    RegisteredValidatorMetadata, ValidationComplexity, ValidatorMetadata, ValidatorMetadataBuilder,
+    ValidatorStatistics,
 };
 pub use refined::Refined;
 pub use state::{Parameter, ParameterBuilder, Unvalidated, Validated};
@@ -157,23 +157,15 @@ pub fn version() -> &'static str {
 #[must_use]
 pub fn features() -> Features {
     Features {
-        async_support: cfg!(feature = "async"),
         serde_support: cfg!(feature = "serde"),
-        cache_support: cfg!(feature = "cache"),
     }
 }
 
 /// Information about enabled features.
 #[derive(Debug, Clone, Copy)]
 pub struct Features {
-    /// Whether async validation is enabled.
-    pub async_support: bool,
-
     /// Whether serde serialization is enabled.
     pub serde_support: bool,
-
-    /// Whether caching is enabled.
-    pub cache_support: bool,
 }
 
 // ============================================================================
@@ -290,7 +282,7 @@ mod core_tests {
     fn test_features() {
         let features = features();
         // At least one feature should be enabled in tests
-        assert!(features.async_support || features.serde_support || features.cache_support);
+        assert!(features.serde_support);
     }
 
     // Simple test validator for testing utilities

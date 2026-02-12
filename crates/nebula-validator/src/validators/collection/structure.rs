@@ -1,6 +1,6 @@
 //! Collection structure validators (for maps)
 
-use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use crate::core::{Validate, ValidationError};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -40,11 +40,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("HasKey")
-            .with_tag("collection")
-            .with_tag("map")
-    }
+    crate::validator_metadata!(
+        "HasKey",
+        "Validates that a map contains a specific key",
+        complexity = Constant,
+        tags = ["collection", "map"]
+    );
 }
 
 pub fn has_key<K, V>(key: K) -> HasKey<K, V>

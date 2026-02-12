@@ -1,6 +1,6 @@
 //! Numeric property validators
 
-use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::core::{Validate, ValidationError};
 use std::fmt::Display;
 use std::marker::PhantomData;
 
@@ -31,11 +31,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("Positive")
-            .with_tag("numeric")
-            .with_tag("property")
-    }
+    crate::validator_metadata!(
+        "Positive",
+        "Validates that a number is positive",
+        complexity = Constant,
+        tags = ["numeric", "property"]
+    );
 }
 
 /// Creates a validator that checks if a number is positive.
@@ -88,11 +89,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("Negative")
-            .with_tag("numeric")
-            .with_tag("property")
-    }
+    crate::validator_metadata!(
+        "Negative",
+        "Validates that a number is negative",
+        complexity = Constant,
+        tags = ["numeric", "property"]
+    );
 }
 
 /// Creates a validator that checks if a number is negative.
@@ -142,11 +144,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("Even")
-            .with_tag("numeric")
-            .with_tag("property")
-    }
+    crate::validator_metadata!(
+        "Even",
+        "Validates that a number is even",
+        complexity = Constant,
+        tags = ["numeric", "property"]
+    );
 }
 
 /// Creates a validator that checks if a number is even.
@@ -196,11 +199,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("Odd")
-            .with_tag("numeric")
-            .with_tag("property")
-    }
+    crate::validator_metadata!(
+        "Odd",
+        "Validates that a number is odd",
+        complexity = Constant,
+        tags = ["numeric", "property"]
+    );
 }
 
 /// Creates a validator that checks if a number is odd.
@@ -263,18 +267,12 @@ where
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "NonZero".into(),
-            description: Some("Value must not be zero".into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "property".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
+    crate::validator_metadata!(
+        "NonZero",
+        "Value must not be zero",
+        complexity = Constant,
+        tags = ["numeric", "property"]
+    );
 }
 
 /// Creates a validator that checks if a number is not zero.
@@ -325,18 +323,12 @@ impl Validate for PowerOfTwo {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "PowerOfTwo".into(),
-            description: Some("Value must be a power of two".into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "property".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
+    crate::validator_metadata!(
+        "PowerOfTwo",
+        "Value must be a power of two",
+        complexity = Constant,
+        tags = ["numeric", "property"]
+    );
 }
 
 /// Creates a validator that checks if a u32 is a power of two.
@@ -363,18 +355,12 @@ impl Validate for PowerOfTwoU64 {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "PowerOfTwoU64".into(),
-            description: Some("Value must be a power of two".into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "property".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
+    crate::validator_metadata!(
+        "PowerOfTwoU64",
+        "Value must be a power of two",
+        complexity = Constant,
+        tags = ["numeric", "property"]
+    );
 }
 
 /// Creates a validator that checks if a u64 is a power of two.

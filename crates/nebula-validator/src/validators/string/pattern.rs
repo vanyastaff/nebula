@@ -224,18 +224,12 @@ impl Validate for Alphanumeric {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "Alphanumeric".into(),
-            description: Some("String must be alphanumeric".into()),
-            complexity: ValidationComplexity::Linear,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["string".into(), "pattern".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
+    crate::validator_metadata!(
+        "Alphanumeric",
+        "String must be alphanumeric",
+        complexity = Linear,
+        tags = ["string", "pattern"]
+    );
 }
 
 #[must_use]
@@ -293,18 +287,12 @@ impl Validate for Alphabetic {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "Alphabetic".into(),
-            description: Some("String must contain only letters".into()),
-            complexity: ValidationComplexity::Linear,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["string".into(), "pattern".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
+    crate::validator_metadata!(
+        "Alphabetic",
+        "String must contain only letters",
+        complexity = Linear,
+        tags = ["string", "pattern"]
+    );
 }
 
 #[must_use]
@@ -334,18 +322,12 @@ impl Validate for Numeric {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "Numeric".into(),
-            description: Some("String must be numeric".into()),
-            complexity: ValidationComplexity::Linear,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["string".into(), "pattern".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
+    crate::validator_metadata!(
+        "Numeric",
+        "String must be numeric",
+        complexity = Linear,
+        tags = ["string", "pattern"]
+    );
 }
 
 #[must_use]
@@ -378,11 +360,12 @@ impl Validate for Lowercase {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("Lowercase")
-            .with_tag("string")
-            .with_tag("case")
-    }
+    crate::validator_metadata!(
+        "Lowercase",
+        "String must be lowercase",
+        complexity = Constant,
+        tags = ["string", "case"]
+    );
 }
 
 #[must_use]
@@ -411,11 +394,12 @@ impl Validate for Uppercase {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("Uppercase")
-            .with_tag("string")
-            .with_tag("case")
-    }
+    crate::validator_metadata!(
+        "Uppercase",
+        "String must be uppercase",
+        complexity = Constant,
+        tags = ["string", "case"]
+    );
 }
 
 #[must_use]

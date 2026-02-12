@@ -1,6 +1,6 @@
 //! Boolean validators
 
-use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use crate::core::{Validate, ValidationError};
 
 // ============================================================================
 // IS TRUE
@@ -21,11 +21,12 @@ impl Validate for IsTrue {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("IsTrue")
-            .with_tag("logical")
-            .with_tag("boolean")
-    }
+    crate::validator_metadata!(
+        "IsTrue",
+        "Value must be true",
+        complexity = Constant,
+        tags = ["logical", "boolean"]
+    );
 }
 
 #[must_use]
@@ -52,11 +53,12 @@ impl Validate for IsFalse {
         }
     }
 
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::simple("IsFalse")
-            .with_tag("logical")
-            .with_tag("boolean")
-    }
+    crate::validator_metadata!(
+        "IsFalse",
+        "Value must be false",
+        complexity = Constant,
+        tags = ["logical", "boolean"]
+    );
 }
 
 #[must_use]
