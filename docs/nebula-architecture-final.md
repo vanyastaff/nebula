@@ -89,7 +89,7 @@ pub trait BinarySerializable: Sized {
 pub struct ExecutionMessage {
     pub execution_id: ExecutionId,
     pub workflow_id: WorkflowId,
-    pub payload: Value,
+    pub payload: serde_json::Value,
 }
 
 // Оптимизированная передача больших данных
@@ -152,7 +152,7 @@ pub enum SchedulingStrategy {
 }
 
 impl ClusterManager {
-    pub async fn execute_workflow(&self, workflow_id: WorkflowId, input: Value) -> Result<ExecutionId> {
+    pub async fn execute_workflow(&self, workflow_id: WorkflowId, input: serde_json::Value) -> Result<ExecutionId> {
         let target_node = self.coordinator.select_node(&workflow_id).await?;
         
         if target_node == self.node_id {
@@ -262,8 +262,9 @@ pub async fn tenant_middleware(req: Request, next: Next) -> Response {
 // nebula-sdk/src/prelude.rs
 pub use nebula_action::{Action, SimpleAction, ProcessAction};
 pub use nebula_workflow::{WorkflowBuilder, NodeBuilder};
-pub use nebula_value::{Value, json};
+pub use nebula_core::{ParamValue, Expression, TemplateString};
 pub use nebula_parameter::{Parameters, Parameter};
+pub use serde_json::{json, Value};
 
 // Удобные макросы
 #[macro_export]
@@ -289,6 +290,7 @@ impl SimpleAction for MyAction {
     type Input = MyInput;
     type Output = MyOutput;
     
+    // Action получает уже resolve-нные serde_json::Value
     async fn execute_simple(&self, input: Self::Input, ctx: &ActionContext) -> Result<Self::Output> {
         // Implementation
     }
@@ -350,12 +352,12 @@ impl WorkflowTestHarness {
         Self::default()
     }
     
-    pub fn with_mock_action(mut self, id: &str, handler: impl Fn(Value) -> Value) -> Self {
+    pub fn with_mock_action(mut self, id: &str, handler: impl Fn(serde_json::Value) -> serde_json::Value) -> Self {
         self.engine.register_mock(id, handler);
         self
     }
     
-    pub async fn execute(&self, workflow: WorkflowDefinition, input: Value) -> TestResult {
+    pub async fn execute(&self, workflow: WorkflowDefinition, input: serde_json::Value) -> TestResult {
         let execution = self.engine.execute(workflow, input).await?;
         
         TestResult {

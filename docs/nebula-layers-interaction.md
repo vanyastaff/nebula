@@ -10,27 +10,21 @@
 
 ## Детальные примеры взаимодействия
 
-### 1. nebula-value ↔ nebula-validator
+### 1. nebula-validator работает с serde_json::Value
 
-**Направление:** `nebula-validator` зависит от `nebula-value`
+**Направление:** `nebula-validator` валидирует `serde_json::Value` по описанию типа
 
 ```rust
-// В nebula-value определены базовые типы
-pub enum Value {
-    String(StringValue),
-    Number(Number),
-    Object(ObjectValue),
-    // ...
-}
+// nebula-validator определяет валидаторы для serde_json::Value
+use serde_json::Value;
 
 pub enum ValueType {
     String { min_length: Option<usize>, max_length: Option<usize> },
     Number { min: Option<f64>, max: Option<f64> },
-    // ...
+    Bool,
+    Array { item_type: Box<ValueType> },
+    Object { fields: HashMap<String, ValueType> },
 }
-
-// nebula-validator использует эти типы для валидации
-use nebula_value::{Value, ValueType};
 
 impl Validator<Value> for TypeValidator {
     async fn validate(&self, value: &Value) -> ValidationResult {
@@ -57,7 +51,7 @@ impl Validator<Value> for TypeValidator {
                 ValidationResult::valid()
             }
             (ValueType::Number { min, max }, Value::Number(n)) => {
-                let val = n.as_f64();
+                let val = n.as_f64().unwrap_or(0.0);
                 
                 if let Some(min) = min {
                     if val < *min {
@@ -71,7 +65,7 @@ impl Validator<Value> for TypeValidator {
             }
             (expected, actual) => {
                 ValidationResult::error(
-                    format!("Type mismatch: expected {:?}, got {:?}", expected, actual.type_name())
+                    format!("Type mismatch: expected {:?}, got {:?}", expected, value_type_name(actual))
                 )
             }
         }
@@ -82,7 +76,6 @@ impl Validator<Value> for TypeValidator {
 let validator = TypeValidator::new(ValueType::String {
     min_length: Some(3),
     max_length: Some(50),
-    pattern: Some(r"^[a-zA-Z]+$".to_string()),
 });
 
 let value = Value::String("Hello".into());
@@ -97,7 +90,7 @@ assert!(result.is_valid());
 ```rust
 // nebula-parameter определяет параметры с валидацией
 use nebula_validator::{Validator, EmailValidator, RangeValidator, CompositeValidator};
-use nebula_value::Value;
+use serde_json::Value;
 
 pub struct Parameter {
     pub name: String,
@@ -152,20 +145,20 @@ pub struct UserRegistrationParams {
 }
 ```
 
-### 3. nebula-expression ↔ nebula-execution ↔ nebula-value
+### 3. nebula-expression ↔ nebula-execution
 
-**Цепочка:** Expression вычисляется в контексте Execution и возвращает Value
+**Цепочка:** Expression вычисляется в контексте Execution и возвращает serde_json::Value
 
 ```rust
 // nebula-execution предоставляет контекст
 pub struct ExecutionContext {
     pub node_outputs: Arc<RwLock<HashMap<NodeId, NodeOutput>>>,
-    pub variables: Arc<RwLock<HashMap<String, Value>>>,
+    pub variables: Arc<RwLock<HashMap<String, serde_json::Value>>>,
     expression_engine: Arc<ExpressionEngine>,
 }
 
 impl ExecutionContext {
-    pub async fn evaluate_expression(&self, expr: &str) -> Result<Value, ExpressionError> {
+    pub async fn evaluate_expression(&self, expr: &str) -> Result<serde_json::Value, ExpressionError> {
         // Создаем контекст для expression engine
         let eval_context = ExpressionContext {
             get_node_output: Box::new(|node_id| {
@@ -179,15 +172,25 @@ impl ExecutionContext {
                     .cloned()
             }),
             get_user_context: Box::new(|| {
-                Value::Object(hashmap! {
-                    "id" => Value::String(self.user_id.clone()),
-                    "account" => Value::String(self.account_id.clone()),
+                json!({
+                    "id": self.user_id,
+                    "account": self.account_id,
                 })
             }),
         };
         
         // Expression engine парсит и вычисляет
         self.expression_engine.evaluate(expr, eval_context).await
+    }
+    
+    /// Резолвит ParamValue в serde_json::Value.
+    /// Expressions и templates вычисляются, литералы возвращаются as-is.
+    pub async fn resolve_param_value(&self, pv: &ParamValue) -> Result<serde_json::Value> {
+        match pv {
+            ParamValue::Literal(v) => Ok(v.clone()),
+            ParamValue::Expression(expr) => self.evaluate_expression(&expr.raw).await,
+            ParamValue::Template(tmpl) => self.resolve_template(tmpl).await,
+        }
     }
 }
 
@@ -197,12 +200,12 @@ impl ExpressionEngine {
         &self, 
         expr: &str, 
         context: ExpressionContext
-    ) -> Result<Value, ExpressionError> {
+    ) -> Result<serde_json::Value, ExpressionError> {
         let ast = self.parse(expr)?;
         self.eval_ast(&ast, &context).await
     }
     
-    async fn eval_ast(&self, ast: &Ast, ctx: &ExpressionContext) -> Result<Value> {
+    async fn eval_ast(&self, ast: &Ast, ctx: &ExpressionContext) -> Result<serde_json::Value> {
         match ast {
             Ast::NodeReference { node_id, field_path } => {
                 // Получаем данные через контекст
@@ -226,20 +229,22 @@ impl ExpressionEngine {
 // Пример полного flow
 let context = ExecutionContext::new(/* ... */);
 
-// Сохраняем результат узла
+// Сохраняем результат узла — обычный serde_json::Value
 context.node_outputs.write().await.insert(
     NodeId::new("fetch_user"),
     NodeOutput {
-        result: Value::Object(hashmap! {
-            "email" => Value::String("user@example.com"),
-            "age" => Value::Number(25),
+        result: json!({
+            "email": "user@example.com",
+            "age": 25,
         }),
+        status: NodeStatus::Completed,
+        duration: Duration::from_millis(42),
     }
 );
 
-// Вычисляем expression
+// Вычисляем expression — результат serde_json::Value
 let email = context.evaluate_expression("$nodes.fetch_user.result.email").await?;
-assert_eq!(email, Value::String("user@example.com"));
+assert_eq!(email, json!("user@example.com"));
 ```
 
 ### 4. nebula-action ↔ nebula-resource ↔ nebula-credential
@@ -521,14 +526,95 @@ impl ResourceInstance for DatabaseInstance {
 }
 ```
 
-### 8. nebula-memory управляет памятью для других крейтов
+### 8. nebula-sandbox ↔ nebula-runtime ↔ nebula-action
+
+**Паттерн:** Runtime делегирует выполнение Action в Sandbox, который контролирует доступ через capabilities
+
+```rust
+// nebula-runtime использует sandbox для выполнения actions
+impl ActionRuntime {
+    pub async fn execute_action(
+        &self,
+        action_id: &ActionId,
+        context: ActionContext,
+    ) -> Result<ActionResult> {
+        let action = self.action_registry.get(action_id)?;
+        let metadata = action.metadata();
+        
+        // Определяем уровень изоляции из metadata или config
+        let isolation = self.resolve_isolation_level(metadata);
+        
+        match isolation {
+            IsolationLevel::None => {
+                // Builtin actions — выполняем напрямую
+                action.execute(context).await
+            }
+            _ => {
+                // Создаем sandboxed context — проксирует вызовы через capability checks
+                let sandboxed = SandboxedContext::new(
+                    context,
+                    metadata.capabilities.clone(),
+                );
+                self.sandbox.execute(action.as_ref(), sandboxed).await
+            }
+        }
+    }
+}
+
+// nebula-sandbox проверяет capabilities при каждом обращении к ресурсу
+impl SandboxedContext {
+    pub async fn get_resource<R: Resource>(&self) -> Result<R::Instance> {
+        // Проверяем capability перед делегированием
+        let resource_id = R::resource_id();
+        self.check_capability(&Capability::Resource(resource_id))?;
+        
+        // Делегируем в inner ActionContext
+        self.inner.get_resource::<R>().await
+    }
+    
+    pub async fn get_credential(&self, id: &str) -> Result<AuthData> {
+        self.check_capability(&Capability::Credential(CredentialId::new(id)))?;
+        self.inner.get_credential(id).await
+    }
+}
+
+// nebula-action декларирует capabilities через derive
+#[derive(Action)]
+#[action(id = "external.api_call")]
+#[sandbox(
+    isolation = "lightweight",
+    capabilities = [
+        Network { allowed_hosts: ["api.example.com"] },
+        Credential("api_key"),
+        MaxCpuTime("30s"),
+    ]
+)]
+pub struct ExternalApiAction;
+
+// При попытке обратиться к не-декларированному ресурсу — SandboxViolation
+impl ProcessAction for ExternalApiAction {
+    async fn execute(&self, input: Input, ctx: &SandboxedContext) -> Result<Output> {
+        // OK — credential "api_key" декларирован
+        let key = ctx.get_credential("api_key").await?;
+        
+        // FAIL — DatabaseResource не в capabilities → SandboxViolation
+        // let db = ctx.get_resource::<DatabaseResource>().await?;
+        
+        let client = HttpClient::new(key);
+        let result = client.get(&input.url).await?;
+        Ok(result)
+    }
+}
+```
+
+### 9. nebula-memory управляет памятью для других крейтов
 
 **Паттерн:** Memory manager предоставляет scoped allocation
 
 ```rust
 // nebula-execution использует memory для кеширования
 impl ExecutionContext {
-    pub async fn cache_node_result(&self, node_id: NodeId, result: Value) -> Result<()> {
+    pub async fn cache_node_result(&self, node_id: NodeId, result: serde_json::Value) -> Result<()> {
         // Allocate в execution-scoped memory
         let cached = self.memory_manager
             .allocate_scoped(result, MemoryScope::Execution(self.execution_id))
@@ -560,7 +646,7 @@ impl ExpressionEngine {
 }
 ```
 
-### 9. Cross-cutting concerns через middleware pattern
+### 10. Cross-cutting concerns через middleware pattern
 
 ```rust
 // nebula-tenant, nebula-log, nebula-metrics работают через middleware
@@ -665,7 +751,7 @@ impl ExecutionMiddleware for MetricsMiddleware {
 │              Execution Layer                     │
 │                                                  │
 │  Engine orchestrates Workers                     │
-│  Runtime executes Actions                        │
+│  Runtime executes Actions through Sandbox        │
 └────────────────────┬────────────────────────────┘
                      │ выполняет
 ┌────────────────────▼────────────────────────────┐
@@ -677,7 +763,7 @@ impl ExecutionMiddleware for MetricsMiddleware {
 ┌────────────────────▼────────────────────────────┐
 │                Core Layer                        │
 │                                                  │
-│  Workflow definitions, Values, Expressions       │
+│  Workflow definitions, Expressions, ParamValue    │
 │  EventBus для loose coupling                     │
 └────────────────────┬────────────────────────────┘
                      │ использует
@@ -700,6 +786,6 @@ impl ExecutionMiddleware for MetricsMiddleware {
 1. **Dependency Injection** - конфигурация и ресурсы инжектируются сверху вниз
 2. **Event-driven** - слои общаются через события для loose coupling
 3. **Middleware chain** - cross-cutting concerns через цепочку middleware
-4. **Type safety** - `nebula-value` обеспечивает type safety через все слои
+4. **serde_json::Value everywhere** - единый тип данных через все слои, expressions резолвятся на уровне Execution через `ParamValue`
 5. **Context propagation** - `ExecutionContext` несет информацию через все вызовы
 6. **Resource scoping** - автоматическое управление жизненным циклом на разных уровнях

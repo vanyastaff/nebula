@@ -7,9 +7,10 @@
 [dependencies]
 uuid = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 thiserror = "1.0"
 ```
-Экспортирует базовые типы для всей системы.
+Экспортирует базовые типы для всей системы, включая `ParamValue` для разделения expressions и литеральных значений.
 
 ### nebula-derive
 ```toml
@@ -97,6 +98,7 @@ unic-langid = "0.9"
 [dependencies]
 nebula-core = { workspace = true }
 nebula-locale = { workspace = true, optional = true }
+serde_json = "1.0"
 regex = "1.9"
 async-trait = "0.1"
 ```
@@ -112,24 +114,11 @@ futures = "0.3"
 
 ## Core Layer
 
-### nebula-value
-```toml
-[dependencies]
-nebula-core = { workspace = true }
-nebula-validator = { workspace = true, optional = true }
-nebula-binary = { workspace = true }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-chrono = "0.4"
-smallvec = "1.11"
-bytes = "1.0"
-```
-
 ### nebula-expression
 ```toml
 [dependencies]
 nebula-core = { workspace = true }
-nebula-value = { workspace = true }
+serde_json = "1.0"
 pest = "2.7"  # парсер
 pest_derive = "2.7"
 async-trait = "0.1"
@@ -139,8 +128,8 @@ async-trait = "0.1"
 ```toml
 [dependencies]
 nebula-core = { workspace = true }
-nebula-value = { workspace = true }
 nebula-storage = { workspace = true, optional = true }
+serde_json = "1.0"
 lru = "0.11"
 dashmap = "5.5"
 tokio = { version = "1.0", features = ["sync"] }
@@ -167,10 +156,10 @@ async-trait = "0.1"
 ```toml
 [dependencies]
 nebula-core = { workspace = true }
-nebula-value = { workspace = true }
 nebula-validator = { workspace = true }
 nebula-derive = { workspace = true, optional = true }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 petgraph = "0.6"  # для графов workflow
 ```
 
@@ -179,12 +168,12 @@ petgraph = "0.6"  # для графов workflow
 [dependencies]
 nebula-core = { workspace = true }
 nebula-workflow = { workspace = true }
-nebula-value = { workspace = true }
 nebula-expression = { workspace = true }
 nebula-memory = { workspace = true }
 nebula-eventbus = { workspace = true }
 nebula-log = { workspace = true }
 nebula-metrics = { workspace = true }
+serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 dashmap = "5.5"
 ```
@@ -195,11 +184,11 @@ dashmap = "5.5"
 ```toml
 [dependencies]
 nebula-core = { workspace = true }
-nebula-value = { workspace = true }
 nebula-validator = { workspace = true }
 nebula-expression = { workspace = true }
 nebula-derive = { workspace = true, optional = true }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 ```
 
 ### nebula-credential
@@ -217,12 +206,12 @@ base64 = "0.21"
 ```toml
 [dependencies]
 nebula-core = { workspace = true }
-nebula-value = { workspace = true }
 nebula-parameter = { workspace = true }
 nebula-credential = { workspace = true, optional = true }
 nebula-derive = { workspace = true, optional = true }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 ```
 
 ### nebula-node
@@ -263,11 +252,35 @@ semver = "1.0"
 
 ## Execution Layer
 
+### nebula-sandbox
+```toml
+[dependencies]
+nebula-core = { workspace = true }
+nebula-action = { workspace = true }
+nebula-credential = { workspace = true }
+nebula-resilience = { workspace = true }
+nebula-log = { workspace = true }
+async-trait = "0.1"
+tokio = { version = "1.0", features = ["time", "sync"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dependencies.wasmtime]
+version = "17.0"
+optional = true
+
+[features]
+default = ["in-process"]
+in-process = []
+wasm = ["wasmtime"]
+```
+
 ### nebula-runtime
 ```toml
 [dependencies]
 nebula-core = { workspace = true }
 nebula-action = { workspace = true }
+nebula-sandbox = { workspace = true }
 nebula-resource = { workspace = true }
 nebula-memory = { workspace = true }
 nebula-metrics = { workspace = true }
@@ -354,8 +367,8 @@ nebula-core = { workspace = true }
 nebula-workflow = { workspace = true }
 nebula-action = { workspace = true }
 nebula-parameter = { workspace = true }
-nebula-value = { workspace = true }
 nebula-derive = { workspace = true, optional = true }
+serde_json = "1.0"
 
 [features]
 default = ["derive"]

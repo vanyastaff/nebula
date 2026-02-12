@@ -13,6 +13,7 @@ Nebula - высокопроизводительный workflow engine на Rust,
 5. **Smart Resource Management** - различные lifecycle scopes
 6. **Expression-driven** - мощная система выражений для динамической логики
 7. **Event-Driven** - loose coupling через eventbus
+8. **Security Isolation** - sandbox с capability-based доступом для выполнения Actions
 
 ### Слои архитектуры
 
@@ -31,7 +32,8 @@ Nebula - высокопроизводительный workflow engine на Rust,
 │         (nebula-resource, nebula-registry)              │
 ├─────────────────────────────────────────────────────────┤
 │                   Execution Layer                       │
-│      (nebula-engine, nebula-runtime, nebula-worker)     │
+│  (nebula-engine, nebula-runtime, nebula-worker,         │
+│              nebula-sandbox)                             │
 ├─────────────────────────────────────────────────────────┤
 │                     Node Layer                          │
 │  (nebula-node, nebula-action, nebula-parameter,         │
@@ -39,7 +41,7 @@ Nebula - высокопроизводительный workflow engine на Rust,
 ├─────────────────────────────────────────────────────────┤
 │                     Core Layer                          │
 │  (nebula-core, nebula-workflow, nebula-execution,       │
-│   nebula-value, nebula-memory, nebula-expression,       │
+│   nebula-memory, nebula-expression,                     │
 │   nebula-eventbus, nebula-idempotency)                  │
 ├─────────────────────────────────────────────────────────┤
 │              Cross-Cutting Concerns Layer               │
@@ -90,6 +92,31 @@ pub trait HasContext {
     fn workflow_id(&self) -> Option<&WorkflowId>;
     fn tenant_id(&self) -> Option<&TenantId>;
 }
+
+// Параметрическое значение — разделяет expressions от литеральных данных.
+// Используется в WorkflowDefinition и ParameterCollection.
+// После resolve на уровне Execution всё превращается в serde_json::Value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ParamValue {
+    /// Expression: "$nodes.user_lookup.result.email"
+    Expression(Expression),
+    /// Template: "Order #{order_id} for {name}"
+    Template(TemplateString),
+    /// Обычное JSON-значение
+    Literal(serde_json::Value),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Expression {
+    pub raw: String,  // "$nodes.user_lookup.result.email"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TemplateString {
+    pub template: String,
+    pub bindings: Vec<String>,
+}
 ```
 
 ---
@@ -113,17 +140,20 @@ let workflow = WorkflowDefinition {
             id: NodeId::new("validate"),
             action_id: ActionId::new("validation.user_data"),
             parameters: params!{
-                "email_pattern" => "^[^@]+@[^@]+$",
-                "required_fields" => ["email", "password"]
+                "email_pattern" => ParamValue::Literal(json!("^[^@]+@[^@]+$")),
+                "required_fields" => ParamValue::Literal(json!(["email", "password"]))
             },
         },
         NodeDefinition {
             id: NodeId::new("create_user"),
             action_id: ActionId::new("database.insert"),
             parameters: params!{
-                "table" => "users",
-                // Expression - данные из предыдущего узла
-                "data" => "$nodes.validate.result.validated_data"
+                "table" => ParamValue::Literal(json!("users")),
+                // Expression — данные из предыдущего узла,
+                // резолвится в serde_json::Value на этапе execution
+                "data" => ParamValue::Expression(Expression {
+                    raw: "$nodes.validate.result.validated_data".into()
+                })
             },
         }
     ],
@@ -160,56 +190,28 @@ pub struct ExecutionContext {
     pub expression_engine: Arc<ExpressionEngine>,
 }
 
+// NodeOutput хранит результат как serde_json::Value
+pub struct NodeOutput {
+    pub result: serde_json::Value,
+    pub status: NodeStatus,
+    pub duration: Duration,
+}
+
 // Использование
 let context = ExecutionContext::new(workflow_id, execution_id);
 
-// Вычисление expressions
-let user_email = context
+// Вычисление expressions — результат serde_json::Value
+let user_email: serde_json::Value = context
     .evaluate_expression("$nodes.create_user.result.email")
+    .await?;
+
+// Resolve ParamValue перед передачей в Action
+let resolved: serde_json::Value = context
+    .resolve_param_value(&param_value)
     .await?;
 
 // Получение ресурсов с правильным scope
 let database = context.get_resource::<DatabaseResource>().await?;
-```
-
----
-
-### nebula-value
-**Назначение:** Типобезопасная система значений для передачи данных между узлами.
-
-**Ключевые компоненты:**
-- Value enum с оптимизациями
-- ValueType для валидации
-- Expression support
-- Zero-copy оптимизации
-
-```rust
-pub enum Value {
-    Null,
-    Bool(bool),
-    Number(Number),
-    String(StringValue),  // Оптимизированное хранение
-    Array(Vec<Value>),
-    Object(ObjectValue),
-    Binary(BinaryValue),  // Inline/Heap/MMap/Stream
-    DateTime(DateTime<Utc>),
-    Reference(ValueReference),  // Ссылки для expressions
-    Expression(String),  // Неразрешенное expression
-}
-
-// Оптимизированное хранение строк
-pub enum StringValue {
-    Inline(SmallString<[u8; 22]>),  // Без аллокации
-    Heap(String),                    // Обычная строка
-    Interned(InternedString),        // Переиспользуемые
-}
-
-// Expression references
-pub enum ValueReference {
-    NodeOutput { node_id: String, field_path: String },
-    WorkflowVariable { variable_name: String },
-    ExecutionMetadata { field_name: String },
-}
 ```
 
 ---
@@ -223,6 +225,9 @@ pub enum ValueReference {
 - Pipeline операции: `$array | filter(...) | map(...) | sort(...)`
 - String interpolation: `"Hello ${user.name}!"`
 - Null safety: `$user?.address?.city ?? "Unknown"`
+
+Все значения представлены как `serde_json::Value`. Expressions из `ParamValue::Expression` 
+резолвятся на уровне Execution Layer до передачи в Action.
 
 ```rust
 // Примеры expressions
@@ -243,8 +248,8 @@ let examples = vec![
     "${workflow.variables.base_url}/users/${nodes.create_user.result.id}",
 ];
 
-// Использование
-let result = context.evaluate_expression(expression).await?;
+// Использование — результат всегда serde_json::Value
+let result: serde_json::Value = context.evaluate_expression(expression).await?;
 ```
 
 ---
@@ -274,9 +279,9 @@ pub struct TieredMemoryCache {
     expression_cache: ExpressionResultCache,          // Для expressions
 }
 
-// Использование
+// Использование — данные передаются как serde_json::Value
 let data = context.allocate_scoped_memory(
-    large_dataset,
+    large_dataset,  // serde_json::Value
     ResourceLifecycle::Execution  // Очистится в конце execution
 ).await?;
 ```
