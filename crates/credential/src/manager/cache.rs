@@ -34,7 +34,7 @@ impl CacheLayer {
     /// # Examples
     ///
     /// ```
-    /// use nebula_credential::manager::{CacheLayer, CacheConfig};
+    /// use nebula_credential::manager::{CacheLayer, CacheConfig, EvictionStrategy};
     /// use std::time::Duration;
     ///
     /// let config = CacheConfig {
@@ -161,6 +161,8 @@ impl CacheStats {
     /// # Examples
     ///
     /// ```
+    /// use nebula_credential::manager::CacheStats;
+    ///
     /// let stats = CacheStats { hits: 80, misses: 20, size: 50, max_capacity: 100 };
     /// assert_eq!(stats.hit_rate(), 0.8); // 80% hit rate
     /// ```
@@ -191,6 +193,8 @@ impl CacheStats {
     /// # Examples
     ///
     /// ```
+    /// use nebula_credential::manager::CacheStats;
+    ///
     /// let stats = CacheStats { hits: 80, misses: 20, size: 50, max_capacity: 100 };
     /// assert_eq!(stats.utilization(), 0.5); // 50% utilized
     /// ```

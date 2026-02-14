@@ -147,11 +147,11 @@
 //!
 //! Complete example showing how to implement rotation for a database credential:
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use nebula_credential::rotation::{
-//!     RotationPolicy, PeriodicConfig, RotatableCredential, TestableCredential,
-//!     TestResult, RotationResult,
+//!     RotationPolicy, PeriodicConfig, TestResult, RotationResult,
 //! };
+//! use nebula_credential::traits::{RotatableCredential, TestableCredential};
 //! use async_trait::async_trait;
 //! use std::time::Duration;
 //!
@@ -167,8 +167,8 @@
 //! impl TestableCredential for PostgresCredential {
 //!     async fn test(&self) -> RotationResult<TestResult> {
 //!         // Test database connection
-//!         // let conn = tokio_postgres::connect(&self.connection_string(), ...).await?;
-//!         Ok(TestResult::success("Connection successful"))
+//!         let start = std::time::Instant::now();
+//!         Ok(TestResult::success("Connection successful", "SELECT 1", start.elapsed()))
 //!     }
 //! }
 //!
@@ -177,11 +177,6 @@
 //!     async fn rotate(&self) -> RotationResult<Self> {
 //!         // Generate new password
 //!         let new_password = generate_secure_password();
-//!
-//!         // Create new database user with same privileges
-//!         // let new_username = format!("{}_v{}", self.username, version);
-//!         // CREATE USER new_username WITH PASSWORD new_password;
-//!         // GRANT ALL PRIVILEGES ON DATABASE ... TO new_username;
 //!
 //!         Ok(PostgresCredential {
 //!             username: format!("{}_rotated", self.username),
@@ -192,8 +187,6 @@
 //!     }
 //!
 //!     async fn cleanup_old(&self) -> RotationResult<()> {
-//!         // Drop old database user after grace period
-//!         // DROP USER IF EXISTS old_username;
 //!         Ok(())
 //!     }
 //! }

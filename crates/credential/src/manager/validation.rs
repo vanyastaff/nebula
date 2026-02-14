@@ -68,13 +68,13 @@ impl ValidationResult {
     ///
     /// ```
     /// use nebula_credential::manager::validation::{ValidationResult, ValidationDetails};
-    /// use nebula_credential::core::CredentialId;
+    /// use nebula_credential::CredentialId;
     /// use chrono::{Utc, Duration as ChronoDuration};
     /// use std::time::Duration;
     ///
     /// let expires_in_1_hour = Utc::now() + ChronoDuration::hours(1);
     /// let result = ValidationResult {
-    ///     credential_id: CredentialId::from("test"),
+    ///     credential_id: CredentialId::new("test").unwrap(),
     ///     valid: true,
     ///     details: ValidationDetails::Valid {
     ///         expires_at: Some(expires_in_1_hour),

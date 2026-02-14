@@ -25,6 +25,25 @@ pub mod traits;
 /// Utilities for crypto, time, etc.
 pub mod utils;
 
+// ── Root re-exports ─────────────────────────────────────────────────────────
+// Commonly-used types available directly as `nebula_credential::TypeName`.
+
+// Core types & errors
+pub use crate::core::{
+    CredentialContext, CredentialDescription, CredentialError, CredentialFilter, CredentialId,
+    CredentialMetadata, CredentialState, CryptoError, ManagerError, ManagerResult, ScopeId,
+    SecretString, StorageError, ValidationError,
+};
+
+// Traits
+pub use crate::traits::{DistributedLock, LockError, LockGuard, StateStore, StorageProvider};
+
+// Utils - crypto
+pub use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
+
+// Rotation
+pub use crate::rotation::{GracePeriodConfig, RotationError, RotationResult};
+
 /// Commonly used types and traits
 pub mod prelude {
     // Core types

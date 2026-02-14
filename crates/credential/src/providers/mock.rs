@@ -27,8 +27,7 @@ use tokio::sync::RwLock;
 ///
 ///     // Simulate permission denied error
 ///     provider.fail_next_with(StorageError::PermissionDenied {
-///         resource: "test_credential".into(),
-///         required_permission: "write".into(),
+///         id: "test_credential".into(),
 ///     }).await;
 ///
 ///     // Next operation will fail with the configured error

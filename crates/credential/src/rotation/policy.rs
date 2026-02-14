@@ -24,11 +24,11 @@ use super::error::{RotationError, RotationResult};
 /// use nebula_credential::rotation::{RotationPolicy, PeriodicConfig};
 /// use std::time::Duration;
 ///
-/// let policy = RotationPolicy::Periodic(PeriodicConfig {
-///     interval: Duration::from_secs(90 * 24 * 3600), // 90 days
-///     grace_period: Duration::from_secs(24 * 3600),  // 24 hours
-///     enable_jitter: true, // Prevent thundering herd
-/// });
+/// let policy = RotationPolicy::Periodic(PeriodicConfig::new(
+///     Duration::from_secs(90 * 24 * 3600), // 90 days
+///     Duration::from_secs(24 * 3600),      // 24 hours grace
+///     true,                                // enable jitter
+/// ).unwrap());
 /// ```
 ///
 /// ## Before Expiry (OAuth Tokens)
@@ -39,11 +39,11 @@ use super::error::{RotationError, RotationResult};
 /// use nebula_credential::rotation::{RotationPolicy, BeforeExpiryConfig};
 /// use std::time::Duration;
 ///
-/// let policy = RotationPolicy::BeforeExpiry(BeforeExpiryConfig {
-///     threshold_percentage: 0.80, // Rotate at 80% TTL
-///     minimum_time_before_expiry: Duration::from_secs(3600),   // Don't rotate if TTL < 1 hour
-///     grace_period: Duration::from_secs(600), // 10 minutes grace period
-/// });
+/// let policy = RotationPolicy::BeforeExpiry(BeforeExpiryConfig::new(
+///     0.80,                              // Rotate at 80% TTL
+///     Duration::from_secs(3600),         // Don't rotate if TTL < 1 hour
+///     Duration::from_secs(600),          // 10 minutes grace period
+/// ).unwrap());
 /// ```
 ///
 /// ## Scheduled (Maintenance Window)
@@ -55,10 +55,11 @@ use super::error::{RotationError, RotationResult};
 /// use chrono::{Utc, Duration};
 /// use std::time::Duration as StdDuration;
 ///
-/// let policy = RotationPolicy::Scheduled(ScheduledConfig {
-///     scheduled_at: Utc::now() + Duration::days(7),
-///     notify_before: Some(StdDuration::from_secs(24 * 3600)), // Notify 24h before
-/// });
+/// let policy = RotationPolicy::Scheduled(ScheduledConfig::new(
+///     Utc::now() + Duration::days(7),
+///     StdDuration::from_secs(3600),                     // 1 hour grace period
+///     Some(StdDuration::from_secs(24 * 3600)),          // Notify 24h before
+/// ).unwrap());
 /// ```
 ///
 /// ## Manual (Security Incident)

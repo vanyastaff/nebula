@@ -160,16 +160,18 @@
 //!
 //! // Fluent builder API
 //! let manager = CredentialManager::builder()
-//!     .storage(storage)
+//!     .storage(storage.clone())
 //!     .cache_ttl(Duration::from_secs(600))
 //!     .cache_max_size(5000)
 //!     .build();
 //!
 //! // Or use CacheConfig struct
 //! let cache_config = CacheConfig {
-//!     ttl: Duration::from_secs(600),
-//!     max_size: 5000,
-//!     eviction_strategy: EvictionStrategy::LRU,
+//!     enabled: true,
+//!     ttl: Some(Duration::from_secs(600)),
+//!     idle_timeout: None,
+//!     max_capacity: 5000,
+//!     eviction_strategy: EvictionStrategy::Lru,
 //! };
 //!
 //! let manager = CredentialManager::builder()

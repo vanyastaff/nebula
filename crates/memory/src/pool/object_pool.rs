@@ -46,7 +46,7 @@ pub struct ObjectPool<T: Poolable> {
     factory: Box<dyn Fn() -> T>,
     config: PoolConfig,
     callbacks: Box<dyn PoolCallbacks<T>>,
-    /// Total number of objects ever created (for max_capacity enforcement)
+    /// Total number of objects ever created (for `max_capacity` enforcement)
     created_count: core::cell::Cell<usize>,
     #[cfg(feature = "stats")]
     stats: PoolStats,
@@ -133,10 +133,10 @@ impl<T: Poolable> ObjectPool<T> {
             self.stats.record_miss();
 
             // Check capacity limits
-            if let Some(max) = self.config.max_capacity {
-                if self.created_count.get() >= max {
-                    return Err(MemoryError::pool_exhausted("pool", 0));
-                }
+            if let Some(max) = self.config.max_capacity
+                && self.created_count.get() >= max
+            {
+                return Err(MemoryError::pool_exhausted("pool", 0));
             }
 
             // Create new object

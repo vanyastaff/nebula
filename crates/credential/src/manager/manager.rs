@@ -66,8 +66,9 @@ impl CredentialManager {
     /// #     .storage(Arc::new(MockStorageProvider::new()))
     /// #     .build();
     /// let id = CredentialId::new("github-token")?;
-    /// let data = encrypt(b"secret", &EncryptionKey::from_bytes(&[0u8; 32])?)?;
-    /// let metadata = CredentialMetadata::new("user-123");
+    /// let key = EncryptionKey::from_bytes([0u8; 32]);
+    /// let data = encrypt(&key, b"secret")?;
+    /// let metadata = CredentialMetadata::new();
     /// let context = CredentialContext::new("user-123");
     ///
     /// manager.store(&id, data, metadata, &context).await?;
@@ -1901,6 +1902,7 @@ impl CredentialManager {
     ///
     /// ```no_run
     /// # use nebula_credential::prelude::*;
+    /// # use nebula_credential::GracePeriodConfig;
     /// # use std::sync::Arc;
     /// # use std::time::Duration;
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {

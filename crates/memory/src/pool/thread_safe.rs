@@ -43,7 +43,7 @@ pub struct ThreadSafePool<T: Poolable> {
     config: PoolConfig,
     callbacks: Arc<dyn PoolCallbacks<T>>,
     not_empty: Condvar,
-    /// Total number of objects ever created (for max_capacity enforcement)
+    /// Total number of objects ever created (for `max_capacity` enforcement)
     created_count: std::sync::atomic::AtomicUsize,
     #[cfg(feature = "stats")]
     stats: Arc<PoolStats>,
