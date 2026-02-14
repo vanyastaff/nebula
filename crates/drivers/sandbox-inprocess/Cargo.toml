@@ -1,0 +1,25 @@
+[package]
+name = "nebula-sandbox-inprocess"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description = "In-process sandbox driver for the Nebula workflow engine"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+nebula-ports = { path = "../../ports" }
+nebula-action = { path = "../../action" }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+nebula-core = { path = "../../core" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+pretty_assertions = { workspace = true }

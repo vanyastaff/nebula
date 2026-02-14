@@ -13,8 +13,12 @@ members = [
     "crates/resilience",
     "crates/resource",
     "crates/system",
+    "crates/telemetry",
     "crates/validator",
     "crates/workflow",
+    # Drivers
+    "crates/drivers/queue-memory",
+    "crates/drivers/sandbox-inprocess",
 ]
 exclude = [
     "crates/*/fuzz",

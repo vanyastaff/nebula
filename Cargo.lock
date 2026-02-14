@@ -3847,6 +3847,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-queue-memory"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "nebula-ports",
+ "pretty_assertions",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "nebula-resilience"
 version = "0.1.0"
 dependencies = [
@@ -3912,6 +3924,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-sandbox-inprocess"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "nebula-action",
+ "nebula-core",
+ "nebula-ports",
+ "pretty_assertions",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nebula-system"
 version = "0.1.0"
 dependencies = [
@@ -3929,6 +3955,20 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "winapi",
+]
+
+[[package]]
+name = "nebula-telemetry"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "nebula-core",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

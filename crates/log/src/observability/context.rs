@@ -437,8 +437,8 @@ mod tests {
     #[test]
     fn test_global_context() {
         // Test init + current
-        let ctx = GlobalContext::new("test-service", "1.0.0", "test")
-            .with_instance_id("instance-1");
+        let ctx =
+            GlobalContext::new("test-service", "1.0.0", "test").with_instance_id("instance-1");
         assert_eq!(ctx.service_name, "test-service");
         assert_eq!(ctx.version, "1.0.0");
         assert_eq!(ctx.environment, "test");
