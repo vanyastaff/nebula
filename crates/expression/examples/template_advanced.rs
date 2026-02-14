@@ -24,8 +24,8 @@ fn main() {
     println!("Expressions: {:?}", template.expressions());
 
     let mut context = EvaluationContext::new();
-    context.set_input(Value::text("Alice"));
-    context.set_execution_var("count", Value::integer(5));
+    context.set_input(Value::String("Alice".to_string()));
+    context.set_execution_var("count", serde_json::json!(5));
 
     let result = template.render(&engine, &context).unwrap();
     println!("Result: {}\n", result);
@@ -78,7 +78,7 @@ Line 3"#,
     println!("Dynamic template? {}", dynamic.is_template());
     println!("Static template? {}", static_text.is_template());
 
-    context.set_input(Value::text("Bob"));
+    context.set_input(Value::String("Bob".to_string()));
 
     let result1 = dynamic.resolve(&engine, &context).unwrap();
     let result2 = static_text.resolve(&engine, &context).unwrap();
@@ -103,10 +103,10 @@ Line 3"#,
     )
     .unwrap();
 
-    context.set_input(Value::text("charlie"));
-    context.set_execution_var("title", Value::text("Dashboard"));
-    context.set_execution_var("message_count", Value::integer(42));
-    context.set_execution_var("last_login", Value::integer(1704067200)); // 2024-01-01
+    context.set_input(Value::String("charlie".to_string()));
+    context.set_execution_var("title", Value::String("Dashboard".to_string()));
+    context.set_execution_var("message_count", serde_json::json!(42));
+    context.set_execution_var("last_login", serde_json::json!(1704067200)); // 2024-01-01
 
     let result = html.render(&engine, &context).unwrap();
     println!("{}\n", result);
@@ -120,8 +120,8 @@ Line 3"#,
     let users = vec![("Alice", 100), ("Bob", 85), ("Charlie", 92)];
 
     for (name, score) in users {
-        context.set_input(Value::text(name));
-        context.set_execution_var("score", Value::integer(score));
+        context.set_input(Value::String(name.to_string()));
+        context.set_execution_var("score", serde_json::json!(score));
 
         let result = greeting_template.render(&engine, &context).unwrap();
         println!("{}", result);
@@ -154,16 +154,14 @@ Line 3"#,
     )
     .unwrap();
 
-    context.set_input(Value::text("admin"));
-    context.set_execution_var("user_id", Value::integer(1));
+    context.set_input(Value::String("admin".to_string()));
+    context.set_execution_var("user_id", serde_json::json!(1));
 
     // Create array manually
-    let mut roles = nebula_value::Array::new();
-    roles = roles.push(serde_json::Value::String("admin".to_string()));
-    roles = roles.push(serde_json::Value::String("user".to_string()));
-    context.set_execution_var("roles", Value::Array(roles));
+    let roles = serde_json::json!(["admin", "user"]);
+    context.set_execution_var("roles", roles);
 
-    context.set_execution_var("active", Value::Boolean(true));
+    context.set_execution_var("active", serde_json::json!(true));
 
     let result = json_template.render(&engine, &context).unwrap();
     println!("{}", result);

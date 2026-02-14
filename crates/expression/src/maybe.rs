@@ -216,7 +216,10 @@ impl MaybeExpression<String> {
             Self::Value(s) => Ok(s.clone()),
             Self::Expression(cached) => {
                 let value = engine.evaluate(&cached.source, context)?;
-                Ok(value.to_string())
+                match value.as_str() {
+                    Some(s) => Ok(s.to_owned()),
+                    None => Ok(value.to_string()),
+                }
             }
         }
     }

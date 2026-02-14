@@ -483,11 +483,11 @@ impl FailureHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{
-        CredentialContext, CredentialDescription, CredentialError, CredentialState,
-        InitializeResult,
-    };
-    use crate::traits::Credential;
+    use async_trait::async_trait;
+
+    use crate::core::result::InitializeResult;
+    use crate::core::{CredentialContext, CredentialDescription, CredentialError, CredentialState};
+    use crate::traits::{Credential, RotatableCredential};
 
     #[derive(Clone, Serialize, Deserialize)]
     struct MockState;
@@ -524,7 +524,7 @@ mod tests {
             _input: &Self::Input,
             _ctx: &mut CredentialContext,
         ) -> Result<InitializeResult<Self::State>, CredentialError> {
-            Ok(InitializeResult::Complete(MockState, None))
+            Ok(InitializeResult::Complete(MockState))
         }
 
         async fn refresh(

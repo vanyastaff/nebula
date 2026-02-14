@@ -5,6 +5,7 @@
 //! **Prerequisites**: Docker must be running
 //!
 //! Run with: `cargo test --test integration_kubernetes --features storage-k8s -- --ignored`
+#![cfg(feature = "storage-k8s")]
 
 use chrono::Utc;
 use nebula_credential::core::{

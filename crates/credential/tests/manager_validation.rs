@@ -3,6 +3,7 @@
 //! Tests Phase 5: User Story 3 - Credential Validation and Health Checks
 
 use nebula_credential::prelude::*;
+use nebula_credential::rotation::PeriodicConfig;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -54,7 +55,14 @@ async fn test_validate_expired() {
     metadata.created_at = chrono::Utc::now() - chrono::Duration::days(2);
     metadata.last_modified = metadata.created_at;
     // Policy: expires after 1 day
-    let policy = RotationPolicy { interval_days: 1 };
+    let policy = RotationPolicy::Periodic(
+        PeriodicConfig::new(
+            Duration::from_secs(24 * 3600), // 1 day interval
+            Duration::from_secs(3600),      // 1 hour grace
+            false,
+        )
+        .unwrap(),
+    );
     metadata.rotation_policy = Some(policy);
 
     let context = CredentialContext::new("user-1");
@@ -109,7 +117,14 @@ async fn test_rotation_recommended() {
     let id_fresh = CredentialId::new("fresh-cred").unwrap();
     let data = create_test_data("password");
     let mut metadata_fresh = CredentialMetadata::new();
-    metadata_fresh.rotation_policy = Some(RotationPolicy { interval_days: 30 });
+    metadata_fresh.rotation_policy = Some(RotationPolicy::Periodic(
+        PeriodicConfig::new(
+            Duration::from_secs(30 * 24 * 3600), // 30 days
+            Duration::from_secs(24 * 3600),      // 1 day grace
+            false,
+        )
+        .unwrap(),
+    ));
     let context = CredentialContext::new("user-1");
 
     manager
@@ -130,7 +145,14 @@ async fn test_rotation_recommended() {
     let mut metadata_old = CredentialMetadata::new();
     metadata_old.created_at = chrono::Utc::now() - chrono::Duration::days(25);
     metadata_old.last_modified = metadata_old.created_at;
-    metadata_old.rotation_policy = Some(RotationPolicy { interval_days: 30 });
+    metadata_old.rotation_policy = Some(RotationPolicy::Periodic(
+        PeriodicConfig::new(
+            Duration::from_secs(30 * 24 * 3600), // 30 days
+            Duration::from_secs(24 * 3600),      // 1 day grace
+            false,
+        )
+        .unwrap(),
+    ));
 
     manager
         .store(&id_old, data, metadata_old, &context)

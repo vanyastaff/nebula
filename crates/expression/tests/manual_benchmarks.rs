@@ -59,7 +59,7 @@ fn benchmark_baseline() {
 
     let engine = ExpressionEngine::new();
     let mut ctx = EvaluationContext::new();
-    ctx.set_input(Value::text("World"));
+    ctx.set_input(Value::String("World".to_string()));
     let tmpl = Template::new("Hello {{ $input }}!").unwrap();
 
     let time = avg_time(|| {
@@ -121,7 +121,7 @@ fn benchmark_baseline() {
 
     let mut big_ctx = EvaluationContext::new();
     for i in 0..100 {
-        big_ctx.set_execution_var(format!("var_{}", i), Value::integer(i as i64));
+        big_ctx.set_execution_var(format!("var_{}", i), serde_json::json!(i as i64));
     }
 
     let time = avg_time(|| {

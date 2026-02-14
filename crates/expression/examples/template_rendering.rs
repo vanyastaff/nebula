@@ -12,8 +12,8 @@ fn main() {
     // Example 1: Simple text template
     println!("=== Example 1: Simple Text Template ===");
     let mut context = EvaluationContext::new();
-    context.set_input(Value::text("Alice"));
-    context.set_execution_var("order_id", Value::integer(12345));
+    context.set_input(Value::String("Alice".to_string()));
+    context.set_execution_var("order_id", serde_json::json!(12345));
 
     let template = Template::new(
         "Hello {{ $input }}! Your order #{{ $execution.order_id }} is being processed.",
@@ -24,8 +24,8 @@ fn main() {
 
     // Example 2: HTML Email Template
     println!("\n=== Example 2: HTML Email Template ===");
-    context.set_execution_var("total", Value::float(99.99));
-    context.set_execution_var("items_count", Value::integer(3));
+    context.set_execution_var("total", serde_json::json!(99.99));
+    context.set_execution_var("items_count", serde_json::json!(3));
 
     let html_template = r#"
 <!DOCTYPE html>
@@ -53,8 +53,8 @@ fn main() {
 
     // Example 3: JSON Template
     println!("\n=== Example 3: JSON Template ===");
-    context.set_execution_var("user_id", Value::integer(42));
-    context.set_execution_var("username", Value::text("alice_dev"));
+    context.set_execution_var("user_id", serde_json::json!(42));
+    context.set_execution_var("username", Value::String("alice_dev".to_string()));
 
     let json_template = r#"{
   "user": {
@@ -78,8 +78,8 @@ fn main() {
 
     // Example 4: Markdown Document
     println!("\n=== Example 4: Markdown Document ===");
-    context.set_execution_var("product", Value::text("Premium Widget"));
-    context.set_execution_var("price", Value::float(29.99));
+    context.set_execution_var("product", Value::String("Premium Widget".to_string()));
+    context.set_execution_var("price", serde_json::json!(29.99));
 
     let markdown_template = r#"
 # Order Summary
@@ -106,7 +106,7 @@ fn main() {
 
     // Example 5: Complex expressions with functions
     println!("\n=== Example 5: Complex Expressions ===");
-    context.set_input(Value::integer(1704067200)); // 2024-01-01 00:00:00 UTC
+    context.set_input(serde_json::json!(1704067200)); // 2024-01-01 00:00:00 UTC
 
     let template = r#"
 Report for {{ $execution.username }}:
@@ -126,8 +126,8 @@ Report for {{ $execution.username }}:
 
     // Example 6: Conditional content (using pipeline)
     println!("\n=== Example 6: With Calculations ===");
-    context.set_execution_var("quantity", Value::integer(5));
-    context.set_execution_var("unit_price", Value::float(19.99));
+    context.set_execution_var("quantity", serde_json::json!(5));
+    context.set_execution_var("unit_price", serde_json::json!(19.99));
 
     let template = r#"
 Invoice:

@@ -9,8 +9,8 @@
 //! - Event correlation and tracing
 //! - Centralized observability configuration
 
+use nebula_log::info;
 use nebula_log::observability::{ObservabilityEvent, ObservabilityHook, emit_event, register_hook};
-use nebula_log::{info, warn};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

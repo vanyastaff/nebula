@@ -2,6 +2,7 @@
 //!
 //! These tests automatically start and manage a LocalStack container.
 //! No external docker-compose required.
+#![cfg(feature = "storage-aws")]
 
 use nebula_credential::core::{CredentialContext, CredentialId, CredentialMetadata};
 use nebula_credential::providers::{AwsSecretsManagerConfig, AwsSecretsManagerProvider};
@@ -30,6 +31,9 @@ fn test_metadata(tags: HashMap<String, String>) -> CredentialMetadata {
         last_modified: chrono::Utc::now(),
         scope: None,
         rotation_policy: None,
+        version: 1,
+        expires_at: None,
+        ttl_seconds: None,
         tags,
     }
 }
@@ -147,8 +151,8 @@ async fn test_update_existing() {
 
     // NOTE: LocalStack 4.x has a bug with PutSecretValue that returns "service error"
     // This test may fail on LocalStack but works correctly on real AWS Secrets Manager
-    let update_result = StorageProvider::store(&provider, &id, data2.clone(), metadata2, &context)
-        .await;
+    let update_result =
+        StorageProvider::store(&provider, &id, data2.clone(), metadata2, &context).await;
 
     if update_result.is_err() {
         println!(

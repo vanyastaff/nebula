@@ -512,6 +512,9 @@ impl StorageProvider for KubernetesSecretsProvider {
             last_accessed,
             last_modified,
             rotation_policy: None,
+            version: 1,
+            expires_at: None,
+            ttl_seconds: None,
             tags,
             scope: None,
         };

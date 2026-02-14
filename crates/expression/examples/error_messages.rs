@@ -9,7 +9,7 @@ use serde_json::Value;
 fn main() {
     let engine = ExpressionEngine::new();
     let mut context = EvaluationContext::new();
-    context.set_input(Value::text("Alice"));
+    context.set_input(Value::String("Alice".to_string()));
 
     println!("=== Example 1: Undefined Variable ===\n");
     let template = r#"<html>
@@ -63,7 +63,7 @@ Line 5"#;
     }
 
     println!("=== Example 4: Type Error ===\n");
-    context.set_execution_var("count", Value::text("not a number"));
+    context.set_execution_var("count", Value::String("not a number".to_string()));
 
     let template4 = r#"<div>
     <p>Total items: {{ $execution.count * 2 }}</p>

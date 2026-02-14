@@ -152,7 +152,10 @@ impl Template {
 
                     match engine.evaluate(content.trim(), context) {
                         Ok(value) => {
-                            result.push_str(&value.to_string());
+                            match value.as_str() {
+                                Some(s) => result.push_str(s),
+                                None => result.push_str(&value.to_string()),
+                            }
 
                             // Mark that we should strip leading whitespace from next static part
                             if *strip_right {

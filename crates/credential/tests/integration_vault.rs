@@ -2,6 +2,7 @@
 //!
 //! These tests automatically start and manage a Vault container.
 //! No external docker-compose required.
+#![cfg(feature = "storage-vault")]
 
 use nebula_credential::core::{CredentialContext, CredentialId, CredentialMetadata};
 use nebula_credential::providers::{HashiCorpVaultProvider, VaultAuthMethod, VaultConfig};
@@ -30,6 +31,9 @@ fn test_metadata(tags: HashMap<String, String>) -> CredentialMetadata {
         last_modified: chrono::Utc::now(),
         scope: None,
         rotation_policy: None,
+        version: 1,
+        expires_at: None,
+        ttl_seconds: None,
         tags,
     }
 }

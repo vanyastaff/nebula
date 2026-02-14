@@ -75,7 +75,7 @@ targets = [
 
 
 [[example]]
-name = "basic"
+name = "system_basic"
 required-features = ["sysinfo", "memory"]
 
 [[example]]

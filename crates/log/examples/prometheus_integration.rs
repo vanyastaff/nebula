@@ -35,7 +35,6 @@
 use nebula_log::observability::{ObservabilityEvent, ObservabilityHook, emit_event, register_hook};
 use nebula_log::{info, warn};
 use std::sync::Arc;
-use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
@@ -164,7 +163,7 @@ impl MetricsHook {
 }
 
 impl ObservabilityHook for MetricsHook {
-    fn on_event(&self, event: &dyn ObservabilityEvent) {
+    fn on_event(&self, _event: &dyn ObservabilityEvent) {
         // Increment counter
         self.event_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

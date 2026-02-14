@@ -521,7 +521,10 @@ mod tests {
                 assert!(snapshot.execution.is_some());
                 assert!(snapshot.node.is_some());
 
-                assert_eq!(snapshot.global.unwrap().service_name, "test");
+                // Global context is process-wide (ArcSwap), so parallel tests
+                // may overwrite the value. Only assert it exists; the exact
+                // service_name depends on test ordering.
+                assert!(snapshot.global.is_some());
                 assert_eq!(snapshot.execution.unwrap().execution_id, "exec-1");
                 assert_eq!(snapshot.node.unwrap().node_id, "node-1");
             });

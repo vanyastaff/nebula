@@ -46,12 +46,12 @@ fn main() {
     let mut context = EvaluationContext::new();
 
     // Set up context
-    context.set_input(Value::integer(3));
-    context.set_execution_var("env", Value::text("production"));
-    context.set_execution_var("user_name", Value::text("Alice"));
-    context.set_execution_var("user_email", Value::text("alice@example.com"));
-    context.set_execution_var("order_id", Value::integer(12345));
-    context.set_execution_var("total", Value::float(99.99));
+    context.set_input(serde_json::json!(3));
+    context.set_execution_var("env", Value::String("production".to_string()));
+    context.set_execution_var("user_name", Value::String("Alice".to_string()));
+    context.set_execution_var("user_email", Value::String("alice@example.com".to_string()));
+    context.set_execution_var("order_id", serde_json::json!(12345));
+    context.set_execution_var("total", serde_json::json!(99.99));
 
     // Example 1: MaybeExpression for typed configuration
     println!("=== Example 1: MaybeExpression for Configuration ===\n");
@@ -72,10 +72,19 @@ fn main() {
     println!("  debug: {:?}\n", config.debug);
 
     // Resolve values
-    let timeout = config.timeout.resolve(&engine, &context).unwrap();
-    let retry_count = config.retry_count.resolve(&engine, &context).unwrap();
-    let base_url = config.base_url.resolve(&engine, &context).unwrap();
-    let debug = config.debug.resolve(&engine, &context).unwrap();
+    let timeout = config
+        .timeout
+        .resolve_as_integer(&engine, &context)
+        .unwrap();
+    let retry_count = config
+        .retry_count
+        .resolve_as_integer(&engine, &context)
+        .unwrap();
+    let base_url = config
+        .base_url
+        .resolve_as_string(&engine, &context)
+        .unwrap();
+    let debug = config.debug.resolve_as_bool(&engine, &context).unwrap();
 
     println!("Resolved values:");
     println!("  timeout: {}", timeout);
@@ -99,10 +108,19 @@ fn main() {
     println!("  debug: {:?}\n", config.debug);
 
     // Resolve values
-    let timeout = config.timeout.resolve(&engine, &context).unwrap();
-    let retry_count = config.retry_count.resolve(&engine, &context).unwrap();
-    let base_url = config.base_url.resolve(&engine, &context).unwrap();
-    let debug = config.debug.resolve(&engine, &context).unwrap();
+    let timeout = config
+        .timeout
+        .resolve_as_integer(&engine, &context)
+        .unwrap();
+    let retry_count = config
+        .retry_count
+        .resolve_as_integer(&engine, &context)
+        .unwrap();
+    let base_url = config
+        .base_url
+        .resolve_as_string(&engine, &context)
+        .unwrap();
+    let debug = config.debug.resolve_as_bool(&engine, &context).unwrap();
 
     println!("Resolved values:");
     println!("  timeout: {} (computed from $input * 1000)", timeout);
@@ -129,7 +147,7 @@ fn main() {
     // Resolve
     let subject = email.subject.resolve(&engine, &context).unwrap();
     let body = email.body.resolve(&engine, &context).unwrap();
-    let from = email.from.resolve(&engine, &context).unwrap();
+    let from = email.from.resolve_as_string(&engine, &context).unwrap();
 
     println!("Rendered email:");
     println!("  From: {}", from);
@@ -152,7 +170,7 @@ fn main() {
     // Resolve
     let subject = email.subject.resolve(&engine, &context).unwrap();
     let body = email.body.resolve(&engine, &context).unwrap();
-    let from = email.from.resolve(&engine, &context).unwrap();
+    let from = email.from.resolve_as_string(&engine, &context).unwrap();
 
     println!("Rendered email:");
     println!("  From: {}", from);
@@ -218,9 +236,12 @@ fn main() {
     );
 
     // Resolve all fields
-    let url = request.url.resolve(&engine, &context).unwrap();
-    let method = request.method.resolve(&engine, &context).unwrap();
-    let timeout = request.timeout_ms.resolve(&engine, &context).unwrap();
+    let url = request.url.resolve_as_string(&engine, &context).unwrap();
+    let method = request.method.resolve_as_string(&engine, &context).unwrap();
+    let timeout = request
+        .timeout_ms
+        .resolve_as_integer(&engine, &context)
+        .unwrap();
     let body = request.body.resolve(&engine, &context).unwrap();
 
     println!("Resolved HTTP Request:");

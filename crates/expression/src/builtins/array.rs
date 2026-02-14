@@ -27,7 +27,7 @@ pub fn first(
     check_arg_count("first", args, 1)?;
     let arr = get_array_arg("first", args, 0, "array")?;
     let json_val = arr
-        .get(0)
+        .first()
         .ok_or_else(|| ExpressionError::expression_eval_error("Array is empty"))?;
     Ok(json_val.clone())
 }
@@ -93,7 +93,7 @@ pub fn sort(
     check_arg_count("sort", args, 1)?;
     let arr = get_array_arg("sort", args, 0, "array")?;
 
-    let mut elements: Vec<Value> = arr.iter().cloned().collect();
+    let mut elements: Vec<Value> = arr.to_vec();
 
     // Sort the values
     elements.sort_by(|a, b| match (a, b) {
@@ -120,7 +120,7 @@ pub fn reverse(
     check_arg_count("reverse", args, 1)?;
     let arr = get_array_arg("reverse", args, 0, "array")?;
 
-    let mut elements: Vec<Value> = arr.iter().cloned().collect();
+    let mut elements: Vec<Value> = arr.to_vec();
     elements.reverse();
 
     Ok(Value::Array(elements))
@@ -222,7 +222,7 @@ pub fn flatten(
         .iter()
         .flat_map(|elem| {
             if let Some(inner_arr) = elem.as_array() {
-                inner_arr.iter().cloned().collect::<Vec<_>>()
+                inner_arr.to_vec()
             } else {
                 vec![elem.clone()]
             }

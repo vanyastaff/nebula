@@ -77,7 +77,7 @@ fn template_benchmarks() {
     // Render simple
     let engine = ExpressionEngine::new();
     let mut context = EvaluationContext::new();
-    context.set_input(Value::text("World"));
+    context.set_input(Value::String("World".to_string()));
     let simple = Template::new("Hello {{ $input }}!").unwrap();
 
     benchmark("template/render/simple", || {
@@ -140,7 +140,7 @@ fn context_benchmarks() {
     // Create context with many variables
     let mut context = EvaluationContext::new();
     for i in 0..100 {
-        context.set_execution_var(format!("var_{}", i), Value::integer(i as i64));
+        context.set_execution_var(format!("var_{}", i), serde_json::json!(i as i64));
     }
 
     benchmark("context/clone_100_vars", || {
@@ -269,7 +269,7 @@ fn bench_template_render() {
     println!("\nTemplate Render Benchmark:");
     let engine = ExpressionEngine::new();
     let mut context = EvaluationContext::new();
-    context.set_input(Value::text("World"));
+    context.set_input(Value::String("World".to_string()));
     let template = Template::new("Hello {{ $input }}!").unwrap();
 
     benchmark("template/render", || {
