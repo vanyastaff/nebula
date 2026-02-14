@@ -160,6 +160,7 @@ impl UsageHistory {
     }
 
     /// Get the average usage over the history
+    #[allow(dead_code)] // planned for budget analytics
     fn average_usage(&self) -> Option<usize> {
         if self.usage.is_empty() {
             return None;
@@ -195,6 +196,7 @@ impl MemoryBudget {
     }
 
     /// Create a new memory budget with a parent
+    #[allow(clippy::needless_pass_by_value)] // Arc is cheap to clone, taking by value is idiomatic
     pub fn with_parent(config: BudgetConfig, parent: Arc<MemoryBudget>) -> Arc<Self> {
         let mut budget = Self::new(config);
 

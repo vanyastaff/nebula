@@ -642,13 +642,10 @@ pub enum BarrierType {
 #[inline(always)]
 pub fn memory_barrier_ex(barrier_type: BarrierType) {
     match barrier_type {
-        BarrierType::LoadLoad => fence(Ordering::Acquire),
-        BarrierType::StoreStore => fence(Ordering::Release),
+        BarrierType::LoadLoad | BarrierType::Acquire => fence(Ordering::Acquire),
+        BarrierType::StoreStore | BarrierType::Release => fence(Ordering::Release),
         BarrierType::LoadStore => fence(Ordering::AcqRel),
-        BarrierType::StoreLoad => fence(Ordering::SeqCst),
-        BarrierType::Release => fence(Ordering::Release),
-        BarrierType::Acquire => fence(Ordering::Acquire),
-        BarrierType::Full => fence(Ordering::SeqCst),
+        BarrierType::StoreLoad | BarrierType::Full => fence(Ordering::SeqCst),
     }
 }
 
@@ -872,7 +869,7 @@ impl Default for PrefetchManager {
 
 /// Performance measurement utilities
 pub mod perf {
-    use super::*;
+    use super::{Duration, Instant};
 
     /// Measures the execution time of a closure
     ///

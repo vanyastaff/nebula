@@ -108,7 +108,7 @@ impl InternalCheckpoint {
 ///
 /// Provides insights into allocator memory fragmentation, useful for
 /// monitoring and optimization.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FragmentationStats {
     /// Total free memory across all fragments (bytes)
     pub total_free: usize,
@@ -126,16 +126,7 @@ pub struct FragmentationStats {
     pub fragmentation_percent: u8,
 }
 
-impl Default for FragmentationStats {
-    fn default() -> Self {
-        Self {
-            total_free: 0,
-            largest_block: 0,
-            fragment_count: 0,
-            fragmentation_percent: 0,
-        }
-    }
-}
+// FragmentationStats uses derive(Default) — all numeric fields default to 0
 
 impl FragmentationStats {
     /// Calculate fragmentation percentage from free space metrics

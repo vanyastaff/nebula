@@ -156,7 +156,7 @@ impl<T: Poolable> BatchAllocator<T> {
         // Get all objects first
         for _ in 0..count {
             if let Some(pooled) = self.pool.try_get() {
-                objects.push(pooled.detach())
+                objects.push(pooled.detach());
             } else {
                 // Return what we got so far
                 for obj in objects {

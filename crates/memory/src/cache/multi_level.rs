@@ -707,6 +707,7 @@ where
     }
 
     /// Generate optimization recommendations
+    #[allow(clippy::unused_self)]
     fn generate_recommendations(&self, stats: &MultiLevelStats) -> Vec<String> {
         let mut recommendations = Vec::new();
 

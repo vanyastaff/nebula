@@ -373,7 +373,7 @@ pub fn create_debug_metrics_reporter() -> impl MetricsReporter {
             value: u64,
             labels: &BTreeMap<String, String>,
         ) -> MemoryResult<()> {
-            println!("Counter {}{:?} = {}", name, labels, value);
+            println!("Counter {name}{labels:?} = {value}");
             Ok(())
         }
 
@@ -383,7 +383,7 @@ pub fn create_debug_metrics_reporter() -> impl MetricsReporter {
             value: f64,
             labels: &BTreeMap<String, String>,
         ) -> MemoryResult<()> {
-            println!("Gauge {}{:?} = {}", name, labels, value);
+            println!("Gauge {name}{labels:?} = {value}");
             Ok(())
         }
 
@@ -393,7 +393,7 @@ pub fn create_debug_metrics_reporter() -> impl MetricsReporter {
             value: f64,
             labels: &BTreeMap<String, String>,
         ) -> MemoryResult<()> {
-            println!("Histogram {}{:?} = {}", name, labels, value);
+            println!("Histogram {name}{labels:?} = {value}");
             Ok(())
         }
 
@@ -403,7 +403,7 @@ pub fn create_debug_metrics_reporter() -> impl MetricsReporter {
             value: f64,
             labels: &BTreeMap<String, String>,
         ) -> MemoryResult<()> {
-            println!("Summary {}{:?} = {}", name, labels, value);
+            println!("Summary {name}{labels:?} = {value}");
             Ok(())
         }
     }

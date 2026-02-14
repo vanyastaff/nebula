@@ -111,10 +111,16 @@ impl<T: Poolable> HierarchicalPool<T> {
 
     /// Get object from pool hierarchy
     pub fn get(&mut self) -> MemoryResult<HierarchicalPooledValue<T>> {
-        // Try local pool first
-        if let Ok(value) = self.local.get() {
+        // Try local pool first — extract and detach before taking &mut self
+        // to avoid overlapping borrows (the Result temporary holds a borrow)
+        let local_value = self
+            .local
+            .get()
+            .ok()
+            .map(super::object_pool::PooledValue::detach);
+        if let Some(detached) = local_value {
             return Ok(HierarchicalPooledValue {
-                value: ManuallyDrop::new(value.detach()),
+                value: ManuallyDrop::new(detached),
                 pool: std::ptr::from_mut(self),
                 borrowed: false,
             });
@@ -156,7 +162,7 @@ impl<T: Poolable> HierarchicalPool<T> {
         if was_borrowed {
             // Return to parent
             if let Some(parent) = &self.parent {
-                let mut parent_guard = parent.lock();
+                let parent_guard = parent.lock();
                 parent_guard.local.return_object(obj);
                 self.borrowed_count = self.borrowed_count.saturating_sub(1);
                 return;
@@ -201,6 +207,7 @@ impl<T: Poolable> HierarchicalPool<T> {
 
 /// Statistics for pool hierarchy
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // public API for stats feature consumers
 pub struct HierarchyStats {
     pub levels: Vec<PoolStatsSnapshot>,
     pub total_objects: usize,
@@ -209,6 +216,7 @@ pub struct HierarchyStats {
 
 /// Pool statistics snapshot
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // public API for stats feature consumers
 pub struct PoolStatsSnapshot {
     pub available: usize,
     pub total_created: usize,
@@ -298,6 +306,7 @@ unsafe impl<T: Poolable + Send> Send for HierarchicalPooledValue<T> {}
 ///
 /// This trait provides ergonomic methods that hide the Arc<Mutex<>> complexity
 /// from users, making the API cleaner and preventing common lifetime issues.
+#[allow(dead_code)] // extension trait for ergonomic pool access
 pub trait HierarchicalPoolExt<T: Poolable> {
     /// Create a child pool
     fn create_child(&self, capacity: usize) -> Arc<Mutex<HierarchicalPool<T>>>;

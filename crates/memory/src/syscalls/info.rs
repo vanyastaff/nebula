@@ -31,7 +31,7 @@ impl MemoryPressureLevel {
     /// Check if memory pressure is concerning
     #[inline]
     #[must_use]
-    pub fn is_concerning(&self) -> bool {
+    pub fn is_concerning(self) -> bool {
         matches!(self, Self::High | Self::Critical)
     }
 }

@@ -60,6 +60,7 @@ where
     }
 
     /// Check if an entry has expired
+    #[allow(dead_code)] // planned for proactive expiration checks
     fn is_expired(&self, key: &K) -> bool {
         if let Some(insertion_time) = self.insertion_times.get(key) {
             let ttl = self.get_ttl(key);
@@ -70,6 +71,7 @@ where
     }
 
     /// Record insertion time for a key
+    #[allow(dead_code)] // planned for proactive expiration checks
     fn record_insertion_time(&mut self, key: &K) {
         self.insertion_times.insert(key.clone(), Instant::now());
     }

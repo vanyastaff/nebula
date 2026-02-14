@@ -271,8 +271,8 @@ impl BumpAllocator {
     }
 
     fn try_bump(&self, size: usize, align: usize) -> Option<NonNull<u8>> {
-        let actual_size = self.effective_size(size);
         const MAX_RETRIES: usize = 100;
+        let actual_size = self.effective_size(size);
         let mut backoff = Backoff::new();
         let mut attempts = 0;
 
@@ -491,8 +491,8 @@ impl crate::allocator::sealed::AllocatorInternal for BumpAllocator {
         let total_free = self.available();
         crate::allocator::sealed::FragmentationStats::calculate(
             total_free,
-            total_free,                         // Largest block = all free space
-            if total_free > 0 { 1 } else { 0 }, // Single fragment or none
+            total_free,                  // Largest block = all free space
+            usize::from(total_free > 0), // Single fragment or none
         )
     }
 
@@ -512,10 +512,10 @@ impl crate::allocator::sealed::AllocatorInternal for BumpAllocator {
         }
 
         // Validate stats consistency (if enabled)
-        if let Some(stats) = self.stats.snapshot() {
-            if stats.total_bytes_deallocated > stats.total_bytes_allocated {
-                return Err("deallocated bytes exceed allocated bytes");
-            }
+        if let Some(stats) = self.stats.snapshot()
+            && stats.total_bytes_deallocated > stats.total_bytes_allocated
+        {
+            return Err("deallocated bytes exceed allocated bytes");
         }
 
         Ok(())

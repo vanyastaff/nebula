@@ -171,6 +171,7 @@ where
     }
 
     /// Get or compute with TTL
+    #[allow(clippy::needless_pass_by_value)] // Duration is Copy, pass-by-value is idiomatic
     pub fn get_or_compute_with_ttl<F>(&self, key: K, ttl: Duration, f: F) -> CacheResult<V>
     where
         F: FnOnce() -> Result<V, MemoryError>,

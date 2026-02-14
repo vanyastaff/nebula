@@ -16,7 +16,7 @@
 
 // Re-export allocator-specific memory info
 mod info;
-pub use info::*;
+pub use info::{MemoryEvent, MemoryInfo, MemoryPressureLevel, get_page_size};
 
 // Direct syscalls module (was syscalls.rs)
 mod direct;

@@ -379,12 +379,13 @@ where
 
     /// Evict a random entry
     fn evict_random(&mut self) -> MemoryResult<()> {
+        use rand::prelude::IndexedRandom;
+
         if self.entries.is_empty() {
             return Ok(());
         }
 
         // True random using rng
-        use rand::prelude::IndexedRandom;
         let keys: Vec<_> = self.entries.keys().cloned().collect();
         if let Some(key) = keys.choose(&mut rand::rng()) {
             self.entries.remove(key);

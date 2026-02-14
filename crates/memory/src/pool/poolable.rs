@@ -146,10 +146,11 @@ where
     }
 }
 
-impl<K, V> Poolable for std::collections::HashMap<K, V>
+impl<K, V, S> Poolable for std::collections::HashMap<K, V, S>
 where
     K: Send + 'static,
     V: Send + 'static,
+    S: std::hash::BuildHasher + Send + 'static,
 {
     fn reset(&mut self) {
         self.clear();
@@ -174,6 +175,7 @@ where
 }
 
 /// Extension trait for poolable builders
+#[allow(dead_code)] // public API for custom pool builders
 pub trait PoolableBuilder: Poolable {
     /// Create a new instance
     fn build() -> Self;

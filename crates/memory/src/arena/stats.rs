@@ -159,6 +159,7 @@ impl ArenaStats {
             .fetch_add(time_ns, Ordering::Relaxed);
     }
 
+    #[allow(dead_code)] // symmetric API for future deallocation tracking
     pub(crate) fn record_deallocation(&self, bytes: usize) {
         self.bytes_used.fetch_sub(bytes, Ordering::Relaxed);
         self.deallocations.fetch_add(1, Ordering::Relaxed);
@@ -173,6 +174,7 @@ impl ArenaStats {
             .fetch_max(prev_chunks + 1, Ordering::Relaxed);
     }
 
+    #[allow(dead_code)] // symmetric API for future deallocation tracking
     pub(crate) fn record_chunk_deallocation(&self, bytes: usize) {
         self.bytes_allocated.fetch_sub(bytes, Ordering::Relaxed);
         self.current_chunks.fetch_sub(1, Ordering::Relaxed);

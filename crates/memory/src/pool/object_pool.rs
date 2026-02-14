@@ -270,7 +270,7 @@ impl<T: Poolable> ObjectPool<T> {
 
     /// Clear all pooled objects
     pub fn clear(&mut self) {
-        for obj in self.objects.drain(..) {
+        for obj in self.objects.borrow_mut().drain(..) {
             self.callbacks.on_destroy(&obj);
         }
 
@@ -304,10 +304,7 @@ impl<T: Poolable> ObjectPool<T> {
     #[cfg(feature = "stats")]
     fn update_memory_stats(&self) {
         let objects = self.objects.borrow();
-        let memory = objects
-            .iter()
-            .map(|obj| obj.memory_usage())
-            .sum::<usize>()
+        let memory = objects.iter().map(|obj| obj.memory_usage()).sum::<usize>()
             + objects.capacity() * core::mem::size_of::<T>();
 
         self.stats.update_memory(memory);

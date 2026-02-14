@@ -140,7 +140,7 @@ impl ArenaAllocator<Arena> {
     /// Create a new allocator with a basic arena
     #[must_use]
     pub fn new_basic() -> Self {
-        Self::new(Arc::new(Arena::new(Default::default())))
+        Self::new(Arc::new(Arena::new(super::ArenaConfig::default())))
     }
 
     /// Create a new allocator with a basic arena with specified capacity
@@ -154,7 +154,9 @@ impl ArenaAllocator<ThreadSafeArena> {
     /// Create a new allocator with a thread-safe arena
     #[must_use]
     pub fn new_thread_safe() -> Self {
-        Self::new(Arc::new(ThreadSafeArena::new(Default::default())))
+        Self::new(Arc::new(
+            ThreadSafeArena::new(super::ArenaConfig::default()),
+        ))
     }
 
     /// Create a new allocator with a thread-safe arena with specified config
@@ -198,6 +200,7 @@ pub struct ArenaBackedVec<T, A: ArenaAllocate> {
     data: *mut T,
     len: usize,
     capacity: usize,
+    #[allow(dead_code)] // retained for future deallocation support
     allocator: Arc<A>,
     _marker: PhantomData<T>,
 }

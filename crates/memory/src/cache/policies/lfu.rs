@@ -108,6 +108,7 @@ struct FrequencyDistribution {
 
 /// Access record for time-based tracking
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // fields used for decay calculations in future eviction strategies
 struct AccessRecord {
     /// Timestamp of access
     timestamp: Instant,
@@ -119,6 +120,7 @@ struct AccessRecord {
 
 /// Frequency bucket for efficient frequency-based operations
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // fields used for linked-list traversal in future optimizations
 struct FrequencyBucket<K> {
     /// Frequency value
     frequency: u64,
@@ -423,6 +425,8 @@ where
 
     /// Update access order for LRU tie-breaking
     fn update_access_order(&mut self, key: &K) {
+        const MAX_ACCESS_ORDER_SIZE: usize = 10000;
+
         // Remove key from current position
         if let Some(pos) = self.access_order.iter().position(|k| k == key) {
             self.access_order.remove(pos);
@@ -432,7 +436,6 @@ where
         self.access_order.push_back(key.clone());
 
         // Limit access order size to prevent unbounded growth
-        const MAX_ACCESS_ORDER_SIZE: usize = 10000;
         if self.access_order.len() > MAX_ACCESS_ORDER_SIZE {
             self.access_order.pop_front();
         }
@@ -540,6 +543,7 @@ where
     }
 
     /// Simple hash function for probabilistic operations
+    #[allow(clippy::unused_self)]
     fn simple_hash(&self, key: &K) -> u64
     where
         K: std::hash::Hash,
@@ -593,6 +597,7 @@ where
     }
 
     /// Update bucket links for efficient traversal
+    #[allow(clippy::unused_self)]
     fn update_bucket_links(&mut self, _frequency: u64) {
         // This is a simplified implementation
         // In a full implementation, you'd maintain a proper doubly-linked structure

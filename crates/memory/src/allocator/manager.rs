@@ -143,7 +143,7 @@ impl AllocatorManager {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            allocators: Default::default(),
+            allocators: DashMap::default(),
             active_allocator: AtomicUsize::new(0),
             default_allocator: None,
         }

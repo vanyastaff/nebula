@@ -468,7 +468,6 @@ impl PoolAllocator {
             if let Some(ref mut b) = backoff {
                 b.spin();
             }
-            continue;
         }
     }
 

@@ -76,7 +76,7 @@ pub enum MemoryError {
     InitializationFailed { reason: String },
 
     // --- Feature Support Errors ---
-    #[error("Feature not supported: {feature}{}", context.as_ref().map(|c| format!(" ({})", c)).unwrap_or_default())]
+    #[error("Feature not supported: {feature}{}", context.as_ref().map(|c| format!(" ({c})")).unwrap_or_default())]
     NotSupported {
         feature: &'static str,
         context: Option<String>,

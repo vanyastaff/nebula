@@ -209,29 +209,29 @@ pub fn create_console_logger() -> impl MemoryLogger {
             let secs = since_epoch.as_secs();
             let millis = since_epoch.subsec_millis();
 
-            let timestamp = format!("{}.{:03}", secs, millis);
+            let timestamp = format!("{secs}.{millis:03}");
 
             let prefix = format!(
                 "[{}] {} [{}] {}: ",
                 timestamp, event.level, event.source, event.event_type
             );
 
-            let mut message = format!("{}{}", prefix, event.message);
+            let mut message = format!("{prefix}{}", event.message);
 
             if !event.data.is_empty() {
                 message.push_str(" {");
                 let data_parts: Vec<String> = event
                     .data
                     .iter()
-                    .map(|(key, value)| format!("{}={}", key, value))
+                    .map(|(key, value)| format!("{key}={value}"))
                     .collect();
                 message.push_str(&data_parts.join(", "));
                 message.push('}');
             }
 
             match event.level {
-                LogLevel::Error => eprintln!("{}", message),
-                _ => println!("{}", message),
+                LogLevel::Error => eprintln!("{message}"),
+                _ => println!("{message}"),
             }
         }
     }

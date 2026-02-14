@@ -308,7 +308,7 @@ where
     /// Get the partition index for a key
     fn get_partition_index(&self, key: &K) -> usize {
         match self.config.hash_strategy {
-            HashStrategy::Default => {
+            HashStrategy::Default | HashStrategy::Modulo => {
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 key.hash(&mut hasher);
                 (hasher.finish() as usize) % self.config.partition_count
@@ -339,11 +339,6 @@ where
                         (hasher.finish() as usize) % self.config.partition_count
                     }
                 }
-            }
-            HashStrategy::Modulo => {
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                key.hash(&mut hasher);
-                (hasher.finish() as usize) % self.config.partition_count
             }
         }
     }

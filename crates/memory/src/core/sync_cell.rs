@@ -35,6 +35,7 @@ unsafe impl<T: ?Sized + Send> Send for SyncUnsafeCell<T> {}
 impl<T> SyncUnsafeCell<T> {
     /// Creates a new `SyncUnsafeCell` containing the given value.
     #[inline]
+    #[allow(dead_code)] // foundational primitive for concurrent data structures
     pub(crate) const fn new(value: T) -> Self {
         Self(UnsafeCell::new(value))
     }

@@ -45,6 +45,7 @@ where
     /// Phantom data for unused type parameter V
     _phantom: PhantomData<V>,
     /// Configuration
+    #[allow(dead_code)] // retained for future configuration-driven eviction
     config: RandomConfig,
     /// Set of tracked keys
     keys: HashSet<K>,

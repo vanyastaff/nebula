@@ -1,6 +1,6 @@
 //! Optimized LRU (Least Recently Used) cache eviction policy
 //!
-//! This module provides an O(1) LRU implementation using a HashMap with doubly-linked list indices.
+//! This module provides an O(1) LRU implementation using a `HashMap` with doubly-linked list indices.
 //! When the cache is full, it evicts the least recently used entry.
 //!
 //! All operations (access, insertion, removal) are O(1) for optimal performance.
@@ -25,7 +25,7 @@ struct LruNode<K> {
 /// it's moved to the front in O(1) time. When eviction is needed, the key at the back
 /// (least recently used) is selected in O(1) time.
 ///
-/// This implementation uses a HashMap for O(1) lookups and a Vec-based doubly-linked list
+/// This implementation uses a `HashMap` for O(1) lookups and a `Vec`-based doubly-linked list
 /// for O(1) reordering. All operations are constant time.
 ///
 /// # Performance

@@ -21,7 +21,7 @@ pub enum SerializationFormat {
     Json,
     /// Bincode binary format
     Bincode,
-    /// MessagePack format
+    /// `MessagePack` format
     MessagePack,
     /// CBOR format
     Cbor,
@@ -36,7 +36,7 @@ impl fmt::Display for SerializationFormat {
             Self::Bincode => write!(f, "bincode"),
             Self::MessagePack => write!(f, "messagepack"),
             Self::Cbor => write!(f, "cbor"),
-            Self::Custom(name) => write!(f, "custom({})", name),
+            Self::Custom(name) => write!(f, "custom({name})"),
         }
     }
 }
@@ -101,7 +101,7 @@ impl SerializableValue for StringValue {
             .replace('\n', "\\n")
             .replace('\r', "\\r")
             .replace('\t', "\\t");
-        Ok(format!("\"{}\"", escaped))
+        Ok(format!("\"{escaped}\""))
     }
 
     fn clone_value(&self) -> Box<dyn SerializableValue> {
@@ -267,7 +267,7 @@ impl Serializer for JsonSerializer {
             }
             _ => Err(MemoryError::NotSupported {
                 feature: "JSON deserialization",
-                context: Some(format!("Type {} not supported", type_hint)),
+                context: Some(format!("Type {type_hint} not supported")),
             }),
         }
     }
@@ -297,7 +297,7 @@ impl SerializationExtension {
         self.serializers
             .iter()
             .find(|s| s.format() == format)
-            .map(|s| s.as_ref())
+            .map(AsRef::as_ref)
     }
 
     /// Serialize a value with the specified format
@@ -310,7 +310,7 @@ impl SerializationExtension {
             Some(serializer) => serializer.serialize(value),
             None => Err(MemoryError::NotSupported {
                 feature: "Serialization format",
-                context: Some(format!("{} is not supported", format)),
+                context: Some(format!("{format} is not supported")),
             }),
         }
     }
@@ -326,7 +326,7 @@ impl SerializationExtension {
             Some(serializer) => serializer.deserialize(data, type_hint),
             None => Err(MemoryError::NotSupported {
                 feature: "Deserialization format",
-                context: Some(format!("{} is not supported", format)),
+                context: Some(format!("{format} is not supported")),
             }),
         }
     }

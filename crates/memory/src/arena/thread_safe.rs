@@ -418,6 +418,7 @@ pub struct ThreadSafeArenaRef<'a, T: ?Sized + Sync> {
 
 impl<'a, T: ?Sized + Sync> ThreadSafeArenaRef<'a, T> {
     /// Creates a new thread-safe reference from raw pointer
+    #[allow(dead_code)] // public API not yet wired up
     pub(crate) fn new(ptr: NonNull<T>, arena: &'a ThreadSafeArena) -> Self {
         Self { ptr, _arena: arena }
     }

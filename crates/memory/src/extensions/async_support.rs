@@ -293,7 +293,7 @@ pub fn init_global_async(executor_name: impl Into<String>) -> MemoryResult<()> {
 
 /// Check if async support is enabled globally
 pub fn is_async_enabled() -> bool {
-    global_async().map(|ext| ext.is_enabled()).unwrap_or(false)
+    global_async().is_some_and(|ext| ext.is_enabled())
 }
 
 /// A task that can be spawned on an async runtime

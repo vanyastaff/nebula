@@ -549,6 +549,7 @@ pub struct ArenaRef<'a, T: ?Sized> {
 
 impl<'a, T: ?Sized> ArenaRef<'a, T> {
     /// Creates a new reference from raw pointer
+    #[allow(dead_code)] // public API not yet wired up
     pub(crate) fn new(ptr: NonNull<T>, arena: &'a Arena) -> Self {
         Self { ptr, _arena: arena }
     }
@@ -581,6 +582,7 @@ pub struct ArenaRefMut<'a, T: ?Sized> {
 
 impl<'a, T: ?Sized> ArenaRefMut<'a, T> {
     /// Creates a new mutable reference from raw pointer
+    #[allow(dead_code)] // public API not yet wired up
     pub(crate) fn new(ptr: NonNull<T>, arena: &'a Arena) -> Self {
         Self { ptr, _arena: arena }
     }
