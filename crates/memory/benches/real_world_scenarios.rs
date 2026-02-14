@@ -2,10 +2,11 @@
 //!
 //! Benchmarks that simulate actual usage patterns
 
-use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use nebula_memory::allocator::{Allocator, BumpAllocator, PoolAllocator, PoolConfig};
 use nebula_memory::core::traits::Resettable;
 use std::alloc::Layout;
+use std::hint::black_box;
 
 /// Simulate request/response cycle (allocate, use, deallocate)
 fn bench_request_response(c: &mut Criterion) {

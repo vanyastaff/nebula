@@ -2,11 +2,12 @@
 //!
 //! Compares performance of different allocators across various workloads
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nebula_memory::allocator::{
     Allocator, BumpAllocator, PoolAllocator, PoolConfig, StackAllocator, StackConfig,
 };
 use std::alloc::Layout;
+use std::hint::black_box;
 
 /// Benchmark single allocation/deallocation cycle
 fn bench_single_allocation(c: &mut Criterion) {
