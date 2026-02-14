@@ -1,0 +1,43 @@
+[package]
+name = "nebula-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+publish = false
+
+[dependencies]
+# Async and concurrency
+async-trait = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+
+# Format parsers
+toml = { version = "0.9.7" }
+yaml-rust2 = { version = "0.9" }
+
+# Notifications
+notify = { version = "8.2.0" }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Time and utilities
+chrono = { workspace = true, features = ["serde"] }
+regex = { workspace = true }
+uuid = { workspace = true }
+dashmap = { workspace = true }
+
+# Internal crates
+nebula-log = { path = "../log" }

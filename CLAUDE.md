@@ -9,7 +9,7 @@ Nebula is a workflow automation toolkit in Rust, similar to n8n.
 **Stack:**
 - Rust 2024 Edition (MSRV: 1.92)
 - Tokio async runtime
-- 16-crate workspace
+- 11-crate workspace
 - egui for UI
 
 ## Common Commands
@@ -36,27 +36,24 @@ cargo audit
 
 ## Workspace Structure
 
+All crates live under `crates/` with short directory names. Package names retain the `nebula-` prefix (e.g. `crates/core/` contains package `nebula-core`).
+
 **Core:**
-- `nebula-core` - Identifiers, scope system
-- `nebula-value` - Runtime type system (Value: Null, Bool, Number, String, Array, Object)
-- `nebula-log` - Logging, observability
+- `crates/core` - Identifiers, scope system
+- `crates/log` - Logging, observability
 
 **Domain:**
-- `nebula-parameter` - Parameter definitions with validation
-- `nebula-action` - Action execution
-- `nebula-expression` - Expression evaluation
-- `nebula-validator` - Validation combinators
-- `nebula-credential` - Credential management
-
-**UI:**
-- `nebula-ui` - Base UI framework
-- `nebula-parameter-ui` - Parameter widgets
+- `crates/action` - Action execution
+- `crates/expression` - Expression evaluation
+- `crates/validator` - Validation combinators
+- `crates/credential` - Credential management
 
 **System:**
-- `nebula-config`, `nebula-memory`, `nebula-resilience`, `nebula-resource`, `nebula-system`
-
-**Tooling:**
-- `nebula-derive` - Procedural macros
+- `crates/config` - Configuration, hot-reload
+- `crates/memory` - Memory management, arenas, caching
+- `crates/resilience` - Circuit breaker, retry, rate limiting
+- `crates/resource` - Resource lifecycle, scopes, policies
+- `crates/system` - Cross-platform utilities, pressure detection
 
 ## Error Handling
 
@@ -158,7 +155,7 @@ async fn test_async() {
 - Rust 2024 Edition (MSRV: 1.92) + Tokio async runtime, async-trait, serde, thiserror, chrono (005-refactor-traits-validation)
 - N/A (pure refactoring) (005-refactor-traits-validation)
 - N/A (this feature only adds types, no persistence logic) (006-extend-core-identity)
-- Rust 2024 Edition (MSRV: 1.92) + nebula-core, nebula-system, nebula-log (optional), thiserror, parking_lot, crossbeam-queue, hashbrown, dashmap, tokio (optional), winapi (Windows) (007-memory-prerelease)
+- Rust 2024 Edition (MSRV: 1.92) + core, system, log (optional), thiserror, parking_lot, crossbeam-queue, hashbrown, dashmap, tokio (optional), winapi (Windows) (007-memory-prerelease)
 - N/A (in-memory allocators) (007-memory-prerelease)
 - Rust 2024 Edition (MSRV: 1.92) + serde_json, chrono, rust_decimal, bytes, thiserror (008-serde-value-migration)
 - N/A (value type refactoring) (008-serde-value-migration)

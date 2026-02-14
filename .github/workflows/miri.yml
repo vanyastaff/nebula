@@ -2,15 +2,15 @@ name: Miri Safety Tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
-      - 'crates/nebula-memory/**'
-      - '.github/workflows/miri.yml'
+      - "crates/memory/**"
+      - ".github/workflows/miri.yml"
   pull_request:
-    branches: [ main ]
+    branches: [main]
     paths:
-      - 'crates/nebula-memory/**'
-      - '.github/workflows/miri.yml'
+      - "crates/memory/**"
+      - ".github/workflows/miri.yml"
 
 env:
   CARGO_TERM_COLOR: always
@@ -34,7 +34,7 @@ jobs:
 
       - name: Run Miri tests on nebula-memory
         run: |
-          cd crates/nebula-memory
+          cd crates/memory
           MIRIFLAGS="-Zmiri-permissive-provenance -Zmiri-disable-isolation" \
           cargo +nightly miri test --test miri_safety
         env:
@@ -42,7 +42,7 @@ jobs:
 
       - name: Run Miri on nebula-memory unit tests (sample)
         run: |
-          cd crates/nebula-memory
+          cd crates/memory
           MIRIFLAGS="-Zmiri-permissive-provenance -Zmiri-disable-isolation" \
           cargo +nightly miri test --lib allocator::bump --no-fail-fast
         continue-on-error: true
@@ -64,14 +64,13 @@ jobs:
           echo "## Miri Test Coverage" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          unsafe_count=$(rg "unsafe \{" crates/nebula-memory/src --count-matches | \
+          unsafe_count=$(rg "unsafe \{" crates/memory/src --count-matches | \
             awk '{sum+=$1} END {print sum}')
 
-          test_count=$(rg "^fn miri_" crates/nebula-memory/tests/miri_safety.rs | wc -l)
+          test_count=$(rg "^fn miri_" crates/memory/tests/miri_safety.rs | wc -l)
 
           echo "- **Unsafe blocks in nebula-memory**: $unsafe_count" >> $GITHUB_STEP_SUMMARY
           echo "- **Miri tests**: $test_count" >> $GITHUB_STEP_SUMMARY
           echo "- **Estimated coverage**: $(echo "scale=1; $test_count * 100 / ($unsafe_count / 20)" | bc)%" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "✅ Miri tests help detect undefined behavior in unsafe code" >> $GITHUB_STEP_SUMMARY
-

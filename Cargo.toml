@@ -1,16 +1,16 @@
 [workspace]
 members = [
-    "crates/nebula-action",
-    "crates/nebula-config",
-    "crates/nebula-core",
-    "crates/nebula-credential",
-    "crates/nebula-expression",
-    "crates/nebula-log",
-    "crates/nebula-memory",
-    "crates/nebula-resilience",
-    "crates/nebula-resource",
-    "crates/nebula-system",
-    "crates/nebula-validator",
+    "crates/action",
+    "crates/config",
+    "crates/core",
+    "crates/credential",
+    "crates/expression",
+    "crates/log",
+    "crates/memory",
+    "crates/resilience",
+    "crates/resource",
+    "crates/system",
+    "crates/validator",
 ]
 exclude = [
     "crates/*/fuzz",
