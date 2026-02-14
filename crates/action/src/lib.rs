@@ -55,6 +55,8 @@
 
 /// Base action trait defining identity and metadata.
 pub mod action;
+/// Execution budget and data passing policies.
+pub mod budget;
 /// Capability declarations and isolation levels for sandboxed execution.
 pub mod capability;
 /// Runtime context provided to actions during execution.
@@ -65,12 +67,10 @@ pub mod error;
 pub mod metadata;
 /// Output data representations (inline JSON and blob references).
 pub mod output;
-/// Execution result types carrying data and flow-control intent.
-pub mod result;
-/// Execution budget and data passing policies.
-pub mod budget;
 /// Action registry for type-erased discovery and lookup.
 pub mod registry;
+/// Execution result types carrying data and flow-control intent.
+pub mod result;
 /// Sandboxed execution context and runner port trait.
 pub mod sandbox;
 mod types;
@@ -83,18 +83,18 @@ pub use context::ActionContext;
 pub use error::ActionError;
 pub use metadata::{ActionMetadata, ActionType, ExecutionMode, InterfaceVersion};
 pub use output::NodeOutputData;
-pub use result::{ActionResult, BreakReason, BranchKey, PortKey, WaitCondition};
+pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
+pub use types::InteractiveAction;
 pub use types::ProcessAction;
 pub use types::StatefulAction;
-pub use types::TriggerAction;
-pub use types::trigger::{TriggerEvent, TriggerKind, WebhookRequest};
 pub use types::StreamingAction;
-pub use types::streaming::{StreamItem, StreamMetadata};
 pub use types::TransactionalAction;
-pub use types::transactional::{PrepareResult, TransactionOutcome, TransactionVote};
-pub use types::InteractiveAction;
+pub use types::TriggerAction;
 pub use types::interactive::{InteractionRequest, InteractionResponse, InteractionType};
+pub use types::streaming::{StreamItem, StreamMetadata};
+pub use types::transactional::{PrepareResult, TransactionOutcome, TransactionVote};
+pub use types::trigger::{TriggerEvent, TriggerKind, WebhookRequest};
 
 pub use budget::{DataPassingPolicy, ExecutionBudget, LargeDataStrategy};
 pub use registry::ActionRegistry;
-pub use sandbox::{SandboxRunner, SandboxedContext};
+pub use sandbox::SandboxedContext;

@@ -1,9 +1,6 @@
-use async_trait::async_trait;
-
 use crate::capability::Capability;
 use crate::context::ActionContext;
 use crate::error::ActionError;
-use crate::metadata::ActionMetadata;
 
 /// Execution context wrapped with capability enforcement.
 ///
@@ -52,9 +49,9 @@ impl SandboxedContext {
     /// Check whether network access to a host is allowed.
     pub fn check_network(&self, host: &str) -> Result<(), ActionError> {
         let granted = self.granted.iter().any(|g| match g {
-            Capability::Network { allowed_hosts } => {
-                allowed_hosts.iter().any(|pattern| host_matches(pattern, host))
-            }
+            Capability::Network { allowed_hosts } => allowed_hosts
+                .iter()
+                .any(|pattern| host_matches(pattern, host)),
             _ => false,
         });
         if granted {
@@ -73,30 +70,6 @@ impl SandboxedContext {
     }
 }
 
-/// Port trait for executing actions within an isolation boundary.
-///
-/// Implemented by drivers:
-/// - `sandbox-inprocess`: runs in the same process with capability checks
-/// - `sandbox-wasm`: runs in a WASM sandbox (full isolation)
-///
-/// The engine calls this instead of invoking `Action::execute` directly.
-#[async_trait]
-pub trait SandboxRunner: Send + Sync {
-    /// Execute an action within the sandbox.
-    ///
-    /// The runner:
-    /// 1. Verifies capabilities from `metadata` against granted set
-    /// 2. Enforces resource limits (memory, CPU, wall time)
-    /// 3. Invokes the action
-    /// 4. Validates output size
-    async fn execute(
-        &self,
-        context: SandboxedContext,
-        metadata: &ActionMetadata,
-        input: serde_json::Value,
-    ) -> Result<serde_json::Value, ActionError>;
-}
-
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Check if a granted capability satisfies a required capability.
@@ -106,14 +79,12 @@ fn capabilities_match(granted: &Capability, required: &Capability) -> bool {
         (Capability::Resource(g), Capability::Resource(r)) => g == r,
         (Capability::MaxMemory(g), Capability::MaxMemory(r)) => g >= r,
         (Capability::MaxCpuTime(g), Capability::MaxCpuTime(r)) => g >= r,
-        (
-            Capability::Environment { keys: g },
-            Capability::Environment { keys: r },
-        ) => r.iter().all(|rk| g.contains(rk)),
-        (
-            Capability::Network { allowed_hosts: g },
-            Capability::Network { allowed_hosts: r },
-        ) => r.iter().all(|rh| g.iter().any(|gh| host_matches(gh, rh))),
+        (Capability::Environment { keys: g }, Capability::Environment { keys: r }) => {
+            r.iter().all(|rk| g.contains(rk))
+        }
+        (Capability::Network { allowed_hosts: g }, Capability::Network { allowed_hosts: r }) => {
+            r.iter().all(|rh| g.iter().any(|gh| host_matches(gh, rh)))
+        }
         (
             Capability::FileSystem {
                 paths: g_paths,
@@ -128,7 +99,9 @@ fn capabilities_match(granted: &Capability, required: &Capability) -> bool {
             if *g_ro && !r_ro {
                 return false;
             }
-            r_paths.iter().all(|rp| g_paths.iter().any(|gp| rp.starts_with(gp)))
+            r_paths
+                .iter()
+                .all(|rp| g_paths.iter().any(|gp| rp.starts_with(gp)))
         }
         _ => false,
     }
