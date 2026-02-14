@@ -16,12 +16,10 @@
 
 pub mod data_policy;
 pub mod error;
-pub mod handler;
 pub mod registry;
 pub mod runtime;
 
 pub use data_policy::{DataPassingPolicy, LargeDataStrategy};
 pub use error::RuntimeError;
-pub use handler::ActionHandler;
 pub use registry::ActionRegistry;
 pub use runtime::ActionRuntime;

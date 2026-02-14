@@ -14,12 +14,13 @@ use crate::node_type::NodeType;
 /// shared across threads.
 ///
 /// ```
-/// use nebula_node::{NodeRegistry, NodeType, NodeMetadata, Node};
+/// use nebula_node::{NodeRegistry, NodeType, NodeMetadata, Node, NodeComponents};
 ///
 /// #[derive(Debug)]
 /// struct EchoNode(NodeMetadata);
 /// impl Node for EchoNode {
 ///     fn metadata(&self) -> &NodeMetadata { &self.0 }
+///     fn register(&self, _components: &mut NodeComponents) {}
 /// }
 ///
 /// let mut registry = NodeRegistry::new();
@@ -136,6 +137,8 @@ mod tests {
         fn metadata(&self) -> &NodeMetadata {
             &self.0
         }
+
+        fn register(&self, _components: &mut crate::NodeComponents) {}
     }
 
     fn make_type(key: &str) -> NodeType {

@@ -3863,7 +3863,6 @@ dependencies = [
  "nebula-action",
  "nebula-core",
  "nebula-credential",
- "nebula-parameter",
  "pretty_assertions",
  "serde",
  "serde_json",

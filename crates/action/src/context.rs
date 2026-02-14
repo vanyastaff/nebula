@@ -1,11 +1,83 @@
+use std::fmt;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 use nebula_core::scope::ScopeLevel;
 use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ActionError;
+
+/// A string that redacts its contents in Debug and Display.
+///
+/// Used for credential values to prevent accidental logging.
+#[derive(Clone)]
+pub struct SecureString {
+    inner: String,
+}
+
+impl SecureString {
+    /// Create a new secure string.
+    pub fn new(value: impl Into<String>) -> Self {
+        Self {
+            inner: value.into(),
+        }
+    }
+
+    /// Access the underlying value.
+    pub fn expose(&self) -> &str {
+        &self.inner
+    }
+}
+
+impl fmt::Debug for SecureString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SecureString(***)")
+    }
+}
+
+impl fmt::Display for SecureString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("***")
+    }
+}
+
+/// Port trait for providing credentials to actions.
+///
+/// Implemented by the runtime to inject credential resolution into actions
+/// without coupling them to the credential storage backend.
+#[async_trait]
+pub trait CredentialProvider: Send + Sync {
+    /// Retrieve a credential value by key.
+    async fn get(&self, key: &str) -> Result<SecureString, ActionError>;
+}
+
+/// Port trait for action-level logging.
+///
+/// Actions use this to emit structured log messages that are captured
+/// by the runtime's logging infrastructure.
+pub trait ActionLogger: Send + Sync {
+    /// Log a debug message.
+    fn debug(&self, message: &str);
+    /// Log an info message.
+    fn info(&self, message: &str);
+    /// Log a warning.
+    fn warn(&self, message: &str);
+    /// Log an error.
+    fn error(&self, message: &str);
+}
+
+/// Port trait for action-level metrics.
+///
+/// Actions use this to emit custom metrics (counters, histograms)
+/// that are collected by the runtime's metrics infrastructure.
+pub trait ActionMetrics: Send + Sync {
+    /// Increment a counter by 1.
+    fn counter(&self, name: &str, value: u64);
+    /// Record a histogram observation.
+    fn histogram(&self, name: &str, value: f64);
+}
 
 /// Runtime context provided to every action during execution.
 ///
@@ -29,6 +101,12 @@ pub struct ActionContext {
     pub cancellation: CancellationToken,
     /// Shared workflow-scoped variables.
     variables: Arc<RwLock<serde_json::Map<String, serde_json::Value>>>,
+    /// Optional credential provider for accessing secrets.
+    credentials: Option<Arc<dyn CredentialProvider>>,
+    /// Optional logger for structured action logging.
+    logger: Option<Arc<dyn ActionLogger>>,
+    /// Optional metrics emitter for custom action metrics.
+    metrics: Option<Arc<dyn ActionMetrics>>,
 }
 
 impl ActionContext {
@@ -46,6 +124,9 @@ impl ActionContext {
             scope,
             cancellation: CancellationToken::new(),
             variables: Arc::new(RwLock::new(serde_json::Map::new())),
+            credentials: None,
+            logger: None,
+            metrics: None,
         }
     }
 
@@ -95,6 +176,76 @@ impl ActionContext {
             Err(ActionError::Cancelled)
         } else {
             Ok(())
+        }
+    }
+
+    /// Attach a credential provider.
+    pub fn with_credentials(mut self, provider: Arc<dyn CredentialProvider>) -> Self {
+        self.credentials = Some(provider);
+        self
+    }
+
+    /// Attach a logger.
+    pub fn with_logger(mut self, logger: Arc<dyn ActionLogger>) -> Self {
+        self.logger = Some(logger);
+        self
+    }
+
+    /// Attach a metrics emitter.
+    pub fn with_metrics(mut self, metrics: Arc<dyn ActionMetrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    /// Retrieve a credential value by key.
+    ///
+    /// Returns an error if no credential provider is configured.
+    pub async fn credential(&self, key: &str) -> Result<SecureString, ActionError> {
+        match &self.credentials {
+            Some(provider) => provider.get(key).await,
+            None => Err(ActionError::fatal("no credential provider configured")),
+        }
+    }
+
+    /// Log a debug message. No-op if no logger is attached.
+    pub fn log_debug(&self, message: &str) {
+        if let Some(logger) = &self.logger {
+            logger.debug(message);
+        }
+    }
+
+    /// Log an info message. No-op if no logger is attached.
+    pub fn log_info(&self, message: &str) {
+        if let Some(logger) = &self.logger {
+            logger.info(message);
+        }
+    }
+
+    /// Log a warning. No-op if no logger is attached.
+    pub fn log_warn(&self, message: &str) {
+        if let Some(logger) = &self.logger {
+            logger.warn(message);
+        }
+    }
+
+    /// Log an error. No-op if no logger is attached.
+    pub fn log_error(&self, message: &str) {
+        if let Some(logger) = &self.logger {
+            logger.error(message);
+        }
+    }
+
+    /// Record a counter metric. No-op if no metrics emitter is attached.
+    pub fn record_counter(&self, name: &str, value: u64) {
+        if let Some(metrics) = &self.metrics {
+            metrics.counter(name, value);
+        }
+    }
+
+    /// Record a histogram metric. No-op if no metrics emitter is attached.
+    pub fn record_histogram(&self, name: &str, value: f64) {
+        if let Some(metrics) = &self.metrics {
+            metrics.histogram(name, value);
         }
     }
 }
@@ -188,5 +339,31 @@ mod tests {
         let debug = format!("{ctx:?}");
         assert!(debug.contains("ActionContext"));
         assert!(debug.contains("execution_id"));
+    }
+
+    #[test]
+    fn secure_string_redacts_debug() {
+        let s = SecureString::new("secret123");
+        assert_eq!(format!("{s:?}"), "SecureString(***)");
+        assert_eq!(format!("{s}"), "***");
+        assert_eq!(s.expose(), "secret123");
+    }
+
+    #[test]
+    fn log_methods_noop_without_logger() {
+        let ctx = test_context();
+        // These should not panic even without a logger.
+        ctx.log_debug("debug");
+        ctx.log_info("info");
+        ctx.log_warn("warn");
+        ctx.log_error("error");
+    }
+
+    #[test]
+    fn metrics_methods_noop_without_metrics() {
+        let ctx = test_context();
+        // These should not panic even without metrics.
+        ctx.record_counter("requests", 1);
+        ctx.record_histogram("latency", 0.5);
     }
 }

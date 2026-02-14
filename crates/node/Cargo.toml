@@ -19,7 +19,6 @@ dynamic-loading = ["dep:libloading"]
 nebula-core = { path = "../core" }
 nebula-action = { path = "../action" }
 nebula-credential = { path = "../credential" }
-nebula-parameter = { path = "../parameter" }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

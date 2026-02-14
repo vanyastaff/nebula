@@ -9,6 +9,7 @@ use std::time::Instant;
 use nebula_action::SandboxedContext;
 use nebula_action::capability::IsolationLevel;
 use nebula_action::context::ActionContext;
+use nebula_action::result::ActionResult;
 use nebula_ports::SandboxRunner;
 use nebula_telemetry::event::{EventBus, ExecutionEvent};
 use nebula_telemetry::metrics::MetricsRegistry;
@@ -80,7 +81,7 @@ impl ActionRuntime {
         action_key: &str,
         input: serde_json::Value,
         context: ActionContext,
-    ) -> Result<serde_json::Value, RuntimeError> {
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let handler = self.registry.get(action_key)?;
         let metadata = handler.metadata();
         let isolation = &metadata.isolation_level;
@@ -116,33 +117,15 @@ impl ActionRuntime {
         action_counter.inc();
 
         match result {
-            Ok(output) => {
-                // Enforce data limits.
-                if let Err((limit, actual)) = self.data_policy.check_output_size(&output) {
-                    error_counter.inc();
-                    self.event_bus.emit(ExecutionEvent::NodeFailed {
-                        execution_id: execution_id.clone(),
-                        node_id: node_id.clone(),
-                        error: format!("data limit exceeded: {actual} > {limit}"),
-                    });
-                    match self.data_policy.large_data_strategy {
-                        LargeDataStrategy::Reject => {
-                            return Err(RuntimeError::DataLimitExceeded {
-                                limit_bytes: limit,
-                                actual_bytes: actual,
-                            });
-                        }
-                        LargeDataStrategy::SpillToBlob => {
-                            // Phase 2: spill to blob storage.
-                            tracing::warn!(
-                                action_key,
-                                actual,
-                                limit,
-                                "output exceeds limit, spill to blob not yet implemented"
-                            );
-                        }
-                    }
-                }
+            Ok(action_result) => {
+                // Enforce data limits on the primary output value.
+                self.enforce_data_limit(
+                    action_key,
+                    &action_result,
+                    &error_counter,
+                    &execution_id,
+                    &node_id,
+                )?;
 
                 self.event_bus.emit(ExecutionEvent::NodeCompleted {
                     execution_id,
@@ -150,7 +133,7 @@ impl ActionRuntime {
                     duration: elapsed,
                 });
 
-                Ok(output)
+                Ok(action_result)
             }
             Err(action_err) => {
                 error_counter.inc();
@@ -163,15 +146,77 @@ impl ActionRuntime {
             }
         }
     }
+
+    /// Check the primary output of an `ActionResult` against the data passing policy.
+    ///
+    /// Returns `Ok(())` if within limits or if using `SpillToBlob` strategy.
+    /// Returns `Err(DataLimitExceeded)` if the output is too large and strategy is `Reject`.
+    fn enforce_data_limit(
+        &self,
+        action_key: &str,
+        action_result: &ActionResult<serde_json::Value>,
+        error_counter: &nebula_telemetry::metrics::Counter,
+        execution_id: &str,
+        node_id: &str,
+    ) -> Result<(), RuntimeError> {
+        let output = match primary_output(action_result) {
+            Some(o) => o,
+            None => return Ok(()),
+        };
+
+        let (limit, actual) = match self.data_policy.check_output_size(output) {
+            Ok(_) => return Ok(()),
+            Err(exceeded) => exceeded,
+        };
+
+        error_counter.inc();
+        self.event_bus.emit(ExecutionEvent::NodeFailed {
+            execution_id: execution_id.to_owned(),
+            node_id: node_id.to_owned(),
+            error: format!("data limit exceeded: {actual} > {limit}"),
+        });
+
+        match self.data_policy.large_data_strategy {
+            LargeDataStrategy::Reject => Err(RuntimeError::DataLimitExceeded {
+                limit_bytes: limit,
+                actual_bytes: actual,
+            }),
+            LargeDataStrategy::SpillToBlob => {
+                // Phase 2: spill to blob storage.
+                tracing::warn!(
+                    action_key,
+                    actual,
+                    limit,
+                    "output exceeds limit, spill to blob not yet implemented"
+                );
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Extract the primary output value from an `ActionResult` for size checking.
+fn primary_output(result: &ActionResult<serde_json::Value>) -> Option<&serde_json::Value> {
+    match result {
+        ActionResult::Success { output } => Some(output),
+        ActionResult::Skip { output, .. } => output.as_ref(),
+        ActionResult::Continue { output, .. } => Some(output),
+        ActionResult::Break { output, .. } => Some(output),
+        ActionResult::Branch { output, .. } => Some(output),
+        ActionResult::Route { data, .. } => Some(data),
+        ActionResult::MultiOutput { main_output, .. } => main_output.as_ref(),
+        ActionResult::Wait { partial_output, .. } => partial_output.as_ref(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handler::ActionHandler;
-    use nebula_action::ActionError;
+    use nebula_action::ParameterCollection;
     use nebula_action::capability::IsolationLevel;
-    use nebula_action::metadata::ActionMetadata;
+    use nebula_action::error::ActionError;
+    use nebula_action::handler::InternalHandler;
+    use nebula_action::metadata::{ActionMetadata, ActionType};
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
     use nebula_core::scope::ScopeLevel;
     use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};
@@ -181,16 +226,22 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl ActionHandler for EchoHandler {
+    impl InternalHandler for EchoHandler {
         async fn execute(
             &self,
             input: serde_json::Value,
             _ctx: ActionContext,
-        ) -> Result<serde_json::Value, ActionError> {
-            Ok(input)
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            Ok(ActionResult::success(input))
         }
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
+        }
+        fn action_type(&self) -> ActionType {
+            ActionType::Process
+        }
+        fn parameters(&self) -> Option<&ParameterCollection> {
+            None
         }
     }
 
@@ -199,16 +250,22 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl ActionHandler for FailHandler {
+    impl InternalHandler for FailHandler {
         async fn execute(
             &self,
             _input: serde_json::Value,
             _ctx: ActionContext,
-        ) -> Result<serde_json::Value, ActionError> {
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             Err(ActionError::retryable("transient failure"))
         }
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
+        }
+        fn action_type(&self) -> ActionType {
+            ActionType::Process
+        }
+        fn parameters(&self) -> Option<&ParameterCollection> {
+            None
         }
     }
 
@@ -222,8 +279,9 @@ mod tests {
     }
 
     fn make_runtime(registry: Arc<ActionRegistry>) -> ActionRuntime {
-        let executor: ActionExecutor =
-            Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(input) }));
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let event_bus = Arc::new(EventBus::new(64));
         let metrics = Arc::new(MetricsRegistry::new());
@@ -250,7 +308,11 @@ mod tests {
         let result = rt
             .execute_action("test.echo", input.clone(), test_context())
             .await;
-        assert_eq!(result.unwrap(), input);
+        let action_result = result.unwrap();
+        match action_result {
+            ActionResult::Success { output } => assert_eq!(output, input),
+            other => panic!("expected Success, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -287,8 +349,9 @@ mod tests {
                 .with_isolation(IsolationLevel::None),
         }));
 
-        let executor: ActionExecutor =
-            Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(input) }));
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let event_bus = Arc::new(EventBus::new(64));
         let metrics = Arc::new(MetricsRegistry::new());
@@ -320,8 +383,9 @@ mod tests {
                 .with_isolation(IsolationLevel::None),
         }));
 
-        let executor: ActionExecutor =
-            Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(input) }));
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let event_bus = Arc::new(EventBus::new(64));
         let metrics = Arc::new(MetricsRegistry::new());

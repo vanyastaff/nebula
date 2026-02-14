@@ -21,8 +21,17 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use nebula_action::result::ActionResult;
 use nebula_action::{ActionError, ActionMetadata, SandboxedContext};
 use nebula_ports::SandboxRunner;
+
+/// Boxed future returned by the action executor.
+pub type ActionExecutorFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<ActionResult<serde_json::Value>, ActionError>>
+            + Send,
+    >,
+>;
 
 /// Callback type for executing an action.
 ///
@@ -34,11 +43,6 @@ pub type ActionExecutor = Arc<
     dyn Fn(SandboxedContext, &ActionMetadata, serde_json::Value) -> ActionExecutorFuture
         + Send
         + Sync,
->;
-
-/// Boxed future returned by the action executor.
-pub type ActionExecutorFuture = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<serde_json::Value, ActionError>> + Send>,
 >;
 
 /// In-process sandbox that executes actions in the same process.
@@ -56,7 +60,7 @@ pub type ActionExecutorFuture = std::pin::Pin<
 /// let executor: ActionExecutor = Arc::new(|ctx, metadata, input| {
 ///     Box::pin(async move {
 ///         // Look up and execute the action...
-///         Ok(serde_json::json!({"result": "ok"}))
+///         Ok(nebula_action::ActionResult::success(serde_json::json!({"result": "ok"})))
 ///     })
 /// });
 ///
@@ -80,7 +84,7 @@ impl SandboxRunner for InProcessSandbox {
         context: SandboxedContext,
         metadata: &ActionMetadata,
         input: serde_json::Value,
-    ) -> Result<serde_json::Value, ActionError> {
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         tracing::debug!(
             action_key = %metadata.key,
             isolation = ?metadata.isolation_level,
@@ -131,8 +135,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_returns_executor_result() {
-        let executor: ActionExecutor =
-            Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(input) }));
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
 
         let sandbox = InProcessSandbox::new(executor);
         let metadata = test_metadata();
@@ -140,7 +145,10 @@ mod tests {
         let ctx = test_context(vec![]);
 
         let result = sandbox.execute(ctx, &metadata, input.clone()).await;
-        assert_eq!(result.unwrap(), input);
+        match result.unwrap() {
+            ActionResult::Success { output } => assert_eq!(output, input),
+            other => panic!("expected Success, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -163,7 +171,9 @@ mod tests {
     #[tokio::test]
     async fn execute_checks_cancellation() {
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, _input| {
-            Box::pin(async move { Ok(serde_json::json!("should not reach")) })
+            Box::pin(
+                async move { Ok(ActionResult::success(serde_json::json!("should not reach"))) },
+            )
         });
 
         let sandbox = InProcessSandbox::new(executor);

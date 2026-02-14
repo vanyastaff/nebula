@@ -5,6 +5,7 @@
 //! on the port, not on a concrete sandbox implementation.
 
 use async_trait::async_trait;
+use nebula_action::result::ActionResult;
 use nebula_action::{ActionError, ActionMetadata, SandboxedContext};
 
 /// Port trait for executing actions within an isolation boundary.
@@ -22,5 +23,5 @@ pub trait SandboxRunner: Send + Sync {
         context: SandboxedContext,
         metadata: &ActionMetadata,
         input: serde_json::Value,
-    ) -> Result<serde_json::Value, ActionError>;
+    ) -> Result<ActionResult<serde_json::Value>, ActionError>;
 }

@@ -11,6 +11,7 @@ use std::time::Instant;
 use dashmap::DashMap;
 use nebula_action::ExecutionBudget;
 use nebula_action::context::ActionContext;
+use nebula_action::result::ActionResult;
 use nebula_core::id::{ActionId, ExecutionId, NodeId, WorkflowId};
 use nebula_core::scope::ScopeLevel;
 use nebula_execution::ExecutionStatus;
@@ -238,7 +239,7 @@ impl WorkflowEngine {
         execution_id: ExecutionId,
         workflow_id: WorkflowId,
         input: &serde_json::Value,
-    ) -> JoinSet<(NodeId, Result<serde_json::Value, EngineError>)> {
+    ) -> JoinSet<(NodeId, Result<ActionResult<serde_json::Value>, EngineError>)> {
         let mut join_set = JoinSet::new();
 
         for &node_id in group {
@@ -337,7 +338,7 @@ struct NodeTask {
 
 impl NodeTask {
     /// Execute this node: acquire semaphore, check cancellation, run action.
-    async fn run(self) -> (NodeId, Result<serde_json::Value, EngineError>) {
+    async fn run(self) -> (NodeId, Result<ActionResult<serde_json::Value>, EngineError>) {
         let _permit = self.sem.acquire().await.expect("semaphore closed");
 
         if self.cancel.is_cancelled() {
@@ -358,9 +359,12 @@ impl NodeTask {
             .await;
 
         match result {
-            Ok(output) => {
-                self.outputs.insert(self.node_id, output.clone());
-                (self.node_id, Ok(output))
+            Ok(action_result) => {
+                // Extract the primary output for downstream node input resolution.
+                if let Some(output) = extract_primary_output(&action_result) {
+                    self.outputs.insert(self.node_id, output);
+                }
+                (self.node_id, Ok(action_result))
             }
             Err(e) => (self.node_id, Err(EngineError::Runtime(e))),
         }
@@ -371,13 +375,13 @@ impl NodeTask {
 ///
 /// Returns `Some((node_id, error))` if a node failed, `None` if all succeeded.
 async fn collect_level_results(
-    join_set: &mut JoinSet<(NodeId, Result<serde_json::Value, EngineError>)>,
+    join_set: &mut JoinSet<(NodeId, Result<ActionResult<serde_json::Value>, EngineError>)>,
     exec_state: &mut ExecutionState,
     cancel_token: &CancellationToken,
 ) -> Option<(NodeId, String)> {
     while let Some(join_result) = join_set.join_next().await {
         match join_result {
-            Ok((node_id, Ok(_))) => {
+            Ok((node_id, Ok(_action_result))) => {
                 mark_node_completed(exec_state, node_id);
             }
             Ok((node_id, Err(ref err))) => {
@@ -455,16 +459,32 @@ fn resolve_node_input(
     serde_json::Value::Object(merged)
 }
 
+/// Extract the primary output value from an ActionResult for downstream input resolution.
+fn extract_primary_output(result: &ActionResult<serde_json::Value>) -> Option<serde_json::Value> {
+    match result {
+        ActionResult::Success { output } => Some(output.clone()),
+        ActionResult::Skip { output, .. } => output.clone(),
+        ActionResult::Continue { output, .. } => Some(output.clone()),
+        ActionResult::Break { output, .. } => Some(output.clone()),
+        ActionResult::Branch { output, .. } => Some(output.clone()),
+        ActionResult::Route { data, .. } => Some(data.clone()),
+        ActionResult::MultiOutput { main_output, .. } => main_output.clone(),
+        ActionResult::Wait { partial_output, .. } => partial_output.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use nebula_action::ActionError;
+    use nebula_action::ParameterCollection;
     use nebula_action::capability::IsolationLevel;
-    use nebula_action::metadata::ActionMetadata;
+    use nebula_action::handler::InternalHandler;
+    use nebula_action::metadata::{ActionMetadata, ActionType};
+    use nebula_action::result::ActionResult;
     use nebula_core::Version;
     use nebula_core::id::ActionId;
     use nebula_runtime::DataPassingPolicy;
-    use nebula_runtime::handler::ActionHandler;
     use nebula_runtime::registry::ActionRegistry;
     use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};
     use nebula_workflow::{Connection, NodeDefinition, WorkflowConfig, WorkflowDefinition};
@@ -476,16 +496,22 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl ActionHandler for EchoHandler {
+    impl InternalHandler for EchoHandler {
         async fn execute(
             &self,
             input: serde_json::Value,
             _ctx: ActionContext,
-        ) -> Result<serde_json::Value, ActionError> {
-            Ok(input)
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            Ok(ActionResult::success(input))
         }
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
+        }
+        fn action_type(&self) -> ActionType {
+            ActionType::Process
+        }
+        fn parameters(&self) -> Option<&ParameterCollection> {
+            None
         }
     }
 
@@ -494,16 +520,22 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl ActionHandler for FailHandler {
+    impl InternalHandler for FailHandler {
         async fn execute(
             &self,
             _input: serde_json::Value,
             _ctx: ActionContext,
-        ) -> Result<serde_json::Value, ActionError> {
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             Err(ActionError::fatal("intentional failure"))
         }
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
+        }
+        fn action_type(&self) -> ActionType {
+            ActionType::Process
+        }
+        fn parameters(&self) -> Option<&ParameterCollection> {
+            None
         }
     }
 
@@ -532,8 +564,9 @@ mod tests {
     fn make_engine(
         registry: Arc<ActionRegistry>,
     ) -> (WorkflowEngine, Arc<EventBus>, Arc<MetricsRegistry>) {
-        let executor: ActionExecutor =
-            Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(input) }));
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let event_bus = Arc::new(EventBus::new(64));
         let metrics = Arc::new(MetricsRegistry::new());

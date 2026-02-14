@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
+use nebula_action::handler::InternalHandler;
+
 use crate::error::RuntimeError;
-use crate::handler::ActionHandler;
 
 /// Thread-safe registry of action handlers.
 ///
@@ -22,7 +23,7 @@ use crate::handler::ActionHandler;
 /// let handler = registry.get("http.request").unwrap();
 /// ```
 pub struct ActionRegistry {
-    handlers: DashMap<String, Arc<dyn ActionHandler>>,
+    handlers: DashMap<String, Arc<dyn InternalHandler>>,
 }
 
 impl ActionRegistry {
@@ -37,14 +38,28 @@ impl ActionRegistry {
     /// Register an action handler.
     ///
     /// If a handler with the same key already exists, it is replaced.
-    pub fn register(&self, handler: Arc<dyn ActionHandler>) {
+    pub fn register(&self, handler: Arc<dyn InternalHandler>) {
         let key = handler.metadata().key.clone();
         tracing::info!(action_key = %key, "registered action handler");
         self.handlers.insert(key, handler);
     }
 
+    /// Register a typed [`ProcessAction`](nebula_action::ProcessAction) directly.
+    ///
+    /// Wraps the action in a [`ProcessActionAdapter`](nebula_action::ProcessActionAdapter)
+    /// automatically.
+    pub fn register_process<A>(&self, action: A)
+    where
+        A: nebula_action::ProcessAction + Send + Sync + 'static,
+        A::Input: serde::de::DeserializeOwned + Send + Sync + 'static,
+        A::Output: serde::Serialize + Send + Sync + 'static,
+    {
+        let adapter = nebula_action::ProcessActionAdapter::new(action);
+        self.register(Arc::new(adapter));
+    }
+
     /// Look up an action handler by key.
-    pub fn get(&self, key: &str) -> Result<Arc<dyn ActionHandler>, RuntimeError> {
+    pub fn get(&self, key: &str) -> Result<Arc<dyn InternalHandler>, RuntimeError> {
         self.handlers
             .get(key)
             .map(|entry| entry.value().clone())
@@ -60,7 +75,7 @@ impl ActionRegistry {
     }
 
     /// Remove a handler by key. Returns the removed handler, if any.
-    pub fn remove(&self, key: &str) -> Option<Arc<dyn ActionHandler>> {
+    pub fn remove(&self, key: &str) -> Option<Arc<dyn InternalHandler>> {
         self.handlers.remove(key).map(|(_, v)| v)
     }
 
@@ -92,7 +107,11 @@ impl Default for ActionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_action::{ActionError, ActionMetadata};
+    use nebula_action::ParameterCollection;
+    use nebula_action::context::ActionContext;
+    use nebula_action::error::ActionError;
+    use nebula_action::metadata::{ActionMetadata, ActionType};
+    use nebula_action::result::ActionResult;
 
     /// Minimal test handler that echoes input.
     struct EchoHandler {
@@ -108,17 +127,25 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl ActionHandler for EchoHandler {
+    impl InternalHandler for EchoHandler {
         async fn execute(
             &self,
             input: serde_json::Value,
-            _context: nebula_action::context::ActionContext,
-        ) -> Result<serde_json::Value, ActionError> {
-            Ok(input)
+            _ctx: ActionContext,
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            Ok(ActionResult::success(input))
         }
 
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
+        }
+
+        fn action_type(&self) -> ActionType {
+            ActionType::Process
+        }
+
+        fn parameters(&self) -> Option<&ParameterCollection> {
+            None
         }
     }
 

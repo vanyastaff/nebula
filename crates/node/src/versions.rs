@@ -15,12 +15,13 @@ use crate::node::Node;
 /// have a matching key.
 ///
 /// ```
-/// use nebula_node::{NodeVersions, NodeMetadata, Node};
+/// use nebula_node::{NodeVersions, NodeMetadata, Node, NodeComponents};
 ///
 /// #[derive(Debug)]
 /// struct MyNode(NodeMetadata);
 /// impl Node for MyNode {
 ///     fn metadata(&self) -> &NodeMetadata { &self.0 }
+///     fn register(&self, _components: &mut NodeComponents) {}
 /// }
 ///
 /// let mut versions = NodeVersions::new();
@@ -153,6 +154,8 @@ mod tests {
         fn metadata(&self) -> &NodeMetadata {
             &self.0
         }
+
+        fn register(&self, _components: &mut crate::NodeComponents) {}
     }
 
     fn stub(key: &str, version: u32) -> StubNode {

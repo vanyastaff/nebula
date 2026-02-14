@@ -6,14 +6,13 @@
 //! "Slack", "HTTP Request", or "PostgreSQL". Each node bundles:
 //!
 //! - [`NodeMetadata`] — key, name, version, group, icon, docs URL
-//! - Parameter schemas ([`ParameterCollection`])
-//! - Credential requirements ([`CredentialDescription`])
-//! - Action references (action keys that the engine resolves to [`ActionHandler`]s)
+//! - [`NodeComponents`] — registered actions and credential requirements
 //!
 //! ## Core Types
 //!
 //! - [`Node`] — base trait every node implements
 //! - [`NodeMetadata`] — static descriptor with builder API
+//! - [`NodeComponents`] — runtime component collection (actions, credentials)
 //! - [`NodeType`] — enum wrapping a single node or a versioned set
 //! - [`NodeVersions`] — multi-version container keyed by `u32`
 //! - [`NodeRegistry`] — in-memory registry mapping [`NodeKey`] → [`NodeType`]
@@ -28,6 +27,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+mod components;
 mod error;
 #[cfg(feature = "dynamic-loading")]
 mod loader;
@@ -39,6 +39,7 @@ mod versions;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
+pub use components::NodeComponents;
 pub use error::NodeError;
 #[cfg(feature = "dynamic-loading")]
 pub use loader::{NodeLoadError, NodeLoader};

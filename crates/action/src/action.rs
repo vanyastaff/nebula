@@ -1,4 +1,5 @@
 use crate::metadata::{ActionMetadata, ActionType};
+use nebula_parameter::collection::ParameterCollection;
 
 /// Base trait for all action types.
 ///
@@ -16,4 +17,12 @@ pub trait Action: Send + Sync + 'static {
 
     /// The kind of action (Process, Stateful, Trigger).
     fn action_type(&self) -> ActionType;
+
+    /// User-facing parameter definitions, if any.
+    ///
+    /// Defaults to the parameters from metadata. Override if parameters
+    /// are defined separately from metadata.
+    fn parameters(&self) -> Option<&ParameterCollection> {
+        self.metadata().parameters.as_ref()
+    }
 }

@@ -1,8 +1,6 @@
 //! Node metadata and builder.
 
 use nebula_core::NodeKey;
-use nebula_credential::CredentialDescription;
-use nebula_parameter::collection::ParameterCollection;
 use serde::{Deserialize, Serialize};
 
 use crate::NodeError;
@@ -40,12 +38,6 @@ pub struct NodeMetadata {
     icon_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     documentation_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    parameters: Option<ParameterCollection>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    credentials: Vec<CredentialDescription>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    action_keys: Vec<String>,
 }
 
 fn default_version() -> u32 {
@@ -64,9 +56,6 @@ impl NodeMetadata {
             icon: None,
             icon_url: None,
             documentation_url: None,
-            parameters: None,
-            credentials: Vec::new(),
-            action_keys: Vec::new(),
         }
     }
 
@@ -117,24 +106,6 @@ impl NodeMetadata {
     pub fn documentation_url(&self) -> Option<&str> {
         self.documentation_url.as_deref()
     }
-
-    /// User-facing parameter definitions, if any.
-    #[inline]
-    pub fn parameters(&self) -> Option<&ParameterCollection> {
-        self.parameters.as_ref()
-    }
-
-    /// Credential descriptions required by this node.
-    #[inline]
-    pub fn credentials(&self) -> &[CredentialDescription] {
-        &self.credentials
-    }
-
-    /// Action keys this node exposes.
-    #[inline]
-    pub fn action_keys(&self) -> &[String] {
-        &self.action_keys
-    }
 }
 
 /// Builder for [`NodeMetadata`].
@@ -147,9 +118,6 @@ pub struct NodeMetadataBuilder {
     icon: Option<String>,
     icon_url: Option<String>,
     documentation_url: Option<String>,
-    parameters: Option<ParameterCollection>,
-    credentials: Vec<CredentialDescription>,
-    action_keys: Vec<String>,
 }
 
 impl NodeMetadataBuilder {
@@ -189,36 +157,6 @@ impl NodeMetadataBuilder {
         self
     }
 
-    /// Set user-facing parameter definitions.
-    pub fn parameters(mut self, params: ParameterCollection) -> Self {
-        self.parameters = Some(params);
-        self
-    }
-
-    /// Add a credential description.
-    pub fn credential(mut self, cred: CredentialDescription) -> Self {
-        self.credentials.push(cred);
-        self
-    }
-
-    /// Set all credential descriptions at once.
-    pub fn credentials(mut self, creds: Vec<CredentialDescription>) -> Self {
-        self.credentials = creds;
-        self
-    }
-
-    /// Add an action key this node exposes.
-    pub fn action_key(mut self, key: impl Into<String>) -> Self {
-        self.action_keys.push(key.into());
-        self
-    }
-
-    /// Set all action keys at once.
-    pub fn action_keys(mut self, keys: Vec<String>) -> Self {
-        self.action_keys = keys;
-        self
-    }
-
     /// Validate and build the metadata.
     pub fn build(self) -> Result<NodeMetadata, NodeError> {
         let key: NodeKey = self.key.parse().map_err(NodeError::InvalidKey)?;
@@ -232,9 +170,6 @@ impl NodeMetadataBuilder {
             icon: self.icon,
             icon_url: self.icon_url,
             documentation_url: self.documentation_url,
-            parameters: self.parameters,
-            credentials: self.credentials,
-            action_keys: self.action_keys,
         })
     }
 }
@@ -262,8 +197,6 @@ mod tests {
             .icon("globe")
             .icon_url("https://example.com/icon.png")
             .documentation_url("https://docs.example.com/http")
-            .action_key("http.get")
-            .action_key("http.post")
             .build()
             .unwrap();
 
@@ -271,7 +204,10 @@ mod tests {
         assert_eq!(meta.group(), &["network", "api"]);
         assert_eq!(meta.icon(), Some("globe"));
         assert_eq!(meta.icon_url(), Some("https://example.com/icon.png"));
-        assert_eq!(meta.action_keys(), &["http.get", "http.post"]);
+        assert_eq!(
+            meta.documentation_url(),
+            Some("https://docs.example.com/http")
+        );
     }
 
     #[test]

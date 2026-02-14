@@ -55,6 +55,9 @@
 
 /// Base action trait defining identity and metadata.
 pub mod action;
+/// Adapter implementations bridging typed action traits to [`InternalHandler`].
+#[doc(hidden)]
+pub mod adapters;
 /// Execution budget and data passing policies.
 pub mod budget;
 /// Capability declarations and isolation levels for sandboxed execution.
@@ -63,10 +66,15 @@ pub mod capability;
 pub mod context;
 /// Error types distinguishing retryable from fatal failures.
 pub mod error;
+/// Type-erased internal handler for action execution (runtime use only).
+#[doc(hidden)]
+pub mod handler;
 /// Static metadata, versioning, and execution mode descriptors.
 pub mod metadata;
 /// Output data representations (inline JSON and blob references).
 pub mod output;
+/// Convenience re-exports for action authors.
+pub mod prelude;
 /// Action registry for type-erased discovery and lookup.
 pub mod registry;
 /// Execution result types carrying data and flow-control intent.
@@ -98,6 +106,11 @@ pub use types::trigger::{TriggerEvent, TriggerKind, WebhookRequest};
 pub use budget::{DataPassingPolicy, ExecutionBudget, LargeDataStrategy};
 pub use registry::ActionRegistry;
 pub use sandbox::SandboxedContext;
+
+#[doc(hidden)]
+pub use adapters::ProcessActionAdapter;
+#[doc(hidden)]
+pub use handler::InternalHandler;
 
 // Re-export parameter types so action authors can define parameters without
 // depending on `nebula-parameter` directly.

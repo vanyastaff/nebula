@@ -182,6 +182,61 @@ impl<T> ActionResult<T> {
     pub fn is_waiting(&self) -> bool {
         matches!(self, Self::Wait { .. })
     }
+
+    /// Transform the output value in every variant, preserving flow-control semantics.
+    ///
+    /// This is used by adapters to convert typed outputs to JSON and vice-versa.
+    pub fn map_output<U>(self, mut f: impl FnMut(T) -> U) -> ActionResult<U> {
+        match self {
+            Self::Success { output } => ActionResult::Success { output: f(output) },
+            Self::Skip { reason, output } => ActionResult::Skip {
+                reason,
+                output: output.map(&mut f),
+            },
+            Self::Continue {
+                output,
+                progress,
+                delay,
+            } => ActionResult::Continue {
+                output: f(output),
+                progress,
+                delay,
+            },
+            Self::Break { output, reason } => ActionResult::Break {
+                output: f(output),
+                reason,
+            },
+            Self::Branch {
+                selected,
+                output,
+                alternatives,
+            } => ActionResult::Branch {
+                selected,
+                output: f(output),
+                alternatives: alternatives.into_iter().map(|(k, v)| (k, f(v))).collect(),
+            },
+            Self::Route { port, data } => ActionResult::Route {
+                port,
+                data: f(data),
+            },
+            Self::MultiOutput {
+                outputs,
+                main_output,
+            } => ActionResult::MultiOutput {
+                outputs: outputs.into_iter().map(|(k, v)| (k, f(v))).collect(),
+                main_output: main_output.map(&mut f),
+            },
+            Self::Wait {
+                condition,
+                timeout,
+                partial_output,
+            } => ActionResult::Wait {
+                condition,
+                timeout,
+                partial_output: partial_output.map(&mut f),
+            },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -310,5 +365,164 @@ mod tests {
             BreakReason::Custom("done".into()),
             BreakReason::Custom("done".into())
         );
+    }
+
+    // ── map_output tests ────────────────────────────────────────────
+
+    #[test]
+    fn map_output_success() {
+        let r = ActionResult::success(5);
+        let mapped = r.map_output(|n| n * 2);
+        match mapped {
+            ActionResult::Success { output } => assert_eq!(output, 10),
+            _ => panic!("expected Success"),
+        }
+    }
+
+    #[test]
+    fn map_output_skip() {
+        let r = ActionResult::skip_with_output("skip", 3);
+        let mapped = r.map_output(|n| n.to_string());
+        match mapped {
+            ActionResult::Skip { reason, output } => {
+                assert_eq!(reason, "skip");
+                assert_eq!(output.as_deref(), Some("3"));
+            }
+            _ => panic!("expected Skip"),
+        }
+    }
+
+    #[test]
+    fn map_output_skip_none() {
+        let r: ActionResult<i32> = ActionResult::skip("no output");
+        let mapped = r.map_output(|n| n.to_string());
+        match mapped {
+            ActionResult::Skip { output, .. } => assert!(output.is_none()),
+            _ => panic!("expected Skip"),
+        }
+    }
+
+    #[test]
+    fn map_output_continue() {
+        let r: ActionResult<i32> = ActionResult::Continue {
+            output: 7,
+            progress: Some(0.5),
+            delay: Some(Duration::from_secs(1)),
+        };
+        let mapped = r.map_output(|n| n + 1);
+        match mapped {
+            ActionResult::Continue {
+                output,
+                progress,
+                delay,
+            } => {
+                assert_eq!(output, 8);
+                assert_eq!(progress, Some(0.5));
+                assert_eq!(delay, Some(Duration::from_secs(1)));
+            }
+            _ => panic!("expected Continue"),
+        }
+    }
+
+    #[test]
+    fn map_output_break() {
+        let r: ActionResult<i32> = ActionResult::Break {
+            output: 42,
+            reason: BreakReason::Completed,
+        };
+        let mapped = r.map_output(|n| format!("result:{n}"));
+        match mapped {
+            ActionResult::Break { output, reason } => {
+                assert_eq!(output, "result:42");
+                assert_eq!(reason, BreakReason::Completed);
+            }
+            _ => panic!("expected Break"),
+        }
+    }
+
+    #[test]
+    fn map_output_branch() {
+        let mut alts = HashMap::new();
+        alts.insert("a".into(), 1);
+        alts.insert("b".into(), 2);
+        let r = ActionResult::Branch {
+            selected: "a".into(),
+            output: 10,
+            alternatives: alts,
+        };
+        let mapped = r.map_output(|n| n * 10);
+        match mapped {
+            ActionResult::Branch {
+                selected,
+                output,
+                alternatives,
+            } => {
+                assert_eq!(selected, "a");
+                assert_eq!(output, 100);
+                assert_eq!(alternatives.get("a"), Some(&10));
+                assert_eq!(alternatives.get("b"), Some(&20));
+            }
+            _ => panic!("expected Branch"),
+        }
+    }
+
+    #[test]
+    fn map_output_route() {
+        let r = ActionResult::Route {
+            port: "out".into(),
+            data: 99,
+        };
+        let mapped = r.map_output(|n| n as f64);
+        match mapped {
+            ActionResult::Route { port, data } => {
+                assert_eq!(port, "out");
+                assert_eq!(data, 99.0);
+            }
+            _ => panic!("expected Route"),
+        }
+    }
+
+    #[test]
+    fn map_output_multi_output() {
+        let mut outputs = HashMap::new();
+        outputs.insert("x".into(), 1);
+        let r = ActionResult::MultiOutput {
+            outputs,
+            main_output: Some(0),
+        };
+        let mapped = r.map_output(|n| n + 100);
+        match mapped {
+            ActionResult::MultiOutput {
+                outputs,
+                main_output,
+            } => {
+                assert_eq!(outputs.get("x"), Some(&101));
+                assert_eq!(main_output, Some(100));
+            }
+            _ => panic!("expected MultiOutput"),
+        }
+    }
+
+    #[test]
+    fn map_output_wait() {
+        let r: ActionResult<String> = ActionResult::Wait {
+            condition: WaitCondition::Duration {
+                duration: Duration::from_secs(60),
+            },
+            timeout: Some(Duration::from_secs(300)),
+            partial_output: Some("partial".into()),
+        };
+        let mapped = r.map_output(|s| s.len());
+        match mapped {
+            ActionResult::Wait {
+                partial_output,
+                timeout,
+                ..
+            } => {
+                assert_eq!(partial_output, Some(7));
+                assert_eq!(timeout, Some(Duration::from_secs(300)));
+            }
+            _ => panic!("expected Wait"),
+        }
     }
 }

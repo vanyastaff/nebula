@@ -120,6 +120,10 @@ impl Node for ArcNode {
     fn metadata(&self) -> &crate::NodeMetadata {
         self.0.metadata()
     }
+
+    fn register(&self, components: &mut crate::NodeComponents) {
+        self.0.register(components)
+    }
 }
 
 #[cfg(test)]
@@ -133,6 +137,8 @@ mod tests {
         fn metadata(&self) -> &NodeMetadata {
             &self.0
         }
+
+        fn register(&self, _components: &mut crate::NodeComponents) {}
     }
 
     fn stub(key: &str, version: u32) -> StubNode {
