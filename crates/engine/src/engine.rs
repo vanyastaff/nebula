@@ -24,6 +24,8 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use nebula_node::NodeRegistry;
+
 use crate::error::EngineError;
 use crate::result::ExecutionResult;
 
@@ -42,6 +44,8 @@ pub struct WorkflowEngine {
     metrics: Arc<MetricsRegistry>,
     /// Maps action IDs (from node definitions) to registry keys.
     action_keys: HashMap<ActionId, String>,
+    /// Node registry for node-level metadata and versioning.
+    node_registry: NodeRegistry,
 }
 
 impl WorkflowEngine {
@@ -56,6 +60,7 @@ impl WorkflowEngine {
             event_bus,
             metrics,
             action_keys: HashMap::new(),
+            node_registry: NodeRegistry::new(),
         }
     }
 
@@ -65,6 +70,16 @@ impl WorkflowEngine {
     /// runtime's action registry when executing a node.
     pub fn map_action(&mut self, action_id: ActionId, key: impl Into<String>) {
         self.action_keys.insert(action_id, key.into());
+    }
+
+    /// Access the node registry.
+    pub fn node_registry(&self) -> &NodeRegistry {
+        &self.node_registry
+    }
+
+    /// Mutable access to the node registry.
+    pub fn node_registry_mut(&mut self) -> &mut NodeRegistry {
+        &mut self.node_registry
     }
 
     /// Resolve the action registry key for a given action ID.

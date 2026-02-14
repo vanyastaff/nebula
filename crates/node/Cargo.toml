@@ -1,0 +1,34 @@
+[package]
+name = "nebula-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description = "Node type system with versioning, registry, and dynamic loading"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[features]
+default = []
+dynamic-loading = ["dep:libloading"]
+
+[dependencies]
+nebula-core = { path = "../core" }
+nebula-action = { path = "../action" }
+nebula-credential = { path = "../credential" }
+nebula-parameter = { path = "../parameter" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Optional: dynamic library loading
+libloading = { version = "0.8", optional = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+async-trait = { workspace = true }

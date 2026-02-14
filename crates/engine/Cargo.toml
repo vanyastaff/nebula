@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 nebula-core = { path = "../core" }
 nebula-action = { path = "../action" }
+nebula-node = { path = "../node" }
 nebula-workflow = { path = "../workflow" }
 nebula-execution = { path = "../execution" }
 nebula-runtime = { path = "../runtime" }
