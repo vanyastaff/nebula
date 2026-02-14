@@ -3615,6 +3615,18 @@ dependencies = [
 [[package]]
 name = "nebula-action"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "nebula-core",
+ "parking_lot",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-util",
+]
 
 [[package]]
 name = "nebula-config"
