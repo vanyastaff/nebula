@@ -52,9 +52,9 @@ pub type Result<T> = std::result::Result<T, error::CoreError>;
 /// Common prelude for Nebula crates
 pub mod prelude {
     pub use super::{
-        CoreError, CredentialId, ExecutionId, HasContext, Identifiable, NodeId, OrganizationId,
-        ProjectId, ProjectType, Result, RoleId, RoleScope, ScopeLevel, Scoped, TenantId, UserId,
-        UuidParseError, WorkflowId,
+        CoreError, CredentialId, ExecutionId, HasContext, Identifiable, InterfaceVersion, NodeId,
+        OrganizationId, ProjectId, ProjectType, Result, RoleId, RoleScope, ScopeLevel, Scoped,
+        TenantId, UserId, UuidParseError, WorkflowId,
     };
 
     pub use crate::keys::*;

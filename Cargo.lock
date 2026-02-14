@@ -1985,6 +1985,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fixedbitset"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
+
+[[package]]
 name = "flate2"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3799,6 +3805,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-ports"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "nebula-action",
+ "nebula-core",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+]
+
+[[package]]
 name = "nebula-resilience"
 version = "0.1.0"
 dependencies = [
@@ -3898,6 +3918,20 @@ dependencies = [
  "tokio-test",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "nebula-workflow"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "nebula-core",
+ "petgraph",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
 ]
 
 [[package]]
@@ -4606,6 +4640,16 @@ checksum = "602113b5b5e8621770cfd490cfd90b9f84ab29bd2b0e49ad83eb6d186cef2365"
 dependencies = [
  "pest",
  "sha2",
+]
+
+[[package]]
+name = "petgraph"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3672b37090dbd86368a4145bc067582552b29c27377cad4e0a306c97f9bd7772"
+dependencies = [
+ "fixedbitset",
+ "indexmap 2.12.1",
 ]
 
 [[package]]
