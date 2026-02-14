@@ -6,9 +6,10 @@
 //! - Cached combinator with various hit rates
 //! - Nested compositions
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_validator::core::{Validate, ValidateExt};
 use nebula_validator::validators::string::*;
+use std::hint::black_box;
 
 // ============================================================================
 // BASIC COMBINATORS
@@ -269,7 +270,7 @@ fn bench_cached_capacity(c: &mut Criterion) {
                 b.iter(|| {
                     for i in 0..10 {
                         let input = format!("test{}", i);
-                        validator.validate(black_box(&input));
+                        let _re = validator.validate(black_box(&input));
                     }
                 })
             },

@@ -174,7 +174,7 @@ fn concurrent_benchmarks() {
     });
 
     // 2 threads
-    let duration = benchmark("concurrent/2_threads", || {
+    let _duration = benchmark("concurrent/2_threads", || {
         let handles: Vec<_> = (0..2)
             .map(|_| {
                 let engine = Arc::clone(&engine);
@@ -193,7 +193,7 @@ fn concurrent_benchmarks() {
     });
 
     // 8 threads
-    let duration = benchmark("concurrent/8_threads", || {
+    let _duration = benchmark("concurrent/8_threads", || {
         let handles: Vec<_> = (0..8)
             .map(|_| {
                 let engine = Arc::clone(&engine);
