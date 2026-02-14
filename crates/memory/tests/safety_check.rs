@@ -1,5 +1,7 @@
 use nebula_memory::pool::{ObjectPool, PoolConfig, Poolable};
 
+#[derive(Debug)]
+#[allow(dead_code)]
 struct TestItem {
     id: usize,
 }

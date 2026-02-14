@@ -365,6 +365,8 @@ mod tests {
         logger.log(&event);
     }
 
+    #[derive(Debug)]
+    #[allow(dead_code)]
     struct TestLogger {
         pub logs: Vec<MemoryEvent>,
     }

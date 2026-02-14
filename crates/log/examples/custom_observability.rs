@@ -120,6 +120,7 @@ impl ObservabilityEvent for UserActionEvent {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum HealthStatus {
     Healthy,
     Degraded,
@@ -177,6 +178,7 @@ impl ObservabilityEvent for BusinessMetricEvent {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum ErrorSeverity {
     Low,
     Medium,
