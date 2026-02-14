@@ -56,6 +56,20 @@ pub enum ValidationRule {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
     },
+
+    /// Collection must contain at least `count` items.
+    MinItems {
+        count: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+
+    /// Collection must contain at most `count` items.
+    MaxItems {
+        count: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
 }
 
 impl ValidationRule {
@@ -110,6 +124,24 @@ impl ValidationRule {
     #[must_use]
     pub fn range(min: f64, max: f64) -> Vec<Self> {
         vec![Self::min(min), Self::max(max)]
+    }
+
+    /// Require a minimum number of items in a collection.
+    #[must_use]
+    pub fn min_items(count: usize) -> Self {
+        Self::MinItems {
+            count,
+            message: None,
+        }
+    }
+
+    /// Require a maximum number of items in a collection.
+    #[must_use]
+    pub fn max_items(count: usize) -> Self {
+        Self::MaxItems {
+            count,
+            message: None,
+        }
     }
 }
 
@@ -243,6 +275,55 @@ mod tests {
 
         let json = serde_json::to_string(&rule).unwrap();
         assert!(json.contains("\"rule\":\"custom\""));
+
+        let deserialized: ValidationRule = serde_json::from_str(&json).unwrap();
+        assert_eq!(rule, deserialized);
+    }
+
+    #[test]
+    fn min_items_constructor() {
+        let rule = ValidationRule::min_items(2);
+        match &rule {
+            ValidationRule::MinItems { count, message } => {
+                assert_eq!(*count, 2);
+                assert!(message.is_none());
+            }
+            _ => panic!("expected MinItems"),
+        }
+    }
+
+    #[test]
+    fn max_items_constructor() {
+        let rule = ValidationRule::max_items(10);
+        match &rule {
+            ValidationRule::MaxItems { count, message } => {
+                assert_eq!(*count, 10);
+                assert!(message.is_none());
+            }
+            _ => panic!("expected MaxItems"),
+        }
+    }
+
+    #[test]
+    fn serde_min_items_round_trip() {
+        let rule = ValidationRule::MinItems {
+            count: 1,
+            message: Some("need at least one".into()),
+        };
+
+        let json = serde_json::to_string(&rule).unwrap();
+        assert!(json.contains("\"rule\":\"min_items\""));
+        assert!(json.contains("\"count\":1"));
+
+        let deserialized: ValidationRule = serde_json::from_str(&json).unwrap();
+        assert_eq!(rule, deserialized);
+    }
+
+    #[test]
+    fn serde_max_items_round_trip() {
+        let rule = ValidationRule::max_items(50);
+        let json = serde_json::to_string(&rule).unwrap();
+        assert!(json.contains("\"rule\":\"max_items\""));
 
         let deserialized: ValidationRule = serde_json::from_str(&json).unwrap();
         assert_eq!(rule, deserialized);

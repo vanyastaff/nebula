@@ -22,6 +22,11 @@ pub enum ParameterKind {
     Color,
     Hidden,
     Notice,
+    Object,
+    List,
+    Mode,
+    Group,
+    Expirable,
 }
 
 /// Capabilities that a parameter kind may support.
@@ -96,6 +101,20 @@ impl ParameterKind {
             ],
             Self::Hidden => &[HasValue, Serializable],
             Self::Notice => &[Displayable],
+            Self::Object => &[
+                HasValue, Container, Displayable, Requirable, Validatable, Serializable,
+            ],
+            Self::List => &[
+                HasValue, Container, Editable, Displayable, Requirable, Validatable, Interactive,
+                Serializable,
+            ],
+            Self::Mode => &[
+                HasValue, Container, Editable, Displayable, Requirable, Interactive, Serializable,
+            ],
+            Self::Group => &[Container, Displayable],
+            Self::Expirable => &[
+                HasValue, Container, Displayable, Requirable, Validatable, Serializable,
+            ],
         }
     }
 
@@ -186,6 +205,11 @@ impl ParameterKind {
             Self::Color => "color",
             Self::Hidden => "hidden",
             Self::Notice => "notice",
+            Self::Object => "object",
+            Self::List => "list",
+            Self::Mode => "mode",
+            Self::Group => "group",
+            Self::Expirable => "expirable",
         }
     }
 
@@ -201,6 +225,11 @@ impl ParameterKind {
             Self::DateTime | Self::Date | Self::Time => "string",
             Self::Hidden => "any",
             Self::Notice => "none",
+            Self::Object => "object",
+            Self::List => "array",
+            Self::Mode => "object",
+            Self::Group => "none",
+            Self::Expirable => "any",
         }
     }
 }
@@ -226,6 +255,11 @@ mod tests {
             ParameterKind::Color,
             ParameterKind::Hidden,
             ParameterKind::Notice,
+            ParameterKind::Object,
+            ParameterKind::List,
+            ParameterKind::Mode,
+            ParameterKind::Group,
+            ParameterKind::Expirable,
         ];
 
         for kind in &kinds {
@@ -311,6 +345,11 @@ mod tests {
             ParameterKind::Color,
             ParameterKind::Hidden,
             ParameterKind::Notice,
+            ParameterKind::Object,
+            ParameterKind::List,
+            ParameterKind::Mode,
+            ParameterKind::Group,
+            ParameterKind::Expirable,
         ];
 
         for kind in &kinds {
@@ -325,7 +364,7 @@ mod tests {
 
     #[test]
     fn value_types_are_valid() {
-        let valid = ["string", "number", "boolean", "any", "array", "none"];
+        let valid = ["string", "number", "boolean", "any", "array", "none", "object"];
         let kinds = [
             ParameterKind::Text,
             ParameterKind::Textarea,
@@ -341,6 +380,11 @@ mod tests {
             ParameterKind::Color,
             ParameterKind::Hidden,
             ParameterKind::Notice,
+            ParameterKind::Object,
+            ParameterKind::List,
+            ParameterKind::Mode,
+            ParameterKind::Group,
+            ParameterKind::Expirable,
         ];
 
         for kind in &kinds {
@@ -386,5 +430,42 @@ mod tests {
         assert!(ParameterKind::Select.has_capability(ParameterCapability::Interactive));
         assert!(ParameterKind::MultiSelect.has_capability(ParameterCapability::Interactive));
         assert!(ParameterKind::Code.has_capability(ParameterCapability::Interactive));
+    }
+
+    #[test]
+    fn all_container_kinds_are_containers() {
+        let containers = [
+            ParameterKind::Object,
+            ParameterKind::List,
+            ParameterKind::Mode,
+            ParameterKind::Group,
+            ParameterKind::Expirable,
+        ];
+
+        for kind in &containers {
+            assert!(
+                kind.is_container(),
+                "{:?} should be a container",
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn group_has_no_value() {
+        let group = ParameterKind::Group;
+        assert!(!group.has_value());
+        assert!(group.is_container());
+        assert!(group.is_displayable());
+        assert_eq!(group.value_type(), "none");
+    }
+
+    #[test]
+    fn container_value_types() {
+        assert_eq!(ParameterKind::Object.value_type(), "object");
+        assert_eq!(ParameterKind::List.value_type(), "array");
+        assert_eq!(ParameterKind::Mode.value_type(), "object");
+        assert_eq!(ParameterKind::Group.value_type(), "none");
+        assert_eq!(ParameterKind::Expirable.value_type(), "any");
     }
 }
