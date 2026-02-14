@@ -1,0 +1,20 @@
+[package]
+name = "nebula-parameter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description = "Parameter definition system for Nebula workflow nodes"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

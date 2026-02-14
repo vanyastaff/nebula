@@ -1,4 +1,4 @@
-use paramdef::Schema;
+use nebula_parameter::collection::ParameterCollection;
 use serde::{Deserialize, Serialize};
 
 /// Describes a credential type (OAuth2, API Key, Database, etc.)
@@ -14,7 +14,13 @@ use serde::{Deserialize, Serialize};
 ///
 /// ```
 /// use nebula_credential::core::CredentialDescription;
-/// use paramdef::Schema;
+/// use nebula_parameter::collection::ParameterCollection;
+/// use nebula_parameter::def::ParameterDef;
+/// use nebula_parameter::types::{TextParameter, SecretParameter};
+///
+/// let properties = ParameterCollection::new()
+///     .with(ParameterDef::Text(TextParameter::new("client_id", "Client ID")))
+///     .with(ParameterDef::Secret(SecretParameter::new("client_secret", "Client Secret")));
 ///
 /// let github_oauth2 = CredentialDescription {
 ///     key: "github_oauth2".to_string(),
@@ -23,7 +29,7 @@ use serde::{Deserialize, Serialize};
 ///     icon: Some("github".to_string()),
 ///     icon_url: None,
 ///     documentation_url: Some("https://docs.github.com/en/apps/oauth-apps".to_string()),
-///     properties: Schema::default(),
+///     properties,
 /// };
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,15 +54,16 @@ pub struct CredentialDescription {
     /// Optional documentation URL
     #[serde(skip_serializing_if = "Option::is_none")]
     pub documentation_url: Option<String>,
-    // Parameter definitions - what fields this credential type requires
-    //
-    // Uses paramdef::Schema for type-safe parameter definitions.
-    //
-    // Example for GitHub OAuth2:
-    // - client_id: String (required)
-    // - client_secret: SecretString (required, sensitive)
-    // - scopes: Array<String> (optional)
-    // pub properties: Schema, // Disable till i update paramdef create enable serde
+
+    /// Parameter definitions - what fields this credential type requires.
+    ///
+    /// Uses `ParameterCollection` for type-safe parameter definitions.
+    ///
+    /// Example for GitHub OAuth2:
+    /// - client_id: Text (required)
+    /// - client_secret: Secret (required, sensitive)
+    /// - scopes: MultiSelect (optional)
+    pub properties: ParameterCollection,
 }
 
 impl CredentialDescription {
@@ -75,7 +82,7 @@ pub struct CredentialDescriptionBuilder {
     icon: Option<String>,
     icon_url: Option<String>,
     documentation_url: Option<String>,
-    properties: Option<Schema>,
+    properties: Option<ParameterCollection>,
 }
 
 impl CredentialDescriptionBuilder {
@@ -116,7 +123,7 @@ impl CredentialDescriptionBuilder {
     }
 
     /// Set the parameter schema
-    pub fn properties(mut self, properties: Schema) -> Self {
+    pub fn properties(mut self, properties: ParameterCollection) -> Self {
         self.properties = Some(properties);
         self
     }
@@ -125,7 +132,7 @@ impl CredentialDescriptionBuilder {
     ///
     /// # Errors
     ///
-    /// Returns an error if required fields (key, name, description) are not set
+    /// Returns an error if required fields (key, name, description, properties) are not set
     pub fn build(self) -> Result<CredentialDescription, String> {
         Ok(CredentialDescription {
             key: self.key.ok_or("key is required")?,
@@ -134,7 +141,7 @@ impl CredentialDescriptionBuilder {
             icon: self.icon,
             icon_url: self.icon_url,
             documentation_url: self.documentation_url,
-            // properties: self.properties.ok_or("properties is required")?,
+            properties: self.properties.ok_or("properties is required")?,
         })
     }
 }
