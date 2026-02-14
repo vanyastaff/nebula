@@ -43,6 +43,8 @@ pub struct ThreadSafePool<T: Poolable> {
     config: PoolConfig,
     callbacks: Arc<dyn PoolCallbacks<T>>,
     not_empty: Condvar,
+    /// Total number of objects ever created (for max_capacity enforcement)
+    created_count: std::sync::atomic::AtomicUsize,
     #[cfg(feature = "stats")]
     stats: Arc<PoolStats>,
 }
@@ -77,10 +79,13 @@ impl<T: Poolable> ThreadSafePool<T> {
         #[cfg(feature = "stats")]
         let stats = Arc::new(PoolStats::default());
 
+        let mut created_count = 0;
+
         // Pre-warm pool if configured
         if config.pre_warm {
             for _ in 0..config.initial_capacity {
                 let obj = factory();
+                created_count += 1;
                 #[cfg(feature = "stats")]
                 stats.record_creation();
                 objects.push(obj);
@@ -96,6 +101,7 @@ impl<T: Poolable> ThreadSafePool<T> {
             config,
             callbacks: Arc::new(NoOpCallbacks),
             not_empty: Condvar::new(),
+            created_count: std::sync::atomic::AtomicUsize::new(created_count),
             #[cfg(feature = "stats")]
             stats,
         }
@@ -174,10 +180,9 @@ impl<T: Poolable> ThreadSafePool<T> {
 
         // Check if we can create new object
         if let Some(max) = self.config.max_capacity {
-            #[cfg(feature = "stats")]
-            let created = self.stats.total_created();
-            #[cfg(not(feature = "stats"))]
-            let created = 0;
+            let created = self
+                .created_count
+                .load(std::sync::atomic::Ordering::Relaxed);
 
             if created >= max {
                 // Need to wait for object to be returned
@@ -228,6 +233,8 @@ impl<T: Poolable> ThreadSafePool<T> {
         self.stats.record_miss();
 
         let obj = (self.factory)();
+        self.created_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.callbacks.on_create(&obj);
 
         #[cfg(feature = "stats")]
@@ -558,6 +565,8 @@ mod tests {
                 thread::spawn(move || {
                     for _ in 0..10 {
                         let mut buffer = pool.get().unwrap();
+                        // Vec::reset() clears the vec, so resize before use
+                        buffer.resize(1024, 0);
                         buffer[0] = i as u8;
                         thread::yield_now();
                     }

@@ -1018,9 +1018,10 @@ mod tests {
         assert_eq!(value, 42);
 
         let stats = cache.stats();
-        assert_eq!(stats.requests, 1);
+        // get_or_compute calls get() internally (1 request, 1 miss), then explicit get() (1 request, 1 hit)
+        assert_eq!(stats.requests, 2);
         assert_eq!(stats.level_hits[0], 1);
-        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.misses, 1);
     }
 
     #[test]

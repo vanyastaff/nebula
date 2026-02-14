@@ -6,7 +6,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc,
+        Arc, Condvar,
         atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
@@ -46,6 +46,7 @@ where
     ttls: Arc<Mutex<HashMap<K, Instant>>>,
     cleanup_interval: Duration,
     shutdown: Arc<AtomicBool>,
+    shutdown_notify: Arc<(std::sync::Mutex<()>, Condvar)>,
     cleanup_thread: Option<JoinHandle<()>>,
 }
 
@@ -65,14 +66,23 @@ where
         let cache = Arc::new(Mutex::new(ComputeCache::new(max_entries)));
         let ttls: Arc<Mutex<HashMap<K, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_notify = Arc::new((std::sync::Mutex::new(()), Condvar::new()));
 
         let cache_clone = cache.clone();
         let ttls_clone = ttls.clone();
         let shutdown_clone = shutdown.clone();
+        let notify_clone = shutdown_notify.clone();
 
         let cleanup_thread = thread::spawn(move || {
+            let (lock, cvar) = &*notify_clone;
             while !shutdown_clone.load(Ordering::Relaxed) {
-                thread::sleep(cleanup_interval);
+                // Wait for cleanup_interval or until notified to shutdown
+                let guard = lock.lock().unwrap();
+                let _ = cvar.wait_timeout(guard, cleanup_interval);
+
+                if shutdown_clone.load(Ordering::Relaxed) {
+                    break;
+                }
 
                 // Clean up expired entries
                 let now = Instant::now();
@@ -99,6 +109,7 @@ where
             ttls,
             cleanup_interval,
             shutdown,
+            shutdown_notify,
             cleanup_thread: Some(cleanup_thread),
         }
     }
@@ -109,14 +120,22 @@ where
         let cache = Arc::new(Mutex::new(ComputeCache::with_config(config)));
         let ttls: Arc<Mutex<HashMap<K, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_notify = Arc::new((std::sync::Mutex::new(()), Condvar::new()));
 
         let cache_clone = cache.clone();
         let ttls_clone = ttls.clone();
         let shutdown_clone = shutdown.clone();
+        let notify_clone = shutdown_notify.clone();
 
         let cleanup_thread = thread::spawn(move || {
+            let (lock, cvar) = &*notify_clone;
             while !shutdown_clone.load(Ordering::Relaxed) {
-                thread::sleep(cleanup_interval);
+                let guard = lock.lock().unwrap();
+                let _ = cvar.wait_timeout(guard, cleanup_interval);
+
+                if shutdown_clone.load(Ordering::Relaxed) {
+                    break;
+                }
 
                 let now = Instant::now();
                 let mut ttls_guard = ttls_clone.lock();
@@ -140,6 +159,7 @@ where
             ttls,
             cleanup_interval,
             shutdown,
+            shutdown_notify,
             cleanup_thread: Some(cleanup_thread),
         }
     }
@@ -257,8 +277,9 @@ where
     V: Clone + Send + Sync + 'static,
 {
     fn drop(&mut self) {
-        // Signal shutdown
+        // Signal shutdown and wake the cleanup thread immediately
         self.shutdown.store(true, Ordering::Relaxed);
+        self.shutdown_notify.1.notify_one();
 
         // Wait for cleanup thread to finish
         if let Some(handle) = self.cleanup_thread.take() {

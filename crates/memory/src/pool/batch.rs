@@ -400,9 +400,10 @@ mod tests {
 
     #[test]
     fn test_partial_batch() {
-        let mut allocator = BatchAllocator::new(5, || TestObject { value: 42 });
+        let config = PoolConfig::bounded(5);
+        let mut allocator = BatchAllocator::with_config(config, || TestObject { value: 42 });
 
-        // Request more than available
+        // Request more than available (bounded pool limits to 5)
         let batch = allocator.get_batch(10).unwrap();
         assert!(batch.len() <= 5);
     }

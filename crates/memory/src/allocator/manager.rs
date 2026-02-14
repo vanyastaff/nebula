@@ -395,12 +395,14 @@ unsafe impl ThreadSafeAllocator for AllocatorManager {}
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Once;
+    use std::sync::{Mutex, Once};
 
     use super::*;
     use crate::allocator::system::SystemAllocator;
 
     static INIT: Once = Once::new();
+    /// Serialize tests that use the global allocator manager to avoid races
+    static GLOBAL_MANAGER_LOCK: Mutex<()> = Mutex::new(());
 
     fn ensure_global_manager_initialized() {
         INIT.call_once(|| {
@@ -427,6 +429,7 @@ mod tests {
 
     #[test]
     fn test_allocator_switching() {
+        let _lock = GLOBAL_MANAGER_LOCK.lock().unwrap();
         ensure_global_manager_initialized();
         let manager = GlobalAllocatorManager::get();
 
@@ -448,6 +451,7 @@ mod tests {
 
     #[test]
     fn test_macros() {
+        let _lock = GLOBAL_MANAGER_LOCK.lock().unwrap();
         ensure_global_manager_initialized();
         let manager = GlobalAllocatorManager::get();
 

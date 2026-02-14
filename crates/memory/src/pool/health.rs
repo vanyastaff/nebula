@@ -285,7 +285,8 @@ mod tests {
 
         monitor.record_checkout();
         monitor.record_return();
-        monitor.update_available(99);
+        // Set available to 50 so utilization = (100-50)/100 = 0.5, within [0.2, 0.9]
+        monitor.update_available(50);
 
         let health = monitor.check_health();
         assert_eq!(health, PoolHealth::Healthy);

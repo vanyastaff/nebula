@@ -340,7 +340,13 @@ mod tests {
 
     #[test]
     fn test_ttl_expiration() {
-        let mut pool = TtlPool::new(10, Duration::from_millis(100), || TestObject { value: 42 });
+        let config = PoolConfig {
+            initial_capacity: 10,
+            ttl: Some(Duration::from_millis(100)),
+            pre_warm: false,
+            ..Default::default()
+        };
+        let mut pool = TtlPool::with_config(config, || TestObject { value: 42 });
 
         // Return some objects
         pool.return_object(TestObject { value: 1 });

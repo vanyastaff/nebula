@@ -385,10 +385,12 @@ impl MemoryBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::budget::OvercommitPolicy;
 
     #[test]
     fn test_budget_allocation() {
-        let budget = MemoryBudget::new(BudgetConfig::new("test", 1000));
+        let config = BudgetConfig::new("test", 1000).with_overcommit(OvercommitPolicy::None);
+        let budget = MemoryBudget::new(config);
 
         // Initial state
         assert_eq!(budget.used(), 0);
@@ -419,8 +421,13 @@ mod tests {
 
     #[test]
     fn test_budget_hierarchy() {
-        let parent = MemoryBudget::new(BudgetConfig::new("parent", 1000));
-        let child = MemoryBudget::with_parent(BudgetConfig::new("child", 500), parent.clone());
+        let parent = MemoryBudget::new(
+            BudgetConfig::new("parent", 1000).with_overcommit(OvercommitPolicy::None),
+        );
+        let child = MemoryBudget::with_parent(
+            BudgetConfig::new("child", 500).with_overcommit(OvercommitPolicy::None),
+            parent.clone(),
+        );
 
         // Initial state
         assert_eq!(parent.used(), 0);
@@ -435,7 +442,10 @@ mod tests {
         assert!(child.request_memory(300).is_err());
 
         // Try to exceed parent limit through child
-        let child2 = MemoryBudget::with_parent(BudgetConfig::new("child2", 800), parent.clone());
+        let child2 = MemoryBudget::with_parent(
+            BudgetConfig::new("child2", 800).with_overcommit(OvercommitPolicy::None),
+            parent.clone(),
+        );
         assert!(child2.request_memory(800).is_err()); // Would exceed parent's remaining capacity
 
         // Release from child

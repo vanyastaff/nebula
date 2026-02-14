@@ -480,8 +480,9 @@ mod tests {
         let config = CacheConfig::new(0);
         assert!(config.validate().is_err());
 
-        // Invalid load_factor
-        let config = CacheConfig::new(100).with_load_factor(1.5);
+        // Invalid load_factor - set directly since with_load_factor clamps
+        let mut config = CacheConfig::new(100);
+        config.load_factor = 1.5;
         assert!(config.validate().is_err());
 
         // Invalid initial_capacity
@@ -496,8 +497,8 @@ mod tests {
         metrics.misses = 20;
         metrics.compute_time_ns = 1_000_000_000; // 1 second total
 
-        assert_eq!(metrics.hit_rate(), 0.8);
-        assert_eq!(metrics.miss_rate(), 0.2);
+        assert!((metrics.hit_rate() - 0.8).abs() < f64::EPSILON);
+        assert!((metrics.miss_rate() - 0.2).abs() < f64::EPSILON);
         assert_eq!(metrics.avg_compute_time_ns(), 50_000_000); // 50ms per miss
         assert_eq!(metrics.total_operations(), 100);
 
@@ -531,8 +532,8 @@ mod tests {
         metrics.compute_time_ns = 500_000_000; // 500ms total
 
         let report = metrics.performance_report();
-        assert_eq!(report.hit_rate, 0.9);
-        assert_eq!(report.miss_rate, 0.1);
+        assert!((report.hit_rate - 0.9).abs() < f64::EPSILON);
+        assert!((report.miss_rate - 0.1).abs() < f64::EPSILON);
         assert!(report.is_performing_well());
 
         let recommendations = report.recommendations();

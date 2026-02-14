@@ -46,6 +46,8 @@ pub struct ObjectPool<T: Poolable> {
     factory: Box<dyn Fn() -> T>,
     config: PoolConfig,
     callbacks: Box<dyn PoolCallbacks<T>>,
+    /// Total number of objects ever created (for max_capacity enforcement)
+    created_count: core::cell::Cell<usize>,
     #[cfg(feature = "stats")]
     stats: PoolStats,
 }
@@ -75,10 +77,13 @@ impl<T: Poolable> ObjectPool<T> {
         #[cfg(feature = "stats")]
         let stats = PoolStats::default();
 
+        let mut created_count = 0;
+
         // Pre-warm pool if configured
         if config.pre_warm {
             for _ in 0..config.initial_capacity {
                 let obj = factory();
+                created_count += 1;
                 #[cfg(feature = "stats")]
                 {
                     stats.record_creation();
@@ -96,6 +101,7 @@ impl<T: Poolable> ObjectPool<T> {
             factory: Box::new(factory),
             config,
             callbacks: Box::new(NoOpCallbacks),
+            created_count: core::cell::Cell::new(created_count),
             #[cfg(feature = "stats")]
             stats,
         }
@@ -128,18 +134,14 @@ impl<T: Poolable> ObjectPool<T> {
 
             // Check capacity limits
             if let Some(max) = self.config.max_capacity {
-                #[cfg(feature = "stats")]
-                let created = self.stats.total_created();
-                #[cfg(not(feature = "stats"))]
-                let created = 0;
-
-                if created >= max {
+                if self.created_count.get() >= max {
                     return Err(MemoryError::pool_exhausted("pool", 0));
                 }
             }
 
             // Create new object
             let obj = (self.factory)();
+            self.created_count.set(self.created_count.get() + 1);
             self.callbacks.on_create(&obj);
 
             #[cfg(feature = "stats")]
@@ -512,28 +514,33 @@ mod tests {
 
     #[test]
     fn test_basic_pool_operations() {
-        let mut pool = ObjectPool::new(10, || TestObject {
-            value: 42,
+        let config = PoolConfig {
+            initial_capacity: 10,
+            pre_warm: false,
+            ..Default::default()
+        };
+        let pool = ObjectPool::with_config(config, || TestObject {
+            value: 0,
             resets: 0,
         });
 
-        // Get object
+        // Get object - newly created, not reset
         let mut obj = pool.get().unwrap();
-        assert_eq!((*obj).value, 0); // Should be reset
+        assert_eq!((*obj).value, 0);
         (*obj).value = 100;
 
-        // Return happens on drop
+        // Return happens on drop (reset on return)
         drop(obj);
 
-        // Get again - should reuse
+        // Get again - should reuse (reset on checkout)
         let obj2 = pool.get().unwrap();
-        assert_eq!(obj2.resets, 2); // Reset on first get and second get
+        assert_eq!(obj2.resets, 2); // Reset on return and on second get
     }
 
     #[test]
     fn test_pool_exhaustion() {
         let config = PoolConfig::bounded(2);
-        let mut pool = ObjectPool::with_config(config, || TestObject {
+        let pool = ObjectPool::with_config(config, || TestObject {
             value: 0,
             resets: 0,
         });
@@ -547,7 +554,12 @@ mod tests {
 
     #[test]
     fn test_detach() {
-        let mut pool = ObjectPool::new(10, || TestObject {
+        let config = PoolConfig {
+            initial_capacity: 10,
+            pre_warm: false,
+            ..Default::default()
+        };
+        let pool = ObjectPool::with_config(config, || TestObject {
             value: 42,
             resets: 0,
         });
@@ -555,8 +567,8 @@ mod tests {
         let obj = pool.get().unwrap();
         let detached = obj.detach();
 
-        assert_eq!(detached.value, 0);
-        assert_eq!(pool.available(), 9); // Object not returned
+        assert_eq!(detached.value, 42); // Newly created, not reset
+        assert_eq!(pool.available(), 0); // Pool was empty, object detached
     }
 
     #[cfg(feature = "adaptive")]
