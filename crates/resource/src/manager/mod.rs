@@ -16,11 +16,10 @@ use crate::core::{
     error::{ResourceError, ResourceResult},
     lifecycle::{LifecycleEvent, LifecycleState},
     resource::{
-        Resource, ResourceFactory, ResourceGuard, ResourceId, ResourceInstance,
-        ResourceInstanceMetadata, ResourceMetadata, TypedResourceInstance,
+        Resource, ResourceFactory, ResourceGuard, ResourceId, ResourceInstanceMetadata,
+        ResourceMetadata, TypedResourceInstance,
     },
     scoping::{ResourceScope, ScopingStrategy},
-    traits::HealthCheckable,
 };
 
 use crate::health::{HealthCheckConfig, HealthChecker};
@@ -917,7 +916,7 @@ where
 mod tests {
     use super::*;
     use crate::core::context::ResourceContext;
-    use crate::core::resource::ResourceConfig;
+    use crate::core::resource::{ResourceConfig, ResourceInstance};
 
     // Mock resource for testing
     struct TestResource;

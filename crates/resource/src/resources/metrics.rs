@@ -70,6 +70,7 @@ impl ResourceConfig for MetricsConfig {
 
 /// Metrics instance with Prometheus exporter
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct MetricsInstance {
     instance_id: uuid::Uuid,
     resource_id: ResourceId,

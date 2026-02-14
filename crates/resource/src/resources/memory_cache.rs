@@ -319,6 +319,7 @@ impl HealthCheckable for MemoryCacheInstance {
 
 /// Cache entry with expiration
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct CacheEntry {
     value: String,
     expires_at: Option<Instant>,

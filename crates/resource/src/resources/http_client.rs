@@ -648,6 +648,7 @@ enum HttpMethod {
     Put,
     Delete,
     Head,
+    #[allow(dead_code)]
     Patch,
 }
 

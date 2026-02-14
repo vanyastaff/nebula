@@ -71,6 +71,7 @@ impl ResourceConfig for TracerConfig {
 
 /// Tracer instance with OpenTelemetry integration
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct TracerInstance {
     instance_id: uuid::Uuid,
     resource_id: ResourceId,

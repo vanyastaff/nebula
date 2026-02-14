@@ -44,6 +44,7 @@ impl ResourceConfig for CacheConfig {
 
 /// Cache resource instance
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct CacheInstance {
     instance_id: uuid::Uuid,
     resource_id: ResourceId,

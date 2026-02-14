@@ -50,6 +50,7 @@ impl ResourceConfig for StorageConfig {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct StorageInstance {
     instance_id: uuid::Uuid,
     resource_id: ResourceId,

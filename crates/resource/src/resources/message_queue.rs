@@ -44,6 +44,7 @@ impl ResourceConfig for MessageQueueConfig {
 
 /// Message queue resource instance
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct MessageQueueInstance {
     instance_id: uuid::Uuid,
     resource_id: ResourceId,

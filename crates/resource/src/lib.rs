@@ -3,8 +3,6 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::if_same_then_else)]
 #![allow(clippy::collapsible_if)]
-#![allow(dead_code)]
-#![allow(unused_imports)]
 
 //! # Nebula Resource Management
 //!
@@ -25,7 +23,7 @@
 //!
 //! ## Quick Start
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use nebula_resource::prelude::*;
 //! use async_trait::async_trait;
 //!

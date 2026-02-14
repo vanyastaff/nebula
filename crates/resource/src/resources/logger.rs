@@ -70,6 +70,7 @@ impl ResourceConfig for LoggerConfig {
 
 /// Logger instance with nebula-log integration
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct LoggerInstance {
     instance_id: uuid::Uuid,
     resource_id: ResourceId,

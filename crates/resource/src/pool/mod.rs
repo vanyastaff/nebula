@@ -430,6 +430,7 @@ pub trait PoolTrait: Send + Sync {
 
 /// Adaptive strategy state
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct AdaptiveState {
     /// Recent selection history (resource index, response time)
     selection_history: Vec<(usize, f64)>,
@@ -439,6 +440,7 @@ struct AdaptiveState {
     strategy_preference: f64,
 }
 
+#[allow(dead_code)]
 impl AdaptiveState {
     fn new() -> Self {
         Self {
@@ -1144,6 +1146,7 @@ where
 
 /// A resource that's been acquired from a pool
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct PooledResource<T> {
     /// Instance ID
     instance_id: Uuid,

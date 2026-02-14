@@ -20,6 +20,7 @@ use crate::core::{
 
 /// Resource metrics collector
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct ResourceMetrics {
     /// Resource acquisition counter
     #[cfg(feature = "metrics")]

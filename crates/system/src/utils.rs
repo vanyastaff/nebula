@@ -74,7 +74,7 @@ mod tests {
 /// use nebula_system::utils::format_duration;
 ///
 /// assert_eq!(format_duration(Duration::from_nanos(500)), "500ns");
-/// assert_eq!(format_duration(Duration::from_micros(1500)), "1.50µs");
+/// assert_eq!(format_duration(Duration::from_micros(1500)), "1.50ms");
 /// assert_eq!(format_duration(Duration::from_secs(65)), "1m 5s");
 /// ```
 #[must_use]
