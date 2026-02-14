@@ -3924,6 +3924,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "dashmap",
+ "nebula-action",
+ "nebula-core",
+ "nebula-ports",
+ "nebula-sandbox-inprocess",
+ "nebula-telemetry",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nebula-sandbox-inprocess"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,31 @@
+[package]
+name = "nebula-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description = "Action runtime and execution orchestration for the Nebula workflow engine"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+nebula-core = { path = "../core" }
+nebula-action = { path = "../action" }
+nebula-ports = { path = "../ports" }
+nebula-telemetry = { path = "../telemetry" }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+dashmap = { workspace = true }
+
+[dev-dependencies]
+nebula-core = { path = "../core" }
+nebula-sandbox-inprocess = { path = "../drivers/sandbox-inprocess" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+pretty_assertions = { workspace = true }
