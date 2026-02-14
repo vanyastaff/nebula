@@ -6,7 +6,7 @@ use crate::option::SelectOption;
 use crate::validation::ValidationRule;
 
 /// Options specific to select parameters.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectOptions {
     /// Placeholder text shown when no option is selected.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -4,7 +4,7 @@ use std::ops::Index;
 use serde::{Deserialize, Serialize};
 
 /// A set of parameter values, keyed by parameter key.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParameterValues {
     #[serde(flatten)]
     values: HashMap<String, serde_json::Value>,
@@ -137,13 +137,13 @@ impl Index<&str> for ParameterValues {
 }
 
 /// A frozen copy of parameter values for snapshot/restore.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParameterSnapshot {
     values: HashMap<String, serde_json::Value>,
 }
 
 /// Describes the differences between two parameter value sets.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParameterDiff {
     /// Keys present in `other` but not in `self`.
     pub added: Vec<String>,

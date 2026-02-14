@@ -5,7 +5,7 @@ use crate::metadata::ParameterMetadata;
 use crate::validation::ValidationRule;
 
 /// Options specific to text parameters.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextOptions {
     /// Regex pattern the value must match.
     #[serde(default, skip_serializing_if = "Option::is_none")]

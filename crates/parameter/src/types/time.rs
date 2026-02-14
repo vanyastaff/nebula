@@ -5,7 +5,7 @@ use crate::metadata::ParameterMetadata;
 use crate::validation::ValidationRule;
 
 /// Options specific to time parameters.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeOptions {
     /// Earliest allowed time.
     #[serde(default, skip_serializing_if = "Option::is_none")]

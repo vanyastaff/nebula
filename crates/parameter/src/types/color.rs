@@ -5,7 +5,7 @@ use crate::metadata::ParameterMetadata;
 use crate::validation::ValidationRule;
 
 /// Supported color representation formats.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ColorFormat {
     Hex,

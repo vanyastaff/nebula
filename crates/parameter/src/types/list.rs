@@ -6,7 +6,7 @@ use crate::metadata::ParameterMetadata;
 use crate::validation::ValidationRule;
 
 /// Options specific to list parameters.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListOptions {
     /// Minimum number of items.
     #[serde(default, skip_serializing_if = "Option::is_none")]

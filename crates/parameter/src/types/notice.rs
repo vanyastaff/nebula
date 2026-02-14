@@ -4,7 +4,7 @@ use crate::display::ParameterDisplay;
 use crate::metadata::ParameterMetadata;
 
 /// The severity/style of a notice parameter.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NoticeType {
     Info,

@@ -5,7 +5,7 @@ use crate::display::ParameterDisplay;
 use crate::metadata::ParameterMetadata;
 
 /// Options specific to group parameters.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupOptions {
     /// Whether the group can be collapsed in the UI.
     #[serde(default)]

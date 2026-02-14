@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// This is the human-facing information: labels, hints, placeholders.
 /// It is separate from the parameter's type and value semantics.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParameterMetadata {
     /// Unique key identifying this parameter within its parent scope.
     pub key: String,

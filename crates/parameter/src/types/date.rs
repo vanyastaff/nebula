@@ -5,7 +5,7 @@ use crate::metadata::ParameterMetadata;
 use crate::validation::ValidationRule;
 
 /// Options specific to date parameters.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DateOptions {
     /// Earliest allowed date (as ISO 8601 date string).
     #[serde(default, skip_serializing_if = "Option::is_none")]

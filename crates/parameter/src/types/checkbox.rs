@@ -5,7 +5,7 @@ use crate::metadata::ParameterMetadata;
 use crate::validation::ValidationRule;
 
 /// Options specific to checkbox parameters.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckboxOptions {
     /// Label displayed next to the checkbox.
     #[serde(default, skip_serializing_if = "Option::is_none")]

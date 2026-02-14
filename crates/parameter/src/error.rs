@@ -2,7 +2,7 @@
 ///
 /// Covers key validation, lookup, type mismatches, serialization,
 /// and declarative validation failures.
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ParameterError {
     /// Parameter key does not meet naming rules.
     #[error("invalid key format `{key}`: {reason}")]

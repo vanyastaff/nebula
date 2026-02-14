@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A single option in a select or multi-select parameter.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectOption {
     /// Machine-readable identifier.
     pub key: String,
@@ -36,7 +36,7 @@ impl SelectOption {
 }
 
 /// Where a select parameter gets its options from.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum OptionsSource {
     /// Options defined inline in the parameter schema.
