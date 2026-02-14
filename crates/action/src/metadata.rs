@@ -103,6 +103,12 @@ pub enum ActionType {
     Stateful,
     /// Event source that starts workflows.
     Trigger,
+    /// Continuous stream producer.
+    Streaming,
+    /// Distributed transaction participant (saga pattern).
+    Transactional,
+    /// Human-in-the-loop interaction.
+    Interactive,
 }
 
 /// Interface version — tracks schema compatibility independently of package version.

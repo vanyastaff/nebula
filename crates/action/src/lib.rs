@@ -13,6 +13,9 @@
 //! - [`ProcessAction`] — stateless single-execution action (most common)
 //! - [`StatefulAction`] — iterative action with persistent state
 //! - [`TriggerAction`] — event source that starts workflows
+//! - [`StreamingAction`] — continuous stream producer
+//! - [`TransactionalAction`] — distributed transaction participant (saga)
+//! - [`InteractiveAction`] — human-in-the-loop interaction
 //! - [`ActionResult`] — execution result carrying data and flow-control intent
 //! - [`ActionError`] — error type distinguishing retryable from fatal failures
 //! - [`ActionContext`] — runtime context with IDs, variables, cancellation
@@ -85,6 +88,12 @@ pub use types::ProcessAction;
 pub use types::StatefulAction;
 pub use types::TriggerAction;
 pub use types::trigger::{TriggerEvent, TriggerKind, WebhookRequest};
+pub use types::StreamingAction;
+pub use types::streaming::{StreamItem, StreamMetadata};
+pub use types::TransactionalAction;
+pub use types::transactional::{PrepareResult, TransactionOutcome, TransactionVote};
+pub use types::InteractiveAction;
+pub use types::interactive::{InteractionRequest, InteractionResponse, InteractionType};
 
 pub use budget::{DataPassingPolicy, ExecutionBudget, LargeDataStrategy};
 pub use registry::ActionRegistry;
