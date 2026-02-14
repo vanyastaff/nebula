@@ -19,7 +19,7 @@ pub struct SecretOptions {
 /// A masked text input for sensitive values like passwords and API keys.
 ///
 /// Always sets `metadata.sensitive = true`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SecretParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,

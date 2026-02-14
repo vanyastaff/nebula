@@ -18,7 +18,7 @@ pub struct MultiSelectOptions {
 }
 
 /// A multi-choice selection parameter.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MultiSelectParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,

@@ -25,7 +25,7 @@ pub struct NumberOptions {
 }
 
 /// A numeric input parameter.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NumberParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,

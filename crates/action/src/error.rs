@@ -79,10 +79,7 @@ impl ActionError {
     }
 
     /// Create a retryable error carrying a partial result.
-    pub fn retryable_with_partial(
-        msg: impl Into<String>,
-        partial: serde_json::Value,
-    ) -> Self {
+    pub fn retryable_with_partial(msg: impl Into<String>, partial: serde_json::Value) -> Self {
         Self::Retryable {
             error: msg.into(),
             backoff_hint: None,
@@ -158,8 +155,7 @@ mod tests {
 
     #[test]
     fn retryable_with_backoff_carries_hint() {
-        let err =
-            ActionError::retryable_with_backoff("rate limited", Duration::from_secs(5));
+        let err = ActionError::retryable_with_backoff("rate limited", Duration::from_secs(5));
         assert!(err.is_retryable());
         assert_eq!(err.backoff_hint(), Some(Duration::from_secs(5)));
     }

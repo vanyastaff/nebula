@@ -47,6 +47,7 @@ pub enum ParameterError {
 
 impl ParameterError {
     /// Broad error category for grouping in logs and metrics.
+    #[must_use]
     pub fn category(&self) -> &str {
         match self {
             Self::InvalidKeyFormat { .. } => "format",
@@ -62,6 +63,7 @@ impl ParameterError {
     }
 
     /// Machine-readable error code for programmatic handling.
+    #[must_use]
     pub fn code(&self) -> &str {
         match self {
             Self::InvalidKeyFormat { .. } => "PARAM_INVALID_KEY",
@@ -80,6 +82,7 @@ impl ParameterError {
     ///
     /// All parameter errors are deterministic — same input, same result.
     /// Returns `false` for every variant.
+    #[must_use]
     pub fn is_retryable(&self) -> bool {
         false
     }

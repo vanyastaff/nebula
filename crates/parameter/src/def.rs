@@ -9,7 +9,7 @@ use crate::types::*;
 ///
 /// Each variant wraps a specific parameter type struct. The `type` field
 /// in JSON determines which variant is used during deserialization.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ParameterDef {
     Text(TextParameter),
@@ -34,7 +34,7 @@ pub enum ParameterDef {
 }
 
 macro_rules! delegate_metadata {
-    ($self:ident => $method:ident -> $ret:ty) => {
+    ($self:ident) => {
         match $self {
             Self::Text(p) => &p.metadata,
             Self::Textarea(p) => &p.metadata,
@@ -55,6 +55,32 @@ macro_rules! delegate_metadata {
             Self::Mode(p) => &p.metadata,
             Self::Group(p) => &p.metadata,
             Self::Expirable(p) => &p.metadata,
+        }
+    };
+}
+
+macro_rules! delegate_metadata_mut {
+    ($self:ident) => {
+        match $self {
+            Self::Text(p) => &mut p.metadata,
+            Self::Textarea(p) => &mut p.metadata,
+            Self::Code(p) => &mut p.metadata,
+            Self::Secret(p) => &mut p.metadata,
+            Self::Number(p) => &mut p.metadata,
+            Self::Checkbox(p) => &mut p.metadata,
+            Self::Select(p) => &mut p.metadata,
+            Self::MultiSelect(p) => &mut p.metadata,
+            Self::Color(p) => &mut p.metadata,
+            Self::DateTime(p) => &mut p.metadata,
+            Self::Date(p) => &mut p.metadata,
+            Self::Time(p) => &mut p.metadata,
+            Self::Hidden(p) => &mut p.metadata,
+            Self::Notice(p) => &mut p.metadata,
+            Self::Object(p) => &mut p.metadata,
+            Self::List(p) => &mut p.metadata,
+            Self::Mode(p) => &mut p.metadata,
+            Self::Group(p) => &mut p.metadata,
+            Self::Expirable(p) => &mut p.metadata,
         }
     };
 }
@@ -89,15 +115,13 @@ impl ParameterDef {
     /// The unique key identifying this parameter.
     #[must_use]
     pub fn key(&self) -> &str {
-        let meta = delegate_metadata!(self => key -> &str);
-        &meta.key
+        &delegate_metadata!(self).key
     }
 
     /// The human-readable display name.
     #[must_use]
     pub fn name(&self) -> &str {
-        let meta = delegate_metadata!(self => name -> &str);
-        &meta.name
+        &delegate_metadata!(self).name
     }
 
     /// The parameter kind (determines UI widget and value semantics).
@@ -129,7 +153,12 @@ impl ParameterDef {
     /// Access the full metadata for this parameter.
     #[must_use]
     pub fn metadata(&self) -> &ParameterMetadata {
-        delegate_metadata!(self => metadata -> &ParameterMetadata)
+        delegate_metadata!(self)
+    }
+
+    /// Access the metadata mutably for post-construction changes.
+    pub fn metadata_mut(&mut self) -> &mut ParameterMetadata {
+        delegate_metadata_mut!(self)
     }
 
     /// Whether this parameter is required.
@@ -418,8 +447,7 @@ mod tests {
             ModeVariant::new("oauth", "OAuth")
                 .with_parameter(ParameterDef::Text(TextParameter::new("client", "Client")))
                 .with_parameter(ParameterDef::Secret(SecretParameter::new(
-                    "secret",
-                    "Secret",
+                    "secret", "Secret",
                 ))),
         );
         let def = ParameterDef::Mode(mode);
@@ -433,13 +461,9 @@ mod tests {
 
     #[test]
     fn children_returns_group_params() {
-        let def = ParameterDef::Group(
-            GroupParameter::new("adv", "Advanced")
-                .with_parameter(ParameterDef::Number(NumberParameter::new(
-                    "timeout",
-                    "Timeout",
-                ))),
-        );
+        let def = ParameterDef::Group(GroupParameter::new("adv", "Advanced").with_parameter(
+            ParameterDef::Number(NumberParameter::new("timeout", "Timeout")),
+        ));
 
         let children = def.children().unwrap();
         assert_eq!(children.len(), 1);
@@ -559,8 +583,7 @@ mod tests {
             "Values",
             ParameterDef::Text(TextParameter::new("val", "Value")),
         );
-        let obj = ObjectParameter::new("entry", "Entry")
-            .with_field(ParameterDef::List(inner_list));
+        let obj = ObjectParameter::new("entry", "Entry").with_field(ParameterDef::List(inner_list));
         let def = ParameterDef::List(ListParameter::new(
             "entries",
             "Entries",
@@ -639,5 +662,41 @@ mod tests {
 
         let children = def.children().unwrap();
         assert_eq!(children.len(), 3);
+    }
+
+    #[test]
+    fn metadata_mut_changes_key() {
+        let mut def = ParameterDef::Text(TextParameter::new("old", "Old"));
+        def.metadata_mut().key = "new".into();
+        assert_eq!(def.key(), "new");
+    }
+
+    #[test]
+    fn metadata_mut_sets_required() {
+        let mut def = ParameterDef::Number(NumberParameter::new("port", "Port"));
+        assert!(!def.is_required());
+        def.metadata_mut().required = true;
+        assert!(def.is_required());
+    }
+
+    #[test]
+    fn partial_eq_same_parameters() {
+        let a = ParameterDef::Text(TextParameter::new("x", "X"));
+        let b = ParameterDef::Text(TextParameter::new("x", "X"));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn partial_eq_different_parameters() {
+        let a = ParameterDef::Text(TextParameter::new("x", "X"));
+        let b = ParameterDef::Text(TextParameter::new("y", "Y"));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn partial_eq_different_variants() {
+        let a = ParameterDef::Text(TextParameter::new("x", "X"));
+        let b = ParameterDef::Number(NumberParameter::new("x", "X"));
+        assert_ne!(a, b);
     }
 }

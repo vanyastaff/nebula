@@ -205,13 +205,8 @@ mod tests {
         }
 
         // Arena should be reset to outer position
-        // Verify the outer allocation is still intact
-        let _outer_after = arena.alloc(0).unwrap();
         assert_eq!(arena.current_position(), pos_outer);
-
-        // Can't safely verify outer_value persisted since arena was reset
-        // but we verified position is correct
-        let _ = outer_value; // Use the value to avoid warning
+        assert_eq!(outer_value, 1);
     }
 
     #[test]
@@ -307,6 +302,8 @@ mod tests {
         }
 
         let mut arena = Arena::new(ArenaConfig::default());
+        // Force arena to have a chunk so position is stable
+        let _ = arena.alloc(0u8).unwrap();
         let pos = arena.current_position();
 
         // Early return should still trigger guard drop

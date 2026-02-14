@@ -21,7 +21,7 @@ pub struct TextOptions {
 }
 
 /// A single-line text input parameter.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,

@@ -693,7 +693,9 @@ mod tests {
 
         arena.reset();
 
-        assert_eq!(arena.stats().allocations(), 0);
+        // allocations() is a lifetime counter — not reset
+        assert_eq!(arena.stats().allocations(), 2);
+        assert_eq!(arena.stats().bytes_used(), 0);
         assert_eq!(arena.stats().resets(), 1);
     }
 

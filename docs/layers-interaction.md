@@ -1,23 +1,23 @@
 # Nebula Architecture — Layers Interaction
 
-## Interaction Principles
+## Принципы взаимодействия
 
-1.  **Ports & Drivers** — Core speaks only to trait interfaces (`ports`), drivers implement them.
-2.  **ExecutionRepo = Truth** — `ports::ExecutionRepo` (journal + CAS) = single source of truth, events = projections.
-3.  **Dependency Injection** — Bins assemble core + drivers via composition root.
-4.  **Typed + Dynamic** — Typed Actions (first-party) + dynamic `serde_json::Value` (community).
-5.  **Bounded Concurrency** — Semaphore + bounded channels, no unbounded spawns.
-6.  **Execution Plan** — Plan with budget is built BEFORE execution.
-7.  **Capability-based Sandbox** — Community actions are always fully isolated.
+1. **Ports & Drivers** — core говорит только с trait-интерфейсами (`ports`), drivers реализуют
+2. **ExecutionRepo = Truth** — `ports::ExecutionRepo` (journal + CAS) = единственный источник истины, events = проекции
+3. **Dependency Injection** — bins собирают core + drivers через composition root
+4. **Typed + Dynamic** — typed Actions (first-party) + dynamic serde_json::Value (community)
+5. **Bounded Concurrency** — Semaphore + bounded channels, никаких unbounded spawn
+6. **Execution Plan** — план с budget строится ДО запуска
+7. **Capability-based Sandbox** — community actions всегда Full isolation
 
 ---
 
-## 1. core ↔ ports (Fundamental Boundary)
+## 1. core ↔ ports (фундаментальная граница)
 
-**Rule:** Core crates NEVER depend on drivers. Only on `ports` (traits).
+**Правило:** Core крейты НИКОГДА не зависят от drivers. Только от `ports` (traits).
 
 ```rust
-// core/engine depends on ports::TaskQueue (trait), not queue-redis (impl)
+// core/engine зависит от ports::TaskQueue (trait), не от queue-redis (impl)
 pub struct WorkflowEngine {
     execution_repo: Arc<dyn ExecutionRepo>,    // ports trait
     workflow_repo: Arc<dyn WorkflowRepo>,      // ports trait
@@ -25,25 +25,25 @@ pub struct WorkflowEngine {
     telemetry: Arc<Telemetry>,
 }
 
-// runtime depends on ports::SandboxRunner (trait), not sandbox-wasm (impl)
+// runtime зависит от ports::SandboxRunner (trait), не от sandbox-wasm (impl)
 pub struct ActionRuntime {
     sandbox: Arc<dyn SandboxRunner>,           // ports trait
     action_registry: Arc<ActionRegistry>,
 }
 
-// Concrete implementations are substituted in bins (composition root)
+// Конкретные реализации подставляются в bins (composition root)
 ```
 
-**Why this is important:**
--   Desktop build does not compile postgres/redis/s3/wasmtime.
--   The same engine works with SQLite (desktop) and Postgres (cloud).
--   Core testing is done without external dependencies (in-memory mocks).
+**Почему это важно:**
+- Desktop билд не компилирует postgres/redis/s3/wasmtime
+- Один и тот же engine работает с SQLite (desktop) и Postgres (cloud)
+- Тестирование core — без внешних зависимостей (in-memory mocks)
 
 ---
 
-## 2. bins → drivers → ports (Composition Root)
+## 2. bins → drivers → ports (composition root)
 
-**Pattern:** Each bin crate = composition root. Reads config, creates drivers, injects into core.
+**Паттерн:** Каждый bin-крейт = composition root. Читает config, создаёт drivers, инжектирует в core.
 
 ```rust
 // bins/desktop/src/main.rs
@@ -51,14 +51,14 @@ pub struct ActionRuntime {
 async fn main() -> Result<()> {
     let config: NebulaConfig = ConfigManager::load("config.desktop.toml").await?;
 
-    // 1. Create drivers (concrete implementations of ports traits)
+    // 1. Создаём drivers (конкретные реализации ports traits)
     let storage = SqliteStorage::new(&config.storage.path).await?;
     let blobs = FsBlobStore::new(&config.blobs.root)?;
     let queue = MemoryQueue::new(config.engine.max_concurrent_executions);
     let sandbox = InProcessSandbox::new();
     let secrets = LocalSecretsStore::new(&config.secrets.path)?;
 
-    // 2. Assemble core (engine/runtime) with drivers via ports traits
+    // 2. Собираем core (engine/runtime) с drivers через ports traits
     let engine = WorkflowEngine::builder()
         .execution_repo(Arc::new(storage.clone()) as Arc<dyn ExecutionRepo>)
         .workflow_repo(Arc::new(storage.clone()) as Arc<dyn WorkflowRepo>)
@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
         .sandbox(Arc::new(sandbox) as Arc<dyn SandboxRunner>)
         .build()?;
 
-    // 3. Start worker + API
+    // 3. Запускаем worker + API
     let worker = Worker::new(engine.task_queue(), runtime, config.engine.max_concurrent_executions);
 
     tokio::select! {
@@ -80,16 +80,16 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-// bins/server/src/main.rs — same, but with postgres/redis drivers
-// bins/worker/src/main.rs — only runtime + queue (no engine/API)
-// bins/control-plane/src/main.rs — only engine + API (no runtime)
+// bins/server/src/main.rs — то же самое, но с postgres/redis drivers
+// bins/worker/src/main.rs — только runtime + queue (без engine/API)
+// bins/control-plane/src/main.rs — только engine + API (без runtime)
 ```
 
 ---
 
 ## 3. engine ↔ execution ↔ ports::ExecutionRepo
 
-**Flow:** Engine builds plan → writes to ExecutionRepo → enqueues in TaskQueue.
+**Flow:** Engine строит план → записывает в ExecutionRepo → ставит в TaskQueue.
 
 ```rust
 impl WorkflowEngine {
@@ -97,7 +97,7 @@ impl WorkflowEngine {
         let workflow = self.workflow_repo.get(&workflow_id).await?
             .ok_or(EngineError::WorkflowNotFound)?;
 
-        // 1. Build ExecutionPlan (dependency graph, parallel groups, budget)
+        // 1. Строим ExecutionPlan (dependency graph, parallel groups, budget)
         let plan = self.planner.build_plan(&workflow, &input).await?;
 
         // 2. ExecutionRepo — source of truth (atomic CAS + journal append)
@@ -112,7 +112,7 @@ impl WorkflowEngine {
             },
         ).await?;
 
-        // 3. Enqueue (via ports::TaskQueue)
+        // 3. Ставим в очередь (через ports::TaskQueue)
         self.task_queue.enqueue(Task {
             execution_id: execution_id.clone(),
             workflow_id,
@@ -120,7 +120,7 @@ impl WorkflowEngine {
             budget: plan.budget,
         }).await?;
 
-        // 4. Telemetry — PROJECTION, not source of truth
+        // 4. Telemetry — ПРОЕКЦИЯ, не source of truth
         self.telemetry.emit(ExecutionEvent::Started {
             execution_id: execution_id.clone(),
         }).await?;
@@ -130,42 +130,43 @@ impl WorkflowEngine {
 }
 ```
 
-**Important:** On recovery after crash — state comes from ExecutionRepo, NOT from events.
+**Важно:** при восстановлении после падения — состояние из ExecutionRepo, НЕ из событий.
 
 ---
 
 ## 4. worker ↔ ports::TaskQueue ↔ runtime ↔ ports::SandboxRunner
 
-**Delivery Semantics: at-least-once.**
-Consistency is achieved via `idempotency_key` in `NodeAttempt`.
+**Семантика доставки: at-least-once.**
+Консистентность достигается через `idempotency_key` в `NodeAttempt`.
 
-**Mandatory Operation Order (worker loop):**
-1.  `dequeue` — task received, visibility timeout started.
-2.  `acquire_lease` in ExecutionRepo (if distributed).
-3.  journal append: attempt started.
-4.  execute action (via SandboxRunner).
-5.  journal append: attempt completed/failed.
-6.  `ack` (success) or `nack` (retry).
+**Обязательный порядок операций (worker loop):**
+1. `dequeue` — task получен, visibility timeout запущен
+2. `acquire_lease` в ExecutionRepo (если distributed)
+3. journal append: attempt started
+4. execute action (через SandboxRunner)
+5. journal append: attempt completed/failed
+6. `ack` (успех) или `nack` (retry)
 
 **Failure scenarios:**
--   Worker crashes between 3 and 6 → visibility timeout expires → task returns to queue → `idempotency_key` prevents duplicate execution.
--   Worker crashes before 3 → task returns, as if nothing happened.
--   Queue loses ack → re-delivery → idempotency check.
+- Worker упал между 3 и 6 → visibility timeout истечёт → task вернётся в очередь → 
+  `idempotency_key` предотвратит дубли выполнения
+- Worker упал до 3 → task вернётся, как будто ничего не было
+- Queue потерял ack → повторная доставка → idempotency check
 
 ```rust
 impl Worker {
     async fn run(&self) {
-        // Reaper: periodically claim stale entries from dead consumers
+        // Reaper: периодически claim stale entries у мёртвых consumers
         let reaper_handle = self.spawn_reaper();
 
         loop {
-            // 1. Dequeue with visibility timeout
+            // 1. Dequeue с visibility timeout
             let task = match self.task_queue.dequeue(Duration::from_secs(5)).await {
                 Ok(Some(task)) => task,
                 _ => continue,
             };
 
-            // 2. Bounded concurrency — Semaphore (NEVER unbounded spawn)
+            // 2. Bounded concurrency — Semaphore (НИКОГДА unbounded spawn)
             let permit = self.concurrency_semaphore
                 .clone().acquire_owned().await
                 .expect("semaphore closed");
@@ -178,7 +179,7 @@ impl Worker {
                 let _permit = permit; // Drop = release
 
                 // 3. Acquire lease (distributed mode)
-                // In single-process (desktop) — no-op
+                // В single-process (desktop) — no-op
                 if !execution_repo.acquire_lease(
                     &task.execution_id, &self.id, Duration::from_secs(60)
                 ).await.unwrap_or(false) {
@@ -227,32 +228,32 @@ impl Worker {
                     }),
                 ).await.ok();
 
-                // 7. Ack/nack in queue (AFTER journal)
-                // Fatal → ack (do not retry). Retryable → nack (returns to queue).
+                // 7. Ack/nack в queue (ПОСЛЕ journal)
+                // Fatal → ack (не ретраим). Retryable → nack (вернётся в queue).
                 match &result {
                     Ok(_) => queue.ack(&task.id).await.ok(),
                     Err(e) if e.is_retryable() => queue.nack(&task.id).await.ok(),
-                    Err(_) => queue.ack(&task.id).await.ok(), // Fatal — do not retry
+                    Err(_) => queue.ack(&task.id).await.ok(), // Fatal — не ретраим
                 };
             });
         }
     }
 
-    /// Reaper: periodically claim stale entries from dead consumers
+    /// Reaper: периодически claim stale entries у мёртвых consumers
     fn spawn_reaper(&self) -> JoinHandle<()> {
         let queue = self.task_queue.clone();
         let execution_repo = self.execution_repo.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(30)).await;
-                // Claim tasks stuck with dead consumers
+                // Claim tasks stuck с мёртвыми consumers
                 if let Ok(stale) = queue.claim_stale(Duration::from_secs(60)).await {
                     for task in stale {
-                        // Re-enqueue or handle
+                        // Re-enqueue или handle
                         queue.nack(&task.id).await.ok();
                     }
                 }
-                // Also: check stale leases in ExecutionRepo
+                // Также: check stale leases в ExecutionRepo
                 if let Ok(stale_execs) = execution_repo.find_stale_leases(Duration::from_secs(120)).await {
                     for exec_id in stale_execs {
                         // Mark as failed / re-schedulable
@@ -267,15 +268,15 @@ impl Worker {
 
 ---
 
-## 5. runtime ↔ sandbox ↔ action (Capability Enforcement + Data Limits)
+## 5. runtime ↔ sandbox ↔ action (capability enforcement + data limits)
 
-**Flow:** Runtime determines IsolationLevel → creates SandboxedContext → calls SandboxRunner → enforces data limits.
+**Flow:** Runtime определяет IsolationLevel → создаёт SandboxedContext → вызывает SandboxRunner → enforce data limits.
 
 **Return type:** `Result<ActionResult<serde_json::Value>, ActionError>`.
--   `Ok(ActionResult::*)` = flow control (Success, Branch, Continue, Wait, ...)
--   `Err(ActionError::Retryable)` → engine decides retry policy → nack
--   `Err(ActionError::Fatal)` → fail fast → ack (do not retry)
--   `Err(ActionError::Cancelled)` → execution cancelled → nack
+- `Ok(ActionResult::*)` = flow control (Success, Branch, Continue, Wait, ...)
+- `Err(ActionError::Retryable)` → engine решает retry policy → nack
+- `Err(ActionError::Fatal)` → fail fast → ack (не ретраим)
+- `Err(ActionError::Cancelled)` → execution cancelled → nack
 
 ```rust
 impl ActionRuntime {
@@ -293,7 +294,7 @@ impl ActionRuntime {
 
         let result = match isolation {
             IsolationLevel::None => {
-                // Trusted builtin: direct execution
+                // Trusted builtin: напрямую
                 action.execute(context).await?
             }
             IsolationLevel::CapabilityGated | IsolationLevel::Isolated => {
@@ -301,19 +302,19 @@ impl ActionRuntime {
                     context,
                     metadata.capabilities.clone(),
                 );
-                // SandboxRunner enforces capabilities + isolation
+                // SandboxRunner enforce-ит capabilities + isolation
                 self.sandbox.execute(action.as_ref(), sandboxed, metadata).await?
             }
         };
 
-        // 2. Enforce data limits on output
+        // 2. Enforce data limits на output
         self.enforce_data_limits(&result)?;
 
         Ok(result)
     }
 }
 
-// SandboxedContext proxies calls through capability checks
+// SandboxedContext проксирует вызовы через capability checks
 impl SandboxedContext {
     pub async fn get_resource<R: Resource>(&self) -> Result<R::Instance, ActionError> {
         self.check_capability(&Capability::Resource(R::resource_id()))?;
@@ -325,38 +326,38 @@ impl SandboxedContext {
         self.inner.get_credential(id).await
     }
 
-    /// CancellationToken — action checks this in long operations
+    /// CancellationToken — action проверяет в длинных операциях
     pub fn check_cancelled(&self) -> Result<(), ActionError> {
         self.inner.check_cancelled()
     }
 }
 
-// Violation example:
-// Action "community.risky_plugin" requests get_resource::<DatabaseResource>()
-// but it does not have Capability::Resource("database")
+// Пример violation:
+// Action "community.risky_plugin" запрашивает get_resource::<DatabaseResource>()
+// но у него нет Capability::Resource("database")
 // → ActionError::SandboxViolation { capability: "database", action_id: "community.risky_plugin" }
 ```
 
 ---
 
-## 6. telemetry ↔ execution (Events as Projections)
+## 6. telemetry ↔ execution (events как проекции)
 
-**Pattern:** ExecutionRepo transition → emit event.
-Events — "best effort", can be lost. ExecutionRepo — recoverable.
+**Паттерн:** ExecutionRepo transition → emit event.
+Events — "best effort", могут потеряться. ExecutionRepo — восстанавливаемый.
 
 ```rust
-// execution: after state transition → emit via telemetry
+// execution: после state transition → emit через telemetry
 impl ExecutionContext {
     pub async fn complete_node(&self, node_id: &NodeId, output: serde_json::Value) -> Result<()> {
         // 1. ExecutionRepo — source of truth (atomic CAS + journal)
         self.execution_repo.transition(
             &self.execution_id,
             ExecutionStatus::Running,
-            ExecutionStatus::Running, // not final yet
+            ExecutionStatus::Running, // ещё не финальный
             JournalEntry::NodeAttempt(/* ... */),
         ).await?;
 
-        // 2. Telemetry — projection
+        // 2. Telemetry — проекция
         self.telemetry.emit(NodeEvent::Completed {
             execution_id: self.execution_id.clone(),
             node_id: node_id.clone(),
@@ -367,7 +368,7 @@ impl ExecutionContext {
     }
 }
 
-// telemetry: subscribers receive projections
+// telemetry: подписчики получают проекции
 impl Telemetry {
     pub fn setup_event_logging(&self) {
         self.event_bus.subscribe(|event: ExecutionEvent| async move {
@@ -398,20 +399,20 @@ impl Telemetry {
     }
 }
 
-// IMPORTANT: on recovery — from ExecutionRepo (journal), NOT from events
+// ВАЖНО: при recovery — из ExecutionRepo (journal), НЕ из событий
 ```
 
 ---
 
 ## 7. config → preset → drivers selection
 
-**Pattern:** Config defines behavior, cargo features define capabilities.
+**Паттерн:** Config определяет поведение, cargo features определяют возможности.
 
-**Important: StaticConfig vs DynamicConfig.**
-Not everything can be changed on the fly. Hot-reload is allowed only for DynamicConfig.
+**Важно: StaticConfig vs DynamicConfig.**
+Не всё можно менять на лету. Hot-reload допустим только для DynamicConfig.
 
 ```rust
-/// Only at process start. Change requires restart.
+/// Только при старте процесса. Смена требует рестарт.
 pub struct StaticConfig {
     pub storage_backend: String,      // "sqlite" | "postgres"
     pub queue_backend: String,        // "memory" | "redis"
@@ -420,7 +421,7 @@ pub struct StaticConfig {
     pub api_bind: String,
 }
 
-/// Can be changed on the fly via hot-reload.
+/// Можно менять на лету через hot-reload.
 pub struct DynamicConfig {
     pub max_concurrent_executions: usize,
     pub default_timeout: Duration,
@@ -429,18 +430,18 @@ pub struct DynamicConfig {
     pub sandbox_limits: SandboxLimitsConfig,  // memory, cpu time
 }
 
-// Engine/runtime accepts only DynamicConfig for hot-reload:
+// Engine/runtime принимает только DynamicConfig на hot-reload:
 impl WorkflowEngine {
     pub fn apply_dynamic_config(&self, config: &DynamicConfig) {
         self.scheduler.update_concurrency(config.max_concurrent_executions);
         self.rate_limiter.update(config.rate_limits);
-        // DO NOT change drivers on the fly — this is StaticConfig
+        // НЕ меняем drivers на лету — это StaticConfig
     }
 }
 ```
 
 ```rust
-// In bin crate: StaticConfig → driver selection at start
+// В bin-крейте: StaticConfig → выбор drivers при старте
 pub fn build_app(config: &StaticConfig) -> Result<App> {
     let storage: Arc<dyn ExecutionRepo> = match config.storage_backend.as_str() {
         "sqlite" => {
@@ -477,7 +478,7 @@ pub fn build_app(config: &StaticConfig) -> Result<App> {
 
 ## 8. resource ↔ system (pressure hooks)
 
-**Pattern:** SystemMonitor detects pressure → ResourceManager reacts via policy.
+**Паттерн:** SystemMonitor детектирует pressure → ResourceManager реагирует по policy.
 
 ```rust
 impl ResourceManager {
@@ -486,11 +487,11 @@ impl ResourceManager {
         system_monitor.on_pressure(move |level| {
             match level {
                 PressureLevel::Warning => {
-                    // Evict idle resources with policy = EvictIdle
+                    // Evict idle ресурсы у которых policy = EvictIdle
                     manager.evict_by_policy(PressureAction::EvictIdle);
                 }
                 PressureLevel::Critical => {
-                    // Evict everything except active
+                    // Evict всё кроме active
                     manager.evict_by_policy(PressureAction::EvictAll);
                 }
                 _ => {}
@@ -504,26 +505,26 @@ impl ResourceManager {
 
 ## 9. registry ↔ action (interface versioning)
 
-**Pattern:** Registry stores ActionMetadata with interface_version and schema_hash.
-WorkflowDefinition binds to interface_version, not package version.
+**Паттерн:** Registry хранит ActionMetadata с interface_version и schema_hash.
+WorkflowDefinition привязывается к interface_version, не к package version.
 
 ```rust
-// On Action update
+// При обновлении Action
 impl Registry {
     fn check_compatibility(&self, existing: &ActionMetadata, new: &ActionMetadata) -> Result<()> {
-        // If schema_hash matches — contract unchanged, ok
+        // Если schema_hash совпадает — контракт не изменился, ok
         if existing.schema_hash == new.schema_hash {
             return Ok(());
         }
 
-        // Schema changed — interface_version.major must be bumped
+        // Schema изменилась — interface_version.major должен быть bumped
         if new.interface_version.major <= existing.interface_version.major {
             return Err(RegistryError::IncompatibleUpdate {
                 reason: "Schema changed but interface_version.major not bumped".into(),
             });
         }
 
-        // Check that migration rules exist
+        // Проверяем что есть migration rules
         if new.migrations.is_empty() {
             warn!("Schema changed without migration rules");
         }
@@ -532,16 +533,16 @@ impl Registry {
     }
 }
 
-// On workflow start — engine checks if interface_version is compatible
-// and applies SchemaMigration (rename param, add default, etc.) if needed
+// При запуске workflow — engine проверяет что interface_version совместима
+// и при необходимости применяет SchemaMigration (rename param, add default, etc.)
 ```
 
 ---
 
-## Summary Diagram
+## Итоговая диаграмма потоков
 
 ```
-User
+Пользователь
     │
     ▼
 ┌───────────────┐     config.toml          ┌───────────────┐
@@ -562,6 +563,7 @@ User
 │ ═══════════   │          │  metrics/log)  │
 │ SQLite impl   │          └────────────────┘
 │ Postgres impl │
+└───────┬───────┘
         │ enqueue
         ▼
 ┌───────────────┐
@@ -570,6 +572,7 @@ User
 │ ═══════════   │
 │ Memory impl   │
 │ Redis impl    │
+└───────┬───────┘
         │ dequeue
         ▼
 ┌───────────────┐  Semaphore    ┌────────────────┐
@@ -594,15 +597,15 @@ User
                                 └────────────────┘
 ```
 
-## Key Patterns (Summary)
+## Ключевые паттерны (сводка)
 
-1.  **Core → ports (traits) → drivers (impls)** — strict dependency direction.
-2.  **Bins = composition roots** — glue core + drivers based on config/features.
-3.  **ExecutionRepo = truth** — single source of truth (journal + CAS), events = projections.
-4.  **Execution Plan → bounded budget** — no unbounded spawns.
-5.  **Sandbox: community = Isolated always** — CapabilityGated for first-party, Isolated (WASM) for community.
-6.  **Queue: at-least-once + idempotency** — formal journal/ack + reaper order.
-7.  **StaticConfig vs DynamicConfig** — drivers cannot be changed on the fly.
-8.  **Resource policies** — eviction/TTL/pressure hooks.
-9.  **Interface versioning** — schema_hash + SchemaMigration in registry.
-10. **Three presets** — desktop/selfhost/cloud = different drivers, same core.
+1. **Core → ports (traits) → drivers (impls)** — жёсткое направление зависимостей
+2. **Bins = composition roots** — склеивают core + drivers по config/features
+3. **ExecutionRepo = truth** — единственный источник истины (journal + CAS), events = проекции
+4. **Execution Plan → bounded budget** — никаких unbounded spawn
+5. **Sandbox: community = Isolated always** — CapabilityGated для first-party, Isolated (WASM) для community
+6. **Queue: at-least-once + idempotency** — формализованный порядок journal/ack + reaper
+7. **StaticConfig vs DynamicConfig** — drivers не меняются на лету
+8. **Resource policies** — eviction/TTL/pressure hooks
+9. **Interface versioning** — schema_hash + SchemaMigration в registry
+10. **Three presets** — desktop/selfhost/cloud = разные drivers, одно ядро

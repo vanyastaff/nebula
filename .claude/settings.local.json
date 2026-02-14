@@ -69,7 +69,8 @@
       "Bash(grep:*)",
       "Bash(wc:*)",
       "Bash(cargo doc:*)",
-      "mcp__filesystem__list_directory_with_sizes"
+      "mcp__filesystem__list_directory_with_sizes",
+      "Bash(git -C /c/Users/vanya/RustroverProjects/nebula branch -a)"
     ]
   }
 }

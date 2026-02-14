@@ -143,6 +143,25 @@ impl ValidationRule {
             message: None,
         }
     }
+
+    /// Set a custom error message on this rule (builder-style).
+    #[must_use]
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        match &mut self {
+            Self::MinLength { message: m, .. }
+            | Self::MaxLength { message: m, .. }
+            | Self::Pattern { message: m, .. }
+            | Self::Min { message: m, .. }
+            | Self::Max { message: m, .. }
+            | Self::OneOf { message: m, .. }
+            | Self::Custom { message: m, .. }
+            | Self::MinItems { message: m, .. }
+            | Self::MaxItems { message: m, .. } => {
+                *m = Some(message.into());
+            }
+        }
+        self
+    }
 }
 
 #[cfg(test)]
@@ -327,6 +346,37 @@ mod tests {
 
         let deserialized: ValidationRule = serde_json::from_str(&json).unwrap();
         assert_eq!(rule, deserialized);
+    }
+
+    #[test]
+    fn with_message_sets_custom_message() {
+        let rule = ValidationRule::min_length(3).with_message("too short!");
+        match &rule {
+            ValidationRule::MinLength { length, message } => {
+                assert_eq!(*length, 3);
+                assert_eq!(message.as_deref(), Some("too short!"));
+            }
+            _ => panic!("expected MinLength"),
+        }
+    }
+
+    #[test]
+    fn with_message_works_on_all_variants() {
+        let rules = vec![
+            ValidationRule::min_length(1).with_message("a"),
+            ValidationRule::max_length(10).with_message("b"),
+            ValidationRule::pattern(".*").with_message("c"),
+            ValidationRule::min(0.0).with_message("d"),
+            ValidationRule::max(100.0).with_message("e"),
+            ValidationRule::min_items(1).with_message("f"),
+            ValidationRule::max_items(10).with_message("g"),
+        ];
+
+        let expected = ["a", "b", "c", "d", "e", "f", "g"];
+        for (rule, msg) in rules.iter().zip(expected.iter()) {
+            let json = serde_json::to_string(rule).unwrap();
+            assert!(json.contains(msg), "expected message {msg} in {json}");
+        }
     }
 
     #[test]

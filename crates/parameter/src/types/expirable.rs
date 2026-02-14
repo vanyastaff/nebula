@@ -25,7 +25,7 @@ pub struct ExpirableOptions {
 ///
 /// Runtime state (expires_at) belongs in the value layer, not schema.
 /// Use case: OAuth tokens, temporary credentials.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExpirableParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,
@@ -46,11 +46,7 @@ pub struct ExpirableParameter {
 impl ExpirableParameter {
     /// Create a new expirable parameter wrapping an inner parameter.
     #[must_use]
-    pub fn new(
-        key: impl Into<String>,
-        name: impl Into<String>,
-        inner: ParameterDef,
-    ) -> Self {
+    pub fn new(key: impl Into<String>, name: impl Into<String>, inner: ParameterDef) -> Self {
         Self {
             metadata: ParameterMetadata::new(key, name),
             inner: Box::new(inner),

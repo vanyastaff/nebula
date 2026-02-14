@@ -42,11 +42,7 @@ pub struct InteractionRequest {
 
 impl InteractionRequest {
     /// Create an approval request.
-    pub fn approval(
-        id: impl Into<String>,
-        prompt: impl Into<String>,
-        timeout: Duration,
-    ) -> Self {
+    pub fn approval(id: impl Into<String>, prompt: impl Into<String>, timeout: Duration) -> Self {
         Self {
             interaction_id: id.into(),
             interaction_type: InteractionType::Approval,
@@ -195,11 +191,7 @@ mod tests {
 
     #[test]
     fn approval_request() {
-        let req = InteractionRequest::approval(
-            "req-1",
-            "Approve this?",
-            Duration::from_secs(300),
-        );
+        let req = InteractionRequest::approval("req-1", "Approve this?", Duration::from_secs(300));
         assert_eq!(req.interaction_id, "req-1");
         assert!(matches!(req.interaction_type, InteractionType::Approval));
         assert_eq!(req.timeout, Duration::from_secs(300));
@@ -208,7 +200,8 @@ mod tests {
 
     #[test]
     fn form_request() {
-        let schema = serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}});
+        let schema =
+            serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}});
         let req = InteractionRequest::form(
             "form-1",
             "Enter details",
@@ -227,10 +220,7 @@ mod tests {
             vec!["staging".into(), "production".into()],
             Duration::from_secs(120),
         );
-        assert!(matches!(
-            req.interaction_type,
-            InteractionType::Selection
-        ));
+        assert!(matches!(req.interaction_type, InteractionType::Selection));
         let opts = req.options.unwrap();
         assert_eq!(opts.as_array().unwrap().len(), 2);
     }

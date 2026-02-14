@@ -21,7 +21,7 @@ pub struct ColorOptions {
 }
 
 /// A color picker parameter.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ColorParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,

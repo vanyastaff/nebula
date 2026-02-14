@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Resource budget for an entire workflow execution.
@@ -5,13 +6,14 @@ use std::time::Duration;
 /// The engine enforces these limits across all nodes in an execution.
 /// Individual actions do not see or enforce these — the engine/executor
 /// layer is responsible.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionBudget {
     /// Maximum nodes executing concurrently within this execution.
     pub max_concurrent_nodes: usize,
     /// Maximum total retry attempts across all nodes.
     pub max_total_retries: u32,
-    /// Maximum wall-clock time for the entire execution.
+    /// Maximum wall-clock time for the entire execution (serialized as milliseconds).
+    #[serde(with = "self::serde_duration_millis")]
     pub max_wall_time: Duration,
     /// Maximum total payload size across all node outputs (bytes).
     pub max_payload_bytes: u64,
@@ -32,7 +34,7 @@ impl Default for ExecutionBudget {
 }
 
 /// Policy controlling how data is passed between workflow nodes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataPassingPolicy {
     /// Maximum output size per node (bytes). Default: 10 MB.
     pub max_node_output_bytes: u64,
@@ -45,7 +47,7 @@ pub struct DataPassingPolicy {
 impl Default for DataPassingPolicy {
     fn default() -> Self {
         Self {
-            max_node_output_bytes: 10 * 1024 * 1024,   // 10 MB
+            max_node_output_bytes: 10 * 1024 * 1024,      // 10 MB
             max_total_execution_bytes: 100 * 1024 * 1024, // 100 MB
             large_data_strategy: LargeDataStrategy::Reject,
         }
@@ -53,12 +55,28 @@ impl Default for DataPassingPolicy {
 }
 
 /// Strategy for handling outputs that exceed the per-node size limit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LargeDataStrategy {
     /// Reject the output and return `ActionError::DataLimitExceeded`.
     Reject,
     /// Spill the output to blob storage, pass a `NodeOutputData::BlobRef` instead.
     SpillToBlob,
+}
+
+/// Serde helper for `Duration` serialized as milliseconds.
+pub(crate) mod serde_duration_millis {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S: Serializer>(duration: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        (duration.as_millis() as u64).serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
+        let millis = u64::deserialize(d)?;
+        Ok(Duration::from_millis(millis))
+    }
 }
 
 #[cfg(test)]

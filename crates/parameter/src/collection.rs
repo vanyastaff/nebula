@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::def::ParameterDef;
 
 /// An ordered collection of parameter definitions.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ParameterCollection {
     parameters: Vec<ParameterDef>,
 }
@@ -72,6 +72,11 @@ impl ParameterCollection {
     /// Iterate over all parameter definitions.
     pub fn iter(&self) -> impl Iterator<Item = &ParameterDef> {
         self.parameters.iter()
+    }
+
+    /// Iterate mutably over all parameter definitions.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ParameterDef> {
+        self.parameters.iter_mut()
     }
 }
 
@@ -198,6 +203,30 @@ mod tests {
 
         let col: ParameterCollection = defs.into_iter().collect();
         assert_eq!(col.len(), 2);
+    }
+
+    #[test]
+    fn iter_mut_modifies_in_place() {
+        let mut col = ParameterCollection::new()
+            .with(ParameterDef::Text(TextParameter::new("a", "A")))
+            .with(ParameterDef::Text(TextParameter::new("b", "B")));
+
+        for param in col.iter_mut() {
+            param.metadata_mut().required = true;
+        }
+
+        assert!(col.get(0).unwrap().is_required());
+        assert!(col.get(1).unwrap().is_required());
+    }
+
+    #[test]
+    fn partial_eq_collections() {
+        let a = ParameterCollection::new().with(ParameterDef::Text(TextParameter::new("x", "X")));
+        let b = ParameterCollection::new().with(ParameterDef::Text(TextParameter::new("x", "X")));
+        assert_eq!(a, b);
+
+        let c = ParameterCollection::new().with(ParameterDef::Text(TextParameter::new("y", "Y")));
+        assert_ne!(a, c);
     }
 
     #[test]

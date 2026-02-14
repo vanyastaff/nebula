@@ -16,7 +16,7 @@ pub enum NoticeType {
 /// A display-only parameter that shows a message to the user.
 ///
 /// Notice parameters have no value and no validation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NoticeParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,

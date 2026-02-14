@@ -21,7 +21,7 @@ pub struct TextareaOptions {
 }
 
 /// A multi-line text input parameter.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextareaParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,

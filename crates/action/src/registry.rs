@@ -89,10 +89,7 @@ impl std::fmt::Debug for ActionRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ActionRegistry")
             .field("count", &self.actions.len())
-            .field(
-                "keys",
-                &self.actions.keys().collect::<Vec<_>>(),
-            )
+            .field("keys", &self.actions.keys().collect::<Vec<_>>())
             .finish()
     }
 }

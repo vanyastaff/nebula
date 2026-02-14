@@ -25,7 +25,7 @@ pub struct TimeOptions {
 }
 
 /// A time-only picker parameter (no date component).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimeParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,

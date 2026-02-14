@@ -20,7 +20,7 @@ pub struct ObjectOptions {
 /// A fixed set of named child parameters grouped as an object.
 ///
 /// Use case: DB connection (host + port + user + password grouped).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObjectParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,
@@ -66,8 +66,8 @@ impl ObjectParameter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::TextParameter;
     use crate::types::NumberParameter;
+    use crate::types::TextParameter;
     use serde_json::json;
 
     #[test]

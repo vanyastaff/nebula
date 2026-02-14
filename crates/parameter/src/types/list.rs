@@ -28,7 +28,7 @@ pub struct ListOptions {
 /// A repeatable list of items sharing the same template.
 ///
 /// Use case: HTTP headers, email recipients.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ListParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,

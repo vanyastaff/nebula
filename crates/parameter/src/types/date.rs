@@ -21,7 +21,7 @@ pub struct DateOptions {
 }
 
 /// A date picker parameter (no time component).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DateParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,

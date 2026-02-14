@@ -1,10 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 /// The kind of a parameter, determining its UI widget and value semantics.
-///
-/// Phase 1 covers the 14 most common parameter kinds. Composite kinds
-/// (Collection, FixedCollection, ResourceLocator, etc.) will be added
-/// in a later phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParameterKind {
@@ -102,18 +98,40 @@ impl ParameterKind {
             Self::Hidden => &[HasValue, Serializable],
             Self::Notice => &[Displayable],
             Self::Object => &[
-                HasValue, Container, Displayable, Requirable, Validatable, Serializable,
+                HasValue,
+                Container,
+                Displayable,
+                Requirable,
+                Validatable,
+                Serializable,
             ],
             Self::List => &[
-                HasValue, Container, Editable, Displayable, Requirable, Validatable, Interactive,
+                HasValue,
+                Container,
+                Editable,
+                Displayable,
+                Requirable,
+                Validatable,
+                Interactive,
                 Serializable,
             ],
             Self::Mode => &[
-                HasValue, Container, Editable, Displayable, Requirable, Interactive, Serializable,
+                HasValue,
+                Container,
+                Editable,
+                Displayable,
+                Requirable,
+                Interactive,
+                Serializable,
             ],
             Self::Group => &[Container, Displayable],
             Self::Expirable => &[
-                HasValue, Container, Displayable, Requirable, Validatable, Serializable,
+                HasValue,
+                Container,
+                Displayable,
+                Requirable,
+                Validatable,
+                Serializable,
             ],
         }
     }
@@ -364,7 +382,9 @@ mod tests {
 
     #[test]
     fn value_types_are_valid() {
-        let valid = ["string", "number", "boolean", "any", "array", "none", "object"];
+        let valid = [
+            "string", "number", "boolean", "any", "array", "none", "object",
+        ];
         let kinds = [
             ParameterKind::Text,
             ParameterKind::Textarea,
@@ -443,11 +463,7 @@ mod tests {
         ];
 
         for kind in &containers {
-            assert!(
-                kind.is_container(),
-                "{:?} should be a container",
-                kind
-            );
+            assert!(kind.is_container(), "{:?} should be a container", kind);
         }
     }
 

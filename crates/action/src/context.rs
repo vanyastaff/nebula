@@ -56,10 +56,7 @@ impl ActionContext {
     }
 
     /// Create a context with pre-populated variables.
-    pub fn with_variables(
-        mut self,
-        vars: serde_json::Map<String, serde_json::Value>,
-    ) -> Self {
+    pub fn with_variables(mut self, vars: serde_json::Map<String, serde_json::Value>) -> Self {
         self.variables = Arc::new(RwLock::new(vars));
         self
     }

@@ -60,10 +60,13 @@ impl ThreadSafeChunk {
     /// Attempts to allocate from this chunk
     #[inline]
     fn try_alloc(&self, size: usize, align: usize) -> Option<*mut u8> {
+        let base = self.ptr.as_ptr() as usize;
         let mut current = self.used.load(Ordering::Relaxed);
 
         loop {
-            let aligned_pos = align_up(current, align);
+            // Align the absolute address, then convert back to offset
+            let aligned_addr = align_up(base + current, align);
+            let aligned_pos = aligned_addr - base;
             let new_used = aligned_pos + size;
 
             if new_used > self.capacity {

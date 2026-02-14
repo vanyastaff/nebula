@@ -5,7 +5,7 @@ use crate::metadata::ParameterMetadata;
 use crate::validation::ValidationRule;
 
 /// A hidden parameter that carries a value but is not shown in the UI.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HiddenParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,

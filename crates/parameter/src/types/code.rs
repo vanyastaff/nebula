@@ -36,7 +36,7 @@ pub struct CodeOptions {
 }
 
 /// A code editor parameter with syntax highlighting.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CodeParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,

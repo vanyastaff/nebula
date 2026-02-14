@@ -21,7 +21,7 @@ pub struct DateTimeOptions {
 }
 
 /// A combined date and time picker parameter.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DateTimeParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,

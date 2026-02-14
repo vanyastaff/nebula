@@ -15,7 +15,7 @@ pub enum ModeSelectorStyle {
 }
 
 /// A single variant within a mode parameter.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModeVariant {
     /// Unique key for this variant.
     pub key: String,
@@ -66,7 +66,7 @@ fn default_selector_style() -> ModeSelectorStyle {
 /// A mutually exclusive set of parameter groups.
 ///
 /// Use case: Auth method (API Key vs OAuth shows different fields).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModeParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,
@@ -145,8 +145,9 @@ mod tests {
                 .with_parameter(ParameterDef::Secret(SecretParameter::new("key", "Key"))),
         );
         p.variants.push(
-            ModeVariant::new("oauth", "OAuth")
-                .with_parameter(ParameterDef::Text(TextParameter::new("client_id", "Client ID"))),
+            ModeVariant::new("oauth", "OAuth").with_parameter(ParameterDef::Text(
+                TextParameter::new("client_id", "Client ID"),
+            )),
         );
 
         assert!(p.get_variant("api_key").is_some());
@@ -161,13 +162,12 @@ mod tests {
         p.options = Some(ModeOptions {
             selector_style: ModeSelectorStyle::Tabs,
         });
-        p.variants.push(
-            ModeVariant::new("api_key", "API Key")
-                .with_parameter(ParameterDef::Secret(SecretParameter::new(
-                    "api_key",
-                    "API Key",
-                ))),
-        );
+        p.variants
+            .push(
+                ModeVariant::new("api_key", "API Key").with_parameter(ParameterDef::Secret(
+                    SecretParameter::new("api_key", "API Key"),
+                )),
+            );
         p.variants.push(ModeVariant::new("oauth", "OAuth"));
 
         let json = serde_json::to_string(&p).unwrap();

@@ -1,9 +1,12 @@
+use serde::{Deserialize, Serialize};
+
 /// How action output data is passed between workflow nodes.
 ///
 /// Small data is stored inline as JSON. Large data (exceeding the
 /// configured `DataPassingPolicy` limit) is spilled to blob storage,
 /// and only a reference is passed through the workflow graph.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum NodeOutputData {
     /// Small data — stored inline as JSON value.
     Inline(serde_json::Value),
@@ -62,15 +65,16 @@ mod tests {
         let data = NodeOutputData::inline(serde_json::json!({"result": 42}));
         assert!(data.is_inline());
         assert!(!data.is_blob_ref());
-        assert_eq!(
-            data.as_inline(),
-            Some(&serde_json::json!({"result": 42}))
-        );
+        assert_eq!(data.as_inline(), Some(&serde_json::json!({"result": 42})));
     }
 
     #[test]
     fn blob_ref_output() {
-        let data = NodeOutputData::blob("exec-123/node-456/output.json", 1_500_000, "application/json");
+        let data = NodeOutputData::blob(
+            "exec-123/node-456/output.json",
+            1_500_000,
+            "application/json",
+        );
         assert!(data.is_blob_ref());
         assert!(!data.is_inline());
         assert!(data.as_inline().is_none());

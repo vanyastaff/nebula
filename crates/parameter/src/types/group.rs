@@ -24,7 +24,7 @@ pub struct GroupOptions {
 ///
 /// Group carries no value — children's values are stored flat.
 /// Use case: "Advanced Settings" collapsible section.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GroupParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,
@@ -77,7 +77,9 @@ mod tests {
     #[test]
     fn with_parameter_chains() {
         let p = GroupParameter::new("advanced", "Advanced")
-            .with_parameter(ParameterDef::Number(NumberParameter::new("timeout", "Timeout")))
+            .with_parameter(ParameterDef::Number(NumberParameter::new(
+                "timeout", "Timeout",
+            )))
             .with_parameter(ParameterDef::Checkbox(CheckboxParameter::new(
                 "debug",
                 "Debug Mode",
@@ -93,8 +95,7 @@ mod tests {
         let p = GroupParameter {
             metadata: ParameterMetadata::new("extra", "Extra Options"),
             parameters: vec![ParameterDef::Number(NumberParameter::new(
-                "retries",
-                "Retries",
+                "retries", "Retries",
             ))],
             options: Some(GroupOptions {
                 collapsible: true,

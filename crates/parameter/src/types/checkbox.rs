@@ -17,7 +17,7 @@ pub struct CheckboxOptions {
 }
 
 /// A boolean toggle parameter.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CheckboxParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,

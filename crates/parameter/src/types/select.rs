@@ -14,7 +14,7 @@ pub struct SelectOptions {
 }
 
 /// A single-choice dropdown parameter.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SelectParameter {
     #[serde(flatten)]
     pub metadata: ParameterMetadata,
