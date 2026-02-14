@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 /// The kind of a parameter, determining its UI widget and value semantics.
@@ -249,6 +251,12 @@ impl ParameterKind {
             Self::Group => "none",
             Self::Expirable => "any",
         }
+    }
+}
+
+impl fmt::Display for ParameterKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

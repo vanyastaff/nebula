@@ -96,7 +96,7 @@ impl DisplayCondition {
 }
 
 /// Holds current parameter values and validation state for display rule evaluation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct DisplayContext {
     values: HashMap<String, serde_json::Value>,
     validation: HashMap<String, bool>,
@@ -256,14 +256,10 @@ impl ParameterDisplay {
     pub fn dependencies(&self) -> Vec<String> {
         let mut deps = Vec::new();
         for rule_set in &self.show_when {
-            for dep in rule_set.dependencies() {
-                deps.push(dep);
-            }
+            deps.extend(rule_set.dependencies());
         }
         for rule_set in &self.hide_when {
-            for dep in rule_set.dependencies() {
-                deps.push(dep);
-            }
+            deps.extend(rule_set.dependencies());
         }
         deps.sort();
         deps.dedup();

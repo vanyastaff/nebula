@@ -40,8 +40,8 @@ impl ParameterValues {
     }
 
     /// Iterate over all keys.
-    pub fn keys(&self) -> impl Iterator<Item = &String> {
-        self.values.keys()
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.values.keys().map(String::as_str)
     }
 
     /// The number of values stored.
@@ -137,13 +137,13 @@ impl Index<&str> for ParameterValues {
 }
 
 /// A frozen copy of parameter values for snapshot/restore.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParameterSnapshot {
     values: HashMap<String, serde_json::Value>,
 }
 
 /// Describes the differences between two parameter value sets.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParameterDiff {
     /// Keys present in `other` but not in `self`.
     pub added: Vec<String>,
@@ -203,7 +203,7 @@ mod tests {
         vals.set("a", json!(1));
         vals.set("b", json!(2));
 
-        let mut keys: Vec<&String> = vals.keys().collect();
+        let mut keys: Vec<&str> = vals.keys().collect();
         keys.sort();
         assert_eq!(keys.len(), 2);
     }

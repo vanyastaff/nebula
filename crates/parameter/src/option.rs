@@ -36,7 +36,7 @@ impl SelectOption {
 }
 
 /// Where a select parameter gets its options from.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum OptionsSource {
     /// Options defined inline in the parameter schema.
