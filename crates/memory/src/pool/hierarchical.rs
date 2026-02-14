@@ -32,7 +32,7 @@ use crate::error::{MemoryError, MemoryResult};
 ///
 /// # Example
 /// ```
-/// use nebula_memory::pool::HierarchicalPool;
+/// use nebula_memory::pool::{HierarchicalPool, HierarchicalPoolExt};
 ///
 /// // Global pool
 /// let global_pool = HierarchicalPool::new(1000, || Vec::<u8>::with_capacity(4096));
@@ -90,9 +90,15 @@ impl<T: Poolable> HierarchicalPool<T> {
     ) -> Arc<Mutex<HierarchicalPool<T>>> {
         let parent_clone = parent.clone();
 
-        // Get factory from parent
+        // Child pools must not pre-warm because they borrow from parent instead
+        // of creating objects via factory
+        let child_config = super::PoolConfig {
+            initial_capacity: capacity,
+            pre_warm: false,
+            ..Default::default()
+        };
         let child = Arc::new(Mutex::new(Self {
-            local: ObjectPool::new(capacity, || {
+            local: ObjectPool::with_config(child_config, || {
                 unreachable!(
                     "Child pool factory should not be called directly; objects are borrowed from parent pool"
                 )

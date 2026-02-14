@@ -23,7 +23,7 @@ use std::time::Duration;
 
 pub use batch::BatchAllocator;
 pub use health::{HealthConfig, HealthMetrics, LeakDetectionReport, PoolHealth, PoolHealthMonitor};
-pub use hierarchical::HierarchicalPool;
+pub use hierarchical::{HierarchicalPool, HierarchicalPoolExt};
 pub use object_pool::{ObjectPool, PooledValue};
 pub use poolable::Poolable;
 pub use priority::PriorityPool;

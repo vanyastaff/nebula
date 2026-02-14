@@ -96,7 +96,8 @@ macro_rules! arena_str {
 ///
 /// # Examples
 /// ```
-/// use nebula_memory::{local_alloc, reset_local_arena};
+/// use nebula_memory::local_alloc;
+/// use nebula_memory::arena::reset_local_arena;
 ///
 /// let x = local_alloc!(42u32);
 /// let y = local_alloc!("hello");
@@ -119,7 +120,7 @@ macro_rules! local_alloc {
 /// typed_arena! {
 ///     u32 => [1, 2, 3, 4, 5] => |arena, values| {
 ///         assert_eq!(values.len(), 5);
-///         for (i, &val) in values.iter().enumerate() {
+///         for (i, val) in values.iter().enumerate() {
 ///             assert_eq!(**val, i as u32 + 1);
 ///         }
 ///     }
@@ -293,7 +294,7 @@ macro_rules! shared_arena {
 /// use nebula_memory::arena_alloc_or;
 ///
 /// let arena = Arena::new(Default::default());
-/// let x = arena_alloc_or!(arena, Ok::<i32, &str>(42), -1);
+/// let x = arena_alloc_or!(arena, 42i32, -1);
 /// assert_eq!(*x, 42);
 /// ```
 #[macro_export]
@@ -354,7 +355,7 @@ macro_rules! impl_arena_alloc {
 /// # Examples
 /// ```
 /// use nebula_memory::arena::Arena;
-/// use nebula_memory::arena_debug;
+/// use nebula_memory::{arena_config, arena_debug};
 ///
 /// let arena = Arena::new(arena_config! {
 ///     track_stats: true,

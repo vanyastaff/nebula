@@ -259,7 +259,7 @@ pub trait AllocatorInternal: private::Sealed + Allocator {
     /// # Examples
     ///
     /// ```rust
-    /// # use nebula_memory::allocator::{BumpAllocator, sealed::AllocatorInternal};
+    /// # use nebula_memory::allocator::{Allocator, BumpAllocator, sealed::AllocatorInternal};
     /// # use nebula_memory::allocator::bump::BumpConfig;
     /// # use core::alloc::Layout;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {

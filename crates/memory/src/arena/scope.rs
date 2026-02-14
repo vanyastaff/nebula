@@ -91,14 +91,17 @@ impl Drop for ArenaScope {
 ///
 /// let mut arena = Arena::new(ArenaConfig::default());
 /// let outer = arena.alloc(1).unwrap();
+/// let outer_value = *outer; // Copy value before guard borrows arena
+/// let pos_before = arena.current_position();
 ///
 /// {
-///     let _guard = ArenaGuard::new(&mut arena);
-///     let _temp = arena.alloc(2).unwrap();
+///     let mut guard = ArenaGuard::new(&mut arena);
+///     let _temp = guard.arena_mut().alloc(2).unwrap();
 ///     // temp is automatically freed when guard is dropped
 /// }
 ///
-/// assert_eq!(*outer, 1);
+/// assert_eq!(outer_value, 1);
+/// assert_eq!(arena.current_position(), pos_before);
 /// ```
 #[must_use = "ArenaGuard does nothing unless held"]
 pub struct ArenaGuard<'a> {

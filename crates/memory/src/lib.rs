@@ -16,12 +16,12 @@
 //!
 //! // Use a memory pool for object reuse
 //! let mut pool = ObjectPool::new(10, || String::new());
-//! let item = pool.get()?;
+//! let item = pool.get().unwrap();
 //! // item is automatically returned to pool when dropped
 //!
 //! // Use an arena for fast bulk allocation
-//! let arena = Arena::new();
-//! let data = arena.alloc_slice::<u64>(1000);
+//! let arena = Arena::new(Default::default());
+//! let data = arena.alloc_slice(&[0u64; 100]).unwrap();
 //! // entire arena is freed at once when dropped
 //! ```
 //!
@@ -166,8 +166,6 @@ use nebula_log::{debug, info};
 /// # Examples
 ///
 /// ```rust
-/// use nebula_memory;
-///
 /// fn main() -> nebula_memory::MemoryResult<()> {
 ///     nebula_memory::init()?;
 ///

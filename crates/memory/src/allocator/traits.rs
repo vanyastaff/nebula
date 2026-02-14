@@ -477,8 +477,7 @@ pub unsafe trait ThreadSafeAllocator: Allocator + Sync + Send {}
 ///
 /// # Examples
 /// ```rust
-/// use nebula_memory::prelude::*;
-/// use nebula_memory::allocator::TypedAllocator;
+/// use nebula_memory::allocator::{BumpAllocator, TypedAllocator};
 ///
 /// let allocator = BumpAllocator::new(4096)?;
 ///
@@ -511,8 +510,7 @@ pub trait TypedAllocator: Allocator {
     ///
     /// # Examples
     /// ```rust
-    /// use nebula_memory::prelude::*;
-    /// use nebula_memory::allocator::TypedAllocator;
+    /// use nebula_memory::allocator::{BumpAllocator, TypedAllocator};
     ///
     /// let allocator = BumpAllocator::new(1024)?;
     /// let ptr = unsafe { allocator.alloc_typed::<u64>()? };
@@ -547,8 +545,7 @@ pub trait TypedAllocator: Allocator {
     ///
     /// # Examples
     /// ```rust
-    /// use nebula_memory::prelude::*;
-    /// use nebula_memory::allocator::TypedAllocator;
+    /// use nebula_memory::allocator::{BumpAllocator, TypedAllocator};
     ///
     /// let allocator = BumpAllocator::new(1024)?;
     /// let ptr = unsafe { allocator.alloc_init(String::from("hello"))? };
@@ -584,8 +581,7 @@ pub trait TypedAllocator: Allocator {
     ///
     /// # Examples
     /// ```rust
-    /// use nebula_memory::prelude::*;
-    /// use nebula_memory::allocator::TypedAllocator;
+    /// use nebula_memory::allocator::{BumpAllocator, TypedAllocator};
     ///
     /// let allocator = BumpAllocator::new(1024)?;
     /// let ptr = unsafe { allocator.alloc_array::<u32>(10)? };
@@ -627,8 +623,7 @@ pub trait TypedAllocator: Allocator {
     ///
     /// # Examples
     /// ```rust
-    /// use nebula_memory::prelude::*;
-    /// use nebula_memory::allocator::TypedAllocator;
+    /// use nebula_memory::allocator::{BumpAllocator, TypedAllocator};
     ///
     /// let allocator = BumpAllocator::new(1024)?;
     /// let ptr = unsafe { allocator.alloc_array_with::<u32>(5, 42)? };
@@ -709,8 +704,7 @@ pub trait TypedAllocator: Allocator {
     ///
     /// # Example
     /// ```rust
-    /// use nebula_memory::prelude::*;
-    /// use nebula_memory::allocator::TypedAllocator;
+    /// use nebula_memory::allocator::{BumpAllocator, TypedAllocator};
     ///
     /// let allocator = BumpAllocator::new(1024)?;
     /// let value = allocator.try_alloc_value(String::from("hello"))?;
@@ -739,8 +733,7 @@ pub trait TypedAllocator: Allocator {
     ///
     /// # Example
     /// ```rust
-    /// use nebula_memory::prelude::*;
-    /// use nebula_memory::allocator::TypedAllocator;
+    /// use nebula_memory::allocator::{BumpAllocator, TypedAllocator};
     ///
     /// let allocator = BumpAllocator::new(1024)?;
     /// let array = allocator.try_alloc_array_with(10, 42u32)?;

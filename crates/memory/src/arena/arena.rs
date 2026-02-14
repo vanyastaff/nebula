@@ -472,6 +472,8 @@ impl Arena {
     /// use nebula_memory::arena::{Arena, ArenaConfig};
     ///
     /// let mut arena = Arena::new(ArenaConfig::default());
+    /// // Force chunk creation so position captures a valid chunk pointer
+    /// let _init = arena.alloc(0u8).unwrap();
     /// let pos = arena.current_position();
     /// let _temp = arena.alloc(42).unwrap();
     /// arena.reset_to_position(pos).unwrap();

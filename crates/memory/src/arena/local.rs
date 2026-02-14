@@ -308,14 +308,12 @@ pub fn reset_local_arena() {
 ///
 /// # Examples
 /// ```
-/// use nebula_memory::arena::local::with_arena;
+/// use nebula_memory::arena::with_arena;
 ///
 /// with_arena(|arena| {
-///     let x = arena.alloc(42)?;
+///     let x = arena.alloc(42u32).unwrap();
 ///     assert_eq!(*x, 42);
-///     Ok::<_, nebula_memory::MemoryError>(())
-/// }).unwrap();
-/// # Ok::<(), nebula_memory::MemoryError>(())
+/// });
 /// ```
 pub fn with_arena<F, R>(f: F) -> R
 where
