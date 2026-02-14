@@ -3625,6 +3625,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "nebula-core",
+ "nebula-parameter",
  "parking_lot",
  "pretty_assertions",
  "serde",

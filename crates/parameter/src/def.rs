@@ -4,6 +4,7 @@ use crate::display::ParameterDisplay;
 use crate::kind::ParameterKind;
 use crate::metadata::ParameterMetadata;
 use crate::types::*;
+use crate::validation::ValidationRule;
 
 /// A concrete parameter definition, tagged by type.
 ///
@@ -177,6 +178,33 @@ impl ParameterDef {
     #[must_use]
     pub fn is_sensitive(&self) -> bool {
         self.metadata().sensitive
+    }
+
+    /// Access the validation rules attached to this parameter.
+    ///
+    /// Notice and Group parameters carry no validation rules and return `&[]`.
+    #[must_use]
+    pub fn validation_rules(&self) -> &[ValidationRule] {
+        match self {
+            Self::Text(p) => &p.validation,
+            Self::Textarea(p) => &p.validation,
+            Self::Code(p) => &p.validation,
+            Self::Secret(p) => &p.validation,
+            Self::Number(p) => &p.validation,
+            Self::Checkbox(p) => &p.validation,
+            Self::Select(p) => &p.validation,
+            Self::MultiSelect(p) => &p.validation,
+            Self::Color(p) => &p.validation,
+            Self::DateTime(p) => &p.validation,
+            Self::Date(p) => &p.validation,
+            Self::Time(p) => &p.validation,
+            Self::Hidden(p) => &p.validation,
+            Self::Object(p) => &p.validation,
+            Self::List(p) => &p.validation,
+            Self::Mode(p) => &p.validation,
+            Self::Expirable(p) => &p.validation,
+            Self::Notice(_) | Self::Group(_) => &[],
+        }
     }
 
     /// Returns references to child parameters for container types.

@@ -98,3 +98,8 @@ pub use types::trigger::{TriggerEvent, TriggerKind, WebhookRequest};
 pub use budget::{DataPassingPolicy, ExecutionBudget, LargeDataStrategy};
 pub use registry::ActionRegistry;
 pub use sandbox::SandboxedContext;
+
+// Re-export parameter types so action authors can define parameters without
+// depending on `nebula-parameter` directly.
+pub use nebula_parameter::collection::ParameterCollection;
+pub use nebula_parameter::def::ParameterDef;

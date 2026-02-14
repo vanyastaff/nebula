@@ -128,6 +128,64 @@ impl CredentialManager {
         Ok(())
     }
 
+    /// Store a credential after validating plaintext values against a schema
+    ///
+    /// Validates `values` against the `ParameterCollection` in `description`,
+    /// then delegates to [`store`](Self::store) for persistence.  The caller is
+    /// responsible for encrypting the credential data and passing both the
+    /// plaintext values (for validation) and the encrypted blob (for storage).
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - Unique credential identifier
+    /// * `description` - Credential type schema to validate against
+    /// * `values` - Plaintext parameter values to validate
+    /// * `data` - Pre-encrypted credential data for storage
+    /// * `metadata` - Credential metadata
+    /// * `context` - Request context (owner, scope, trace)
+    ///
+    /// # Errors
+    ///
+    /// * `ManagerError::SchemaValidation` - Values do not satisfy the schema
+    /// * `ManagerError::StorageError` - Storage operation fails after validation
+    pub async fn store_validated(
+        &self,
+        id: &CredentialId,
+        description: &crate::core::CredentialDescription,
+        values: &nebula_parameter::values::ParameterValues,
+        data: EncryptedData,
+        metadata: CredentialMetadata,
+        context: &CredentialContext,
+    ) -> ManagerResult<()> {
+        info!(
+            credential_id = %id,
+            credential_type = %description.key,
+            owner_id = %context.owner_id,
+            "Validating credential values against schema before store"
+        );
+
+        if let Err(errors) = description.properties.validate(values) {
+            warn!(
+                credential_id = %id,
+                credential_type = %description.key,
+                error_count = errors.len(),
+                "Credential schema validation failed"
+            );
+            return Err(ManagerError::SchemaValidation {
+                credential_type: description.key.clone(),
+                errors,
+            });
+        }
+
+        debug!(
+            credential_id = %id,
+            credential_type = %description.key,
+            "Schema validation passed, proceeding to store"
+        );
+
+        self.store(id, data, metadata, context).await
+    }
+
     /// Retrieve a credential by ID with cache-aside pattern
     ///
     /// # Cache Behavior

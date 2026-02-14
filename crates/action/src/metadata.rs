@@ -1,3 +1,4 @@
+use nebula_parameter::collection::ParameterCollection;
 use serde::{Deserialize, Serialize};
 
 use crate::capability::{Capability, IsolationLevel};
@@ -31,6 +32,13 @@ pub struct ActionMetadata {
     pub input_schema: Option<serde_json::Value>,
     /// JSON Schema for output validation (optional).
     pub output_schema: Option<serde_json::Value>,
+    /// User-facing configuration parameters for this action.
+    /// Describes the form fields shown in the workflow editor when configuring this node.
+    /// Validation of values against this collection is the engine's responsibility.
+    pub parameters: Option<ParameterCollection>,
+    /// Credential types this action requires, referenced by key.
+    /// The engine resolves these to actual credentials at runtime.
+    pub required_credentials: Vec<String>,
 }
 
 impl ActionMetadata {
@@ -51,6 +59,8 @@ impl ActionMetadata {
             execution_mode: ExecutionMode::Dynamic,
             input_schema: None,
             output_schema: None,
+            parameters: None,
+            required_credentials: Vec::new(),
         }
     }
 
@@ -93,6 +103,18 @@ impl ActionMetadata {
     /// Set the JSON Schema for output validation.
     pub fn with_output_schema(mut self, schema: serde_json::Value) -> Self {
         self.output_schema = Some(schema);
+        self
+    }
+
+    /// Set user-facing configuration parameters for this action.
+    pub fn with_parameters(mut self, parameters: ParameterCollection) -> Self {
+        self.parameters = Some(parameters);
+        self
+    }
+
+    /// Add a credential type this action requires.
+    pub fn with_required_credential(mut self, credential_key: impl Into<String>) -> Self {
+        self.required_credentials.push(credential_key.into());
         self
     }
 }
@@ -167,6 +189,67 @@ mod tests {
         assert_eq!(meta.isolation_level, IsolationLevel::default());
         assert_eq!(meta.execution_mode, ExecutionMode::Dynamic);
         assert!(meta.capabilities.is_empty());
+        assert!(meta.input_schema.is_none());
+        assert!(meta.output_schema.is_none());
+        assert!(meta.parameters.is_none());
+        assert!(meta.required_credentials.is_empty());
+    }
+
+    #[test]
+    fn with_parameters_builder() {
+        use nebula_parameter::prelude::*;
+
+        let params = ParameterCollection::new()
+            .with(ParameterDef::Text(TextParameter::new("url", "URL")))
+            .with(ParameterDef::Select(SelectParameter::new(
+                "method", "Method",
+            )));
+
+        let meta = ActionMetadata::new("http.request", "HTTP Request", "Make HTTP calls")
+            .with_parameters(params);
+
+        let params = meta.parameters.expect("parameters should be Some");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params.get_by_key("url").unwrap().key(), "url");
+        assert_eq!(params.get_by_key("method").unwrap().key(), "method");
+    }
+
+    #[test]
+    fn with_required_credential_builder() {
+        let meta = ActionMetadata::new("slack.send", "Slack Send", "Send a Slack message")
+            .with_required_credential("slack_oauth")
+            .with_required_credential("webhook_secret");
+
+        assert_eq!(meta.required_credentials.len(), 2);
+        assert_eq!(meta.required_credentials[0], "slack_oauth");
+        assert_eq!(meta.required_credentials[1], "webhook_secret");
+    }
+
+    #[test]
+    fn builder_chaining_all_new_fields() {
+        use nebula_parameter::prelude::*;
+
+        let params = ParameterCollection::new()
+            .with(ParameterDef::Text(TextParameter::new("channel", "Channel")));
+
+        let meta = ActionMetadata::new("slack.send", "Slack Send", "Send message")
+            .with_category("messaging")
+            .with_parameters(params)
+            .with_required_credential("slack_oauth")
+            .with_execution_mode(ExecutionMode::Dynamic);
+
+        assert_eq!(meta.category, "messaging");
+        assert!(meta.parameters.is_some());
+        assert_eq!(meta.required_credentials, vec!["slack_oauth"]);
+        assert_eq!(meta.execution_mode, ExecutionMode::Dynamic);
+    }
+
+    #[test]
+    fn parameters_none_by_default() {
+        let meta = ActionMetadata::new("noop", "No-Op", "Does nothing");
+        assert!(meta.parameters.is_none());
+        assert!(meta.required_credentials.is_empty());
+        // Existing fields still have their defaults
         assert!(meta.input_schema.is_none());
         assert!(meta.output_schema.is_none());
     }

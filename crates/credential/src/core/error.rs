@@ -125,6 +125,13 @@ pub enum ManagerError {
         failed: usize,
         errors: Vec<(String, Box<ManagerError>)>,
     },
+
+    /// Credential values failed validation against the credential type schema
+    #[error("Schema validation failed for credential type '{credential_type}': {errors:?}")]
+    SchemaValidation {
+        credential_type: String,
+        errors: Vec<nebula_parameter::error::ParameterError>,
+    },
 }
 
 impl ManagerError {
