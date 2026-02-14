@@ -154,11 +154,9 @@ impl DisplayRule {
             return context.get_validation(&self.field).unwrap_or(false);
         }
 
-        let value = context
-            .get(&self.field)
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-        self.condition.evaluate(&value)
+        let null = serde_json::Value::Null;
+        let value = context.get(&self.field).unwrap_or(&null);
+        self.condition.evaluate(value)
     }
 }
 

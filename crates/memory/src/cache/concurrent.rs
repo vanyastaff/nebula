@@ -148,22 +148,24 @@ where
         self.config.max_entries
     }
 
-    /// Simple LRU eviction: remove the oldest entry
+    /// Simple eviction: remove one arbitrary entry
     ///
-    /// This is a simplified eviction strategy that doesn't track access order perfectly
-    /// (to maintain lock-free performance), but removes entries when capacity is reached.
+    /// Uses an atomic flag with `retain` to remove exactly one entry,
+    /// avoiding potential deadlocks from `iter()` + `remove()` on `DashMap`.
     fn evict_lru(&self) -> MemoryResult<()> {
         if self.entries.is_empty() {
             return Ok(());
         }
 
-        // Find the first entry and remove it (simple FIFO-like behavior)
-        // In a production system, you might want a more sophisticated strategy
-        if let Some(entry) = self.entries.iter().next() {
-            let key = entry.key().clone();
-            drop(entry); // Release the reference before removing
-            self.entries.remove(&key);
-        }
+        let removed = std::sync::atomic::AtomicBool::new(false);
+        self.entries.retain(|_, _| {
+            if removed.load(std::sync::atomic::Ordering::Relaxed) {
+                true // keep remaining entries
+            } else {
+                removed.store(true, std::sync::atomic::Ordering::Relaxed);
+                false // remove this one entry
+            }
+        });
 
         Ok(())
     }
