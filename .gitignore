@@ -310,3 +310,6 @@ docker-compose.override.yml
 # Upgrade/migration planning files
 crates/nebula-validator/upgrade/.temp/
 /.temp/
+
+# Debug output artifacts
+check_output.txt

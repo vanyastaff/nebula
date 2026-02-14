@@ -1,0 +1,59 @@
+[package]
+name = "nebula-resilience"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+# Async and concurrency
+async-trait = "0.1"
+futures = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
+
+# Errors and serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# Utilities
+parking_lot = { workspace = true, features = ["arc_lock", "serde"] }
+dashmap = { workspace = true }
+humantime-serde = "1.1.1"
+governor = "0.10"
+tokio-util = { version = "0.7", features = ["rt"] }
+fastrand = "2.1"
+tracing = { workspace = true }
+
+# Internal crates
+nebula-config = { path = "../config" }
+nebula-core = { path = "../core" }
+nebula-log = { path = "../log" }
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
+rand = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[[bench]]
+name = "circuit_breaker"
+harness = false
+
+[[bench]]
+name = "rate_limiter"
+harness = false
+
+[[bench]]
+name = "manager"
+harness = false
+
+[[bench]]
+name = "retry"
+harness = false

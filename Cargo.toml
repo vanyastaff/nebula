@@ -1,16 +1,16 @@
 [workspace]
 members = [
-    "crates/nebula-action",
-    "crates/nebula-config",
-    "crates/nebula-core",
-    "crates/nebula-credential",
-    "crates/nebula-expression",
-    "crates/nebula-log",
-    "crates/nebula-memory",
-    "crates/nebula-resilience",
-    "crates/nebula-resource",
-    "crates/nebula-system",
-    "crates/nebula-validator",
+    "crates/action",
+    "crates/config",
+    "crates/core",
+    "crates/credential",
+    "crates/expression",
+    "crates/log",
+    "crates/memory",
+    "crates/resilience",
+    "crates/resource",
+    "crates/system",
+    "crates/validator",
 ]
 exclude = [
     "crates/*/fuzz",
@@ -72,7 +72,7 @@ rust_decimal = { version = "1.39", features = ["serde"] }
 regex = "1.11"
 url = "2.5"
 base64 = "0.22.1"
-bytes = "1.11.0"
+bytes = "1.11.1"
 
 # Random number generation
 rand = "0.9.2"

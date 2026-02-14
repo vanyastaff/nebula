@@ -1,0 +1,123 @@
+[package]
+name = "nebula-resource"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[features]
+default = ["std", "tokio", "serde"]
+
+# Core features
+std = ["tokio/rt", "tracing/std"]
+alloc = []
+
+# Runtime features
+tokio = ["dep:tokio"]
+
+# Serialization
+serde = ["dep:serde", "dep:serde_json", "dep:serde_yaml"]
+
+# Observability
+metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
+tracing = ["dep:tracing", "dep:tracing-opentelemetry", "dep:opentelemetry"]
+
+# Security
+credentials = ["nebula-credential"]
+
+# Pooling strategies (using custom implementation)
+pooling = []
+
+# Database support
+postgres = ["dep:sqlx", "sqlx?/postgres"]
+mysql = ["dep:sqlx", "sqlx?/mysql"]
+mongodb = ["dep:mongodb"]
+redis = ["dep:redis"]
+
+# HTTP client support
+http-client = ["dep:reqwest"]
+
+# Kafka message queue support
+kafka = ["dep:rdkafka"]
+
+# Testing utilities
+testing = ["dep:mockall", "dep:test-case"]
+
+# Full feature set (for examples and benchmarks)
+full = [
+    "std", "tokio", "serde", "metrics", "tracing",
+    "credentials", "pooling", "testing"
+]
+
+[dependencies]
+# Nebula ecosystem
+nebula-log = { path = "../log" }
+nebula-credential = { path = "../credential", optional = true }
+nebula-resilience = { path = "../resilience" }
+
+# Async runtime
+tokio = { version = "1.0", features = ["rt-multi-thread", "time", "sync", "macros"], optional = true }
+futures = "0.3"
+
+# Core utilities
+async-trait = { workspace = true }
+pin-project-lite = "0.2"
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
+serde_yaml = { version = "0.9", optional = true }
+
+# Collections and data structures
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+crossbeam = "0.8"
+
+# Observability
+tracing = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+metrics = { workspace = true, optional = true }
+metrics-exporter-prometheus = { workspace = true, optional = true }
+
+# Time and scheduling
+chrono = { workspace = true }
+
+# Database drivers
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "uuid", "chrono"], optional = true }
+mongodb = { version = "3.1", optional = true }
+redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"], optional = true }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream", "cookies"], default-features = false, optional = true }
+
+# Message queue
+rdkafka = { version = "0.38", features = ["tokio"], optional = true }
+
+# Resource pooling (custom implementation)
+# Note: deadpool and bb8 removed - we use custom pool implementation
+
+# Configuration and validation
+base64 = { workspace = true }
+
+# Development and testing
+mockall = { workspace = true, optional = true }
+test-case = { version = "3.3.1", optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+criterion = { workspace = true }
+proptest = { workspace = true }
+test-case = "3.3.1"
+mockall = { workspace = true }
+tempfile = { workspace = true }
+testcontainers = "0.26"
+testcontainers-modules = { version = "0.14", features = ["postgres"] }
