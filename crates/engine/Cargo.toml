@@ -1,0 +1,29 @@
+[package]
+name = "nebula-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Workflow execution engine for Nebula"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nebula-core = { path = "../core" }
+nebula-action = { path = "../action" }
+nebula-workflow = { path = "../workflow" }
+nebula-execution = { path = "../execution" }
+nebula-runtime = { path = "../runtime" }
+nebula-telemetry = { path = "../telemetry" }
+
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+dashmap = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+nebula-sandbox-inprocess = { path = "../drivers/sandbox-inprocess" }
+async-trait = { workspace = true }
+chrono = { workspace = true }
