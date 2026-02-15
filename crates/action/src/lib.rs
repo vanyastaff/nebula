@@ -75,6 +75,8 @@ pub mod handler;
 pub mod metadata;
 /// Output data representations (inline JSON and blob references).
 pub mod output;
+/// Port definitions describing action input/output connection points.
+pub mod port;
 /// Convenience re-exports for action authors.
 pub mod prelude;
 /// Action registry for type-erased discovery and lookup.
@@ -100,6 +102,7 @@ pub use output::{
     Overflow, PollTarget, Producer, ProducerKind, Progress, Resolution, StreamMode, StreamOutput,
     StreamState, Timing, TokenUsage,
 };
+pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
 pub use types::InteractiveAction;
 pub use types::ProcessAction;

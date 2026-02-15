@@ -4,6 +4,7 @@ use nebula_parameter::collection::ParameterCollection;
 use serde::{Deserialize, Serialize};
 
 use crate::capability::{Capability, IsolationLevel};
+use crate::port::{self, InputPort, OutputPort};
 
 // Re-export from core so downstream code can continue using `nebula_action::InterfaceVersion`.
 pub use nebula_core::InterfaceVersion;
@@ -50,6 +51,12 @@ pub struct ActionMetadata {
     /// The kind of action this metadata describes.
     /// Used as a default when implementing [`Action::action_type`](crate::Action::action_type).
     pub action_type: ActionType,
+    /// Input ports this action accepts.
+    /// Defaults to a single flow input `"in"`.
+    pub inputs: Vec<InputPort>,
+    /// Output ports this action produces.
+    /// Defaults to a single main flow output `"out"`.
+    pub outputs: Vec<OutputPort>,
 }
 
 impl ActionMetadata {
@@ -75,6 +82,8 @@ impl ActionMetadata {
             retry_policy: None,
             timeout_policy: None,
             action_type: ActionType::Process,
+            inputs: port::default_input_ports(),
+            outputs: port::default_output_ports(),
         }
     }
 
@@ -147,6 +156,18 @@ impl ActionMetadata {
     /// Set the action type discriminant.
     pub fn with_action_type(mut self, action_type: ActionType) -> Self {
         self.action_type = action_type;
+        self
+    }
+
+    /// Set the input port definitions for this action.
+    pub fn with_inputs(mut self, inputs: Vec<InputPort>) -> Self {
+        self.inputs = inputs;
+        self
+    }
+
+    /// Set the output port definitions for this action.
+    pub fn with_outputs(mut self, outputs: Vec<OutputPort>) -> Self {
+        self.outputs = outputs;
         self
     }
 }
@@ -345,6 +366,13 @@ mod tests {
         assert!(meta.required_credentials.is_empty());
         assert!(meta.retry_policy.is_none());
         assert!(meta.timeout_policy.is_none());
+        // Default ports
+        assert_eq!(meta.inputs.len(), 1);
+        assert!(meta.inputs[0].is_flow());
+        assert_eq!(meta.inputs[0].key(), "in");
+        assert_eq!(meta.outputs.len(), 1);
+        assert!(meta.outputs[0].is_flow());
+        assert_eq!(meta.outputs[0].key(), "out");
     }
 
     #[test]
@@ -477,5 +505,85 @@ mod tests {
         let timeout = meta.timeout_policy.unwrap();
         assert_eq!(timeout.start_to_close, Some(Duration::from_secs(10)));
         assert_eq!(timeout.heartbeat, Some(Duration::from_secs(3)));
+    }
+
+    // ── Port builder tests ──────────────────────────────────────────
+
+    #[test]
+    fn with_inputs_builder() {
+        let meta = ActionMetadata::new("ai.agent", "AI Agent", "Run agent").with_inputs(vec![
+            InputPort::flow("in"),
+            InputPort::support("model", "AI Model", "Language model"),
+        ]);
+        assert_eq!(meta.inputs.len(), 2);
+        assert!(meta.inputs[0].is_flow());
+        assert!(meta.inputs[1].is_support());
+        assert_eq!(meta.inputs[1].key(), "model");
+    }
+
+    #[test]
+    fn with_outputs_builder() {
+        use crate::port::FlowKind;
+
+        let meta = ActionMetadata::new("http.request", "HTTP Request", "Make calls")
+            .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")]);
+        assert_eq!(meta.outputs.len(), 2);
+        if let OutputPort::Flow { kind, .. } = &meta.outputs[0] {
+            assert_eq!(*kind, FlowKind::Main);
+        }
+        if let OutputPort::Flow { kind, .. } = &meta.outputs[1] {
+            assert_eq!(*kind, FlowKind::Error);
+        }
+    }
+
+    #[test]
+    fn with_dynamic_output() {
+        let meta = ActionMetadata::new("flow.switch", "Switch", "Route by conditions")
+            .with_inputs(vec![InputPort::flow("in")])
+            .with_outputs(vec![OutputPort::dynamic("rule", "rules")]);
+        assert_eq!(meta.outputs.len(), 1);
+        assert!(meta.outputs[0].is_dynamic());
+        assert_eq!(meta.outputs[0].key(), "rule");
+    }
+
+    #[test]
+    fn with_support_input_full_config() {
+        use crate::port::{ConnectionFilter, SupportPort};
+
+        let meta = ActionMetadata::new("ai.agent", "AI Agent", "Run agent").with_inputs(vec![
+            InputPort::flow("in"),
+            InputPort::Support(SupportPort {
+                key: "tools".into(),
+                name: "Tools".into(),
+                description: "Agent tools".into(),
+                required: false,
+                multi: true,
+                filter: ConnectionFilter::new().with_allowed_tags(vec!["langchain_tool".into()]),
+            }),
+        ]);
+        assert_eq!(meta.inputs.len(), 2);
+        if let InputPort::Support(s) = &meta.inputs[1] {
+            assert!(s.multi);
+            assert!(!s.required);
+            assert!(!s.filter.is_empty());
+        } else {
+            panic!("expected Support port");
+        }
+    }
+
+    #[test]
+    fn builder_chaining_with_ports() {
+        let meta = ActionMetadata::new("test", "Test", "desc")
+            .with_category("test")
+            .with_version(2, 0)
+            .with_inputs(vec![InputPort::flow("in")])
+            .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")])
+            .with_execution_mode(ExecutionMode::Typed);
+
+        assert_eq!(meta.category, "test");
+        assert_eq!(meta.version, InterfaceVersion::new(2, 0));
+        assert_eq!(meta.inputs.len(), 1);
+        assert_eq!(meta.outputs.len(), 2);
+        assert_eq!(meta.execution_mode, ExecutionMode::Typed);
     }
 }

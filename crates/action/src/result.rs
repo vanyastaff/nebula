@@ -10,7 +10,9 @@ use crate::output::{ActionOutput, BinaryData, DataReference, DeferredOutput};
 pub type BranchKey = String;
 
 /// Type alias for action output port keys (e.g. `"main"`, `"error"`, `"filtered"`).
-pub type PortKey = String;
+///
+/// Canonical definition lives in [`crate::port`]; re-exported here for convenience.
+pub use crate::port::PortKey;
 
 /// Result of an action execution, carrying both data and flow-control intent.
 ///

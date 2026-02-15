@@ -14,6 +14,9 @@ pub use crate::output::{
     ActionOutput, DeferredOutput, ExpectedOutput, Producer, ProducerKind, Progress, Resolution,
     StreamMode, StreamOutput,
 };
+pub use crate::port::{
+    ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort,
+};
 pub use crate::result::ActionResult;
 pub use crate::types::InteractiveAction;
 pub use crate::types::ProcessAction;
