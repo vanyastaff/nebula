@@ -89,7 +89,9 @@ pub use action::Action;
 pub use capability::{Capability, IsolationLevel};
 pub use context::ActionContext;
 pub use error::ActionError;
-pub use metadata::{ActionMetadata, ActionType, ExecutionMode, InterfaceVersion};
+pub use metadata::{
+    ActionMetadata, ActionType, ExecutionMode, InterfaceVersion, RetryPolicy, TimeoutPolicy,
+};
 pub use output::NodeOutputData;
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
 pub use types::InteractiveAction;

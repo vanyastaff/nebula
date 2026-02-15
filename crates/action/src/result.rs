@@ -21,6 +21,7 @@ pub type PortKey = String;
 /// - `Route` / `MultiOutput` → fan-out to output ports
 /// - `Wait` → pause until external event, timer, or approval
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ActionResult<T> {
     /// Successful completion -- engine passes output to dependent nodes.
     Success {
@@ -97,10 +98,23 @@ pub enum ActionResult<T> {
         /// Partial output produced before pausing.
         partial_output: Option<T>,
     },
+
+    /// Request a retry after a delay.
+    ///
+    /// Unlike `ActionError::Retryable`, this is a *successful* signal that the
+    /// action wants to be re-executed (e.g. upstream data not ready, rate-limit
+    /// cooldown). The engine re-enqueues the node after `after` elapses.
+    Retry {
+        /// Suggested delay before re-execution.
+        after: Duration,
+        /// Human-readable reason for requesting the retry.
+        reason: String,
+    },
 }
 
 /// Reason a stateful iteration ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BreakReason {
     /// All work completed naturally.
     Completed,
@@ -114,6 +128,7 @@ pub enum BreakReason {
 
 /// Condition that must be met before a waiting action resumes.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum WaitCondition {
     /// Wait for an inbound HTTP callback.
     Webhook {
@@ -183,6 +198,11 @@ impl<T> ActionResult<T> {
         matches!(self, Self::Wait { .. })
     }
 
+    /// Returns `true` if the action is requesting a retry.
+    pub fn is_retry(&self) -> bool {
+        matches!(self, Self::Retry { .. })
+    }
+
     /// Transform the output value in every variant, preserving flow-control semantics.
     ///
     /// This is used by adapters to convert typed outputs to JSON and vice-versa.
@@ -235,6 +255,100 @@ impl<T> ActionResult<T> {
                 timeout,
                 partial_output: partial_output.map(&mut f),
             },
+            Self::Retry { after, reason } => ActionResult::Retry { after, reason },
+        }
+    }
+
+    /// Fallible version of [`map_output`](Self::map_output).
+    ///
+    /// The closure returns `Result<U, E>`. If any conversion fails the whole
+    /// operation short-circuits with that error. Used by adapters to safely
+    /// serialize typed outputs to JSON.
+    pub fn try_map_output<U, E>(
+        self,
+        mut f: impl FnMut(T) -> Result<U, E>,
+    ) -> Result<ActionResult<U>, E> {
+        match self {
+            Self::Success { output } => Ok(ActionResult::Success { output: f(output)? }),
+            Self::Skip { reason, output } => Ok(ActionResult::Skip {
+                reason,
+                output: output.map(&mut f).transpose()?,
+            }),
+            Self::Continue {
+                output,
+                progress,
+                delay,
+            } => Ok(ActionResult::Continue {
+                output: f(output)?,
+                progress,
+                delay,
+            }),
+            Self::Break { output, reason } => Ok(ActionResult::Break {
+                output: f(output)?,
+                reason,
+            }),
+            Self::Branch {
+                selected,
+                output,
+                alternatives,
+            } => {
+                let mapped_output = f(output)?;
+                let mapped_alts = alternatives
+                    .into_iter()
+                    .map(|(k, v)| Ok((k, f(v)?)))
+                    .collect::<Result<HashMap<_, _>, E>>()?;
+                Ok(ActionResult::Branch {
+                    selected,
+                    output: mapped_output,
+                    alternatives: mapped_alts,
+                })
+            }
+            Self::Route { port, data } => Ok(ActionResult::Route {
+                port,
+                data: f(data)?,
+            }),
+            Self::MultiOutput {
+                outputs,
+                main_output,
+            } => {
+                let mapped_outputs = outputs
+                    .into_iter()
+                    .map(|(k, v)| Ok((k, f(v)?)))
+                    .collect::<Result<HashMap<_, _>, E>>()?;
+                Ok(ActionResult::MultiOutput {
+                    outputs: mapped_outputs,
+                    main_output: main_output.map(&mut f).transpose()?,
+                })
+            }
+            Self::Wait {
+                condition,
+                timeout,
+                partial_output,
+            } => Ok(ActionResult::Wait {
+                condition,
+                timeout,
+                partial_output: partial_output.map(&mut f).transpose()?,
+            }),
+            Self::Retry { after, reason } => Ok(ActionResult::Retry { after, reason }),
+        }
+    }
+
+    /// Extract the primary output value, consuming `self`.
+    ///
+    /// Returns `Some(T)` for variants that carry a primary output.
+    /// Returns `None` for `Skip` without output, `Wait` without partial
+    /// output, `MultiOutput` without main output, and `Retry`.
+    pub fn into_primary_output(self) -> Option<T> {
+        match self {
+            Self::Success { output } => Some(output),
+            Self::Skip { output, .. } => output,
+            Self::Continue { output, .. } => Some(output),
+            Self::Break { output, .. } => Some(output),
+            Self::Branch { output, .. } => Some(output),
+            Self::Route { data, .. } => Some(data),
+            Self::MultiOutput { main_output, .. } => main_output,
+            Self::Wait { partial_output, .. } => partial_output,
+            Self::Retry { .. } => None,
         }
     }
 }
@@ -524,5 +638,190 @@ mod tests {
             }
             _ => panic!("expected Wait"),
         }
+    }
+
+    #[test]
+    fn map_output_retry() {
+        let r: ActionResult<i32> = ActionResult::Retry {
+            after: Duration::from_secs(5),
+            reason: "rate limited".into(),
+        };
+        let mapped = r.map_output(|n| n * 2);
+        match mapped {
+            ActionResult::Retry { after, reason } => {
+                assert_eq!(after, Duration::from_secs(5));
+                assert_eq!(reason, "rate limited");
+            }
+            _ => panic!("expected Retry"),
+        }
+    }
+
+    // ── retry tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn retry_result() {
+        let result: ActionResult<()> = ActionResult::Retry {
+            after: Duration::from_secs(10),
+            reason: "upstream not ready".into(),
+        };
+        assert!(result.is_retry());
+        assert!(!result.is_success());
+        assert!(!result.is_continue());
+        assert!(!result.is_waiting());
+    }
+
+    // ── try_map_output tests ─────────────────────────────────────────
+
+    #[test]
+    fn try_map_output_success_ok() {
+        let r = ActionResult::success(5);
+        let mapped = r.try_map_output(|n| Ok::<_, String>(n * 2));
+        match mapped.unwrap() {
+            ActionResult::Success { output } => assert_eq!(output, 10),
+            _ => panic!("expected Success"),
+        }
+    }
+
+    #[test]
+    fn try_map_output_success_err() {
+        let r = ActionResult::success(5);
+        let mapped = r.try_map_output(|_| Err::<i32, _>("serialization failed"));
+        assert_eq!(mapped.unwrap_err(), "serialization failed");
+    }
+
+    #[test]
+    fn try_map_output_skip_with_output() {
+        let r = ActionResult::skip_with_output("filtered", 3);
+        let mapped = r.try_map_output(|n| Ok::<_, String>(n.to_string()));
+        match mapped.unwrap() {
+            ActionResult::Skip { reason, output } => {
+                assert_eq!(reason, "filtered");
+                assert_eq!(output.as_deref(), Some("3"));
+            }
+            _ => panic!("expected Skip"),
+        }
+    }
+
+    #[test]
+    fn try_map_output_skip_none() {
+        let r: ActionResult<i32> = ActionResult::skip("no output");
+        let mapped = r.try_map_output(|n| Ok::<_, String>(n.to_string()));
+        match mapped.unwrap() {
+            ActionResult::Skip { output, .. } => assert!(output.is_none()),
+            _ => panic!("expected Skip"),
+        }
+    }
+
+    #[test]
+    fn try_map_output_branch_partial_failure() {
+        let mut alts = HashMap::new();
+        alts.insert("a".into(), 1);
+        alts.insert("b".into(), 2);
+        let r = ActionResult::Branch {
+            selected: "a".into(),
+            output: 10,
+            alternatives: alts,
+        };
+        // Fail on value 2 to test short-circuit
+        let mapped = r.try_map_output(|n| if n == 2 { Err("bad value") } else { Ok(n * 10) });
+        assert_eq!(mapped.unwrap_err(), "bad value");
+    }
+
+    #[test]
+    fn try_map_output_retry() {
+        let r: ActionResult<i32> = ActionResult::Retry {
+            after: Duration::from_secs(5),
+            reason: "retry".into(),
+        };
+        let mapped = r.try_map_output(|_| Err::<String, _>("should not be called"));
+        match mapped.unwrap() {
+            ActionResult::Retry { after, reason } => {
+                assert_eq!(after, Duration::from_secs(5));
+                assert_eq!(reason, "retry");
+            }
+            _ => panic!("expected Retry"),
+        }
+    }
+
+    // ── into_primary_output tests ────────────────────────────────────
+
+    #[test]
+    fn into_primary_output_success() {
+        let r = ActionResult::success(42);
+        assert_eq!(r.into_primary_output(), Some(42));
+    }
+
+    #[test]
+    fn into_primary_output_skip_some() {
+        let r = ActionResult::skip_with_output("reason", 7);
+        assert_eq!(r.into_primary_output(), Some(7));
+    }
+
+    #[test]
+    fn into_primary_output_skip_none() {
+        let r: ActionResult<i32> = ActionResult::skip("no data");
+        assert_eq!(r.into_primary_output(), None);
+    }
+
+    #[test]
+    fn into_primary_output_continue() {
+        let r: ActionResult<i32> = ActionResult::Continue {
+            output: 99,
+            progress: Some(0.5),
+            delay: None,
+        };
+        assert_eq!(r.into_primary_output(), Some(99));
+    }
+
+    #[test]
+    fn into_primary_output_branch() {
+        let r = ActionResult::Branch {
+            selected: "a".into(),
+            output: 10,
+            alternatives: HashMap::new(),
+        };
+        assert_eq!(r.into_primary_output(), Some(10));
+    }
+
+    #[test]
+    fn into_primary_output_route() {
+        let r = ActionResult::Route {
+            port: "out".into(),
+            data: 55,
+        };
+        assert_eq!(r.into_primary_output(), Some(55));
+    }
+
+    #[test]
+    fn into_primary_output_retry() {
+        let r: ActionResult<i32> = ActionResult::Retry {
+            after: Duration::from_secs(1),
+            reason: "wait".into(),
+        };
+        assert_eq!(r.into_primary_output(), None);
+    }
+
+    #[test]
+    fn into_primary_output_wait_none() {
+        let r: ActionResult<i32> = ActionResult::Wait {
+            condition: WaitCondition::Duration {
+                duration: Duration::from_secs(60),
+            },
+            timeout: None,
+            partial_output: None,
+        };
+        assert_eq!(r.into_primary_output(), None);
+    }
+
+    #[test]
+    fn into_primary_output_wait_some() {
+        let r: ActionResult<i32> = ActionResult::Wait {
+            condition: WaitCondition::Duration {
+                duration: Duration::from_secs(60),
+            },
+            timeout: None,
+            partial_output: Some(33),
+        };
+        assert_eq!(r.into_primary_output(), Some(33));
     }
 }

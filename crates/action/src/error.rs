@@ -6,6 +6,7 @@ use std::time::Duration;
 /// retry policy (backoff, max attempts, budget) without the action
 /// needing to know about resilience patterns.
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum ActionError {
     /// Transient failure — engine may retry based on its policy.
     ///

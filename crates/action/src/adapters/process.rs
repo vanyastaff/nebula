@@ -56,10 +56,11 @@ where
         // 3. Execute
         let result = self.action.execute(typed_input, &ctx).await?;
 
-        // 4. Serialize typed output into JSON via map_output
-        Ok(result.map_output(|output| {
-            serde_json::to_value(output).expect("action output must be serializable")
-        }))
+        // 4. Serialize typed output into JSON via try_map_output
+        result.try_map_output(|output| {
+            serde_json::to_value(output)
+                .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
+        })
     }
 
     fn metadata(&self) -> &ActionMetadata {

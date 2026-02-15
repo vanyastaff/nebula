@@ -206,6 +206,8 @@ fn primary_output(result: &ActionResult<serde_json::Value>) -> Option<&serde_jso
         ActionResult::Route { data, .. } => Some(data),
         ActionResult::MultiOutput { main_output, .. } => main_output.as_ref(),
         ActionResult::Wait { partial_output, .. } => partial_output.as_ref(),
+        ActionResult::Retry { .. } => None,
+        _ => None,
     }
 }
 

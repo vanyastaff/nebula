@@ -470,6 +470,8 @@ fn extract_primary_output(result: &ActionResult<serde_json::Value>) -> Option<se
         ActionResult::Route { data, .. } => Some(data.clone()),
         ActionResult::MultiOutput { main_output, .. } => main_output.clone(),
         ActionResult::Wait { partial_output, .. } => partial_output.clone(),
+        ActionResult::Retry { .. } => None,
+        _ => None,
     }
 }
 
