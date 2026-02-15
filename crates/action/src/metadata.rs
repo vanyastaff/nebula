@@ -21,8 +21,6 @@ pub struct ActionMetadata {
     pub name: String,
     /// Short description of what this action does.
     pub description: String,
-    /// Category for UI grouping (e.g. `"network"`, `"transform"`, `"database"`).
-    pub category: String,
     /// Interface version — changes only when input/output schema changes.
     pub version: InterfaceVersion,
     /// Capabilities this action requires from the runtime.
@@ -39,9 +37,9 @@ pub struct ActionMetadata {
     /// Describes the form fields shown in the workflow editor when configuring this node.
     /// Validation of values against this collection is the engine's responsibility.
     pub parameters: Option<ParameterCollection>,
-    /// Credential types this action requires, referenced by key.
-    /// The engine resolves these to actual credentials at runtime.
-    pub required_credentials: Vec<String>,
+    /// Credential type this action requires, referenced by key.
+    /// The engine resolves this to an actual credential at runtime.
+    pub credential: Option<String>,
     /// Declarative retry policy for this action.
     /// When set, the engine uses this to decide how to retry failed executions.
     pub retry_policy: Option<RetryPolicy>,
@@ -70,7 +68,6 @@ impl ActionMetadata {
             key: key.into(),
             name: name.into(),
             description: description.into(),
-            category: String::new(),
             version: InterfaceVersion::new(1, 0),
             capabilities: Vec::new(),
             isolation_level: IsolationLevel::default(),
@@ -78,19 +75,13 @@ impl ActionMetadata {
             input_schema: None,
             output_schema: None,
             parameters: None,
-            required_credentials: Vec::new(),
+            credential: None,
             retry_policy: None,
             timeout_policy: None,
             action_type: ActionType::Process,
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
         }
-    }
-
-    /// Set the UI category for this action.
-    pub fn with_category(mut self, category: impl Into<String>) -> Self {
-        self.category = category.into();
-        self
     }
 
     /// Set the interface version (major, minor).
@@ -135,9 +126,9 @@ impl ActionMetadata {
         self
     }
 
-    /// Add a credential type this action requires.
-    pub fn with_required_credential(mut self, credential_key: impl Into<String>) -> Self {
-        self.required_credentials.push(credential_key.into());
+    /// Set the credential type this action requires.
+    pub fn with_credential(mut self, credential_key: impl Into<String>) -> Self {
+        self.credential = Some(credential_key.into());
         self
     }
 
@@ -323,13 +314,11 @@ mod tests {
     #[test]
     fn metadata_builder() {
         let meta = ActionMetadata::new("http.request", "HTTP Request", "Make HTTP calls")
-            .with_category("network")
             .with_version(2, 1)
             .with_execution_mode(ExecutionMode::Typed);
 
         assert_eq!(meta.key, "http.request");
         assert_eq!(meta.name, "HTTP Request");
-        assert_eq!(meta.category, "network");
         assert_eq!(meta.version, InterfaceVersion::new(2, 1));
         assert_eq!(meta.execution_mode, ExecutionMode::Typed);
     }
@@ -363,7 +352,7 @@ mod tests {
         assert!(meta.input_schema.is_none());
         assert!(meta.output_schema.is_none());
         assert!(meta.parameters.is_none());
-        assert!(meta.required_credentials.is_empty());
+        assert!(meta.credential.is_none());
         assert!(meta.retry_policy.is_none());
         assert!(meta.timeout_policy.is_none());
         // Default ports
@@ -395,14 +384,10 @@ mod tests {
     }
 
     #[test]
-    fn with_required_credential_builder() {
+    fn with_credential_builder() {
         let meta = ActionMetadata::new("slack.send", "Slack Send", "Send a Slack message")
-            .with_required_credential("slack_oauth")
-            .with_required_credential("webhook_secret");
-
-        assert_eq!(meta.required_credentials.len(), 2);
-        assert_eq!(meta.required_credentials[0], "slack_oauth");
-        assert_eq!(meta.required_credentials[1], "webhook_secret");
+            .with_credential("slack_oauth");
+        assert_eq!(meta.credential.as_deref(), Some("slack_oauth"));
     }
 
     #[test]
@@ -413,14 +398,12 @@ mod tests {
             .with(ParameterDef::Text(TextParameter::new("channel", "Channel")));
 
         let meta = ActionMetadata::new("slack.send", "Slack Send", "Send message")
-            .with_category("messaging")
             .with_parameters(params)
-            .with_required_credential("slack_oauth")
+            .with_credential("slack_oauth")
             .with_execution_mode(ExecutionMode::Dynamic);
 
-        assert_eq!(meta.category, "messaging");
         assert!(meta.parameters.is_some());
-        assert_eq!(meta.required_credentials, vec!["slack_oauth"]);
+        assert_eq!(meta.credential.as_deref(), Some("slack_oauth"));
         assert_eq!(meta.execution_mode, ExecutionMode::Dynamic);
     }
 
@@ -428,7 +411,7 @@ mod tests {
     fn parameters_none_by_default() {
         let meta = ActionMetadata::new("noop", "No-Op", "Does nothing");
         assert!(meta.parameters.is_none());
-        assert!(meta.required_credentials.is_empty());
+        assert!(meta.credential.is_none());
         // Existing fields still have their defaults
         assert!(meta.input_schema.is_none());
         assert!(meta.output_schema.is_none());
@@ -574,13 +557,11 @@ mod tests {
     #[test]
     fn builder_chaining_with_ports() {
         let meta = ActionMetadata::new("test", "Test", "desc")
-            .with_category("test")
             .with_version(2, 0)
             .with_inputs(vec![InputPort::flow("in")])
             .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")])
             .with_execution_mode(ExecutionMode::Typed);
 
-        assert_eq!(meta.category, "test");
         assert_eq!(meta.version, InterfaceVersion::new(2, 0));
         assert_eq!(meta.inputs.len(), 1);
         assert_eq!(meta.outputs.len(), 2);

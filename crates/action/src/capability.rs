@@ -19,10 +19,6 @@ pub enum Capability {
         /// If `true`, only read access is permitted.
         read_only: bool,
     },
-    /// Access to a managed resource by ID.
-    Resource(String),
-    /// Access to a credential/secret by ID.
-    Credential(String),
     /// Maximum memory the action may consume.
     MaxMemory(usize),
     /// Maximum CPU time for action execution.
@@ -90,12 +86,6 @@ mod tests {
             }
             _ => panic!("expected Network"),
         }
-    }
-
-    #[test]
-    fn capability_credential() {
-        let cap = Capability::Credential("github-token".into());
-        assert_eq!(cap, Capability::Credential("github-token".into()));
     }
 
     #[test]

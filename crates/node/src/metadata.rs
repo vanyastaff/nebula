@@ -38,6 +38,10 @@ pub struct NodeMetadata {
     icon_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     documentation_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    color: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
 fn default_version() -> u32 {
@@ -56,6 +60,8 @@ impl NodeMetadata {
             icon: None,
             icon_url: None,
             documentation_url: None,
+            color: None,
+            tags: Vec::new(),
         }
     }
 
@@ -106,6 +112,18 @@ impl NodeMetadata {
     pub fn documentation_url(&self) -> Option<&str> {
         self.documentation_url.as_deref()
     }
+
+    /// Optional UI color.
+    #[inline]
+    pub fn color(&self) -> Option<&str> {
+        self.color.as_deref()
+    }
+
+    /// Tags for filtering and categorization.
+    #[inline]
+    pub fn tags(&self) -> &[String] {
+        &self.tags
+    }
 }
 
 /// Builder for [`NodeMetadata`].
@@ -118,6 +136,8 @@ pub struct NodeMetadataBuilder {
     icon: Option<String>,
     icon_url: Option<String>,
     documentation_url: Option<String>,
+    color: Option<String>,
+    tags: Vec<String>,
 }
 
 impl NodeMetadataBuilder {
@@ -157,6 +177,18 @@ impl NodeMetadataBuilder {
         self
     }
 
+    /// Set the UI color.
+    pub fn color(mut self, color: impl Into<String>) -> Self {
+        self.color = Some(color.into());
+        self
+    }
+
+    /// Set the tags.
+    pub fn tags(mut self, tags: Vec<String>) -> Self {
+        self.tags = tags;
+        self
+    }
+
     /// Validate and build the metadata.
     pub fn build(self) -> Result<NodeMetadata, NodeError> {
         let key: NodeKey = self.key.parse().map_err(NodeError::InvalidKey)?;
@@ -170,6 +202,8 @@ impl NodeMetadataBuilder {
             icon: self.icon,
             icon_url: self.icon_url,
             documentation_url: self.documentation_url,
+            color: self.color,
+            tags: self.tags,
         })
     }
 }

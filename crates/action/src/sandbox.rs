@@ -13,12 +13,23 @@ use crate::error::ActionError;
 pub struct SandboxedContext {
     inner: ActionContext,
     granted: Vec<Capability>,
+    allowed_credential: Option<String>,
 }
 
 impl SandboxedContext {
     /// Wrap an existing context with a set of granted capabilities.
     pub fn new(inner: ActionContext, granted: Vec<Capability>) -> Self {
-        Self { inner, granted }
+        Self {
+            inner,
+            granted,
+            allowed_credential: None,
+        }
+    }
+
+    /// Set the allowed credential for this sandboxed context.
+    pub fn with_allowed_credential(mut self, credential: Option<String>) -> Self {
+        self.allowed_credential = credential;
+        self
     }
 
     /// Access the underlying context (always available).
@@ -43,7 +54,13 @@ impl SandboxedContext {
 
     /// Check whether a credential is accessible.
     pub fn check_credential(&self, credential_id: &str) -> Result<(), ActionError> {
-        self.check_capability(&Capability::Credential(credential_id.to_owned()))
+        match &self.allowed_credential {
+            Some(allowed) if allowed == credential_id => Ok(()),
+            _ => Err(ActionError::SandboxViolation {
+                capability: format!("Credential({})", credential_id),
+                action_id: self.inner.node_id.to_string(),
+            }),
+        }
     }
 
     /// Check whether network access to a host is allowed.
@@ -75,8 +92,6 @@ impl SandboxedContext {
 /// Check if a granted capability satisfies a required capability.
 fn capabilities_match(granted: &Capability, required: &Capability) -> bool {
     match (granted, required) {
-        (Capability::Credential(g), Capability::Credential(r)) => g == r,
-        (Capability::Resource(g), Capability::Resource(r)) => g == r,
         (Capability::MaxMemory(g), Capability::MaxMemory(r)) => g >= r,
         (Capability::MaxCpuTime(g), Capability::MaxCpuTime(r)) => g >= r,
         (Capability::Environment { keys: g }, Capability::Environment { keys: r }) => {
@@ -140,13 +155,13 @@ mod tests {
 
     #[test]
     fn credential_check_granted() {
-        let ctx = test_sandboxed(vec![Capability::Credential("github-token".into())]);
+        let ctx = test_sandboxed(vec![]).with_allowed_credential(Some("github-token".into()));
         assert!(ctx.check_credential("github-token").is_ok());
     }
 
     #[test]
     fn credential_check_denied() {
-        let ctx = test_sandboxed(vec![Capability::Credential("github-token".into())]);
+        let ctx = test_sandboxed(vec![]).with_allowed_credential(Some("github-token".into()));
         let err = ctx.check_credential("aws-secret").unwrap_err();
         assert!(matches!(err, ActionError::SandboxViolation { .. }));
     }
@@ -258,13 +273,6 @@ mod tests {
         let granted = Capability::MaxCpuTime(Duration::from_secs(60));
         let required = Capability::MaxCpuTime(Duration::from_secs(30));
         assert!(capabilities_match(&granted, &required));
-    }
-
-    #[test]
-    fn different_capability_types_dont_match() {
-        let granted = Capability::Credential("x".into());
-        let required = Capability::Resource("x".into());
-        assert!(!capabilities_match(&granted, &required));
     }
 
     #[test]
