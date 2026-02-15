@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -199,14 +199,14 @@ impl Default for HealthCheckConfig {
 }
 
 /// Background health checker for resource instances
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HealthChecker {
     /// Configuration
     config: HealthCheckConfig,
     /// Health records by instance ID
     records: Arc<DashMap<uuid::Uuid, HealthRecord>>,
-    /// Shutdown signal
-    shutdown: Arc<RwLock<bool>>,
+    /// Cancellation token for shutdown
+    cancel: CancellationToken,
 }
 
 impl HealthChecker {
@@ -216,7 +216,7 @@ impl HealthChecker {
         Self {
             config,
             records: Arc::new(DashMap::new()),
-            shutdown: Arc::new(RwLock::new(false)),
+            cancel: CancellationToken::new(),
         }
     }
 
@@ -231,14 +231,16 @@ impl HealthChecker {
         let check_timeout = self.config.check_timeout;
         let failure_threshold = self.config.failure_threshold;
         let records = Arc::clone(&self.records);
-        let shutdown = Arc::clone(&self.shutdown);
+        let cancel = self.cancel.child_token();
 
         tokio::spawn(async move {
             let mut consecutive_failures = 0;
 
             loop {
-                if *shutdown.read().await {
-                    break;
+                // Wait for next check or cancellation
+                tokio::select! {
+                    () = tokio::time::sleep(interval) => {}
+                    () = cancel.cancelled() => break,
                 }
 
                 // Perform health check with timeout
@@ -271,9 +273,6 @@ impl HealthChecker {
                         consecutive_failures
                     );
                 }
-
-                // Wait for next check
-                tokio::time::sleep(interval).await;
             }
 
             // Cleanup record on shutdown
@@ -346,9 +345,9 @@ impl HealthChecker {
             .collect()
     }
 
-    /// Shutdown the health checker
-    pub async fn shutdown(&self) {
-        *self.shutdown.write().await = true;
+    /// Shutdown the health checker, cancelling all background monitoring tasks.
+    pub fn shutdown(&self) {
+        self.cancel.cancel();
     }
 }
 
@@ -396,15 +395,16 @@ mod tests {
 
     // --- HealthChecker tests ---
 
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     struct MockHealthCheckable {
-        should_fail: Arc<RwLock<bool>>,
+        should_fail: Arc<AtomicBool>,
     }
 
     #[async_trait]
     impl HealthCheckable for MockHealthCheckable {
         async fn health_check(&self) -> ResourceResult<HealthStatus> {
-            let should_fail = *self.should_fail.read().await;
-            if should_fail {
+            if self.should_fail.load(Ordering::Relaxed) {
                 Ok(HealthStatus::unhealthy("mock failure"))
             } else {
                 Ok(HealthStatus::healthy())
@@ -430,7 +430,7 @@ mod tests {
 
         let instance_id = uuid::Uuid::new_v4();
         let resource_id = "test".to_string();
-        let should_fail = Arc::new(RwLock::new(false));
+        let should_fail = Arc::new(AtomicBool::new(false));
         let instance = Arc::new(MockHealthCheckable {
             should_fail: Arc::clone(&should_fail),
         });
@@ -444,7 +444,7 @@ mod tests {
         assert!(health.status.is_usable());
         assert_eq!(health.consecutive_failures, 0);
 
-        checker.shutdown().await;
+        checker.shutdown();
     }
 
     #[tokio::test]
@@ -459,7 +459,7 @@ mod tests {
 
         let instance_id = uuid::Uuid::new_v4();
         let resource_id = "test".to_string();
-        let should_fail = Arc::new(RwLock::new(true)); // Start failing immediately
+        let should_fail = Arc::new(AtomicBool::new(true)); // Start failing immediately
         let instance = Arc::new(MockHealthCheckable {
             should_fail: Arc::clone(&should_fail),
         });
@@ -473,7 +473,7 @@ mod tests {
         assert!(!health.status.is_usable());
         assert!(health.consecutive_failures > 0);
 
-        checker.shutdown().await;
+        checker.shutdown();
     }
 
     #[tokio::test]
@@ -489,14 +489,14 @@ mod tests {
         // Add healthy instance
         let healthy_id = uuid::Uuid::new_v4();
         let healthy_instance = Arc::new(MockHealthCheckable {
-            should_fail: Arc::new(RwLock::new(false)),
+            should_fail: Arc::new(AtomicBool::new(false)),
         });
         checker.start_monitoring(healthy_id, "test".to_string(), healthy_instance);
 
         // Add unhealthy instance
         let unhealthy_id = uuid::Uuid::new_v4();
         let unhealthy_instance = Arc::new(MockHealthCheckable {
-            should_fail: Arc::new(RwLock::new(true)),
+            should_fail: Arc::new(AtomicBool::new(true)),
         });
         checker.start_monitoring(unhealthy_id, "test".to_string(), unhealthy_instance);
 
@@ -507,6 +507,6 @@ mod tests {
         assert_eq!(unhealthy.len(), 1);
         assert_eq!(unhealthy[0].instance_id, unhealthy_id);
 
-        checker.shutdown().await;
+        checker.shutdown();
     }
 }

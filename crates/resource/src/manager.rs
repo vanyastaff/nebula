@@ -1,6 +1,6 @@
 //! Resource manager — central registry, pool orchestration, and dependency ordering.
 
-use std::any::{Any, TypeId};
+use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -73,9 +73,8 @@ impl DependencyGraph {
         if let Some(cycle) = self.detect_cycle() {
             // Rollback the changes
             self.remove_dependency(&resource, &depends_on);
-            return Err(ResourceError::internal(
-                &resource,
-                format!("Adding dependency would create cycle: {cycle:?}"),
+            return Err(ResourceError::circular_dependency(
+                cycle.join(" -> "),
             ));
         }
 
@@ -230,9 +229,8 @@ impl DependencyGraph {
         if sorted.len() != all_nodes.len()
             && let Some(cycle) = self.detect_cycle()
         {
-            return Err(ResourceError::internal(
-                &cycle[0],
-                format!("Circular dependency detected: {cycle:?}"),
+            return Err(ResourceError::circular_dependency(
+                cycle.join(" -> "),
             ));
         }
 
@@ -303,6 +301,48 @@ impl DependencyGraph {
 }
 
 // ---------------------------------------------------------------------------
+// Type-erased guard
+// ---------------------------------------------------------------------------
+
+/// Trait for type-erased resource guards.
+///
+/// Provides `&dyn Any` access to the inner instance while the concrete
+/// `TypedGuard<R>` holds the real `ResourceGuard` that returns the instance
+/// to the pool on drop.
+pub trait AnyGuardTrait: Send {
+    /// Access the inner instance as `&dyn Any` for downcasting.
+    fn as_any(&self) -> &dyn Any;
+
+    /// Access the inner instance as `&mut dyn Any` for downcasting.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+/// Type-erased guard returned by [`ResourceManager::acquire`].
+///
+/// When dropped, the underlying `ResourceGuard` returns the instance
+/// to the pool. Use [`as_any`](AnyGuardTrait::as_any) and
+/// [`downcast_ref`](Any::downcast_ref) to access the concrete instance.
+pub type AnyGuard = Box<dyn AnyGuardTrait>;
+
+/// Concrete guard wrapping a typed `ResourceGuard`.
+struct TypedGuard<R: Resource> {
+    guard: ResourceGuard<R::Instance>,
+}
+
+impl<R: Resource> AnyGuardTrait for TypedGuard<R>
+where
+    R::Instance: Any,
+{
+    fn as_any(&self) -> &dyn Any {
+        &*self.guard
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        &mut *self.guard
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Type-erased pool wrapper
 // ---------------------------------------------------------------------------
 
@@ -310,11 +350,11 @@ impl DependencyGraph {
 /// resource types in a single map.
 #[async_trait]
 trait AnyPool: Send + Sync {
-    /// Acquire a type-erased instance wrapped in `Arc<dyn Any>`.
-    async fn acquire_any(
-        &self,
-        ctx: &ResourceContext,
-    ) -> ResourceResult<ResourceGuard<Arc<dyn Any + Send + Sync>>>;
+    /// Acquire a type-erased instance.
+    ///
+    /// The returned `AnyGuard` properly returns the instance to the
+    /// underlying typed pool when dropped.
+    async fn acquire_any(&self, ctx: &ResourceContext) -> ResourceResult<AnyGuard>;
 
     /// Shut down the pool.
     async fn shutdown(&self) -> ResourceResult<()>;
@@ -326,17 +366,13 @@ struct TypedPool<R: Resource> {
 }
 
 #[async_trait]
-impl<R: Resource> AnyPool for TypedPool<R> {
-    async fn acquire_any(
-        &self,
-        ctx: &ResourceContext,
-    ) -> ResourceResult<ResourceGuard<Arc<dyn Any + Send + Sync>>> {
+impl<R: Resource> AnyPool for TypedPool<R>
+where
+    R::Instance: Any,
+{
+    async fn acquire_any(&self, ctx: &ResourceContext) -> ResourceResult<AnyGuard> {
         let guard = self.pool.acquire(ctx).await?;
-        let instance: R::Instance = guard.into_inner();
-        let arc_instance: Arc<dyn Any + Send + Sync> = Arc::new(instance);
-        // No return-to-pool for the type-erased path — the instance is consumed.
-        // For full pool recycling, callers should use Pool<R> directly.
-        Ok(ResourceGuard::new(arc_instance, |_| {}))
+        Ok(Box::new(TypedGuard::<R> { guard }))
     }
 
     async fn shutdown(&self) -> ResourceResult<()> {
@@ -349,9 +385,12 @@ impl<R: Resource> AnyPool for TypedPool<R> {
 // ---------------------------------------------------------------------------
 
 /// Central manager for resource pools and dependency ordering.
+///
+/// Pools are keyed by the resource's string ID (`Resource::id()`), allowing
+/// multiple pools of the same resource type with different IDs.
 pub struct ResourceManager {
-    /// Pools indexed by TypeId of the Resource implementation.
-    pools: DashMap<TypeId, Arc<dyn AnyPool>>,
+    /// Pools indexed by resource ID string.
+    pools: DashMap<String, Arc<dyn AnyPool>>,
     /// Dependency graph for initialization ordering.
     deps: parking_lot::RwLock<DependencyGraph>,
 }
@@ -366,16 +405,19 @@ impl ResourceManager {
         }
     }
 
-    /// Register a resource type with its config and pool settings.
+    /// Register a resource with its config and pool settings.
     ///
-    /// The pool is created immediately but no instances are pre-warmed.
+    /// The pool is keyed by `resource.id()`. Registering a second resource
+    /// with the same ID replaces the previous one.
     pub fn register<R: Resource>(
         &self,
         resource: R,
         config: R::Config,
         pool_config: PoolConfig,
-    ) -> ResourceResult<()> {
-        let type_id = TypeId::of::<R>();
+    ) -> ResourceResult<()>
+    where
+        R::Instance: Any,
+    {
         let id = resource.id().to_string();
 
         // Register dependencies
@@ -386,23 +428,30 @@ impl ResourceManager {
             }
         }
 
-        let pool = Pool::new(resource, config, pool_config);
+        let pool = Pool::new(resource, config, pool_config)?;
         let any_pool: Arc<dyn AnyPool> = Arc::new(TypedPool { pool });
-        self.pools.insert(type_id, any_pool);
+        self.pools.insert(id, any_pool);
         Ok(())
     }
 
-    /// Acquire a resource instance by resource type.
+    /// Acquire a resource instance by resource ID.
     ///
-    /// The caller specifies the Resource implementation type `R` and gets
-    /// back a guard wrapping `R::Instance`.
-    pub async fn acquire<R: Resource>(
+    /// Returns an [`AnyGuard`] that provides `&dyn Any` access to the
+    /// instance. When the guard is dropped, the instance is returned to
+    /// the pool.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let guard = mgr.acquire("postgres", &ctx).await?;
+    /// let conn = guard.as_any().downcast_ref::<PgConnection>().unwrap();
+    /// ```
+    pub async fn acquire(
         &self,
+        resource_id: &str,
         ctx: &ResourceContext,
-    ) -> ResourceResult<ResourceGuard<Arc<dyn Any + Send + Sync>>> {
-        let type_id = TypeId::of::<R>();
-        let pool = self.pools.get(&type_id).ok_or_else(|| {
-            ResourceError::unavailable("unknown", "Resource type not registered", false)
+    ) -> ResourceResult<AnyGuard> {
+        let pool = self.pools.get(resource_id).ok_or_else(|| {
+            ResourceError::unavailable(resource_id, "Resource not registered", false)
         })?;
 
         pool.acquire_any(ctx).await
@@ -604,8 +653,9 @@ mod tests {
         mgr.register(TestResource, config, PoolConfig::default())
             .unwrap();
 
-        let guard = mgr.acquire::<TestResource>(&ctx()).await.unwrap();
+        let guard = mgr.acquire("test", &ctx()).await.unwrap();
         let instance = guard
+            .as_any()
             .downcast_ref::<String>()
             .expect("should downcast to String");
         assert_eq!(instance, "instance-hello");
@@ -614,7 +664,7 @@ mod tests {
     #[tokio::test]
     async fn acquire_unregistered_fails() {
         let mgr = ResourceManager::new();
-        let result = mgr.acquire::<TestResource>(&ctx()).await;
+        let result = mgr.acquire("test", &ctx()).await;
         assert!(result.is_err());
     }
 
@@ -626,5 +676,34 @@ mod tests {
             .unwrap();
         mgr.shutdown().await.unwrap();
         assert!(mgr.pools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn acquire_returns_to_pool_on_drop() {
+        let mgr = ResourceManager::new();
+        let config = TestConfig {
+            value: "pooled".into(),
+        };
+        let pool_config = PoolConfig {
+            min_size: 0,
+            max_size: 1,
+            ..Default::default()
+        };
+        mgr.register(TestResource, config, pool_config).unwrap();
+
+        // Acquire and drop — should return to pool
+        {
+            let _guard = mgr.acquire("test", &ctx()).await.unwrap();
+        }
+        // Give the spawn a moment to return the instance
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Should be able to acquire again (pool recycled)
+        let guard = mgr.acquire("test", &ctx()).await.unwrap();
+        let instance = guard
+            .as_any()
+            .downcast_ref::<String>()
+            .expect("should downcast");
+        assert_eq!(instance, "instance-pooled");
     }
 }

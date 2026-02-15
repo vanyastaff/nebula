@@ -46,7 +46,7 @@ async fn pool_exhaustion_returns_error() {
         acquire_timeout: Duration::from_millis(200),
         ..Default::default()
     };
-    let pool = Pool::new(TestResource, TestConfig, pool_config);
+    let pool = Pool::new(TestResource, TestConfig, pool_config).unwrap();
 
     // Acquire 2 resources (should succeed)
     let _r1 = pool
@@ -78,7 +78,7 @@ async fn pool_reuses_after_drop() {
         acquire_timeout: Duration::from_secs(1),
         ..Default::default()
     };
-    let pool = Pool::new(TestResource, TestConfig, pool_config);
+    let pool = Pool::new(TestResource, TestConfig, pool_config).unwrap();
 
     // Acquire and drop to return to pool
     {
@@ -102,7 +102,7 @@ async fn pool_exhausted_error_is_retryable() {
         acquire_timeout: Duration::from_millis(100),
         ..Default::default()
     };
-    let pool = Pool::new(TestResource, TestConfig, pool_config);
+    let pool = Pool::new(TestResource, TestConfig, pool_config).unwrap();
 
     let _r1 = pool.acquire(&ctx()).await.unwrap();
     let err = pool.acquire(&ctx()).await.unwrap_err();

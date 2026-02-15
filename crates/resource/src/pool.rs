@@ -52,6 +52,29 @@ impl Default for PoolConfig {
     }
 }
 
+impl PoolConfig {
+    /// Validate pool configuration, returning an error if invalid.
+    pub fn validate(&self) -> crate::error::ResourceResult<()> {
+        if self.max_size == 0 {
+            return Err(crate::error::ResourceError::configuration(
+                "max_size must be greater than 0",
+            ));
+        }
+        if self.min_size > self.max_size {
+            return Err(crate::error::ResourceError::configuration(format!(
+                "min_size ({}) must not exceed max_size ({})",
+                self.min_size, self.max_size
+            )));
+        }
+        if self.acquire_timeout.is_zero() {
+            return Err(crate::error::ResourceError::configuration(
+                "acquire_timeout must be greater than zero",
+            ));
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pool internals
 // ---------------------------------------------------------------------------
@@ -70,6 +93,15 @@ impl<T> Entry<T> {
             instance,
             created_at: now,
             last_used: now,
+        }
+    }
+
+    /// Return an entry to the pool, preserving the original `created_at`.
+    fn returned(instance: T, created_at: Instant) -> Self {
+        Self {
+            instance,
+            created_at,
+            last_used: Instant::now(),
         }
     }
 
@@ -139,9 +171,13 @@ impl<R: Resource> std::fmt::Debug for Pool<R> {
 
 impl<R: Resource> Pool<R> {
     /// Create a new pool for the given resource, config, and pool settings.
-    pub fn new(resource: R, config: R::Config, pool_config: PoolConfig) -> Self {
+    ///
+    /// # Errors
+    /// Returns error if `pool_config` is invalid (e.g. max_size == 0).
+    pub fn new(resource: R, config: R::Config, pool_config: PoolConfig) -> ResourceResult<Self> {
+        pool_config.validate()?;
         let max = pool_config.max_size;
-        Self {
+        Ok(Self {
             inner: Arc::new(PoolInner {
                 resource: Arc::new(resource),
                 config,
@@ -150,7 +186,7 @@ impl<R: Resource> Pool<R> {
                 stats: Mutex::new(PoolStats::default()),
                 semaphore: Semaphore::new(max),
             }),
-        }
+        })
     }
 
     /// Acquire a resource instance from the pool.
@@ -180,28 +216,28 @@ impl<R: Resource> Pool<R> {
                     ResourceError::internal(inner.resource.id(), "Pool semaphore closed")
                 })?;
 
-        // Try to get an idle instance
-        let instance = loop {
+        // Try to get an idle instance, tracking created_at for recycled entries.
+        let (instance, created_at) = loop {
             let entry = { inner.idle.lock().pop_front() };
             match entry {
                 Some(entry) if entry.is_expired(&inner.pool_config) => {
                     // Expired — clean up and try next
                     let _ = inner.resource.cleanup(entry.instance).await;
-                    let mut stats = inner.stats.lock();
-                    stats.destroyed += 1;
-                    stats.idle = inner.idle.lock().len();
+                    {
+                        let mut stats = inner.stats.lock();
+                        stats.destroyed += 1;
+                    }
                     // Don't add permit back — we'll create a new instance below if needed
                     continue;
                 }
                 Some(entry) => {
                     // Validate
+                    let created_at = entry.created_at;
                     match inner.resource.is_valid(&entry.instance).await {
-                        Ok(true) => break entry.instance,
+                        Ok(true) => break (entry.instance, Some(created_at)),
                         _ => {
                             let _ = inner.resource.cleanup(entry.instance).await;
-                            let mut stats = inner.stats.lock();
-                            stats.destroyed += 1;
-                            stats.idle = inner.idle.lock().len();
+                            inner.stats.lock().destroyed += 1;
                             continue;
                         }
                     }
@@ -213,7 +249,7 @@ impl<R: Resource> Pool<R> {
                         let mut stats = inner.stats.lock();
                         stats.created += 1;
                     }
-                    break instance;
+                    break (instance, None);
                 }
             }
         };
@@ -232,34 +268,32 @@ impl<R: Resource> Pool<R> {
         Ok(ResourceGuard::new(instance, move |mut inst| {
             // Return instance to pool on drop.
             // We run recycle + return synchronously-ish by spawning a task.
-            tokio::spawn(async move {
+            drop(tokio::spawn(async move {
                 let inner = &pool.inner;
                 // Try to recycle
-                let keep = match inner.resource.recycle(&mut inst).await {
-                    Ok(()) => true,
-                    Err(_) => false,
-                };
+                let keep = inner.resource.recycle(&mut inst).await.is_ok();
 
                 if keep {
-                    let mut entry = Entry::new(inst);
-                    entry.last_used = Instant::now();
+                    let entry = match created_at {
+                        Some(ca) => Entry::returned(inst, ca),
+                        None => Entry::new(inst),
+                    };
                     inner.idle.lock().push_back(entry);
                 } else {
                     let _ = inner.resource.cleanup(inst).await;
-                    let mut stats = inner.stats.lock();
-                    stats.destroyed += 1;
+                    inner.stats.lock().destroyed += 1;
                 }
 
                 {
                     let mut stats = inner.stats.lock();
                     stats.total_releases += 1;
                     stats.active = stats.active.saturating_sub(1);
-                    stats.idle = inner.idle.lock().len();
                 }
+                inner.stats.lock().idle = inner.idle.lock().len();
 
                 // Return the permit
                 inner.semaphore.add_permits(1);
-            });
+            }));
         }))
     }
 
@@ -289,9 +323,7 @@ impl<R: Resource> Pool<R> {
             *idle = kept;
             let removed = before - idle.len();
             if removed > 0 {
-                let mut stats = inner.stats.lock();
-                stats.destroyed += removed as u64;
-                stats.idle = idle.len();
+                inner.stats.lock().destroyed += removed as u64;
             }
         }
 
@@ -300,8 +332,11 @@ impl<R: Resource> Pool<R> {
         }
 
         // Ensure min_size
-        let current_idle = inner.idle.lock().len();
-        let current_active = inner.stats.lock().active;
+        let (current_idle, current_active) = {
+            let idle_count = inner.idle.lock().len();
+            let active = inner.stats.lock().active;
+            (idle_count, active)
+        };
         let total = current_idle + current_active;
         if total < inner.pool_config.min_size {
             let needed = inner.pool_config.min_size - total;
@@ -309,14 +344,15 @@ impl<R: Resource> Pool<R> {
                 match inner.resource.create(&inner.config, ctx).await {
                     Ok(instance) => {
                         inner.idle.lock().push_back(Entry::new(instance));
-                        let mut stats = inner.stats.lock();
-                        stats.created += 1;
-                        stats.idle = inner.idle.lock().len();
+                        inner.stats.lock().created += 1;
                     }
                     Err(_) => break,
                 }
             }
         }
+
+        // Sync idle count
+        inner.stats.lock().idle = inner.idle.lock().len();
 
         Ok(())
     }
@@ -400,16 +436,24 @@ mod tests {
         assert_eq!(config.acquire_timeout, Duration::from_secs(30));
     }
 
+    #[test]
+    fn test_pool_config_validation() {
+        assert!(PoolConfig { max_size: 0, ..Default::default() }.validate().is_err());
+        assert!(PoolConfig { min_size: 11, max_size: 10, ..Default::default() }.validate().is_err());
+        assert!(PoolConfig { acquire_timeout: Duration::ZERO, ..Default::default() }.validate().is_err());
+        assert!(PoolConfig::default().validate().is_ok());
+    }
+
     #[tokio::test]
     async fn acquire_returns_instance() {
-        let pool = Pool::new(TestResource, test_config(), PoolConfig::default());
+        let pool = Pool::new(TestResource, test_config(), PoolConfig::default()).unwrap();
         let guard = pool.acquire(&test_ctx()).await.unwrap();
         assert_eq!(*guard, "test-instance");
     }
 
     #[tokio::test]
     async fn pool_reuses_instances() {
-        let pool = Pool::new(TestResource, test_config(), PoolConfig::default());
+        let pool = Pool::new(TestResource, test_config(), PoolConfig::default()).unwrap();
 
         // Acquire and drop to return to pool
         {
@@ -437,7 +481,7 @@ mod tests {
             acquire_timeout: Duration::from_millis(100),
             ..Default::default()
         };
-        let pool = Pool::new(TestResource, test_config(), pool_config);
+        let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
 
         let _g1 = pool.acquire(&test_ctx()).await.unwrap();
         let _g2 = pool.acquire(&test_ctx()).await.unwrap();
@@ -449,7 +493,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_cleans_idle() {
-        let pool = Pool::new(TestResource, test_config(), PoolConfig::default());
+        let pool = Pool::new(TestResource, test_config(), PoolConfig::default()).unwrap();
 
         {
             let _g = pool.acquire(&test_ctx()).await.unwrap();

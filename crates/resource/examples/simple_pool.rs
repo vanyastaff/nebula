@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Create a pool
-    let pool = Pool::new(ConnectionResource, resource_config, pool_config);
+    let pool = Pool::new(ConnectionResource, resource_config, pool_config)?;
 
     println!("Pool created with:");
     println!("  - Min size: 2");
