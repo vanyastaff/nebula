@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -107,6 +108,11 @@ pub struct ActionContext {
     logger: Option<Arc<dyn ActionLogger>>,
     /// Optional metrics emitter for custom action metrics.
     metrics: Option<Arc<dyn ActionMetrics>>,
+    /// Data arriving on support input ports, keyed by port name.
+    ///
+    /// Each key is a support port name (e.g., "tools", "model") and the value
+    /// is the list of JSON values from all connections targeting that port.
+    support_inputs: HashMap<String, Vec<serde_json::Value>>,
 }
 
 impl ActionContext {
@@ -127,6 +133,7 @@ impl ActionContext {
             credentials: None,
             logger: None,
             metrics: None,
+            support_inputs: HashMap::new(),
         }
     }
 
@@ -195,6 +202,33 @@ impl ActionContext {
     pub fn with_metrics(mut self, metrics: Arc<dyn ActionMetrics>) -> Self {
         self.metrics = Some(metrics);
         self
+    }
+
+    /// Attach support port data.
+    ///
+    /// Each entry maps a support port name to the list of values received
+    /// on that port from predecessor connections.
+    pub fn with_support_inputs(
+        mut self,
+        support_inputs: HashMap<String, Vec<serde_json::Value>>,
+    ) -> Self {
+        self.support_inputs = support_inputs;
+        self
+    }
+
+    /// Get all values received on a support input port.
+    ///
+    /// Returns an empty slice if no data was received on the given port.
+    pub fn support_input(&self, port: &str) -> &[serde_json::Value] {
+        self.support_inputs
+            .get(port)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// Get the full map of support inputs.
+    pub fn support_inputs(&self) -> &HashMap<String, Vec<serde_json::Value>> {
+        &self.support_inputs
     }
 
     /// Retrieve a credential value by key.

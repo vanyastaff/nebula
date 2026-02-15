@@ -250,6 +250,7 @@ impl WorkflowEngine {
                 let spawned = self.spawn_node(
                     node_id,
                     node_map,
+                    graph,
                     outputs,
                     semaphore,
                     cancel_token,
@@ -366,6 +367,7 @@ impl WorkflowEngine {
         &self,
         node_id: NodeId,
         node_map: &HashMap<NodeId, &nebula_workflow::NodeDefinition>,
+        graph: &DependencyGraph,
         outputs: &Arc<DashMap<NodeId, serde_json::Value>>,
         semaphore: &Arc<Semaphore>,
         cancel_token: &CancellationToken,
@@ -383,7 +385,10 @@ impl WorkflowEngine {
             return false;
         };
         let action_key = action_key.to_owned();
-        let node_input = resolve_node_input(node_id, outputs, input, activated_edges);
+
+        // Partition incoming connections into flow (to_port=None) and support (to_port=Some)
+        let (node_input, support_inputs) =
+            resolve_node_input_with_support(node_id, graph, outputs, input, activated_edges);
 
         // Resolve node parameters (expressions, templates, references)
         let action_input =
@@ -427,6 +432,7 @@ impl WorkflowEngine {
                 workflow_id,
                 action_key,
                 input: action_input,
+                support_inputs,
             }
             .run(),
         );
@@ -486,6 +492,8 @@ struct NodeTask {
     workflow_id: WorkflowId,
     action_key: String,
     input: serde_json::Value,
+    /// Data for support input ports, keyed by port name.
+    support_inputs: HashMap<String, Vec<serde_json::Value>>,
 }
 
 impl NodeTask {
@@ -497,13 +505,16 @@ impl NodeTask {
             return (self.node_id, Err(EngineError::Cancelled));
         }
 
-        let action_ctx = ActionContext::new(
+        let mut action_ctx = ActionContext::new(
             self.execution_id,
             self.node_id,
             self.workflow_id,
             ScopeLevel::Global,
         )
         .with_cancellation(self.cancel.child_token());
+        if !self.support_inputs.is_empty() {
+            action_ctx = action_ctx.with_support_inputs(self.support_inputs);
+        }
 
         let result = self
             .runtime
@@ -591,8 +602,8 @@ fn process_outgoing_edges(
 /// - `Skip` results don't activate any edges
 /// - Failed nodes only activate `OnError` edges
 /// - `Branch` results only activate edges whose `branch_key` matches `selected`
-/// - `Route` results only activate edges whose `port_key` matches `port`
-/// - `MultiOutput` results only activate edges whose `port_key` is in `outputs`
+/// - `Route` results only activate edges whose `from_port` matches `port`
+/// - `MultiOutput` results only activate edges whose `from_port` is in `outputs`
 /// - `Always` activates on success (not on error, not on skip)
 /// - `OnResult` activates when the matcher matches
 /// - `Expression` activates when the expression evaluates to truthy
@@ -623,20 +634,20 @@ fn evaluate_edge(
         return false;
     }
 
-    // Check port_key for Route results
+    // Check from_port for Route results
     if let Some(ActionResult::Route { port, .. }) = result
-        && let Some(ref key) = conn.port_key
+        && let Some(ref key) = conn.from_port
         && key != port
     {
         return false;
     }
 
-    // Check port_key for MultiOutput results
+    // Check from_port for MultiOutput results
     if let Some(ActionResult::MultiOutput {
         outputs: port_outputs,
         ..
     }) = result
-        && let Some(ref key) = conn.port_key
+        && let Some(ref key) = conn.from_port
         && !port_outputs.contains_key(key)
     {
         return false;
@@ -779,39 +790,71 @@ fn determine_final_status(
 
 // ── Input resolution ────────────────────────────────────────────────────────
 
-/// Resolve the input for a node from its activated predecessors' outputs.
+/// Resolve node input, partitioning by `to_port` into flow input and support inputs.
 ///
-/// - Entry nodes (no activated predecessors): receive the workflow-level input.
-/// - Single activated predecessor: receive that node's output directly.
-/// - Multiple activated predecessors: receive a JSON object with each
-///   predecessor's output keyed by its node ID.
-fn resolve_node_input(
+/// Connections with `to_port = None` feed the main flow input (same as before).
+/// Connections with `to_port = Some(port_name)` are collected into a per-port
+/// map of values, delivered to the action via `ActionContext::support_inputs`.
+fn resolve_node_input_with_support(
     node_id: NodeId,
+    graph: &DependencyGraph,
     outputs: &DashMap<NodeId, serde_json::Value>,
     workflow_input: &serde_json::Value,
     activated_edges: &HashMap<NodeId, HashSet<NodeId>>,
-) -> serde_json::Value {
-    let predecessors: Vec<NodeId> = activated_edges
-        .get(&node_id)
-        .map(|set| set.iter().copied().collect())
-        .unwrap_or_default();
+) -> (serde_json::Value, HashMap<String, Vec<serde_json::Value>>) {
+    let activated: HashSet<NodeId> = activated_edges.get(&node_id).cloned().unwrap_or_default();
 
-    if predecessors.is_empty() {
-        return workflow_input.clone();
-    }
-    if predecessors.len() == 1 {
-        return outputs
-            .get(&predecessors[0])
-            .map(|v| v.value().clone())
-            .unwrap_or(serde_json::Value::Null);
-    }
-    let mut merged = serde_json::Map::new();
-    for pred_id in &predecessors {
-        if let Some(output) = outputs.get(pred_id) {
-            merged.insert(pred_id.to_string(), output.value().clone());
+    // Partition incoming connections by to_port
+    let incoming = graph.incoming_connections(node_id);
+    let mut flow_predecessors: Vec<NodeId> = Vec::new();
+    let mut support_inputs: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+
+    for conn in &incoming {
+        let source = conn.from_node;
+        if !activated.contains(&source) {
+            continue;
+        }
+        match &conn.to_port {
+            None => {
+                if !flow_predecessors.contains(&source) {
+                    flow_predecessors.push(source);
+                }
+            }
+            Some(port_name) => {
+                if let Some(output) = outputs.get(&source) {
+                    support_inputs
+                        .entry(port_name.clone())
+                        .or_default()
+                        .push(output.value().clone());
+                }
+            }
         }
     }
-    serde_json::Value::Object(merged)
+
+    // Resolve main flow input from flow predecessors
+    let flow_input = if flow_predecessors.is_empty() {
+        // No flow predecessors — use workflow-level input (entry node) or Null
+        if activated.is_empty() {
+            workflow_input.clone()
+        } else {
+            serde_json::Value::Null
+        }
+    } else if flow_predecessors.len() == 1 {
+        outputs
+            .get(&flow_predecessors[0])
+            .map(|v| v.value().clone())
+            .unwrap_or(serde_json::Value::Null)
+    } else {
+        let mut merged = serde_json::Map::new();
+        for pred_id in &flow_predecessors {
+            if let Some(output) = outputs.get(pred_id) {
+                merged.insert(pred_id.to_string(), output.value().clone());
+            }
+        }
+        serde_json::Value::Object(merged)
+    };
+
+    (flow_input, support_inputs)
 }
 
 /// Extract the primary output value from an ActionResult for downstream input resolution.

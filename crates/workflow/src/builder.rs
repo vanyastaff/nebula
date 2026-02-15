@@ -92,6 +92,27 @@ impl WorkflowBuilder {
         self
     }
 
+    /// Add a connection with explicit source and target ports.
+    #[must_use]
+    pub fn connect_port(
+        mut self,
+        from: NodeId,
+        from_port: impl Into<String>,
+        to: NodeId,
+        to_port: impl Into<String>,
+    ) -> Self {
+        self.connections
+            .push(Connection::new(from, to).with_ports(from_port, to_port));
+        self
+    }
+
+    /// Add a pre-built connection directly.
+    #[must_use]
+    pub fn add_connection(mut self, connection: Connection) -> Self {
+        self.connections.push(connection);
+        self
+    }
+
     /// Set a workflow-level variable.
     #[must_use]
     pub fn variable(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {

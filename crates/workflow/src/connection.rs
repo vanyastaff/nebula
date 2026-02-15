@@ -16,9 +16,12 @@ pub struct Connection {
     /// Optional branch key (e.g., "true" / "false" for if-nodes).
     #[serde(default)]
     pub branch_key: Option<String>,
-    /// Optional port key for multi-output nodes.
+    /// Source output port (e.g., "error", "output_0"). `None` means default output.
     #[serde(default)]
-    pub port_key: Option<String>,
+    pub from_port: Option<String>,
+    /// Target input port (e.g., "model", "tools"). `None` means default flow input.
+    #[serde(default)]
+    pub to_port: Option<String>,
 }
 
 impl Connection {
@@ -30,7 +33,8 @@ impl Connection {
             to_node,
             condition: EdgeCondition::Always,
             branch_key: None,
-            port_key: None,
+            from_port: None,
+            to_port: None,
         }
     }
 
@@ -48,10 +52,25 @@ impl Connection {
         self
     }
 
-    /// Set the port key.
+    /// Set the source output port.
     #[must_use]
-    pub fn with_port_key(mut self, key: impl Into<String>) -> Self {
-        self.port_key = Some(key.into());
+    pub fn with_from_port(mut self, port: impl Into<String>) -> Self {
+        self.from_port = Some(port.into());
+        self
+    }
+
+    /// Set the target input port.
+    #[must_use]
+    pub fn with_to_port(mut self, port: impl Into<String>) -> Self {
+        self.to_port = Some(port.into());
+        self
+    }
+
+    /// Set both source and target ports.
+    #[must_use]
+    pub fn with_ports(mut self, from_port: impl Into<String>, to_port: impl Into<String>) -> Self {
+        self.from_port = Some(from_port.into());
+        self.to_port = Some(to_port.into());
         self
     }
 
@@ -137,7 +156,8 @@ mod tests {
         assert_eq!(conn.to_node, b);
         assert!(matches!(conn.condition, EdgeCondition::Always));
         assert!(conn.branch_key.is_none());
-        assert!(conn.port_key.is_none());
+        assert!(conn.from_port.is_none());
+        assert!(conn.to_port.is_none());
     }
 
     #[test]
@@ -157,11 +177,13 @@ mod tests {
                 expr: "x > 0".into(),
             })
             .with_branch_key("true")
-            .with_port_key("output_0");
+            .with_from_port("output_0")
+            .with_to_port("model");
 
         assert!(matches!(conn.condition, EdgeCondition::Expression { .. }));
         assert_eq!(conn.branch_key.as_deref(), Some("true"));
-        assert_eq!(conn.port_key.as_deref(), Some("output_0"));
+        assert_eq!(conn.from_port.as_deref(), Some("output_0"));
+        assert_eq!(conn.to_port.as_deref(), Some("model"));
     }
 
     #[test]
