@@ -1,8 +1,9 @@
 //! Property tests for serde JSON roundtrip of core types
 
-use nebula_resource::core::lifecycle::LifecycleState;
-use nebula_resource::core::scoping::{ResourceScope, ScopingStrategy};
-use nebula_resource::core::traits::{HealthState, HealthStatus, PoolConfig};
+use nebula_resource::health::{HealthState, HealthStatus};
+use nebula_resource::lifecycle::LifecycleState;
+use nebula_resource::pool::PoolConfig;
+use nebula_resource::scope::{ResourceScope, ScopingStrategy};
 use proptest::prelude::*;
 use std::time::Duration;
 

@@ -1,38 +1,16 @@
-//! Tests for ResourceGuard drop callback behavior
+//! Tests for ResourceGuard behavior
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use nebula_resource::LifecycleState;
-use nebula_resource::core::resource::{
-    ResourceGuard, ResourceId, ResourceInstanceMetadata, TypedResourceInstance,
-};
-
-fn make_instance() -> TypedResourceInstance<String> {
-    let metadata = ResourceInstanceMetadata {
-        instance_id: uuid::Uuid::new_v4(),
-        resource_id: ResourceId::new("test", "1.0"),
-        state: LifecycleState::Ready,
-        context: nebula_resource::ResourceContext::new(
-            "wf".to_string(),
-            "wf".to_string(),
-            "ex".to_string(),
-            "test".to_string(),
-        ),
-        created_at: chrono::Utc::now(),
-        last_accessed_at: None,
-        tags: std::collections::HashMap::new(),
-    };
-    TypedResourceInstance::new(Arc::new("guarded_resource".to_string()), metadata)
-}
+use nebula_resource::resource::ResourceGuard;
 
 #[test]
 fn guard_drop_calls_callback() {
     let called = Arc::new(AtomicBool::new(false));
     let called_clone = Arc::clone(&called);
 
-    let instance = make_instance();
-    let guard = ResourceGuard::new(instance, move |_resource| {
+    let guard = ResourceGuard::new("guarded_resource".to_string(), move |_resource| {
         called_clone.store(true, Ordering::SeqCst);
     });
 
@@ -50,71 +28,51 @@ fn guard_drop_calls_callback() {
 }
 
 #[test]
-fn guard_release_prevents_callback() {
+fn guard_into_inner_prevents_callback() {
     let called = Arc::new(AtomicBool::new(false));
     let called_clone = Arc::clone(&called);
 
-    let instance = make_instance();
-    let guard = ResourceGuard::new(instance, move |_resource| {
+    let guard = ResourceGuard::new("guarded_resource".to_string(), move |_resource| {
         called_clone.store(true, Ordering::SeqCst);
     });
 
-    // Release takes ownership of the resource, preventing the drop callback
-    let released = guard.release();
-    assert!(released.is_some(), "release should return the resource");
+    let released = guard.into_inner();
+    assert_eq!(released, "guarded_resource");
 
-    // guard is now consumed by release(), drop happens but resource was taken
-    // The callback should NOT have been called
     assert!(
         !called.load(Ordering::SeqCst),
-        "callback should NOT be called after release"
+        "callback should NOT be called after into_inner"
     );
 }
 
 #[test]
 fn guard_deref_provides_access_to_inner() {
-    let instance = make_instance();
-    let guard = ResourceGuard::new(instance, |_| {});
-
-    // Deref should provide access to the inner String
+    let guard = ResourceGuard::new("hello".to_string(), |_| {});
     let inner: &String = &*guard;
-    assert_eq!(inner, "guarded_resource");
+    assert_eq!(inner, "hello");
 }
 
 #[test]
-fn guard_as_ref_returns_some_before_release() {
-    let instance = make_instance();
-    let guard = ResourceGuard::new(instance, |_| {});
-
-    assert!(guard.as_ref().is_some());
-    assert_eq!(guard.as_ref().unwrap(), "guarded_resource");
-}
-
-#[test]
-fn guard_metadata_returns_some_before_release() {
-    let instance = make_instance();
-    let guard = ResourceGuard::new(instance, |_| {});
-
-    let meta = guard.metadata();
-    assert!(meta.is_some());
-    assert_eq!(meta.unwrap().resource_id.name, "test");
+fn guard_deref_mut_allows_modification() {
+    let mut guard = ResourceGuard::new("hello".to_string(), |_| {});
+    guard.push_str(" world");
+    assert_eq!(*guard, "hello world");
 }
 
 #[test]
 fn guard_callback_receives_the_resource() {
-    let received_id = Arc::new(parking_lot::Mutex::new(String::new()));
-    let received_id_clone = Arc::clone(&received_id);
+    let received = Arc::new(parking_lot::Mutex::new(String::new()));
+    let received_clone = Arc::clone(&received);
 
-    let instance = make_instance();
-    let guard = ResourceGuard::new(instance, move |resource| {
-        *received_id_clone.lock() = resource.as_ref().clone();
+    let guard = ResourceGuard::new("test_value".to_string(), move |resource| {
+        *received_clone.lock() = resource;
     });
 
     drop(guard);
 
     assert_eq!(
-        *received_id.lock(),
-        "guarded_resource",
+        *received.lock(),
+        "test_value",
         "callback should receive the resource instance"
     );
 }

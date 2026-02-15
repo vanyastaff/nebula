@@ -1,25 +1,169 @@
-//! Background health checking system
+//! Health checking types and background health monitoring
 //!
-//! Provides automated health monitoring for resources with:
-//! - Periodic health checks
-//! - Configurable intervals
-//! - Health status history
-//! - Automatic unhealthy resource detection
+//! This module provides:
+//! - Health status types (`HealthCheckable`, `HealthStatus`, `HealthState`)
+//! - Background health monitoring (`HealthChecker`)
 
-use crate::core::{
-    resource::ResourceId,
-    traits::{HealthCheckable, HealthStatus},
-};
+use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
+use crate::{context::ResourceContext, error::ResourceResult};
+
+// ---------------------------------------------------------------------------
+// Health types (from core/traits)
+// ---------------------------------------------------------------------------
+
+/// Health status for resource health checks
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct HealthStatus {
+    /// The health state
+    pub state: HealthState,
+    /// Latency of the health check
+    pub latency: Option<std::time::Duration>,
+    /// Additional metadata
+    pub metadata: std::collections::HashMap<String, String>,
+}
+
+/// Health state variants
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum HealthState {
+    /// Resource is fully operational
+    Healthy,
+    /// Resource is partially operational with degraded performance
+    Degraded {
+        /// Reason for degradation
+        reason: String,
+        /// Performance impact (0.0 = no impact, 1.0 = completely degraded)
+        performance_impact: f64,
+    },
+    /// Resource is not operational
+    Unhealthy {
+        /// Reason for being unhealthy
+        reason: String,
+        /// Whether the resource can potentially recover
+        recoverable: bool,
+    },
+    /// Health status is unknown
+    Unknown,
+}
+
+impl HealthStatus {
+    /// Create a healthy status
+    #[must_use]
+    pub fn healthy() -> Self {
+        Self {
+            state: HealthState::Healthy,
+            latency: None,
+            metadata: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Create an unhealthy status
+    pub fn unhealthy<S: Into<String>>(reason: S) -> Self {
+        Self {
+            state: HealthState::Unhealthy {
+                reason: reason.into(),
+                recoverable: true,
+            },
+            latency: None,
+            metadata: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Create a degraded status
+    pub fn degraded<S: Into<String>>(reason: S, performance_impact: f64) -> Self {
+        Self {
+            state: HealthState::Degraded {
+                reason: reason.into(),
+                performance_impact: performance_impact.clamp(0.0, 1.0),
+            },
+            latency: None,
+            metadata: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Add latency information
+    #[must_use]
+    pub fn with_latency(mut self, latency: std::time::Duration) -> Self {
+        self.latency = Some(latency);
+        self
+    }
+
+    /// Add metadata key-value pair
+    pub fn with_metadata<K: Into<String>, V: Into<String>>(mut self, key: K, value: V) -> Self {
+        self.metadata.insert(key.into(), value.into());
+        self
+    }
+
+    /// Check if the resource is considered healthy enough to use
+    #[must_use]
+    pub fn is_usable(&self) -> bool {
+        match &self.state {
+            HealthState::Healthy => true,
+            HealthState::Degraded {
+                performance_impact, ..
+            } => *performance_impact < 0.8,
+            HealthState::Unhealthy { .. } | HealthState::Unknown => false,
+        }
+    }
+
+    /// Get a numeric score for the health status (0.0 = unhealthy, 1.0 = healthy)
+    #[must_use]
+    pub fn score(&self) -> f64 {
+        match &self.state {
+            HealthState::Healthy => 1.0,
+            HealthState::Degraded {
+                performance_impact, ..
+            } => 1.0 - performance_impact,
+            HealthState::Unhealthy { .. } => 0.0,
+            HealthState::Unknown => 0.5,
+        }
+    }
+}
+
+/// Trait for resources that support health checking
+#[async_trait]
+pub trait HealthCheckable: Send + Sync {
+    /// Perform a health check on the resource
+    async fn health_check(&self) -> ResourceResult<HealthStatus>;
+
+    /// Perform a detailed health check with additional context
+    async fn detailed_health_check(
+        &self,
+        _context: &ResourceContext,
+    ) -> ResourceResult<HealthStatus> {
+        // Default implementation just calls the basic health check
+        self.health_check().await
+    }
+
+    /// Get the recommended interval between health checks
+    fn health_check_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(30)
+    }
+
+    /// Get the timeout for health check operations
+    fn health_check_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(5)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Background health checker (from health/mod.rs)
+// ---------------------------------------------------------------------------
+
 /// Health check record for a specific resource instance
 #[derive(Debug, Clone)]
 pub struct HealthRecord {
     /// Resource identifier
-    pub resource_id: ResourceId,
+    pub resource_id: String,
     /// Instance identifier
     pub instance_id: uuid::Uuid,
     /// Current health status
@@ -80,7 +224,7 @@ impl HealthChecker {
     pub fn start_monitoring<T: HealthCheckable + 'static>(
         &self,
         instance_id: uuid::Uuid,
-        resource_id: ResourceId,
+        resource_id: String,
         instance: Arc<T>,
     ) {
         let interval = self.config.default_interval;
@@ -204,13 +348,52 @@ impl HealthChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::error::ResourceResult;
+
+    // --- Health type tests ---
+
+    #[test]
+    fn test_health_status_usable() {
+        assert!(HealthStatus::healthy().is_usable());
+        assert!(HealthStatus::degraded("load", 0.5).is_usable());
+        assert!(!HealthStatus::degraded("load", 0.9).is_usable());
+        assert!(!HealthStatus::unhealthy("down").is_usable());
+    }
+
+    #[test]
+    fn test_health_status_score() {
+        assert_eq!(HealthStatus::healthy().score(), 1.0);
+        assert_eq!(HealthStatus::degraded("load", 0.3).score(), 0.7);
+        assert_eq!(HealthStatus::unhealthy("down").score(), 0.0);
+        assert_eq!(
+            HealthStatus {
+                state: HealthState::Unknown,
+                latency: None,
+                metadata: std::collections::HashMap::new(),
+            }
+            .score(),
+            0.5
+        );
+    }
+
+    #[test]
+    fn test_health_status_with_metadata() {
+        let status = HealthStatus::healthy()
+            .with_latency(std::time::Duration::from_millis(100))
+            .with_metadata("version", "14.5")
+            .with_metadata("connections", "10");
+
+        assert!(status.latency.is_some());
+        assert_eq!(status.metadata.get("version").unwrap(), "14.5");
+        assert_eq!(status.metadata.get("connections").unwrap(), "10");
+    }
+
+    // --- HealthChecker tests ---
 
     struct MockHealthCheckable {
         should_fail: Arc<RwLock<bool>>,
     }
 
-    #[async_trait::async_trait]
+    #[async_trait]
     impl HealthCheckable for MockHealthCheckable {
         async fn health_check(&self) -> ResourceResult<HealthStatus> {
             let should_fail = *self.should_fail.read().await;
@@ -239,7 +422,7 @@ mod tests {
         let checker = HealthChecker::new(config);
 
         let instance_id = uuid::Uuid::new_v4();
-        let resource_id = ResourceId::new("test", "1.0");
+        let resource_id = "test".to_string();
         let should_fail = Arc::new(RwLock::new(false));
         let instance = Arc::new(MockHealthCheckable {
             should_fail: Arc::clone(&should_fail),
@@ -268,7 +451,7 @@ mod tests {
         let checker = HealthChecker::new(config);
 
         let instance_id = uuid::Uuid::new_v4();
-        let resource_id = ResourceId::new("test", "1.0");
+        let resource_id = "test".to_string();
         let should_fail = Arc::new(RwLock::new(true)); // Start failing immediately
         let instance = Arc::new(MockHealthCheckable {
             should_fail: Arc::clone(&should_fail),
@@ -301,18 +484,14 @@ mod tests {
         let healthy_instance = Arc::new(MockHealthCheckable {
             should_fail: Arc::new(RwLock::new(false)),
         });
-        checker.start_monitoring(healthy_id, ResourceId::new("test", "1.0"), healthy_instance);
+        checker.start_monitoring(healthy_id, "test".to_string(), healthy_instance);
 
         // Add unhealthy instance
         let unhealthy_id = uuid::Uuid::new_v4();
         let unhealthy_instance = Arc::new(MockHealthCheckable {
             should_fail: Arc::new(RwLock::new(true)),
         });
-        checker.start_monitoring(
-            unhealthy_id,
-            ResourceId::new("test", "1.0"),
-            unhealthy_instance,
-        );
+        checker.start_monitoring(unhealthy_id, "test".to_string(), unhealthy_instance);
 
         // Wait for checks
         tokio::time::sleep(Duration::from_millis(150)).await;

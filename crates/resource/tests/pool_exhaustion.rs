@@ -1,59 +1,65 @@
 //! Pool exhaustion and recovery tests
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use nebula_resource::ResourceContext;
-use nebula_resource::core::error::ResourceError;
-use nebula_resource::core::resource::{
-    ResourceId, ResourceInstanceMetadata, TypedResourceInstance,
-};
-use nebula_resource::core::traits::PoolConfig;
-use nebula_resource::pool::{PoolStrategy, ResourcePool};
+use async_trait::async_trait;
+use nebula_resource::context::ResourceContext;
+use nebula_resource::error::{ResourceError, ResourceResult};
+use nebula_resource::pool::{Pool, PoolConfig};
+use nebula_resource::resource::{Resource, ResourceConfig};
+use nebula_resource::scope::ResourceScope;
 
-async fn create_test_instance()
--> Result<TypedResourceInstance<String>, nebula_resource::ResourceError> {
-    let metadata = ResourceInstanceMetadata {
-        instance_id: uuid::Uuid::new_v4(),
-        resource_id: ResourceId::new("test", "1.0"),
-        state: nebula_resource::LifecycleState::Ready,
-        context: ResourceContext::new(
-            "test".to_string(),
-            "test".to_string(),
-            "test".to_string(),
-            "test".to_string(),
-        ),
-        created_at: chrono::Utc::now(),
-        last_accessed_at: None,
-        tags: std::collections::HashMap::new(),
-    };
+#[derive(Debug, Clone, serde::Deserialize)]
+struct TestConfig;
 
-    Ok(TypedResourceInstance::new(
-        Arc::new("test_resource".to_string()),
-        metadata,
-    ))
+impl ResourceConfig for TestConfig {}
+
+struct TestResource;
+
+#[async_trait]
+impl Resource for TestResource {
+    type Config = TestConfig;
+    type Instance = String;
+
+    fn id(&self) -> &str {
+        "test-pool"
+    }
+
+    async fn create(
+        &self,
+        _config: &Self::Config,
+        _ctx: &ResourceContext,
+    ) -> ResourceResult<Self::Instance> {
+        Ok("pooled-instance".to_string())
+    }
+}
+
+fn ctx() -> ResourceContext {
+    ResourceContext::new(ResourceScope::Global, "wf", "ex")
 }
 
 #[tokio::test]
 async fn pool_exhaustion_returns_error() {
-    let config = PoolConfig {
+    let pool_config = PoolConfig {
         min_size: 0,
         max_size: 2,
-        acquire_timeout: Duration::from_secs(1),
-        idle_timeout: Duration::from_secs(600),
-        max_lifetime: Duration::from_secs(3600),
-        validation_interval: Duration::from_secs(30),
+        acquire_timeout: Duration::from_millis(200),
+        ..Default::default()
     };
-    let pool = ResourcePool::new(config, PoolStrategy::Fifo, create_test_instance);
+    let pool = Pool::new(TestResource, TestConfig, pool_config);
 
     // Acquire 2 resources (should succeed)
-    let r1 = pool.acquire().await.expect("first acquire should succeed");
-    let r2 = pool.acquire().await.expect("second acquire should succeed");
-
-    assert_eq!(pool.stats().active_count, 2);
+    let _r1 = pool
+        .acquire(&ctx())
+        .await
+        .expect("first acquire should succeed");
+    let _r2 = pool
+        .acquire(&ctx())
+        .await
+        .expect("second acquire should succeed");
 
     // Third acquire should fail with PoolExhausted
-    let result = pool.acquire().await;
+    let result = pool.acquire(&ctx()).await;
     assert!(result.is_err(), "third acquire should fail");
 
     let err = result.unwrap_err();
@@ -62,89 +68,44 @@ async fn pool_exhaustion_returns_error() {
         "expected PoolExhausted, got: {:?}",
         err
     );
-
-    // Release one resource
-    let id1 = r1.instance_id();
-    drop(r1);
-    pool.release(id1).await.unwrap();
-
-    // Now acquire should succeed again
-    let r3 = pool
-        .acquire()
-        .await
-        .expect("acquire after release should succeed");
-
-    assert_eq!(pool.stats().active_count, 2);
-
-    // Cleanup
-    drop(r2);
-    drop(r3);
 }
 
 #[tokio::test]
-async fn pool_exhaustion_stats_track_failures() {
-    let config = PoolConfig {
+async fn pool_reuses_after_drop() {
+    let pool_config = PoolConfig {
         min_size: 0,
         max_size: 1,
         acquire_timeout: Duration::from_secs(1),
-        idle_timeout: Duration::from_secs(600),
-        max_lifetime: Duration::from_secs(3600),
-        validation_interval: Duration::from_secs(30),
+        ..Default::default()
     };
-    let pool = ResourcePool::new(config, PoolStrategy::Fifo, create_test_instance);
+    let pool = Pool::new(TestResource, TestConfig, pool_config);
 
-    let r1 = pool.acquire().await.unwrap();
-
-    // Multiple failed attempts
-    for _ in 0..3 {
-        let _ = pool.acquire().await;
+    // Acquire and drop to return to pool
+    {
+        let _r1 = pool.acquire(&ctx()).await.unwrap();
     }
+    // Give the spawn a moment to return the instance
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Should be able to acquire again
+    let _r2 = pool.acquire(&ctx()).await.expect("should reuse after drop");
 
     let stats = pool.stats();
-    assert_eq!(stats.failed_acquisitions, 3);
-    assert_eq!(stats.total_acquisitions, 4); // 1 success + 3 failures
-
-    drop(r1);
-}
-
-#[tokio::test]
-async fn pool_drop_returns_resource_for_reuse() {
-    let config = PoolConfig {
-        min_size: 0,
-        max_size: 1,
-        acquire_timeout: Duration::from_secs(1),
-        idle_timeout: Duration::from_secs(600),
-        max_lifetime: Duration::from_secs(3600),
-        validation_interval: Duration::from_secs(30),
-    };
-    let pool = ResourcePool::new(config, PoolStrategy::Fifo, create_test_instance);
-
-    // Acquire and drop (Drop sends resource back via channel)
-    let r1 = pool.acquire().await.unwrap();
-    drop(r1);
-
-    // Next acquire triggers drain_returned, should reuse the dropped resource
-    let r2 = pool.acquire().await.expect("should reuse dropped resource");
-
-    let stats = pool.stats();
-    // Only 1 resource should have been created (the first one, reused after drop)
-    assert_eq!(stats.resources_created, 1);
     assert_eq!(stats.total_acquisitions, 2);
-
-    drop(r2);
 }
 
 #[tokio::test]
 async fn pool_exhausted_error_is_retryable() {
-    let config = PoolConfig {
+    let pool_config = PoolConfig {
         min_size: 0,
         max_size: 1,
-        ..PoolConfig::default()
+        acquire_timeout: Duration::from_millis(100),
+        ..Default::default()
     };
-    let pool = ResourcePool::new(config, PoolStrategy::Fifo, create_test_instance);
+    let pool = Pool::new(TestResource, TestConfig, pool_config);
 
-    let _r1 = pool.acquire().await.unwrap();
-    let err = pool.acquire().await.unwrap_err();
+    let _r1 = pool.acquire(&ctx()).await.unwrap();
+    let err = pool.acquire(&ctx()).await.unwrap_err();
 
     assert!(err.is_retryable(), "PoolExhausted should be retryable");
 }

@@ -5,17 +5,18 @@
 //! - Circular dependency detection
 //! - Dependency validation
 
-use crate::core::error::{ResourceError, ResourceResult};
-use crate::core::resource::ResourceId;
+use crate::error::{ResourceError, ResourceResult};
 use std::collections::{HashMap, HashSet, VecDeque};
 
-/// Dependency graph for managing resource initialization order
+/// Dependency graph for managing resource initialization order.
+///
+/// Resources are identified by plain string keys (matching `Resource::id()`).
 #[derive(Debug, Clone, Default)]
 pub struct DependencyGraph {
-    /// `ResourceId` -> list of dependencies (what this resource depends on)
-    dependencies: HashMap<ResourceId, Vec<ResourceId>>,
-    /// `ResourceId` -> list of dependents (what depends on this resource)
-    dependents: HashMap<ResourceId, Vec<ResourceId>>,
+    /// resource key -> list of dependencies (what this resource depends on)
+    dependencies: HashMap<String, Vec<String>>,
+    /// resource key -> list of dependents (what depends on this resource)
+    dependents: HashMap<String, Vec<String>>,
 }
 
 impl DependencyGraph {
@@ -34,13 +35,16 @@ impl DependencyGraph {
     /// Returns error if adding this dependency would create a cycle
     pub fn add_dependency(
         &mut self,
-        resource: ResourceId,
-        depends_on: ResourceId,
+        resource: impl Into<String>,
+        depends_on: impl Into<String>,
     ) -> ResourceResult<()> {
+        let resource = resource.into();
+        let depends_on = depends_on.into();
+
         // Don't allow self-dependency
         if resource == depends_on {
             return Err(ResourceError::internal(
-                resource.to_string(),
+                &resource,
                 format!("Resource cannot depend on itself: {resource}"),
             ));
         }
@@ -62,7 +66,7 @@ impl DependencyGraph {
             // Rollback the changes
             self.remove_dependency(&resource, &depends_on);
             return Err(ResourceError::internal(
-                resource.to_string(),
+                &resource,
                 format!("Adding dependency would create cycle: {cycle:?}"),
             ));
         }
@@ -71,7 +75,7 @@ impl DependencyGraph {
     }
 
     /// Remove a dependency relationship
-    fn remove_dependency(&mut self, resource: &ResourceId, depends_on: &ResourceId) {
+    fn remove_dependency(&mut self, resource: &str, depends_on: &str) {
         if let Some(deps) = self.dependencies.get_mut(resource) {
             deps.retain(|d| d != depends_on);
         }
@@ -82,13 +86,13 @@ impl DependencyGraph {
 
     /// Get all dependencies for a resource
     #[must_use]
-    pub fn get_dependencies(&self, resource: &ResourceId) -> Vec<ResourceId> {
+    pub fn get_dependencies(&self, resource: &str) -> Vec<String> {
         self.dependencies.get(resource).cloned().unwrap_or_default()
     }
 
     /// Get all dependents of a resource (what depends on this resource)
     #[must_use]
-    pub fn get_dependents(&self, resource: &ResourceId) -> Vec<ResourceId> {
+    pub fn get_dependents(&self, resource: &str) -> Vec<String> {
         self.dependents.get(resource).cloned().unwrap_or_default()
     }
 
@@ -97,13 +101,13 @@ impl DependencyGraph {
     /// # Returns
     /// `Some(cycle_path)` if a cycle is detected, None otherwise
     #[must_use]
-    pub fn detect_cycle(&self) -> Option<Vec<ResourceId>> {
+    pub fn detect_cycle(&self) -> Option<Vec<String>> {
         let mut visited = HashSet::new();
         let mut rec_stack = HashSet::new();
         let mut path = Vec::new();
 
         for node in self.dependencies.keys() {
-            if !visited.contains(node)
+            if !visited.contains(node.as_str())
                 && let Some(cycle) =
                     self.detect_cycle_dfs(node, &mut visited, &mut rec_stack, &mut path)
             {
@@ -117,22 +121,22 @@ impl DependencyGraph {
     /// DFS-based cycle detection helper
     fn detect_cycle_dfs(
         &self,
-        node: &ResourceId,
-        visited: &mut HashSet<ResourceId>,
-        rec_stack: &mut HashSet<ResourceId>,
-        path: &mut Vec<ResourceId>,
-    ) -> Option<Vec<ResourceId>> {
-        visited.insert(node.clone());
-        rec_stack.insert(node.clone());
-        path.push(node.clone());
+        node: &str,
+        visited: &mut HashSet<String>,
+        rec_stack: &mut HashSet<String>,
+        path: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        visited.insert(node.to_string());
+        rec_stack.insert(node.to_string());
+        path.push(node.to_string());
 
         if let Some(deps) = self.dependencies.get(node) {
             for dep in deps {
-                if !visited.contains(dep) {
+                if !visited.contains(dep.as_str()) {
                     if let Some(cycle) = self.detect_cycle_dfs(dep, visited, rec_stack, path) {
                         return Some(cycle);
                     }
-                } else if rec_stack.contains(dep) {
+                } else if rec_stack.contains(dep.as_str()) {
                     // Found cycle - build cycle path
                     let cycle_start = path.iter().position(|p| p == dep).unwrap();
                     return Some(path[cycle_start..].to_vec());
@@ -148,13 +152,13 @@ impl DependencyGraph {
     /// Perform topological sort to get initialization order
     ///
     /// # Returns
-    /// Ordered list of `ResourceIds` where dependencies come before dependents
+    /// Ordered list of resource keys where dependencies come before dependents
     ///
     /// # Errors
     /// Returns error if there's a cycle in the graph
-    pub fn topological_sort(&self) -> ResourceResult<Vec<ResourceId>> {
+    pub fn topological_sort(&self) -> ResourceResult<Vec<String>> {
         // Use Kahn's algorithm
-        let mut in_degree: HashMap<ResourceId, usize> = HashMap::new();
+        let mut in_degree: HashMap<String, usize> = HashMap::new();
         let mut all_nodes = HashSet::new();
 
         // Collect all nodes and calculate in-degrees
@@ -170,7 +174,7 @@ impl DependencyGraph {
         }
 
         // Find all nodes with no incoming edges
-        let mut queue: VecDeque<ResourceId> = in_degree
+        let mut queue: VecDeque<String> = in_degree
             .iter()
             .filter(|(_, degree)| **degree == 0)
             .map(|(node, _)| node.clone())
@@ -207,7 +211,7 @@ impl DependencyGraph {
             && let Some(cycle) = self.detect_cycle()
         {
             return Err(ResourceError::internal(
-                cycle[0].to_string(),
+                &cycle[0],
                 format!("Circular dependency detected: {cycle:?}"),
             ));
         }
@@ -216,7 +220,7 @@ impl DependencyGraph {
     }
 
     /// Get the initialization order for a specific resource and its dependencies
-    pub fn get_init_order(&self, resource: &ResourceId) -> ResourceResult<Vec<ResourceId>> {
+    pub fn get_init_order(&self, resource: &str) -> ResourceResult<Vec<String>> {
         let mut visited = HashSet::new();
         let mut order = Vec::new();
 
@@ -228,15 +232,15 @@ impl DependencyGraph {
     /// Recursively build initialization order using DFS
     fn build_init_order(
         &self,
-        resource: &ResourceId,
-        visited: &mut HashSet<ResourceId>,
-        order: &mut Vec<ResourceId>,
+        resource: &str,
+        visited: &mut HashSet<String>,
+        order: &mut Vec<String>,
     ) -> ResourceResult<()> {
         if visited.contains(resource) {
             return Ok(());
         }
 
-        visited.insert(resource.clone());
+        visited.insert(resource.to_string());
 
         // Visit dependencies first
         if let Some(deps) = self.dependencies.get(resource) {
@@ -246,21 +250,21 @@ impl DependencyGraph {
         }
 
         // Add this resource after its dependencies
-        order.push(resource.clone());
+        order.push(resource.to_string());
 
         Ok(())
     }
 
     /// Get all transitive dependencies of a resource
     #[must_use]
-    pub fn get_all_dependencies(&self, resource: &ResourceId) -> HashSet<ResourceId> {
+    pub fn get_all_dependencies(&self, resource: &str) -> HashSet<String> {
         let mut all_deps = HashSet::new();
         self.collect_dependencies(resource, &mut all_deps);
         all_deps
     }
 
     /// Recursively collect all dependencies
-    fn collect_dependencies(&self, resource: &ResourceId, collected: &mut HashSet<ResourceId>) {
+    fn collect_dependencies(&self, resource: &str, collected: &mut HashSet<String>) {
         if let Some(deps) = self.dependencies.get(resource) {
             for dep in deps {
                 if collected.insert(dep.clone()) {
@@ -272,7 +276,7 @@ impl DependencyGraph {
 
     /// Check if resource A depends on resource B (directly or transitively)
     #[must_use]
-    pub fn depends_on(&self, resource: &ResourceId, depends_on: &ResourceId) -> bool {
+    pub fn depends_on(&self, resource: &str, depends_on: &str) -> bool {
         let all_deps = self.get_all_dependencies(resource);
         all_deps.contains(depends_on)
     }
@@ -282,71 +286,56 @@ impl DependencyGraph {
 mod tests {
     use super::*;
 
-    fn rid(name: &str) -> ResourceId {
-        ResourceId::new(name, "1.0")
-    }
-
     #[test]
     fn test_add_simple_dependency() {
         let mut graph = DependencyGraph::new();
-        let a = rid("a");
-        let b = rid("b");
 
-        graph.add_dependency(a.clone(), b.clone()).unwrap();
+        graph.add_dependency("a", "b").unwrap();
 
-        assert_eq!(graph.get_dependencies(&a), vec![b.clone()]);
-        assert_eq!(graph.get_dependents(&b), vec![a.clone()]);
+        assert_eq!(graph.get_dependencies("a"), vec!["b".to_string()]);
+        assert_eq!(graph.get_dependents("b"), vec!["a".to_string()]);
     }
 
     #[test]
     fn test_self_dependency_rejected() {
         let mut graph = DependencyGraph::new();
-        let a = rid("a");
 
-        let result = graph.add_dependency(a.clone(), a.clone());
+        let result = graph.add_dependency("a", "a");
         assert!(result.is_err());
     }
 
     #[test]
     fn test_circular_dependency_detected() {
         let mut graph = DependencyGraph::new();
-        let a = rid("a");
-        let b = rid("b");
-        let c = rid("c");
 
         // a -> b -> c is fine
-        graph.add_dependency(a.clone(), b.clone()).unwrap();
-        graph.add_dependency(b.clone(), c.clone()).unwrap();
+        graph.add_dependency("a", "b").unwrap();
+        graph.add_dependency("b", "c").unwrap();
 
         // c -> a creates a cycle
-        let result = graph.add_dependency(c.clone(), a.clone());
+        let result = graph.add_dependency("c", "a");
         assert!(result.is_err());
     }
 
     #[test]
     fn test_topological_sort() {
         let mut graph = DependencyGraph::new();
-        let a = rid("a");
-        let b = rid("b");
-        let c = rid("c");
-        let d = rid("d");
 
         // a depends on b and c
         // b depends on d
         // c depends on d
         // Expected order: d, then b and c (in any order), then a
-        graph.add_dependency(a.clone(), b.clone()).unwrap();
-        graph.add_dependency(a.clone(), c.clone()).unwrap();
-        graph.add_dependency(b.clone(), d.clone()).unwrap();
-        graph.add_dependency(c.clone(), d.clone()).unwrap();
+        graph.add_dependency("a", "b").unwrap();
+        graph.add_dependency("a", "c").unwrap();
+        graph.add_dependency("b", "d").unwrap();
+        graph.add_dependency("c", "d").unwrap();
 
         let sorted = graph.topological_sort().unwrap();
 
-        // d must come before b and c
-        let d_pos = sorted.iter().position(|r| r == &d).unwrap();
-        let b_pos = sorted.iter().position(|r| r == &b).unwrap();
-        let c_pos = sorted.iter().position(|r| r == &c).unwrap();
-        let a_pos = sorted.iter().position(|r| r == &a).unwrap();
+        let d_pos = sorted.iter().position(|r| r == "d").unwrap();
+        let b_pos = sorted.iter().position(|r| r == "b").unwrap();
+        let c_pos = sorted.iter().position(|r| r == "c").unwrap();
+        let a_pos = sorted.iter().position(|r| r == "a").unwrap();
 
         assert!(d_pos < b_pos);
         assert!(d_pos < c_pos);
@@ -357,50 +346,41 @@ mod tests {
     #[test]
     fn test_get_init_order() {
         let mut graph = DependencyGraph::new();
-        let a = rid("a");
-        let b = rid("b");
-        let c = rid("c");
 
-        graph.add_dependency(a.clone(), b.clone()).unwrap();
-        graph.add_dependency(b.clone(), c.clone()).unwrap();
+        graph.add_dependency("a", "b").unwrap();
+        graph.add_dependency("b", "c").unwrap();
 
-        let order = graph.get_init_order(&a).unwrap();
+        let order = graph.get_init_order("a").unwrap();
 
         // Should be: c, b, a
         assert_eq!(order.len(), 3);
-        assert_eq!(order[0], c);
-        assert_eq!(order[1], b);
-        assert_eq!(order[2], a);
+        assert_eq!(order[0], "c");
+        assert_eq!(order[1], "b");
+        assert_eq!(order[2], "a");
     }
 
     #[test]
     fn test_transitive_dependencies() {
         let mut graph = DependencyGraph::new();
-        let a = rid("a");
-        let b = rid("b");
-        let c = rid("c");
 
-        graph.add_dependency(a.clone(), b.clone()).unwrap();
-        graph.add_dependency(b.clone(), c.clone()).unwrap();
+        graph.add_dependency("a", "b").unwrap();
+        graph.add_dependency("b", "c").unwrap();
 
-        let all_deps = graph.get_all_dependencies(&a);
-        assert!(all_deps.contains(&b));
-        assert!(all_deps.contains(&c));
+        let all_deps = graph.get_all_dependencies("a");
+        assert!(all_deps.contains("b"));
+        assert!(all_deps.contains("c"));
         assert_eq!(all_deps.len(), 2);
     }
 
     #[test]
     fn test_depends_on() {
         let mut graph = DependencyGraph::new();
-        let a = rid("a");
-        let b = rid("b");
-        let c = rid("c");
 
-        graph.add_dependency(a.clone(), b.clone()).unwrap();
-        graph.add_dependency(b.clone(), c.clone()).unwrap();
+        graph.add_dependency("a", "b").unwrap();
+        graph.add_dependency("b", "c").unwrap();
 
-        assert!(graph.depends_on(&a, &b));
-        assert!(graph.depends_on(&a, &c)); // transitive
-        assert!(!graph.depends_on(&b, &a));
+        assert!(graph.depends_on("a", "b"));
+        assert!(graph.depends_on("a", "c")); // transitive
+        assert!(!graph.depends_on("b", "a"));
     }
 }

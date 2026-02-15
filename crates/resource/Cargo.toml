@@ -55,6 +55,7 @@ futures = "0.3"
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # Serialization
 serde = { workspace = true, features = ["derive"], optional = true }
