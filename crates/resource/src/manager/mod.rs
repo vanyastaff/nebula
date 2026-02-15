@@ -19,7 +19,7 @@ use crate::core::{
         Resource, ResourceFactory, ResourceGuard, ResourceId, ResourceInstanceMetadata,
         ResourceMetadata, TypedResourceInstance,
     },
-    scoping::{ResourceScope, ScopingStrategy},
+    scoping::ScopingStrategy,
 };
 
 use crate::health::{HealthCheckConfig, HealthChecker};
@@ -40,6 +40,12 @@ pub struct ResourceManager {
 
     /// Resource metadata cache
     metadata_cache: Arc<DashMap<ResourceId, ResourceMetadata>>,
+
+    /// Maps concrete instance `TypeId` to `ResourceId` for type-safe lookups
+    type_to_resource: DashMap<TypeId, ResourceId>,
+
+    /// Stored configs for each resource (passed to factory on pool creation)
+    resource_configs: DashMap<ResourceId, serde_json::Value>,
 
     /// Dependency graph for initialization ordering
     dependency_graph: Arc<RwLock<DependencyGraph>>,
@@ -68,10 +74,12 @@ impl std::fmt::Debug for ResourceManager {
         let registry_count = self.registry.read().len();
         let pool_count = self.pools.len();
         let metadata_count = self.metadata_cache.len();
+        let type_mapping_count = self.type_to_resource.len();
         f.debug_struct("ResourceManager")
             .field("registry_count", &registry_count)
             .field("pool_count", &pool_count)
             .field("metadata_count", &metadata_count)
+            .field("type_mapping_count", &type_mapping_count)
             .field("dependency_graph", &self.dependency_graph)
             .field(
                 "event_subscriber_count",
@@ -155,6 +163,8 @@ impl ResourceManager {
             registry: Arc::new(RwLock::new(HashMap::new())),
             pools,
             metadata_cache: Arc::new(DashMap::new()),
+            type_to_resource: DashMap::new(),
+            resource_configs: DashMap::new(),
             dependency_graph: Arc::new(RwLock::new(DependencyGraph::new())),
             event_subscribers: Arc::new(RwLock::new(Vec::new())),
             cleanup_tx,
@@ -177,6 +187,19 @@ impl ResourceManager {
         R: Resource + 'static,
         R::Config: serde::de::DeserializeOwned,
     {
+        self.register_with_config(resource, serde_json::Value::Null)
+    }
+
+    /// Register a resource type with explicit configuration
+    pub fn register_with_config<R>(
+        &self,
+        resource: R,
+        config: serde_json::Value,
+    ) -> ResourceResult<()>
+    where
+        R: Resource + 'static,
+        R::Config: serde::de::DeserializeOwned,
+    {
         let metadata = resource.metadata();
         let resource_id = metadata.id.clone();
 
@@ -194,6 +217,13 @@ impl ResourceManager {
                     })?;
             }
         }
+
+        // Map the Instance TypeId to this ResourceId for type-safe lookups
+        self.type_to_resource
+            .insert(TypeId::of::<R::Instance>(), resource_id.clone());
+
+        // Store config for later use by the pool factory
+        self.resource_configs.insert(resource_id.clone(), config);
 
         // Store metadata in cache
         self.metadata_cache.insert(resource_id.clone(), metadata);
@@ -291,6 +321,13 @@ impl ResourceManager {
             })?
         };
 
+        // Retrieve stored config (fall back to Null if not found)
+        let stored_config = self
+            .resource_configs
+            .get(resource_id)
+            .map(|e| e.value().clone())
+            .unwrap_or(serde_json::Value::Null);
+
         let factory_clone = Arc::clone(&factory);
         let context_clone = context.clone();
         let resource_id_clone = resource_id.clone();
@@ -302,6 +339,7 @@ impl ResourceManager {
             let context = context_clone.clone();
             let resource_id = resource_id_clone.clone();
             let subscribers = Arc::clone(&event_subscribers);
+            let config = stored_config.clone();
 
             async move {
                 // Emit creation start event
@@ -317,8 +355,6 @@ impl ResourceManager {
                     }
                 }
 
-                // Create configuration (simplified for now)
-                let config = serde_json::json!({});
                 let dependencies = HashMap::new();
 
                 // Create instance through factory
@@ -400,25 +436,19 @@ impl ResourceManager {
     where
         T: 'static,
     {
-        let _type_id = TypeId::of::<T>();
-
-        // For now, we'll use a simple approach
-        // In a real implementation, we'd maintain a TypeId -> ResourceId mapping
-        for entry in self.metadata_cache.iter() {
-            // This is a simplified check - in reality we'd need better type mapping
-            if entry.key().name.contains(std::any::type_name::<T>()) {
-                return Ok(entry.key().clone());
-            }
-        }
-
-        Err(ResourceError::unavailable(
-            "unknown",
-            format!(
-                "No resource registered for type {}",
-                std::any::type_name::<T>()
-            ),
-            false,
-        ))
+        self.type_to_resource
+            .get(&TypeId::of::<T>())
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| {
+                ResourceError::unavailable(
+                    "unknown",
+                    format!(
+                        "No resource registered for type {}",
+                        std::any::type_name::<T>()
+                    ),
+                    false,
+                )
+            })
     }
 
     fn cast_to_typed_instance<T>(
@@ -645,7 +675,6 @@ impl ResourceManager {
         resource_id: &ResourceId,
         context: &ResourceContext,
     ) -> ResourceResult<()> {
-        // Get resource metadata
         let metadata = self.metadata_cache.get(resource_id).ok_or_else(|| {
             ResourceError::unavailable(resource_id.to_string(), "Resource not registered", false)
         })?;
@@ -653,133 +682,20 @@ impl ResourceManager {
         let resource_scope = &metadata.default_scope;
         let context_scope = &context.scope;
 
-        // Check if the context scope is allowed to access the resource scope
-        match (&resource_scope, &context_scope) {
-            // Global resources can be accessed from any scope
-            (ResourceScope::Global, _) => Ok(()),
-
-            // Tenant resources can only be accessed from the same tenant or broader
-            (
-                ResourceScope::Tenant {
-                    tenant_id: res_tenant,
-                },
-                ResourceScope::Tenant {
-                    tenant_id: ctx_tenant,
-                },
-            ) => {
-                if res_tenant == ctx_tenant {
-                    Ok(())
-                } else {
-                    Err(ResourceError::unavailable(
-                        resource_id.to_string(),
-                        format!(
-                            "Tenant mismatch: resource is scoped to tenant '{res_tenant}', but context is in tenant '{ctx_tenant}'"
-                        ),
-                        false,
-                    ))
-                }
-            }
-
-            // Tenant resources cannot be accessed from narrower scopes without matching tenant
-            (ResourceScope::Tenant { .. }, _) => Err(ResourceError::unavailable(
-                resource_id.to_string(),
-                "Tenant-scoped resource requires tenant context",
-                false,
-            )),
-
-            // Workflow resources can only be accessed from the same workflow or broader
-            (
-                ResourceScope::Workflow {
-                    workflow_id: res_wf,
-                },
-                ResourceScope::Workflow {
-                    workflow_id: ctx_wf,
-                },
-            ) => {
-                if res_wf == ctx_wf {
-                    Ok(())
-                } else {
-                    Err(ResourceError::unavailable(
-                        resource_id.to_string(),
-                        format!(
-                            "Workflow mismatch: resource is scoped to workflow '{res_wf}', but context is in workflow '{ctx_wf}'"
-                        ),
-                        false,
-                    ))
-                }
-            }
-
-            // Workflow resources can be accessed from narrower scopes within the same workflow
-            (
-                ResourceScope::Workflow {
-                    workflow_id: _res_wf,
-                },
-                ResourceScope::Execution { .. } | ResourceScope::Action { .. },
-            ) => {
-                // In a real implementation, we'd verify the execution/action belongs to this workflow
-                // For now, we allow it (this would be enhanced with proper context tracking)
-                Ok(())
-            }
-
-            // Execution resources
-            (
-                ResourceScope::Execution {
-                    execution_id: res_exec,
-                },
-                ResourceScope::Execution {
-                    execution_id: ctx_exec,
-                },
-            ) => {
-                if res_exec == ctx_exec {
-                    Ok(())
-                } else {
-                    Err(ResourceError::unavailable(
-                        resource_id.to_string(),
-                        "Execution-scoped resource can only be accessed from the same execution",
-                        false,
-                    ))
-                }
-            }
-
-            // Execution resources can be accessed from actions in the same execution
-            (
-                ResourceScope::Execution {
-                    execution_id: _res_exec,
-                },
-                ResourceScope::Action { .. },
-            ) => {
-                // In a real implementation, we'd verify the action belongs to this execution
-                Ok(())
-            }
-
-            // Action resources
-            (
-                ResourceScope::Action {
-                    action_id: res_action,
-                },
-                ResourceScope::Action {
-                    action_id: ctx_action,
-                },
-            ) => {
-                if res_action == ctx_action {
-                    Ok(())
-                } else {
-                    Err(ResourceError::unavailable(
-                        resource_id.to_string(),
-                        "Action-scoped resource can only be accessed from the same action",
-                        false,
-                    ))
-                }
-            }
-
-            // All other combinations are not allowed
-            _ => Err(ResourceError::unavailable(
+        // The resource scope must contain the context scope.
+        // e.g. a Global resource contains any context scope,
+        //      a Tenant("A") resource contains Workflow(tenant_id=Some("A")),
+        //      but NOT Workflow(tenant_id=Some("B")).
+        if resource_scope.contains(context_scope) {
+            Ok(())
+        } else {
+            Err(ResourceError::unavailable(
                 resource_id.to_string(),
                 format!(
-                    "Scope mismatch: resource scope {resource_scope:?} cannot be accessed from context scope {context_scope:?}"
+                    "Scope mismatch: resource scope {resource_scope:?} does not contain context scope {context_scope:?}"
                 ),
                 false,
-            )),
+            ))
         }
     }
 }

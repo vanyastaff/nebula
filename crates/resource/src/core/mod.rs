@@ -17,5 +17,5 @@ pub use error::{ResourceError, ResourceResult};
 pub use lifecycle::LifecycleState;
 pub use resource::{Resource, ResourceFactory, ResourceInstance};
 pub use scoping::ResourceScope;
-pub use traits::{HealthCheckable, Poolable, Stateful};
+pub use traits::{HealthCheckable, Poolable};
 pub use versioning::{Version, VersionChecker};

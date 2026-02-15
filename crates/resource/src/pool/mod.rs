@@ -512,6 +512,10 @@ pub struct ResourcePool<T> {
     wrr_current_index: Arc<Mutex<usize>>,
     /// Adaptive strategy state
     adaptive_state: Arc<Mutex<AdaptiveState>>,
+    /// Channel for returning resources from sync Drop
+    return_tx: tokio::sync::mpsc::UnboundedSender<Uuid>,
+    /// Receiver for returned resources (drained during acquire/maintain)
+    return_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<Uuid>>,
 }
 
 impl<T> std::fmt::Debug for ResourcePool<T> {
@@ -531,6 +535,7 @@ impl<T> std::fmt::Debug for ResourcePool<T> {
             )
             .field("wrr_current_index", &self.wrr_current_index)
             .field("adaptive_state", &self.adaptive_state)
+            .field("return_tx", &"<channel>")
             .finish()
     }
 }
@@ -545,6 +550,7 @@ where
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ResourceResult<TypedResourceInstance<T>>> + Send + 'static,
     {
+        let (return_tx, return_rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             config: config.clone(),
             strategy,
@@ -558,6 +564,8 @@ where
             health_checker: None,
             wrr_current_index: Arc::new(Mutex::new(0)),
             adaptive_state: Arc::new(Mutex::new(AdaptiveState::new())),
+            return_tx,
+            return_rx: Mutex::new(return_rx),
         }
     }
 
@@ -567,8 +575,33 @@ where
         self
     }
 
+    /// Drain resources returned via the Drop channel back into the available pool.
+    fn drain_returned(&self) {
+        let mut rx = self.return_rx.lock();
+        let mut acquired = self.acquired.lock();
+        let mut available = self.available.lock();
+        let mut stats = self.stats.write();
+
+        while let Ok(instance_id) = rx.try_recv() {
+            if let Some(entry) = acquired.remove(&instance_id) {
+                if entry.is_expired(self.config.max_lifetime, self.config.idle_timeout) {
+                    stats.resources_destroyed += 1;
+                } else {
+                    available.push(entry);
+                }
+                stats.total_releases += 1;
+                stats.active_count = stats.active_count.saturating_sub(1);
+                stats.idle_count = available.len();
+                stats.utilization = stats.calculate_utilization(self.config.max_size);
+            }
+        }
+    }
+
     /// Acquire a resource from the pool
     pub async fn acquire(&self) -> ResourceResult<PooledResource<T>> {
+        // Drain any resources returned via Drop before acquiring
+        self.drain_returned();
+
         let start_time = Instant::now();
         let wait_start = Instant::now();
 
@@ -613,14 +646,17 @@ where
                 instance_id,
                 Arc::clone(&self.acquired),
                 Arc::clone(&self.stats),
+                self.return_tx.clone(),
             ));
         }
 
         // Create new resource if pool not at capacity
         {
-            let stats = self.stats.read();
-            if stats.active_count + stats.idle_count >= self.config.max_size {
-                // Update failed acquisition stats
+            let at_capacity = {
+                let stats = self.stats.read();
+                stats.active_count + stats.idle_count >= self.config.max_size
+            };
+            if at_capacity {
                 let mut stats = self.stats.write();
                 stats.failed_acquisitions += 1;
 
@@ -672,11 +708,15 @@ where
             instance_id,
             Arc::clone(&self.acquired),
             Arc::clone(&self.stats),
+            self.return_tx.clone(),
         ))
     }
 
     /// Release a resource back to the pool
     pub async fn release(&self, instance_id: Uuid) -> ResourceResult<()> {
+        // Drain any pending returns from Drop before processing this release
+        self.drain_returned();
+
         let entry = {
             let mut acquired = self.acquired.lock();
             acquired.remove(&instance_id)
@@ -776,6 +816,9 @@ where
 
     /// Perform maintenance on the pool (cleanup expired resources)
     pub async fn maintain(&self) -> ResourceResult<MaintenanceStats> {
+        // Drain any resources returned via Drop first
+        self.drain_returned();
+
         let start_time = Instant::now();
 
         let (_initial_count, removed_count, current_len) = {
@@ -1146,14 +1189,16 @@ where
 
 /// A resource that's been acquired from a pool
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct PooledResource<T> {
-    /// Instance ID
-    instance_id: Uuid,
+    /// Instance ID (None if already released via Drop)
+    instance_id: Option<Uuid>,
     /// Reference to the acquired resources map
     acquired: Arc<Mutex<std::collections::HashMap<Uuid, PoolEntry<T>>>>,
-    /// Reference to pool stats
+    /// Reference to pool stats (kept for future use by callers)
+    #[allow(dead_code)]
     stats: Arc<RwLock<PoolStats>>,
+    /// Channel to return resource to pool from sync Drop
+    return_tx: tokio::sync::mpsc::UnboundedSender<Uuid>,
 }
 
 impl<T> PooledResource<T> {
@@ -1161,34 +1206,41 @@ impl<T> PooledResource<T> {
         instance_id: Uuid,
         acquired: Arc<Mutex<std::collections::HashMap<Uuid, PoolEntry<T>>>>,
         stats: Arc<RwLock<PoolStats>>,
+        return_tx: tokio::sync::mpsc::UnboundedSender<Uuid>,
     ) -> Self {
         Self {
-            instance_id,
+            instance_id: Some(instance_id),
             acquired,
             stats,
+            return_tx,
         }
     }
 
     /// Get a cloned Arc to the underlying resource
     #[must_use]
     pub fn get_instance(&self) -> Option<Arc<T>> {
+        let id = self.instance_id?;
         let acquired = self.acquired.lock();
         acquired
-            .get(&self.instance_id())
+            .get(&id)
             .map(|entry| Arc::clone(&entry.instance.instance))
     }
 
     /// Get the instance ID
     #[must_use]
     pub fn instance_id(&self) -> Uuid {
-        self.instance_id
+        self.instance_id.unwrap_or_default()
     }
 }
 
 impl<T> Drop for PooledResource<T> {
     fn drop(&mut self) {
-        // Note: In a real implementation, we'd need to handle the async release
-        // This would typically involve sending the instance_id to a cleanup task
+        if let Some(id) = self.instance_id.take() {
+            // Send the instance ID back to the pool via the return channel.
+            // The pool will drain this channel during acquire() or maintain()
+            // and move the entry from acquired -> available.
+            let _ = self.return_tx.send(id);
+        }
     }
 }
 
@@ -1762,5 +1814,67 @@ mod tests {
         for (_, stats) in results.iter() {
             assert!(stats.completed_gracefully);
         }
+    }
+
+    #[tokio::test]
+    async fn test_drop_returns_resource_to_pool() {
+        let config = PoolConfig {
+            min_size: 0,
+            max_size: 5,
+            ..Default::default()
+        };
+        let pool = ResourcePool::new(config, PoolStrategy::Fifo, create_test_instance);
+
+        // Acquire a resource and immediately drop it (no manual release)
+        let resource = pool.acquire().await.unwrap();
+        let _id = resource.instance_id();
+        assert_eq!(pool.stats().active_count, 1);
+        drop(resource);
+
+        // Acquire again -- this triggers drain_returned, which should
+        // move the dropped resource from acquired -> available first,
+        // then hand it back out.
+        let resource2 = pool.acquire().await.unwrap();
+        let stats = pool.stats();
+
+        // total_acquisitions should be 2 (one original + one re-acquire)
+        assert_eq!(stats.total_acquisitions, 2);
+        // active_count should be 1 (the re-acquired resource)
+        assert_eq!(stats.active_count, 1);
+        // total_releases should be 1 (from the drain_returned processing the drop)
+        assert_eq!(stats.total_releases, 1);
+        // resources_created should be 1 (only the first create, second reused the dropped one)
+        assert_eq!(stats.resources_created, 1);
+
+        drop(resource2);
+    }
+
+    #[tokio::test]
+    async fn test_drop_then_manual_release_no_double_return() {
+        let config = PoolConfig {
+            min_size: 0,
+            max_size: 5,
+            ..Default::default()
+        };
+        let pool = ResourcePool::new(config, PoolStrategy::Fifo, create_test_instance);
+
+        // Acquire, save id, drop, then also call release (existing pattern)
+        let resource = pool.acquire().await.unwrap();
+        let id = resource.instance_id();
+        drop(resource);
+        // Manual release after drop -- should not double-return
+        pool.release(id).await.unwrap();
+
+        let stats = pool.stats();
+        // Should have exactly 1 release (drain_returned in release() processes the drop)
+        // and the manual release finds nothing in acquired, so no double-add
+        assert_eq!(stats.active_count, 0);
+        assert_eq!(stats.idle_count, 1);
+
+        // Acquire again -- should get the returned resource
+        let resource2 = pool.acquire().await.unwrap();
+        assert_eq!(pool.stats().active_count, 1);
+        assert_eq!(pool.stats().resources_created, 1); // no new resource created
+        drop(resource2);
     }
 }

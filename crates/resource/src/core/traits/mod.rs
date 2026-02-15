@@ -5,10 +5,7 @@ use async_trait::async_trait;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use super::{
-    context::ResourceContext,
-    error::{ResourceError, ResourceResult},
-};
+use super::{context::ResourceContext, error::ResourceResult};
 
 /// Health status for resource health checks
 #[derive(Debug, Clone)]
@@ -194,113 +191,6 @@ pub trait Poolable: Send + Sync {
 
     /// Prepare the resource for being acquired from the pool
     fn prepare_for_acquisition(&mut self) -> ResourceResult<()> {
-        Ok(())
-    }
-}
-
-/// Trait for resources that maintain state
-#[async_trait]
-pub trait Stateful: Send + Sync {
-    /// The type of state this resource maintains
-    type State: Send + Sync + Clone + Serialize + serde::de::DeserializeOwned;
-
-    /// Save the current state of the resource
-    async fn save_state(&self) -> ResourceResult<Self::State>;
-
-    /// Restore the resource from a saved state
-    async fn restore_state(&mut self, state: Self::State) -> ResourceResult<()>;
-
-    /// Get the current version of the state schema
-    fn state_version(&self) -> u32 {
-        1
-    }
-
-    /// Migrate state from an older version to the current version
-    async fn migrate_state(
-        &self,
-        old_state: serde_json::Value,
-        from_version: u32,
-        to_version: u32,
-    ) -> ResourceResult<Self::State> {
-        if from_version == to_version {
-            serde_json::from_value(old_state).map_err(|e| {
-                ResourceError::internal("unknown", format!("Failed to deserialize state: {e}"))
-            })
-        } else {
-            Err(ResourceError::internal(
-                "unknown",
-                format!(
-                    "State migration from version {from_version} to {to_version} is not supported"
-                ),
-            ))
-        }
-    }
-}
-
-/// Trait for resources that can be observed for lifecycle events
-pub trait Observable: Send + Sync {
-    /// The type of events this resource emits
-    type Event: Send + Sync + Clone;
-
-    /// Subscribe to events from this resource
-    fn subscribe(&self) -> futures::channel::mpsc::UnboundedReceiver<Self::Event>;
-}
-
-/// Trait for resources that support graceful shutdown
-#[async_trait]
-pub trait GracefulShutdown: Send + Sync {
-    /// Begin graceful shutdown of the resource
-    async fn begin_shutdown(&self) -> ResourceResult<()>;
-
-    /// Wait for the resource to finish shutting down
-    async fn wait_for_shutdown(&self) -> ResourceResult<()>;
-
-    /// Force immediate shutdown of the resource
-    async fn force_shutdown(&self) -> ResourceResult<()>;
-
-    /// Get the maximum time to wait for graceful shutdown
-    fn shutdown_timeout(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(30)
-    }
-}
-
-/// Trait for resources that support metrics collection
-pub trait Metrics: Send + Sync {
-    /// Get metrics data from the resource
-    fn metrics(&self) -> std::collections::HashMap<String, f64>;
-
-    /// Get metric labels for this resource
-    fn metric_labels(&self) -> std::collections::HashMap<String, String> {
-        std::collections::HashMap::new()
-    }
-}
-
-/// Trait for resources that can be reset to initial state
-#[async_trait]
-pub trait Resettable: Send + Sync {
-    /// Reset the resource to its initial state
-    async fn reset(&mut self) -> ResourceResult<()>;
-
-    /// Check if the resource supports reset operations
-    fn supports_reset(&self) -> bool {
-        true
-    }
-}
-
-/// Trait for resources that support configuration updates
-#[async_trait]
-pub trait Configurable: Send + Sync {
-    /// The type of configuration this resource accepts
-    type Config: Send + Sync + Clone;
-
-    /// Update the resource configuration
-    async fn update_config(&mut self, config: Self::Config) -> ResourceResult<()>;
-
-    /// Get the current configuration
-    fn current_config(&self) -> Self::Config;
-
-    /// Validate a configuration without applying it
-    fn validate_config(&self, _config: &Self::Config) -> ResourceResult<()> {
         Ok(())
     }
 }

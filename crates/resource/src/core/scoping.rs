@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 
 /// Defines the scope and visibility of a resource
 ///
-/// Note: Hash is not derived because the Custom variant contains `HashMap`
+/// Each variant carries optional parent identifiers so that `contains()`
+/// can verify the parent chain instead of unconditionally returning true.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Default)]
@@ -24,23 +25,35 @@ pub enum ResourceScope {
     Workflow {
         /// The workflow identifier
         workflow_id: String,
+        /// Owning tenant (if known)
+        tenant_id: Option<String>,
     },
     /// Execution scope - scoped to a specific workflow execution
     Execution {
         /// The execution identifier
         execution_id: String,
+        /// Owning workflow (if known)
+        workflow_id: Option<String>,
+        /// Owning tenant (if known)
+        tenant_id: Option<String>,
     },
     /// Action scope - scoped to a specific action within a workflow
     Action {
         /// The action identifier
         action_id: String,
+        /// Owning execution (if known)
+        execution_id: Option<String>,
+        /// Owning workflow (if known)
+        workflow_id: Option<String>,
+        /// Owning tenant (if known)
+        tenant_id: Option<String>,
     },
-    /// Custom scope with arbitrary key-value pairs
+    /// Custom scope with a key-value pair
     Custom {
-        /// The scope name
-        name: String,
-        /// Custom scope attributes
-        attributes: std::collections::HashMap<String, String>,
+        /// The scope key
+        key: String,
+        /// The scope value
+        value: String,
     },
 }
 
@@ -52,35 +65,74 @@ impl ResourceScope {
         }
     }
 
-    /// Create a workflow scope
+    /// Create a workflow scope without parent info
     pub fn workflow<S: Into<String>>(workflow_id: S) -> Self {
         Self::Workflow {
             workflow_id: workflow_id.into(),
+            tenant_id: None,
         }
     }
 
-    /// Create an execution scope
+    /// Create a workflow scope with tenant parent
+    pub fn workflow_in_tenant<S: Into<String>>(workflow_id: S, tenant_id: S) -> Self {
+        Self::Workflow {
+            workflow_id: workflow_id.into(),
+            tenant_id: Some(tenant_id.into()),
+        }
+    }
+
+    /// Create an execution scope without parent info
     pub fn execution<S: Into<String>>(execution_id: S) -> Self {
         Self::Execution {
             execution_id: execution_id.into(),
+            workflow_id: None,
+            tenant_id: None,
         }
     }
 
-    /// Create an action scope
+    /// Create an execution scope with full parent chain
+    pub fn execution_in_workflow<S: Into<String>>(
+        execution_id: S,
+        workflow_id: S,
+        tenant_id: Option<String>,
+    ) -> Self {
+        Self::Execution {
+            execution_id: execution_id.into(),
+            workflow_id: Some(workflow_id.into()),
+            tenant_id,
+        }
+    }
+
+    /// Create an action scope without parent info
     pub fn action<S: Into<String>>(action_id: S) -> Self {
         Self::Action {
             action_id: action_id.into(),
+            execution_id: None,
+            workflow_id: None,
+            tenant_id: None,
+        }
+    }
+
+    /// Create an action scope with full parent chain
+    pub fn action_in_execution<S: Into<String>>(
+        action_id: S,
+        execution_id: S,
+        workflow_id: Option<String>,
+        tenant_id: Option<String>,
+    ) -> Self {
+        Self::Action {
+            action_id: action_id.into(),
+            execution_id: Some(execution_id.into()),
+            workflow_id,
+            tenant_id,
         }
     }
 
     /// Create a custom scope
-    pub fn custom<S: Into<String>>(
-        name: S,
-        attributes: std::collections::HashMap<String, String>,
-    ) -> Self {
+    pub fn custom<S: Into<String>>(key: S, value: S) -> Self {
         Self::Custom {
-            name: name.into(),
-            attributes,
+            key: key.into(),
+            value: value.into(),
         }
     }
 
@@ -109,55 +161,114 @@ impl ResourceScope {
         self.hierarchy_level() > other.hierarchy_level()
     }
 
-    /// Check if this scope contains another scope
+    /// Check if this scope contains another scope.
+    ///
+    /// Containment requires the child to have a matching parent identifier.
+    /// If the child's parent is unknown (`None`), containment is denied
+    /// (deny-by-default for security).
     #[must_use]
     pub fn contains(&self, other: &ResourceScope) -> bool {
         match (self, other) {
             // Global contains everything
             (Self::Global, _) => true,
 
-            // Tenant contains workflow, execution, and action in same tenant
-            (
-                Self::Tenant { tenant_id: _t1 },
-                Self::Workflow { .. } | Self::Execution { .. } | Self::Action { .. },
-            ) => {
-                // Note: This is simplified - in reality we'd need context to check tenant ownership
-                true
-            }
+            // Tenant == Tenant: same tenant_id
             (Self::Tenant { tenant_id: t1 }, Self::Tenant { tenant_id: t2 }) => t1 == t2,
 
-            // Workflow contains execution and action in same workflow
-            (Self::Workflow { workflow_id: _w1 }, Self::Execution { .. } | Self::Action { .. }) => {
-                // Note: This is simplified - in reality we'd need context to check workflow ownership
-                true
-            }
-            (Self::Workflow { workflow_id: w1 }, Self::Workflow { workflow_id: w2 }) => w1 == w2,
+            // Tenant contains Workflow if tenant_id matches
+            (
+                Self::Tenant { tenant_id: t1 },
+                Self::Workflow {
+                    tenant_id: Some(t2),
+                    ..
+                },
+            ) => t1 == t2,
 
-            // Execution contains action in same execution
-            (Self::Execution { execution_id: _e1 }, Self::Action { .. }) => {
-                // Note: This is simplified - in reality we'd need context to check execution ownership
-                true
-            }
-            (Self::Execution { execution_id: e1 }, Self::Execution { execution_id: e2 }) => {
-                e1 == e2
-            }
+            // Tenant contains Execution if tenant_id matches
+            (
+                Self::Tenant { tenant_id: t1 },
+                Self::Execution {
+                    tenant_id: Some(t2),
+                    ..
+                },
+            ) => t1 == t2,
+
+            // Tenant contains Action if tenant_id matches
+            (
+                Self::Tenant { tenant_id: t1 },
+                Self::Action {
+                    tenant_id: Some(t2),
+                    ..
+                },
+            ) => t1 == t2,
+
+            // Workflow == Workflow: same workflow_id
+            (
+                Self::Workflow {
+                    workflow_id: w1, ..
+                },
+                Self::Workflow {
+                    workflow_id: w2, ..
+                },
+            ) => w1 == w2,
+
+            // Workflow contains Execution if workflow_id matches
+            (
+                Self::Workflow {
+                    workflow_id: w1, ..
+                },
+                Self::Execution {
+                    workflow_id: Some(w2),
+                    ..
+                },
+            ) => w1 == w2,
+
+            // Workflow contains Action if workflow_id matches
+            (
+                Self::Workflow {
+                    workflow_id: w1, ..
+                },
+                Self::Action {
+                    workflow_id: Some(w2),
+                    ..
+                },
+            ) => w1 == w2,
+
+            // Execution == Execution: same execution_id
+            (
+                Self::Execution {
+                    execution_id: e1, ..
+                },
+                Self::Execution {
+                    execution_id: e2, ..
+                },
+            ) => e1 == e2,
+
+            // Execution contains Action if execution_id matches
+            (
+                Self::Execution {
+                    execution_id: e1, ..
+                },
+                Self::Action {
+                    execution_id: Some(e2),
+                    ..
+                },
+            ) => e1 == e2,
 
             // Action only contains itself
-            (Self::Action { action_id: a1 }, Self::Action { action_id: a2 }) => a1 == a2,
+            (Self::Action { action_id: a1, .. }, Self::Action { action_id: a2, .. }) => a1 == a2,
 
             // Custom scopes only contain themselves
             (
                 Self::Custom {
-                    name: n1,
-                    attributes: a1,
+                    key: k1, value: v1, ..
                 },
                 Self::Custom {
-                    name: n2,
-                    attributes: a2,
+                    key: k2, value: v2, ..
                 },
-            ) => n1 == n2 && a1 == a2,
+            ) => k1 == k2 && v1 == v2,
 
-            // All other combinations
+            // Everything else: deny by default
             _ => false,
         }
     }
@@ -168,16 +279,10 @@ impl ResourceScope {
         match self {
             Self::Global => "global".to_string(),
             Self::Tenant { tenant_id } => format!("tenant:{tenant_id}"),
-            Self::Workflow { workflow_id } => format!("workflow:{workflow_id}"),
-            Self::Execution { execution_id } => format!("execution:{execution_id}"),
-            Self::Action { action_id } => format!("action:{action_id}"),
-            Self::Custom { name, attributes } => {
-                let mut key = format!("custom:{name}");
-                for (k, v) in attributes {
-                    key.push_str(&format!(":{k}={v}"));
-                }
-                key
-            }
+            Self::Workflow { workflow_id, .. } => format!("workflow:{workflow_id}"),
+            Self::Execution { execution_id, .. } => format!("execution:{execution_id}"),
+            Self::Action { action_id, .. } => format!("action:{action_id}"),
+            Self::Custom { key, value } => format!("custom:{key}={value}"),
         }
     }
 
@@ -187,17 +292,15 @@ impl ResourceScope {
         match self {
             Self::Global => "Global scope (shared across all workflows and tenants)".to_string(),
             Self::Tenant { tenant_id } => format!("Tenant scope (tenant: {tenant_id})"),
-            Self::Workflow { workflow_id } => format!("Workflow scope (workflow: {workflow_id})"),
-            Self::Execution { execution_id } => {
+            Self::Workflow { workflow_id, .. } => {
+                format!("Workflow scope (workflow: {workflow_id})")
+            }
+            Self::Execution { execution_id, .. } => {
                 format!("Execution scope (execution: {execution_id})")
             }
-            Self::Action { action_id } => format!("Action scope (action: {action_id})"),
-            Self::Custom { name, attributes } => {
-                format!(
-                    "Custom scope '{}' with {} attributes",
-                    name,
-                    attributes.len()
-                )
+            Self::Action { action_id, .. } => format!("Action scope (action: {action_id})"),
+            Self::Custom { key, value } => {
+                format!("Custom scope ({key}={value})")
             }
         }
     }
@@ -244,7 +347,6 @@ impl ScopingStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[test]
     fn test_scope_hierarchy_levels() {
@@ -256,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scope_containment() {
+    fn test_scope_containment_global() {
         let global = ResourceScope::Global;
         let tenant = ResourceScope::tenant("tenant1");
         let workflow = ResourceScope::workflow("wf1");
@@ -268,15 +370,70 @@ mod tests {
     }
 
     #[test]
+    fn test_tenant_isolation() {
+        let tenant_a = ResourceScope::tenant("A");
+        let tenant_b = ResourceScope::tenant("B");
+
+        // Same tenant
+        assert!(tenant_a.contains(&ResourceScope::tenant("A")));
+        // Different tenant
+        assert!(!tenant_a.contains(&tenant_b));
+
+        // Workflow with known parent tenant
+        let wf_in_a = ResourceScope::workflow_in_tenant("wf1", "A");
+        let wf_in_b = ResourceScope::workflow_in_tenant("wf1", "B");
+        assert!(tenant_a.contains(&wf_in_a));
+        assert!(!tenant_a.contains(&wf_in_b));
+
+        // Workflow without parent info: deny by default
+        let wf_no_parent = ResourceScope::workflow("wf1");
+        assert!(!tenant_a.contains(&wf_no_parent));
+    }
+
+    #[test]
+    fn test_workflow_containment() {
+        let wf = ResourceScope::workflow("wf1");
+
+        // Execution with matching workflow parent
+        let exec_in_wf1 = ResourceScope::execution_in_workflow("ex1", "wf1", Some("A".to_string()));
+        assert!(wf.contains(&exec_in_wf1));
+
+        // Execution with different workflow parent
+        let exec_in_wf2 = ResourceScope::execution_in_workflow("ex1", "wf2", Some("A".to_string()));
+        assert!(!wf.contains(&exec_in_wf2));
+
+        // Execution without workflow info: deny
+        let exec_no_parent = ResourceScope::execution("ex1");
+        assert!(!wf.contains(&exec_no_parent));
+    }
+
+    #[test]
+    fn test_execution_containment() {
+        let exec = ResourceScope::execution("ex1");
+
+        // Action with matching execution parent
+        let action_in_ex1 = ResourceScope::action_in_execution("a1", "ex1", None, None);
+        assert!(exec.contains(&action_in_ex1));
+
+        // Action with different execution parent
+        let action_in_ex2 = ResourceScope::action_in_execution("a1", "ex2", None, None);
+        assert!(!exec.contains(&action_in_ex2));
+
+        // Action without execution info: deny
+        let action_no_parent = ResourceScope::action("a1");
+        assert!(!exec.contains(&action_no_parent));
+    }
+
+    #[test]
     fn test_scope_keys() {
         assert_eq!(ResourceScope::Global.scope_key(), "global");
         assert_eq!(ResourceScope::tenant("t1").scope_key(), "tenant:t1");
         assert_eq!(ResourceScope::workflow("w1").scope_key(), "workflow:w1");
+        assert_eq!(ResourceScope::execution("e1").scope_key(), "execution:e1");
+        assert_eq!(ResourceScope::action("a1").scope_key(), "action:a1");
 
-        let mut attrs = HashMap::new();
-        attrs.insert("env".to_string(), "prod".to_string());
-        let custom = ResourceScope::custom("test", attrs);
-        assert!(custom.scope_key().starts_with("custom:test:"));
+        let custom = ResourceScope::custom("env", "prod");
+        assert_eq!(custom.scope_key(), "custom:env=prod");
     }
 
     #[test]
@@ -292,5 +449,24 @@ mod tests {
 
         assert!(ScopingStrategy::Fallback.is_compatible(&global, &tenant));
         assert!(ScopingStrategy::Fallback.is_compatible(&tenant, &tenant));
+    }
+
+    #[test]
+    fn test_cross_tenant_denial() {
+        // This is the security fix: Tenant A must NOT be able to access Tenant B's resources
+        let tenant_a = ResourceScope::tenant("A");
+
+        let wf_in_b = ResourceScope::workflow_in_tenant("wf1", "B");
+        let exec_in_b = ResourceScope::execution_in_workflow("ex1", "wf1", Some("B".to_string()));
+        let action_in_b = ResourceScope::action_in_execution(
+            "a1",
+            "ex1",
+            Some("wf1".to_string()),
+            Some("B".to_string()),
+        );
+
+        assert!(!tenant_a.contains(&wf_in_b));
+        assert!(!tenant_a.contains(&exec_in_b));
+        assert!(!tenant_a.contains(&action_in_b));
     }
 }

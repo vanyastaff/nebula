@@ -301,17 +301,6 @@ impl MockResourceInstance {
         // Simulate operation latency
         tokio::time::sleep(self.behavior.operation_latency).await;
 
-        // Simulate random failures
-        if self.behavior.random_failures {
-            if rand::random::<f64>() < self.behavior.failure_probability {
-                return Err(ResourceError::internal(
-                    self.resource_id.unique_key(),
-                    "Simulated random failure",
-                ));
-            }
-        }
-
-        self.touch();
         Ok(())
     }
 }
@@ -326,7 +315,7 @@ impl ResourceInstance for MockResourceInstance {
     }
 
     fn lifecycle_state(&self) -> LifecycleState {
-        *self.state.read().unwrap()
+        *self.state.read()
     }
 
     fn context(&self) -> &ResourceContext {
@@ -341,7 +330,7 @@ impl ResourceInstance for MockResourceInstance {
         *self.last_accessed.lock()
     }
 
-    fn touch(&mut self) {
+    fn touch(&self) {
         *self.last_accessed.lock() = Some(chrono::Utc::now());
     }
 }
