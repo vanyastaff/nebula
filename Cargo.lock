@@ -3742,7 +3742,9 @@ dependencies = [
  "nebula-action",
  "nebula-core",
  "nebula-execution",
+ "nebula-expression",
  "nebula-node",
+ "nebula-parameter",
  "nebula-runtime",
  "nebula-sandbox-inprocess",
  "nebula-telemetry",
@@ -3875,6 +3877,7 @@ name = "nebula-parameter"
 version = "0.1.0"
 dependencies = [
  "pretty_assertions",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.17",

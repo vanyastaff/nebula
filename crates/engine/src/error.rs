@@ -36,6 +36,26 @@ pub enum EngineError {
     #[error("execution cancelled")]
     Cancelled,
 
+    /// Parameter resolution failed (expression eval, reference lookup, etc.)
+    #[error("parameter resolution failed for node {node_id}, param '{param_key}': {error}")]
+    ParameterResolution {
+        /// The node whose parameter could not be resolved.
+        node_id: NodeId,
+        /// The parameter key that failed.
+        param_key: String,
+        /// The underlying error.
+        error: String,
+    },
+
+    /// Parameter validation failed against the action's schema.
+    #[error("parameter validation failed for node {node_id}: {errors}")]
+    ParameterValidation {
+        /// The node whose parameters failed validation.
+        node_id: NodeId,
+        /// Combined validation error messages.
+        errors: String,
+    },
+
     /// A budget limit was exceeded.
     #[error("budget exceeded: {0}")]
     BudgetExceeded(String),

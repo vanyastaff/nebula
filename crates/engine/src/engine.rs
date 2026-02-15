@@ -25,9 +25,11 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use nebula_expression::ExpressionEngine;
 use nebula_node::NodeRegistry;
 
 use crate::error::EngineError;
+use crate::resolver::ParamResolver;
 use crate::result::ExecutionResult;
 
 /// The workflow execution engine.
@@ -47,6 +49,8 @@ pub struct WorkflowEngine {
     action_keys: HashMap<ActionId, String>,
     /// Node registry for node-level metadata and versioning.
     node_registry: NodeRegistry,
+    /// Resolves node parameters (expressions, templates, references) to JSON.
+    resolver: ParamResolver,
 }
 
 impl WorkflowEngine {
@@ -56,12 +60,14 @@ impl WorkflowEngine {
         event_bus: Arc<EventBus>,
         metrics: Arc<MetricsRegistry>,
     ) -> Self {
+        let expression_engine = Arc::new(ExpressionEngine::with_cache_size(1024));
         Self {
             runtime,
             event_bus,
             metrics,
             action_keys: HashMap::new(),
             node_registry: NodeRegistry::new(),
+            resolver: ParamResolver::new(expression_engine),
         }
     }
 
@@ -252,6 +258,26 @@ impl WorkflowEngine {
             let action_key = action_key.to_owned();
             let node_input = resolve_node_input(node_id, graph, outputs, input);
 
+            // Resolve node parameters (expressions, templates, references)
+            let action_input =
+                match self
+                    .resolver
+                    .resolve(node_id, &node_def.parameters, &node_input, outputs)
+                {
+                    Ok(Some(resolved_params)) => resolved_params,
+                    Ok(None) => node_input, // No parameters → use predecessor output
+                    Err(e) => {
+                        // Mark node as failed and skip spawning
+                        if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
+                            let _ = ns.transition_to(NodeState::Ready);
+                            let _ = ns.transition_to(NodeState::Running);
+                            let _ = ns.transition_to(NodeState::Failed);
+                            ns.error_message = Some(e.to_string());
+                        }
+                        continue;
+                    }
+                };
+
             // Mark node as running in execution state
             if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
                 let _ = ns.transition_to(NodeState::Ready);
@@ -273,7 +299,7 @@ impl WorkflowEngine {
                     node_id,
                     workflow_id,
                     action_key,
-                    input: node_input,
+                    input: action_input,
                 }
                 .run(),
             );

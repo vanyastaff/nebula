@@ -240,8 +240,27 @@ fn evaluate_rule(
                 });
             }
         }
-        ValidationRule::Pattern { message: _, .. } => {
-            // TODO: evaluate regex when a regex dependency is added
+        ValidationRule::Pattern { pattern, message } => {
+            if let Some(s) = value.as_str() {
+                match regex::Regex::new(pattern) {
+                    Ok(re) => {
+                        if !re.is_match(s) {
+                            errors.push(ParameterError::ValidationError {
+                                key: path.to_owned(),
+                                reason: message
+                                    .clone()
+                                    .unwrap_or_else(|| format!("must match pattern: {pattern}")),
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(ParameterError::ValidationError {
+                            key: path.to_owned(),
+                            reason: format!("invalid regex pattern '{pattern}': {e}"),
+                        });
+                    }
+                }
+            }
         }
         ValidationRule::Min {
             value: min,
@@ -811,7 +830,19 @@ mod tests {
     }
 
     #[test]
-    fn validate_pattern_rule_skipped() {
+    fn validate_pattern_passes_on_valid_input() {
+        let mut text = TextParameter::new("email", "Email");
+        text.validation
+            .push(ValidationRule::pattern(r"^.+@.+\..+$"));
+        let col = ParameterCollection::new().with(ParameterDef::Text(text));
+
+        let mut values = ParameterValues::new();
+        values.set("email", json!("user@example.com"));
+        assert!(col.validate(&values).is_ok());
+    }
+
+    #[test]
+    fn validate_pattern_fails_on_non_matching_input() {
         let mut text = TextParameter::new("email", "Email");
         text.validation
             .push(ValidationRule::pattern(r"^.+@.+\..+$"));
@@ -819,7 +850,45 @@ mod tests {
 
         let mut values = ParameterValues::new();
         values.set("email", json!("not-an-email"));
-        assert!(col.validate(&values).is_ok());
+        let errs = col.validate(&values).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(
+            matches!(&errs[0], ParameterError::ValidationError { key, reason }
+            if key == "email" && reason.contains("must match pattern"))
+        );
+    }
+
+    #[test]
+    fn validate_pattern_fails_with_custom_message() {
+        let mut text = TextParameter::new("email", "Email");
+        text.validation
+            .push(ValidationRule::pattern(r"^.+@.+\..+$").with_message("invalid email address"));
+        let col = ParameterCollection::new().with(ParameterDef::Text(text));
+
+        let mut values = ParameterValues::new();
+        values.set("email", json!("bad"));
+        let errs = col.validate(&values).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(
+            matches!(&errs[0], ParameterError::ValidationError { reason, .. }
+            if reason == "invalid email address")
+        );
+    }
+
+    #[test]
+    fn validate_pattern_invalid_regex_produces_error() {
+        let mut text = TextParameter::new("code", "Code");
+        text.validation.push(ValidationRule::pattern(r"[invalid"));
+        let col = ParameterCollection::new().with(ParameterDef::Text(text));
+
+        let mut values = ParameterValues::new();
+        values.set("code", json!("anything"));
+        let errs = col.validate(&values).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(
+            matches!(&errs[0], ParameterError::ValidationError { key, reason }
+            if key == "code" && reason.contains("invalid regex pattern"))
+        );
     }
 
     #[test]
