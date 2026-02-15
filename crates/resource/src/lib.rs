@@ -1,5 +1,3 @@
-#![allow(clippy::excessive_nesting)]
-
 //! # Nebula Resource Management
 //!
 //! Resource lifecycle management for the Nebula workflow engine.
@@ -15,14 +13,11 @@ pub mod pool;
 pub mod resource;
 pub mod scope;
 
-// Re-exports
 pub use context::ResourceContext;
 pub use error::{ResourceError, ResourceResult};
 pub use health::{HealthCheckConfig, HealthCheckable, HealthChecker, HealthState, HealthStatus};
 pub use lifecycle::LifecycleState;
+pub use manager::{DependencyGraph, ResourceManager};
 pub use pool::{Pool, PoolConfig, PoolStats};
 pub use resource::{Resource, ResourceConfig, ResourceGuard};
 pub use scope::{ResourceScope, ScopingStrategy};
-
-pub use manager::ResourceManager;
-pub use manager::dependency::DependencyGraph;

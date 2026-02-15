@@ -237,36 +237,18 @@ impl HealthChecker {
             let mut consecutive_failures = 0;
 
             loop {
-                // Check shutdown signal
-                {
-                    let should_shutdown = *shutdown.read().await;
-                    if should_shutdown {
-                        break;
-                    }
+                if *shutdown.read().await {
+                    break;
                 }
 
                 // Perform health check with timeout
                 let check_result =
                     tokio::time::timeout(check_timeout, instance.health_check()).await;
 
-                let status = match check_result {
-                    Ok(Ok(status)) => {
-                        if status.is_usable() {
-                            consecutive_failures = 0;
-                        } else {
-                            consecutive_failures += 1;
-                        }
-                        status
-                    }
-                    Ok(Err(e)) => {
-                        consecutive_failures += 1;
-                        HealthStatus::unhealthy(format!("Health check failed: {e}"))
-                    }
-                    Err(_) => {
-                        consecutive_failures += 1;
-                        HealthStatus::unhealthy("Health check timed out")
-                    }
-                };
+                let status = Self::process_check_result(
+                    check_result,
+                    &mut consecutive_failures,
+                );
 
                 // Record health status
                 records.insert(
@@ -297,6 +279,31 @@ impl HealthChecker {
             // Cleanup record on shutdown
             records.remove(&instance_id);
         });
+    }
+
+    /// Process a health check result, updating the consecutive failure count.
+    fn process_check_result(
+        result: Result<ResourceResult<HealthStatus>, tokio::time::error::Elapsed>,
+        consecutive_failures: &mut u32,
+    ) -> HealthStatus {
+        match result {
+            Ok(Ok(status)) if status.is_usable() => {
+                *consecutive_failures = 0;
+                status
+            }
+            Ok(Ok(status)) => {
+                *consecutive_failures += 1;
+                status
+            }
+            Ok(Err(e)) => {
+                *consecutive_failures += 1;
+                HealthStatus::unhealthy(format!("Health check failed: {e}"))
+            }
+            Err(_) => {
+                *consecutive_failures += 1;
+                HealthStatus::unhealthy("Health check timed out")
+            }
+        }
     }
 
     /// Stop monitoring an instance

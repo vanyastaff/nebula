@@ -3,11 +3,9 @@
 //! `Pool<R>` calls `R::create`, `R::is_valid`, `R::recycle` and `R::cleanup`
 //! directly, removing the need for closure factories.
 
-pub mod config;
-
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use tokio::sync::Semaphore;
@@ -16,7 +14,47 @@ use crate::context::ResourceContext;
 use crate::error::{ResourceError, ResourceResult};
 use crate::resource::{Resource, ResourceGuard};
 
-pub use config::PoolConfig;
+// ---------------------------------------------------------------------------
+// PoolConfig
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
+/// Configuration for resource pooling
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct PoolConfig {
+    /// Minimum number of resources in the pool
+    pub min_size: usize,
+    /// Maximum number of resources in the pool
+    pub max_size: usize,
+    /// Timeout for acquiring a resource from the pool
+    pub acquire_timeout: Duration,
+    /// Time after which idle resources are removed
+    pub idle_timeout: Duration,
+    /// Maximum lifetime of a resource
+    pub max_lifetime: Duration,
+    /// Interval for validation/health checks
+    pub validation_interval: Duration,
+}
+
+impl Default for PoolConfig {
+    fn default() -> Self {
+        Self {
+            min_size: 1,
+            max_size: 10,
+            acquire_timeout: Duration::from_secs(30),
+            idle_timeout: Duration::from_secs(600),
+            max_lifetime: Duration::from_secs(3600),
+            validation_interval: Duration::from_secs(30),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pool internals
+// ---------------------------------------------------------------------------
 
 /// A pool entry wrapping a resource instance.
 struct Entry<T> {
@@ -68,6 +106,10 @@ struct PoolInner<R: Resource> {
     /// Semaphore limits total concurrent instances (idle + active).
     semaphore: Semaphore,
 }
+
+// ---------------------------------------------------------------------------
+// Pool<R>
+// ---------------------------------------------------------------------------
 
 /// Generic resource pool.
 ///
@@ -303,7 +345,6 @@ mod tests {
     use crate::resource::{Resource, ResourceConfig};
     use crate::scope::ResourceScope;
     use async_trait::async_trait;
-    use std::time::Duration;
 
     // -- Test resource --
 
@@ -349,6 +390,14 @@ mod tests {
         TestConfig {
             prefix: "test".to_string(),
         }
+    }
+
+    #[test]
+    fn test_pool_config_default() {
+        let config = PoolConfig::default();
+        assert_eq!(config.min_size, 1);
+        assert_eq!(config.max_size, 10);
+        assert_eq!(config.acquire_timeout, Duration::from_secs(30));
     }
 
     #[tokio::test]
