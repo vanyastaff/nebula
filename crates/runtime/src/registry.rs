@@ -58,6 +58,35 @@ impl ActionRegistry {
         self.register(Arc::new(adapter));
     }
 
+    /// Register a typed [`StatefulAction`](nebula_action::StatefulAction) directly.
+    ///
+    /// Wraps the action in a [`StatefulActionAdapter`](nebula_action::StatefulActionAdapter)
+    /// automatically.
+    pub fn register_stateful<A>(&self, action: A)
+    where
+        A: nebula_action::StatefulAction + Send + Sync + 'static,
+        A::Input: serde::de::DeserializeOwned + Clone + Send + Sync + 'static,
+        A::Output: serde::Serialize + Send + Sync + 'static,
+        A::State: Send + Sync + 'static,
+    {
+        let adapter = nebula_action::StatefulActionAdapter::new(action);
+        self.register(Arc::new(adapter));
+    }
+
+    /// Register a typed [`TriggerAction`](nebula_action::TriggerAction) directly.
+    ///
+    /// Wraps the action in a [`TriggerActionAdapter`](nebula_action::TriggerActionAdapter)
+    /// automatically.
+    pub fn register_trigger<A>(&self, action: A)
+    where
+        A: nebula_action::TriggerAction + Send + Sync + 'static,
+        A::Config: serde::de::DeserializeOwned + Send + Sync + 'static,
+        A::Event: serde::Serialize + Send + Sync + 'static,
+    {
+        let adapter = nebula_action::TriggerActionAdapter::new(action);
+        self.register(Arc::new(adapter));
+    }
+
     /// Look up an action handler by key.
     pub fn get(&self, key: &str) -> Result<Arc<dyn InternalHandler>, RuntimeError> {
         self.handlers

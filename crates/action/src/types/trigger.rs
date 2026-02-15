@@ -30,7 +30,7 @@ pub enum TriggerKind {
 }
 
 /// An event emitted by a trigger.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriggerEvent<T> {
     /// The event payload.
     pub data: T,
@@ -62,7 +62,7 @@ impl<T> TriggerEvent<T> {
 }
 
 /// Incoming webhook request forwarded by the engine to a trigger.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookRequest {
     /// HTTP method (e.g. `"POST"`).
     pub method: String,

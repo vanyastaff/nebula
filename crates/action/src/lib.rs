@@ -120,6 +120,10 @@ pub use sandbox::SandboxedContext;
 #[doc(hidden)]
 pub use adapters::ProcessActionAdapter;
 #[doc(hidden)]
+pub use adapters::StatefulActionAdapter;
+#[doc(hidden)]
+pub use adapters::TriggerActionAdapter;
+#[doc(hidden)]
 pub use handler::InternalHandler;
 
 // Re-export parameter types so action authors can define parameters without

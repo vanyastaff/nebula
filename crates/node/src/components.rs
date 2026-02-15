@@ -3,6 +3,10 @@
 use std::sync::Arc;
 
 use nebula_action::ProcessAction;
+use nebula_action::StatefulAction;
+use nebula_action::StatefulActionAdapter;
+use nebula_action::TriggerAction;
+use nebula_action::TriggerActionAdapter;
 use nebula_action::adapters::ProcessActionAdapter;
 use nebula_action::handler::InternalHandler;
 use nebula_credential::CredentialDescription;
@@ -46,6 +50,37 @@ impl NodeComponents {
     {
         self.handlers
             .push(Arc::new(ProcessActionAdapter::new(action)));
+        self
+    }
+
+    /// Register a typed [`StatefulAction`].
+    ///
+    /// The action is wrapped in a [`StatefulActionAdapter`] that handles
+    /// JSON-to-typed conversion and the Continue/Break loop automatically.
+    pub fn stateful_action<A>(&mut self, action: A) -> &mut Self
+    where
+        A: StatefulAction + Send + Sync + 'static,
+        A::Input: DeserializeOwned + Clone + Send + Sync + 'static,
+        A::Output: Serialize + Send + Sync + 'static,
+        A::State: Send + Sync + 'static,
+    {
+        self.handlers
+            .push(Arc::new(StatefulActionAdapter::new(action)));
+        self
+    }
+
+    /// Register a typed [`TriggerAction`].
+    ///
+    /// The action is wrapped in a [`TriggerActionAdapter`] that handles
+    /// JSON-to-typed conversion and operation dispatch automatically.
+    pub fn trigger_action<A>(&mut self, action: A) -> &mut Self
+    where
+        A: TriggerAction + Send + Sync + 'static,
+        A::Config: DeserializeOwned + Send + Sync + 'static,
+        A::Event: Serialize + Send + Sync + 'static,
+    {
+        self.handlers
+            .push(Arc::new(TriggerActionAdapter::new(action)));
         self
     }
 

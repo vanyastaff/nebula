@@ -22,6 +22,8 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 parking_lot = { workspace = true }
 
+tokio = { workspace = true, features = ["time"] }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 pretty_assertions = { workspace = true }
