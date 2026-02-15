@@ -11,7 +11,7 @@ use crate::action::Action;
 use crate::context::ActionContext;
 use crate::error::ActionError;
 use crate::handler::InternalHandler;
-use crate::metadata::{ActionMetadata, ActionType};
+use crate::metadata::ActionMetadata;
 use crate::result::ActionResult;
 use crate::types::ProcessAction;
 
@@ -67,10 +67,6 @@ where
         self.action.metadata()
     }
 
-    fn action_type(&self) -> ActionType {
-        self.action.action_type()
-    }
-
     fn parameters(&self) -> Option<&ParameterCollection> {
         self.action.parameters()
     }
@@ -87,7 +83,7 @@ impl<A: Action> std::fmt::Debug for ProcessActionAdapter<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metadata::ActionMetadata;
+    use crate::metadata::{ActionMetadata, ActionType};
 
     #[derive(Debug)]
     struct DoubleAction {
@@ -97,10 +93,6 @@ mod tests {
     impl Action for DoubleAction {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
-        }
-
-        fn action_type(&self) -> ActionType {
-            ActionType::Process
         }
     }
 
@@ -143,7 +135,9 @@ mod tests {
             .await
             .unwrap();
         match result {
-            ActionResult::Success { output } => assert_eq!(output, serde_json::json!(42)),
+            ActionResult::Success { output } => {
+                assert_eq!(output.as_value(), Some(&serde_json::json!(42)));
+            }
             other => panic!("expected Success, got {other:?}"),
         }
     }

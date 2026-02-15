@@ -462,14 +462,18 @@ fn resolve_node_input(
 /// Extract the primary output value from an ActionResult for downstream input resolution.
 fn extract_primary_output(result: &ActionResult<serde_json::Value>) -> Option<serde_json::Value> {
     match result {
-        ActionResult::Success { output } => Some(output.clone()),
-        ActionResult::Skip { output, .. } => output.clone(),
-        ActionResult::Continue { output, .. } => Some(output.clone()),
-        ActionResult::Break { output, .. } => Some(output.clone()),
-        ActionResult::Branch { output, .. } => Some(output.clone()),
-        ActionResult::Route { data, .. } => Some(data.clone()),
-        ActionResult::MultiOutput { main_output, .. } => main_output.clone(),
-        ActionResult::Wait { partial_output, .. } => partial_output.clone(),
+        ActionResult::Success { output } => output.as_value().cloned(),
+        ActionResult::Skip { output, .. } => output.as_ref().and_then(|o| o.as_value().cloned()),
+        ActionResult::Continue { output, .. } => output.as_value().cloned(),
+        ActionResult::Break { output, .. } => output.as_value().cloned(),
+        ActionResult::Branch { output, .. } => output.as_value().cloned(),
+        ActionResult::Route { data, .. } => data.as_value().cloned(),
+        ActionResult::MultiOutput { main_output, .. } => {
+            main_output.as_ref().and_then(|o| o.as_value().cloned())
+        }
+        ActionResult::Wait { partial_output, .. } => {
+            partial_output.as_ref().and_then(|o| o.as_value().cloned())
+        }
         ActionResult::Retry { .. } => None,
         _ => None,
     }

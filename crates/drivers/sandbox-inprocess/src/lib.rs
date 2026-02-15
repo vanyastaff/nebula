@@ -146,7 +146,9 @@ mod tests {
 
         let result = sandbox.execute(ctx, &metadata, input.clone()).await;
         match result.unwrap() {
-            ActionResult::Success { output } => assert_eq!(output, input),
+            ActionResult::Success { output } => {
+                assert_eq!(output.as_value(), Some(&input));
+            }
             other => panic!("expected Success, got {other:?}"),
         }
     }

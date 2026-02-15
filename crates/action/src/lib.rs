@@ -10,13 +10,15 @@
 //! ## Core Types
 //!
 //! - [`Action`] — base trait providing identity and metadata
-//! - [`ProcessAction`] — stateless single-execution action (most common)
+//! - [`SimpleAction`] — zero-boilerplate action returning `Result<Output, Error>`
+//! - [`ProcessAction`] — stateless single-execution action with flow-control
 //! - [`StatefulAction`] — iterative action with persistent state
 //! - [`TriggerAction`] — event source that starts workflows
 //! - [`StreamingAction`] — continuous stream producer
 //! - [`TransactionalAction`] — distributed transaction participant (saga)
 //! - [`InteractiveAction`] — human-in-the-loop interaction
 //! - [`ActionResult`] — execution result carrying data and flow-control intent
+//! - [`ActionOutput`] — first-class output type (value, binary, reference, stream)
 //! - [`ActionError`] — error type distinguishing retryable from fatal failures
 //! - [`ActionContext`] — runtime context with IDs, variables, cancellation
 //! - [`ActionMetadata`] — static descriptor (key, version, capabilities)
@@ -92,10 +94,13 @@ pub use error::ActionError;
 pub use metadata::{
     ActionMetadata, ActionType, ExecutionMode, InterfaceVersion, RetryPolicy, TimeoutPolicy,
 };
-pub use output::NodeOutputData;
+pub use output::{
+    ActionOutput, BinaryData, BinaryStorage, DataReference, NodeOutputData, StreamReference,
+};
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
 pub use types::InteractiveAction;
 pub use types::ProcessAction;
+pub use types::SimpleAction;
 pub use types::StatefulAction;
 pub use types::StreamingAction;
 pub use types::TransactionalAction;

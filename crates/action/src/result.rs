@@ -4,6 +4,8 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use nebula_core::id::ExecutionId;
 
+use crate::output::{ActionOutput, BinaryData, DataReference};
+
 /// Type alias for workflow branch keys (e.g. `"true"`, `"false"`, `"case_1"`).
 pub type BranchKey = String;
 
@@ -20,13 +22,16 @@ pub type PortKey = String;
 /// - `Branch` → activate a specific branch path
 /// - `Route` / `MultiOutput` → fan-out to output ports
 /// - `Wait` → pause until external event, timer, or approval
+///
+/// All output fields are wrapped in [`ActionOutput<T>`] to support binary,
+/// reference, and stream data alongside structured values.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum ActionResult<T> {
     /// Successful completion -- engine passes output to dependent nodes.
     Success {
         /// The produced output value.
-        output: T,
+        output: ActionOutput<T>,
     },
 
     /// Skip this node -- engine skips downstream dependents.
@@ -34,7 +39,7 @@ pub enum ActionResult<T> {
         /// Human-readable reason for skipping.
         reason: String,
         /// Optional output produced before the skip decision.
-        output: Option<T>,
+        output: Option<ActionOutput<T>>,
     },
 
     /// Stateful iteration: not yet done, need another call.
@@ -42,7 +47,7 @@ pub enum ActionResult<T> {
     /// Engine saves state, optionally waits `delay`, then re-invokes.
     Continue {
         /// Intermediate output for this iteration.
-        output: T,
+        output: ActionOutput<T>,
         /// Progress indicator in `0.0..=1.0` range.
         progress: Option<f64>,
         /// Optional delay before next iteration (e.g. rate limiting).
@@ -54,7 +59,7 @@ pub enum ActionResult<T> {
     /// Engine finalizes state and passes output downstream.
     Break {
         /// Final output of the iteration.
-        output: T,
+        output: ActionOutput<T>,
         /// Why the iteration ended.
         reason: BreakReason,
     },
@@ -66,9 +71,9 @@ pub enum ActionResult<T> {
         /// Key of the chosen branch.
         selected: BranchKey,
         /// Output for the selected branch.
-        output: T,
+        output: ActionOutput<T>,
         /// Outputs for non-selected branches (may be used for previews).
-        alternatives: HashMap<BranchKey, T>,
+        alternatives: HashMap<BranchKey, ActionOutput<T>>,
     },
 
     /// Route output to a specific output port.
@@ -76,15 +81,15 @@ pub enum ActionResult<T> {
         /// Target output port key.
         port: PortKey,
         /// Data to send to the port.
-        data: T,
+        data: ActionOutput<T>,
     },
 
     /// Fan-out to multiple output ports simultaneously.
     MultiOutput {
         /// Per-port output data.
-        outputs: HashMap<PortKey, T>,
+        outputs: HashMap<PortKey, ActionOutput<T>>,
         /// Optional primary output sent to the default port.
-        main_output: Option<T>,
+        main_output: Option<ActionOutput<T>>,
     },
 
     /// Pause execution until an external condition is met.
@@ -96,7 +101,7 @@ pub enum ActionResult<T> {
         /// Maximum time to wait before the engine cancels.
         timeout: Option<Duration>,
         /// Partial output produced before pausing.
-        partial_output: Option<T>,
+        partial_output: Option<ActionOutput<T>>,
     },
 
     /// Request a retry after a delay.
@@ -162,9 +167,32 @@ pub enum WaitCondition {
 // ── Convenience constructors ────────────────────────────────────────────────
 
 impl<T> ActionResult<T> {
-    /// Create a successful result.
+    /// Create a successful result wrapping the output in [`ActionOutput::Value`].
     pub fn success(output: T) -> Self {
-        Self::Success { output }
+        Self::Success {
+            output: ActionOutput::Value(output),
+        }
+    }
+
+    /// Create a successful result with binary data.
+    pub fn success_binary(data: BinaryData) -> Self {
+        Self::Success {
+            output: ActionOutput::Binary(data),
+        }
+    }
+
+    /// Create a successful result with a data reference.
+    pub fn success_reference(reference: DataReference) -> Self {
+        Self::Success {
+            output: ActionOutput::Reference(reference),
+        }
+    }
+
+    /// Create a successful result with no output.
+    pub fn success_empty() -> Self {
+        Self::Success {
+            output: ActionOutput::Empty,
+        }
     }
 
     /// Create a skip result.
@@ -175,11 +203,11 @@ impl<T> ActionResult<T> {
         }
     }
 
-    /// Create a skip result carrying an output.
+    /// Create a skip result carrying a value output.
     pub fn skip_with_output(reason: impl Into<String>, output: T) -> Self {
         Self::Skip {
             reason: reason.into(),
-            output: Some(output),
+            output: Some(ActionOutput::Value(output)),
         }
     }
 
@@ -205,25 +233,27 @@ impl<T> ActionResult<T> {
 
     /// Transform the output value in every variant, preserving flow-control semantics.
     ///
-    /// This is used by adapters to convert typed outputs to JSON and vice-versa.
+    /// Delegates to [`ActionOutput::map`] for each output field.
     pub fn map_output<U>(self, mut f: impl FnMut(T) -> U) -> ActionResult<U> {
         match self {
-            Self::Success { output } => ActionResult::Success { output: f(output) },
+            Self::Success { output } => ActionResult::Success {
+                output: output.map(&mut f),
+            },
             Self::Skip { reason, output } => ActionResult::Skip {
                 reason,
-                output: output.map(&mut f),
+                output: output.map(|o| o.map(&mut f)),
             },
             Self::Continue {
                 output,
                 progress,
                 delay,
             } => ActionResult::Continue {
-                output: f(output),
+                output: output.map(&mut f),
                 progress,
                 delay,
             },
             Self::Break { output, reason } => ActionResult::Break {
-                output: f(output),
+                output: output.map(&mut f),
                 reason,
             },
             Self::Branch {
@@ -232,19 +262,25 @@ impl<T> ActionResult<T> {
                 alternatives,
             } => ActionResult::Branch {
                 selected,
-                output: f(output),
-                alternatives: alternatives.into_iter().map(|(k, v)| (k, f(v))).collect(),
+                output: output.map(&mut f),
+                alternatives: alternatives
+                    .into_iter()
+                    .map(|(k, v)| (k, v.map(&mut f)))
+                    .collect(),
             },
             Self::Route { port, data } => ActionResult::Route {
                 port,
-                data: f(data),
+                data: data.map(&mut f),
             },
             Self::MultiOutput {
                 outputs,
                 main_output,
             } => ActionResult::MultiOutput {
-                outputs: outputs.into_iter().map(|(k, v)| (k, f(v))).collect(),
-                main_output: main_output.map(&mut f),
+                outputs: outputs
+                    .into_iter()
+                    .map(|(k, v)| (k, v.map(&mut f)))
+                    .collect(),
+                main_output: main_output.map(|o| o.map(&mut f)),
             },
             Self::Wait {
                 condition,
@@ -253,7 +289,7 @@ impl<T> ActionResult<T> {
             } => ActionResult::Wait {
                 condition,
                 timeout,
-                partial_output: partial_output.map(&mut f),
+                partial_output: partial_output.map(|o| o.map(&mut f)),
             },
             Self::Retry { after, reason } => ActionResult::Retry { after, reason },
         }
@@ -261,30 +297,30 @@ impl<T> ActionResult<T> {
 
     /// Fallible version of [`map_output`](Self::map_output).
     ///
-    /// The closure returns `Result<U, E>`. If any conversion fails the whole
-    /// operation short-circuits with that error. Used by adapters to safely
-    /// serialize typed outputs to JSON.
+    /// Delegates to [`ActionOutput::try_map`] for each output field.
     pub fn try_map_output<U, E>(
         self,
         mut f: impl FnMut(T) -> Result<U, E>,
     ) -> Result<ActionResult<U>, E> {
         match self {
-            Self::Success { output } => Ok(ActionResult::Success { output: f(output)? }),
+            Self::Success { output } => Ok(ActionResult::Success {
+                output: output.try_map(&mut f)?,
+            }),
             Self::Skip { reason, output } => Ok(ActionResult::Skip {
                 reason,
-                output: output.map(&mut f).transpose()?,
+                output: output.map(|o| o.try_map(&mut f)).transpose()?,
             }),
             Self::Continue {
                 output,
                 progress,
                 delay,
             } => Ok(ActionResult::Continue {
-                output: f(output)?,
+                output: output.try_map(&mut f)?,
                 progress,
                 delay,
             }),
             Self::Break { output, reason } => Ok(ActionResult::Break {
-                output: f(output)?,
+                output: output.try_map(&mut f)?,
                 reason,
             }),
             Self::Branch {
@@ -292,10 +328,10 @@ impl<T> ActionResult<T> {
                 output,
                 alternatives,
             } => {
-                let mapped_output = f(output)?;
+                let mapped_output = output.try_map(&mut f)?;
                 let mapped_alts = alternatives
                     .into_iter()
-                    .map(|(k, v)| Ok((k, f(v)?)))
+                    .map(|(k, v)| Ok((k, v.try_map(&mut f)?)))
                     .collect::<Result<HashMap<_, _>, E>>()?;
                 Ok(ActionResult::Branch {
                     selected,
@@ -305,7 +341,7 @@ impl<T> ActionResult<T> {
             }
             Self::Route { port, data } => Ok(ActionResult::Route {
                 port,
-                data: f(data)?,
+                data: data.try_map(&mut f)?,
             }),
             Self::MultiOutput {
                 outputs,
@@ -313,11 +349,11 @@ impl<T> ActionResult<T> {
             } => {
                 let mapped_outputs = outputs
                     .into_iter()
-                    .map(|(k, v)| Ok((k, f(v)?)))
+                    .map(|(k, v)| Ok((k, v.try_map(&mut f)?)))
                     .collect::<Result<HashMap<_, _>, E>>()?;
                 Ok(ActionResult::MultiOutput {
                     outputs: mapped_outputs,
-                    main_output: main_output.map(&mut f).transpose()?,
+                    main_output: main_output.map(|o| o.try_map(&mut f)).transpose()?,
                 })
             }
             Self::Wait {
@@ -327,18 +363,18 @@ impl<T> ActionResult<T> {
             } => Ok(ActionResult::Wait {
                 condition,
                 timeout,
-                partial_output: partial_output.map(&mut f).transpose()?,
+                partial_output: partial_output.map(|o| o.try_map(&mut f)).transpose()?,
             }),
             Self::Retry { after, reason } => Ok(ActionResult::Retry { after, reason }),
         }
     }
 
-    /// Extract the primary output value, consuming `self`.
+    /// Extract the primary output, consuming `self`.
     ///
-    /// Returns `Some(T)` for variants that carry a primary output.
+    /// Returns `Some(ActionOutput<T>)` for variants that carry a primary output.
     /// Returns `None` for `Skip` without output, `Wait` without partial
     /// output, `MultiOutput` without main output, and `Retry`.
-    pub fn into_primary_output(self) -> Option<T> {
+    pub fn into_primary_output(self) -> Option<ActionOutput<T>> {
         match self {
             Self::Success { output } => Some(output),
             Self::Skip { output, .. } => output,
@@ -350,6 +386,15 @@ impl<T> ActionResult<T> {
             Self::Wait { partial_output, .. } => partial_output,
             Self::Retry { .. } => None,
         }
+    }
+
+    /// Extract the primary value `T` from the output, consuming `self`.
+    ///
+    /// Equivalent to `self.into_primary_output().and_then(|o| o.into_value())`.
+    /// Returns `None` for non-value outputs (binary, reference, stream, empty)
+    /// and for variants with no output.
+    pub fn into_primary_value(self) -> Option<T> {
+        self.into_primary_output().and_then(|o| o.into_value())
     }
 }
 
@@ -383,7 +428,7 @@ mod tests {
         match &result {
             ActionResult::Skip { reason, output } => {
                 assert_eq!(reason, "filtered");
-                assert_eq!(output.as_ref().unwrap(), &vec![1, 2, 3]);
+                assert_eq!(output.as_ref().unwrap().as_value().unwrap(), &vec![1, 2, 3]);
             }
             _ => panic!("expected Skip"),
         }
@@ -392,7 +437,7 @@ mod tests {
     #[test]
     fn continue_result() {
         let result: ActionResult<String> = ActionResult::Continue {
-            output: "partial".into(),
+            output: ActionOutput::Value("partial".into()),
             progress: Some(0.5),
             delay: Some(Duration::from_secs(1)),
         };
@@ -403,7 +448,7 @@ mod tests {
     #[test]
     fn break_result() {
         let result: ActionResult<i32> = ActionResult::Break {
-            output: 100,
+            output: ActionOutput::Value(100),
             reason: BreakReason::MaxIterations,
         };
         assert!(!result.is_continue());
@@ -418,11 +463,11 @@ mod tests {
     #[test]
     fn branch_result() {
         let mut alts = HashMap::new();
-        alts.insert("true".into(), "yes");
-        alts.insert("false".into(), "no");
+        alts.insert("true".into(), ActionOutput::Value("yes"));
+        alts.insert("false".into(), ActionOutput::Value("no"));
         let result = ActionResult::Branch {
             selected: "true".into(),
-            output: "yes",
+            output: ActionOutput::Value("yes"),
             alternatives: alts,
         };
         match result {
@@ -442,7 +487,7 @@ mod tests {
     fn route_result() {
         let result = ActionResult::Route {
             port: "error".into(),
-            data: "something failed",
+            data: ActionOutput::Value("something failed"),
         };
         assert!(!result.is_success());
     }
@@ -450,11 +495,11 @@ mod tests {
     #[test]
     fn multi_output_result() {
         let mut outputs = HashMap::new();
-        outputs.insert("main".into(), 1);
-        outputs.insert("audit".into(), 2);
+        outputs.insert("main".into(), ActionOutput::Value(1));
+        outputs.insert("audit".into(), ActionOutput::Value(2));
         let result = ActionResult::MultiOutput {
             outputs,
-            main_output: Some(1),
+            main_output: Some(ActionOutput::Value(1)),
         };
         assert!(!result.is_success());
     }
@@ -488,7 +533,7 @@ mod tests {
         let r = ActionResult::success(5);
         let mapped = r.map_output(|n| n * 2);
         match mapped {
-            ActionResult::Success { output } => assert_eq!(output, 10),
+            ActionResult::Success { output } => assert_eq!(output.into_value(), Some(10)),
             _ => panic!("expected Success"),
         }
     }
@@ -500,7 +545,7 @@ mod tests {
         match mapped {
             ActionResult::Skip { reason, output } => {
                 assert_eq!(reason, "skip");
-                assert_eq!(output.as_deref(), Some("3"));
+                assert_eq!(output.unwrap().as_value().map(|s| s.as_str()), Some("3"));
             }
             _ => panic!("expected Skip"),
         }
@@ -519,7 +564,7 @@ mod tests {
     #[test]
     fn map_output_continue() {
         let r: ActionResult<i32> = ActionResult::Continue {
-            output: 7,
+            output: ActionOutput::Value(7),
             progress: Some(0.5),
             delay: Some(Duration::from_secs(1)),
         };
@@ -530,7 +575,7 @@ mod tests {
                 progress,
                 delay,
             } => {
-                assert_eq!(output, 8);
+                assert_eq!(output.into_value(), Some(8));
                 assert_eq!(progress, Some(0.5));
                 assert_eq!(delay, Some(Duration::from_secs(1)));
             }
@@ -541,13 +586,13 @@ mod tests {
     #[test]
     fn map_output_break() {
         let r: ActionResult<i32> = ActionResult::Break {
-            output: 42,
+            output: ActionOutput::Value(42),
             reason: BreakReason::Completed,
         };
         let mapped = r.map_output(|n| format!("result:{n}"));
         match mapped {
             ActionResult::Break { output, reason } => {
-                assert_eq!(output, "result:42");
+                assert_eq!(output.as_value().map(|s| s.as_str()), Some("result:42"));
                 assert_eq!(reason, BreakReason::Completed);
             }
             _ => panic!("expected Break"),
@@ -557,11 +602,11 @@ mod tests {
     #[test]
     fn map_output_branch() {
         let mut alts = HashMap::new();
-        alts.insert("a".into(), 1);
-        alts.insert("b".into(), 2);
+        alts.insert("a".into(), ActionOutput::Value(1));
+        alts.insert("b".into(), ActionOutput::Value(2));
         let r = ActionResult::Branch {
             selected: "a".into(),
-            output: 10,
+            output: ActionOutput::Value(10),
             alternatives: alts,
         };
         let mapped = r.map_output(|n| n * 10);
@@ -572,9 +617,9 @@ mod tests {
                 alternatives,
             } => {
                 assert_eq!(selected, "a");
-                assert_eq!(output, 100);
-                assert_eq!(alternatives.get("a"), Some(&10));
-                assert_eq!(alternatives.get("b"), Some(&20));
+                assert_eq!(output.into_value(), Some(100));
+                assert_eq!(alternatives.get("a").unwrap().as_value(), Some(&10));
+                assert_eq!(alternatives.get("b").unwrap().as_value(), Some(&20));
             }
             _ => panic!("expected Branch"),
         }
@@ -584,13 +629,13 @@ mod tests {
     fn map_output_route() {
         let r = ActionResult::Route {
             port: "out".into(),
-            data: 99,
+            data: ActionOutput::Value(99),
         };
         let mapped = r.map_output(|n| n as f64);
         match mapped {
             ActionResult::Route { port, data } => {
                 assert_eq!(port, "out");
-                assert_eq!(data, 99.0);
+                assert_eq!(data.into_value(), Some(99.0));
             }
             _ => panic!("expected Route"),
         }
@@ -599,10 +644,10 @@ mod tests {
     #[test]
     fn map_output_multi_output() {
         let mut outputs = HashMap::new();
-        outputs.insert("x".into(), 1);
+        outputs.insert("x".into(), ActionOutput::Value(1));
         let r = ActionResult::MultiOutput {
             outputs,
-            main_output: Some(0),
+            main_output: Some(ActionOutput::Value(0)),
         };
         let mapped = r.map_output(|n| n + 100);
         match mapped {
@@ -610,8 +655,8 @@ mod tests {
                 outputs,
                 main_output,
             } => {
-                assert_eq!(outputs.get("x"), Some(&101));
-                assert_eq!(main_output, Some(100));
+                assert_eq!(outputs.get("x").unwrap().as_value(), Some(&101));
+                assert_eq!(main_output.unwrap().into_value(), Some(100));
             }
             _ => panic!("expected MultiOutput"),
         }
@@ -624,7 +669,7 @@ mod tests {
                 duration: Duration::from_secs(60),
             },
             timeout: Some(Duration::from_secs(300)),
-            partial_output: Some("partial".into()),
+            partial_output: Some(ActionOutput::Value("partial".into())),
         };
         let mapped = r.map_output(|s| s.len());
         match mapped {
@@ -633,7 +678,7 @@ mod tests {
                 timeout,
                 ..
             } => {
-                assert_eq!(partial_output, Some(7));
+                assert_eq!(partial_output.unwrap().into_value(), Some(7));
                 assert_eq!(timeout, Some(Duration::from_secs(300)));
             }
             _ => panic!("expected Wait"),
@@ -677,7 +722,7 @@ mod tests {
         let r = ActionResult::success(5);
         let mapped = r.try_map_output(|n| Ok::<_, String>(n * 2));
         match mapped.unwrap() {
-            ActionResult::Success { output } => assert_eq!(output, 10),
+            ActionResult::Success { output } => assert_eq!(output.into_value(), Some(10)),
             _ => panic!("expected Success"),
         }
     }
@@ -696,7 +741,7 @@ mod tests {
         match mapped.unwrap() {
             ActionResult::Skip { reason, output } => {
                 assert_eq!(reason, "filtered");
-                assert_eq!(output.as_deref(), Some("3"));
+                assert_eq!(output.unwrap().as_value().map(|s| s.as_str()), Some("3"));
             }
             _ => panic!("expected Skip"),
         }
@@ -715,11 +760,11 @@ mod tests {
     #[test]
     fn try_map_output_branch_partial_failure() {
         let mut alts = HashMap::new();
-        alts.insert("a".into(), 1);
-        alts.insert("b".into(), 2);
+        alts.insert("a".into(), ActionOutput::Value(1));
+        alts.insert("b".into(), ActionOutput::Value(2));
         let r = ActionResult::Branch {
             selected: "a".into(),
-            output: 10,
+            output: ActionOutput::Value(10),
             alternatives: alts,
         };
         // Fail on value 2 to test short-circuit
@@ -748,48 +793,53 @@ mod tests {
     #[test]
     fn into_primary_output_success() {
         let r = ActionResult::success(42);
-        assert_eq!(r.into_primary_output(), Some(42));
+        let out = r.into_primary_output().unwrap();
+        assert_eq!(out.into_value(), Some(42));
     }
 
     #[test]
     fn into_primary_output_skip_some() {
         let r = ActionResult::skip_with_output("reason", 7);
-        assert_eq!(r.into_primary_output(), Some(7));
+        let out = r.into_primary_output().unwrap();
+        assert_eq!(out.into_value(), Some(7));
     }
 
     #[test]
     fn into_primary_output_skip_none() {
         let r: ActionResult<i32> = ActionResult::skip("no data");
-        assert_eq!(r.into_primary_output(), None);
+        assert!(r.into_primary_output().is_none());
     }
 
     #[test]
     fn into_primary_output_continue() {
         let r: ActionResult<i32> = ActionResult::Continue {
-            output: 99,
+            output: ActionOutput::Value(99),
             progress: Some(0.5),
             delay: None,
         };
-        assert_eq!(r.into_primary_output(), Some(99));
+        let out = r.into_primary_output().unwrap();
+        assert_eq!(out.into_value(), Some(99));
     }
 
     #[test]
     fn into_primary_output_branch() {
         let r = ActionResult::Branch {
             selected: "a".into(),
-            output: 10,
+            output: ActionOutput::Value(10),
             alternatives: HashMap::new(),
         };
-        assert_eq!(r.into_primary_output(), Some(10));
+        let out = r.into_primary_output().unwrap();
+        assert_eq!(out.into_value(), Some(10));
     }
 
     #[test]
     fn into_primary_output_route() {
         let r = ActionResult::Route {
             port: "out".into(),
-            data: 55,
+            data: ActionOutput::Value(55),
         };
-        assert_eq!(r.into_primary_output(), Some(55));
+        let out = r.into_primary_output().unwrap();
+        assert_eq!(out.into_value(), Some(55));
     }
 
     #[test]
@@ -798,7 +848,7 @@ mod tests {
             after: Duration::from_secs(1),
             reason: "wait".into(),
         };
-        assert_eq!(r.into_primary_output(), None);
+        assert!(r.into_primary_output().is_none());
     }
 
     #[test]
@@ -810,7 +860,7 @@ mod tests {
             timeout: None,
             partial_output: None,
         };
-        assert_eq!(r.into_primary_output(), None);
+        assert!(r.into_primary_output().is_none());
     }
 
     #[test]
@@ -820,8 +870,76 @@ mod tests {
                 duration: Duration::from_secs(60),
             },
             timeout: None,
-            partial_output: Some(33),
+            partial_output: Some(ActionOutput::Value(33)),
         };
-        assert_eq!(r.into_primary_output(), Some(33));
+        let out = r.into_primary_output().unwrap();
+        assert_eq!(out.into_value(), Some(33));
+    }
+
+    // ── into_primary_value tests ─────────────────────────────────────
+
+    #[test]
+    fn into_primary_value_success() {
+        let r = ActionResult::success(42);
+        assert_eq!(r.into_primary_value(), Some(42));
+    }
+
+    #[test]
+    fn into_primary_value_empty() {
+        let r: ActionResult<i32> = ActionResult::success_empty();
+        assert_eq!(r.into_primary_value(), None);
+    }
+
+    #[test]
+    fn into_primary_value_retry() {
+        let r: ActionResult<i32> = ActionResult::Retry {
+            after: Duration::from_secs(1),
+            reason: "wait".into(),
+        };
+        assert_eq!(r.into_primary_value(), None);
+    }
+
+    // ── success_binary / success_reference / success_empty tests ─────
+
+    #[test]
+    fn success_binary_result() {
+        use crate::output::{BinaryData, BinaryStorage};
+        let r: ActionResult<i32> = ActionResult::success_binary(BinaryData {
+            content_type: "image/png".into(),
+            data: BinaryStorage::Inline(vec![1, 2, 3]),
+            size: 3,
+            metadata: None,
+        });
+        assert!(r.is_success());
+        match r {
+            ActionResult::Success { output } => assert!(output.is_binary()),
+            _ => panic!("expected Success"),
+        }
+    }
+
+    #[test]
+    fn success_reference_result() {
+        use crate::output::DataReference;
+        let r: ActionResult<i32> = ActionResult::success_reference(DataReference {
+            storage_type: "s3".into(),
+            path: "bucket/key".into(),
+            size: Some(1024),
+            content_type: None,
+        });
+        assert!(r.is_success());
+        match r {
+            ActionResult::Success { output } => assert!(output.is_reference()),
+            _ => panic!("expected Success"),
+        }
+    }
+
+    #[test]
+    fn success_empty_result() {
+        let r: ActionResult<i32> = ActionResult::success_empty();
+        assert!(r.is_success());
+        match r {
+            ActionResult::Success { output } => assert!(output.is_empty()),
+            _ => panic!("expected Success"),
+        }
     }
 }

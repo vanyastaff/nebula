@@ -198,14 +198,18 @@ impl ActionRuntime {
 /// Extract the primary output value from an `ActionResult` for size checking.
 fn primary_output(result: &ActionResult<serde_json::Value>) -> Option<&serde_json::Value> {
     match result {
-        ActionResult::Success { output } => Some(output),
-        ActionResult::Skip { output, .. } => output.as_ref(),
-        ActionResult::Continue { output, .. } => Some(output),
-        ActionResult::Break { output, .. } => Some(output),
-        ActionResult::Branch { output, .. } => Some(output),
-        ActionResult::Route { data, .. } => Some(data),
-        ActionResult::MultiOutput { main_output, .. } => main_output.as_ref(),
-        ActionResult::Wait { partial_output, .. } => partial_output.as_ref(),
+        ActionResult::Success { output } => output.as_value(),
+        ActionResult::Skip { output, .. } => output.as_ref().and_then(|o| o.as_value()),
+        ActionResult::Continue { output, .. } => output.as_value(),
+        ActionResult::Break { output, .. } => output.as_value(),
+        ActionResult::Branch { output, .. } => output.as_value(),
+        ActionResult::Route { data, .. } => data.as_value(),
+        ActionResult::MultiOutput { main_output, .. } => {
+            main_output.as_ref().and_then(|o| o.as_value())
+        }
+        ActionResult::Wait { partial_output, .. } => {
+            partial_output.as_ref().and_then(|o| o.as_value())
+        }
         ActionResult::Retry { .. } => None,
         _ => None,
     }
@@ -312,7 +316,9 @@ mod tests {
             .await;
         let action_result = result.unwrap();
         match action_result {
-            ActionResult::Success { output } => assert_eq!(output, input),
+            ActionResult::Success { output } => {
+                assert_eq!(output.as_value(), Some(&input));
+            }
             other => panic!("expected Success, got {other:?}"),
         }
     }

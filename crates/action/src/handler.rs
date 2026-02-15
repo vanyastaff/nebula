@@ -30,7 +30,11 @@ pub trait InternalHandler: Send + Sync + 'static {
     fn metadata(&self) -> &ActionMetadata;
 
     /// The discriminant for this action type.
-    fn action_type(&self) -> ActionType;
+    ///
+    /// Defaults to the `action_type` field from [`ActionMetadata`].
+    fn action_type(&self) -> ActionType {
+        self.metadata().action_type
+    }
 
     /// User-facing parameter definitions, if any.
     fn parameters(&self) -> Option<&ParameterCollection>;

@@ -15,8 +15,13 @@ pub trait Action: Send + Sync + 'static {
     /// Static metadata describing this action type.
     fn metadata(&self) -> &ActionMetadata;
 
-    /// The kind of action (Process, Stateful, Trigger).
-    fn action_type(&self) -> ActionType;
+    /// The kind of action (Process, Stateful, Trigger, etc.).
+    ///
+    /// Defaults to the `action_type` field from [`ActionMetadata`].
+    /// Override only if the action type is determined dynamically.
+    fn action_type(&self) -> ActionType {
+        self.metadata().action_type
+    }
 
     /// User-facing parameter definitions, if any.
     ///

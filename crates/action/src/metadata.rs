@@ -47,6 +47,9 @@ pub struct ActionMetadata {
     /// Timeout policy for this action.
     /// The engine enforces these timeouts and cancels the action via its cancellation token.
     pub timeout_policy: Option<TimeoutPolicy>,
+    /// The kind of action this metadata describes.
+    /// Used as a default when implementing [`Action::action_type`](crate::Action::action_type).
+    pub action_type: ActionType,
 }
 
 impl ActionMetadata {
@@ -71,6 +74,7 @@ impl ActionMetadata {
             required_credentials: Vec::new(),
             retry_policy: None,
             timeout_policy: None,
+            action_type: ActionType::Process,
         }
     }
 
@@ -137,6 +141,12 @@ impl ActionMetadata {
     /// Set the timeout policy for this action.
     pub fn with_timeout_policy(mut self, policy: TimeoutPolicy) -> Self {
         self.timeout_policy = Some(policy);
+        self
+    }
+
+    /// Set the action type discriminant.
+    pub fn with_action_type(mut self, action_type: ActionType) -> Self {
+        self.action_type = action_type;
         self
     }
 }
