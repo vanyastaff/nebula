@@ -5,9 +5,8 @@
 //! ```
 
 pub use crate::action::Action;
-pub use crate::context::{
-    ActionContext, ActionLogger, ActionMetrics, CredentialProvider, SecureString,
-};
+pub use crate::context::ActionContext;
+pub use crate::provider::{ActionLogger, ActionMetrics, CredentialProvider, SecureString};
 pub use crate::error::ActionError;
 pub use crate::metadata::{ActionMetadata, ActionType};
 pub use crate::output::{

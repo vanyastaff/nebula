@@ -64,10 +64,12 @@ pub mod adapters;
 pub mod budget;
 /// Capability declarations and isolation levels for sandboxed execution.
 pub mod capability;
-/// Runtime context provided to actions during execution.
-pub mod context;
 /// Error types distinguishing retryable from fatal failures.
 pub mod error;
+/// Dependency-injection port traits (credentials, logging, metrics).
+pub mod provider;
+/// Runtime context provided to actions during execution.
+pub mod context;
 /// Type-erased internal handler for action execution (runtime use only).
 #[doc(hidden)]
 pub mod handler;
@@ -93,6 +95,7 @@ pub use action::Action;
 pub use capability::{Capability, IsolationLevel};
 pub use context::ActionContext;
 pub use error::ActionError;
+pub use provider::{ActionLogger, ActionMetrics, CredentialProvider, SecureString};
 pub use metadata::{
     ActionMetadata, ActionType, ExecutionMode, InterfaceVersion, RetryPolicy, TimeoutPolicy,
 };
