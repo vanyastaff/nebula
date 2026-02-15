@@ -35,7 +35,7 @@ pub use context::ExecutionContext;
 pub use error::ExecutionError;
 pub use idempotency::{IdempotencyKey, IdempotencyManager};
 pub use journal::JournalEntry;
-pub use output::NodeOutput;
+pub use output::{ExecutionOutput, NodeOutput};
 pub use plan::ExecutionPlan;
 pub use state::{ExecutionState, NodeExecutionState};
 pub use status::ExecutionStatus;

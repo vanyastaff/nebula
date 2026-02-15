@@ -95,7 +95,10 @@ pub use metadata::{
     ActionMetadata, ActionType, ExecutionMode, InterfaceVersion, RetryPolicy, TimeoutPolicy,
 };
 pub use output::{
-    ActionOutput, BinaryData, BinaryStorage, DataReference, NodeOutputData, StreamReference,
+    ActionOutput, BinaryData, BinaryStorage, BufferConfig, CacheInfo, Cost, DataReference,
+    DeferredOutput, DeltaFormat, ExpectedOutput, OutputEnvelope, OutputMeta, OutputOrigin,
+    Overflow, PollTarget, Producer, ProducerKind, Progress, Resolution, StreamMode, StreamOutput,
+    StreamState, Timing, TokenUsage,
 };
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
 pub use types::InteractiveAction;

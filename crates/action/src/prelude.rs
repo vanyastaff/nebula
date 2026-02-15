@@ -10,7 +10,10 @@ pub use crate::context::{
 };
 pub use crate::error::ActionError;
 pub use crate::metadata::{ActionMetadata, ActionType};
-pub use crate::output::ActionOutput;
+pub use crate::output::{
+    ActionOutput, DeferredOutput, ExpectedOutput, Producer, ProducerKind, Progress, Resolution,
+    StreamMode, StreamOutput,
+};
 pub use crate::result::ActionResult;
 pub use crate::types::InteractiveAction;
 pub use crate::types::ProcessAction;

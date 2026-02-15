@@ -1,7 +1,7 @@
 //! Node execution attempt tracking.
 
+use crate::output::ExecutionOutput;
 use chrono::{DateTime, Utc};
-use nebula_action::NodeOutputData;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -21,7 +21,7 @@ pub struct NodeAttempt {
     pub completed_at: Option<DateTime<Utc>>,
     /// Output data if the attempt succeeded.
     #[serde(default)]
-    pub output: Option<NodeOutputData>,
+    pub output: Option<ExecutionOutput>,
     /// Error message if the attempt failed.
     #[serde(default)]
     pub error: Option<String>,
@@ -46,7 +46,7 @@ impl NodeAttempt {
     }
 
     /// Mark this attempt as successfully completed.
-    pub fn complete_success(&mut self, output: NodeOutputData, output_bytes: u64) {
+    pub fn complete_success(&mut self, output: ExecutionOutput, output_bytes: u64) {
         self.completed_at = Some(Utc::now());
         self.output = Some(output);
         self.output_bytes = output_bytes;
@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn complete_success() {
         let mut attempt = NodeAttempt::new(0, test_key());
-        attempt.complete_success(NodeOutputData::inline(serde_json::json!(42)), 8);
+        attempt.complete_success(ExecutionOutput::inline(serde_json::json!(42)), 8);
         assert!(attempt.is_complete());
         assert!(attempt.is_success());
         assert!(!attempt.is_failure());
@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn duration_after_completion() {
         let mut attempt = NodeAttempt::new(0, test_key());
-        attempt.complete_success(NodeOutputData::inline(serde_json::json!(null)), 0);
+        attempt.complete_success(ExecutionOutput::inline(serde_json::json!(null)), 0);
         let dur = attempt.duration();
         assert!(dur.is_some());
     }
@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn serde_roundtrip_success() {
         let mut attempt = NodeAttempt::new(0, test_key());
-        attempt.complete_success(NodeOutputData::inline(serde_json::json!({"ok": true})), 32);
+        attempt.complete_success(ExecutionOutput::inline(serde_json::json!({"ok": true})), 32);
         let json = serde_json::to_string(&attempt).unwrap();
         let back: NodeAttempt = serde_json::from_str(&json).unwrap();
         assert!(back.is_success());

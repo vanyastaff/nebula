@@ -4,7 +4,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use nebula_core::id::ExecutionId;
 
-use crate::output::{ActionOutput, BinaryData, DataReference};
+use crate::output::{ActionOutput, BinaryData, DataReference, DeferredOutput};
 
 /// Type alias for workflow branch keys (e.g. `"true"`, `"false"`, `"case_1"`).
 pub type BranchKey = String;
@@ -192,6 +192,18 @@ impl<T> ActionResult<T> {
     pub fn success_empty() -> Self {
         Self::Success {
             output: ActionOutput::Empty,
+        }
+    }
+
+    /// Create a successful result with a pre-built `ActionOutput`.
+    pub fn success_output(output: ActionOutput<T>) -> Self {
+        Self::Success { output }
+    }
+
+    /// Create a successful result with a deferred output.
+    pub fn success_deferred(deferred: DeferredOutput) -> Self {
+        Self::Success {
+            output: ActionOutput::Deferred(Box::new(deferred)),
         }
     }
 
@@ -939,6 +951,127 @@ mod tests {
         assert!(r.is_success());
         match r {
             ActionResult::Success { output } => assert!(output.is_empty()),
+            _ => panic!("expected Success"),
+        }
+    }
+
+    // ── success_output / success_deferred tests ─────────────────────
+
+    #[test]
+    fn success_output_result() {
+        use crate::output::{DeferredOutput, ExpectedOutput, Producer, ProducerKind, Resolution};
+        let deferred = ActionOutput::<serde_json::Value>::Deferred(Box::new(DeferredOutput {
+            handle_id: "h-1".into(),
+            resolution: Resolution::Await {
+                channel_id: "ch".into(),
+            },
+            expected: ExpectedOutput::Dynamic,
+            progress: None,
+            producer: Producer {
+                kind: ProducerKind::AiModel,
+                name: None,
+                version: None,
+            },
+            retry: None,
+            timeout: None,
+        }));
+        let r = ActionResult::success_output(deferred);
+        assert!(r.is_success());
+        match r {
+            ActionResult::Success { output } => assert!(output.is_deferred()),
+            _ => panic!("expected Success"),
+        }
+    }
+
+    #[test]
+    fn success_deferred_result() {
+        use crate::output::{DeferredOutput, ExpectedOutput, Producer, ProducerKind, Resolution};
+        let r: ActionResult<serde_json::Value> = ActionResult::success_deferred(DeferredOutput {
+            handle_id: "h-2".into(),
+            resolution: Resolution::Callback {
+                endpoint: "https://example.com".into(),
+                token: "tok".into(),
+            },
+            expected: ExpectedOutput::Value { schema: None },
+            progress: None,
+            producer: Producer {
+                kind: ProducerKind::ExternalApi,
+                name: None,
+                version: None,
+            },
+            retry: None,
+            timeout: None,
+        });
+        assert!(r.is_success());
+        match r {
+            ActionResult::Success { output } => {
+                assert!(output.is_deferred());
+                assert!(output.needs_resolution());
+            }
+            _ => panic!("expected Success"),
+        }
+    }
+
+    #[test]
+    fn map_output_with_deferred() {
+        use crate::output::{DeferredOutput, ExpectedOutput, Producer, ProducerKind, Resolution};
+        let r: ActionResult<i32> = ActionResult::Success {
+            output: ActionOutput::Deferred(Box::new(DeferredOutput {
+                handle_id: "h".into(),
+                resolution: Resolution::Await {
+                    channel_id: "ch".into(),
+                },
+                expected: ExpectedOutput::Dynamic,
+                progress: None,
+                producer: Producer {
+                    kind: ProducerKind::LocalCompute,
+                    name: None,
+                    version: None,
+                },
+                retry: None,
+                timeout: None,
+            })),
+        };
+        let mapped = r.map_output(|n| n.to_string());
+        match mapped {
+            ActionResult::Success { output } => assert!(output.is_deferred()),
+            _ => panic!("expected Success"),
+        }
+    }
+
+    #[test]
+    fn map_output_with_streaming() {
+        use crate::output::{ExpectedOutput, StreamMode, StreamOutput, StreamState};
+        let r: ActionResult<i32> = ActionResult::Success {
+            output: ActionOutput::Streaming(StreamOutput {
+                stream_id: "s".into(),
+                mode: StreamMode::Events,
+                expected: ExpectedOutput::Dynamic,
+                state: StreamState::Pending,
+                buffer: None,
+            }),
+        };
+        let mapped = r.map_output(|n| n * 2);
+        match mapped {
+            ActionResult::Success { output } => assert!(output.is_streaming()),
+            _ => panic!("expected Success"),
+        }
+    }
+
+    #[test]
+    fn map_output_with_collection() {
+        let r: ActionResult<i32> = ActionResult::Success {
+            output: ActionOutput::Collection(vec![ActionOutput::Value(1), ActionOutput::Value(2)]),
+        };
+        let mapped = r.map_output(|n| n * 10);
+        match mapped {
+            ActionResult::Success { output } => match output {
+                ActionOutput::Collection(items) => {
+                    assert_eq!(items[0].as_value(), Some(&10));
+                    assert_eq!(items[1].as_value(), Some(&20));
+                }
+                _ => panic!("expected Collection"),
+            },
             _ => panic!("expected Success"),
         }
     }

@@ -182,7 +182,7 @@ pub enum ExecutionMode {
 ///
 /// Inspired by Temporal's retry policy. When attached to [`ActionMetadata`],
 /// the engine uses this to decide how to retry failed executions.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RetryPolicy {
     /// Maximum number of attempts (1 = no retry, 2 = one retry, etc.).
     pub max_attempts: u32,
@@ -246,7 +246,7 @@ impl RetryPolicy {
 ///
 /// Inspired by Temporal's activity timeouts. The engine enforces these
 /// timeouts and cancels the action via its cancellation token.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimeoutPolicy {
     /// Maximum time from schedule to start (queue wait time).
     pub schedule_to_start: Option<Duration>,

@@ -60,7 +60,7 @@ impl Default for DataPassingPolicy {
 pub enum LargeDataStrategy {
     /// Reject the output and return `ActionError::DataLimitExceeded`.
     Reject,
-    /// Spill the output to blob storage, pass a `NodeOutputData::BlobRef` instead.
+    /// Spill the output to blob storage, pass a blob reference instead.
     SpillToBlob,
 }
 
