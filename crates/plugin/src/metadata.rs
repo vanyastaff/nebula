@@ -1,18 +1,18 @@
-//! Node metadata and builder.
+//! Plugin metadata and builder.
 
-use nebula_core::NodeKey;
+use nebula_core::PluginKey;
 use serde::{Deserialize, Serialize};
 
-use crate::NodeError;
+use crate::PluginError;
 
-/// Static metadata describing a node type.
+/// Static metadata describing a plugin type.
 ///
 /// Built via the builder API:
 ///
 /// ```
-/// use nebula_node::NodeMetadata;
+/// use nebula_plugin::PluginMetadata;
 ///
-/// let meta = NodeMetadata::builder("http_request", "HTTP Request")
+/// let meta = PluginMetadata::builder("http_request", "HTTP Request")
 ///     .description("Make HTTP calls to external APIs")
 ///     .group(vec!["network".into()])
 ///     .version(2)
@@ -23,8 +23,8 @@ use crate::NodeError;
 /// assert_eq!(meta.version(), 2);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NodeMetadata {
-    key: NodeKey,
+pub struct PluginMetadata {
+    key: PluginKey,
     name: String,
     #[serde(default = "default_version")]
     version: u32,
@@ -48,10 +48,10 @@ fn default_version() -> u32 {
     1
 }
 
-impl NodeMetadata {
+impl PluginMetadata {
     /// Start building metadata with the minimum required fields.
-    pub fn builder(key: impl AsRef<str>, name: impl Into<String>) -> NodeMetadataBuilder {
-        NodeMetadataBuilder {
+    pub fn builder(key: impl AsRef<str>, name: impl Into<String>) -> PluginMetadataBuilder {
+        PluginMetadataBuilder {
             key: key.as_ref().to_owned(),
             name: name.into(),
             version: 1,
@@ -67,7 +67,7 @@ impl NodeMetadata {
 
     /// The normalized key.
     #[inline]
-    pub fn key(&self) -> &NodeKey {
+    pub fn key(&self) -> &PluginKey {
         &self.key
     }
 
@@ -126,8 +126,8 @@ impl NodeMetadata {
     }
 }
 
-/// Builder for [`NodeMetadata`].
-pub struct NodeMetadataBuilder {
+/// Builder for [`PluginMetadata`].
+pub struct PluginMetadataBuilder {
     key: String,
     name: String,
     version: u32,
@@ -140,7 +140,7 @@ pub struct NodeMetadataBuilder {
     tags: Vec<String>,
 }
 
-impl NodeMetadataBuilder {
+impl PluginMetadataBuilder {
     /// Set the version number (defaults to 1).
     pub fn version(mut self, version: u32) -> Self {
         self.version = version;
@@ -190,10 +190,10 @@ impl NodeMetadataBuilder {
     }
 
     /// Validate and build the metadata.
-    pub fn build(self) -> Result<NodeMetadata, NodeError> {
-        let key: NodeKey = self.key.parse().map_err(NodeError::InvalidKey)?;
+    pub fn build(self) -> Result<PluginMetadata, PluginError> {
+        let key: PluginKey = self.key.parse().map_err(PluginError::InvalidKey)?;
 
-        Ok(NodeMetadata {
+        Ok(PluginMetadata {
             key,
             name: self.name,
             version: self.version,
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn builder_minimal() {
-        let meta = NodeMetadata::builder("slack", "Slack").build().unwrap();
+        let meta = PluginMetadata::builder("slack", "Slack").build().unwrap();
         assert_eq!(meta.key().as_str(), "slack");
         assert_eq!(meta.name(), "Slack");
         assert_eq!(meta.version(), 1);
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn builder_full() {
-        let meta = NodeMetadata::builder("http_request", "HTTP Request")
+        let meta = PluginMetadata::builder("http_request", "HTTP Request")
             .version(2)
             .group(vec!["network".into(), "api".into()])
             .description("Make HTTP calls")
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn builder_normalizes_key() {
-        let meta = NodeMetadata::builder("HTTP Request", "HTTP Request")
+        let meta = PluginMetadata::builder("HTTP Request", "HTTP Request")
             .build()
             .unwrap();
         assert_eq!(meta.key().as_str(), "http_request");
@@ -254,20 +254,20 @@ mod tests {
 
     #[test]
     fn builder_rejects_invalid_key() {
-        let result = NodeMetadata::builder("", "Empty").build();
+        let result = PluginMetadata::builder("", "Empty").build();
         assert!(result.is_err());
     }
 
     #[test]
     fn serde_roundtrip() {
-        let meta = NodeMetadata::builder("slack", "Slack")
+        let meta = PluginMetadata::builder("slack", "Slack")
             .version(3)
             .description("Send messages")
             .build()
             .unwrap();
 
         let json = serde_json::to_string(&meta).unwrap();
-        let back: NodeMetadata = serde_json::from_str(&json).unwrap();
+        let back: PluginMetadata = serde_json::from_str(&json).unwrap();
 
         assert_eq!(back.key().as_str(), "slack");
         assert_eq!(back.version(), 3);

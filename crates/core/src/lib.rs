@@ -53,8 +53,8 @@ pub type Result<T> = std::result::Result<T, error::CoreError>;
 pub mod prelude {
     pub use super::{
         CoreError, CredentialId, ExecutionId, HasContext, Identifiable, InterfaceVersion, NodeId,
-        NodeKey, NodeKeyError, OrganizationId, ProjectId, ProjectType, Result, RoleId, RoleScope,
-        ScopeLevel, Scoped, TenantId, UserId, UuidParseError, WorkflowId,
+        OrganizationId, PluginKey, PluginKeyError, ProjectId, ProjectType, Result, RoleId,
+        RoleScope, ScopeLevel, Scoped, TenantId, UserId, UuidParseError, WorkflowId,
     };
 
     pub use crate::keys::*;

@@ -1,11 +1,11 @@
 [package]
-name = "nebula-node"
+name = "nebula-plugin"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 keywords.workspace = true
 authors.workspace = true
-description = "Node type system with versioning, registry, and dynamic loading"
+description = "Plugin system with versioning, registry, and dynamic loading"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true

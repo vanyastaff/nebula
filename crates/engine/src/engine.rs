@@ -30,7 +30,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use nebula_expression::{EvaluationContext, ExpressionEngine};
-use nebula_node::NodeRegistry;
+use nebula_plugin::PluginRegistry;
 
 use crate::error::EngineError;
 use crate::resolver::ParamResolver;
@@ -53,7 +53,7 @@ pub struct WorkflowEngine {
     /// Maps action IDs (from node definitions) to registry keys.
     action_keys: HashMap<ActionId, String>,
     /// Node registry for node-level metadata and versioning.
-    node_registry: NodeRegistry,
+    plugin_registry: PluginRegistry,
     /// Resolves node parameters (expressions, templates, references) to JSON.
     resolver: ParamResolver,
     /// Expression engine for evaluating edge conditions.
@@ -74,7 +74,7 @@ impl WorkflowEngine {
             event_bus,
             metrics,
             action_keys: HashMap::new(),
-            node_registry: NodeRegistry::new(),
+            plugin_registry: PluginRegistry::new(),
             resolver: ParamResolver::new(expression_engine.clone()),
             expression_engine,
         }
@@ -89,13 +89,13 @@ impl WorkflowEngine {
     }
 
     /// Access the node registry.
-    pub fn node_registry(&self) -> &NodeRegistry {
-        &self.node_registry
+    pub fn plugin_registry(&self) -> &PluginRegistry {
+        &self.plugin_registry
     }
 
     /// Mutable access to the node registry.
-    pub fn node_registry_mut(&mut self) -> &mut NodeRegistry {
-        &mut self.node_registry
+    pub fn plugin_registry_mut(&mut self) -> &mut PluginRegistry {
+        &mut self.plugin_registry
     }
 
     /// Resolve the action registry key for a given action ID.

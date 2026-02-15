@@ -9,7 +9,7 @@ members = [
     "crates/expression",
     "crates/log",
     "crates/memory",
-    "crates/node",
+    "crates/plugin",
     "crates/parameter",
     "crates/ports",
     "crates/resilience",

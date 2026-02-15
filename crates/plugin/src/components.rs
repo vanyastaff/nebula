@@ -1,4 +1,4 @@
-//! Node component collection for action and credential registration.
+//! Plugin component collection for action and credential registration.
 
 use std::sync::Arc;
 
@@ -13,17 +13,17 @@ use nebula_credential::CredentialDescription;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-/// Collects the runtime components (actions, credentials) registered by a node.
+/// Collects the runtime components (actions, credentials) registered by a plugin.
 ///
-/// During [`Node::register()`](crate::Node::register), nodes add their typed
+/// During [`Plugin::register()`](crate::Plugin::register), plugins add their typed
 /// actions and credential requirements. The runtime then extracts handlers
 /// for the action registry.
-pub struct NodeComponents {
+pub struct PluginComponents {
     credentials: Vec<CredentialDescription>,
     handlers: Vec<Arc<dyn InternalHandler>>,
 }
 
-impl NodeComponents {
+impl PluginComponents {
     /// Create an empty collection.
     pub fn new() -> Self {
         Self {
@@ -106,15 +106,15 @@ impl NodeComponents {
     }
 }
 
-impl Default for NodeComponents {
+impl Default for PluginComponents {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl std::fmt::Debug for NodeComponents {
+impl std::fmt::Debug for PluginComponents {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NodeComponents")
+        f.debug_struct("PluginComponents")
             .field("credentials", &self.credentials.len())
             .field("handlers", &self.handlers.len())
             .finish()

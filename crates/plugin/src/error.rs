@@ -1,66 +1,66 @@
-//! Node error types.
+//! Plugin error types.
 
-use nebula_core::NodeKey;
+use nebula_core::PluginKey;
 
-/// Errors from node operations.
+/// Errors from plugin operations.
 #[derive(Debug, thiserror::Error)]
-pub enum NodeError {
-    /// Node not found in the registry.
-    #[error("node not found: {0}")]
-    NotFound(NodeKey),
+pub enum PluginError {
+    /// Plugin not found in the registry.
+    #[error("plugin not found: {0}")]
+    NotFound(PluginKey),
 
     /// A specific version was not found.
-    #[error("version {version} not found for node '{key}'")]
+    #[error("version {version} not found for plugin '{key}'")]
     VersionNotFound {
         /// The requested version.
         version: u32,
-        /// The node key.
-        key: NodeKey,
+        /// The plugin key.
+        key: PluginKey,
     },
 
-    /// The node is not versioned (it is a single instance).
-    #[error("node '{0}' is not versioned")]
-    NotVersioned(NodeKey),
+    /// The plugin is not versioned (it is a single instance).
+    #[error("plugin '{0}' is not versioned")]
+    NotVersioned(PluginKey),
 
-    /// A node with this key already exists in the registry.
-    #[error("node '{0}' already exists")]
-    AlreadyExists(NodeKey),
+    /// A plugin with this key already exists in the registry.
+    #[error("plugin '{0}' already exists")]
+    AlreadyExists(PluginKey),
 
-    /// No versions are available in a `NodeVersions` container.
-    #[error("no versions available for node '{0}'")]
-    NoVersionsAvailable(NodeKey),
+    /// No versions are available in a `PluginVersions` container.
+    #[error("no versions available for plugin '{0}'")]
+    NoVersionsAvailable(PluginKey),
 
-    /// The key of a node being added doesn't match the container's key.
-    #[error("key mismatch: node has key '{node_key}', container has key '{container_key}'")]
+    /// The key of a plugin being added doesn't match the container's key.
+    #[error("key mismatch: plugin has key '{plugin_key}', container has key '{container_key}'")]
     KeyMismatch {
-        /// The incoming node's key.
-        node_key: NodeKey,
+        /// The incoming plugin's key.
+        plugin_key: PluginKey,
         /// The container's existing key.
-        container_key: NodeKey,
+        container_key: PluginKey,
     },
 
     /// A version already exists in the container.
-    #[error("version {version} already exists for node '{key}'")]
+    #[error("version {version} already exists for plugin '{key}'")]
     VersionAlreadyExists {
         /// The conflicting version.
         version: u32,
-        /// The node key.
-        key: NodeKey,
+        /// The plugin key.
+        key: PluginKey,
     },
 
-    /// A required field was missing during node construction.
-    #[error("missing required field '{field}' for node")]
+    /// A required field was missing during plugin construction.
+    #[error("missing required field '{field}' for plugin")]
     MissingRequiredField {
         /// The missing field name.
         field: &'static str,
     },
 
-    /// Node key validation failed.
-    #[error("invalid node key: {0}")]
-    InvalidKey(#[from] nebula_core::NodeKeyError),
+    /// Plugin key validation failed.
+    #[error("invalid plugin key: {0}")]
+    InvalidKey(#[from] nebula_core::PluginKeyError),
 }
 
-impl PartialEq for NodeError {
+impl PartialEq for PluginError {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::NotFound(a), Self::NotFound(b)) => a == b,
@@ -79,11 +79,11 @@ impl PartialEq for NodeError {
             (Self::NoVersionsAvailable(a), Self::NoVersionsAvailable(b)) => a == b,
             (
                 Self::KeyMismatch {
-                    node_key: n1,
+                    plugin_key: n1,
                     container_key: c1,
                 },
                 Self::KeyMismatch {
-                    node_key: n2,
+                    plugin_key: n2,
                     container_key: c2,
                 },
             ) => n1 == n2 && c1 == c2,
@@ -107,7 +107,7 @@ impl PartialEq for NodeError {
     }
 }
 
-impl Eq for NodeError {}
+impl Eq for PluginError {}
 
 #[cfg(test)]
 mod tests {
@@ -115,34 +115,34 @@ mod tests {
 
     #[test]
     fn not_found_display() {
-        let key: NodeKey = "slack".parse().unwrap();
-        let err = NodeError::NotFound(key);
-        assert_eq!(err.to_string(), "node not found: slack");
+        let key: PluginKey = "slack".parse().unwrap();
+        let err = PluginError::NotFound(key);
+        assert_eq!(err.to_string(), "plugin not found: slack");
     }
 
     #[test]
     fn version_not_found_display() {
-        let key: NodeKey = "http_request".parse().unwrap();
-        let err = NodeError::VersionNotFound { version: 3, key };
+        let key: PluginKey = "http_request".parse().unwrap();
+        let err = PluginError::VersionNotFound { version: 3, key };
         assert_eq!(
             err.to_string(),
-            "version 3 not found for node 'http_request'"
+            "version 3 not found for plugin 'http_request'"
         );
     }
 
     #[test]
     fn already_exists_display() {
-        let key: NodeKey = "slack".parse().unwrap();
-        let err = NodeError::AlreadyExists(key);
-        assert_eq!(err.to_string(), "node 'slack' already exists");
+        let key: PluginKey = "slack".parse().unwrap();
+        let err = PluginError::AlreadyExists(key);
+        assert_eq!(err.to_string(), "plugin 'slack' already exists");
     }
 
     #[test]
     fn key_mismatch_display() {
-        let nk: NodeKey = "foo".parse().unwrap();
-        let ck: NodeKey = "bar".parse().unwrap();
-        let err = NodeError::KeyMismatch {
-            node_key: nk,
+        let pk: PluginKey = "foo".parse().unwrap();
+        let ck: PluginKey = "bar".parse().unwrap();
+        let err = PluginError::KeyMismatch {
+            plugin_key: pk,
             container_key: ck,
         };
         assert!(err.to_string().contains("foo"));
@@ -151,11 +151,11 @@ mod tests {
 
     #[test]
     fn partial_eq() {
-        let a = NodeError::NotFound("slack".parse().unwrap());
-        let b = NodeError::NotFound("slack".parse().unwrap());
+        let a = PluginError::NotFound("slack".parse().unwrap());
+        let b = PluginError::NotFound("slack".parse().unwrap());
         assert_eq!(a, b);
 
-        let c = NodeError::NotFound("http".parse().unwrap());
+        let c = PluginError::NotFound("http".parse().unwrap());
         assert_ne!(a, c);
     }
 }

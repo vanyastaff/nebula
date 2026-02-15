@@ -23,5 +23,5 @@ pub use engine::WorkflowEngine;
 pub use error::EngineError;
 pub use result::ExecutionResult;
 
-// Re-export node types for convenience.
-pub use nebula_node::{Node, NodeKey, NodeMetadata, NodeRegistry, NodeType};
+// Re-export plugin types for convenience.
+pub use nebula_plugin::{Plugin, PluginKey, PluginMetadata, PluginRegistry, PluginType};
