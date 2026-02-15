@@ -1,10 +1,11 @@
 //! Workflow execution engine.
 //!
-//! Executes workflows by processing parallel groups level-by-level,
-//! resolving inputs from predecessor outputs, and delegating action
-//! execution to the runtime.
+//! Executes workflows using a frontier-based approach: each node is spawned
+//! as soon as all its incoming edges are resolved and at least one is activated,
+//! rather than waiting for an entire topological level. This enables branching,
+//! skip propagation, error routing, and conditional edges.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -20,12 +21,15 @@ use nebula_execution::state::ExecutionState;
 use nebula_runtime::ActionRuntime;
 use nebula_telemetry::event::{EventBus, ExecutionEvent};
 use nebula_telemetry::metrics::MetricsRegistry;
-use nebula_workflow::{DependencyGraph, NodeState, WorkflowDefinition};
+use nebula_workflow::{
+    Connection, DependencyGraph, EdgeCondition, ErrorMatcher, NodeState, ResultMatcher,
+    WorkflowDefinition,
+};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use nebula_expression::ExpressionEngine;
+use nebula_expression::{EvaluationContext, ExpressionEngine};
 use nebula_node::NodeRegistry;
 
 use crate::error::EngineError;
@@ -36,11 +40,12 @@ use crate::result::ExecutionResult;
 ///
 /// Orchestrates end-to-end execution of workflow definitions by:
 ///
-/// 1. Building an execution plan (parallel groups from the DAG)
-/// 2. Executing nodes level-by-level with bounded concurrency
-/// 3. Resolving each node's input from predecessor outputs
-/// 4. Delegating action execution to the [`ActionRuntime`]
-/// 5. Tracking execution state and emitting telemetry
+/// 1. Building a dependency graph from the workflow
+/// 2. Executing nodes frontier-by-frontier with bounded concurrency
+/// 3. Evaluating edge conditions to determine which successors to activate
+/// 4. Resolving each node's input from activated predecessor outputs
+/// 5. Delegating action execution to the [`ActionRuntime`]
+/// 6. Tracking execution state and emitting telemetry
 pub struct WorkflowEngine {
     runtime: Arc<ActionRuntime>,
     event_bus: Arc<EventBus>,
@@ -51,6 +56,9 @@ pub struct WorkflowEngine {
     node_registry: NodeRegistry,
     /// Resolves node parameters (expressions, templates, references) to JSON.
     resolver: ParamResolver,
+    /// Expression engine for evaluating edge conditions.
+    #[allow(dead_code)]
+    expression_engine: Arc<ExpressionEngine>,
 }
 
 impl WorkflowEngine {
@@ -67,7 +75,8 @@ impl WorkflowEngine {
             metrics,
             action_keys: HashMap::new(),
             node_registry: NodeRegistry::new(),
-            resolver: ParamResolver::new(expression_engine),
+            resolver: ParamResolver::new(expression_engine.clone()),
+            expression_engine,
         }
     }
 
@@ -99,12 +108,13 @@ impl WorkflowEngine {
 
     /// Execute a workflow from start to finish.
     ///
-    /// Builds an execution plan, then processes parallel groups
-    /// level-by-level. Within each level, nodes execute concurrently
+    /// Builds an execution plan for validation, then processes nodes
+    /// frontier-by-frontier. Each node is spawned as soon as all its
+    /// incoming edges are resolved and at least one is activated,
     /// up to `budget.max_concurrent_nodes`.
     ///
     /// Entry nodes receive the workflow-level `input`. Subsequent nodes
-    /// receive the output of their predecessors.
+    /// receive the output of their activated predecessors.
     pub async fn execute_workflow(
         &self,
         workflow: &WorkflowDefinition,
@@ -114,11 +124,11 @@ impl WorkflowEngine {
         let execution_id = ExecutionId::v4();
         let started = Instant::now();
 
-        // 1. Build execution plan
-        let plan = ExecutionPlan::from_workflow(execution_id, workflow, budget.clone())
+        // 1. Validate workflow (reuse ExecutionPlan for validation)
+        let _plan = ExecutionPlan::from_workflow(execution_id, workflow, budget.clone())
             .map_err(|e| EngineError::PlanningFailed(e.to_string()))?;
 
-        // 2. Build dependency graph for predecessor lookup
+        // 2. Build dependency graph
         let graph = DependencyGraph::from_definition(workflow)
             .map_err(|e| EngineError::PlanningFailed(e.to_string()))?;
 
@@ -150,10 +160,9 @@ impl WorkflowEngine {
         let outputs: Arc<DashMap<NodeId, serde_json::Value>> = Arc::new(DashMap::new());
         let semaphore = Arc::new(Semaphore::new(budget.max_concurrent_nodes));
 
-        // 9. Execute level by level
+        // 9. Execute using frontier-based loop
         let failed_node = self
-            .run_levels(
-                &plan,
+            .run_frontier(
                 &graph,
                 &node_map,
                 &outputs,
@@ -187,13 +196,17 @@ impl WorkflowEngine {
         })
     }
 
-    /// Execute all parallel groups level-by-level.
+    /// Execute all reachable nodes using a frontier-based approach.
     ///
-    /// Returns `Some((node_id, error))` if a node failed, `None` if all succeeded.
+    /// Nodes are spawned as soon as all their incoming edges have been resolved
+    /// and at least one edge has been activated. This supports branching, skip
+    /// propagation, and error routing.
+    ///
+    /// Returns `Some((node_id, error))` if a node failed without an error handler,
+    /// `None` if all reachable nodes completed (or were skipped).
     #[allow(clippy::too_many_arguments)]
-    async fn run_levels(
+    async fn run_frontier(
         &self,
-        plan: &ExecutionPlan,
         graph: &DependencyGraph,
         node_map: &HashMap<NodeId, &nebula_workflow::NodeDefinition>,
         outputs: &Arc<DashMap<NodeId, serde_json::Value>>,
@@ -204,40 +217,155 @@ impl WorkflowEngine {
         workflow_id: WorkflowId,
         input: &serde_json::Value,
     ) -> Option<(NodeId, String)> {
-        for group in &plan.parallel_groups {
-            if cancel_token.is_cancelled() {
+        // Precompute how many incoming edges each node has
+        let required_count: HashMap<NodeId, usize> = node_map
+            .keys()
+            .map(|&nid| (nid, graph.incoming_connections(nid).len()))
+            .collect();
+
+        // Track edge resolution state
+        let mut activated_edges: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
+        let mut resolved_edges: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
+
+        // Queue of nodes ready to execute
+        let mut ready_queue: VecDeque<NodeId> = VecDeque::new();
+
+        // Seed with entry nodes (no incoming edges)
+        for entry_id in graph.entry_nodes() {
+            ready_queue.push_back(entry_id);
+        }
+
+        // In-flight tasks
+        let mut join_set: JoinSet<(NodeId, Result<ActionResult<serde_json::Value>, EngineError>)> =
+            JoinSet::new();
+
+        // Main frontier loop
+        loop {
+            // Phase 1: Drain ready queue → spawn into join_set
+            while let Some(node_id) = ready_queue.pop_front() {
+                if cancel_token.is_cancelled() {
+                    break;
+                }
+
+                let spawned = self.spawn_node(
+                    node_id,
+                    node_map,
+                    outputs,
+                    semaphore,
+                    cancel_token,
+                    exec_state,
+                    execution_id,
+                    workflow_id,
+                    input,
+                    &activated_edges,
+                    &mut join_set,
+                );
+
+                // Node failed during setup (e.g., param resolution).
+                // Treat as a node failure: check for error handlers.
+                let has_error_handler = !spawned
+                    && process_outgoing_edges(
+                        node_id,
+                        None,
+                        Some("parameter resolution failed"),
+                        graph,
+                        &mut activated_edges,
+                        &mut resolved_edges,
+                        &required_count,
+                        &mut ready_queue,
+                        exec_state,
+                    );
+                if !spawned && !has_error_handler {
+                    cancel_token.cancel();
+                    return Some((node_id, "parameter resolution failed".into()));
+                }
+            }
+
+            // Phase 2: Wait for one completion (or exit if nothing in flight)
+            if join_set.is_empty() {
                 break;
             }
 
-            let mut join_set = self.spawn_level(
-                group,
-                node_map,
-                graph,
-                outputs,
-                semaphore,
-                cancel_token,
-                exec_state,
-                execution_id,
-                workflow_id,
-                input,
-            );
+            if cancel_token.is_cancelled() {
+                while join_set.join_next().await.is_some() {}
+                break;
+            }
 
-            if let Some(failure) =
-                collect_level_results(&mut join_set, exec_state, cancel_token).await
-            {
-                return Some(failure);
+            let Some(join_result) = join_set.join_next().await else {
+                break;
+            };
+
+            // Phase 3: Process the completed task
+            match join_result {
+                Ok((node_id, Ok(action_result))) => {
+                    // Node ran and produced a result
+                    mark_node_completed(exec_state, node_id);
+
+                    // Evaluate outgoing edges and update frontier
+                    process_outgoing_edges(
+                        node_id,
+                        Some(&action_result),
+                        None, // not failed
+                        graph,
+                        &mut activated_edges,
+                        &mut resolved_edges,
+                        &required_count,
+                        &mut ready_queue,
+                        exec_state,
+                    );
+                }
+                Ok((node_id, Err(ref err))) => {
+                    // Node failed at runtime
+                    mark_node_failed(exec_state, node_id, err);
+
+                    // Check for error handlers
+                    let error_handled = process_outgoing_edges(
+                        node_id,
+                        None, // no successful result
+                        Some(&err.to_string()),
+                        graph,
+                        &mut activated_edges,
+                        &mut resolved_edges,
+                        &required_count,
+                        &mut ready_queue,
+                        exec_state,
+                    );
+
+                    if error_handled {
+                        // Store error info for OnError handler input
+                        outputs.insert(
+                            node_id,
+                            serde_json::json!({
+                                "error": err.to_string(),
+                                "node_id": node_id.to_string(),
+                            }),
+                        );
+                    } else {
+                        // No error handler → fail-fast
+                        cancel_token.cancel();
+                        return Some((node_id, err.to_string()));
+                    }
+                }
+                Err(join_err) => {
+                    tracing::error!(?join_err, "node task panicked");
+                    cancel_token.cancel();
+                    return Some((NodeId::v4(), join_err.to_string()));
+                }
             }
         }
+
         None
     }
 
-    /// Spawn all nodes in a single level into a JoinSet.
+    /// Spawn a single node into the JoinSet.
+    ///
+    /// Returns `true` if the node was spawned, `false` if it failed during setup
+    /// (e.g., param resolution error).
     #[allow(clippy::too_many_arguments)]
-    fn spawn_level(
+    fn spawn_node(
         &self,
-        group: &[NodeId],
+        node_id: NodeId,
         node_map: &HashMap<NodeId, &nebula_workflow::NodeDefinition>,
-        graph: &DependencyGraph,
         outputs: &Arc<DashMap<NodeId, serde_json::Value>>,
         semaphore: &Arc<Semaphore>,
         cancel_token: &CancellationToken,
@@ -245,67 +373,65 @@ impl WorkflowEngine {
         execution_id: ExecutionId,
         workflow_id: WorkflowId,
         input: &serde_json::Value,
-    ) -> JoinSet<(NodeId, Result<ActionResult<serde_json::Value>, EngineError>)> {
-        let mut join_set = JoinSet::new();
+        activated_edges: &HashMap<NodeId, HashSet<NodeId>>,
+        join_set: &mut JoinSet<(NodeId, Result<ActionResult<serde_json::Value>, EngineError>)>,
+    ) -> bool {
+        let Some(node_def) = node_map.get(&node_id) else {
+            return false;
+        };
+        let Ok(action_key) = self.resolve_action_key(node_def.action_id) else {
+            return false;
+        };
+        let action_key = action_key.to_owned();
+        let node_input = resolve_node_input(node_id, outputs, input, activated_edges);
 
-        for &node_id in group {
-            let Some(node_def) = node_map.get(&node_id) else {
-                continue;
-            };
-            let Ok(action_key) = self.resolve_action_key(node_def.action_id) else {
-                continue;
-            };
-            let action_key = action_key.to_owned();
-            let node_input = resolve_node_input(node_id, graph, outputs, input);
-
-            // Resolve node parameters (expressions, templates, references)
-            let action_input =
-                match self
-                    .resolver
-                    .resolve(node_id, &node_def.parameters, &node_input, outputs)
-                {
-                    Ok(Some(resolved_params)) => resolved_params,
-                    Ok(None) => node_input, // No parameters → use predecessor output
-                    Err(e) => {
-                        // Mark node as failed and skip spawning
-                        if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-                            let _ = ns.transition_to(NodeState::Ready);
-                            let _ = ns.transition_to(NodeState::Running);
-                            let _ = ns.transition_to(NodeState::Failed);
-                            ns.error_message = Some(e.to_string());
-                        }
-                        continue;
+        // Resolve node parameters (expressions, templates, references)
+        let action_input =
+            match self
+                .resolver
+                .resolve(node_id, &node_def.parameters, &node_input, outputs)
+            {
+                Ok(Some(resolved_params)) => resolved_params,
+                Ok(None) => node_input, // No parameters → use predecessor output
+                Err(e) => {
+                    // Mark node as failed and signal failure
+                    if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
+                        let _ = ns.transition_to(NodeState::Ready);
+                        let _ = ns.transition_to(NodeState::Running);
+                        let _ = ns.transition_to(NodeState::Failed);
+                        ns.error_message = Some(e.to_string());
                     }
-                };
-
-            // Mark node as running in execution state
-            if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-                let _ = ns.transition_to(NodeState::Ready);
-                let _ = ns.transition_to(NodeState::Running);
-            }
-
-            let runtime = self.runtime.clone();
-            let cancel = cancel_token.clone();
-            let sem = semaphore.clone();
-            let outputs_ref = outputs.clone();
-
-            join_set.spawn(
-                NodeTask {
-                    runtime,
-                    cancel,
-                    sem,
-                    outputs: outputs_ref,
-                    execution_id,
-                    node_id,
-                    workflow_id,
-                    action_key,
-                    input: action_input,
+                    return false;
                 }
-                .run(),
-            );
+            };
+
+        // Mark node as running in execution state
+        if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
+            let _ = ns.transition_to(NodeState::Ready);
+            let _ = ns.transition_to(NodeState::Running);
         }
 
-        join_set
+        let runtime = self.runtime.clone();
+        let cancel = cancel_token.clone();
+        let sem = semaphore.clone();
+        let outputs_ref = outputs.clone();
+
+        join_set.spawn(
+            NodeTask {
+                runtime,
+                cancel,
+                sem,
+                outputs: outputs_ref,
+                execution_id,
+                node_id,
+                workflow_id,
+                action_key,
+                input: action_input,
+            }
+            .run(),
+        );
+
+        true
     }
 
     /// Emit the final execution event and record metrics.
@@ -397,33 +523,230 @@ impl NodeTask {
     }
 }
 
-/// Collect results from a level's JoinSet and update execution state.
+// ── Edge evaluation ─────────────────────────────────────────────────────────
+
+/// Process outgoing edges from a completed/failed/skipped node.
 ///
-/// Returns `Some((node_id, error))` if a node failed, `None` if all succeeded.
-async fn collect_level_results(
-    join_set: &mut JoinSet<(NodeId, Result<ActionResult<serde_json::Value>, EngineError>)>,
+/// For each outgoing edge, evaluates whether it should activate, updates
+/// the tracking maps, and checks if any target node becomes ready or should
+/// be skipped.
+///
+/// Returns `true` if the error was handled (at least one OnError edge activated).
+#[allow(clippy::too_many_arguments)]
+fn process_outgoing_edges(
+    source_id: NodeId,
+    result: Option<&ActionResult<serde_json::Value>>,
+    error_msg: Option<&str>,
+    graph: &DependencyGraph,
+    activated_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
+    resolved_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
+    required_count: &HashMap<NodeId, usize>,
+    ready_queue: &mut VecDeque<NodeId>,
     exec_state: &mut ExecutionState,
-    cancel_token: &CancellationToken,
-) -> Option<(NodeId, String)> {
-    while let Some(join_result) = join_set.join_next().await {
-        match join_result {
-            Ok((node_id, Ok(_action_result))) => {
-                mark_node_completed(exec_state, node_id);
+) -> bool {
+    let outgoing = graph.outgoing_connections(source_id);
+    let node_failed = error_msg.is_some();
+    let mut error_handled = false;
+
+    for conn in &outgoing {
+        let target = conn.to_node;
+        let activate = evaluate_edge(conn, result, node_failed);
+
+        resolved_edges.entry(target).or_default().insert(source_id);
+        if activate {
+            activated_edges.entry(target).or_default().insert(source_id);
+            if node_failed {
+                error_handled = true;
             }
-            Ok((node_id, Err(ref err))) => {
-                mark_node_failed(exec_state, node_id, err);
-                cancel_token.cancel();
-                return Some((node_id, err.to_string()));
-            }
-            Err(join_err) => {
-                tracing::error!(?join_err, "node task panicked");
-                cancel_token.cancel();
-                return Some((NodeId::v4(), join_err.to_string()));
+        }
+
+        // Check if target is now fully resolved
+        let resolved = resolved_edges.get(&target).map_or(0, |s| s.len());
+        let required = required_count.get(&target).copied().unwrap_or(0);
+        let activated = activated_edges.get(&target).map_or(0, |s| s.len());
+
+        if resolved == required {
+            if activated > 0 {
+                ready_queue.push_back(target);
+            } else {
+                propagate_skip(
+                    target,
+                    graph,
+                    exec_state,
+                    resolved_edges,
+                    activated_edges,
+                    required_count,
+                    ready_queue,
+                );
             }
         }
     }
-    None
+
+    error_handled
 }
+
+/// Evaluate whether an edge should activate given the source node's outcome.
+///
+/// Rules:
+/// - `Skip` results don't activate any edges
+/// - Failed nodes only activate `OnError` edges
+/// - `Branch` results only activate edges whose `branch_key` matches `selected`
+/// - `Route` results only activate edges whose `port_key` matches `port`
+/// - `MultiOutput` results only activate edges whose `port_key` is in `outputs`
+/// - `Always` activates on success (not on error, not on skip)
+/// - `OnResult` activates when the matcher matches
+/// - `Expression` activates when the expression evaluates to truthy
+/// - `OnError` activates only when the node failed
+fn evaluate_edge(
+    conn: &Connection,
+    result: Option<&ActionResult<serde_json::Value>>,
+    node_failed: bool,
+) -> bool {
+    // Skip results don't activate any edges
+    if let Some(ActionResult::Skip { .. }) = result {
+        return false;
+    }
+
+    // For failed nodes, only OnError edges can activate
+    if node_failed {
+        return match &conn.condition {
+            EdgeCondition::OnError { matcher } => match_error_condition(matcher),
+            _ => false,
+        };
+    }
+
+    // Check branch_key for Branch results
+    if let Some(ActionResult::Branch { selected, .. }) = result
+        && let Some(ref key) = conn.branch_key
+        && key != selected
+    {
+        return false;
+    }
+
+    // Check port_key for Route results
+    if let Some(ActionResult::Route { port, .. }) = result
+        && let Some(ref key) = conn.port_key
+        && key != port
+    {
+        return false;
+    }
+
+    // Check port_key for MultiOutput results
+    if let Some(ActionResult::MultiOutput {
+        outputs: port_outputs,
+        ..
+    }) = result
+        && let Some(ref key) = conn.port_key
+        && !port_outputs.contains_key(key)
+    {
+        return false;
+    }
+
+    // Evaluate the edge condition
+    match &conn.condition {
+        EdgeCondition::Always => true,
+        EdgeCondition::OnError { .. } => false, // Not failed, so OnError doesn't activate
+        EdgeCondition::OnResult { matcher } => match_result_condition(matcher, result),
+        EdgeCondition::Expression { expr } => evaluate_expression_condition(expr, result),
+    }
+}
+
+/// Check if an OnError condition matches (for failed nodes).
+fn match_error_condition(matcher: &ErrorMatcher) -> bool {
+    match matcher {
+        ErrorMatcher::Any => true,
+        // For Code and Expression matchers, default to matching for now.
+        // Full implementation would check error codes or evaluate expressions.
+        ErrorMatcher::Code { .. } | ErrorMatcher::Expression { .. } => true,
+    }
+}
+
+/// Check if an OnResult condition matches the node's output.
+fn match_result_condition(
+    matcher: &ResultMatcher,
+    result: Option<&ActionResult<serde_json::Value>>,
+) -> bool {
+    match matcher {
+        ResultMatcher::Success => true,
+        ResultMatcher::FieldEquals { field, value } => {
+            let output = result.and_then(extract_primary_output);
+            output
+                .as_ref()
+                .and_then(|v| v.get(field))
+                .is_some_and(|v| v == value)
+        }
+        // Expression-based result matching; default to true for now.
+        ResultMatcher::Expression { .. } => true,
+    }
+}
+
+/// Evaluate an Expression edge condition against the node's output.
+fn evaluate_expression_condition(
+    expr: &str,
+    result: Option<&ActionResult<serde_json::Value>>,
+) -> bool {
+    // Build a minimal expression engine for evaluation.
+    // In production, this should be shared; here we use a lightweight approach.
+    let engine = ExpressionEngine::new();
+    let mut ctx = EvaluationContext::new();
+    if let Some(output) = result.and_then(extract_primary_output) {
+        ctx.set_input(output);
+    }
+    match engine.evaluate(expr, &ctx) {
+        Ok(value) => value.as_bool().unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
+/// Recursively mark a node and its unreachable successors as skipped.
+fn propagate_skip(
+    node_id: NodeId,
+    graph: &DependencyGraph,
+    exec_state: &mut ExecutionState,
+    resolved_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
+    activated_edges: &HashMap<NodeId, HashSet<NodeId>>,
+    required_count: &HashMap<NodeId, usize>,
+    ready_queue: &mut VecDeque<NodeId>,
+) {
+    // Guard against double-processing
+    if let Some(ns) = exec_state.node_states.get(&node_id)
+        && ns.state.is_terminal()
+    {
+        return;
+    }
+
+    if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
+        let _ = ns.transition_to(NodeState::Skipped);
+    }
+
+    // Mark all outgoing edges as resolved (dead) for their targets
+    for conn in graph.outgoing_connections(node_id) {
+        let target = conn.to_node;
+        resolved_edges.entry(target).or_default().insert(node_id);
+
+        let resolved = resolved_edges.get(&target).map_or(0, |s| s.len());
+        let required = required_count.get(&target).copied().unwrap_or(0);
+        let activated = activated_edges.get(&target).map_or(0, |s| s.len());
+
+        if resolved == required {
+            if activated > 0 {
+                ready_queue.push_back(target);
+            } else {
+                propagate_skip(
+                    target,
+                    graph,
+                    exec_state,
+                    resolved_edges,
+                    activated_edges,
+                    required_count,
+                    ready_queue,
+                );
+            }
+        }
+    }
+}
+
+// ── Node state helpers ──────────────────────────────────────────────────────
 
 /// Mark a node as completed in the execution state.
 fn mark_node_completed(exec_state: &mut ExecutionState, node_id: NodeId) {
@@ -454,19 +777,25 @@ fn determine_final_status(
     }
 }
 
-/// Resolve the input for a node from its predecessors' outputs.
+// ── Input resolution ────────────────────────────────────────────────────────
+
+/// Resolve the input for a node from its activated predecessors' outputs.
 ///
-/// - Entry nodes (no predecessors): receive the workflow-level input.
-/// - Single predecessor: receive that node's output directly.
-/// - Multiple predecessors: receive a JSON object with each predecessor's
-///   output keyed by its node ID.
+/// - Entry nodes (no activated predecessors): receive the workflow-level input.
+/// - Single activated predecessor: receive that node's output directly.
+/// - Multiple activated predecessors: receive a JSON object with each
+///   predecessor's output keyed by its node ID.
 fn resolve_node_input(
     node_id: NodeId,
-    graph: &DependencyGraph,
     outputs: &DashMap<NodeId, serde_json::Value>,
     workflow_input: &serde_json::Value,
+    activated_edges: &HashMap<NodeId, HashSet<NodeId>>,
 ) -> serde_json::Value {
-    let predecessors = graph.predecessors(node_id);
+    let predecessors: Vec<NodeId> = activated_edges
+        .get(&node_id)
+        .map(|set| set.iter().copied().collect())
+        .unwrap_or_default();
+
     if predecessors.is_empty() {
         return workflow_input.clone();
     }
@@ -846,5 +1175,346 @@ mod tests {
         assert!(result.is_failure());
         assert!(metrics.counter("executions_started_total").get() > 0);
         assert!(metrics.counter("executions_failed_total").get() > 0);
+    }
+
+    // -- Frontier-specific test handlers --
+
+    struct SkipHandler {
+        meta: ActionMetadata,
+    }
+
+    #[async_trait::async_trait]
+    impl InternalHandler for SkipHandler {
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: ActionContext,
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            Ok(ActionResult::skip("skipped by test"))
+        }
+        fn metadata(&self) -> &ActionMetadata {
+            &self.meta
+        }
+        fn action_type(&self) -> ActionType {
+            ActionType::Process
+        }
+        fn parameters(&self) -> Option<&ParameterCollection> {
+            None
+        }
+    }
+
+    struct BranchHandler {
+        meta: ActionMetadata,
+        selected: String,
+    }
+
+    #[async_trait::async_trait]
+    impl InternalHandler for BranchHandler {
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            _ctx: ActionContext,
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            Ok(ActionResult::Branch {
+                selected: self.selected.clone(),
+                output: nebula_action::output::ActionOutput::Value(input),
+                alternatives: std::collections::HashMap::new(),
+            })
+        }
+        fn metadata(&self) -> &ActionMetadata {
+            &self.meta
+        }
+        fn action_type(&self) -> ActionType {
+            ActionType::Process
+        }
+        fn parameters(&self) -> Option<&ParameterCollection> {
+            None
+        }
+    }
+
+    // -- Frontier-specific tests --
+
+    /// A → Branch(selects "true") → B (branch_key="true") / C (branch_key="false") → D
+    /// Only B should execute; C should be skipped; D should still run (via B).
+    #[tokio::test]
+    async fn branch_workflow_only_selected_path_executes() {
+        let echo_id = ActionId::v4();
+        let branch_id = ActionId::v4();
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new("echo", "Echo", "echoes input")
+                .with_isolation(IsolationLevel::None),
+        }));
+        registry.register(Arc::new(BranchHandler {
+            meta: ActionMetadata::new("branch", "Branch", "branches")
+                .with_isolation(IsolationLevel::None),
+            selected: "true".into(),
+        }));
+
+        let (mut engine, _, _) = make_engine(registry);
+        engine.map_action(echo_id, "echo");
+        engine.map_action(branch_id, "branch");
+
+        let a = NodeId::v4();
+        let b = NodeId::v4();
+        let c = NodeId::v4();
+        let d = NodeId::v4();
+        let wf = make_workflow(
+            vec![
+                NodeDefinition::new(a, "A", branch_id),
+                NodeDefinition::new(b, "B", echo_id),
+                NodeDefinition::new(c, "C", echo_id),
+                NodeDefinition::new(d, "D", echo_id),
+            ],
+            vec![
+                Connection::new(a, b).with_branch_key("true"),
+                Connection::new(a, c).with_branch_key("false"),
+                Connection::new(b, d),
+                Connection::new(c, d),
+            ],
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("input"), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        assert!(result.is_success());
+        // A executed (branch node)
+        assert!(result.node_output(a).is_some());
+        // B executed (true branch)
+        assert!(result.node_output(b).is_some());
+        // C was NOT executed (false branch, skipped)
+        assert!(result.node_output(c).is_none());
+        // D executed (received input from B only)
+        assert!(result.node_output(d).is_some());
+    }
+
+    /// A → B(skip) → C. Verify C is skipped and doesn't execute.
+    #[tokio::test]
+    async fn skip_propagation() {
+        let echo_id = ActionId::v4();
+        let skip_id = ActionId::v4();
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new("echo", "Echo", "echoes input")
+                .with_isolation(IsolationLevel::None),
+        }));
+        registry.register(Arc::new(SkipHandler {
+            meta: ActionMetadata::new("skip", "Skip", "always skips")
+                .with_isolation(IsolationLevel::None),
+        }));
+
+        let (mut engine, _, _) = make_engine(registry);
+        engine.map_action(echo_id, "echo");
+        engine.map_action(skip_id, "skip");
+
+        let a = NodeId::v4();
+        let b = NodeId::v4();
+        let c = NodeId::v4();
+        let wf = make_workflow(
+            vec![
+                NodeDefinition::new(a, "A", echo_id),
+                NodeDefinition::new(b, "B", skip_id),
+                NodeDefinition::new(c, "C", echo_id),
+            ],
+            vec![Connection::new(a, b), Connection::new(b, c)],
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("input"), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        // Execution succeeds overall (skip is not a failure)
+        assert!(result.is_success());
+        // A executed
+        assert!(result.node_output(a).is_some());
+        // B executed but produced Skip result (no output stored since skip has no output)
+        assert!(result.node_output(b).is_none());
+        // C was skipped (never executed)
+        assert!(result.node_output(c).is_none());
+    }
+
+    /// A → B(fails) --OnError--> C. Verify C receives error data and execution succeeds.
+    #[tokio::test]
+    async fn error_routing_with_handler() {
+        let echo_id = ActionId::v4();
+        let fail_id = ActionId::v4();
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new("echo", "Echo", "echoes input")
+                .with_isolation(IsolationLevel::None),
+        }));
+        registry.register(Arc::new(FailHandler {
+            meta: ActionMetadata::new("fail", "Fail", "always fails")
+                .with_isolation(IsolationLevel::None),
+        }));
+
+        let (mut engine, _, _) = make_engine(registry);
+        engine.map_action(echo_id, "echo");
+        engine.map_action(fail_id, "fail");
+
+        let a = NodeId::v4();
+        let b = NodeId::v4();
+        let c = NodeId::v4();
+        let wf = make_workflow(
+            vec![
+                NodeDefinition::new(a, "A", echo_id),
+                NodeDefinition::new(b, "B", fail_id),
+                NodeDefinition::new(c, "C", echo_id),
+            ],
+            vec![
+                Connection::new(a, b),
+                Connection::new(b, c).with_condition(EdgeCondition::OnError {
+                    matcher: ErrorMatcher::Any,
+                }),
+            ],
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("input"), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        // Execution succeeds because the error was handled
+        assert!(result.is_success());
+        // A executed
+        assert!(result.node_output(a).is_some());
+        // B failed but error data was stored
+        assert!(result.node_output(b).is_some());
+        // C executed with error data from B
+        let c_output = result.node_output(c).unwrap();
+        assert!(c_output.get("error").is_some());
+    }
+
+    /// A → B(fails) → C (Always). No OnError handler → fail-fast (same as today).
+    #[tokio::test]
+    async fn error_without_handler_fails_fast() {
+        let echo_id = ActionId::v4();
+        let fail_id = ActionId::v4();
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new("echo", "Echo", "echoes input")
+                .with_isolation(IsolationLevel::None),
+        }));
+        registry.register(Arc::new(FailHandler {
+            meta: ActionMetadata::new("fail", "Fail", "always fails")
+                .with_isolation(IsolationLevel::None),
+        }));
+
+        let (mut engine, _, _) = make_engine(registry);
+        engine.map_action(echo_id, "echo");
+        engine.map_action(fail_id, "fail");
+
+        let a = NodeId::v4();
+        let b = NodeId::v4();
+        let c = NodeId::v4();
+        let wf = make_workflow(
+            vec![
+                NodeDefinition::new(a, "A", echo_id),
+                NodeDefinition::new(b, "B", fail_id),
+                NodeDefinition::new(c, "C", echo_id),
+            ],
+            vec![Connection::new(a, b), Connection::new(b, c)],
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("input"), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        assert!(result.is_failure());
+        assert!(result.node_output(a).is_some());
+        // B failed, no error handler → fail-fast
+        assert!(result.node_output(c).is_none());
+    }
+
+    /// A → B with OnResult(Success) condition. B should run when A succeeds.
+    #[tokio::test]
+    async fn conditional_edge_on_result() {
+        let echo_id = ActionId::v4();
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new("echo", "Echo", "echoes input")
+                .with_isolation(IsolationLevel::None),
+        }));
+
+        let (mut engine, _, _) = make_engine(registry);
+        engine.map_action(echo_id, "echo");
+
+        let a = NodeId::v4();
+        let b = NodeId::v4();
+        let wf = make_workflow(
+            vec![
+                NodeDefinition::new(a, "A", echo_id),
+                NodeDefinition::new(b, "B", echo_id),
+            ],
+            vec![
+                Connection::new(a, b).with_condition(EdgeCondition::OnResult {
+                    matcher: ResultMatcher::Success,
+                }),
+            ],
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("hello"), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        assert!(result.is_success());
+        assert_eq!(result.node_output(a), Some(&serde_json::json!("hello")));
+        assert_eq!(result.node_output(b), Some(&serde_json::json!("hello")));
+    }
+
+    /// Diamond with mixed conditions:
+    /// A → B (Always), A → C (OnResult{Success}), B → D, C → D
+    /// All should execute when A succeeds.
+    #[tokio::test]
+    async fn diamond_with_mixed_conditions() {
+        let echo_id = ActionId::v4();
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register(Arc::new(EchoHandler {
+            meta: ActionMetadata::new("echo", "Echo", "echoes input")
+                .with_isolation(IsolationLevel::None),
+        }));
+
+        let (mut engine, _, _) = make_engine(registry);
+        engine.map_action(echo_id, "echo");
+
+        let a = NodeId::v4();
+        let b = NodeId::v4();
+        let c = NodeId::v4();
+        let d = NodeId::v4();
+        let wf = make_workflow(
+            vec![
+                NodeDefinition::new(a, "A", echo_id),
+                NodeDefinition::new(b, "B", echo_id),
+                NodeDefinition::new(c, "C", echo_id),
+                NodeDefinition::new(d, "D", echo_id),
+            ],
+            vec![
+                Connection::new(a, b), // Always
+                Connection::new(a, c).with_condition(EdgeCondition::OnResult {
+                    matcher: ResultMatcher::Success,
+                }),
+                Connection::new(b, d),
+                Connection::new(c, d),
+            ],
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("start"), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        assert!(result.is_success());
+        assert_eq!(result.node_outputs.len(), 4);
+        assert!(result.node_output(a).is_some());
+        assert!(result.node_output(b).is_some());
+        assert!(result.node_output(c).is_some());
+        // D should have merged input from B and C
+        let d_output = result.node_output(d).unwrap();
+        assert!(d_output.is_object());
     }
 }

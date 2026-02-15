@@ -56,6 +56,17 @@ pub enum EngineError {
         errors: String,
     },
 
+    /// Edge condition evaluation failed.
+    #[error("edge evaluation failed from {from_node} to {to_node}: {error}")]
+    EdgeEvaluationFailed {
+        /// Source node of the edge.
+        from_node: NodeId,
+        /// Target node of the edge.
+        to_node: NodeId,
+        /// The underlying error.
+        error: String,
+    },
+
     /// A budget limit was exceeded.
     #[error("budget exceeded: {0}")]
     BudgetExceeded(String),

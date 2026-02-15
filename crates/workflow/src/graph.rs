@@ -110,6 +110,30 @@ impl DependencyGraph {
         Ok(levels)
     }
 
+    /// Get all incoming connections (edges pointing TO this node).
+    #[must_use]
+    pub fn incoming_connections(&self, id: NodeId) -> Vec<&Connection> {
+        let Some(&idx) = self.index_map.get(&id) else {
+            return Vec::new();
+        };
+        self.graph
+            .edges_directed(idx, Direction::Incoming)
+            .map(|e| e.weight())
+            .collect()
+    }
+
+    /// Get all outgoing connections (edges leaving FROM this node).
+    #[must_use]
+    pub fn outgoing_connections(&self, id: NodeId) -> Vec<&Connection> {
+        let Some(&idx) = self.index_map.get(&id) else {
+            return Vec::new();
+        };
+        self.graph
+            .edges_directed(idx, Direction::Outgoing)
+            .map(|e| e.weight())
+            .collect()
+    }
+
     /// Nodes with no incoming edges (start points of the DAG).
     #[must_use]
     pub fn entry_nodes(&self) -> Vec<NodeId> {
