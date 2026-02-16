@@ -187,13 +187,25 @@ impl_numeric_widening! {
     i32 => f64,
 }
 
-// i64 -> f64 is lossy (no From impl), handled separately
+// i64 -> f64 is lossy for |n| > 2^53 (no From impl), handled with precision check.
+// The cast-back `f64 as i64` saturates for out-of-range values, so we guard
+// against that before the roundtrip comparison.
 impl AsValidatable<f64> for i64 {
     type Output<'a> = f64;
 
     #[inline]
     fn as_validatable(&self) -> Result<f64, ValidationError> {
-        Ok(*self as f64)
+        let converted = *self as f64;
+        // Guard: f64 values >= 2^63 would saturate to i64::MAX on cast-back,
+        // producing a false roundtrip match.
+        if converted >= 9_223_372_036_854_775_808.0_f64 || converted as i64 != *self {
+            return Err(ValidationError::new(
+                "precision_loss",
+                format!("Integer {self} cannot be represented exactly as f64"),
+            )
+            .with_param("value", self.to_string()));
+        }
+        Ok(converted)
     }
 }
 
@@ -368,6 +380,35 @@ mod tests {
         let owned: Cow<str> = Cow::Owned(String::from("world"));
         let output = owned.as_validatable().unwrap();
         assert_eq!(output, "world");
+    }
+
+    #[test]
+    fn test_i64_to_f64_precision_ok() {
+        // 2^53 is exactly representable
+        let n: i64 = 1 << 53;
+        let result: f64 = AsValidatable::<f64>::as_validatable(&n).unwrap();
+        assert_eq!(result, 9007199254740992.0);
+    }
+
+    #[test]
+    fn test_i64_to_f64_precision_loss() {
+        // 2^53 + 1 loses precision
+        let n: i64 = (1 << 53) + 1;
+        let err = AsValidatable::<f64>::as_validatable(&n).unwrap_err();
+        assert_eq!(err.code.as_ref(), "precision_loss");
+    }
+
+    #[test]
+    fn test_i64_max_precision_loss() {
+        let err = AsValidatable::<f64>::as_validatable(&i64::MAX).unwrap_err();
+        assert_eq!(err.code.as_ref(), "precision_loss");
+    }
+
+    #[test]
+    fn test_i64_to_f64_small_values_ok() {
+        for n in [-100i64, -1, 0, 1, 42, 100] {
+            assert!(AsValidatable::<f64>::as_validatable(&n).is_ok());
+        }
     }
 
     #[test]
