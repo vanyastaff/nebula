@@ -36,6 +36,7 @@ full = ["serde", "caching"]
 pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = "0.4"
+proptest = "1"
 
 # Benchmarking
 criterion = { workspace = true }
