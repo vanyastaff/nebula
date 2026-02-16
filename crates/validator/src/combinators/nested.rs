@@ -2,7 +2,7 @@
 //!
 //! This module provides validators for nested structs and complex field types.
 
-use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 use std::marker::PhantomData;
 
 // ============================================================================

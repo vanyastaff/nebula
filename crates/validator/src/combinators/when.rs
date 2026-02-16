@@ -1,6 +1,6 @@
 //! WHEN combinator - conditional validation
 
-use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError, ValidatorMetadata};
 use std::borrow::Cow;
 
 /// Conditionally applies a validator based on a predicate.
@@ -78,7 +78,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::traits::ValidateExt;
+    use crate::foundation::traits::ValidateExt;
 
     struct MinLength {
         min: usize,

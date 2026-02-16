@@ -1,6 +1,6 @@
 //! EACH combinator - validates each element of a collection
 
-use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 use std::borrow::Cow;
 
 // ============================================================================
@@ -16,7 +16,7 @@ use std::borrow::Cow;
 ///
 /// ```rust,ignore
 /// use nebula_validator::combinators::Each;
-/// use nebula_validator::core::Validate;
+/// use nebula_validator::foundation::Validate;
 ///
 /// let validator = Each::new(MinLength { min: 3 });
 ///
@@ -170,7 +170,7 @@ pub fn each_fail_fast<V>(validator: V) -> Each<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Validate;
+    use crate::foundation::Validate;
 
     struct Positive;
 

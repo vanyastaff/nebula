@@ -12,8 +12,8 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-# Caching
-moka = { version = "0.12", features = ["sync"] }
+# Caching (optional)
+moka = { version = "0.12", features = ["sync"], optional = true }
 
 # Data formats
 base64 = { workspace = true }
@@ -28,6 +28,9 @@ serde_json = { workspace = true }
 [features]
 default = ["serde"]
 serde = []
+caching = ["dep:moka"]
+optimizer = []
+full = ["serde", "caching", "optimizer"]
 
 [dev-dependencies]
 # Testing

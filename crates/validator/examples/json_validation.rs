@@ -3,10 +3,10 @@
 //! Run: `cargo run -p nebula-validator --features serde --example json_validation`
 
 use nebula_validator::combinators::{json_field, json_field_optional, not, when, with_message};
-use nebula_validator::core::{Validate, ValidateExt};
-use nebula_validator::validators::logical::is_true;
-use nebula_validator::validators::numeric::{in_range, positive};
-use nebula_validator::validators::string::{contains, email, max_length, min_length};
+use nebula_validator::foundation::{Validate, ValidateExt};
+use nebula_validator::validators::is_true;
+use nebula_validator::validators::{contains, email, max_length, min_length};
+use nebula_validator::validators::{in_range, positive};
 use serde_json::{Value, json};
 
 fn main() {
@@ -225,7 +225,7 @@ fn error_reporting() {
     }
 }
 
-fn status(result: &Result<(), nebula_validator::core::ValidationError>) -> &'static str {
+fn status(result: &Result<(), nebula_validator::foundation::ValidationError>) -> &'static str {
     match result {
         Ok(()) => "PASS",
         Err(_) => "FAIL",

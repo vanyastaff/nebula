@@ -1,6 +1,6 @@
 //! LAZY combinator - deferred validator initialization
 
-use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError, ValidatorMetadata};
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
@@ -19,7 +19,7 @@ use std::sync::OnceLock;
 ///
 /// ```rust,ignore
 /// use nebula_validator::combinators::Lazy;
-/// use nebula_validator::core::Validate;
+/// use nebula_validator::foundation::Validate;
 ///
 /// // Validate is created only when first used
 /// let validator = Lazy::new(|| {
@@ -106,7 +106,7 @@ where
             None => ValidatorMetadata {
                 name: "Lazy(uninitialized)".into(),
                 description: Some("Lazy validator not yet initialized".into()),
-                complexity: crate::core::ValidationComplexity::Constant,
+                complexity: crate::foundation::ValidationComplexity::Constant,
                 cacheable: false,
                 estimated_time: None,
                 tags: vec!["combinator".into(), "lazy".into()],

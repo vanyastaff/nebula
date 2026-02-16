@@ -1,6 +1,6 @@
 //! NOT combinator - logical negation of validators
 
-use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError, ValidatorMetadata};
 use std::borrow::Cow;
 
 /// Inverts a validator with logical NOT.
@@ -67,7 +67,7 @@ pub fn not<V>(validator: V) -> Not<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::traits::ValidateExt;
+    use crate::foundation::traits::ValidateExt;
 
     struct Contains {
         substring: &'static str,

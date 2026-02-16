@@ -1,6 +1,6 @@
 //! UNLESS combinator - inverse conditional validation
 
-use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError, ValidatorMetadata};
 use std::borrow::Cow;
 
 // ============================================================================
@@ -15,7 +15,7 @@ use std::borrow::Cow;
 ///
 /// ```rust,ignore
 /// use nebula_validator::combinators::Unless;
-/// use nebula_validator::core::Validate;
+/// use nebula_validator::foundation::Validate;
 ///
 /// // Skip validation for admin users
 /// let validator = Unless::new(

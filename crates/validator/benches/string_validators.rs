@@ -7,8 +7,8 @@
 //! - Unicode handling
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use nebula_validator::core::Validate;
-use nebula_validator::validators::string::*;
+use nebula_validator::foundation::Validate;
+use nebula_validator::validators::*;
 use std::hint::black_box;
 
 // ============================================================================
@@ -336,7 +336,7 @@ fn bench_unicode_handling(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_composition(c: &mut Criterion) {
-    use nebula_validator::core::ValidateExt;
+    use nebula_validator::foundation::ValidateExt;
 
     let mut group = c.benchmark_group("composition");
 
@@ -376,7 +376,7 @@ fn bench_composition(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_early_termination(c: &mut Criterion) {
-    use nebula_validator::core::ValidateExt;
+    use nebula_validator::foundation::ValidateExt;
 
     let mut group = c.benchmark_group("early_termination");
 
@@ -410,7 +410,7 @@ fn bench_early_termination(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_username_validation(c: &mut Criterion) {
-    use nebula_validator::core::ValidateExt;
+    use nebula_validator::foundation::ValidateExt;
 
     let mut group = c.benchmark_group("username_validation");
 

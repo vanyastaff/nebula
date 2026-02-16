@@ -4,7 +4,7 @@
 //! Useful for expensive validators that may be called multiple times with
 //! the same input.
 
-use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;

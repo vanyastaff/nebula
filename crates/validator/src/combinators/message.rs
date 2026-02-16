@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError, ValidatorMetadata};
 
 // ============================================================================
 // WITH MESSAGE COMBINATOR
@@ -16,7 +16,7 @@ use crate::core::{Validate, ValidationError, ValidatorMetadata};
 ///
 /// ```rust,ignore
 /// use nebula_validator::combinators::WithMessage;
-/// use nebula_validator::core::Validate;
+/// use nebula_validator::foundation::Validate;
 ///
 /// let validator = WithMessage::new(
 ///     MinLength { min: 8 },
@@ -116,7 +116,7 @@ pub fn with_message<V>(validator: V, message: impl Into<String>) -> WithMessage<
 ///
 /// ```rust,ignore
 /// use nebula_validator::combinators::WithCode;
-/// use nebula_validator::core::Validate;
+/// use nebula_validator::foundation::Validate;
 ///
 /// let validator = WithCode::new(MinLength { min: 8 }, "ERR_PASSWORD_TOO_SHORT");
 ///

@@ -1,6 +1,6 @@
 //! AND combinator - logical conjunction of validators
 
-use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 use std::borrow::Cow;
 
 /// Combines two validators with logical AND.
@@ -142,7 +142,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::traits::ValidateExt;
+    use crate::foundation::traits::ValidateExt;
 
     struct MinLength {
         min: usize,

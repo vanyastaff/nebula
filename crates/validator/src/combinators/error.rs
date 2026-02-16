@@ -22,7 +22,7 @@
 //! let error = CombinatorError::field_failed("email", validation_err);
 //! ```
 
-use crate::core::ValidationError;
+use crate::foundation::ValidationError;
 use std::fmt;
 
 // ============================================================================

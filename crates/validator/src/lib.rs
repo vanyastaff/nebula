@@ -6,5 +6,8 @@
 #![allow(clippy::type_complexity)]
 
 pub mod combinators;
-pub mod core;
+pub mod foundation;
+#[cfg(feature = "serde")]
+pub mod json;
+pub mod prelude;
 pub mod validators;

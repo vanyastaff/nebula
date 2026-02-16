@@ -123,25 +123,25 @@ macro_rules! validator {
             )*
         }
 
-        impl $crate::core::Validate for $name {
+        impl $crate::foundation::Validate for $name {
             type Input = $input_ty;
 
             fn validate(&self, $input: &Self::Input) -> Result<(), ValidationError> {
                 if Self::check($input $(, self.$param)*) {
                     Ok(())
                 } else {
-                    Err($crate::core::ValidationError::new(
+                    Err($crate::foundation::ValidationError::new(
                         stringify!($name),
                         Self::error($(self.$error_param),*)
                     ))
                 }
             }
 
-            fn metadata(&self) -> $crate::core::ValidatorMetadata {
-                $crate::core::ValidatorMetadata {
+            fn metadata(&self) -> $crate::foundation::ValidatorMetadata {
+                $crate::foundation::ValidatorMetadata {
                     name: stringify!($name).to_string(),
                     description: validator!(@desc $($desc)?),
-                    complexity: $crate::core::ValidationComplexity::Linear,
+                    complexity: $crate::foundation::ValidationComplexity::Linear,
                     cacheable: true,
                     estimated_time: None,
                     tags: vec![],
@@ -190,7 +190,7 @@ macro_rules! validate {
         if $predicate(&value) {
             Ok(())
         } else {
-            Err($crate::core::ValidationError::new(
+            Err($crate::foundation::ValidationError::new(
                 "validation_failed",
                 $message,
             ))
@@ -203,7 +203,7 @@ macro_rules! validate {
         if $predicate(&value) {
             Ok(())
         } else {
-            Err($crate::core::ValidationError::new($code, $message))
+            Err($crate::foundation::ValidationError::new($code, $message))
         }
     }};
 }
@@ -249,22 +249,22 @@ macro_rules! validator_fn {
             }
         }
 
-        impl $crate::core::Validate for $name {
+        impl $crate::foundation::Validate for $name {
             type Input = $input_ty;
 
             fn validate(&self, $input: &Self::Input) -> Result<(), ValidationError> {
                 if $body {
                     Ok(())
                 } else {
-                    Err($crate::core::ValidationError::new(
+                    Err($crate::foundation::ValidationError::new(
                         stringify!($name),
                         $message,
                     ))
                 }
             }
 
-            fn metadata(&self) -> $crate::core::ValidatorMetadata {
-                $crate::core::ValidatorMetadata::simple(stringify!($name))
+            fn metadata(&self) -> $crate::foundation::ValidatorMetadata {
+                $crate::foundation::ValidatorMetadata::simple(stringify!($name))
             }
         }
     };
@@ -299,22 +299,22 @@ macro_rules! validator_const {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub struct $name;
 
-        impl $crate::core::Validate for $name {
+        impl $crate::foundation::Validate for $name {
             type Input = $input_ty;
 
             fn validate(&self, $input: &Self::Input) -> Result<(), ValidationError> {
                 if $body {
                     Ok(())
                 } else {
-                    Err($crate::core::ValidationError::new(
+                    Err($crate::foundation::ValidationError::new(
                         stringify!($name),
                         $message,
                     ))
                 }
             }
 
-            fn metadata(&self) -> $crate::core::ValidatorMetadata {
-                $crate::core::ValidatorMetadata::simple(stringify!($name))
+            fn metadata(&self) -> $crate::foundation::ValidatorMetadata {
+                $crate::foundation::ValidatorMetadata::simple(stringify!($name))
             }
         }
     };
@@ -381,7 +381,7 @@ macro_rules! any_of {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Validate, ValidationError};
+    use crate::foundation::{Validate, ValidationError};
 
     validator! {
         struct TestMinLength {

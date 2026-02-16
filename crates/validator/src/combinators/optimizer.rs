@@ -3,7 +3,7 @@
 //! This module provides optimization for validator chains to improve
 //! performance by reordering validators and applying fusion rules.
 
-use crate::core::{Validate, ValidationComplexity, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationComplexity, ValidatorMetadata};
 
 // ============================================================================
 // VALIDATOR CHAIN OPTIMIZER

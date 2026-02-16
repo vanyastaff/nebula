@@ -1,3 +1,4 @@
+#![cfg(feature = "optimizer")]
 //! Integration tests for the validator chain optimizer
 //!
 //! Tests optimization strategies, performance profiling, and chain analysis.
@@ -6,7 +7,9 @@ use nebula_validator::combinators::{
     OptimizationReport, OptimizationStrategy, ValidatorChainOptimizer, ValidatorOrdering,
     ValidatorStats,
 };
-use nebula_validator::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use nebula_validator::foundation::{
+    Validate, ValidationComplexity, ValidationError, ValidatorMetadata,
+};
 use std::time::Duration;
 
 // ============================================================================

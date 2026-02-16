@@ -1,6 +1,6 @@
 //! OR combinator - logical disjunction of validators
 
-use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 use std::borrow::Cow;
 
 /// Combines two validators with logical OR.
@@ -171,7 +171,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::traits::ValidateExt;
+    use crate::foundation::traits::ValidateExt;
 
     struct ExactLength {
         length: usize,

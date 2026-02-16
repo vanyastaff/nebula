@@ -4,7 +4,7 @@
 //! without requiring derive macros.
 
 use crate::combinators::error::CombinatorError;
-use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
 use std::borrow::Cow;
 use std::marker::PhantomData;
 

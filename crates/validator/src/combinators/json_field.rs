@@ -3,8 +3,8 @@
 //! Uses RFC 6901 JSON Pointer syntax for path traversal via
 //! `serde_json::Value::pointer()`.
 
-use crate::core::validatable::AsValidatable;
-use crate::core::{Validate, ValidationError};
+use crate::foundation::validatable::AsValidatable;
+use crate::foundation::{Validate, ValidationError};
 use std::borrow::{Borrow, Cow};
 use std::fmt;
 
@@ -109,8 +109,8 @@ impl<V: Clone> Clone for JsonField<V> {
 ///
 /// ```
 /// use nebula_validator::combinators::json_field;
-/// use nebula_validator::validators::numeric::min;
-/// use nebula_validator::core::Validate;
+/// use nebula_validator::validators::min;
+/// use nebula_validator::foundation::Validate;
 /// use serde_json::json;
 ///
 /// let v = json_field("/port", min::<i64>(1));
@@ -129,8 +129,8 @@ pub fn json_field<V>(pointer: impl Into<Cow<'static, str>>, validator: V) -> Jso
 ///
 /// ```
 /// use nebula_validator::combinators::json_field_optional;
-/// use nebula_validator::validators::string::min_length;
-/// use nebula_validator::core::Validate;
+/// use nebula_validator::validators::min_length;
+/// use nebula_validator::foundation::Validate;
 /// use serde_json::json;
 ///
 /// let v = json_field_optional("/email", min_length(5));
@@ -145,8 +145,8 @@ pub fn json_field_optional<V>(pointer: impl Into<Cow<'static, str>>, validator: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::ValidateExt;
-    use crate::validators::string::min_length;
+    use crate::foundation::ValidateExt;
+    use crate::validators::min_length;
     use serde_json::json;
 
     #[test]

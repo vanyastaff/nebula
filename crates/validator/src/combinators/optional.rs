@@ -1,6 +1,6 @@
 //! OPTIONAL combinator - validates Option types
 
-use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError, ValidatorMetadata};
 use std::borrow::Cow;
 
 /// Makes a validator work with Option types.
@@ -64,7 +64,7 @@ pub fn optional<V>(validator: V) -> Optional<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Validate;
+    use crate::foundation::Validate;
 
     struct MinLength {
         min: usize,
