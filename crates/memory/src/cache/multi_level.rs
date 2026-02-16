@@ -1086,7 +1086,7 @@ mod tests {
         let results = cache.get_or_compute_batch(keys, |k| Ok(k.len()));
 
         assert_eq!(results.len(), 3);
-        assert!(results.iter().all(|r| r.is_ok()));
+        assert!(results.iter().all(std::result::Result::is_ok));
 
         // Test batch get
         let batch_keys = vec!["key1".to_string(), "key4".to_string()];
@@ -1103,7 +1103,7 @@ mod tests {
 
         // Add some data and access patterns
         for i in 0..10 {
-            let key = format!("key{}", i);
+            let key = format!("key{i}");
             cache.get_or_compute(key.clone(), || Ok(i)).unwrap();
 
             // Access some keys multiple times

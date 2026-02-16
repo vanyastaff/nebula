@@ -33,7 +33,7 @@ async fn test_store_batch() {
     // Prepare batch of credentials
     let mut batch = Vec::new();
     for i in 0..10 {
-        let id = CredentialId::new(&format!("batch-cred-{}", i)).unwrap();
+        let id = CredentialId::new(format!("batch-cred-{}", i)).unwrap();
         let data = create_test_data(&format!("secret-{}", i));
         let metadata = CredentialMetadata::new();
         batch.push((id, data, metadata));
@@ -50,7 +50,7 @@ async fn test_store_batch() {
 
     // Verify credentials are actually stored
     for i in 0..10 {
-        let id = CredentialId::new(&format!("batch-cred-{}", i)).unwrap();
+        let id = CredentialId::new(format!("batch-cred-{}", i)).unwrap();
         let retrieved = manager.retrieve(&id, &context).await.unwrap();
         assert!(
             retrieved.is_some(),
@@ -71,7 +71,7 @@ async fn test_retrieve_batch() {
 
     // Store some credentials first
     for i in 0..5 {
-        let id = CredentialId::new(&format!("retrieve-batch-{}", i)).unwrap();
+        let id = CredentialId::new(format!("retrieve-batch-{}", i)).unwrap();
         let data = create_test_data(&format!("data-{}", i));
         let metadata = CredentialMetadata::new();
         manager.store(&id, data, metadata, &context).await.unwrap();
@@ -79,7 +79,7 @@ async fn test_retrieve_batch() {
 
     // Prepare batch request
     let ids: Vec<CredentialId> = (0..5)
-        .map(|i| CredentialId::new(&format!("retrieve-batch-{}", i)).unwrap())
+        .map(|i| CredentialId::new(format!("retrieve-batch-{}", i)).unwrap())
         .collect();
 
     // Retrieve batch
@@ -92,7 +92,7 @@ async fn test_retrieve_batch() {
         let option_data = result.as_ref().unwrap();
         assert!(option_data.is_some(), "Should have credential data");
         let (data, _metadata) = option_data.as_ref().unwrap();
-        assert!(data.ciphertext.len() > 0, "Should have encrypted data");
+        assert!(!data.ciphertext.is_empty(), "Should have encrypted data");
     }
 }
 
@@ -106,7 +106,7 @@ async fn test_delete_batch() {
 
     // Store some credentials first
     for i in 0..8 {
-        let id = CredentialId::new(&format!("delete-batch-{}", i)).unwrap();
+        let id = CredentialId::new(format!("delete-batch-{}", i)).unwrap();
         let data = create_test_data(&format!("data-{}", i));
         let metadata = CredentialMetadata::new();
         manager.store(&id, data, metadata, &context).await.unwrap();
@@ -114,7 +114,7 @@ async fn test_delete_batch() {
 
     // Prepare batch delete request
     let ids: Vec<CredentialId> = (0..8)
-        .map(|i| CredentialId::new(&format!("delete-batch-{}", i)).unwrap())
+        .map(|i| CredentialId::new(format!("delete-batch-{}", i)).unwrap())
         .collect();
 
     // Delete batch
@@ -128,7 +128,7 @@ async fn test_delete_batch() {
 
     // Verify credentials are actually deleted
     for i in 0..8 {
-        let id = CredentialId::new(&format!("delete-batch-{}", i)).unwrap();
+        let id = CredentialId::new(format!("delete-batch-{}", i)).unwrap();
         let retrieved = manager.retrieve(&id, &context).await.unwrap();
         assert!(retrieved.is_none(), "Credential {} should be deleted", i);
     }
@@ -147,7 +147,7 @@ async fn test_batch_performance() {
     // Prepare test data
     let mut batch = Vec::new();
     for i in 0..num_ops {
-        let id = CredentialId::new(&format!("perf-cred-{}", i)).unwrap();
+        let id = CredentialId::new(format!("perf-cred-{}", i)).unwrap();
         let data = create_test_data(&format!("secret-{}", i));
         let metadata = CredentialMetadata::new();
         batch.push((id, data, metadata));
@@ -165,7 +165,7 @@ async fn test_batch_performance() {
 
     // Clean up for batch test
     let ids: Vec<CredentialId> = (0..num_ops)
-        .map(|i| CredentialId::new(&format!("perf-cred-{}", i)).unwrap())
+        .map(|i| CredentialId::new(format!("perf-cred-{}", i)).unwrap())
         .collect();
     manager.delete_batch(&ids, &context).await.unwrap();
 
@@ -203,7 +203,7 @@ async fn test_batch_partial_failure() {
 
     // Store some credentials
     for i in 0..5 {
-        let id = CredentialId::new(&format!("partial-{}", i)).unwrap();
+        let id = CredentialId::new(format!("partial-{}", i)).unwrap();
         let data = create_test_data(&format!("data-{}", i));
         let metadata = CredentialMetadata::new();
         manager.store(&id, data, metadata, &context).await.unwrap();
@@ -211,7 +211,7 @@ async fn test_batch_partial_failure() {
 
     // Try to retrieve batch with mix of existing and non-existing IDs
     let ids: Vec<CredentialId> = (0..10)
-        .map(|i| CredentialId::new(&format!("partial-{}", i)).unwrap())
+        .map(|i| CredentialId::new(format!("partial-{}", i)).unwrap())
         .collect();
 
     let results = manager.retrieve_batch(&ids, &context).await.unwrap();
@@ -221,7 +221,7 @@ async fn test_batch_partial_failure() {
 
     // First 5 should succeed
     for i in 0..5 {
-        let id = CredentialId::new(&format!("partial-{}", i)).unwrap();
+        let id = CredentialId::new(format!("partial-{}", i)).unwrap();
         let result = results
             .get(&id)
             .expect("Should have result for existing ID");
@@ -231,7 +231,7 @@ async fn test_batch_partial_failure() {
     // Last 5 should return None (not found, but not an error in retrieve_batch)
     // Note: retrieve_batch returns Ok(None) for not-found credentials
     for i in 5..10 {
-        let id = CredentialId::new(&format!("partial-{}", i)).unwrap();
+        let id = CredentialId::new(format!("partial-{}", i)).unwrap();
         let result = results
             .get(&id)
             .expect("Should have result for non-existing ID");

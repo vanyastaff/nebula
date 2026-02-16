@@ -426,7 +426,7 @@ mod tests {
 
         let maybe = MaybeExpression::value(true);
         let result = maybe.resolve_as_bool(&engine, &context).unwrap();
-        assert_eq!(result, true);
+        assert!(result);
     }
 
     #[test]
@@ -436,7 +436,7 @@ mod tests {
 
         let maybe = MaybeExpression::expression("{{ 5 > 3 }}");
         let result = maybe.resolve_as_bool(&engine, &context).unwrap();
-        assert_eq!(result, true);
+        assert!(result);
     }
 
     #[test]

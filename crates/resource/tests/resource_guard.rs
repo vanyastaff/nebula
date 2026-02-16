@@ -48,7 +48,7 @@ fn guard_into_inner_prevents_callback() {
 #[test]
 fn guard_deref_provides_access_to_inner() {
     let guard = Guard::new("hello".to_string(), |_| {});
-    let inner: &String = &*guard;
+    let inner: &String = &guard;
     assert_eq!(inner, "hello");
 }
 

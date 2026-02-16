@@ -381,7 +381,7 @@ mod tests {
         fn log(&self, event: &MemoryEvent) {
             // In a real test, we would store the event in self.logs
             // Here we just print it for demonstration purposes
-            println!("Logged event: {:?}", event);
+            println!("Logged event: {event:?}");
         }
     }
 

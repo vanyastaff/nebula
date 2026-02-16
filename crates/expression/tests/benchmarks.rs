@@ -48,7 +48,7 @@ fn run_all_benchmarks() {
 }
 
 fn template_benchmarks() {
-    println!("\n{} TEMPLATE BENCHMARKS", "📝");
+    println!("\n📝 TEMPLATE BENCHMARKS");
 
     // Parse simple
     benchmark("template/parse/simple", || {
@@ -92,7 +92,7 @@ fn template_benchmarks() {
 }
 
 fn engine_benchmarks() {
-    println!("\n{} ENGINE BENCHMARKS", "⚙️");
+    println!("\n⚙️ ENGINE BENCHMARKS");
 
     let engine = ExpressionEngine::new();
     let context = EvaluationContext::new();
@@ -135,7 +135,7 @@ fn engine_benchmarks() {
 }
 
 fn context_benchmarks() {
-    println!("\n{} CONTEXT BENCHMARKS", "📦");
+    println!("\n📦 CONTEXT BENCHMARKS");
 
     // Create context with many variables
     let mut context = EvaluationContext::new();
@@ -153,7 +153,7 @@ fn context_benchmarks() {
 }
 
 fn concurrent_benchmarks() {
-    println!("\n{} CONCURRENT BENCHMARKS", "🔀");
+    println!("\n🔀 CONCURRENT BENCHMARKS");
 
     use std::sync::Arc;
     use std::thread;
@@ -226,7 +226,7 @@ fn concurrent_benchmarks() {
 }
 
 fn builtin_benchmarks() {
-    println!("\n{} BUILTIN BENCHMARKS", "🔧");
+    println!("\n🔧 BUILTIN BENCHMARKS");
 
     let engine = ExpressionEngine::new();
     let context = EvaluationContext::new();

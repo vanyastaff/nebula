@@ -289,7 +289,7 @@ mod tests {
             let ptr = allocator.allocate(old_layout).unwrap();
 
             // Write some data
-            *(ptr.as_ptr() as *mut u32) = 0x12345678;
+            *ptr.as_ptr().cast::<u32>() = 0x12345678;
 
             let new_ptr = allocator
                 .reallocate(ptr.cast(), old_layout, new_layout)
@@ -356,7 +356,7 @@ mod tests {
     fn test_max_allocation_size() {
         let max_size = SystemAllocator::max_allocation_size();
         assert!(max_size > 0);
-        assert!(max_size <= isize::MAX as usize);
+        assert!(isize::try_from(max_size).is_ok());
     }
 
     #[test]

@@ -382,7 +382,7 @@ mod manager_scope_tests {
 
         let ctx_b = Context::new(Scope::tenant("B"), "wf1", "ex1");
         let result = mgr.acquire("db", &ctx_b).await;
-        let err = result.err().expect("cross-tenant acquire should be denied");
+        let err = result.expect_err("cross-tenant acquire should be denied");
         assert!(
             err.to_string().contains("Scope mismatch"),
             "error should mention scope mismatch, got: {err}"
@@ -424,8 +424,7 @@ mod manager_scope_tests {
         let err = mgr
             .acquire("cache", &ctx_wf2)
             .await
-            .err()
-            .expect("cross-workflow acquire should be denied");
+            .expect_err("cross-workflow acquire should be denied");
         assert!(
             err.to_string().contains("Scope mismatch"),
             "error should mention scope mismatch, got: {err}"
@@ -479,8 +478,7 @@ mod manager_scope_tests {
         let err = mgr
             .acquire("exec-db", &ctx_global)
             .await
-            .err()
-            .expect("execution-scoped resource should deny global context");
+            .expect_err("execution-scoped resource should deny global context");
         assert!(
             err.to_string().contains("Scope mismatch"),
             "error should mention scope mismatch, got: {err}"

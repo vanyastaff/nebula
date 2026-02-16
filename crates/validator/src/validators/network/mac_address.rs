@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn test_output_unit() {
         let validator = MacAddress::new();
-        let result = validator.validate("01:23:45:67:89:AB").unwrap();
-        assert_eq!(result, ());
+        validator.validate("01:23:45:67:89:AB").unwrap();
+        assert_eq!((), ());
     }
 }

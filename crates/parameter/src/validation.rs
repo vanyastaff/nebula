@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn with_message_works_on_all_variants() {
-        let rules = vec![
+        let rules = [
             ValidationRule::min_length(1).with_message("a"),
             ValidationRule::max_length(10).with_message("b"),
             ValidationRule::pattern(".*").with_message("c"),

@@ -191,7 +191,7 @@ async fn test_lru_eviction() {
 
     // Store 3 credentials to fill cache
     for i in 1..=3 {
-        let id = CredentialId::new(&format!("cred-{}", i)).unwrap();
+        let id = CredentialId::new(format!("cred-{}", i)).unwrap();
         let data = create_test_data(&format!("pass-{}", i));
         let metadata = CredentialMetadata::new();
         manager.store(&id, data, metadata, &context).await.unwrap();
@@ -259,7 +259,7 @@ async fn test_cache_stats() {
     // Verify hit rate calculation
     let hit_rate = stats_after_hit.hit_rate();
     assert!(
-        hit_rate >= 0.0 && hit_rate <= 1.0,
+        (0.0..=1.0).contains(&hit_rate),
         "Hit rate should be between 0 and 1"
     );
     assert!(hit_rate > 0.0, "Hit rate should be >0 after cache hit");

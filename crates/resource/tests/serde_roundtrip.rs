@@ -27,17 +27,17 @@ fn arb_lifecycle() -> impl Strategy<Value = Lifecycle> {
 fn arb_scope() -> impl Strategy<Value = Scope> {
     prop_oneof![
         Just(Scope::Global),
-        "[a-z0-9]{1,10}".prop_map(|s| Scope::tenant(s)),
-        "[a-z0-9]{1,10}".prop_map(|s| Scope::workflow(s)),
+        "[a-z0-9]{1,10}".prop_map(Scope::tenant),
+        "[a-z0-9]{1,10}".prop_map(Scope::workflow),
         ("[a-z0-9]{1,10}", "[a-z0-9]{1,10}").prop_map(|(w, t)| Scope::workflow_in_tenant(w, t)),
-        "[a-z0-9]{1,10}".prop_map(|s| Scope::execution(s)),
+        "[a-z0-9]{1,10}".prop_map(Scope::execution),
         (
             "[a-z0-9]{1,10}",
             "[a-z0-9]{1,10}",
             proptest::option::of("[a-z0-9]{1,10}")
         )
             .prop_map(|(e, w, t)| Scope::execution_in_workflow(e, w, t)),
-        "[a-z0-9]{1,10}".prop_map(|s| Scope::action(s)),
+        "[a-z0-9]{1,10}".prop_map(Scope::action),
         (
             "[a-z0-9]{1,10}",
             "[a-z0-9]{1,10}",

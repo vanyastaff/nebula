@@ -528,6 +528,20 @@ impl std::fmt::Debug for Config {
     }
 }
 
+// Cleanup on drop
+impl Drop for Config {
+    fn drop(&mut self) {
+        // Cancel all background tasks (auto-reload, etc.)
+        self.cancel_token.cancel();
+
+        if let Some(watcher) = &self.watcher
+            && watcher.is_watching()
+        {
+            nebula_log::debug!("Config dropped while still watching");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -738,19 +752,5 @@ mod tests {
         assert!(debug.contains("watching"));
         assert!(debug.contains("has_validator"));
         assert!(debug.contains("has_watcher"));
-    }
-}
-
-// Cleanup on drop
-impl Drop for Config {
-    fn drop(&mut self) {
-        // Cancel all background tasks (auto-reload, etc.)
-        self.cancel_token.cancel();
-
-        if let Some(watcher) = &self.watcher
-            && watcher.is_watching()
-        {
-            nebula_log::debug!("Config dropped while still watching");
-        }
     }
 }

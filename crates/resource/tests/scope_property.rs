@@ -51,11 +51,11 @@ fn arb_scope() -> impl Strategy<Value = Scope> {
         // Global
         Just(Scope::Global),
         // Tenant
-        arb_tenant_id().prop_map(|t| Scope::tenant(t)),
+        arb_tenant_id().prop_map(Scope::tenant),
         // Workflow with tenant parent
         (arb_workflow_id(), arb_tenant_id()).prop_map(|(w, t)| Scope::workflow_in_tenant(w, t)),
         // Workflow without tenant parent
-        arb_workflow_id().prop_map(|w| Scope::workflow(w)),
+        arb_workflow_id().prop_map(Scope::workflow),
         // Execution with full chain
         (arb_execution_id(), arb_workflow_id(), arb_tenant_id())
             .prop_map(|(e, w, t)| { Scope::execution_in_workflow(e, w, Some(t)) }),
@@ -71,7 +71,7 @@ fn arb_scope() -> impl Strategy<Value = Scope> {
         )
             .prop_map(|(a, e, w, t)| { Scope::action_in_execution(a, e, Some(w), Some(t)) }),
         // Action without parents
-        arb_action_id().prop_map(|a| Scope::action(a)),
+        arb_action_id().prop_map(Scope::action),
     ]
 }
 

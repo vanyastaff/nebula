@@ -894,7 +894,7 @@ mod tests {
 
         // Add some keys with different access patterns
         for i in 0..10 {
-            let key = format!("key{}", i);
+            let key = format!("key{i}");
             policy.record_insertion(&key, &entry, None);
 
             // Create different access patterns
