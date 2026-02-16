@@ -84,7 +84,8 @@ impl ResourceProvider for Resources {
                 })?
             }
             () = self.cancellation.cancelled() => {
-                return Err(ActionError::fatal("resource acquire cancelled"));
+                // Preserve cancellation semantics for upstream control flow/reporting.
+                return Err(ActionError::Cancelled);
             }
         };
 
