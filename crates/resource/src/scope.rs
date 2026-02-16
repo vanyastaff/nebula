@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// Each variant carries optional parent identifiers so that `contains()`
 /// can verify the parent chain instead of unconditionally returning true.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Default)]
-pub enum ResourceScope {
+pub enum Scope {
     /// Global scope - shared across all workflows and tenants
     #[default]
     Global,
@@ -57,7 +57,7 @@ pub enum ResourceScope {
     },
 }
 
-impl ResourceScope {
+impl Scope {
     /// Create a tenant scope
     pub fn tenant<S: Into<String>>(tenant_id: S) -> Self {
         Self::Tenant {
@@ -151,13 +151,13 @@ impl ResourceScope {
 
     /// Check if this scope is broader than another scope
     #[must_use]
-    pub fn is_broader_than(&self, other: &ResourceScope) -> bool {
+    pub fn is_broader_than(&self, other: &Scope) -> bool {
         self.hierarchy_level() < other.hierarchy_level()
     }
 
     /// Check if this scope is narrower than another scope
     #[must_use]
-    pub fn is_narrower_than(&self, other: &ResourceScope) -> bool {
+    pub fn is_narrower_than(&self, other: &Scope) -> bool {
         self.hierarchy_level() > other.hierarchy_level()
     }
 
@@ -167,7 +167,7 @@ impl ResourceScope {
     /// If the child's parent is unknown (`None`), containment is denied
     /// (deny-by-default for security).
     #[must_use]
-    pub fn contains(&self, other: &ResourceScope) -> bool {
+    pub fn contains(&self, other: &Scope) -> bool {
         match (self, other) {
             // Global contains everything
             (Self::Global, _) => true,
@@ -306,7 +306,7 @@ impl ResourceScope {
     }
 }
 
-impl fmt::Display for ResourceScope {
+impl fmt::Display for Scope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.scope_key())
     }
@@ -316,7 +316,7 @@ impl fmt::Display for ResourceScope {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Default)]
-pub enum ScopingStrategy {
+pub enum Strategy {
     /// Strict scoping - only exact scope matches
     Strict,
     /// Hierarchical scoping - allows broader scopes to be used
@@ -326,14 +326,10 @@ pub enum ScopingStrategy {
     Fallback,
 }
 
-impl ScopingStrategy {
+impl Strategy {
     /// Check if a resource scope is compatible with a requested scope using this strategy
     #[must_use]
-    pub fn is_compatible(
-        &self,
-        resource_scope: &ResourceScope,
-        requested_scope: &ResourceScope,
-    ) -> bool {
+    pub fn is_compatible(&self, resource_scope: &Scope, requested_scope: &Scope) -> bool {
         match self {
             Self::Strict => resource_scope == requested_scope,
             Self::Hierarchical => resource_scope.contains(requested_scope),
@@ -350,18 +346,18 @@ mod tests {
 
     #[test]
     fn test_scope_hierarchy_levels() {
-        assert_eq!(ResourceScope::Global.hierarchy_level(), 0);
-        assert_eq!(ResourceScope::tenant("test").hierarchy_level(), 1);
-        assert_eq!(ResourceScope::workflow("wf").hierarchy_level(), 2);
-        assert_eq!(ResourceScope::execution("ex").hierarchy_level(), 3);
-        assert_eq!(ResourceScope::action("act").hierarchy_level(), 4);
+        assert_eq!(Scope::Global.hierarchy_level(), 0);
+        assert_eq!(Scope::tenant("test").hierarchy_level(), 1);
+        assert_eq!(Scope::workflow("wf").hierarchy_level(), 2);
+        assert_eq!(Scope::execution("ex").hierarchy_level(), 3);
+        assert_eq!(Scope::action("act").hierarchy_level(), 4);
     }
 
     #[test]
     fn test_scope_containment_global() {
-        let global = ResourceScope::Global;
-        let tenant = ResourceScope::tenant("tenant1");
-        let workflow = ResourceScope::workflow("wf1");
+        let global = Scope::Global;
+        let tenant = Scope::tenant("tenant1");
+        let workflow = Scope::workflow("wf1");
 
         assert!(global.contains(&tenant));
         assert!(global.contains(&workflow));
@@ -371,102 +367,108 @@ mod tests {
 
     #[test]
     fn test_tenant_isolation() {
-        let tenant_a = ResourceScope::tenant("A");
-        let tenant_b = ResourceScope::tenant("B");
+        let tenant_a = Scope::tenant("A");
+        let tenant_b = Scope::tenant("B");
 
         // Same tenant
-        assert!(tenant_a.contains(&ResourceScope::tenant("A")));
+        assert!(tenant_a.contains(&Scope::tenant("A")));
         // Different tenant
         assert!(!tenant_a.contains(&tenant_b));
 
         // Workflow with known parent tenant
-        let wf_in_a = ResourceScope::workflow_in_tenant("wf1", "A");
-        let wf_in_b = ResourceScope::workflow_in_tenant("wf1", "B");
+        let wf_in_a = Scope::workflow_in_tenant("wf1", "A");
+        let wf_in_b = Scope::workflow_in_tenant("wf1", "B");
         assert!(tenant_a.contains(&wf_in_a));
         assert!(!tenant_a.contains(&wf_in_b));
 
         // Workflow without parent info: deny by default
-        let wf_no_parent = ResourceScope::workflow("wf1");
+        let wf_no_parent = Scope::workflow("wf1");
         assert!(!tenant_a.contains(&wf_no_parent));
     }
 
     #[test]
     fn test_workflow_containment() {
-        let wf = ResourceScope::workflow("wf1");
+        let wf = Scope::workflow("wf1");
 
         // Execution with matching workflow parent
-        let exec_in_wf1 = ResourceScope::execution_in_workflow("ex1", "wf1", Some("A".to_string()));
+        let exec_in_wf1 = Scope::execution_in_workflow("ex1", "wf1", Some("A".to_string()));
         assert!(wf.contains(&exec_in_wf1));
 
         // Execution with different workflow parent
-        let exec_in_wf2 = ResourceScope::execution_in_workflow("ex1", "wf2", Some("A".to_string()));
+        let exec_in_wf2 = Scope::execution_in_workflow("ex1", "wf2", Some("A".to_string()));
         assert!(!wf.contains(&exec_in_wf2));
 
         // Execution without workflow info: deny
-        let exec_no_parent = ResourceScope::execution("ex1");
+        let exec_no_parent = Scope::execution("ex1");
         assert!(!wf.contains(&exec_no_parent));
     }
 
     #[test]
     fn test_execution_containment() {
-        let exec = ResourceScope::execution("ex1");
+        let exec = Scope::execution("ex1");
 
         // Action with matching execution parent
-        let action_in_ex1 = ResourceScope::action_in_execution("a1", "ex1", None, None);
+        let action_in_ex1 = Scope::action_in_execution("a1", "ex1", None, None);
         assert!(exec.contains(&action_in_ex1));
 
         // Action with different execution parent
-        let action_in_ex2 = ResourceScope::action_in_execution("a1", "ex2", None, None);
+        let action_in_ex2 = Scope::action_in_execution("a1", "ex2", None, None);
         assert!(!exec.contains(&action_in_ex2));
 
         // Action without execution info: deny
-        let action_no_parent = ResourceScope::action("a1");
+        let action_no_parent = Scope::action("a1");
         assert!(!exec.contains(&action_no_parent));
     }
 
     #[test]
     fn test_scope_keys() {
-        assert_eq!(ResourceScope::Global.scope_key(), "global");
-        assert_eq!(ResourceScope::tenant("t1").scope_key(), "tenant:t1");
-        assert_eq!(ResourceScope::workflow("w1").scope_key(), "workflow:w1");
-        assert_eq!(ResourceScope::execution("e1").scope_key(), "execution:e1");
-        assert_eq!(ResourceScope::action("a1").scope_key(), "action:a1");
+        assert_eq!(Scope::Global.scope_key(), "global");
+        assert_eq!(Scope::tenant("t1").scope_key(), "tenant:t1");
+        assert_eq!(Scope::workflow("w1").scope_key(), "workflow:w1");
+        assert_eq!(Scope::execution("e1").scope_key(), "execution:e1");
+        assert_eq!(Scope::action("a1").scope_key(), "action:a1");
 
-        let custom = ResourceScope::custom("env", "prod");
+        let custom = Scope::custom("env", "prod");
         assert_eq!(custom.scope_key(), "custom:env=prod");
     }
 
     #[test]
     fn test_scoping_strategies() {
-        let global = ResourceScope::Global;
-        let tenant = ResourceScope::tenant("t1");
+        let global = Scope::Global;
+        let tenant = Scope::tenant("t1");
 
-        assert!(ScopingStrategy::Strict.is_compatible(&global, &global));
-        assert!(!ScopingStrategy::Strict.is_compatible(&global, &tenant));
+        assert!(Strategy::Strict.is_compatible(&global, &global));
+        assert!(!Strategy::Strict.is_compatible(&global, &tenant));
 
-        assert!(ScopingStrategy::Hierarchical.is_compatible(&global, &tenant));
-        assert!(!ScopingStrategy::Hierarchical.is_compatible(&tenant, &global));
+        assert!(Strategy::Hierarchical.is_compatible(&global, &tenant));
+        assert!(!Strategy::Hierarchical.is_compatible(&tenant, &global));
 
-        assert!(ScopingStrategy::Fallback.is_compatible(&global, &tenant));
-        assert!(ScopingStrategy::Fallback.is_compatible(&tenant, &tenant));
+        assert!(Strategy::Fallback.is_compatible(&global, &tenant));
+        assert!(Strategy::Fallback.is_compatible(&tenant, &tenant));
     }
 
     #[test]
     fn test_cross_tenant_denial() {
         // This is the security fix: Tenant A must NOT be able to access Tenant B's resources
-        let tenant_a = ResourceScope::tenant("A");
+        let tenant_a = Scope::tenant("A");
 
-        let wf_in_b = ResourceScope::workflow_in_tenant("wf1", "B");
-        let exec_in_b = ResourceScope::execution_in_workflow("ex1", "wf1", Some("B".to_string()));
-        let action_in_b = ResourceScope::action_in_execution(
-            "a1",
-            "ex1",
-            Some("wf1".to_string()),
-            Some("B".to_string()),
-        );
+        let wf_in_b = Scope::workflow_in_tenant("wf1", "B");
+        let exec_in_b = Scope::execution_in_workflow("ex1", "wf1", Some("B".to_string()));
+        let action_in_b =
+            Scope::action_in_execution("a1", "ex1", Some("wf1".to_string()), Some("B".to_string()));
 
         assert!(!tenant_a.contains(&wf_in_b));
         assert!(!tenant_a.contains(&exec_in_b));
         assert!(!tenant_a.contains(&action_in_b));
+    }
+
+    #[test]
+    fn test_scope_is_hashable() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(Scope::Global);
+        set.insert(Scope::tenant("A"));
+        set.insert(Scope::tenant("A")); // duplicate
+        assert_eq!(set.len(), 2);
     }
 }

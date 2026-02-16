@@ -2,15 +2,17 @@
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dashmap::DashMap;
 
-use crate::context::ResourceContext;
-use crate::error::{ResourceError, ResourceResult};
+use crate::context::Context;
+use crate::error::{Error, Result};
+use crate::guard::Guard;
 use crate::pool::{Pool, PoolConfig};
-use crate::resource::{Resource, ResourceGuard};
+use crate::resource::Resource;
 
 // ---------------------------------------------------------------------------
 // DependencyGraph
@@ -45,16 +47,17 @@ impl DependencyGraph {
         &mut self,
         resource: impl Into<String>,
         depends_on: impl Into<String>,
-    ) -> ResourceResult<()> {
+    ) -> Result<()> {
         let resource = resource.into();
         let depends_on = depends_on.into();
 
         // Don't allow self-dependency
         if resource == depends_on {
-            return Err(ResourceError::internal(
-                &resource,
-                format!("Resource cannot depend on itself: {resource}"),
-            ));
+            return Err(Error::Internal {
+                resource_id: resource.clone(),
+                message: format!("Resource cannot depend on itself: {resource}"),
+                source: None,
+            });
         }
 
         // Add to dependencies map
@@ -73,9 +76,9 @@ impl DependencyGraph {
         if let Some(cycle) = self.detect_cycle() {
             // Rollback the changes
             self.remove_dependency(&resource, &depends_on);
-            return Err(ResourceError::circular_dependency(
-                cycle.join(" -> "),
-            ));
+            return Err(Error::CircularDependency {
+                cycle: cycle.join(" -> "),
+            });
         }
 
         Ok(())
@@ -174,7 +177,7 @@ impl DependencyGraph {
     ///
     /// # Errors
     /// Returns error if there's a cycle in the graph
-    pub fn topological_sort(&self) -> ResourceResult<Vec<String>> {
+    pub fn topological_sort(&self) -> Result<Vec<String>> {
         // Use Kahn's algorithm
         let mut in_degree: HashMap<String, usize> = HashMap::new();
         let mut all_nodes = HashSet::new();
@@ -229,16 +232,16 @@ impl DependencyGraph {
         if sorted.len() != all_nodes.len()
             && let Some(cycle) = self.detect_cycle()
         {
-            return Err(ResourceError::circular_dependency(
-                cycle.join(" -> "),
-            ));
+            return Err(Error::CircularDependency {
+                cycle: cycle.join(" -> "),
+            });
         }
 
         Ok(sorted)
     }
 
     /// Get the initialization order for a specific resource and its dependencies
-    pub fn get_init_order(&self, resource: &str) -> ResourceResult<Vec<String>> {
+    pub fn get_init_order(&self, resource: &str) -> Result<Vec<String>> {
         let mut visited = HashSet::new();
         let mut order = Vec::new();
 
@@ -253,7 +256,7 @@ impl DependencyGraph {
         resource: &str,
         visited: &mut HashSet<String>,
         order: &mut Vec<String>,
-    ) -> ResourceResult<()> {
+    ) -> Result<()> {
         if visited.contains(resource) {
             return Ok(());
         }
@@ -307,7 +310,7 @@ impl DependencyGraph {
 /// Trait for type-erased resource guards.
 ///
 /// Provides `&dyn Any` access to the inner instance while the concrete
-/// `TypedGuard<R>` holds the real `ResourceGuard` that returns the instance
+/// `TypedGuard<R>` holds the real `Guard` that returns the instance
 /// to the pool on drop.
 pub trait AnyGuardTrait: Send {
     /// Access the inner instance as `&dyn Any` for downcasting.
@@ -317,16 +320,16 @@ pub trait AnyGuardTrait: Send {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
-/// Type-erased guard returned by [`ResourceManager::acquire`].
+/// Type-erased guard returned by [`Manager::acquire`].
 ///
-/// When dropped, the underlying `ResourceGuard` returns the instance
+/// When dropped, the underlying `Guard` returns the instance
 /// to the pool. Use [`as_any`](AnyGuardTrait::as_any) and
-/// [`downcast_ref`](Any::downcast_ref) to access the concrete instance.
+/// `downcast_ref` to access the concrete instance.
 pub type AnyGuard = Box<dyn AnyGuardTrait>;
 
-/// Concrete guard wrapping a typed `ResourceGuard`.
+/// Concrete guard wrapping a typed `Guard`.
 struct TypedGuard<R: Resource> {
-    guard: ResourceGuard<R::Instance>,
+    guard: Guard<R::Instance>,
 }
 
 impl<R: Resource> AnyGuardTrait for TypedGuard<R>
@@ -348,16 +351,15 @@ where
 
 /// Type-erased pool interface so the manager can store pools of different
 /// resource types in a single map.
-#[async_trait]
 trait AnyPool: Send + Sync {
     /// Acquire a type-erased instance.
-    ///
-    /// The returned `AnyGuard` properly returns the instance to the
-    /// underlying typed pool when dropped.
-    async fn acquire_any(&self, ctx: &ResourceContext) -> ResourceResult<AnyGuard>;
+    fn acquire_any<'a>(
+        &'a self,
+        ctx: &'a Context,
+    ) -> Pin<Box<dyn Future<Output = Result<AnyGuard>> + Send + 'a>>;
 
     /// Shut down the pool.
-    async fn shutdown(&self) -> ResourceResult<()>;
+    fn shutdown(&self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
 }
 
 /// Concrete adapter from `Pool<R>` to `AnyPool`.
@@ -365,44 +367,46 @@ struct TypedPool<R: Resource> {
     pool: Pool<R>,
 }
 
-#[async_trait]
 impl<R: Resource> AnyPool for TypedPool<R>
 where
     R::Instance: Any,
 {
-    async fn acquire_any(&self, ctx: &ResourceContext) -> ResourceResult<AnyGuard> {
-        let guard = self.pool.acquire(ctx).await?;
-        Ok(Box::new(TypedGuard::<R> { guard }))
+    fn acquire_any<'a>(
+        &'a self,
+        ctx: &'a Context,
+    ) -> Pin<Box<dyn Future<Output = Result<AnyGuard>> + Send + 'a>> {
+        Box::pin(async move {
+            let guard = self.pool.acquire(ctx).await?;
+            Ok(Box::new(TypedGuard::<R> { guard }) as AnyGuard)
+        })
     }
 
-    async fn shutdown(&self) -> ResourceResult<()> {
-        self.pool.shutdown().await
+    fn shutdown(&self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async move { self.pool.shutdown().await })
     }
 }
 
 // ---------------------------------------------------------------------------
-// ResourceManager
+// Manager
 // ---------------------------------------------------------------------------
 
 /// Central manager for resource pools and dependency ordering.
 ///
 /// Pools are keyed by the resource's string ID (`Resource::id()`), allowing
 /// multiple pools of the same resource type with different IDs.
-pub struct ResourceManager {
+#[derive(Default)]
+pub struct Manager {
     /// Pools indexed by resource ID string.
     pools: DashMap<String, Arc<dyn AnyPool>>,
     /// Dependency graph for initialization ordering.
     deps: parking_lot::RwLock<DependencyGraph>,
 }
 
-impl ResourceManager {
+impl Manager {
     /// Create a new empty resource manager.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            pools: DashMap::new(),
-            deps: parking_lot::RwLock::new(DependencyGraph::new()),
-        }
+        Self::default()
     }
 
     /// Register a resource with its config and pool settings.
@@ -414,7 +418,7 @@ impl ResourceManager {
         resource: R,
         config: R::Config,
         pool_config: PoolConfig,
-    ) -> ResourceResult<()>
+    ) -> Result<()>
     where
         R::Instance: Any,
     {
@@ -439,31 +443,26 @@ impl ResourceManager {
     /// Returns an [`AnyGuard`] that provides `&dyn Any` access to the
     /// instance. When the guard is dropped, the instance is returned to
     /// the pool.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let guard = mgr.acquire("postgres", &ctx).await?;
-    /// let conn = guard.as_any().downcast_ref::<PgConnection>().unwrap();
-    /// ```
-    pub async fn acquire(
-        &self,
-        resource_id: &str,
-        ctx: &ResourceContext,
-    ) -> ResourceResult<AnyGuard> {
-        let pool = self.pools.get(resource_id).ok_or_else(|| {
-            ResourceError::unavailable(resource_id, "Resource not registered", false)
-        })?;
+    pub async fn acquire(&self, resource_id: &str, ctx: &Context) -> Result<AnyGuard> {
+        let pool = self
+            .pools
+            .get(resource_id)
+            .ok_or_else(|| Error::Unavailable {
+                resource_id: resource_id.to_string(),
+                reason: "Resource not registered".to_string(),
+                retryable: false,
+            })?;
 
         pool.acquire_any(ctx).await
     }
 
     /// Get the initialization order based on dependency graph.
-    pub fn initialization_order(&self) -> ResourceResult<Vec<String>> {
+    pub fn initialization_order(&self) -> Result<Vec<String>> {
         self.deps.read().topological_sort()
     }
 
     /// Shut down all registered pools.
-    pub async fn shutdown(&self) -> ResourceResult<()> {
+    pub async fn shutdown(&self) -> Result<()> {
         let pools: Vec<Arc<dyn AnyPool>> = self
             .pools
             .iter()
@@ -479,15 +478,9 @@ impl ResourceManager {
     }
 }
 
-impl Default for ResourceManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Debug for ResourceManager {
+impl std::fmt::Debug for Manager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ResourceManager")
+        f.debug_struct("Manager")
             .field("pool_count", &self.pools.len())
             .finish()
     }
@@ -603,18 +596,18 @@ mod dependency_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resource::ResourceConfig;
-    use crate::scope::ResourceScope;
+    use crate::resource::Config;
+    use crate::scope::Scope;
 
     #[derive(Debug, Clone, serde::Deserialize)]
     struct TestConfig {
         value: String,
     }
 
-    impl ResourceConfig for TestConfig {
-        fn validate(&self) -> ResourceResult<()> {
+    impl Config for TestConfig {
+        fn validate(&self) -> Result<()> {
             if self.value.is_empty() {
-                return Err(ResourceError::configuration("value cannot be empty"));
+                return Err(Error::configuration("value cannot be empty"));
             }
             Ok(())
         }
@@ -622,7 +615,6 @@ mod tests {
 
     struct TestResource;
 
-    #[async_trait]
     impl Resource for TestResource {
         type Config = TestConfig;
         type Instance = String;
@@ -631,22 +623,18 @@ mod tests {
             "test"
         }
 
-        async fn create(
-            &self,
-            config: &Self::Config,
-            _ctx: &ResourceContext,
-        ) -> ResourceResult<Self::Instance> {
+        async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
             Ok(format!("instance-{}", config.value))
         }
     }
 
-    fn ctx() -> ResourceContext {
-        ResourceContext::new(ResourceScope::Global, "wf", "ex")
+    fn ctx() -> Context {
+        Context::new(Scope::Global, "wf", "ex")
     }
 
     #[tokio::test]
     async fn register_and_acquire() {
-        let mgr = ResourceManager::new();
+        let mgr = Manager::new();
         let config = TestConfig {
             value: "hello".into(),
         };
@@ -663,14 +651,14 @@ mod tests {
 
     #[tokio::test]
     async fn acquire_unregistered_fails() {
-        let mgr = ResourceManager::new();
+        let mgr = Manager::new();
         let result = mgr.acquire("test", &ctx()).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn shutdown_clears_pools() {
-        let mgr = ResourceManager::new();
+        let mgr = Manager::new();
         let config = TestConfig { value: "x".into() };
         mgr.register(TestResource, config, PoolConfig::default())
             .unwrap();
@@ -680,7 +668,7 @@ mod tests {
 
     #[tokio::test]
     async fn acquire_returns_to_pool_on_drop() {
-        let mgr = ResourceManager::new();
+        let mgr = Manager::new();
         let config = TestConfig {
             value: "pooled".into(),
         };

@@ -2,11 +2,11 @@
 use thiserror::Error;
 
 /// Result type for resource operations
-pub type ResourceResult<T> = Result<T, ResourceError>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// Comprehensive error type for resource management operations
 #[derive(Error, Debug)]
-pub enum ResourceError {
+pub enum Error {
     /// Resource configuration is invalid
     #[error("Configuration error: {message}")]
     Configuration {
@@ -147,173 +147,10 @@ pub enum ResourceError {
     },
 }
 
-impl ResourceError {
+impl Error {
     /// Create a configuration error
     pub fn configuration<S: Into<String>>(message: S) -> Self {
         Self::Configuration {
-            message: message.into(),
-            source: None,
-        }
-    }
-
-    /// Create a configuration error with source
-    pub fn configuration_with_source<S: Into<String>, E>(message: S, source: E) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        Self::Configuration {
-            message: message.into(),
-            source: Some(Box::new(source)),
-        }
-    }
-
-    /// Create an initialization error
-    pub fn initialization<S1: Into<String>, S2: Into<String>>(resource_id: S1, reason: S2) -> Self {
-        Self::Initialization {
-            resource_id: resource_id.into(),
-            reason: reason.into(),
-            source: None,
-        }
-    }
-
-    /// Create an initialization error with source
-    pub fn initialization_with_source<S1: Into<String>, S2: Into<String>, E>(
-        resource_id: S1,
-        reason: S2,
-        source: E,
-    ) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        Self::Initialization {
-            resource_id: resource_id.into(),
-            reason: reason.into(),
-            source: Some(Box::new(source)),
-        }
-    }
-
-    /// Create an unavailable error
-    pub fn unavailable<S1: Into<String>, S2: Into<String>>(
-        resource_id: S1,
-        reason: S2,
-        retryable: bool,
-    ) -> Self {
-        Self::Unavailable {
-            resource_id: resource_id.into(),
-            reason: reason.into(),
-            retryable,
-        }
-    }
-
-    /// Create a health check error
-    pub fn health_check<S1: Into<String>, S2: Into<String>>(
-        resource_id: S1,
-        reason: S2,
-        attempt: u32,
-    ) -> Self {
-        Self::HealthCheck {
-            resource_id: resource_id.into(),
-            reason: reason.into(),
-            attempt,
-        }
-    }
-
-    /// Create a missing credential error
-    pub fn missing_credential<S1: Into<String>, S2: Into<String>>(
-        credential_id: S1,
-        resource_id: S2,
-    ) -> Self {
-        Self::MissingCredential {
-            credential_id: credential_id.into(),
-            resource_id: resource_id.into(),
-        }
-    }
-
-    /// Create a cleanup error
-    pub fn cleanup<S1: Into<String>, S2: Into<String>>(resource_id: S1, reason: S2) -> Self {
-        Self::Cleanup {
-            resource_id: resource_id.into(),
-            reason: reason.into(),
-            source: None,
-        }
-    }
-
-    /// Create a timeout error
-    pub fn timeout<S1: Into<String>, S2: Into<String>>(
-        resource_id: S1,
-        timeout_ms: u64,
-        operation: S2,
-    ) -> Self {
-        Self::Timeout {
-            resource_id: resource_id.into(),
-            timeout_ms,
-            operation: operation.into(),
-        }
-    }
-
-    /// Create a circuit breaker open error
-    pub fn circuit_breaker_open<S: Into<String>>(
-        resource_id: S,
-        retry_after_ms: Option<u64>,
-    ) -> Self {
-        Self::CircuitBreakerOpen {
-            resource_id: resource_id.into(),
-            retry_after_ms,
-        }
-    }
-
-    /// Create a pool exhausted error
-    pub fn pool_exhausted<S: Into<String>>(
-        resource_id: S,
-        current_size: usize,
-        max_size: usize,
-        waiters: usize,
-    ) -> Self {
-        Self::PoolExhausted {
-            resource_id: resource_id.into(),
-            current_size,
-            max_size,
-            waiters,
-        }
-    }
-
-    /// Create a dependency failure error
-    pub fn dependency_failure<S1: Into<String>, S2: Into<String>, S3: Into<String>>(
-        resource_id: S1,
-        dependency_id: S2,
-        reason: S3,
-    ) -> Self {
-        Self::DependencyFailure {
-            resource_id: resource_id.into(),
-            dependency_id: dependency_id.into(),
-            reason: reason.into(),
-        }
-    }
-
-    /// Create a circular dependency error
-    pub fn circular_dependency<S: Into<String>>(cycle: S) -> Self {
-        Self::CircularDependency {
-            cycle: cycle.into(),
-        }
-    }
-
-    /// Create an invalid state transition error
-    pub fn invalid_state_transition<S1: Into<String>, S2: Into<String>, S3: Into<String>>(
-        resource_id: S1,
-        from: S2,
-        to: S3,
-    ) -> Self {
-        Self::InvalidStateTransition {
-            resource_id: resource_id.into(),
-            from: from.into(),
-            to: to.into(),
-        }
-    }
-
-    /// Create an internal error
-    pub fn internal<S1: Into<String>, S2: Into<String>>(resource_id: S1, message: S2) -> Self {
-        Self::Internal {
-            resource_id: resource_id.into(),
             message: message.into(),
             source: None,
         }

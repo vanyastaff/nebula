@@ -1,5 +1,6 @@
 //! Resource lifecycle management
 
+use std::collections::HashMap;
 use std::fmt;
 
 #[cfg(feature = "serde")]
@@ -9,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Default)]
-pub enum LifecycleState {
+pub enum Lifecycle {
     /// Resource has been created but not yet initialized
     #[default]
     Created,
@@ -33,7 +34,7 @@ pub enum LifecycleState {
     Failed,
 }
 
-impl LifecycleState {
+impl Lifecycle {
     /// Check if the resource is available for use
     #[must_use]
     pub fn is_available(&self) -> bool {
@@ -60,8 +61,8 @@ impl LifecycleState {
 
     /// Check if the resource can transition to the target state
     #[must_use]
-    pub fn can_transition_to(&self, target: LifecycleState) -> bool {
-        use LifecycleState::{
+    pub fn can_transition_to(&self, target: Lifecycle) -> bool {
+        use Lifecycle::{
             Cleanup, Created, Draining, Failed, Idle, InUse, Initializing, Maintenance, Ready,
             Terminated,
         };
@@ -126,8 +127,8 @@ impl LifecycleState {
 
     /// Get the next logical state(s) for this lifecycle state
     #[must_use]
-    pub fn next_states(&self) -> &'static [LifecycleState] {
-        use LifecycleState::{
+    pub fn next_states(&self) -> &'static [Lifecycle] {
+        use Lifecycle::{
             Cleanup, Created, Draining, Failed, Idle, InUse, Initializing, Maintenance, Ready,
             Terminated,
         };
@@ -164,7 +165,7 @@ impl LifecycleState {
     }
 }
 
-impl fmt::Display for LifecycleState {
+impl fmt::Display for Lifecycle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             Self::Created => "Created",
@@ -185,23 +186,23 @@ impl fmt::Display for LifecycleState {
 /// Lifecycle event that can be observed
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct LifecycleEvent {
+pub struct Event {
     /// The resource identifier
     pub resource_id: String,
     /// The previous state
-    pub from_state: LifecycleState,
+    pub from_state: Lifecycle,
     /// The new state
-    pub to_state: LifecycleState,
+    pub to_state: Lifecycle,
     /// Timestamp of the transition
     pub timestamp: chrono::DateTime<chrono::Utc>,
     /// Optional metadata about the transition
-    pub metadata: Option<serde_json::Value>,
+    pub metadata: Option<HashMap<String, String>>,
 }
 
-impl LifecycleEvent {
+impl Event {
     /// Create a new lifecycle event
     #[must_use]
-    pub fn new(resource_id: String, from_state: LifecycleState, to_state: LifecycleState) -> Self {
+    pub fn new(resource_id: String, from_state: Lifecycle, to_state: Lifecycle) -> Self {
         Self {
             resource_id,
             from_state,
@@ -215,9 +216,9 @@ impl LifecycleEvent {
     #[must_use]
     pub fn with_metadata(
         resource_id: String,
-        from_state: LifecycleState,
-        to_state: LifecycleState,
-        metadata: serde_json::Value,
+        from_state: Lifecycle,
+        to_state: Lifecycle,
+        metadata: HashMap<String, String>,
     ) -> Self {
         Self {
             resource_id,
@@ -235,35 +236,35 @@ mod tests {
 
     #[test]
     fn test_lifecycle_state_availability() {
-        assert!(LifecycleState::Ready.is_available());
-        assert!(LifecycleState::Idle.is_available());
-        assert!(!LifecycleState::Created.is_available());
-        assert!(!LifecycleState::Failed.is_available());
+        assert!(Lifecycle::Ready.is_available());
+        assert!(Lifecycle::Idle.is_available());
+        assert!(!Lifecycle::Created.is_available());
+        assert!(!Lifecycle::Failed.is_available());
     }
 
     #[test]
     fn test_lifecycle_state_terminal() {
-        assert!(LifecycleState::Terminated.is_terminal());
-        assert!(LifecycleState::Failed.is_terminal());
-        assert!(!LifecycleState::Ready.is_terminal());
+        assert!(Lifecycle::Terminated.is_terminal());
+        assert!(Lifecycle::Failed.is_terminal());
+        assert!(!Lifecycle::Ready.is_terminal());
     }
 
     #[test]
     fn test_lifecycle_state_transitions() {
-        assert!(LifecycleState::Created.can_transition_to(LifecycleState::Initializing));
-        assert!(LifecycleState::Initializing.can_transition_to(LifecycleState::Ready));
-        assert!(LifecycleState::Ready.can_transition_to(LifecycleState::InUse));
+        assert!(Lifecycle::Created.can_transition_to(Lifecycle::Initializing));
+        assert!(Lifecycle::Initializing.can_transition_to(Lifecycle::Ready));
+        assert!(Lifecycle::Ready.can_transition_to(Lifecycle::InUse));
 
         // Invalid transitions
-        assert!(!LifecycleState::Created.can_transition_to(LifecycleState::InUse));
-        assert!(!LifecycleState::Terminated.can_transition_to(LifecycleState::Ready));
+        assert!(!Lifecycle::Created.can_transition_to(Lifecycle::InUse));
+        assert!(!Lifecycle::Terminated.can_transition_to(Lifecycle::Ready));
     }
 
     #[test]
     fn test_lifecycle_state_can_acquire() {
-        assert!(LifecycleState::Ready.can_acquire());
-        assert!(LifecycleState::Idle.can_acquire());
-        assert!(!LifecycleState::InUse.can_acquire());
-        assert!(!LifecycleState::Failed.can_acquire());
+        assert!(Lifecycle::Ready.can_acquire());
+        assert!(Lifecycle::Idle.can_acquire());
+        assert!(!Lifecycle::InUse.can_acquire());
+        assert!(!Lifecycle::Failed.can_acquire());
     }
 }

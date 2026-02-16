@@ -4,14 +4,12 @@
 
 use std::time::Duration;
 
-use async_trait::async_trait;
-
 use nebula_resource::{
-    context::ResourceContext,
-    error::ResourceResult,
+    context::Context,
+    error::Result,
     pool::{Pool, PoolConfig},
-    resource::{Resource, ResourceConfig},
-    scope::ResourceScope,
+    resource::{Config, Resource},
+    scope::Scope,
 };
 
 /// Example resource configuration
@@ -20,10 +18,10 @@ struct ConnectionConfig {
     host: String,
 }
 
-impl ResourceConfig for ConnectionConfig {
-    fn validate(&self) -> ResourceResult<()> {
+impl Config for ConnectionConfig {
+    fn validate(&self) -> Result<()> {
         if self.host.is_empty() {
-            return Err(nebula_resource::error::ResourceError::configuration(
+            return Err(nebula_resource::error::Error::configuration(
                 "host cannot be empty",
             ));
         }
@@ -34,7 +32,6 @@ impl ResourceConfig for ConnectionConfig {
 /// Example resource that simulates a database connection
 struct ConnectionResource;
 
-#[async_trait]
 impl Resource for ConnectionResource {
     type Config = ConnectionConfig;
     type Instance = String;
@@ -43,11 +40,7 @@ impl Resource for ConnectionResource {
         "connection"
     }
 
-    async fn create(
-        &self,
-        config: &Self::Config,
-        _ctx: &ResourceContext,
-    ) -> ResourceResult<Self::Instance> {
+    async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
         // Simulate connection creation
         tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(format!(
@@ -59,7 +52,7 @@ impl Resource for ConnectionResource {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("=== Simple Resource Pool Example ===\n");
 
     // Create pool configuration
@@ -84,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - Max size: 10\n");
 
     // Acquire a resource
-    let ctx = ResourceContext::new(ResourceScope::Global, "example-wf", "example-ex");
+    let ctx = Context::new(Scope::Global, "example-wf", "example-ex");
 
     println!("Acquiring resource...");
     let resource = pool.acquire(&ctx).await?;

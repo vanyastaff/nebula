@@ -4,8 +4,8 @@
 //! - Health status types (`HealthCheckable`, `HealthStatus`, `HealthState`)
 //! - Background health monitoring (`HealthChecker`)
 
-use async_trait::async_trait;
 use dashmap::DashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{context::ResourceContext, error::ResourceResult};
+use crate::{context::Context, error::Result};
 
 // ---------------------------------------------------------------------------
 // Health types (from core/traits)
@@ -130,18 +130,16 @@ impl HealthStatus {
 }
 
 /// Trait for resources that support health checking
-#[async_trait]
 pub trait HealthCheckable: Send + Sync {
     /// Perform a health check on the resource
-    async fn health_check(&self) -> ResourceResult<HealthStatus>;
+    fn health_check(&self) -> impl Future<Output = Result<HealthStatus>> + Send;
 
     /// Perform a detailed health check with additional context
-    async fn detailed_health_check(
+    fn detailed_health_check(
         &self,
-        _context: &ResourceContext,
-    ) -> ResourceResult<HealthStatus> {
-        // Default implementation just calls the basic health check
-        self.health_check().await
+        _context: &Context,
+    ) -> impl Future<Output = Result<HealthStatus>> + Send {
+        async { self.health_check().await }
     }
 
     /// Get the recommended interval between health checks
@@ -247,10 +245,7 @@ impl HealthChecker {
                 let check_result =
                     tokio::time::timeout(check_timeout, instance.health_check()).await;
 
-                let status = Self::process_check_result(
-                    check_result,
-                    &mut consecutive_failures,
-                );
+                let status = Self::process_check_result(check_result, &mut consecutive_failures);
 
                 // Record health status
                 records.insert(
@@ -266,6 +261,7 @@ impl HealthChecker {
 
                 // If we've exceeded failure threshold, log warning
                 if consecutive_failures >= failure_threshold {
+                    #[cfg(feature = "tracing")]
                     tracing::warn!(
                         "Instance {} of resource {} has failed {} consecutive health checks",
                         instance_id,
@@ -282,7 +278,7 @@ impl HealthChecker {
 
     /// Process a health check result, updating the consecutive failure count.
     fn process_check_result(
-        result: Result<ResourceResult<HealthStatus>, tokio::time::error::Elapsed>,
+        result: std::result::Result<Result<HealthStatus>, tokio::time::error::Elapsed>,
         consecutive_failures: &mut u32,
     ) -> HealthStatus {
         match result {
@@ -401,9 +397,8 @@ mod tests {
         should_fail: Arc<AtomicBool>,
     }
 
-    #[async_trait]
     impl HealthCheckable for MockHealthCheckable {
-        async fn health_check(&self) -> ResourceResult<HealthStatus> {
+        async fn health_check(&self) -> Result<HealthStatus> {
             if self.should_fail.load(Ordering::Relaxed) {
                 Ok(HealthStatus::unhealthy("mock failure"))
             } else {

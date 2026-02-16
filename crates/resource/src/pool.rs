@@ -10,9 +10,10 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use tokio::sync::Semaphore;
 
-use crate::context::ResourceContext;
-use crate::error::{ResourceError, ResourceResult};
-use crate::resource::{Resource, ResourceGuard};
+use crate::context::Context;
+use crate::error::{Error, Result};
+use crate::guard::Guard;
+use crate::resource::Resource;
 
 // ---------------------------------------------------------------------------
 // PoolConfig
@@ -54,20 +55,18 @@ impl Default for PoolConfig {
 
 impl PoolConfig {
     /// Validate pool configuration, returning an error if invalid.
-    pub fn validate(&self) -> crate::error::ResourceResult<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.max_size == 0 {
-            return Err(crate::error::ResourceError::configuration(
-                "max_size must be greater than 0",
-            ));
+            return Err(Error::configuration("max_size must be greater than 0"));
         }
         if self.min_size > self.max_size {
-            return Err(crate::error::ResourceError::configuration(format!(
+            return Err(Error::configuration(format!(
                 "min_size ({}) must not exceed max_size ({})",
                 self.min_size, self.max_size
             )));
         }
         if self.acquire_timeout.is_zero() {
-            return Err(crate::error::ResourceError::configuration(
+            return Err(Error::configuration(
                 "acquire_timeout must be greater than zero",
             ));
         }
@@ -128,13 +127,18 @@ pub struct PoolStats {
     pub destroyed: u64,
 }
 
+/// Combined pool state: idle queue + statistics under a single lock.
+struct PoolState<T> {
+    idle: VecDeque<Entry<T>>,
+    stats: PoolStats,
+}
+
 /// Inner shared state for the pool.
 struct PoolInner<R: Resource> {
     resource: Arc<R>,
     config: R::Config,
     pool_config: PoolConfig,
-    idle: Mutex<VecDeque<Entry<R::Instance>>>,
-    stats: Mutex<PoolStats>,
+    state: Mutex<PoolState<R::Instance>>,
     /// Semaphore limits total concurrent instances (idle + active).
     semaphore: Semaphore,
 }
@@ -161,7 +165,7 @@ impl<R: Resource> Clone for Pool<R> {
 
 impl<R: Resource> std::fmt::Debug for Pool<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let stats = self.inner.stats.lock().clone();
+        let stats = self.inner.state.lock().stats.clone();
         f.debug_struct("Pool")
             .field("resource_id", &self.inner.resource.id())
             .field("stats", &stats)
@@ -174,7 +178,7 @@ impl<R: Resource> Pool<R> {
     ///
     /// # Errors
     /// Returns error if `pool_config` is invalid (e.g. max_size == 0).
-    pub fn new(resource: R, config: R::Config, pool_config: PoolConfig) -> ResourceResult<Self> {
+    pub fn new(resource: R, config: R::Config, pool_config: PoolConfig) -> Result<Self> {
         pool_config.validate()?;
         let max = pool_config.max_size;
         Ok(Self {
@@ -182,8 +186,10 @@ impl<R: Resource> Pool<R> {
                 resource: Arc::new(resource),
                 config,
                 pool_config,
-                idle: Mutex::new(VecDeque::with_capacity(max)),
-                stats: Mutex::new(PoolStats::default()),
+                state: Mutex::new(PoolState {
+                    idle: VecDeque::with_capacity(max),
+                    stats: PoolStats::default(),
+                }),
                 semaphore: Semaphore::new(max),
             }),
         })
@@ -191,12 +197,9 @@ impl<R: Resource> Pool<R> {
 
     /// Acquire a resource instance from the pool.
     ///
-    /// Returns an RAII `ResourceGuard` that returns the instance to the pool
+    /// Returns an RAII `Guard` that returns the instance to the pool
     /// when dropped.
-    pub async fn acquire(
-        &self,
-        ctx: &ResourceContext,
-    ) -> ResourceResult<ResourceGuard<R::Instance>> {
+    pub async fn acquire(&self, ctx: &Context) -> Result<Guard<R::Instance>> {
         let inner = &self.inner;
 
         // Acquire a permit (limits total instances)
@@ -204,29 +207,28 @@ impl<R: Resource> Pool<R> {
             tokio::time::timeout(inner.pool_config.acquire_timeout, inner.semaphore.acquire())
                 .await
                 .map_err(|_| {
-                    let stats = inner.stats.lock();
-                    ResourceError::pool_exhausted(
-                        inner.resource.id(),
-                        stats.active,
-                        inner.pool_config.max_size,
-                        0,
-                    )
+                    let state = inner.state.lock();
+                    Error::PoolExhausted {
+                        resource_id: inner.resource.id().to_string(),
+                        current_size: state.stats.active,
+                        max_size: inner.pool_config.max_size,
+                        waiters: 0,
+                    }
                 })?
-                .map_err(|_| {
-                    ResourceError::internal(inner.resource.id(), "Pool semaphore closed")
+                .map_err(|_| Error::Internal {
+                    resource_id: inner.resource.id().to_string(),
+                    message: "Pool semaphore closed".to_string(),
+                    source: None,
                 })?;
 
         // Try to get an idle instance, tracking created_at for recycled entries.
         let (instance, created_at) = loop {
-            let entry = { inner.idle.lock().pop_front() };
+            let entry = { inner.state.lock().idle.pop_front() };
             match entry {
                 Some(entry) if entry.is_expired(&inner.pool_config) => {
                     // Expired — clean up and try next
                     let _ = inner.resource.cleanup(entry.instance).await;
-                    {
-                        let mut stats = inner.stats.lock();
-                        stats.destroyed += 1;
-                    }
+                    inner.state.lock().stats.destroyed += 1;
                     // Don't add permit back — we'll create a new instance below if needed
                     continue;
                 }
@@ -237,7 +239,7 @@ impl<R: Resource> Pool<R> {
                         Ok(true) => break (entry.instance, Some(created_at)),
                         _ => {
                             let _ = inner.resource.cleanup(entry.instance).await;
-                            inner.stats.lock().destroyed += 1;
+                            inner.state.lock().stats.destroyed += 1;
                             continue;
                         }
                     }
@@ -245,27 +247,24 @@ impl<R: Resource> Pool<R> {
                 None => {
                     // No idle instances — create new
                     let instance = inner.resource.create(&inner.config, ctx).await?;
-                    {
-                        let mut stats = inner.stats.lock();
-                        stats.created += 1;
-                    }
+                    inner.state.lock().stats.created += 1;
                     break (instance, None);
                 }
             }
         };
 
         {
-            let mut stats = inner.stats.lock();
-            stats.total_acquisitions += 1;
-            stats.active += 1;
-            stats.idle = inner.idle.lock().len();
+            let mut state = inner.state.lock();
+            state.stats.total_acquisitions += 1;
+            state.stats.active += 1;
+            state.stats.idle = state.idle.len();
         }
 
         // Forget the permit — we'll add it back when the guard drops.
         permit.forget();
 
         let pool = self.clone();
-        Ok(ResourceGuard::new(instance, move |mut inst| {
+        Ok(Guard::new(instance, move |mut inst| {
             // Return instance to pool on drop.
             // We run recycle + return synchronously-ish by spawning a task.
             drop(tokio::spawn(async move {
@@ -278,18 +277,18 @@ impl<R: Resource> Pool<R> {
                         Some(ca) => Entry::returned(inst, ca),
                         None => Entry::new(inst),
                     };
-                    inner.idle.lock().push_back(entry);
+                    inner.state.lock().idle.push_back(entry);
                 } else {
                     let _ = inner.resource.cleanup(inst).await;
-                    inner.stats.lock().destroyed += 1;
+                    inner.state.lock().stats.destroyed += 1;
                 }
 
                 {
-                    let mut stats = inner.stats.lock();
-                    stats.total_releases += 1;
-                    stats.active = stats.active.saturating_sub(1);
+                    let mut state = inner.state.lock();
+                    state.stats.total_releases += 1;
+                    state.stats.active = state.stats.active.saturating_sub(1);
+                    state.stats.idle = state.idle.len();
                 }
-                inner.stats.lock().idle = inner.idle.lock().len();
 
                 // Return the permit
                 inner.semaphore.add_permits(1);
@@ -300,30 +299,30 @@ impl<R: Resource> Pool<R> {
     /// Get current pool statistics.
     #[must_use]
     pub fn stats(&self) -> PoolStats {
-        self.inner.stats.lock().clone()
+        self.inner.state.lock().stats.clone()
     }
 
     /// Run maintenance: evict expired idle instances, ensure min_size.
-    pub async fn maintain(&self, ctx: &ResourceContext) -> ResourceResult<()> {
+    pub async fn maintain(&self, ctx: &Context) -> Result<()> {
         let inner = &self.inner;
 
         // Evict expired idle entries
         let mut to_cleanup = Vec::new();
         {
-            let mut idle = inner.idle.lock();
-            let before = idle.len();
-            let mut kept = VecDeque::with_capacity(idle.len());
-            while let Some(entry) = idle.pop_front() {
+            let mut state = inner.state.lock();
+            let before = state.idle.len();
+            let mut kept = VecDeque::with_capacity(state.idle.len());
+            while let Some(entry) = state.idle.pop_front() {
                 if entry.is_expired(&inner.pool_config) {
                     to_cleanup.push(entry.instance);
                 } else {
                     kept.push_back(entry);
                 }
             }
-            *idle = kept;
-            let removed = before - idle.len();
+            state.idle = kept;
+            let removed = before - state.idle.len();
             if removed > 0 {
-                inner.stats.lock().destroyed += removed as u64;
+                state.stats.destroyed += removed as u64;
             }
         }
 
@@ -333,9 +332,8 @@ impl<R: Resource> Pool<R> {
 
         // Ensure min_size
         let (current_idle, current_active) = {
-            let idle_count = inner.idle.lock().len();
-            let active = inner.stats.lock().active;
-            (idle_count, active)
+            let state = inner.state.lock();
+            (state.idle.len(), state.stats.active)
         };
         let total = current_idle + current_active;
         if total < inner.pool_config.min_size {
@@ -343,8 +341,9 @@ impl<R: Resource> Pool<R> {
             for _ in 0..needed {
                 match inner.resource.create(&inner.config, ctx).await {
                     Ok(instance) => {
-                        inner.idle.lock().push_back(Entry::new(instance));
-                        inner.stats.lock().created += 1;
+                        let mut state = inner.state.lock();
+                        state.idle.push_back(Entry::new(instance));
+                        state.stats.created += 1;
                     }
                     Err(_) => break,
                 }
@@ -352,25 +351,26 @@ impl<R: Resource> Pool<R> {
         }
 
         // Sync idle count
-        inner.stats.lock().idle = inner.idle.lock().len();
+        let mut state = inner.state.lock();
+        state.stats.idle = state.idle.len();
 
         Ok(())
     }
 
     /// Shut down the pool, cleaning up all idle instances.
-    pub async fn shutdown(&self) -> ResourceResult<()> {
+    pub async fn shutdown(&self) -> Result<()> {
         let inner = &self.inner;
         let entries: Vec<_> = {
-            let mut idle = inner.idle.lock();
-            idle.drain(..).collect()
+            let mut state = inner.state.lock();
+            state.idle.drain(..).collect()
         };
 
         for entry in entries {
             let _ = inner.resource.cleanup(entry.instance).await;
-            inner.stats.lock().destroyed += 1;
+            inner.state.lock().stats.destroyed += 1;
         }
 
-        inner.stats.lock().idle = 0;
+        inner.state.lock().stats.idle = 0;
         Ok(())
     }
 }
@@ -378,9 +378,8 @@ impl<R: Resource> Pool<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resource::{Resource, ResourceConfig};
-    use crate::scope::ResourceScope;
-    use async_trait::async_trait;
+    use crate::resource::{Config, Resource};
+    use crate::scope::Scope;
 
     // -- Test resource --
 
@@ -389,10 +388,10 @@ mod tests {
         prefix: String,
     }
 
-    impl ResourceConfig for TestConfig {
-        fn validate(&self) -> ResourceResult<()> {
+    impl Config for TestConfig {
+        fn validate(&self) -> Result<()> {
             if self.prefix.is_empty() {
-                return Err(ResourceError::configuration("prefix cannot be empty"));
+                return Err(Error::configuration("prefix cannot be empty"));
             }
             Ok(())
         }
@@ -400,7 +399,6 @@ mod tests {
 
     struct TestResource;
 
-    #[async_trait]
     impl Resource for TestResource {
         type Config = TestConfig;
         type Instance = String;
@@ -409,17 +407,13 @@ mod tests {
             "test-resource"
         }
 
-        async fn create(
-            &self,
-            config: &Self::Config,
-            _ctx: &ResourceContext,
-        ) -> ResourceResult<Self::Instance> {
+        async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
             Ok(format!("{}-instance", config.prefix))
         }
     }
 
-    fn test_ctx() -> ResourceContext {
-        ResourceContext::new(ResourceScope::Global, "wf-1", "ex-1")
+    fn test_ctx() -> Context {
+        Context::new(Scope::Global, "wf-1", "ex-1")
     }
 
     fn test_config() -> TestConfig {
@@ -438,9 +432,31 @@ mod tests {
 
     #[test]
     fn test_pool_config_validation() {
-        assert!(PoolConfig { max_size: 0, ..Default::default() }.validate().is_err());
-        assert!(PoolConfig { min_size: 11, max_size: 10, ..Default::default() }.validate().is_err());
-        assert!(PoolConfig { acquire_timeout: Duration::ZERO, ..Default::default() }.validate().is_err());
+        assert!(
+            PoolConfig {
+                max_size: 0,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            PoolConfig {
+                min_size: 11,
+                max_size: 10,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            PoolConfig {
+                acquire_timeout: Duration::ZERO,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
         assert!(PoolConfig::default().validate().is_ok());
     }
 

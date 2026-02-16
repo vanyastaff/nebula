@@ -50,7 +50,6 @@ nebula-credential = { path = "../credential", optional = true }
 tokio = { version = "1.0", features = ["rt-multi-thread", "time", "sync", "macros"], optional = true }
 
 # Core utilities
-async-trait = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt"] }

@@ -3,14 +3,14 @@
 use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 
-use crate::scope::ResourceScope;
+use crate::scope::Scope;
 
 /// Context for resource operations.
 ///
 /// Carries scope, identifiers, cancellation, and arbitrary metadata.
 #[derive(Debug, Clone)]
-pub struct ResourceContext {
-    pub scope: ResourceScope,
+pub struct Context {
+    pub scope: Scope,
     pub execution_id: String,
     pub workflow_id: String,
     pub tenant_id: Option<String>,
@@ -18,9 +18,9 @@ pub struct ResourceContext {
     pub metadata: HashMap<String, String>,
 }
 
-impl ResourceContext {
+impl Context {
     pub fn new(
-        scope: ResourceScope,
+        scope: Scope,
         workflow_id: impl Into<String>,
         execution_id: impl Into<String>,
     ) -> Self {
@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn test_context_creation() {
-        let ctx = ResourceContext::new(ResourceScope::Global, "wf-1", "ex-1");
+        let ctx = Context::new(Scope::Global, "wf-1", "ex-1");
         assert_eq!(ctx.workflow_id, "wf-1");
         assert_eq!(ctx.execution_id, "ex-1");
         assert!(ctx.tenant_id.is_none());
@@ -65,14 +65,13 @@ mod tests {
 
     #[test]
     fn test_context_with_tenant() {
-        let ctx =
-            ResourceContext::new(ResourceScope::Global, "wf-1", "ex-1").with_tenant("tenant-a");
+        let ctx = Context::new(Scope::Global, "wf-1", "ex-1").with_tenant("tenant-a");
         assert_eq!(ctx.tenant_id.as_deref(), Some("tenant-a"));
     }
 
     #[test]
     fn test_context_with_metadata() {
-        let ctx = ResourceContext::new(ResourceScope::Global, "wf-1", "ex-1")
+        let ctx = Context::new(Scope::Global, "wf-1", "ex-1")
             .with_metadata("env", "prod")
             .with_metadata("region", "us-east-1");
         assert_eq!(ctx.metadata.get("env").unwrap(), "prod");
@@ -83,8 +82,7 @@ mod tests {
     fn test_context_with_cancellation() {
         let token = CancellationToken::new();
         let child = token.child_token();
-        let ctx =
-            ResourceContext::new(ResourceScope::Global, "wf-1", "ex-1").with_cancellation(child);
+        let ctx = Context::new(Scope::Global, "wf-1", "ex-1").with_cancellation(child);
         assert!(!ctx.cancellation.is_cancelled());
         token.cancel();
         assert!(ctx.cancellation.is_cancelled());

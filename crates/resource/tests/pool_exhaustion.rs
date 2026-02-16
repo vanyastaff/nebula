@@ -2,21 +2,19 @@
 
 use std::time::Duration;
 
-use async_trait::async_trait;
-use nebula_resource::context::ResourceContext;
-use nebula_resource::error::{ResourceError, ResourceResult};
+use nebula_resource::context::Context;
+use nebula_resource::error::{Error, Result};
 use nebula_resource::pool::{Pool, PoolConfig};
-use nebula_resource::resource::{Resource, ResourceConfig};
-use nebula_resource::scope::ResourceScope;
+use nebula_resource::resource::{Config, Resource};
+use nebula_resource::scope::Scope;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct TestConfig;
 
-impl ResourceConfig for TestConfig {}
+impl Config for TestConfig {}
 
 struct TestResource;
 
-#[async_trait]
 impl Resource for TestResource {
     type Config = TestConfig;
     type Instance = String;
@@ -25,17 +23,13 @@ impl Resource for TestResource {
         "test-pool"
     }
 
-    async fn create(
-        &self,
-        _config: &Self::Config,
-        _ctx: &ResourceContext,
-    ) -> ResourceResult<Self::Instance> {
+    async fn create(&self, _config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
         Ok("pooled-instance".to_string())
     }
 }
 
-fn ctx() -> ResourceContext {
-    ResourceContext::new(ResourceScope::Global, "wf", "ex")
+fn ctx() -> Context {
+    Context::new(Scope::Global, "wf", "ex")
 }
 
 #[tokio::test]
@@ -64,7 +58,7 @@ async fn pool_exhaustion_returns_error() {
 
     let err = result.unwrap_err();
     assert!(
-        matches!(err, ResourceError::PoolExhausted { max_size: 2, .. }),
+        matches!(err, Error::PoolExhausted { max_size: 2, .. }),
         "expected PoolExhausted, got: {:?}",
         err
     );
