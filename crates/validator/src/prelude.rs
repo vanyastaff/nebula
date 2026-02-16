@@ -40,11 +40,8 @@ pub use crate::combinators::{
 };
 
 // ============================================================================
-// SERDE-GATED: JSON convenience types
+// SERDE-GATED: JSON field validators
 // ============================================================================
-
-#[cfg(feature = "serde")]
-pub use crate::json::*;
 
 #[cfg(feature = "serde")]
 pub use crate::combinators::{JsonField, json_field, json_field_optional};

@@ -7,7 +7,5 @@
 
 pub mod combinators;
 pub mod foundation;
-#[cfg(feature = "serde")]
-pub mod json;
 pub mod prelude;
 pub mod validators;

@@ -6,7 +6,7 @@
 #![cfg(feature = "serde")]
 
 use nebula_validator::prelude::*;
-use serde_json::json;
+use serde_json::{Value, json};
 
 // ============================================================================
 // PRELUDE IMPORT SMOKE TEST
@@ -39,33 +39,33 @@ fn validate_any_string_from_json() {
 }
 
 // ============================================================================
-// JSON SIZE VALIDATORS (TURBOFISH-FREE)
+// JSON SIZE VALIDATORS
 // ============================================================================
 
 #[test]
-fn json_min_size_without_turbofish() {
-    let v = json_min_size(2);
+fn json_min_size_validation() {
+    let v = min_size::<Value>(2);
     assert!(v.validate_any(&json!([1, 2, 3])).is_ok());
     assert!(v.validate_any(&json!([1])).is_err());
 }
 
 #[test]
-fn json_max_size_without_turbofish() {
-    let v = json_max_size(3);
+fn json_max_size_validation() {
+    let v = max_size::<Value>(3);
     assert!(v.validate_any(&json!([1, 2, 3])).is_ok());
     assert!(v.validate_any(&json!([1, 2, 3, 4])).is_err());
 }
 
 #[test]
-fn json_exact_size_without_turbofish() {
-    let v = json_exact_size(2);
+fn json_exact_size_validation() {
+    let v = exact_size::<Value>(2);
     assert!(v.validate_any(&json!([1, 2])).is_ok());
     assert!(v.validate_any(&json!([1])).is_err());
 }
 
 #[test]
-fn json_size_range_without_turbofish() {
-    let v = json_size_range(2, 4);
+fn json_size_range_validation() {
+    let v = size_range::<Value>(2, 4);
     assert!(v.validate_any(&json!([1, 2, 3])).is_ok());
     assert!(v.validate_any(&json!([])).is_err());
     assert!(v.validate_any(&json!([1, 2, 3, 4, 5])).is_err());
@@ -84,7 +84,7 @@ fn type_mismatch_on_null_for_string_validator() {
 
 #[test]
 fn type_mismatch_on_null_for_array_validator() {
-    let v = json_min_size(1);
+    let v = min_size::<Value>(1);
     let err = v.validate_any(&json!(null)).unwrap_err();
     assert_eq!(err.code.as_ref(), "type_mismatch");
 }
@@ -143,7 +143,7 @@ fn json_field_optional_via_prelude() {
 #[test]
 fn composed_json_validation_via_prelude() {
     let v = json_field("/name", min_length(1))
-        .and(json_field("/tags", json_min_size(1)))
+        .and(json_field("/tags", min_size::<Value>(1)))
         .and(json_field_optional("/email", email()));
 
     let valid = json!({
