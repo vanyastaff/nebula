@@ -50,25 +50,17 @@ crate::validator! {
 // MIN LENGTH
 // ============================================================================
 
-/// Validates that a string has at least a minimum length.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MinLength {
-    /// Minimum required length (inclusive).
-    pub min: usize,
-    /// How to count length.
-    pub mode: LengthMode,
+crate::validator! {
+    /// Validates that a string has at least a minimum length.
+    #[derive(Copy, PartialEq, Eq, Hash)]
+    pub MinLength { min: usize, mode: LengthMode } for str;
+    rule(self, input) { self.mode.measure(input) >= self.min }
+    error(self, input) { ValidationError::min_length("", self.min, self.mode.measure(input)) }
+    new(min: usize) { Self { min, mode: LengthMode::Chars } }
+    fn min_length(min: usize);
 }
 
 impl MinLength {
-    /// Creates a new minimum length validator (counts Unicode chars by default).
-    #[must_use]
-    pub fn new(min: usize) -> Self {
-        Self {
-            min,
-            mode: LengthMode::Chars,
-        }
-    }
-
     /// Creates a minimum length validator that counts bytes.
     #[must_use]
     pub fn bytes(min: usize) -> Self {
@@ -79,48 +71,21 @@ impl MinLength {
     }
 }
 
-impl Validate for MinLength {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        let len = self.mode.measure(input);
-        if len >= self.min {
-            Ok(())
-        } else {
-            Err(ValidationError::min_length("", self.min, len))
-        }
-    }
-}
-
-/// Creates a minimum length validator.
-#[must_use]
-pub fn min_length(min: usize) -> MinLength {
-    MinLength::new(min)
-}
-
 // ============================================================================
 // MAX LENGTH
 // ============================================================================
 
-/// Validates that a string does not exceed a maximum length.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MaxLength {
-    /// Maximum allowed length (inclusive).
-    pub max: usize,
-    /// How to count length.
-    pub mode: LengthMode,
+crate::validator! {
+    /// Validates that a string does not exceed a maximum length.
+    #[derive(Copy, PartialEq, Eq, Hash)]
+    pub MaxLength { max: usize, mode: LengthMode } for str;
+    rule(self, input) { self.mode.measure(input) <= self.max }
+    error(self, input) { ValidationError::max_length("", self.max, self.mode.measure(input)) }
+    new(max: usize) { Self { max, mode: LengthMode::Chars } }
+    fn max_length(max: usize);
 }
 
 impl MaxLength {
-    /// Creates a new maximum length validator (counts Unicode chars by default).
-    #[must_use]
-    pub fn new(max: usize) -> Self {
-        Self {
-            max,
-            mode: LengthMode::Chars,
-        }
-    }
-
     /// Creates a maximum length validator that counts bytes.
     #[must_use]
     pub fn bytes(max: usize) -> Self {
@@ -131,48 +96,28 @@ impl MaxLength {
     }
 }
 
-impl Validate for MaxLength {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        let len = self.mode.measure(input);
-        if len <= self.max {
-            Ok(())
-        } else {
-            Err(ValidationError::max_length("", self.max, len))
-        }
-    }
-}
-
-/// Creates a maximum length validator.
-#[must_use]
-pub fn max_length(max: usize) -> MaxLength {
-    MaxLength::new(max)
-}
-
 // ============================================================================
 // EXACT LENGTH
 // ============================================================================
 
-/// Validates that a string has an exact length.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ExactLength {
-    /// Required exact length.
-    pub length: usize,
-    /// How to count length.
-    pub mode: LengthMode,
+crate::validator! {
+    /// Validates that a string has an exact length.
+    #[derive(Copy, PartialEq, Eq, Hash)]
+    pub ExactLength { length: usize, mode: LengthMode } for str;
+    rule(self, input) { self.mode.measure(input) == self.length }
+    error(self, input) {
+        ValidationError::new(
+            "exact_length",
+            format!("String must be exactly {} characters", self.length),
+        )
+        .with_param("expected", self.length.to_string())
+        .with_param("actual", self.mode.measure(input).to_string())
+    }
+    new(length: usize) { Self { length, mode: LengthMode::Chars } }
+    fn exact_length(length: usize);
 }
 
 impl ExactLength {
-    /// Creates a new exact length validator (counts Unicode chars by default).
-    #[must_use]
-    pub fn new(length: usize) -> Self {
-        Self {
-            length,
-            mode: LengthMode::Chars,
-        }
-    }
-
     /// Creates an exact length validator that counts bytes.
     #[must_use]
     pub fn bytes(length: usize) -> Self {
@@ -181,30 +126,6 @@ impl ExactLength {
             mode: LengthMode::Bytes,
         }
     }
-}
-
-impl Validate for ExactLength {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        let len = self.mode.measure(input);
-        if len == self.length {
-            Ok(())
-        } else {
-            Err(ValidationError::new(
-                "exact_length",
-                format!("String must be exactly {} characters", self.length),
-            )
-            .with_param("expected", self.length.to_string())
-            .with_param("actual", len.to_string()))
-        }
-    }
-}
-
-/// Creates an exact length validator.
-#[must_use]
-pub fn exact_length(length: usize) -> ExactLength {
-    ExactLength::new(length)
 }
 
 // ============================================================================

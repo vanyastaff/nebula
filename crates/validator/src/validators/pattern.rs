@@ -2,156 +2,92 @@
 //!
 //! This module provides validators for checking string patterns and formats.
 
-use crate::foundation::{Validate, ValidationError};
+use crate::foundation::ValidationError;
 
 // ============================================================================
 // CONTAINS
 // ============================================================================
 
-/// Validates that a string contains a substring.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::validators::Contains;
-///
-/// let validator = Contains { substring: "test".to_string() };
-/// assert!(validator.validate("test string").is_ok());
-/// assert!(validator.validate("hello world").is_err());
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Contains {
-    /// The substring to search for.
-    pub substring: String,
-}
-
-impl Contains {
-    /// Creates a new contains validator.
-    pub fn new(substring: impl Into<String>) -> Self {
-        Self {
-            substring: substring.into(),
-        }
+crate::validator! {
+    /// Validates that a string contains a substring.
+    #[derive(PartialEq, Eq, Hash)]
+    pub Contains { substring: String } for str;
+    rule(self, input) { input.contains(&self.substring) }
+    error(self, input) {
+        ValidationError::new(
+            "contains",
+            format!("String must contain '{}'", self.substring),
+        )
+        .with_param("substring", self.substring.clone())
     }
-}
-
-impl Validate for Contains {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        if input.contains(&self.substring) {
-            Ok(())
-        } else {
-            Err(ValidationError::new(
-                "contains",
-                format!("String must contain '{}'", self.substring),
-            )
-            .with_param("substring", self.substring.clone()))
-        }
-    }
-}
-
-/// Creates a contains validator.
-pub fn contains(substring: impl Into<String>) -> Contains {
-    Contains::new(substring)
+    new(substring: impl Into<String>) { Self { substring: substring.into() } }
+    fn contains(substring: impl Into<String>);
 }
 
 // ============================================================================
 // STARTS WITH
 // ============================================================================
 
-/// Validates that a string starts with a prefix.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct StartsWith {
-    /// The required prefix.
-    pub prefix: String,
-}
-
-impl StartsWith {
-    pub fn new(prefix: impl Into<String>) -> Self {
-        Self {
-            prefix: prefix.into(),
-        }
+crate::validator! {
+    /// Validates that a string starts with a prefix.
+    #[derive(PartialEq, Eq, Hash)]
+    pub StartsWith { prefix: String } for str;
+    rule(self, input) { input.starts_with(&self.prefix) }
+    error(self, input) {
+        ValidationError::new(
+            "starts_with",
+            format!("String must start with '{}'", self.prefix),
+        )
+        .with_param("prefix", self.prefix.clone())
     }
-}
-
-impl Validate for StartsWith {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        if input.starts_with(&self.prefix) {
-            Ok(())
-        } else {
-            Err(ValidationError::new(
-                "starts_with",
-                format!("String must start with '{}'", self.prefix),
-            )
-            .with_param("prefix", self.prefix.clone()))
-        }
-    }
-}
-
-pub fn starts_with(prefix: impl Into<String>) -> StartsWith {
-    StartsWith::new(prefix)
+    new(prefix: impl Into<String>) { Self { prefix: prefix.into() } }
+    fn starts_with(prefix: impl Into<String>);
 }
 
 // ============================================================================
 // ENDS WITH
 // ============================================================================
 
-/// Validates that a string ends with a suffix.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct EndsWith {
-    /// The required suffix.
-    pub suffix: String,
-}
-
-impl EndsWith {
-    pub fn new(suffix: impl Into<String>) -> Self {
-        Self {
-            suffix: suffix.into(),
-        }
+crate::validator! {
+    /// Validates that a string ends with a suffix.
+    #[derive(PartialEq, Eq, Hash)]
+    pub EndsWith { suffix: String } for str;
+    rule(self, input) { input.ends_with(&self.suffix) }
+    error(self, input) {
+        ValidationError::new(
+            "ends_with",
+            format!("String must end with '{}'", self.suffix),
+        )
+        .with_param("suffix", self.suffix.clone())
     }
-}
-
-impl Validate for EndsWith {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        if input.ends_with(&self.suffix) {
-            Ok(())
-        } else {
-            Err(ValidationError::new(
-                "ends_with",
-                format!("String must end with '{}'", self.suffix),
-            )
-            .with_param("suffix", self.suffix.clone()))
-        }
-    }
-}
-
-pub fn ends_with(suffix: impl Into<String>) -> EndsWith {
-    EndsWith::new(suffix)
+    new(suffix: impl Into<String>) { Self { suffix: suffix.into() } }
+    fn ends_with(suffix: impl Into<String>);
 }
 
 // ============================================================================
 // ALPHANUMERIC
 // ============================================================================
 
-/// Validates that a string contains only alphanumeric characters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Alphanumeric {
-    /// Whether to allow spaces.
-    pub allow_spaces: bool,
+crate::validator! {
+    /// Validates that a string contains only alphanumeric characters.
+    #[derive(Copy, PartialEq, Eq, Hash)]
+    pub Alphanumeric { allow_spaces: bool } for str;
+    rule(self, input) {
+        input.chars().all(|c| c.is_alphanumeric() || (self.allow_spaces && c.is_whitespace()))
+    }
+    error(self, input) {
+        ValidationError::new("alphanumeric", if self.allow_spaces {
+            "String must contain only letters, numbers, and spaces"
+        } else {
+            "String must contain only letters and numbers"
+        })
+    }
+    new() { Self { allow_spaces: false } }
+    fn alphanumeric();
 }
 
 impl Alphanumeric {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            allow_spaces: false,
-        }
-    }
-
+    /// Allow spaces in the string.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_spaces(mut self) -> Self {
         self.allow_spaces = true;
@@ -165,51 +101,26 @@ impl Default for Alphanumeric {
     }
 }
 
-impl Validate for Alphanumeric {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        let is_valid = input
-            .chars()
-            .all(|c| c.is_alphanumeric() || (self.allow_spaces && c.is_whitespace()));
-
-        if is_valid {
-            Ok(())
-        } else {
-            let msg = if self.allow_spaces {
-                "String must contain only letters, numbers, and spaces"
-            } else {
-                "String must contain only letters and numbers"
-            };
-            Err(ValidationError::new("alphanumeric", msg))
-        }
-    }
-}
-
-#[must_use]
-pub fn alphanumeric() -> Alphanumeric {
-    Alphanumeric::new()
-}
-
 // ============================================================================
 // ALPHABETIC
 // ============================================================================
 
-/// Validates that a string contains only alphabetic characters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Alphabetic {
-    /// Whether to allow spaces in the alphabetic string.
-    pub allow_spaces: bool,
+crate::validator! {
+    /// Validates that a string contains only alphabetic characters.
+    #[derive(Copy, PartialEq, Eq, Hash)]
+    pub Alphabetic { allow_spaces: bool } for str;
+    rule(self, input) {
+        input.chars().all(|c| c.is_alphabetic() || (self.allow_spaces && c.is_whitespace()))
+    }
+    error(self, input) {
+        ValidationError::new("alphabetic", "String must contain only letters")
+    }
+    new() { Self { allow_spaces: false } }
+    fn alphabetic();
 }
 
 impl Alphabetic {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            allow_spaces: false,
-        }
-    }
-
+    /// Allow spaces in the alphabetic string.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_spaces(mut self) -> Self {
         self.allow_spaces = true;
@@ -223,114 +134,40 @@ impl Default for Alphabetic {
     }
 }
 
-impl Validate for Alphabetic {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        let is_valid = input
-            .chars()
-            .all(|c| c.is_alphabetic() || (self.allow_spaces && c.is_whitespace()));
-
-        if is_valid {
-            Ok(())
-        } else {
-            Err(ValidationError::new(
-                "alphabetic",
-                "String must contain only letters",
-            ))
-        }
-    }
-}
-
-#[must_use]
-pub fn alphabetic() -> Alphabetic {
-    Alphabetic::new()
-}
-
 // ============================================================================
 // NUMERIC
 // ============================================================================
 
-/// Validates that a string contains only numeric characters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Numeric;
-
-impl Validate for Numeric {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        if input.chars().all(char::is_numeric) {
-            Ok(())
-        } else {
-            Err(ValidationError::new(
-                "numeric",
-                "String must contain only numbers",
-            ))
-        }
-    }
-}
-
-#[must_use]
-pub const fn numeric() -> Numeric {
-    Numeric
+crate::validator! {
+    /// Validates that a string contains only numeric characters.
+    pub Numeric for str;
+    rule(input) { input.chars().all(char::is_numeric) }
+    error(input) { ValidationError::new("numeric", "String must contain only numbers") }
+    fn numeric();
 }
 
 // ============================================================================
-// LOWERCASE / UPPERCASE
+// LOWERCASE
 // ============================================================================
 
-/// Validates that a string is lowercase.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Lowercase;
-
-impl Validate for Lowercase {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        if input
-            .chars()
-            .all(|c| !c.is_alphabetic() || c.is_lowercase())
-        {
-            Ok(())
-        } else {
-            Err(ValidationError::new(
-                "lowercase",
-                "String must be lowercase",
-            ))
-        }
-    }
+crate::validator! {
+    /// Validates that a string is lowercase.
+    pub Lowercase for str;
+    rule(input) { input.chars().all(|c| !c.is_alphabetic() || c.is_lowercase()) }
+    error(input) { ValidationError::new("lowercase", "String must be lowercase") }
+    fn lowercase();
 }
 
-#[must_use]
-pub const fn lowercase() -> Lowercase {
-    Lowercase
-}
+// ============================================================================
+// UPPERCASE
+// ============================================================================
 
-/// Validates that a string is uppercase.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Uppercase;
-
-impl Validate for Uppercase {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        if input
-            .chars()
-            .all(|c| !c.is_alphabetic() || c.is_uppercase())
-        {
-            Ok(())
-        } else {
-            Err(ValidationError::new(
-                "uppercase",
-                "String must be uppercase",
-            ))
-        }
-    }
-}
-
-#[must_use]
-pub const fn uppercase() -> Uppercase {
-    Uppercase
+crate::validator! {
+    /// Validates that a string is uppercase.
+    pub Uppercase for str;
+    rule(input) { input.chars().all(|c| !c.is_alphabetic() || c.is_uppercase()) }
+    error(input) { ValidationError::new("uppercase", "String must be uppercase") }
+    fn uppercase();
 }
 
 // ============================================================================
@@ -340,6 +177,7 @@ pub const fn uppercase() -> Uppercase {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foundation::Validate;
 
     #[test]
     fn test_contains() {
