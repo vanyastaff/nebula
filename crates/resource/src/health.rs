@@ -231,6 +231,12 @@ impl HealthChecker {
         let failure_threshold = self.config.failure_threshold;
         let records = Arc::clone(&self.records);
         let instance_tokens = Arc::clone(&self.instance_tokens);
+        // Cancel any previous monitoring task for this instance_id
+        // to avoid orphaned tasks that run until shutdown.
+        if let Some((_, old_token)) = self.instance_tokens.remove(&instance_id) {
+            old_token.cancel();
+        }
+
         // Per-instance token: child of the global cancel token.
         // Cancelled by either stop_monitoring() or shutdown().
         let cancel = self.cancel.child_token();
@@ -679,6 +685,79 @@ mod tests {
         let unhealthy = checker.get_unhealthy_instances();
         assert_eq!(unhealthy.len(), 1);
         assert_eq!(unhealthy[0].instance_id, unhealthy_id);
+
+        checker.shutdown();
+    }
+
+    #[tokio::test]
+    async fn stop_monitoring_permanently_stops_task() {
+        let config = HealthCheckConfig {
+            default_interval: Duration::from_millis(30),
+            failure_threshold: 2,
+            check_timeout: Duration::from_secs(1),
+        };
+        let checker = HealthChecker::new(config);
+
+        let instance_id = uuid::Uuid::new_v4();
+        let instance = Arc::new(MockHealthCheckable {
+            should_fail: Arc::new(AtomicBool::new(false)),
+        });
+
+        checker.start_monitoring(instance_id, "test".to_string(), instance);
+
+        // Wait for at least one check to run
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(checker.get_health(&instance_id).is_some());
+
+        checker.stop_monitoring(&instance_id);
+
+        // Wait longer than the check interval — record must NOT reappear
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            checker.get_health(&instance_id).is_none(),
+            "record must not reappear after stop_monitoring"
+        );
+
+        checker.shutdown();
+    }
+
+    #[tokio::test]
+    async fn double_start_monitoring_cancels_old_task() {
+        let config = HealthCheckConfig {
+            default_interval: Duration::from_millis(30),
+            failure_threshold: 5,
+            check_timeout: Duration::from_secs(1),
+        };
+        let checker = HealthChecker::new(config);
+
+        let instance_id = uuid::Uuid::new_v4();
+
+        // First monitoring: always unhealthy
+        let first = Arc::new(MockHealthCheckable {
+            should_fail: Arc::new(AtomicBool::new(true)),
+        });
+        checker.start_monitoring(instance_id, "test".to_string(), first);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        let health = checker.get_health(&instance_id).unwrap();
+        assert!(!health.status.is_usable(), "first monitor should report unhealthy");
+
+        // Second monitoring with same instance_id: always healthy
+        let second = Arc::new(MockHealthCheckable {
+            should_fail: Arc::new(AtomicBool::new(false)),
+        });
+        checker.start_monitoring(instance_id, "test".to_string(), second);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        let health = checker.get_health(&instance_id).unwrap();
+        assert!(
+            health.status.is_usable(),
+            "second monitor should overwrite with healthy status"
+        );
+        assert_eq!(
+            health.consecutive_failures, 0,
+            "new task should have fresh failure counter"
+        );
 
         checker.shutdown();
     }
