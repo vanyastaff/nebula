@@ -7,5 +7,6 @@
 
 pub mod combinators;
 pub mod foundation;
+mod macros;
 pub mod prelude;
 pub mod validators;

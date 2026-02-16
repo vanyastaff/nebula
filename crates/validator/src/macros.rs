@@ -1,293 +1,305 @@
-//! Macros for creating validators
-//!
-//! This module provides macros that simplify validator creation and usage.
+//! Macros for creating validators with minimal boilerplate.
 //!
 //! # Available Macros
 //!
-//! - `validator!` - Create simple validators with minimal boilerplate
-//! - `validate!` - Inline validation expressions
-//! - `validator_fn!` - Create validators from functions
+//! - [`validator!`] — Create a complete validator (struct + Validate impl + factory fn)
+//! - [`compose!`] — AND-chain multiple validators
+//! - [`any_of!`] — OR-chain multiple validators
 //!
 //! # Examples
 //!
-//! ## Creating a validator
-//!
 //! ```rust,ignore
-//! use nebula_validator::macros::validator;
+//! use nebula_validator::validator;
+//! use nebula_validator::foundation::{Validate, ValidationError};
 //!
+//! // Unit validator (no fields)
 //! validator! {
-//!     pub struct MinLength {
-//!         min: usize
-//!     }
-//!     impl {
-//!         fn check(input: &str, min: usize) -> bool {
-//!             input.len() >= min
-//!         }
-//!         fn error(min: usize) -> String {
-//!             format!("Must be at least {} characters", min)
-//!         }
-//!         const DESCRIPTION: &str = "Minimum length validator";
-//!     }
+//!     pub NotEmpty for str;
+//!     rule(input) { !input.is_empty() }
+//!     error(input) { ValidationError::new("not_empty", "must not be empty") }
+//!     fn not_empty();
 //! }
-//! ```
 //!
-//! ## Inline validation
-//!
-//! ```rust,ignore
-//! use nebula_validator::macros::validate;
-//!
-//! let result = validate!(input, |s: &str| {
-//!     s.len() >= 5 && s.len() <= 20
-//! }, "Length must be between 5 and 20");
+//! // Struct with fields
+//! validator! {
+//!     #[derive(Copy, PartialEq, Eq, Hash)]
+//!     pub MinLength { min: usize } for str;
+//!     rule(self, input) { input.len() >= self.min }
+//!     error(self, input) { ValidationError::min_length("", self.min, input.len()) }
+//!     fn min_length(min: usize);
+//! }
 //! ```
 
 // ============================================================================
 // VALIDATOR MACRO
 // ============================================================================
 
-/// Creates a validator with minimal boilerplate.
+/// Creates a complete validator: struct definition, `Validate` implementation,
+/// constructor, and factory function.
 ///
-/// This macro generates a complete validator implementation including:
-/// - Struct definition
-/// - Validate trait implementation
-/// - Error handling
+/// `#[derive(Debug, Clone)]` is always applied. Add extra derives via `#[derive(...)]`.
 ///
-/// # Syntax
+/// # Variants
 ///
-/// ```ignore
+/// **Unit validator** (zero-sized, no fields):
+/// ```rust,ignore
 /// validator! {
-///     [pub] struct ValidatorName {
-///         field1: Type1,
-///         field2: Type2,
-///     }
-///     impl {
-///         fn check(input: &InputType, field1: Type1, field2: Type2) -> bool {
-///             // validation logic
-///         }
-///         fn error(field1: Type1, field2: Type2) -> String {
-///             // error message
-///         }
-///         const DESCRIPTION: &str = "description";
-///     }
+///     pub NotEmpty for str;
+///     rule(input) { !input.is_empty() }
+///     error(input) { ValidationError::new("not_empty", "empty") }
+///     fn not_empty();
 /// }
 /// ```
 ///
-/// # Examples
-///
+/// **Struct with fields** (auto `new` from all fields):
 /// ```rust,ignore
-/// use nebula_validator::macros::validator;
-///
 /// validator! {
-///     pub struct MinLength {
-///         min: usize
-///     }
-///     impl {
-///         fn check(input: &str, min: usize) -> bool {
-///             input.len() >= min
-///         }
-///         fn error(min: usize) -> String {
-///             format!("Must be at least {} characters", min)
-///         }
-///         const DESCRIPTION: &str = "Validates minimum string length";
-///     }
+///     #[derive(Copy, PartialEq, Eq, Hash)]
+///     pub MinLength { min: usize } for str;
+///     rule(self, input) { input.len() >= self.min }
+///     error(self, input) { ValidationError::min_length("", self.min, input.len()) }
+///     fn min_length(min: usize);
 /// }
+/// ```
 ///
-/// let validator = MinLength { min: 5 };
-/// assert!(validator.validate("hello").is_ok());
-/// assert!(validator.validate("hi").is_err());
+/// **Custom constructor** (overrides auto `new`):
+/// ```rust,ignore
+/// validator! {
+///     pub LengthRange { min: usize, max: usize } for str;
+///     rule(self, input) { let l = input.len(); l >= self.min && l <= self.max }
+///     error(self, input) { ValidationError::new("range", "out of range") }
+///     new(min: usize, max: usize) { Self { min, max } }
+///     fn length_range(min: usize, max: usize);
+/// }
+/// ```
+///
+/// **Generic validator**:
+/// ```rust,ignore
+/// validator! {
+///     #[derive(Copy, PartialEq, Eq, Hash)]
+///     pub Min<T: PartialOrd + Display + Copy> { min: T } for T;
+///     rule(self, input) { *input >= self.min }
+///     error(self, input) { ValidationError::new("min", format!("must be >= {}", self.min)) }
+///     fn min(value: T);
+/// }
 /// ```
 #[macro_export]
 macro_rules! validator {
-    // Main pattern: struct with fields and impl
+    // ── Variant 1a: Unit validator (no fields) + factory fn ──────────────
     (
         $(#[$meta:meta])*
-        $vis:vis struct $name:ident {
-            $(
-                $(#[$field_meta:meta])*
-                $field:ident: $field_ty:ty
-            ),* $(,)?
+        $vis:vis $name:ident for $input:ty;
+        rule($inp:ident) $rule:block
+        error($einp:ident) $err:block
+        fn $factory:ident();
+    ) => {
+        $crate::validator! {
+            $(#[$meta])*
+            $vis $name for $input;
+            rule($inp) $rule
+            error($einp) $err
         }
-        impl {
-            fn check($input:ident: &$input_ty:ty $(, $param:ident: $param_ty:ty)*) -> bool $check_body:block
-            fn error($($error_param:ident: $error_param_ty:ty),*) -> String $error_body:block
-            $(const DESCRIPTION: &str = $desc:expr;)?
-        }
+
+        #[must_use]
+        $vis const fn $factory() -> $name { $name }
+    };
+
+    // ── Variant 1b: Unit validator (no fields), no factory ───────────────
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident for $input:ty;
+        rule($inp:ident) $rule:block
+        error($einp:ident) $err:block
     ) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        $vis struct $name;
+
+        impl $crate::foundation::Validate for $name {
+            type Input = $input;
+
+            #[allow(unused_variables)]
+            fn validate(&self, $inp: &Self::Input) -> Result<(), $crate::foundation::ValidationError> {
+                if $rule {
+                    Ok(())
+                } else {
+                    let $einp = $inp;
+                    Err($err)
+                }
+            }
+        }
+    };
+
+    // ── Variant 3a: Struct with fields + custom new + factory fn ─────────
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
+        rule($self_:ident, $inp:ident) $rule:block
+        error($self2:ident, $einp:ident) $err:block
+        new($($narg:ident: $naty:ty),* $(,)?) $new_body:block
+        fn $factory:ident($($farg:ident: $faty:ty),* $(,)?);
+    ) => {
+        $crate::validator! {
+            $(#[$meta])*
+            $vis $name { $($field: $fty),+ } for $input;
+            rule($self_, $inp) $rule
+            error($self2, $einp) $err
+            new($($narg: $naty),*) $new_body
+        }
+
+        #[must_use]
+        $vis fn $factory($($farg: $faty),*) -> $name {
+            $name::new($($farg),*)
+        }
+    };
+
+    // ── Variant 3b: Struct with fields + custom new, no factory ──────────
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
+        rule($self_:ident, $inp:ident) $rule:block
+        error($self2:ident, $einp:ident) $err:block
+        new($($narg:ident: $naty:ty),* $(,)?) $new_body:block
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone)]
         $vis struct $name {
-            $(
-                $(#[$field_meta])*
-                pub $field: $field_ty,
-            )*
-        }
-
-        impl $crate::foundation::Validate for $name {
-            type Input = $input_ty;
-
-            fn validate(&self, $input: &Self::Input) -> Result<(), ValidationError> {
-                if Self::check($input $(, self.$param)*) {
-                    Ok(())
-                } else {
-                    Err($crate::foundation::ValidationError::new(
-                        stringify!($name),
-                        Self::error($(self.$error_param),*)
-                    ))
-                }
-            }
+            $(pub $field: $fty,)+
         }
 
         impl $name {
-            fn check($input: &$input_ty $(, $param: $param_ty)*) -> bool $check_body
-            fn error($($error_param: $error_param_ty),*) -> String $error_body
-        }
-    };
-}
-
-// ============================================================================
-// VALIDATE MACRO
-// ============================================================================
-
-/// Inline validation with custom predicate.
-///
-/// This macro provides a quick way to validate a value inline without
-/// creating a full validator struct.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::validate;
-///
-/// let input = "hello";
-/// validate!(input, |s: &str| s.len() >= 5, "Too short")?;
-///
-/// // With custom error code
-/// validate!(input, |s: &str| s.contains("@"), "email_invalid", "Must contain @")?;
-/// ```
-#[macro_export]
-macro_rules! validate {
-    // Simple validation with message
-    ($value:expr, $predicate:expr, $message:expr) => {{
-        let value = $value;
-        if $predicate(&value) {
-            Ok(())
-        } else {
-            Err($crate::foundation::ValidationError::new(
-                "validation_failed",
-                $message,
-            ))
-        }
-    }};
-
-    // Validation with custom error code
-    ($value:expr, $predicate:expr, $code:expr, $message:expr) => {{
-        let value = $value;
-        if $predicate(&value) {
-            Ok(())
-        } else {
-            Err($crate::foundation::ValidationError::new($code, $message))
-        }
-    }};
-}
-
-// ============================================================================
-// VALIDATOR_FN MACRO
-// ============================================================================
-
-/// Creates a validator from a function.
-///
-/// This macro wraps a validation function into a validator struct.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::validator_fn;
-///
-/// validator_fn!(is_even, |n: &i32| *n % 2 == 0, "Number must be even");
-///
-/// let validator = is_even();
-/// assert!(validator.validate(&4).is_ok());
-/// assert!(validator.validate(&3).is_err());
-/// ```
-#[macro_export]
-macro_rules! validator_fn {
-    (
-        $name:ident,
-        |$input:ident: &$input_ty:ty| $body:expr,
-        $message:expr
-    ) => {
-        #[derive(Debug, Clone, Copy)]
-        pub struct $name;
-
-        impl $name {
-            pub fn new() -> Self {
-                Self
-            }
-        }
-
-        impl Default for $name {
-            fn default() -> Self {
-                Self::new()
-            }
+            #[must_use]
+            pub fn new($($narg: $naty),*) -> Self $new_body
         }
 
         impl $crate::foundation::Validate for $name {
-            type Input = $input_ty;
+            type Input = $input;
 
-            fn validate(&self, $input: &Self::Input) -> Result<(), ValidationError> {
-                if $body {
+            #[allow(unused_variables)]
+            fn validate(&$self_, $inp: &Self::Input) -> Result<(), $crate::foundation::ValidationError> {
+                if $rule {
                     Ok(())
                 } else {
-                    Err($crate::foundation::ValidationError::new(
-                        stringify!($name),
-                        $message,
-                    ))
+                    let $einp = $inp;
+                    Err($err)
                 }
             }
         }
     };
-}
 
-// ============================================================================
-// VALIDATOR_CONST MACRO
-// ============================================================================
-
-/// Creates a const validator (zero-size type).
-///
-/// Useful for validators without configuration.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::validator_const;
-///
-/// validator_const! {
-///     NotEmpty,
-///     |s: &str| !s.is_empty(),
-///     "String must not be empty"
-/// }
-/// ```
-#[macro_export]
-macro_rules! validator_const {
+    // ── Variant 2a: Struct with fields + auto new + factory fn ───────────
     (
-        $name:ident,
-        |$input:ident: &$input_ty:ty| $body:expr,
-        $message:expr
+        $(#[$meta:meta])*
+        $vis:vis $name:ident { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
+        rule($self_:ident, $inp:ident) $rule:block
+        error($self2:ident, $einp:ident) $err:block
+        fn $factory:ident($($farg:ident: $faty:ty),* $(,)?);
     ) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub struct $name;
+        $crate::validator! {
+            $(#[$meta])*
+            $vis $name { $($field: $fty),+ } for $input;
+            rule($self_, $inp) $rule
+            error($self2, $einp) $err
+        }
+
+        #[must_use]
+        $vis fn $factory($($farg: $faty),*) -> $name {
+            $name::new($($farg),*)
+        }
+    };
+
+    // ── Variant 2b: Struct with fields + auto new, no factory ────────────
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
+        rule($self_:ident, $inp:ident) $rule:block
+        error($self2:ident, $einp:ident) $err:block
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone)]
+        $vis struct $name {
+            $(pub $field: $fty,)+
+        }
+
+        impl $name {
+            #[must_use]
+            pub fn new($($field: $fty),+) -> Self {
+                Self { $($field),+ }
+            }
+        }
 
         impl $crate::foundation::Validate for $name {
-            type Input = $input_ty;
+            type Input = $input;
 
-            fn validate(&self, $input: &Self::Input) -> Result<(), ValidationError> {
-                if $body {
+            #[allow(unused_variables)]
+            fn validate(&$self_, $inp: &Self::Input) -> Result<(), $crate::foundation::ValidationError> {
+                if $rule {
                     Ok(())
                 } else {
-                    Err($crate::foundation::ValidationError::new(
-                        stringify!($name),
-                        $message,
-                    ))
+                    let $einp = $inp;
+                    Err($err)
+                }
+            }
+        }
+    };
+
+    // ── Variant 4a: Generic struct + auto new + factory fn ───────────────
+    //
+    // Supports a single generic type parameter with one or more trait bounds.
+    // Bounds must be simple identifiers (use imports for paths).
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident<$gen:ident: $first_bound:ident $(+ $rest_bound:ident)*>
+            { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
+        rule($self_:ident, $inp:ident) $rule:block
+        error($self2:ident, $einp:ident) $err:block
+        fn $factory:ident($($farg:ident: $faty:ty),* $(,)?);
+    ) => {
+        $crate::validator! {
+            $(#[$meta])*
+            $vis $name<$gen: $first_bound $(+ $rest_bound)*>
+                { $($field: $fty),+ } for $input;
+            rule($self_, $inp) $rule
+            error($self2, $einp) $err
+        }
+
+        #[must_use]
+        $vis fn $factory<$gen: $first_bound $(+ $rest_bound)*>($($farg: $faty),*) -> $name<$gen> {
+            $name::new($($farg),*)
+        }
+    };
+
+    // ── Variant 4b: Generic struct + auto new, no factory ────────────────
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident<$gen:ident: $first_bound:ident $(+ $rest_bound:ident)*>
+            { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
+        rule($self_:ident, $inp:ident) $rule:block
+        error($self2:ident, $einp:ident) $err:block
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone)]
+        $vis struct $name<$gen> {
+            $(pub $field: $fty,)+
+        }
+
+        impl<$gen: $first_bound $(+ $rest_bound)*> $name<$gen> {
+            #[must_use]
+            pub fn new($($field: $fty),+) -> Self {
+                Self { $($field),+ }
+            }
+        }
+
+        impl<$gen: $first_bound $(+ $rest_bound)*> $crate::foundation::Validate for $name<$gen> {
+            type Input = $input;
+
+            #[allow(unused_variables)]
+            fn validate(&$self_, $inp: &Self::Input) -> Result<(), $crate::foundation::ValidationError> {
+                if $rule {
+                    Ok(())
+                } else {
+                    let $einp = $inp;
+                    Err($err)
                 }
             }
         }
@@ -300,16 +312,8 @@ macro_rules! validator_const {
 
 /// Composes multiple validators using AND logic.
 ///
-/// # Examples
-///
 /// ```rust,ignore
-/// use nebula_validator::compose;
-///
-/// let validator = compose![
-///     min_length(5),
-///     max_length(20),
-///     alphanumeric(),
-/// ];
+/// let validator = compose![min_length(5), max_length(20), alphanumeric()];
 /// ```
 #[macro_export]
 macro_rules! compose {
@@ -327,16 +331,8 @@ macro_rules! compose {
 
 /// Composes multiple validators using OR logic.
 ///
-/// # Examples
-///
 /// ```rust,ignore
-/// use nebula_validator::any_of;
-///
-/// let validator = any_of![
-///     exact_length(5),
-///     exact_length(10),
-///     exact_length(15),
-/// ];
+/// let validator = any_of![exact_length(5), exact_length(10)];
 /// ```
 #[macro_export]
 macro_rules! any_of {
@@ -354,100 +350,176 @@ macro_rules! any_of {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::foundation::{Validate, ValidationError};
 
+    // Test 1: Unit validator (no fields)
     validator! {
-        struct TestMinLength {
-            min: usize
+        /// A test unit validator.
+        TestNotEmpty for str;
+        rule(input) { !input.is_empty() }
+        error(input) { ValidationError::new("not_empty", "must not be empty") }
+        fn test_not_empty();
+    }
+
+    #[test]
+    fn test_unit_validator() {
+        let v = TestNotEmpty;
+        assert!(v.validate("hello").is_ok());
+        assert!(v.validate("").is_err());
+    }
+
+    #[test]
+    fn test_unit_factory() {
+        let v = test_not_empty();
+        assert!(v.validate("x").is_ok());
+    }
+
+    // Test 2: Struct with fields + auto new
+    validator! {
+        #[derive(Copy, PartialEq, Eq, Hash)]
+        TestMinLen { min: usize } for str;
+        rule(self, input) { input.len() >= self.min }
+        error(self, input) {
+            ValidationError::new("min_len", format!("need {} chars", self.min))
         }
-        impl {
-            fn check(input: &str, min: usize) -> bool {
-                input.len() >= min
-            }
-            fn error(min: usize) -> String {
-                format!("Must be at least {} characters", min)
-            }
-            const DESCRIPTION: &str = "Test min length validator";
+        fn test_min_len(min: usize);
+    }
+
+    #[test]
+    fn test_struct_validator() {
+        let v = TestMinLen { min: 3 };
+        assert!(v.validate("abc").is_ok());
+        assert!(v.validate("ab").is_err());
+    }
+
+    #[test]
+    fn test_struct_new() {
+        let v = TestMinLen::new(5);
+        assert!(v.validate("hello").is_ok());
+        assert!(v.validate("hi").is_err());
+    }
+
+    #[test]
+    fn test_struct_factory() {
+        let v = test_min_len(5);
+        assert!(v.validate("hello").is_ok());
+        assert!(v.validate("hi").is_err());
+    }
+
+    // Test 3: Generic validator
+    use std::fmt::Display;
+
+    validator! {
+        #[derive(Copy, PartialEq, Eq, Hash)]
+        TestMin<T: PartialOrd + Display + Copy> { min: T } for T;
+        rule(self, input) { *input >= self.min }
+        error(self, input) {
+            ValidationError::new("min", format!("must be >= {}", self.min))
+        }
+        fn test_min_val(value: T);
+    }
+
+    #[test]
+    fn test_generic_validator() {
+        let v = test_min_val(5_i32);
+        assert!(v.validate(&5).is_ok());
+        assert!(v.validate(&4).is_err());
+    }
+
+    #[test]
+    fn test_generic_validator_f64() {
+        let v = TestMin::new(1.5_f64);
+        assert!(v.validate(&2.0).is_ok());
+        assert!(v.validate(&1.0).is_err());
+    }
+
+    // Test 4: Custom constructor
+    validator! {
+        #[derive(Copy, PartialEq, Eq, Hash)]
+        TestRange { lo: usize, hi: usize } for usize;
+        rule(self, input) { *input >= self.lo && *input <= self.hi }
+        error(self, input) {
+            ValidationError::new("range", format!("{} not in {}..{}", input, self.lo, self.hi))
+        }
+        new(lo: usize, hi: usize) { Self { lo, hi } }
+        fn test_range(lo: usize, hi: usize);
+    }
+
+    #[test]
+    fn test_custom_new() {
+        let v = test_range(1, 10);
+        assert!(v.validate(&5).is_ok());
+        assert!(v.validate(&0).is_err());
+        assert!(v.validate(&11).is_err());
+    }
+
+    // Test 5: Unit validator without factory fn
+    validator! {
+        TestAlwaysOk for str;
+        rule(input) { true }
+        error(input) { ValidationError::new("unreachable", "unreachable") }
+    }
+
+    #[test]
+    fn test_unit_without_factory() {
+        let v = TestAlwaysOk;
+        assert!(v.validate("anything").is_ok());
+    }
+
+    // Test 6: Struct without factory fn
+    validator! {
+        TestMax { max: usize } for usize;
+        rule(self, input) { *input <= self.max }
+        error(self, input) {
+            ValidationError::new("max", format!("must be <= {}", self.max))
         }
     }
 
     #[test]
-    fn test_validator_macro() {
-        let validator = TestMinLength { min: 5 };
-        assert!(validator.validate("hello").is_ok());
-        assert!(validator.validate("hi").is_err());
+    fn test_struct_without_factory() {
+        let v = TestMax::new(10);
+        assert!(v.validate(&10).is_ok());
+        assert!(v.validate(&11).is_err());
+    }
+
+    // Test 7: compose! and any_of! still work
+    #[test]
+    fn test_compose_still_works() {
+        use crate::foundation::ValidateExt;
+        let v = compose![TestMinLen { min: 3 }, TestMinLen { min: 1 }];
+        assert!(v.validate("abc").is_ok());
+        assert!(v.validate("ab").is_err());
     }
 
     #[test]
-    fn test_validate_macro() {
-        let input = "hello";
-        let result = validate!(input, |s: &str| s.len() >= 5, "Too short");
-        assert!(result.is_ok());
+    fn test_any_of_still_works() {
+        use crate::foundation::ValidateExt;
+        let v = any_of![TestMinLen { min: 100 }, TestMinLen { min: 1 }];
+        assert!(v.validate("x").is_ok());
+    }
 
-        let result = validate!(input, |s: &str| s.len() >= 10, "Too short");
-        assert!(result.is_err());
+    // Test 8: Error messages are correct
+    #[test]
+    fn test_error_message_content() {
+        let v = TestMinLen { min: 5 };
+        let err = v.validate("hi").unwrap_err();
+        assert_eq!(err.code, "min_len");
+        assert_eq!(err.message, "need 5 chars");
     }
 
     #[test]
-    fn test_validate_macro_with_code() {
-        let input = "hello";
-        let result = validate!(
-            input,
-            |s: &str| s.contains("@"),
-            "email_invalid",
-            "Must contain @"
-        );
-        assert!(result.is_err());
-        if let Err(e) = result {
-            assert_eq!(e.code, "email_invalid");
-        }
+    fn test_unit_error_message_content() {
+        let v = TestNotEmpty;
+        let err = v.validate("").unwrap_err();
+        assert_eq!(err.code, "not_empty");
+        assert_eq!(err.message, "must not be empty");
     }
 
-    validator_fn!(IsEven, |n: &i32| *n % 2 == 0, "Number must be even");
-
+    // Test 9: Custom new body is respected
     #[test]
-    fn test_validator_fn_macro() {
-        let validator = IsEven::new();
-        assert!(validator.validate(&4).is_ok());
-        assert!(validator.validate(&3).is_err());
-    }
-
-    validator_const!(NotEmpty, |s: &str| !s.is_empty(), "Must not be empty");
-
-    #[test]
-    fn test_validator_const_macro() {
-        let validator = NotEmpty;
-        assert!(validator.validate("hello").is_ok());
-        assert!(validator.validate("").is_err());
-    }
-
-    #[test]
-    fn test_compose_macro() {
-        let validator = compose![TestMinLength { min: 5 }, TestMinLength { min: 3 }];
-        assert!(validator.validate("hello").is_ok());
-        assert!(validator.validate("hi").is_err());
-    }
-
-    #[test]
-    fn test_any_of_macro() {
-        struct ExactLength {
-            length: usize,
-        }
-        impl Validate for ExactLength {
-            type Input = str;
-            fn validate(&self, input: &str) -> Result<(), ValidationError> {
-                if input.len() == self.length {
-                    Ok(())
-                } else {
-                    Err(ValidationError::new("exact_length", "Wrong length"))
-                }
-            }
-        }
-
-        let validator = any_of![ExactLength { length: 5 }, ExactLength { length: 10 }];
-        assert!(validator.validate("hello").is_ok());
-        assert!(validator.validate("helloworld").is_ok());
-        assert!(validator.validate("hi").is_err());
+    fn test_custom_new_body() {
+        let v = TestRange::new(3, 7);
+        assert_eq!(v.lo, 3);
+        assert_eq!(v.hi, 7);
     }
 }
