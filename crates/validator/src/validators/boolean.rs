@@ -1,76 +1,37 @@
 //! Boolean validators
 
-use crate::foundation::{Validate, ValidationError};
+use crate::foundation::ValidationError;
 
-// ============================================================================
-// IS TRUE
-// ============================================================================
-
-/// Validates that a boolean is true.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IsTrue;
-
-impl Validate for IsTrue {
-    type Input = bool;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        if *input {
-            Ok(())
-        } else {
-            Err(ValidationError::new("is_true", "Value must be true"))
-        }
-    }
+crate::validator! {
+    /// Validates that a boolean value is `true`.
+    pub IsTrue for bool;
+    rule(input) { *input }
+    error(input) { ValidationError::new("is_true", "Value must be true") }
+    fn is_true();
 }
 
-#[must_use]
-pub const fn is_true() -> IsTrue {
-    IsTrue
+crate::validator! {
+    /// Validates that a boolean value is `false`.
+    pub IsFalse for bool;
+    rule(input) { !*input }
+    error(input) { ValidationError::new("is_false", "Value must be false") }
+    fn is_false();
 }
-
-// ============================================================================
-// IS FALSE
-// ============================================================================
-
-/// Validates that a boolean is false.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IsFalse;
-
-impl Validate for IsFalse {
-    type Input = bool;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        if *input {
-            Err(ValidationError::new("is_false", "Value must be false"))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-#[must_use]
-pub const fn is_false() -> IsFalse {
-    IsFalse
-}
-
-// ============================================================================
-// TESTS
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foundation::Validate;
 
     #[test]
     fn test_is_true() {
-        let validator = is_true();
-        assert!(validator.validate(&true).is_ok());
-        assert!(validator.validate(&false).is_err());
+        assert!(is_true().validate(&true).is_ok());
+        assert!(is_true().validate(&false).is_err());
     }
 
     #[test]
     fn test_is_false() {
-        let validator = is_false();
-        assert!(validator.validate(&false).is_ok());
-        assert!(validator.validate(&true).is_err());
+        assert!(is_false().validate(&false).is_ok());
+        assert!(is_false().validate(&true).is_err());
     }
 }

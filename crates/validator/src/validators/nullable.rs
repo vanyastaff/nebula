@@ -1,14 +1,10 @@
-//! Nullable validators
+//! Nullable validators for Option types
 
 use crate::foundation::{Validate, ValidationError};
 use std::marker::PhantomData;
 
-// ============================================================================
-// REQUIRED
-// ============================================================================
-
-/// Validates that an Option is Some (not None).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Validates that an `Option` is `Some`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Required<T> {
     _phantom: PhantomData<T>,
 }
@@ -20,11 +16,12 @@ impl<T> Validate for Required<T> {
         if input.is_some() {
             Ok(())
         } else {
-            Err(ValidationError::required(""))
+            Err(ValidationError::new("required", "Value is required"))
         }
     }
 }
 
+/// Creates a Required validator.
 #[must_use]
 pub fn required<T>() -> Required<T> {
     Required {
@@ -32,14 +29,10 @@ pub fn required<T>() -> Required<T> {
     }
 }
 
-// ============================================================================
-// NOT NULL (alias)
-// ============================================================================
-
-/// Validates that a value is not null.
-/// This is an alias for Required.
+/// Alias for Required.
 pub type NotNull<T> = Required<T>;
 
+/// Creates a NotNull validator.
 #[must_use]
 pub fn not_null<T>() -> NotNull<T> {
     Required {
@@ -47,25 +40,19 @@ pub fn not_null<T>() -> NotNull<T> {
     }
 }
 
-// ============================================================================
-// TESTS
-// ============================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_required() {
-        let validator = required();
-        assert!(validator.validate(&Some(42)).is_ok());
-        assert!(validator.validate(&None::<i32>).is_err());
+        assert!(required().validate(&Some(42)).is_ok());
+        assert!(required().validate(&None::<i32>).is_err());
     }
 
     #[test]
     fn test_not_null() {
-        let validator = not_null();
-        assert!(validator.validate(&Some("hello")).is_ok());
-        assert!(validator.validate(&None::<&str>).is_err());
+        assert!(not_null().validate(&Some("x")).is_ok());
+        assert!(not_null().validate(&None::<&str>).is_err());
     }
 }

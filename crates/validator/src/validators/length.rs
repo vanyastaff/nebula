@@ -33,20 +33,24 @@ impl LengthMode {
 }
 
 // ============================================================================
+// NOT EMPTY
+// ============================================================================
+
+crate::validator! {
+    /// Validates that a string is not empty.
+    ///
+    /// This is equivalent to `MinLength::new(1)` but more semantic.
+    pub NotEmpty for str;
+    rule(input) { !input.is_empty() }
+    error(input) { ValidationError::new("not_empty", "String must not be empty") }
+    fn not_empty();
+}
+
+// ============================================================================
 // MIN LENGTH
 // ============================================================================
 
 /// Validates that a string has at least a minimum length.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::validators::MinLength;
-///
-/// let validator = MinLength { min: 5 };
-/// assert!(validator.validate("hello").is_ok());
-/// assert!(validator.validate("hi").is_err());
-/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MinLength {
     /// Minimum required length (inclusive).
@@ -89,15 +93,6 @@ impl Validate for MinLength {
 }
 
 /// Creates a minimum length validator.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::validators::min_length;
-///
-/// let validator = min_length(5);
-/// assert!(validator.validate("hello").is_ok());
-/// ```
 #[must_use]
 pub fn min_length(min: usize) -> MinLength {
     MinLength::new(min)
@@ -108,16 +103,6 @@ pub fn min_length(min: usize) -> MinLength {
 // ============================================================================
 
 /// Validates that a string does not exceed a maximum length.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::validators::MaxLength;
-///
-/// let validator = MaxLength { max: 10 };
-/// assert!(validator.validate("hello").is_ok());
-/// assert!(validator.validate("verylongstring").is_err());
-/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MaxLength {
     /// Maximum allowed length (inclusive).
@@ -170,17 +155,6 @@ pub fn max_length(max: usize) -> MaxLength {
 // ============================================================================
 
 /// Validates that a string has an exact length.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::validators::ExactLength;
-///
-/// let validator = ExactLength { length: 5 };
-/// assert!(validator.validate("hello").is_ok());
-/// assert!(validator.validate("hi").is_err());
-/// assert!(validator.validate("toolong").is_err());
-/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExactLength {
     /// Required exact length.
@@ -240,17 +214,6 @@ pub fn exact_length(length: usize) -> ExactLength {
 /// Validates that a string length is within a range.
 ///
 /// This is more efficient than using `min_length().and(max_length())`.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::validators::LengthRange;
-///
-/// let validator = LengthRange { min: 5, max: 10 };
-/// assert!(validator.validate("hello").is_ok());
-/// assert!(validator.validate("hi").is_err());
-/// assert!(validator.validate("verylongstring").is_err());
-/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LengthRange {
     /// Minimum length (inclusive).
@@ -316,47 +279,6 @@ impl Validate for LengthRange {
 /// Creates a length range validator.
 pub fn length_range(min: usize, max: usize) -> Result<LengthRange, ValidationError> {
     LengthRange::new(min, max)
-}
-
-// ============================================================================
-// NOT EMPTY
-// ============================================================================
-
-/// Validates that a string is not empty.
-///
-/// This is equivalent to `MinLength { min: 1 }` but more semantic.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::validators::NotEmpty;
-///
-/// let validator = NotEmpty;
-/// assert!(validator.validate("hello").is_ok());
-/// assert!(validator.validate("").is_err());
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NotEmpty;
-
-impl Validate for NotEmpty {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        if input.is_empty() {
-            Err(ValidationError::new(
-                "not_empty",
-                "String must not be empty",
-            ))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-/// Creates a not-empty validator.
-#[must_use]
-pub const fn not_empty() -> NotEmpty {
-    NotEmpty
 }
 
 // ============================================================================
@@ -482,17 +404,17 @@ mod tests {
         // Default mode counts Unicode chars, not bytes
         let validator = MinLength::new(5);
         assert!(validator.validate("hello").is_ok()); // 5 chars
-        assert!(validator.validate("👋🌍").is_err()); // 2 chars < 5
+        assert!(validator.validate("\u{1f44b}\u{1f30d}").is_err()); // 2 chars < 5
 
         // Bytes mode counts raw bytes
         let byte_validator = MinLength::bytes(5);
-        assert!(byte_validator.validate("👋🌍").is_ok()); // 8 bytes >= 5
+        assert!(byte_validator.validate("\u{1f44b}\u{1f30d}").is_ok()); // 8 bytes >= 5
 
         // Demonstrate the difference
-        assert_eq!("héllo".chars().count(), 5); // 5 chars
-        assert_eq!("héllo".len(), 6); // 6 bytes (é = 2 bytes)
-        assert!(MinLength::new(5).validate("héllo").is_ok()); // char count
-        assert!(MinLength::bytes(6).validate("héllo").is_ok()); // byte count
+        assert_eq!("h\u{e9}llo".chars().count(), 5); // 5 chars
+        assert_eq!("h\u{e9}llo".len(), 6); // 6 bytes (e with accent = 2 bytes)
+        assert!(MinLength::new(5).validate("h\u{e9}llo").is_ok()); // char count
+        assert!(MinLength::bytes(6).validate("h\u{e9}llo").is_ok()); // byte count
     }
 
     #[test]
