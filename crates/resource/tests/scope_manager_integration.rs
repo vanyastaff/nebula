@@ -52,7 +52,7 @@ fn pool_cfg() -> PoolConfig {
 // Multi-tenant isolation: two tenants each with their own resources
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn two_tenants_each_access_only_own_resources() {
     let mgr = Manager::new();
 
@@ -104,7 +104,7 @@ async fn two_tenants_each_access_only_own_resources() {
 // Mixed global + tenant: global resource accessible from both tenants
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn global_resource_shared_across_tenants() {
     let mgr = Manager::new();
 
@@ -150,7 +150,7 @@ async fn global_resource_shared_across_tenants() {
 // Workflow-scoped resource accessible from execution within that workflow
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn workflow_resource_accessible_from_child_execution() {
     let mgr = Manager::new();
 
@@ -233,7 +233,7 @@ async fn workflow_resource_denied_from_different_workflow() {
 // Tenant-scoped resource accessible from deeply nested action scope
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn tenant_resource_accessible_from_nested_action() {
     let mgr = Manager::new();
 

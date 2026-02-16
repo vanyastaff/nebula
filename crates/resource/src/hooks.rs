@@ -416,42 +416,120 @@ mod tests {
         assert!(!filter.matches("cache-redis"));
     }
 
+    // -----------------------------------------------------------------------
+    // Shared test hook structs (extracted to module level to avoid nesting)
+    // -----------------------------------------------------------------------
+
+    struct PriorityHook {
+        name: String,
+        prio: u32,
+    }
+
+    impl ResourceHook for PriorityHook {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn priority(&self) -> u32 {
+            self.prio
+        }
+        fn events(&self) -> Vec<HookEvent> {
+            vec![HookEvent::Acquire]
+        }
+        fn before<'a>(
+            &'a self,
+            _event: &'a HookEvent,
+            _resource_id: &'a str,
+            _ctx: &'a Context,
+        ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
+            Box::pin(async { HookResult::Continue })
+        }
+        fn after<'a>(
+            &'a self,
+            _event: &'a HookEvent,
+            _resource_id: &'a str,
+            _ctx: &'a Context,
+            _success: bool,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            Box::pin(async {})
+        }
+    }
+
+    struct CancelHook;
+
+    impl ResourceHook for CancelHook {
+        fn name(&self) -> &str {
+            "canceller"
+        }
+        fn priority(&self) -> u32 {
+            10
+        }
+        fn events(&self) -> Vec<HookEvent> {
+            vec![HookEvent::Acquire]
+        }
+        fn before<'a>(
+            &'a self,
+            _event: &'a HookEvent,
+            _resource_id: &'a str,
+            _ctx: &'a Context,
+        ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
+            Box::pin(async {
+                HookResult::Cancel(Error::Unavailable {
+                    resource_id: "test".to_string(),
+                    reason: "cancelled by hook".to_string(),
+                    retryable: false,
+                })
+            })
+        }
+        fn after<'a>(
+            &'a self,
+            _event: &'a HookEvent,
+            _resource_id: &'a str,
+            _ctx: &'a Context,
+            _success: bool,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            Box::pin(async {})
+        }
+    }
+
+    struct TrackingHook {
+        called: std::sync::atomic::AtomicBool,
+    }
+
+    impl ResourceHook for TrackingHook {
+        fn name(&self) -> &str {
+            "tracker"
+        }
+        fn priority(&self) -> u32 {
+            20
+        }
+        fn events(&self) -> Vec<HookEvent> {
+            vec![HookEvent::Acquire]
+        }
+        fn before<'a>(
+            &'a self,
+            _event: &'a HookEvent,
+            _resource_id: &'a str,
+            _ctx: &'a Context,
+        ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
+            Box::pin(async {
+                self.called
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                HookResult::Continue
+            })
+        }
+        fn after<'a>(
+            &'a self,
+            _event: &'a HookEvent,
+            _resource_id: &'a str,
+            _ctx: &'a Context,
+            _success: bool,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            Box::pin(async {})
+        }
+    }
+
     #[test]
     fn hook_registry_sorts_by_priority() {
-        struct PriorityHook {
-            name: String,
-            prio: u32,
-        }
-
-        impl ResourceHook for PriorityHook {
-            fn name(&self) -> &str {
-                &self.name
-            }
-            fn priority(&self) -> u32 {
-                self.prio
-            }
-            fn events(&self) -> Vec<HookEvent> {
-                vec![HookEvent::Acquire]
-            }
-            fn before<'a>(
-                &'a self,
-                _event: &'a HookEvent,
-                _resource_id: &'a str,
-                _ctx: &'a Context,
-            ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
-                Box::pin(async { HookResult::Continue })
-            }
-            fn after<'a>(
-                &'a self,
-                _event: &'a HookEvent,
-                _resource_id: &'a str,
-                _ctx: &'a Context,
-                _success: bool,
-            ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-                Box::pin(async {})
-            }
-        }
-
         let registry = HookRegistry::new();
         registry.register(Arc::new(PriorityHook {
             name: "high".into(),
@@ -475,78 +553,6 @@ mod tests {
     #[tokio::test]
     async fn run_before_short_circuits_on_cancel() {
         use std::sync::atomic::{AtomicBool, Ordering};
-
-        struct CancelHook;
-        struct TrackingHook {
-            called: AtomicBool,
-        }
-
-        impl ResourceHook for CancelHook {
-            fn name(&self) -> &str {
-                "canceller"
-            }
-            fn priority(&self) -> u32 {
-                10
-            }
-            fn events(&self) -> Vec<HookEvent> {
-                vec![HookEvent::Acquire]
-            }
-            fn before<'a>(
-                &'a self,
-                _event: &'a HookEvent,
-                _resource_id: &'a str,
-                _ctx: &'a Context,
-            ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
-                Box::pin(async {
-                    HookResult::Cancel(Error::Unavailable {
-                        resource_id: "test".to_string(),
-                        reason: "cancelled by hook".to_string(),
-                        retryable: false,
-                    })
-                })
-            }
-            fn after<'a>(
-                &'a self,
-                _event: &'a HookEvent,
-                _resource_id: &'a str,
-                _ctx: &'a Context,
-                _success: bool,
-            ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-                Box::pin(async {})
-            }
-        }
-
-        impl ResourceHook for TrackingHook {
-            fn name(&self) -> &str {
-                "tracker"
-            }
-            fn priority(&self) -> u32 {
-                20
-            }
-            fn events(&self) -> Vec<HookEvent> {
-                vec![HookEvent::Acquire]
-            }
-            fn before<'a>(
-                &'a self,
-                _event: &'a HookEvent,
-                _resource_id: &'a str,
-                _ctx: &'a Context,
-            ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
-                Box::pin(async {
-                    self.called.store(true, Ordering::SeqCst);
-                    HookResult::Continue
-                })
-            }
-            fn after<'a>(
-                &'a self,
-                _event: &'a HookEvent,
-                _resource_id: &'a str,
-                _ctx: &'a Context,
-                _success: bool,
-            ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-                Box::pin(async {})
-            }
-        }
 
         let registry = HookRegistry::new();
         registry.register(Arc::new(CancelHook));

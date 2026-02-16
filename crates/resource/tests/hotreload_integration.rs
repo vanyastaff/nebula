@@ -300,3 +300,76 @@ async fn old_pool_guards_cleanup_after_reload() {
     // New pool should still be functional.
     let _g = mgr.acquire("reload-test", &ctx()).await.unwrap();
 }
+
+/// Concurrent acquires during reload: some may fail transiently but pool
+/// recovers. Documents the availability gap between remove and insert.
+#[tokio::test(flavor = "multi_thread")]
+async fn reload_config_concurrent_acquire() {
+    let (resource, cleanup_count) = TrackingResource::new();
+
+    let mgr = Arc::new(Manager::new());
+    mgr.register(
+        resource,
+        TestConfig,
+        PoolConfig {
+            min_size: 0,
+            max_size: 4,
+            acquire_timeout: Duration::from_millis(200),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let mgr_acquirer = Arc::clone(&mgr);
+    let acquire_handle = tokio::spawn(async move {
+        let mut successes = 0u32;
+        let mut failures = 0u32;
+        for _ in 0..20 {
+            match mgr_acquirer.acquire("reload-test", &ctx()).await {
+                Ok(guard) => {
+                    successes += 1;
+                    drop(guard);
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                Err(_) => {
+                    failures += 1;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+        }
+        (successes, failures)
+    });
+
+    // Let acquirer start
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Reload in the middle of acquire loop
+    mgr.reload_config(
+        TrackingResource::with_counter(&cleanup_count),
+        TestConfig,
+        PoolConfig {
+            min_size: 0,
+            max_size: 4,
+            acquire_timeout: Duration::from_millis(200),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let (successes, _failures) = acquire_handle.await.unwrap();
+
+    // Most acquires should succeed; some may fail during the brief reload window
+    assert!(
+        successes >= 10,
+        "at least half of acquires should succeed, got {successes}/20"
+    );
+
+    // After reload, pool should be fully functional
+    let guard = mgr.acquire("reload-test", &ctx()).await.unwrap();
+    let inst = guard
+        .as_any()
+        .downcast_ref::<String>()
+        .expect("should downcast");
+    assert_eq!(inst, "instance");
+}

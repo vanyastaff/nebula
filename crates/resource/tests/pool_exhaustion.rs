@@ -64,7 +64,7 @@ async fn pool_exhaustion_returns_error() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn pool_reuses_after_drop() {
     let pool_config = PoolConfig {
         min_size: 0,

@@ -129,7 +129,7 @@ async fn quarantine_release_allows_acquire() {
 // T055: Recovery after quarantine release returns resource to pool
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn recovery_after_quarantine_release_returns_to_pool() {
     let mgr = Manager::new();
     mgr.register(NamedResource { name: "cache" }, TestConfig, pool_cfg())
@@ -359,7 +359,7 @@ fn record_failed_recovery_nonexistent_returns_false() {
 // Manager + quarantine: scoped resource quarantine
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn scoped_resource_quarantine_blocks_acquire() {
     let mgr = Manager::new();
 
