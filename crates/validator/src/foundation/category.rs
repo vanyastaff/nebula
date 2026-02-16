@@ -140,8 +140,7 @@ pub trait CompositeValidator: Validate + sealed::Sealed {
 // Sealed Implementations for Combinators
 // ============================================================================
 
-#[allow(deprecated)]
-use crate::combinators::{And, Cached, Map, Not, Optional, Or, When};
+use crate::combinators::{And, Cached, Not, Optional, Or, When};
 
 impl<A, B> sealed::Sealed for And<A, B>
 where
@@ -207,19 +206,6 @@ impl<V, T> sealed::Sealed for Optional<V> where V: Validate<Input = T> {}
 impl<V, T> CompositeValidator for Optional<V>
 where
     V: Validate<Input = T>,
-{
-    fn validator_count(&self) -> usize {
-        1
-    }
-}
-
-#[allow(deprecated)]
-impl<V, F> sealed::Sealed for Map<V, F> where V: Validate {}
-
-#[allow(deprecated)]
-impl<V, F> CompositeValidator for Map<V, F>
-where
-    V: Validate,
 {
     fn validator_count(&self) -> usize {
         1

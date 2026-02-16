@@ -155,6 +155,7 @@ macro_rules! validator_metadata {
 ///
 /// This helps optimize validation order by running cheap validators first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[non_exhaustive]
 pub enum ValidationComplexity {
     /// O(1) - constant time operations.
     #[default]
@@ -262,7 +263,7 @@ impl ValidatorMetadataBuilder {
 
     /// Adds multiple tags.
     #[must_use = "builder methods must be chained or built"]
-    pub fn tags(mut self, tags: Vec<Cow<'static, str>>) -> Self {
+    pub fn tags(mut self, tags: impl IntoIterator<Item = Cow<'static, str>>) -> Self {
         self.tags.extend(tags);
         self
     }

@@ -15,6 +15,9 @@ documentation.workspace = true
 # Caching (optional)
 moka = { version = "0.12", features = ["sync"], optional = true }
 
+# Error handling
+thiserror = { workspace = true }
+
 # Data formats
 base64 = { workspace = true }
 regex = { workspace = true }

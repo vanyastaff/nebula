@@ -139,7 +139,7 @@ macro_rules! validator {
 
             fn metadata(&self) -> $crate::foundation::ValidatorMetadata {
                 $crate::foundation::ValidatorMetadata {
-                    name: stringify!($name).to_string(),
+                    name: ::std::borrow::Cow::Borrowed(stringify!($name)),
                     description: validator!(@desc $($desc)?),
                     complexity: $crate::foundation::ValidationComplexity::Linear,
                     cacheable: true,
@@ -158,7 +158,7 @@ macro_rules! validator {
     };
 
     // Helper: Extract description
-    (@desc $desc:expr) => { Some($desc.to_string()) };
+    (@desc $desc:expr) => { Some(::std::borrow::Cow::Borrowed($desc)) };
     (@desc) => { None };
 }
 

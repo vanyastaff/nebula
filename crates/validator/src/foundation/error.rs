@@ -49,7 +49,7 @@ use std::fmt;
 ///         ValidationError::new("email_invalid", "Invalid email format"),
 ///     ]);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ValidationError {
     /// Error code for programmatic handling and i18n.
     ///
@@ -342,7 +342,7 @@ impl ValidationError {
 /// A collection of validation errors.
 ///
 /// Useful for collecting multiple validation errors before returning them.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ValidationErrors {
     errors: Vec<ValidationError>,
 }
@@ -360,7 +360,7 @@ impl ValidationErrors {
     }
 
     /// Adds multiple errors to the collection.
-    pub fn extend(&mut self, errors: Vec<ValidationError>) {
+    pub fn extend(&mut self, errors: impl IntoIterator<Item = ValidationError>) {
         self.errors.extend(errors);
     }
 
@@ -423,6 +423,24 @@ impl fmt::Display for ValidationErrors {
 }
 
 impl std::error::Error for ValidationErrors {}
+
+impl IntoIterator for ValidationErrors {
+    type Item = ValidationError;
+    type IntoIter = std::vec::IntoIter<ValidationError>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.errors.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a ValidationErrors {
+    type Item = &'a ValidationError;
+    type IntoIter = std::slice::Iter<'a, ValidationError>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.errors.iter()
+    }
+}
 
 // ============================================================================
 // TESTS
