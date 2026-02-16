@@ -121,7 +121,16 @@ impl AutoScaler {
     ///
     /// The task checks utilization every `evaluation_window / 2` and
     /// respects the cooldown between scale operations.
-    pub fn start<S, U, D, UF, DF>(&self, get_stats: S, scale_up: U, scale_down: D)
+    ///
+    /// Returns a [`JoinHandle`](tokio::task::JoinHandle) that can be
+    /// awaited to confirm the background task has fully exited after
+    /// [`shutdown`](Self::shutdown) is called.
+    pub fn start<S, U, D, UF, DF>(
+        &self,
+        get_stats: S,
+        scale_up: U,
+        scale_down: D,
+    ) -> tokio::task::JoinHandle<()>
     where
         S: Fn() -> (usize, usize, usize) + Send + Sync + 'static,
         U: Fn(usize) -> UF + Send + Sync + 'static,
@@ -189,7 +198,7 @@ impl AutoScaler {
                     low_since = None;
                 }
             }
-        });
+        })
     }
 
     /// Cancel the background auto-scaler task.

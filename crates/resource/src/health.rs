@@ -308,9 +308,11 @@ impl HealthChecker {
                 }
             }
 
-            // Cleanup record and token on shutdown/stop
+            // Cleanup record on shutdown/stop.
+            // Only remove the token if it is still *our* token — a subsequent
+            // `start_monitoring` call may have replaced it with a new one.
             records.remove(&instance_id);
-            instance_tokens.remove(&instance_id);
+            instance_tokens.remove_if(&instance_id, |_, stored| stored.is_cancelled());
         });
     }
 

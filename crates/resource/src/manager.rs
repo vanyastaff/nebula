@@ -723,7 +723,6 @@ impl Manager {
 
                 self.event_bus.emit(ResourceEvent::Acquired {
                     resource_id: resource_id.to_string(),
-                    pool_stats: crate::pool::PoolStats::default(),
                 });
 
                 // Run after-hooks; errors are logged but never propagated.
@@ -974,24 +973,27 @@ impl Manager {
             Some(Arc::clone(&self.event_bus)),
         )?;
 
-        // Shut down the old pool (if any), then swap in the new one.
-        let old_entry = self.pools.remove(&id);
-        if let Some((_, entry)) = old_entry {
+        // Shut down the old pool (if any), preserving the existing scope.
+        let existing_scope = if let Some((_, entry)) = self.pools.remove(&id) {
+            let scope = entry.scope.clone();
             let _ = entry.pool.shutdown().await;
-        }
+            scope
+        } else {
+            Scope::Global
+        };
 
         let any_pool: Arc<dyn AnyPool> = Arc::new(TypedPool { pool: new_pool });
         self.pools.insert(
             id.clone(),
             PoolEntry {
                 pool: any_pool,
-                scope: Scope::Global,
+                scope: existing_scope.clone(),
             },
         );
 
         self.event_bus.emit(ResourceEvent::Created {
             resource_id: id,
-            scope: Scope::Global,
+            scope: existing_scope,
         });
 
         Ok(())

@@ -440,26 +440,35 @@ impl<R: Resource> Pool<R> {
     ) {
         let inner = &pool.inner;
         let recycle_ok = inner.resource.recycle(&mut inst).await.is_ok();
-        let is_shutdown = inner.state.lock().shutdown;
 
-        if recycle_ok && !is_shutdown {
-            let entry = match created_at {
-                Some(ca) => Entry::returned(inst, ca),
-                None => Entry::new(inst),
-            };
-            inner.state.lock().idle.push_back(entry);
+        // Check shutdown under the same lock that pushes to idle to
+        // prevent a race where shutdown flips between the read and insert.
+        let cleanup_reason = if recycle_ok {
+            let mut state = inner.state.lock();
+            if !state.shutdown {
+                let entry = match created_at {
+                    Some(ca) => Entry::returned(inst, ca),
+                    None => Entry::new(inst),
+                };
+                state.idle.push_back(entry);
+                None
+            } else {
+                Some((inst, CleanupReason::Shutdown))
+            }
+        } else {
+            Some((inst, CleanupReason::RecycleFailed))
+        };
+
+        if cleanup_reason.is_none() {
             #[cfg(feature = "tracing")]
             tracing::debug!(
                 resource_id = %inner.resource.id(),
                 "Released resource instance back to pool"
             );
-        } else {
-            let reason = if is_shutdown {
-                CleanupReason::Shutdown
-            } else {
-                CleanupReason::RecycleFailed
-            };
-            let _ = inner.resource.cleanup(inst).await;
+        }
+
+        if let Some((to_cleanup, reason)) = cleanup_reason {
+            let _ = inner.resource.cleanup(to_cleanup).await;
             inner.state.lock().stats.destroyed += 1;
             Self::emit_event(
                 inner,

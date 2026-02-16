@@ -149,7 +149,7 @@ async fn tenant_shutdown_cascades_to_child_scopes() {
     drop(g1);
     drop(g2);
     drop(g3);
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Shut down tenant "A" scope -- should cascade to all child scopes
     mgr.shutdown_scope(&Scope::tenant("A")).await.unwrap();
@@ -226,7 +226,7 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
         "db-B should still be accessible after tenant A shutdown"
     );
     drop(g1);
-    tokio::time::sleep(Duration::from_millis(30)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let ctx_b_wf = Context::new(Scope::workflow_in_tenant("wf1", "B"), "wf1", "ex1");
     let g2 = mgr.acquire("cache-B", &ctx_b_wf).await;
@@ -235,7 +235,7 @@ async fn scope_shutdown_does_not_affect_other_tenants() {
         "cache-B should still be accessible after tenant A shutdown"
     );
     drop(g2);
-    tokio::time::sleep(Duration::from_millis(30)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Tenant A resources should be gone
     let ctx_a = Context::new(Scope::tenant("A"), "wf1", "ex1");
@@ -368,35 +368,40 @@ async fn shutdown_scope_follows_dependency_ordering() {
     )
     .unwrap();
 
-    // Acquire and release each to populate idle instances for cleanup
+    // Acquire and release each to populate idle instances for cleanup.
+    // Use a generous sleep to ensure the spawned return tasks complete.
     let ctx = Context::new(Scope::tenant("A"), "wf", "ex");
     for name in &["db", "cache", "app"] {
         let g = mgr.acquire(name, &ctx).await.unwrap();
         drop(g);
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     mgr.shutdown_scope(&Scope::tenant("A")).await.unwrap();
 
     let cleanup_order = order.lock().clone();
+    // All three pools had an idle instance, so all three must have been
+    // cleaned up. Fail loudly if that didn't happen.
+    assert_eq!(
+        cleanup_order.len(),
+        3,
+        "expected 3 cleanup callbacks, got {}: {cleanup_order:?}",
+        cleanup_order.len()
+    );
     // "app" depends on "cache" depends on "db".
     // Reverse topo: app before cache, cache before db.
-    if cleanup_order.len() == 3 {
-        let app_pos = cleanup_order.iter().position(|s| s == "app").unwrap();
-        let cache_pos = cleanup_order.iter().position(|s| s == "cache").unwrap();
-        let db_pos = cleanup_order.iter().position(|s| s == "db").unwrap();
-        assert!(
-            app_pos < cache_pos,
-            "app should shut down before cache, got order: {cleanup_order:?}"
-        );
-        assert!(
-            cache_pos < db_pos,
-            "cache should shut down before db, got order: {cleanup_order:?}"
-        );
-    }
-    // If cleanup_order has fewer than 3, the pools had no idle instances to
-    // clean up (instances were already dropped). The important thing is that
-    // the pools were removed.
+    let app_pos = cleanup_order.iter().position(|s| s == "app").unwrap();
+    let cache_pos = cleanup_order.iter().position(|s| s == "cache").unwrap();
+    let db_pos = cleanup_order.iter().position(|s| s == "db").unwrap();
+    assert!(
+        app_pos < cache_pos,
+        "app should shut down before cache, got order: {cleanup_order:?}"
+    );
+    assert!(
+        cache_pos < db_pos,
+        "cache should shut down before db, got order: {cleanup_order:?}"
+    );
+
     assert!(mgr.acquire("app", &ctx).await.is_err());
     assert!(mgr.acquire("cache", &ctx).await.is_err());
     assert!(mgr.acquire("db", &ctx).await.is_err());
@@ -427,7 +432,7 @@ async fn scope_shutdown_invokes_cleanup() {
     {
         let _g = mgr.acquire("tracked-db", &ctx).await.unwrap();
     }
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     mgr.shutdown_scope(&Scope::tenant("A")).await.unwrap();
 

@@ -8,7 +8,6 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 
 use crate::health::HealthState;
-use crate::pool::PoolStats;
 use crate::scope::Scope;
 
 // ---------------------------------------------------------------------------
@@ -33,8 +32,6 @@ pub enum ResourceEvent {
     Acquired {
         /// The resource identifier.
         resource_id: String,
-        /// Pool statistics at the time of acquisition.
-        pool_stats: PoolStats,
     },
     /// A resource instance was released back to the pool.
     Released {

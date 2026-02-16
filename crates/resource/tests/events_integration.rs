@@ -86,7 +86,6 @@ async fn event_bus_multiple_event_types_received_in_order() {
     });
     bus.emit(ResourceEvent::Acquired {
         resource_id: "r1".to_string(),
-        pool_stats: nebula_resource::pool::PoolStats::default(),
     });
     bus.emit(ResourceEvent::Released {
         resource_id: "r1".to_string(),

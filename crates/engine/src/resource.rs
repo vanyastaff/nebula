@@ -73,11 +73,20 @@ impl ResourceProvider for Resources {
             None => ctx,
         };
 
-        let guard = self
-            .manager
-            .acquire(key, &ctx)
-            .await
-            .map_err(|e| ActionError::fatal(format!("resource acquire failed: {e}")))?;
+        let guard = tokio::select! {
+            result = self.manager.acquire(key, &ctx) => {
+                result.map_err(|e| {
+                    if e.is_retryable() {
+                        ActionError::retryable(format!("resource acquire failed: {e}"))
+                    } else {
+                        ActionError::fatal(format!("resource acquire failed: {e}"))
+                    }
+                })?
+            }
+            () = self.cancellation.cancelled() => {
+                return Err(ActionError::fatal("resource acquire cancelled"));
+            }
+        };
 
         Ok(Box::new(ResourceHandle::new(guard)))
     }

@@ -10,15 +10,16 @@ use std::time::Duration;
 
 use nebula_resource::events::{CleanupReason, EventBus, ResourceEvent};
 use nebula_resource::metrics::MetricsCollector;
-use nebula_resource::pool::PoolStats;
+
 use nebula_resource::scope::Scope;
 
 #[tokio::test]
 async fn metrics_collector_processes_all_event_types() {
     let bus = Arc::new(EventBus::new(64));
     let collector = MetricsCollector::new(&bus);
+    let cancel = tokio_util::sync::CancellationToken::new();
 
-    let handle = tokio::spawn(collector.run());
+    let handle = tokio::spawn(collector.run(cancel));
 
     // Emit one of each event type
     bus.emit(ResourceEvent::Created {
@@ -27,7 +28,6 @@ async fn metrics_collector_processes_all_event_types() {
     });
     bus.emit(ResourceEvent::Acquired {
         resource_id: "db".to_string(),
-        pool_stats: PoolStats::default(),
     });
     bus.emit(ResourceEvent::Released {
         resource_id: "db".to_string(),
@@ -69,8 +69,9 @@ async fn metrics_collector_processes_all_event_types() {
 async fn metrics_collector_terminates_when_bus_dropped() {
     let bus = Arc::new(EventBus::new(16));
     let collector = MetricsCollector::new(&bus);
+    let cancel = tokio_util::sync::CancellationToken::new();
 
-    let handle = tokio::spawn(collector.run());
+    let handle = tokio::spawn(collector.run(cancel));
 
     // Drop the bus immediately
     drop(bus);
@@ -86,7 +87,8 @@ async fn metrics_collector_terminates_when_bus_dropped() {
 #[tokio::test]
 async fn spawn_metrics_collector_helper_works() {
     let bus = Arc::new(EventBus::new(16));
-    let handle = nebula_resource::metrics::spawn_metrics_collector(&bus);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handle = nebula_resource::metrics::spawn_metrics_collector(&bus, cancel);
 
     bus.emit(ResourceEvent::Created {
         resource_id: "x".to_string(),

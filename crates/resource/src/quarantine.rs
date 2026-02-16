@@ -189,27 +189,27 @@ impl QuarantineManager {
     /// If the resource is already quarantined, this is a no-op.
     /// Returns `true` if the resource was newly quarantined.
     pub fn quarantine(&self, resource_id: &str, reason: QuarantineReason) -> bool {
-        if self.entries.contains_key(resource_id) {
-            return false;
+        use dashmap::mapref::entry::Entry;
+
+        match self.entries.entry(resource_id.to_string()) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(vacant) => {
+                let delay = self.config.recovery_strategy.delay_for(1);
+                let next = Utc::now()
+                    + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::seconds(60));
+
+                vacant.insert(QuarantineEntry {
+                    resource_id: resource_id.to_string(),
+                    reason,
+                    quarantined_at: Utc::now(),
+                    recovery_attempts: 0,
+                    max_recovery_attempts: self.config.max_recovery_attempts,
+                    next_recovery_at: Some(next),
+                });
+
+                true
+            }
         }
-
-        let delay = self.config.recovery_strategy.delay_for(1);
-        let next =
-            Utc::now() + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::seconds(60));
-
-        self.entries.insert(
-            resource_id.to_string(),
-            QuarantineEntry {
-                resource_id: resource_id.to_string(),
-                reason,
-                quarantined_at: Utc::now(),
-                recovery_attempts: 0,
-                max_recovery_attempts: self.config.max_recovery_attempts,
-                next_recovery_at: Some(next),
-            },
-        );
-
-        true
     }
 
     /// Release a resource from quarantine.

@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 use crate::events::{EventBus, ResourceEvent};
 
@@ -19,7 +20,8 @@ use crate::events::{EventBus, ResourceEvent};
 /// ```rust,ignore
 /// let event_bus = Arc::new(EventBus::default());
 /// let collector = MetricsCollector::new(&event_bus);
-/// tokio::spawn(collector.run());
+/// let cancel = CancellationToken::new();
+/// tokio::spawn(collector.run(cancel));
 /// ```
 pub struct MetricsCollector {
     receiver: broadcast::Receiver<ResourceEvent>,
@@ -37,17 +39,23 @@ impl MetricsCollector {
     /// Run the collector loop, consuming events and updating metrics.
     ///
     /// This method runs until the broadcast channel is closed (i.e. the
-    /// `EventBus` is dropped). Lagged events are skipped with a warning.
-    pub async fn run(mut self) {
+    /// `EventBus` is dropped) or the `cancel` token is cancelled.
+    /// Lagged events are skipped with a warning.
+    pub async fn run(mut self, cancel: CancellationToken) {
         loop {
-            match self.receiver.recv().await {
-                Ok(event) => Self::record_event(&event),
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    #[cfg(feature = "tracing")]
-                    tracing::warn!(skipped = n, "MetricsCollector lagged behind event bus");
-                    let _ = n;
+            tokio::select! {
+                result = self.receiver.recv() => {
+                    match result {
+                        Ok(event) => Self::record_event(&event),
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            #[cfg(feature = "tracing")]
+                            tracing::warn!(skipped = n, "MetricsCollector lagged behind event bus");
+                            let _ = n;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
                 }
-                Err(broadcast::error::RecvError::Closed) => break,
+                () = cancel.cancelled() => break,
             }
         }
     }
@@ -101,10 +109,14 @@ impl std::fmt::Debug for MetricsCollector {
 
 /// Create a [`MetricsCollector`] and spawn it as a background task.
 ///
+/// The task stops when `cancel` is cancelled or the `EventBus` is dropped.
 /// Returns the `JoinHandle` so the caller can await or abort the task.
-pub fn spawn_metrics_collector(event_bus: &Arc<EventBus>) -> tokio::task::JoinHandle<()> {
+pub fn spawn_metrics_collector(
+    event_bus: &Arc<EventBus>,
+    cancel: CancellationToken,
+) -> tokio::task::JoinHandle<()> {
     let collector = MetricsCollector::new(event_bus);
-    tokio::spawn(collector.run())
+    tokio::spawn(collector.run(cancel))
 }
 
 #[cfg(test)]
@@ -119,8 +131,9 @@ mod tests {
         // verify the collector runs and processes events without errors.
         let bus = Arc::new(EventBus::new(64));
         let collector = MetricsCollector::new(&bus);
+        let cancel = CancellationToken::new();
 
-        let handle = tokio::spawn(collector.run());
+        let handle = tokio::spawn(collector.run(cancel));
 
         // Emit a variety of events
         bus.emit(ResourceEvent::Created {
@@ -129,7 +142,6 @@ mod tests {
         });
         bus.emit(ResourceEvent::Acquired {
             resource_id: "db".to_string(),
-            pool_stats: crate::pool::PoolStats::default(),
         });
         bus.emit(ResourceEvent::Released {
             resource_id: "db".to_string(),
