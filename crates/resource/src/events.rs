@@ -127,6 +127,7 @@ impl EventBus {
     /// slow subscribers start lagging (and losing events).
     #[must_use]
     pub fn new(buffer_size: usize) -> Self {
+        assert!(buffer_size > 0, "EventBus buffer_size must be > 0");
         let (sender, _) = broadcast::channel(buffer_size);
         Self { sender }
     }

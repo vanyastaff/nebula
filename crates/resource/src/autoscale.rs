@@ -142,7 +142,7 @@ impl AutoScaler {
         let cancel = self.cancel.clone();
 
         tokio::spawn(async move {
-            let check_interval = policy.evaluation_window / 2;
+            let check_interval = (policy.evaluation_window / 2).max(Duration::from_millis(50));
 
             // Tracks when utilization first exceeded / went below watermarks.
             let mut high_since: Option<Instant> = None;

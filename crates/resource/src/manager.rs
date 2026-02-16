@@ -233,14 +233,6 @@ impl DependencyGraph {
             .map(|(node, _)| node.clone())
             .collect();
 
-        // Add nodes that have no dependencies at all
-        for node in &all_nodes {
-            if !in_degree.contains_key(node) {
-                queue.push_back(node.clone());
-                in_degree.insert(node.clone(), 0);
-            }
-        }
-
         let mut sorted = Vec::new();
 
         while let Some(node) = queue.pop_front() {
@@ -272,35 +264,51 @@ impl DependencyGraph {
         Ok(sorted)
     }
 
-    /// Get the initialization order for a specific resource and its dependencies
+    /// Get the initialization order for a specific resource and its dependencies.
+    ///
+    /// # Errors
+    /// Returns [`Error::CircularDependency`] if a cycle is detected in the
+    /// subgraph reachable from `resource`.
     pub fn get_init_order(&self, resource: &str) -> Result<Vec<String>> {
         let mut visited = HashSet::new();
+        let mut visiting = HashSet::new();
         let mut order = Vec::new();
 
-        self.build_init_order(resource, &mut visited, &mut order)?;
+        self.build_init_order(resource, &mut visited, &mut visiting, &mut order)?;
 
         Ok(order)
     }
 
-    /// Recursively build initialization order using DFS
+    /// Recursively build initialization order using DFS with cycle detection.
+    ///
+    /// `visiting` tracks the current recursion stack — if we encounter a node
+    /// already in `visiting`, we have found a back-edge (cycle).
     fn build_init_order(
         &self,
         resource: &str,
         visited: &mut HashSet<String>,
+        visiting: &mut HashSet<String>,
         order: &mut Vec<String>,
     ) -> Result<()> {
         if visited.contains(resource) {
             return Ok(());
         }
 
-        visited.insert(resource.to_string());
+        if !visiting.insert(resource.to_string()) {
+            return Err(Error::CircularDependency {
+                cycle: resource.to_string(),
+            });
+        }
 
         // Visit dependencies first
         if let Some(deps) = self.dependencies.get(resource) {
             for dep in deps {
-                self.build_init_order(dep, visited, order)?;
+                self.build_init_order(dep, visited, visiting, order)?;
             }
         }
+
+        visiting.remove(resource);
+        visited.insert(resource.to_string());
 
         // Add this resource after its dependencies
         order.push(resource.to_string());
@@ -921,7 +929,7 @@ impl Manager {
         }
 
         // Phase 1: Drain -- give in-flight operations time to complete.
-        tokio::time::sleep(config.drain_timeout.min(Duration::from_millis(100))).await;
+        tokio::time::sleep(config.drain_timeout).await;
 
         // Phase 2: Cleanup each pool in dependency order with per-pool timeout.
         for id in &ordered {
@@ -936,7 +944,7 @@ impl Manager {
 
         // Phase 3: Terminate -- force-clear anything remaining.
         if !self.pools.is_empty() {
-            tokio::time::sleep(config.terminate_timeout.min(Duration::from_millis(100))).await;
+            tokio::time::sleep(config.terminate_timeout).await;
             self.pools.clear();
         }
 
