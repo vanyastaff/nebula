@@ -6,7 +6,6 @@
 
 pub use crate::action::Action;
 pub use crate::context::ActionContext;
-pub use crate::provider::{ActionLogger, ActionMetrics, CredentialProvider, SecureString};
 pub use crate::error::ActionError;
 pub use crate::metadata::{ActionMetadata, ActionType};
 pub use crate::output::{
@@ -15,6 +14,9 @@ pub use crate::output::{
 };
 pub use crate::port::{
     ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort,
+};
+pub use crate::provider::{
+    ActionLogger, ActionMetrics, CredentialProvider, ResourceProvider, SecureString,
 };
 pub use crate::result::ActionResult;
 pub use crate::types::InteractiveAction;

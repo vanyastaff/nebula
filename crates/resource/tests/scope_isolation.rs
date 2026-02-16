@@ -2,6 +2,7 @@
 //!
 //! Tests every meaningful combination of Scope::contains()
 //! to ensure tenant isolation and hierarchical access control.
+//! Includes T018: Manager-level scope validation denies cross-scope acquire.
 
 use nebula_resource::Scope;
 
@@ -319,4 +320,170 @@ fn cross_type_scopes_are_incompatible() {
     assert!(!Scope::custom("env", "prod").contains(&Scope::tenant("A")));
     // Tenant does not contain Custom
     assert!(!Scope::tenant("A").contains(&Scope::custom("env", "prod")));
+}
+
+// ---------------------------------------------------------------------------
+// 8. T018: Manager-level scope validation denies cross-scope acquire
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod manager_scope_tests {
+    use std::time::Duration;
+
+    use nebula_resource::Manager;
+    use nebula_resource::context::Context;
+    use nebula_resource::error::Result;
+    use nebula_resource::pool::PoolConfig;
+    use nebula_resource::resource::{Config, Resource};
+    use nebula_resource::scope::Scope;
+
+    #[derive(Debug, Clone, serde::Deserialize)]
+    struct TestConfig;
+    impl Config for TestConfig {}
+
+    struct TestResource {
+        name: &'static str,
+    }
+
+    impl Resource for TestResource {
+        type Config = TestConfig;
+        type Instance = String;
+
+        fn id(&self) -> &str {
+            self.name
+        }
+
+        async fn create(&self, _config: &TestConfig, _ctx: &Context) -> Result<String> {
+            Ok(format!("{}-instance", self.name))
+        }
+    }
+
+    fn pool_config() -> PoolConfig {
+        PoolConfig {
+            min_size: 0,
+            max_size: 2,
+            acquire_timeout: Duration::from_secs(1),
+            ..Default::default()
+        }
+    }
+
+    /// Register resource with Scope::Tenant("A"), try to acquire with
+    /// Scope::Tenant("B"), expect error.
+    #[tokio::test]
+    async fn cross_tenant_acquire_denied() {
+        let mgr = Manager::new();
+        mgr.register_scoped(
+            TestResource { name: "db" },
+            TestConfig,
+            pool_config(),
+            Scope::tenant("A"),
+        )
+        .unwrap();
+
+        let ctx_b = Context::new(Scope::tenant("B"), "wf1", "ex1");
+        let result = mgr.acquire("db", &ctx_b).await;
+        let err = result.err().expect("cross-tenant acquire should be denied");
+        assert!(
+            err.to_string().contains("Scope mismatch"),
+            "error should mention scope mismatch, got: {err}"
+        );
+    }
+
+    /// Same tenant scope should succeed.
+    #[tokio::test]
+    async fn same_tenant_acquire_allowed() {
+        let mgr = Manager::new();
+        mgr.register_scoped(
+            TestResource { name: "db" },
+            TestConfig,
+            pool_config(),
+            Scope::tenant("A"),
+        )
+        .unwrap();
+
+        let ctx_a = Context::new(Scope::tenant("A"), "wf1", "ex1");
+        let _guard = mgr
+            .acquire("db", &ctx_a)
+            .await
+            .expect("same-tenant acquire should succeed");
+    }
+
+    /// Workflow-scoped resource denies access from a different workflow.
+    #[tokio::test]
+    async fn cross_workflow_acquire_denied() {
+        let mgr = Manager::new();
+        mgr.register_scoped(
+            TestResource { name: "cache" },
+            TestConfig,
+            pool_config(),
+            Scope::workflow("wf1"),
+        )
+        .unwrap();
+
+        let ctx_wf2 = Context::new(Scope::workflow("wf2"), "wf2", "ex1");
+        let err = mgr
+            .acquire("cache", &ctx_wf2)
+            .await
+            .err()
+            .expect("cross-workflow acquire should be denied");
+        assert!(
+            err.to_string().contains("Scope mismatch"),
+            "error should mention scope mismatch, got: {err}"
+        );
+    }
+
+    /// Global-scoped resource allows access from any scope.
+    #[tokio::test]
+    async fn global_resource_accessible_from_any_scope() {
+        let mgr = Manager::new();
+        mgr.register(
+            TestResource { name: "global-db" },
+            TestConfig,
+            pool_config(),
+        )
+        .unwrap();
+
+        // From tenant scope
+        let ctx_tenant = Context::new(Scope::tenant("A"), "wf1", "ex1");
+        let _g1 = mgr
+            .acquire("global-db", &ctx_tenant)
+            .await
+            .expect("global resource should be accessible from tenant scope");
+
+        // Wait for guard to return
+        drop(_g1);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        // From workflow scope
+        let ctx_wf = Context::new(Scope::workflow("wf1"), "wf1", "ex1");
+        let _g2 = mgr
+            .acquire("global-db", &ctx_wf)
+            .await
+            .expect("global resource should be accessible from workflow scope");
+    }
+
+    /// Narrower resource scope does not contain a broader context scope.
+    #[tokio::test]
+    async fn narrow_resource_denies_broader_context() {
+        let mgr = Manager::new();
+        mgr.register_scoped(
+            TestResource { name: "exec-db" },
+            TestConfig,
+            pool_config(),
+            Scope::execution("ex1"),
+        )
+        .unwrap();
+
+        // Global context is broader than execution scope
+        let ctx_global = Context::new(Scope::Global, "wf1", "ex1");
+        let err = mgr
+            .acquire("exec-db", &ctx_global)
+            .await
+            .err()
+            .expect("execution-scoped resource should deny global context");
+        assert!(
+            err.to_string().contains("Scope mismatch"),
+            "error should mention scope mismatch, got: {err}"
+        );
+    }
 }

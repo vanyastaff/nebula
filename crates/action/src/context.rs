@@ -7,7 +7,9 @@ use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ActionError;
-use crate::provider::{ActionLogger, ActionMetrics, CredentialProvider, SecureString};
+use crate::provider::{
+    ActionLogger, ActionMetrics, CredentialProvider, ResourceProvider, SecureString,
+};
 
 /// Runtime context provided to every action during execution.
 ///
@@ -37,6 +39,8 @@ pub struct ActionContext {
     logger: Option<Arc<dyn ActionLogger>>,
     /// Optional metrics emitter for custom action metrics.
     metrics: Option<Arc<dyn ActionMetrics>>,
+    /// Optional resource provider for acquiring runtime resources.
+    resources: Option<Arc<dyn ResourceProvider>>,
     /// Data arriving on support input ports, keyed by port name.
     ///
     /// Each key is a support port name (e.g., "tools", "model") and the value
@@ -62,6 +66,7 @@ impl ActionContext {
             credentials: None,
             logger: None,
             metrics: None,
+            resources: None,
             support_inputs: HashMap::new(),
         }
     }
@@ -133,6 +138,12 @@ impl ActionContext {
         self
     }
 
+    /// Attach a resource provider.
+    pub fn with_resources(mut self, provider: Arc<dyn ResourceProvider>) -> Self {
+        self.resources = Some(provider);
+        self
+    }
+
     /// Attach support port data.
     ///
     /// Each entry maps a support port name to the list of values received
@@ -167,6 +178,16 @@ impl ActionContext {
         match &self.credentials {
             Some(provider) => provider.get(key).await,
             None => Err(ActionError::fatal("no credential provider configured")),
+        }
+    }
+
+    /// Acquire a resource instance by key.
+    ///
+    /// Returns an error if no resource provider is configured.
+    pub async fn resource(&self, key: &str) -> Result<Box<dyn std::any::Any + Send>, ActionError> {
+        match &self.resources {
+            Some(provider) => provider.acquire(key).await,
+            None => Err(ActionError::fatal("no resource provider configured")),
         }
     }
 
@@ -328,5 +349,37 @@ mod tests {
         // These should not panic even without metrics.
         ctx.record_counter("requests", 1);
         ctx.record_histogram("latency", 0.5);
+    }
+
+    #[tokio::test]
+    async fn resource_returns_error_without_provider() {
+        let ctx = test_context();
+        let err = ctx.resource("db").await.unwrap_err();
+        assert!(
+            matches!(err, ActionError::Fatal { .. }),
+            "expected Fatal, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_resources_builder() {
+        use crate::provider::ResourceProvider;
+
+        struct FakeResources;
+
+        #[async_trait::async_trait]
+        impl ResourceProvider for FakeResources {
+            async fn acquire(
+                &self,
+                _key: &str,
+            ) -> Result<Box<dyn std::any::Any + Send>, ActionError> {
+                Ok(Box::new(42_u32))
+            }
+        }
+
+        let ctx = test_context().with_resources(Arc::new(FakeResources));
+        let res = ctx.resource("anything").await.unwrap();
+        let value = res.downcast::<u32>().expect("should downcast to u32");
+        assert_eq!(*value, 42);
     }
 }

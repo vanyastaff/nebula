@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e8b11e5b9c602eadbd968dc71061566e5842df566825c298003519840c9663ee # shrinks to a = Workflow { workflow_id: "wf-2", tenant_id: None }, b = Action { action_id: "act-3", execution_id: Some("ex-1"), workflow_id: Some("wf-2"), tenant_id: Some("tenant-A") }, c = Action { action_id: "act-3", execution_id: Some("ex-1"), workflow_id: Some("wf-1"), tenant_id: Some("tenant-A") }
+cc 29b3ebbc75714b40890211361c343efeffc121af9e85b16727ac9b8078c28d1c # shrinks to a = Workflow { workflow_id: "wf-1", tenant_id: Some("tenant-A") }, b = Execution { execution_id: "ex-1", workflow_id: Some("wf-1"), tenant_id: None }, c = Action { action_id: "act-1", execution_id: Some("ex-1"), workflow_id: Some("wf-2"), tenant_id: Some("tenant-A") }

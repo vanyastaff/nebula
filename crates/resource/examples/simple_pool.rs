@@ -63,6 +63,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         idle_timeout: Duration::from_secs(60),
         validation_interval: Duration::from_secs(30),
         acquire_timeout: Duration::from_secs(5),
+        maintenance_interval: None,
+        ..Default::default()
     };
 
     let resource_config = ConnectionConfig {

@@ -1,6 +1,5 @@
 //! Resource lifecycle management
 
-use std::collections::HashMap;
 use std::fmt;
 
 #[cfg(feature = "serde")]
@@ -180,53 +179,6 @@ impl fmt::Display for Lifecycle {
             Self::Failed => "Failed",
         };
         write!(f, "{name}")
-    }
-}
-
-/// Lifecycle event that can be observed
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct Event {
-    /// The resource identifier
-    pub resource_id: String,
-    /// The previous state
-    pub from_state: Lifecycle,
-    /// The new state
-    pub to_state: Lifecycle,
-    /// Timestamp of the transition
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-    /// Optional metadata about the transition
-    pub metadata: Option<HashMap<String, String>>,
-}
-
-impl Event {
-    /// Create a new lifecycle event
-    #[must_use]
-    pub fn new(resource_id: String, from_state: Lifecycle, to_state: Lifecycle) -> Self {
-        Self {
-            resource_id,
-            from_state,
-            to_state,
-            timestamp: chrono::Utc::now(),
-            metadata: None,
-        }
-    }
-
-    /// Create a new lifecycle event with metadata
-    #[must_use]
-    pub fn with_metadata(
-        resource_id: String,
-        from_state: Lifecycle,
-        to_state: Lifecycle,
-        metadata: HashMap<String, String>,
-    ) -> Self {
-        Self {
-            resource_id,
-            from_state,
-            to_state,
-            timestamp: chrono::Utc::now(),
-            metadata: Some(metadata),
-        }
     }
 }
 

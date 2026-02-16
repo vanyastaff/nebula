@@ -16,7 +16,6 @@ default = ["std", "tokio", "serde"]
 
 # Core features
 std = ["tokio/rt", "tracing/std"]
-alloc = []
 
 # Runtime features
 tokio = ["dep:tokio"]
@@ -31,15 +30,9 @@ tracing = ["dep:tracing", "dep:tracing-opentelemetry", "dep:opentelemetry"]
 # Security
 credentials = ["nebula-credential"]
 
-# Pooling strategies (using custom implementation)
-pooling = []
-
-# Testing utilities
-testing = ["dep:mockall", "dep:test-case"]
-
 # Full feature set (for examples and benchmarks)
 full = [
-    "std", "tokio", "serde", "pooling", "testing"
+    "std", "tokio", "serde", "metrics", "tracing", "credentials"
 ]
 
 [dependencies]
@@ -82,3 +75,8 @@ proptest = { workspace = true }
 test-case = "3.3.1"
 mockall = { workspace = true }
 tempfile = { workspace = true }
+criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
+
+[[bench]]
+name = "pool_throughput"
+harness = false

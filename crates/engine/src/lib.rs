@@ -17,6 +17,7 @@
 pub mod engine;
 pub mod error;
 pub(crate) mod resolver;
+pub(crate) mod resource;
 pub mod result;
 
 pub use engine::WorkflowEngine;

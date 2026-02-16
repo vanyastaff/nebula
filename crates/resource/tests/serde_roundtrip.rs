@@ -94,6 +94,8 @@ fn arb_pool_config() -> impl Strategy<Value = PoolConfig> {
                 idle_timeout: Duration::from_secs(idle_s),
                 max_lifetime: Duration::from_secs(lifetime_s),
                 validation_interval: Duration::from_secs(validation_s),
+                maintenance_interval: None,
+                ..Default::default()
             },
         )
 }
@@ -232,7 +234,10 @@ fn scope_rejects_empty_object() {
 #[test]
 fn scope_rejects_unknown_variant() {
     let result = serde_json::from_str::<Scope>("{\"UnknownScope\": {}}");
-    assert!(result.is_err(), "unknown variant should produce Err for Scope");
+    assert!(
+        result.is_err(),
+        "unknown variant should produce Err for Scope"
+    );
 }
 
 #[test]
@@ -240,7 +245,10 @@ fn health_state_rejects_wrong_type() {
     let result = serde_json::from_str::<HealthState>(
         r#"{"Degraded":{"reason":"x","performance_impact":"not_a_number"}}"#,
     );
-    assert!(result.is_err(), "string where f64 expected should produce Err");
+    assert!(
+        result.is_err(),
+        "string where f64 expected should produce Err"
+    );
 }
 
 #[test]
@@ -264,7 +272,10 @@ fn pool_config_rejects_truncated_json() {
 #[test]
 fn strategy_rejects_unknown_variant() {
     let result = serde_json::from_str::<ScopingStrategy>("\"NonExistent\"");
-    assert!(result.is_err(), "unknown variant should produce Err for Strategy");
+    assert!(
+        result.is_err(),
+        "unknown variant should produce Err for Strategy"
+    );
 }
 
 #[test]

@@ -8,6 +8,10 @@ description = "Workflow execution engine for Nebula"
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+credentials = ["nebula-resource/credentials"]
+
 [dependencies]
 nebula-core = { path = "../core" }
 nebula-action = { path = "../action" }
@@ -16,9 +20,11 @@ nebula-plugin = { path = "../plugin" }
 nebula-parameter = { path = "../parameter" }
 nebula-workflow = { path = "../workflow" }
 nebula-execution = { path = "../execution" }
+nebula-resource = { path = "../resource" }
 nebula-runtime = { path = "../runtime" }
 nebula-telemetry = { path = "../telemetry" }
 
+async-trait = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 dashmap = { workspace = true }
@@ -28,5 +34,4 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 nebula-sandbox-inprocess = { path = "../drivers/sandbox-inprocess" }
-async-trait = { workspace = true }
 chrono = { workspace = true }

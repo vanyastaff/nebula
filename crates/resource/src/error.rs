@@ -4,6 +4,42 @@ use thiserror::Error;
 /// Result type for resource operations
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// A single field validation failure.
+#[derive(Debug, Clone)]
+pub struct FieldViolation {
+    /// The field name (e.g. "max_size").
+    pub field: String,
+    /// The constraint that was violated (e.g. "must be > 0").
+    pub constraint: String,
+    /// The actual value that failed (as a string representation).
+    pub actual: String,
+}
+
+impl FieldViolation {
+    /// Create a new field violation.
+    pub fn new(
+        field: impl Into<String>,
+        constraint: impl Into<String>,
+        actual: impl Into<String>,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            constraint: constraint.into(),
+            actual: actual.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for FieldViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: {} (got {})",
+            self.field, self.constraint, self.actual
+        )
+    }
+}
+
 /// Comprehensive error type for resource management operations
 #[derive(Error, Debug)]
 pub enum Error {
@@ -134,6 +170,13 @@ pub enum Error {
         to: String,
     },
 
+    /// One or more configuration fields failed validation.
+    #[error("Validation error: {violations:?}")]
+    Validation {
+        /// Individual field validation failures.
+        violations: Vec<FieldViolation>,
+    },
+
     /// Generic internal error
     #[error("Internal error in resource '{resource_id}': {message}")]
     Internal {
@@ -156,6 +199,11 @@ impl Error {
         }
     }
 
+    /// Create a validation error from a list of field violations.
+    pub fn validation(violations: Vec<FieldViolation>) -> Self {
+        Self::Validation { violations }
+    }
+
     /// Check if this error is retryable
     #[must_use]
     pub fn is_retryable(&self) -> bool {
@@ -174,6 +222,7 @@ impl Error {
         match self {
             Self::Configuration { .. } => None,
             Self::CircularDependency { .. } => None,
+            Self::Validation { .. } => None,
             Self::Initialization { resource_id, .. }
             | Self::Unavailable { resource_id, .. }
             | Self::HealthCheck { resource_id, .. }
@@ -334,6 +383,7 @@ mod tests {
             Error::CircularDependency {
                 cycle: "a -> b".into(),
             },
+            Error::validation(vec![FieldViolation::new("max_size", "must be > 0", "0")]),
         ];
 
         for err in &variants_without_id {
@@ -342,6 +392,47 @@ mod tests {
                 "expected no resource_id for {:?}",
                 err
             );
+        }
+    }
+
+    #[test]
+    fn validation_error_has_no_resource_id() {
+        let err = Error::validation(vec![
+            FieldViolation::new("max_size", "must be > 0", "0"),
+            FieldViolation::new("min_size", "must be <= max_size", "5"),
+        ]);
+        assert!(err.resource_id().is_none());
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn validation_error_display() {
+        let err = Error::validation(vec![FieldViolation::new("max_size", "must be > 0", "0")]);
+        let msg = err.to_string();
+        assert!(msg.contains("Validation error"));
+        assert!(msg.contains("max_size"));
+    }
+
+    #[test]
+    fn field_violation_display() {
+        let v = FieldViolation::new("max_size", "must be > 0", "0");
+        assert_eq!(v.to_string(), "max_size: must be > 0 (got 0)");
+    }
+
+    #[test]
+    fn validation_convenience_constructor() {
+        let violations = vec![
+            FieldViolation::new("a", "required", ""),
+            FieldViolation::new("b", "too large", "999"),
+        ];
+        let err = Error::validation(violations);
+        match &err {
+            Error::Validation { violations } => {
+                assert_eq!(violations.len(), 2);
+                assert_eq!(violations[0].field, "a");
+                assert_eq!(violations[1].field, "b");
+            }
+            other => panic!("expected Validation, got: {other:?}"),
         }
     }
 

@@ -57,86 +57,144 @@ pub enum Scope {
     },
 }
 
+/// Check if parent chain fields are consistent for transitivity.
+///
+/// Returns `false` if the parent specifies a value but the child does not
+/// (deny-by-default). This ensures that a scope with known ancestry never
+/// "contains" a scope with unknown (and therefore potentially different)
+/// ancestry.
+fn parents_consistent(parent: Option<&str>, child: Option<&str>) -> bool {
+    match (parent, child) {
+        (Some(p), Some(c)) => p == c,
+        (Some(_), None) => false,
+        // (None, Some(_)) or (None, None) — parent doesn't constrain
+        _ => true,
+    }
+}
+
 impl Scope {
-    /// Create a tenant scope
+    /// Create a tenant scope.
+    ///
+    /// # Panics
+    /// Panics if `tenant_id` is empty.
     pub fn tenant<S: Into<String>>(tenant_id: S) -> Self {
-        Self::Tenant {
-            tenant_id: tenant_id.into(),
-        }
+        let tenant_id = tenant_id.into();
+        assert!(!tenant_id.is_empty(), "tenant_id must not be empty");
+        Self::Tenant { tenant_id }
     }
 
-    /// Create a workflow scope without parent info
+    /// Create a workflow scope without parent info.
+    ///
+    /// # Panics
+    /// Panics if `workflow_id` is empty.
     pub fn workflow<S: Into<String>>(workflow_id: S) -> Self {
+        let workflow_id = workflow_id.into();
+        assert!(!workflow_id.is_empty(), "workflow_id must not be empty");
         Self::Workflow {
-            workflow_id: workflow_id.into(),
+            workflow_id,
             tenant_id: None,
         }
     }
 
-    /// Create a workflow scope with tenant parent
+    /// Create a workflow scope with tenant parent.
+    ///
+    /// # Panics
+    /// Panics if `workflow_id` or `tenant_id` is empty.
     pub fn workflow_in_tenant(
         workflow_id: impl Into<String>,
         tenant_id: impl Into<String>,
     ) -> Self {
+        let workflow_id = workflow_id.into();
+        let tenant_id = tenant_id.into();
+        assert!(!workflow_id.is_empty(), "workflow_id must not be empty");
+        assert!(!tenant_id.is_empty(), "tenant_id must not be empty");
         Self::Workflow {
-            workflow_id: workflow_id.into(),
-            tenant_id: Some(tenant_id.into()),
+            workflow_id,
+            tenant_id: Some(tenant_id),
         }
     }
 
-    /// Create an execution scope without parent info
+    /// Create an execution scope without parent info.
+    ///
+    /// # Panics
+    /// Panics if `execution_id` is empty.
     pub fn execution<S: Into<String>>(execution_id: S) -> Self {
+        let execution_id = execution_id.into();
+        assert!(!execution_id.is_empty(), "execution_id must not be empty");
         Self::Execution {
-            execution_id: execution_id.into(),
+            execution_id,
             workflow_id: None,
             tenant_id: None,
         }
     }
 
-    /// Create an execution scope with full parent chain
+    /// Create an execution scope with full parent chain.
+    ///
+    /// # Panics
+    /// Panics if `execution_id` or `workflow_id` is empty.
     pub fn execution_in_workflow(
         execution_id: impl Into<String>,
         workflow_id: impl Into<String>,
         tenant_id: Option<String>,
     ) -> Self {
+        let execution_id = execution_id.into();
+        let workflow_id = workflow_id.into();
+        assert!(!execution_id.is_empty(), "execution_id must not be empty");
+        assert!(!workflow_id.is_empty(), "workflow_id must not be empty");
         Self::Execution {
-            execution_id: execution_id.into(),
-            workflow_id: Some(workflow_id.into()),
+            execution_id,
+            workflow_id: Some(workflow_id),
             tenant_id,
         }
     }
 
-    /// Create an action scope without parent info
+    /// Create an action scope without parent info.
+    ///
+    /// # Panics
+    /// Panics if `action_id` is empty.
     pub fn action<S: Into<String>>(action_id: S) -> Self {
+        let action_id = action_id.into();
+        assert!(!action_id.is_empty(), "action_id must not be empty");
         Self::Action {
-            action_id: action_id.into(),
+            action_id,
             execution_id: None,
             workflow_id: None,
             tenant_id: None,
         }
     }
 
-    /// Create an action scope with full parent chain
+    /// Create an action scope with full parent chain.
+    ///
+    /// # Panics
+    /// Panics if `action_id` or `execution_id` is empty.
     pub fn action_in_execution(
         action_id: impl Into<String>,
         execution_id: impl Into<String>,
         workflow_id: Option<String>,
         tenant_id: Option<String>,
     ) -> Self {
+        let action_id = action_id.into();
+        let execution_id = execution_id.into();
+        assert!(!action_id.is_empty(), "action_id must not be empty");
+        assert!(!execution_id.is_empty(), "execution_id must not be empty");
         Self::Action {
-            action_id: action_id.into(),
-            execution_id: Some(execution_id.into()),
+            action_id,
+            execution_id: Some(execution_id),
             workflow_id,
             tenant_id,
         }
     }
 
-    /// Create a custom scope
+    /// Create a custom scope.
+    ///
+    /// # Panics
+    /// Panics if `key` or `value` is empty.
     pub fn custom(key: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::Custom {
-            key: key.into(),
-            value: value.into(),
-        }
+        let key = key.into();
+        let value = value.into();
+        assert!(!key.is_empty(), "custom scope key must not be empty");
+        assert!(!value.is_empty(), "custom scope value must not be empty");
+        Self::Custom { key, value }
     }
 
     /// Get the scope hierarchy level (lower numbers = broader scope)
@@ -166,9 +224,11 @@ impl Scope {
 
     /// Check if this scope contains another scope.
     ///
-    /// Containment requires the child to have a matching parent identifier.
-    /// If the child's parent is unknown (`None`), containment is denied
-    /// (deny-by-default for security).
+    /// Containment requires the child to have matching parent identifiers
+    /// throughout the entire chain. If the child's parent is unknown (`None`)
+    /// but the parent scope specifies that field, containment is denied
+    /// (deny-by-default for security). This guarantees transitivity:
+    /// if A contains B and B contains C, then A contains C.
     #[must_use]
     pub fn contains(&self, other: &Scope) -> bool {
         match (self, other) {
@@ -205,61 +265,59 @@ impl Scope {
                 },
             ) => t1 == t2,
 
-            // Workflow == Workflow: same workflow_id
-            (
-                Self::Workflow {
-                    workflow_id: w1, ..
-                },
-                Self::Workflow {
-                    workflow_id: w2, ..
-                },
-            ) => w1 == w2,
+            // Workflow contains Workflow: all fields must match
+            (Self::Workflow { .. }, Self::Workflow { .. }) => self == other,
 
-            // Workflow contains Execution if workflow_id matches
+            // Workflow contains Execution if workflow_id matches AND tenant consistent
             (
                 Self::Workflow {
-                    workflow_id: w1, ..
+                    workflow_id: w1,
+                    tenant_id: t1,
                 },
                 Self::Execution {
                     workflow_id: Some(w2),
+                    tenant_id: t2,
                     ..
                 },
-            ) => w1 == w2,
+            ) => w1 == w2 && parents_consistent(t1.as_deref(), t2.as_deref()),
 
-            // Workflow contains Action if workflow_id matches
+            // Workflow contains Action if workflow_id matches AND tenant consistent
             (
                 Self::Workflow {
-                    workflow_id: w1, ..
+                    workflow_id: w1,
+                    tenant_id: t1,
                 },
                 Self::Action {
                     workflow_id: Some(w2),
+                    tenant_id: t2,
                     ..
                 },
-            ) => w1 == w2,
+            ) => w1 == w2 && parents_consistent(t1.as_deref(), t2.as_deref()),
 
-            // Execution == Execution: same execution_id
+            // Execution contains Execution: all fields must match
+            (Self::Execution { .. }, Self::Execution { .. }) => self == other,
+
+            // Execution contains Action if execution_id matches AND parents consistent
             (
                 Self::Execution {
-                    execution_id: e1, ..
-                },
-                Self::Execution {
-                    execution_id: e2, ..
-                },
-            ) => e1 == e2,
-
-            // Execution contains Action if execution_id matches
-            (
-                Self::Execution {
-                    execution_id: e1, ..
+                    execution_id: e1,
+                    workflow_id: w1,
+                    tenant_id: t1,
                 },
                 Self::Action {
                     execution_id: Some(e2),
+                    workflow_id: w2,
+                    tenant_id: t2,
                     ..
                 },
-            ) => e1 == e2,
+            ) => {
+                e1 == e2
+                    && parents_consistent(w1.as_deref(), w2.as_deref())
+                    && parents_consistent(t1.as_deref(), t2.as_deref())
+            }
 
-            // Action only contains itself
-            (Self::Action { action_id: a1, .. }, Self::Action { action_id: a2, .. }) => a1 == a2,
+            // Action only contains the exact same action (all fields must match)
+            (Self::Action { .. }, Self::Action { .. }) => self == other,
 
             // Custom scopes only contain themselves
             (
@@ -473,5 +531,41 @@ mod tests {
         set.insert(Scope::tenant("A"));
         set.insert(Scope::tenant("A")); // duplicate
         assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "tenant_id must not be empty")]
+    fn test_empty_tenant_id_panics() {
+        Scope::tenant("");
+    }
+
+    #[test]
+    #[should_panic(expected = "workflow_id must not be empty")]
+    fn test_empty_workflow_id_panics() {
+        Scope::workflow("");
+    }
+
+    #[test]
+    #[should_panic(expected = "execution_id must not be empty")]
+    fn test_empty_execution_id_panics() {
+        Scope::execution("");
+    }
+
+    #[test]
+    #[should_panic(expected = "action_id must not be empty")]
+    fn test_empty_action_id_panics() {
+        Scope::action("");
+    }
+
+    #[test]
+    #[should_panic(expected = "custom scope key must not be empty")]
+    fn test_empty_custom_key_panics() {
+        Scope::custom("", "value");
+    }
+
+    #[test]
+    #[should_panic(expected = "custom scope value must not be empty")]
+    fn test_empty_custom_value_panics() {
+        Scope::custom("key", "");
     }
 }

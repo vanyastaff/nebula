@@ -79,3 +79,21 @@ pub trait ActionMetrics: Send + Sync {
     /// Record a histogram observation.
     fn histogram(&self, name: &str, value: f64);
 }
+
+/// Port trait for providing resources to actions.
+///
+/// Implemented by the runtime to inject resource access (database connections,
+/// HTTP clients, caches, etc.) into actions without coupling them to the
+/// resource management backend.
+///
+/// Resources are identified by a string key (matching `Resource::id()` in
+/// `nebula-resource`). The returned value is type-erased — the action is
+/// responsible for downcasting to the expected instance type.
+#[async_trait]
+pub trait ResourceProvider: Send + Sync {
+    /// Acquire a resource instance by key.
+    ///
+    /// The returned `Box<dyn Any + Send>` should be downcast to the concrete
+    /// resource instance type. The resource is released when the box is dropped.
+    async fn acquire(&self, key: &str) -> Result<Box<dyn std::any::Any + Send>, ActionError>;
+}

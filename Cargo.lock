@@ -3358,6 +3358,7 @@ dependencies = [
  "nebula-expression",
  "nebula-parameter",
  "nebula-plugin",
+ "nebula-resource",
  "nebula-runtime",
  "nebula-sandbox-inprocess",
  "nebula-telemetry",
@@ -3551,6 +3552,7 @@ name = "nebula-resource"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "criterion",
  "dashmap",
  "metrics",
  "metrics-exporter-prometheus",
