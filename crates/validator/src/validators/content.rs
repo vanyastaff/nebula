@@ -2,150 +2,77 @@
 //!
 //! Validators for checking string content and patterns.
 
-use crate::foundation::{Validate, ValidationError};
+use std::sync::LazyLock;
+
+use crate::foundation::ValidationError;
+
+static EMAIL_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
+    ).unwrap()
+});
+
+static URL_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"^https?://[^\s/$.?#].[^\s]*$").unwrap()
+});
 
 // ============================================================================
 // REGEX VALIDATOR
 // ============================================================================
 
-/// Validates that a string matches a regular expression.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::validators::MatchesRegex;
-/// use regex::Regex;
-///
-/// let validator = MatchesRegex {
-///     pattern: Regex::new(r"^\d{3}-\d{4}$").unwrap()
-/// };
-/// assert!(validator.validate("123-4567").is_ok());
-/// assert!(validator.validate("invalid").is_err());
-/// ```
-#[derive(Debug, Clone)]
-pub struct MatchesRegex {
-    /// The compiled regex pattern to match against.
-    pub pattern: regex::Regex,
-}
-
-impl MatchesRegex {
-    #[must_use = "constructor result must be handled"]
-    pub fn new(pattern: &str) -> Result<Self, regex::Error> {
+crate::validator! {
+    /// Validates that a string matches a regular expression.
+    pub MatchesRegex { pattern: regex::Regex } for str;
+    rule(self, input) { self.pattern.is_match(input) }
+    error(self, input) {
+        ValidationError::new(
+            "regex",
+            format!("String must match pattern: {}", self.pattern.as_str()),
+        )
+        .with_param("pattern", self.pattern.as_str().to_string())
+    }
+    new(pattern: &str) -> regex::Error {
         Ok(Self {
             pattern: regex::Regex::new(pattern)?,
         })
     }
-}
-
-impl Validate for MatchesRegex {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        if self.pattern.is_match(input) {
-            Ok(())
-        } else {
-            Err(ValidationError::new(
-                "regex",
-                format!("String must match pattern: {}", self.pattern.as_str()),
-            )
-            .with_param("pattern", self.pattern.as_str().to_string()))
-        }
-    }
-}
-
-#[must_use = "validator must be used"]
-pub fn matches_regex(pattern: &str) -> Result<MatchesRegex, regex::Error> {
-    MatchesRegex::new(pattern)
+    fn matches_regex(pattern: &str) -> regex::Error;
 }
 
 // ============================================================================
 // EMAIL VALIDATOR
 // ============================================================================
 
-/// Validates email format.
-///
-/// Uses a simple but effective regex pattern.
-#[derive(Debug, Clone)]
-pub struct Email {
-    pattern: regex::Regex,
-}
-
-impl Email {
-    #[must_use]
-    pub fn new() -> Self {
-        // Simple email pattern - can be made more strict
-        let pattern = regex::Regex::new(
-            r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
-        ).expect("hardcoded email regex pattern is valid");
-
-        Self { pattern }
-    }
-}
-
-impl Default for Email {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Validate for Email {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        if self.pattern.is_match(input) {
-            Ok(())
-        } else {
-            Err(ValidationError::invalid_format("", "email"))
+crate::validator! {
+    /// Validates email format.
+    ///
+    /// Uses a simple but effective regex pattern.
+    pub Email { pattern: regex::Regex } for str;
+    rule(self, input) { self.pattern.is_match(input) }
+    error(self, input) { ValidationError::invalid_format("", "email") }
+    new() {
+        Self {
+            pattern: EMAIL_REGEX.clone(),
         }
     }
-}
-
-#[must_use]
-pub fn email() -> Email {
-    Email::new()
+    fn email();
 }
 
 // ============================================================================
 // URL VALIDATOR
 // ============================================================================
 
-/// Validates URL format.
-#[derive(Debug, Clone)]
-pub struct Url {
-    pattern: regex::Regex,
-}
-
-impl Url {
-    #[must_use]
-    pub fn new() -> Self {
-        let pattern = regex::Regex::new(r"^https?://[^\s/$.?#].[^\s]*$")
-            .expect("hardcoded URL regex pattern is valid");
-
-        Self { pattern }
-    }
-}
-
-impl Default for Url {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Validate for Url {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        if self.pattern.is_match(input) {
-            Ok(())
-        } else {
-            Err(ValidationError::invalid_format("", "url"))
+crate::validator! {
+    /// Validates URL format.
+    pub Url { pattern: regex::Regex } for str;
+    rule(self, input) { self.pattern.is_match(input) }
+    error(self, input) { ValidationError::invalid_format("", "url") }
+    new() {
+        Self {
+            pattern: URL_REGEX.clone(),
         }
     }
-}
-
-#[must_use]
-pub fn url() -> Url {
-    Url::new()
+    fn url();
 }
 
 // ============================================================================
@@ -155,6 +82,7 @@ pub fn url() -> Url {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foundation::Validate;
 
     #[test]
     fn test_regex() {

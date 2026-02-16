@@ -167,6 +167,7 @@ macro_rules! validator {
             $(pub $field: $fty,)+
         }
 
+        #[allow(clippy::new_without_default)]
         impl $name {
             #[must_use]
             pub fn new($($narg: $naty),*) -> Self $new_body
@@ -184,6 +185,47 @@ macro_rules! validator {
                     Err($err)
                 }
             }
+        }
+    };
+
+    // ── Variant 3c: Struct with fields + fallible new + fallible factory ─
+    //
+    // For validators whose constructor can fail (returns Result).
+    // The type after `->` is the error type; the macro wraps it in Result.
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
+        rule($self_:ident, $inp:ident) $rule:block
+        error($self2:ident, $einp:ident) $err:block
+        new($($narg:ident: $naty:ty),* $(,)?) -> $ety:ty $new_body:block
+        fn $factory:ident($($farg:ident: $faty:ty),* $(,)?) -> $efty:ty;
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone)]
+        $vis struct $name {
+            $(pub $field: $fty,)+
+        }
+
+        impl $name {
+            pub fn new($($narg: $naty),*) -> ::std::result::Result<Self, $ety> $new_body
+        }
+
+        impl $crate::foundation::Validate for $name {
+            type Input = $input;
+
+            #[allow(unused_variables)]
+            fn validate(&$self_, $inp: &Self::Input) -> ::std::result::Result<(), $crate::foundation::ValidationError> {
+                if $rule {
+                    Ok(())
+                } else {
+                    let $einp = $inp;
+                    Err($err)
+                }
+            }
+        }
+
+        $vis fn $factory($($farg: $faty),*) -> ::std::result::Result<$name, $efty> {
+            $name::new($($farg),*)
         }
     };
 
@@ -291,6 +333,120 @@ macro_rules! validator {
         }
 
         impl<$gen: $first_bound $(+ $rest_bound)*> $crate::foundation::Validate for $name<$gen> {
+            type Input = $input;
+
+            #[allow(unused_variables)]
+            fn validate(&$self_, $inp: &Self::Input) -> Result<(), $crate::foundation::ValidationError> {
+                if $rule {
+                    Ok(())
+                } else {
+                    let $einp = $inp;
+                    Err($err)
+                }
+            }
+        }
+    };
+
+    // ── Variant 5a: Phantom generic unit + factory fn ─────────────────
+    //
+    // For generic validators with no fields and no trait bounds on T.
+    // Automatically adds `PhantomData<T>` to the struct.
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident<$gen:ident> for $input:ty;
+        rule($inp:ident) $rule:block
+        error($einp:ident) $err:block
+        fn $factory:ident();
+    ) => {
+        $crate::validator! {
+            $(#[$meta])*
+            $vis $name<$gen> for $input;
+            rule($inp) $rule
+            error($einp) $err
+        }
+
+        #[must_use]
+        $vis fn $factory<$gen>() -> $name<$gen> {
+            $name { _phantom: ::std::marker::PhantomData }
+        }
+    };
+
+    // ── Variant 5b: Phantom generic unit, no factory ──────────────────
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident<$gen:ident> for $input:ty;
+        rule($inp:ident) $rule:block
+        error($einp:ident) $err:block
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        $vis struct $name<$gen> {
+            _phantom: ::std::marker::PhantomData<$gen>,
+        }
+
+        impl<$gen> $crate::foundation::Validate for $name<$gen> {
+            type Input = $input;
+
+            #[allow(unused_variables)]
+            fn validate(&self, $inp: &Self::Input) -> Result<(), $crate::foundation::ValidationError> {
+                if $rule {
+                    Ok(())
+                } else {
+                    let $einp = $inp;
+                    Err($err)
+                }
+            }
+        }
+    };
+
+    // ── Variant 6a: Phantom generic struct + auto new + factory fn ────
+    //
+    // For generic validators with fields but no trait bounds on T.
+    // Automatically adds `PhantomData<T>` to the struct.
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident<$gen:ident>
+            { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
+        rule($self_:ident, $inp:ident) $rule:block
+        error($self2:ident, $einp:ident) $err:block
+        fn $factory:ident($($farg:ident: $faty:ty),* $(,)?);
+    ) => {
+        $crate::validator! {
+            $(#[$meta])*
+            $vis $name<$gen> { $($field: $fty),+ } for $input;
+            rule($self_, $inp) $rule
+            error($self2, $einp) $err
+        }
+
+        #[must_use]
+        $vis fn $factory<$gen>($($farg: $faty),*) -> $name<$gen> {
+            $name::new($($farg),*)
+        }
+    };
+
+    // ── Variant 6b: Phantom generic struct + auto new, no factory ─────
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident<$gen:ident>
+            { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
+        rule($self_:ident, $inp:ident) $rule:block
+        error($self2:ident, $einp:ident) $err:block
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone)]
+        $vis struct $name<$gen> {
+            $(pub $field: $fty,)+
+            _phantom: ::std::marker::PhantomData<$gen>,
+        }
+
+        impl<$gen> $name<$gen> {
+            #[must_use]
+            pub fn new($($field: $fty),+) -> Self {
+                Self { $($field,)+ _phantom: ::std::marker::PhantomData }
+            }
+        }
+
+        impl<$gen> $crate::foundation::Validate for $name<$gen> {
             type Input = $input;
 
             #[allow(unused_variables)]
@@ -521,5 +677,96 @@ mod tests {
         let v = TestRange::new(3, 7);
         assert_eq!(v.lo, 3);
         assert_eq!(v.hi, 7);
+    }
+
+    // Test 10: Phantom unit validator (generic, no fields, no bounds)
+    validator! {
+        TestPhantomUnit<T> for Option<T>;
+        rule(input) { input.is_some() }
+        error(input) { ValidationError::new("required", "required") }
+        fn test_phantom_unit();
+    }
+
+    #[test]
+    fn test_phantom_unit_validator() {
+        let v = test_phantom_unit::<i32>();
+        assert!(v.validate(&Some(42)).is_ok());
+        assert!(v.validate(&None::<i32>).is_err());
+    }
+
+    #[test]
+    fn test_phantom_unit_copy() {
+        let v = test_phantom_unit::<i32>();
+        let v2 = v; // Copy works when T: Copy
+        assert!(v.validate(&Some(1)).is_ok());
+        assert!(v2.validate(&None::<i32>).is_err());
+    }
+
+    // Test 11: Phantom struct validator (generic, fields, no bounds)
+    validator! {
+        TestPhantomStruct<T> { min: usize } for [T];
+        rule(self, input) { input.len() >= self.min }
+        error(self, input) {
+            ValidationError::new("min", format!("need {} elements", self.min))
+        }
+        fn test_phantom_struct(min: usize);
+    }
+
+    #[test]
+    fn test_phantom_struct_validator() {
+        let v = test_phantom_struct::<i32>(2);
+        assert!(v.validate(&[1, 2, 3]).is_ok());
+        assert!(v.validate(&[1]).is_err());
+    }
+
+    #[test]
+    fn test_phantom_struct_new() {
+        let v = TestPhantomStruct::<String>::new(1);
+        assert!(v.validate(&["a".to_string()]).is_ok());
+        assert!(v.validate(&[]).is_err());
+    }
+
+    #[test]
+    fn test_phantom_struct_error_message() {
+        let v = test_phantom_struct::<i32>(3);
+        let err = v.validate(&[1]).unwrap_err();
+        assert_eq!(err.code, "min");
+        assert_eq!(err.message, "need 3 elements");
+    }
+
+    // Test 12: Fallible constructor (returns Result)
+    validator! {
+        TestFallible { lo: usize, hi: usize } for usize;
+        rule(self, input) { *input >= self.lo && *input <= self.hi }
+        error(self, input) {
+            ValidationError::new("range", format!("{} not in {}..{}", input, self.lo, self.hi))
+        }
+        new(lo: usize, hi: usize) -> ValidationError {
+            if lo > hi {
+                return Err(ValidationError::new("invalid", "lo must be <= hi"));
+            }
+            Ok(Self { lo, hi })
+        }
+        fn test_fallible(lo: usize, hi: usize) -> ValidationError;
+    }
+
+    #[test]
+    fn test_fallible_valid_construction() {
+        let v = test_fallible(1, 10).unwrap();
+        assert!(v.validate(&5).is_ok());
+        assert!(v.validate(&0).is_err());
+        assert!(v.validate(&11).is_err());
+    }
+
+    #[test]
+    fn test_fallible_invalid_construction() {
+        assert!(test_fallible(10, 5).is_err());
+        assert!(TestFallible::new(10, 5).is_err());
+    }
+
+    #[test]
+    fn test_fallible_error_content() {
+        let err = TestFallible::new(10, 5).unwrap_err();
+        assert_eq!(err.code, "invalid");
     }
 }
