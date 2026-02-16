@@ -98,6 +98,7 @@ impl HealthStatus {
     }
 
     /// Add metadata key-value pair
+    #[must_use]
     pub fn with_metadata<K: Into<String>, V: Into<String>>(mut self, key: K, value: V) -> Self {
         self.metadata.insert(key.into(), value.into());
         self

@@ -78,7 +78,6 @@ test-case = { version = "3.3.1", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
-criterion = { workspace = true }
 proptest = { workspace = true }
 test-case = "3.3.1"
 mockall = { workspace = true }

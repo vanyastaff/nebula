@@ -200,3 +200,75 @@ fn global_scope_serialization() {
     let back: Scope = serde_json::from_str(&json).unwrap();
     assert_eq!(back, Scope::Global);
 }
+
+// ---------------------------------------------------------------------------
+// Corrupt / malformed input tests — garbage in must produce Err, not panic
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lifecycle_rejects_unknown_variant() {
+    let result = serde_json::from_str::<Lifecycle>("\"NotAState\"");
+    assert!(result.is_err(), "unknown variant should produce Err");
+}
+
+#[test]
+fn lifecycle_rejects_number() {
+    let result = serde_json::from_str::<Lifecycle>("42");
+    assert!(result.is_err(), "number should produce Err for Lifecycle");
+}
+
+#[test]
+fn lifecycle_rejects_null() {
+    let result = serde_json::from_str::<Lifecycle>("null");
+    assert!(result.is_err(), "null should produce Err for Lifecycle");
+}
+
+#[test]
+fn scope_rejects_empty_object() {
+    let result = serde_json::from_str::<Scope>("{}");
+    assert!(result.is_err(), "empty object should produce Err for Scope");
+}
+
+#[test]
+fn scope_rejects_unknown_variant() {
+    let result = serde_json::from_str::<Scope>("{\"UnknownScope\": {}}");
+    assert!(result.is_err(), "unknown variant should produce Err for Scope");
+}
+
+#[test]
+fn health_state_rejects_wrong_type() {
+    let result = serde_json::from_str::<HealthState>(
+        r#"{"Degraded":{"reason":"x","performance_impact":"not_a_number"}}"#,
+    );
+    assert!(result.is_err(), "string where f64 expected should produce Err");
+}
+
+#[test]
+fn health_state_rejects_null() {
+    let result = serde_json::from_str::<HealthState>("null");
+    assert!(result.is_err(), "null should produce Err for HealthState");
+}
+
+#[test]
+fn pool_config_rejects_null() {
+    let result = serde_json::from_str::<PoolConfig>("null");
+    assert!(result.is_err(), "null should produce Err for PoolConfig");
+}
+
+#[test]
+fn pool_config_rejects_truncated_json() {
+    let result = serde_json::from_str::<PoolConfig>(r#"{"min_size": 1, "max_si"#);
+    assert!(result.is_err(), "truncated JSON should produce Err");
+}
+
+#[test]
+fn strategy_rejects_unknown_variant() {
+    let result = serde_json::from_str::<ScopingStrategy>("\"NonExistent\"");
+    assert!(result.is_err(), "unknown variant should produce Err for Strategy");
+}
+
+#[test]
+fn strategy_rejects_number() {
+    let result = serde_json::from_str::<ScopingStrategy>("99");
+    assert!(result.is_err(), "number should produce Err for Strategy");
+}

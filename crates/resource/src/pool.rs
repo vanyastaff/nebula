@@ -142,7 +142,8 @@ struct PoolInner<R: Resource> {
     config: R::Config,
     pool_config: PoolConfig,
     state: Mutex<PoolState<R::Instance>>,
-    /// Semaphore limits total concurrent instances (idle + active).
+    /// Semaphore limits concurrent active (checked-out) instances.
+    /// Idle instances do not hold permits.
     semaphore: Semaphore,
 }
 
@@ -211,11 +212,27 @@ impl<R: Resource> Pool<R> {
     /// Acquire a resource instance from the pool.
     ///
     /// Returns an RAII `Guard` that returns the instance to the pool
-    /// when dropped.
+    /// when dropped. Respects `ctx.cancellation` — if the token is
+    /// cancelled while waiting, returns `Error::Unavailable` immediately.
     pub async fn acquire(&self, ctx: &Context) -> Result<Guard<R::Instance>> {
+        tokio::select! {
+            result = self.acquire_inner(ctx) => result,
+            () = ctx.cancellation.cancelled() => {
+                Err(Error::Unavailable {
+                    resource_id: self.inner.resource.id().to_string(),
+                    reason: "Operation cancelled".to_string(),
+                    retryable: false,
+                })
+            }
+        }
+    }
+
+    /// Inner acquire logic, separated so `acquire` can wrap it in a
+    /// cancellation-aware `select!`.
+    async fn acquire_inner(&self, ctx: &Context) -> Result<Guard<R::Instance>> {
         let inner = &self.inner;
 
-        // Acquire a permit (limits total instances)
+        // Acquire a permit (limits concurrent active instances)
         let permit =
             tokio::time::timeout(inner.pool_config.acquire_timeout, inner.semaphore.acquire())
                 .await
@@ -831,5 +848,97 @@ mod tests {
             "instance should not be reinserted after shutdown"
         );
         assert_eq!(stats.destroyed, 1, "instance should be cleaned up");
+    }
+
+    // -- Resource that fails create --
+
+    struct FailingCreateResource {
+        /// Countdown: create() fails while > 0, then succeeds.
+        remaining_failures: std::sync::atomic::AtomicU32,
+    }
+
+    impl Resource for FailingCreateResource {
+        type Config = TestConfig;
+        type Instance = String;
+
+        fn id(&self) -> &str {
+            "failing-create"
+        }
+
+        async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
+            let remaining = self
+                .remaining_failures
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            if remaining > 0 {
+                return Err(Error::Initialization {
+                    resource_id: "failing-create".to_string(),
+                    reason: "intentional failure".to_string(),
+                    source: None,
+                });
+            }
+            Ok(format!("{}-inst", config.prefix))
+        }
+    }
+
+    #[tokio::test]
+    async fn create_failure_does_not_leak_semaphore_permit() {
+        let resource = FailingCreateResource {
+            remaining_failures: std::sync::atomic::AtomicU32::new(1),
+        };
+        let pool_config = PoolConfig {
+            min_size: 0,
+            max_size: 1,
+            acquire_timeout: Duration::from_secs(1),
+            ..Default::default()
+        };
+        let pool = Pool::new(resource, test_config(), pool_config).unwrap();
+
+        // First acquire should fail (create returns Err)
+        let result = pool.acquire(&test_ctx()).await;
+        assert!(result.is_err(), "first acquire should fail");
+
+        // Second acquire should succeed (permit was returned, create now works)
+        let guard = pool
+            .acquire(&test_ctx())
+            .await
+            .expect("second acquire should succeed — permit must not be leaked");
+        assert_eq!(*guard, "test-inst");
+    }
+
+    #[tokio::test]
+    async fn acquire_respects_cancellation() {
+        let pool_config = PoolConfig {
+            min_size: 0,
+            max_size: 1,
+            acquire_timeout: Duration::from_secs(10),
+            ..Default::default()
+        };
+        let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
+
+        // Hold one guard so the pool is exhausted
+        let _g = pool.acquire(&test_ctx()).await.unwrap();
+
+        // Create a context with a cancellation token
+        let token = tokio_util::sync::CancellationToken::new();
+        let ctx = Context::new(Scope::Global, "wf-1", "ex-1").with_cancellation(token.clone());
+
+        // Cancel after 50ms
+        let cancel_token = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_token.cancel();
+        });
+
+        // Acquire should fail due to cancellation, not wait 10s for timeout
+        let start = Instant::now();
+        let result = pool.acquire(&ctx).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "acquire should fail when cancelled");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "should fail quickly via cancellation, not wait for timeout (took {:?})",
+            elapsed
+        );
     }
 }
