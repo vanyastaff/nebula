@@ -50,6 +50,9 @@ ehthumbs.db
 # Windows folder config
 Desktop.ini
 
+# Windows NUL device artifact
+nul
+
 # ============================================================================
 # JETBRAINS / RUSTROVER / INTELLIJ
 # ============================================================================
