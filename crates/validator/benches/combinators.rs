@@ -132,7 +132,7 @@ fn bench_when_combinator(c: &mut Criterion) {
 }
 
 fn bench_optional_combinator(c: &mut Criterion) {
-    use nebula_validator::foundation::{ValidationError, ValidatorMetadata};
+    use nebula_validator::foundation::ValidationError;
 
     // Wrapper with sized Input type for Optional compatibility
     struct SizedMinLength(usize);
@@ -144,9 +144,6 @@ fn bench_optional_combinator(c: &mut Criterion) {
             } else {
                 Err(ValidationError::new("min_length", "too short"))
             }
-        }
-        fn metadata(&self) -> ValidatorMetadata {
-            ValidatorMetadata::default()
         }
     }
 
