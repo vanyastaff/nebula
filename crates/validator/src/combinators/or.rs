@@ -41,11 +41,9 @@ where
                 Ok(()) => Ok(()),
                 Err(right_error) => Err(ValidationError::new(
                     "or_failed",
-                    format!(
-                        "Both validators failed: ({}) OR ({})",
-                        left_error.message, right_error.message
-                    ),
-                )),
+                    "All alternatives failed",
+                )
+                .with_nested(vec![left_error, right_error])),
             },
         }
     }
@@ -97,18 +95,15 @@ where
         for validator in &self.validators {
             match validator.validate(input) {
                 Ok(()) => return Ok(()),
-                Err(e) => errors.push(e.message.clone()),
+                Err(e) => errors.push(e),
             }
         }
 
-        Err(ValidationError::new(
-            "or_any_failed",
-            format!(
-                "All {} validators failed: {}",
-                errors.len(),
-                errors.join(", ")
-            ),
-        ))
+        let count = errors.len();
+        Err(
+            ValidationError::new("or_any_failed", format!("All {count} alternatives failed"))
+                .with_nested(errors),
+        )
     }
 }
 
@@ -150,7 +145,11 @@ mod tests {
     #[test]
     fn test_or_both_fail() {
         let validator = Or::new(ExactLength { length: 5 }, ExactLength { length: 10 });
-        assert!(validator.validate("hi").is_err());
+        let err = validator.validate("hi").unwrap_err();
+        assert_eq!(err.code.as_ref(), "or_failed");
+        assert_eq!(err.nested.len(), 2);
+        assert_eq!(err.nested[0].code.as_ref(), "exact_length");
+        assert_eq!(err.nested[1].code.as_ref(), "exact_length");
     }
 
     #[test]
@@ -173,6 +172,12 @@ mod tests {
         let combined = or_any(validators);
         assert!(combined.validate("abc").is_ok());
         assert!(combined.validate("hello").is_ok());
-        assert!(combined.validate("hi").is_err());
+
+        let err = combined.validate("hi").unwrap_err();
+        assert_eq!(err.code.as_ref(), "or_any_failed");
+        assert_eq!(err.nested.len(), 3);
+        for nested in &err.nested {
+            assert_eq!(nested.code.as_ref(), "exact_length");
+        }
     }
 }
