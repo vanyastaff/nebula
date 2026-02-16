@@ -39,11 +39,10 @@ where
             Ok(()) => Ok(()),
             Err(left_error) => match self.right.validate(input) {
                 Ok(()) => Ok(()),
-                Err(right_error) => Err(ValidationError::new(
-                    "or_failed",
-                    "All alternatives failed",
-                )
-                .with_nested(vec![left_error, right_error])),
+                Err(right_error) => {
+                    Err(ValidationError::new("or_failed", "All alternatives failed")
+                        .with_nested(vec![left_error, right_error]))
+                }
             },
         }
     }

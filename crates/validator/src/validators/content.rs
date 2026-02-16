@@ -12,9 +12,8 @@ static EMAIL_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
     ).unwrap()
 });
 
-static URL_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"^https?://[^\s/$.?#].[^\s]*$").unwrap()
-});
+static URL_REGEX: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^https?://[^\s/$.?#].[^\s]*$").unwrap());
 
 // ============================================================================
 // REGEX VALIDATOR
