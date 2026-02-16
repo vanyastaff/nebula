@@ -2,23 +2,24 @@ name: Security Audit
 
 on:
   schedule:
-    # Run daily at 00:00 UTC
-    - cron: '0 0 * * *'
+    - cron: '0 0 * * 1' # Weekly on Monday
   push:
-    branches: [main, master]
+    branches: [main]
     paths:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
+      - '.cargo/audit.toml'
       - '.github/workflows/security-audit.yml'
   pull_request:
     paths:
       - '**/Cargo.toml'
       - '**/Cargo.lock'
-  workflow_dispatch: # Allow manual trigger
+      - '.cargo/audit.toml'
+  workflow_dispatch:
 
 permissions:
   contents: read
-  issues: write # For creating security advisory issues
+  issues: write
 
 jobs:
   audit:
@@ -28,33 +29,26 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        uses: taiki-e/install-action@cargo-audit
 
       - name: Run cargo audit
         id: audit
         continue-on-error: true
         run: |
-          cargo audit --json > audit-report.json
-          cargo audit
+          cargo audit --json > audit-report.json 2>&1
+          VULN_COUNT=$(jq -r '.vulnerabilities.count' audit-report.json 2>/dev/null || echo "0")
+          echo "vuln_count=$VULN_COUNT" >> "$GITHUB_OUTPUT"
 
-      - name: Parse audit results
-        if: always()
-        run: |
-          if [ -f audit-report.json ]; then
-            echo "### 🔍 Security Audit Results" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-
-            # Check if vulnerabilities found
-            VULN_COUNT=$(jq -r '.vulnerabilities.count' audit-report.json 2>/dev/null || echo "0")
-
-            if [ "$VULN_COUNT" = "0" ]; then
-              echo "✅ **No vulnerabilities found!**" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "⚠️ **Found $VULN_COUNT vulnerability(ies)**" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "See job logs for details." >> $GITHUB_STEP_SUMMARY
-            fi
+          echo "### Security Audit Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$VULN_COUNT" = "0" ]; then
+            echo "No vulnerabilities found." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Found **$VULN_COUNT** vulnerability(ies). See job logs for details." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+          # Print human-readable output and propagate exit code
+          cargo audit
 
       - name: Upload audit report
         if: always()
@@ -62,37 +56,84 @@ jobs:
         with:
           name: security-audit-report
           path: audit-report.json
-          retention-days: 90
+          retention-days: 30
 
       - name: Fail if vulnerabilities found
         if: steps.audit.outcome == 'failure'
         run: |
-          echo "::error::Security vulnerabilities detected. Please review audit report."
+          echo "::error::Security vulnerabilities detected. Review the audit report."
           exit 1
 
-  # Optional: Create GitHub issue for new vulnerabilities
   notify:
     runs-on: ubuntu-latest
     needs: audit
-    if: failure() && github.event_name == 'schedule'
+    if: always() && github.event_name == 'schedule'
     steps:
-      - name: Create issue for vulnerabilities
+      - name: Manage security issue
         uses: actions/github-script@v7
         with:
           script: |
-            github.rest.issues.create({
+            const labels = ['security', 'dependencies', 'automated'];
+            const title = 'Security Audit: vulnerabilities detected';
+
+            // Find existing open issue
+            const { data: issues } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: '🚨 Security Audit Failed - Vulnerabilities Detected',
-              body: `The automated security audit has detected vulnerabilities in dependencies.
+              state: 'open',
+              labels: labels.join(','),
+              per_page: 1,
+            });
 
-              **Action Required:**
-              1. Review the [audit report](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
-              2. Update affected dependencies
-              3. Review security advisories
+            const auditPassed = '${{ needs.audit.result }}' === 'success';
 
-              **Workflow:** \`security-audit.yml\`
-              **Run:** ${context.runId}
-              **Date:** ${new Date().toISOString()}`,
-              labels: ['security', 'dependencies', 'automated']
-            })
+            if (auditPassed && issues.length > 0) {
+              // Audit passes now — auto-close the issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues[0].number,
+                body: `Resolved automatically — security audit passing as of [run #${context.runId}](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues[0].number,
+                state: 'closed',
+              });
+              console.log(`Closed issue #${issues[0].number} — audit passing.`);
+              return;
+            }
+
+            if (!auditPassed && issues.length > 0) {
+              // Already tracked — add a comment instead of a new issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues[0].number,
+                body: `Still failing — [run #${context.runId}](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+              });
+              console.log(`Updated issue #${issues[0].number} — still failing.`);
+              return;
+            }
+
+            if (!auditPassed && issues.length === 0) {
+              // New failure — create issue
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body: [
+                  'The weekly security audit has detected vulnerabilities.',
+                  '',
+                  '**Action required:**',
+                  `1. Review the [audit report](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+                  '2. Update affected dependencies',
+                  '3. This issue will close automatically when the audit passes',
+                  '',
+                  `*Run:* ${context.runId} | *Date:* ${new Date().toISOString()}`,
+                ].join('\n'),
+                labels,
+              });
+              console.log('Created new security issue.');
+            }

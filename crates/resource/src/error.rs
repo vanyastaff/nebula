@@ -2,11 +2,47 @@
 use thiserror::Error;
 
 /// Result type for resource operations
-pub type ResourceResult<T> = Result<T, ResourceError>;
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// A single field validation failure.
+#[derive(Debug, Clone)]
+pub struct FieldViolation {
+    /// The field name (e.g. "max_size").
+    pub field: String,
+    /// The constraint that was violated (e.g. "must be > 0").
+    pub constraint: String,
+    /// The actual value that failed (as a string representation).
+    pub actual: String,
+}
+
+impl FieldViolation {
+    /// Create a new field violation.
+    pub fn new(
+        field: impl Into<String>,
+        constraint: impl Into<String>,
+        actual: impl Into<String>,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            constraint: constraint.into(),
+            actual: actual.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for FieldViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: {} (got {})",
+            self.field, self.constraint, self.actual
+        )
+    }
+}
 
 /// Comprehensive error type for resource management operations
 #[derive(Error, Debug)]
-pub enum ResourceError {
+pub enum Error {
     /// Resource configuration is invalid
     #[error("Configuration error: {message}")]
     Configuration {
@@ -134,6 +170,13 @@ pub enum ResourceError {
         to: String,
     },
 
+    /// One or more configuration fields failed validation.
+    #[error("Validation error: {violations:?}")]
+    Validation {
+        /// Individual field validation failures.
+        violations: Vec<FieldViolation>,
+    },
+
     /// Generic internal error
     #[error("Internal error in resource '{resource_id}': {message}")]
     Internal {
@@ -147,7 +190,7 @@ pub enum ResourceError {
     },
 }
 
-impl ResourceError {
+impl Error {
     /// Create a configuration error
     pub fn configuration<S: Into<String>>(message: S) -> Self {
         Self::Configuration {
@@ -156,167 +199,9 @@ impl ResourceError {
         }
     }
 
-    /// Create a configuration error with source
-    pub fn configuration_with_source<S: Into<String>, E>(message: S, source: E) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        Self::Configuration {
-            message: message.into(),
-            source: Some(Box::new(source)),
-        }
-    }
-
-    /// Create an initialization error
-    pub fn initialization<S1: Into<String>, S2: Into<String>>(resource_id: S1, reason: S2) -> Self {
-        Self::Initialization {
-            resource_id: resource_id.into(),
-            reason: reason.into(),
-            source: None,
-        }
-    }
-
-    /// Create an initialization error with source
-    pub fn initialization_with_source<S1: Into<String>, S2: Into<String>, E>(
-        resource_id: S1,
-        reason: S2,
-        source: E,
-    ) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        Self::Initialization {
-            resource_id: resource_id.into(),
-            reason: reason.into(),
-            source: Some(Box::new(source)),
-        }
-    }
-
-    /// Create an unavailable error
-    pub fn unavailable<S1: Into<String>, S2: Into<String>>(
-        resource_id: S1,
-        reason: S2,
-        retryable: bool,
-    ) -> Self {
-        Self::Unavailable {
-            resource_id: resource_id.into(),
-            reason: reason.into(),
-            retryable,
-        }
-    }
-
-    /// Create a health check error
-    pub fn health_check<S1: Into<String>, S2: Into<String>>(
-        resource_id: S1,
-        reason: S2,
-        attempt: u32,
-    ) -> Self {
-        Self::HealthCheck {
-            resource_id: resource_id.into(),
-            reason: reason.into(),
-            attempt,
-        }
-    }
-
-    /// Create a missing credential error
-    pub fn missing_credential<S1: Into<String>, S2: Into<String>>(
-        credential_id: S1,
-        resource_id: S2,
-    ) -> Self {
-        Self::MissingCredential {
-            credential_id: credential_id.into(),
-            resource_id: resource_id.into(),
-        }
-    }
-
-    /// Create a cleanup error
-    pub fn cleanup<S1: Into<String>, S2: Into<String>>(resource_id: S1, reason: S2) -> Self {
-        Self::Cleanup {
-            resource_id: resource_id.into(),
-            reason: reason.into(),
-            source: None,
-        }
-    }
-
-    /// Create a timeout error
-    pub fn timeout<S1: Into<String>, S2: Into<String>>(
-        resource_id: S1,
-        timeout_ms: u64,
-        operation: S2,
-    ) -> Self {
-        Self::Timeout {
-            resource_id: resource_id.into(),
-            timeout_ms,
-            operation: operation.into(),
-        }
-    }
-
-    /// Create a circuit breaker open error
-    pub fn circuit_breaker_open<S: Into<String>>(
-        resource_id: S,
-        retry_after_ms: Option<u64>,
-    ) -> Self {
-        Self::CircuitBreakerOpen {
-            resource_id: resource_id.into(),
-            retry_after_ms,
-        }
-    }
-
-    /// Create a pool exhausted error
-    pub fn pool_exhausted<S: Into<String>>(
-        resource_id: S,
-        current_size: usize,
-        max_size: usize,
-        waiters: usize,
-    ) -> Self {
-        Self::PoolExhausted {
-            resource_id: resource_id.into(),
-            current_size,
-            max_size,
-            waiters,
-        }
-    }
-
-    /// Create a dependency failure error
-    pub fn dependency_failure<S1: Into<String>, S2: Into<String>, S3: Into<String>>(
-        resource_id: S1,
-        dependency_id: S2,
-        reason: S3,
-    ) -> Self {
-        Self::DependencyFailure {
-            resource_id: resource_id.into(),
-            dependency_id: dependency_id.into(),
-            reason: reason.into(),
-        }
-    }
-
-    /// Create a circular dependency error
-    pub fn circular_dependency<S: Into<String>>(cycle: S) -> Self {
-        Self::CircularDependency {
-            cycle: cycle.into(),
-        }
-    }
-
-    /// Create an invalid state transition error
-    pub fn invalid_state_transition<S1: Into<String>, S2: Into<String>, S3: Into<String>>(
-        resource_id: S1,
-        from: S2,
-        to: S3,
-    ) -> Self {
-        Self::InvalidStateTransition {
-            resource_id: resource_id.into(),
-            from: from.into(),
-            to: to.into(),
-        }
-    }
-
-    /// Create an internal error
-    pub fn internal<S1: Into<String>, S2: Into<String>>(resource_id: S1, message: S2) -> Self {
-        Self::Internal {
-            resource_id: resource_id.into(),
-            message: message.into(),
-            source: None,
-        }
+    /// Create a validation error from a list of field violations.
+    pub fn validation(violations: Vec<FieldViolation>) -> Self {
+        Self::Validation { violations }
     }
 
     /// Check if this error is retryable
@@ -337,6 +222,7 @@ impl ResourceError {
         match self {
             Self::Configuration { .. } => None,
             Self::CircularDependency { .. } => None,
+            Self::Validation { .. } => None,
             Self::Initialization { resource_id, .. }
             | Self::Unavailable { resource_id, .. }
             | Self::HealthCheck { resource_id, .. }
@@ -349,5 +235,219 @@ impl ResourceError {
             | Self::InvalidStateTransition { resource_id, .. }
             | Self::Internal { resource_id, .. } => Some(resource_id),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configuration_has_no_resource_id() {
+        let err = Error::configuration("bad config");
+        assert!(err.resource_id().is_none());
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn circular_dependency_has_no_resource_id() {
+        let err = Error::CircularDependency {
+            cycle: "a -> b -> a".to_string(),
+        };
+        assert!(err.resource_id().is_none());
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn pool_exhausted_is_retryable_with_resource_id() {
+        let err = Error::PoolExhausted {
+            resource_id: "postgres".to_string(),
+            current_size: 10,
+            max_size: 10,
+            waiters: 5,
+        };
+        assert_eq!(err.resource_id(), Some("postgres"));
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn timeout_is_retryable_with_resource_id() {
+        let err = Error::Timeout {
+            resource_id: "redis".to_string(),
+            timeout_ms: 5000,
+            operation: "connect".to_string(),
+        };
+        assert_eq!(err.resource_id(), Some("redis"));
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn circuit_breaker_open_is_retryable() {
+        let err = Error::CircuitBreakerOpen {
+            resource_id: "api".to_string(),
+            retry_after_ms: Some(30000),
+        };
+        assert_eq!(err.resource_id(), Some("api"));
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn unavailable_retryable_depends_on_flag() {
+        let retryable = Error::Unavailable {
+            resource_id: "db".to_string(),
+            reason: "overloaded".to_string(),
+            retryable: true,
+        };
+        assert!(retryable.is_retryable());
+
+        let not_retryable = Error::Unavailable {
+            resource_id: "db".to_string(),
+            reason: "not found".to_string(),
+            retryable: false,
+        };
+        assert!(!not_retryable.is_retryable());
+    }
+
+    #[test]
+    fn all_resource_id_variants_covered() {
+        // Variants with resource_id
+        let variants_with_id: Vec<Error> = vec![
+            Error::Initialization {
+                resource_id: "r".into(),
+                reason: "fail".into(),
+                source: None,
+            },
+            Error::Unavailable {
+                resource_id: "r".into(),
+                reason: "down".into(),
+                retryable: false,
+            },
+            Error::HealthCheck {
+                resource_id: "r".into(),
+                reason: "timeout".into(),
+                attempt: 1,
+            },
+            Error::MissingCredential {
+                credential_id: "key".into(),
+                resource_id: "r".into(),
+            },
+            Error::Cleanup {
+                resource_id: "r".into(),
+                reason: "fail".into(),
+                source: None,
+            },
+            Error::Timeout {
+                resource_id: "r".into(),
+                timeout_ms: 1000,
+                operation: "op".into(),
+            },
+            Error::CircuitBreakerOpen {
+                resource_id: "r".into(),
+                retry_after_ms: None,
+            },
+            Error::PoolExhausted {
+                resource_id: "r".into(),
+                current_size: 1,
+                max_size: 1,
+                waiters: 0,
+            },
+            Error::DependencyFailure {
+                resource_id: "r".into(),
+                dependency_id: "dep".into(),
+                reason: "fail".into(),
+            },
+            Error::InvalidStateTransition {
+                resource_id: "r".into(),
+                from: "Ready".into(),
+                to: "Created".into(),
+            },
+            Error::Internal {
+                resource_id: "r".into(),
+                message: "bug".into(),
+                source: None,
+            },
+        ];
+
+        for err in &variants_with_id {
+            assert_eq!(
+                err.resource_id(),
+                Some("r"),
+                "expected resource_id for {:?}",
+                err
+            );
+        }
+
+        // Variants without resource_id
+        let variants_without_id: Vec<Error> = vec![
+            Error::configuration("bad"),
+            Error::CircularDependency {
+                cycle: "a -> b".into(),
+            },
+            Error::validation(vec![FieldViolation::new("max_size", "must be > 0", "0")]),
+        ];
+
+        for err in &variants_without_id {
+            assert!(
+                err.resource_id().is_none(),
+                "expected no resource_id for {:?}",
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn validation_error_has_no_resource_id() {
+        let err = Error::validation(vec![
+            FieldViolation::new("max_size", "must be > 0", "0"),
+            FieldViolation::new("min_size", "must be <= max_size", "5"),
+        ]);
+        assert!(err.resource_id().is_none());
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn validation_error_display() {
+        let err = Error::validation(vec![FieldViolation::new("max_size", "must be > 0", "0")]);
+        let msg = err.to_string();
+        assert!(msg.contains("Validation error"));
+        assert!(msg.contains("max_size"));
+    }
+
+    #[test]
+    fn field_violation_display() {
+        let v = FieldViolation::new("max_size", "must be > 0", "0");
+        assert_eq!(v.to_string(), "max_size: must be > 0 (got 0)");
+    }
+
+    #[test]
+    fn validation_convenience_constructor() {
+        let violations = vec![
+            FieldViolation::new("a", "required", ""),
+            FieldViolation::new("b", "too large", "999"),
+        ];
+        let err = Error::validation(violations);
+        match &err {
+            Error::Validation { violations } => {
+                assert_eq!(violations.len(), 2);
+                assert_eq!(violations[0].field, "a");
+                assert_eq!(violations[1].field, "b");
+            }
+            other => panic!("expected Validation, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_display_messages() {
+        let err = Error::configuration("invalid max_size");
+        assert!(err.to_string().contains("invalid max_size"));
+
+        let err = Error::PoolExhausted {
+            resource_id: "pg".to_string(),
+            current_size: 5,
+            max_size: 5,
+            waiters: 3,
+        };
+        assert!(err.to_string().contains("pg"));
+        assert!(err.to_string().contains("5/5"));
     }
 }

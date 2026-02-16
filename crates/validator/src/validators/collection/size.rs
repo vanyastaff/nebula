@@ -303,35 +303,35 @@ mod tests {
     #[test]
     fn test_min_size_vec() {
         let validator = min_size::<i32>(3);
-        assert!(validator.validate(&vec![1, 2, 3]).is_ok());
-        assert!(validator.validate(&vec![1, 2, 3, 4]).is_ok());
-        assert!(validator.validate(&vec![1, 2]).is_err());
-        assert!(validator.validate(&vec![]).is_err());
+        assert!(validator.validate(&[1, 2, 3]).is_ok());
+        assert!(validator.validate(&[1, 2, 3, 4]).is_ok());
+        assert!(validator.validate(&[1, 2]).is_err());
+        assert!(validator.validate(&[]).is_err());
     }
 
     #[test]
     fn test_max_size_vec() {
         let validator = max_size::<i32>(3);
-        assert!(validator.validate(&vec![1, 2, 3]).is_ok());
-        assert!(validator.validate(&vec![1, 2]).is_ok());
-        assert!(validator.validate(&vec![]).is_ok());
-        assert!(validator.validate(&vec![1, 2, 3, 4]).is_err());
+        assert!(validator.validate(&[1, 2, 3]).is_ok());
+        assert!(validator.validate(&[1, 2]).is_ok());
+        assert!(validator.validate(&[]).is_ok());
+        assert!(validator.validate(&[1, 2, 3, 4]).is_err());
     }
 
     #[test]
     fn test_exact_size_vec() {
         let validator = exact_size::<i32>(3);
-        assert!(validator.validate(&vec![1, 2, 3]).is_ok());
-        assert!(validator.validate(&vec![1, 2]).is_err());
-        assert!(validator.validate(&vec![1, 2, 3, 4]).is_err());
+        assert!(validator.validate(&[1, 2, 3]).is_ok());
+        assert!(validator.validate(&[1, 2]).is_err());
+        assert!(validator.validate(&[1, 2, 3, 4]).is_err());
     }
 
     #[test]
     fn test_not_empty_vec() {
         let validator = not_empty_collection::<i32>();
-        assert!(validator.validate(&vec![1]).is_ok());
-        assert!(validator.validate(&vec![1, 2, 3]).is_ok());
-        assert!(validator.validate(&vec![]).is_err());
+        assert!(validator.validate(&[1]).is_ok());
+        assert!(validator.validate(&[1, 2, 3]).is_ok());
+        assert!(validator.validate(&[]).is_err());
     }
 
     #[test]
@@ -339,19 +339,19 @@ mod tests {
         let validator = min_size::<String>(2);
         assert!(
             validator
-                .validate(&vec!["a".to_string(), "b".to_string()])
+                .validate(&["a".to_string(), "b".to_string()])
                 .is_ok()
         );
-        assert!(validator.validate(&vec!["a".to_string()]).is_err());
+        assert!(validator.validate(&["a".to_string()]).is_err());
     }
 
     #[test]
     fn test_size_range() {
         let validator = size_range::<i32>(2, 4);
-        assert!(validator.validate(&vec![1, 2]).is_ok());
-        assert!(validator.validate(&vec![1, 2, 3]).is_ok());
-        assert!(validator.validate(&vec![1, 2, 3, 4]).is_ok());
-        assert!(validator.validate(&vec![1]).is_err());
-        assert!(validator.validate(&vec![1, 2, 3, 4, 5]).is_err());
+        assert!(validator.validate(&[1, 2]).is_ok());
+        assert!(validator.validate(&[1, 2, 3]).is_ok());
+        assert!(validator.validate(&[1, 2, 3, 4]).is_ok());
+        assert!(validator.validate(&[1]).is_err());
+        assert!(validator.validate(&[1, 2, 3, 4, 5]).is_err());
     }
 }

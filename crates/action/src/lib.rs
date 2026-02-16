@@ -64,12 +64,10 @@ pub mod adapters;
 pub mod budget;
 /// Capability declarations and isolation levels for sandboxed execution.
 pub mod capability;
-/// Error types distinguishing retryable from fatal failures.
-pub mod error;
-/// Dependency-injection port traits (credentials, logging, metrics).
-pub mod provider;
 /// Runtime context provided to actions during execution.
 pub mod context;
+/// Error types distinguishing retryable from fatal failures.
+pub mod error;
 /// Type-erased internal handler for action execution (runtime use only).
 #[doc(hidden)]
 pub mod handler;
@@ -81,6 +79,8 @@ pub mod output;
 pub mod port;
 /// Convenience re-exports for action authors.
 pub mod prelude;
+/// Dependency-injection port traits (credentials, logging, metrics).
+pub mod provider;
 /// Action registry for type-erased discovery and lookup.
 pub mod registry;
 /// Execution result types carrying data and flow-control intent.
@@ -95,7 +95,6 @@ pub use action::Action;
 pub use capability::{Capability, IsolationLevel};
 pub use context::ActionContext;
 pub use error::ActionError;
-pub use provider::{ActionLogger, ActionMetrics, CredentialProvider, SecureString};
 pub use metadata::{
     ActionMetadata, ActionType, ExecutionMode, InterfaceVersion, RetryPolicy, TimeoutPolicy,
 };
@@ -106,6 +105,9 @@ pub use output::{
     StreamState, Timing, TokenUsage,
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
+pub use provider::{
+    ActionLogger, ActionMetrics, CredentialProvider, ResourceProvider, SecureString,
+};
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
 pub use types::InteractiveAction;
 pub use types::ProcessAction;

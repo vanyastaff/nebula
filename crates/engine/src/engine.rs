@@ -59,6 +59,8 @@ pub struct WorkflowEngine {
     /// Expression engine for evaluating edge conditions.
     #[allow(dead_code)]
     expression_engine: Arc<ExpressionEngine>,
+    /// Optional resource manager for providing resources to actions.
+    resource_manager: Option<Arc<nebula_resource::Manager>>,
 }
 
 impl WorkflowEngine {
@@ -77,6 +79,7 @@ impl WorkflowEngine {
             plugin_registry: PluginRegistry::new(),
             resolver: ParamResolver::new(expression_engine.clone()),
             expression_engine,
+            resource_manager: None,
         }
     }
 
@@ -96,6 +99,12 @@ impl WorkflowEngine {
     /// Mutable access to the node registry.
     pub fn plugin_registry_mut(&mut self) -> &mut PluginRegistry {
         &mut self.plugin_registry
+    }
+
+    /// Attach a resource manager for providing resources to actions.
+    pub fn with_resource_manager(mut self, manager: Arc<nebula_resource::Manager>) -> Self {
+        self.resource_manager = Some(manager);
+        self
     }
 
     /// Resolve the action registry key for a given action ID.
@@ -421,6 +430,15 @@ impl WorkflowEngine {
         let sem = semaphore.clone();
         let outputs_ref = outputs.clone();
 
+        let resource_provider = self.resource_manager.as_ref().map(|mgr| {
+            Arc::new(crate::resource::Resources::new(
+                mgr.clone(),
+                workflow_id.to_string(),
+                execution_id.to_string(),
+                cancel_token.child_token(),
+            )) as Arc<dyn nebula_action::provider::ResourceProvider>
+        });
+
         join_set.spawn(
             NodeTask {
                 runtime,
@@ -433,6 +451,7 @@ impl WorkflowEngine {
                 action_key,
                 input: action_input,
                 support_inputs,
+                resource_provider,
             }
             .run(),
         );
@@ -494,6 +513,8 @@ struct NodeTask {
     input: serde_json::Value,
     /// Data for support input ports, keyed by port name.
     support_inputs: HashMap<String, Vec<serde_json::Value>>,
+    /// Optional resource provider for this execution.
+    resource_provider: Option<Arc<dyn nebula_action::provider::ResourceProvider>>,
 }
 
 impl NodeTask {
@@ -514,6 +535,9 @@ impl NodeTask {
         .with_cancellation(self.cancel.child_token());
         if !self.support_inputs.is_empty() {
             action_ctx = action_ctx.with_support_inputs(self.support_inputs);
+        }
+        if let Some(resources) = self.resource_provider {
+            action_ctx = action_ctx.with_resources(resources);
         }
 
         let result = self

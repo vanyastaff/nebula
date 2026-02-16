@@ -547,7 +547,7 @@ mod tests {
         let results = cache.get_or_compute_batch(keys, |k| Ok(k.len()));
 
         assert_eq!(results.len(), 3);
-        assert!(results.iter().all(|r| r.is_ok()));
+        assert!(results.iter().all(std::result::Result::is_ok));
     }
 
     #[test]

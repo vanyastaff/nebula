@@ -1,52 +1,51 @@
 //! Property tests for serde JSON roundtrip of core types
 
 use nebula_resource::health::{HealthState, HealthStatus};
-use nebula_resource::lifecycle::LifecycleState;
+use nebula_resource::lifecycle::Lifecycle;
 use nebula_resource::pool::PoolConfig;
-use nebula_resource::scope::{ResourceScope, ScopingStrategy};
+use nebula_resource::scope::{Scope, Strategy as ScopingStrategy};
 use proptest::prelude::*;
 use std::time::Duration;
 
-/// Generate an arbitrary LifecycleState
-fn arb_lifecycle_state() -> impl Strategy<Value = LifecycleState> {
+/// Generate an arbitrary Lifecycle
+fn arb_lifecycle() -> impl Strategy<Value = Lifecycle> {
     prop_oneof![
-        Just(LifecycleState::Created),
-        Just(LifecycleState::Initializing),
-        Just(LifecycleState::Ready),
-        Just(LifecycleState::InUse),
-        Just(LifecycleState::Idle),
-        Just(LifecycleState::Maintenance),
-        Just(LifecycleState::Draining),
-        Just(LifecycleState::Cleanup),
-        Just(LifecycleState::Terminated),
-        Just(LifecycleState::Failed),
+        Just(Lifecycle::Created),
+        Just(Lifecycle::Initializing),
+        Just(Lifecycle::Ready),
+        Just(Lifecycle::InUse),
+        Just(Lifecycle::Idle),
+        Just(Lifecycle::Maintenance),
+        Just(Lifecycle::Draining),
+        Just(Lifecycle::Cleanup),
+        Just(Lifecycle::Terminated),
+        Just(Lifecycle::Failed),
     ]
 }
 
-/// Generate an arbitrary ResourceScope
-fn arb_scope() -> impl Strategy<Value = ResourceScope> {
+/// Generate an arbitrary Scope
+fn arb_scope() -> impl Strategy<Value = Scope> {
     prop_oneof![
-        Just(ResourceScope::Global),
-        "[a-z0-9]{1,10}".prop_map(|s| ResourceScope::tenant(s)),
-        "[a-z0-9]{1,10}".prop_map(|s| ResourceScope::workflow(s)),
-        ("[a-z0-9]{1,10}", "[a-z0-9]{1,10}")
-            .prop_map(|(w, t)| ResourceScope::workflow_in_tenant(w, t)),
-        "[a-z0-9]{1,10}".prop_map(|s| ResourceScope::execution(s)),
+        Just(Scope::Global),
+        "[a-z0-9]{1,10}".prop_map(Scope::tenant),
+        "[a-z0-9]{1,10}".prop_map(Scope::workflow),
+        ("[a-z0-9]{1,10}", "[a-z0-9]{1,10}").prop_map(|(w, t)| Scope::workflow_in_tenant(w, t)),
+        "[a-z0-9]{1,10}".prop_map(Scope::execution),
         (
             "[a-z0-9]{1,10}",
             "[a-z0-9]{1,10}",
             proptest::option::of("[a-z0-9]{1,10}")
         )
-            .prop_map(|(e, w, t)| ResourceScope::execution_in_workflow(e, w, t)),
-        "[a-z0-9]{1,10}".prop_map(|s| ResourceScope::action(s)),
+            .prop_map(|(e, w, t)| Scope::execution_in_workflow(e, w, t)),
+        "[a-z0-9]{1,10}".prop_map(Scope::action),
         (
             "[a-z0-9]{1,10}",
             "[a-z0-9]{1,10}",
             proptest::option::of("[a-z0-9]{1,10}"),
             proptest::option::of("[a-z0-9]{1,10}"),
         )
-            .prop_map(|(a, e, w, t)| ResourceScope::action_in_execution(a, e, w, t)),
-        ("[a-z]{1,10}", "[a-z0-9]{1,10}").prop_map(|(k, v)| ResourceScope::custom(k, v)),
+            .prop_map(|(a, e, w, t)| Scope::action_in_execution(a, e, w, t)),
+        ("[a-z]{1,10}", "[a-z0-9]{1,10}").prop_map(|(k, v)| Scope::custom(k, v)),
     ]
 }
 
@@ -95,12 +94,14 @@ fn arb_pool_config() -> impl Strategy<Value = PoolConfig> {
                 idle_timeout: Duration::from_secs(idle_s),
                 max_lifetime: Duration::from_secs(lifetime_s),
                 validation_interval: Duration::from_secs(validation_s),
+                maintenance_interval: None,
+                ..Default::default()
             },
         )
 }
 
-/// Generate an arbitrary ScopingStrategy
-fn arb_scoping_strategy() -> impl Strategy<Value = ScopingStrategy> {
+/// Generate an arbitrary Strategy
+fn arb_strategy() -> impl Strategy<Value = ScopingStrategy> {
     prop_oneof![
         Just(ScopingStrategy::Strict),
         Just(ScopingStrategy::Hierarchical),
@@ -110,16 +111,16 @@ fn arb_scoping_strategy() -> impl Strategy<Value = ScopingStrategy> {
 
 proptest! {
     #[test]
-    fn lifecycle_state_roundtrips(state in arb_lifecycle_state()) {
+    fn lifecycle_roundtrips(state in arb_lifecycle()) {
         let json = serde_json::to_string(&state).expect("serialize");
-        let back: LifecycleState = serde_json::from_str(&json).expect("deserialize");
+        let back: Lifecycle = serde_json::from_str(&json).expect("deserialize");
         prop_assert_eq!(state, back);
     }
 
     #[test]
-    fn resource_scope_roundtrips(scope in arb_scope()) {
+    fn scope_roundtrips(scope in arb_scope()) {
         let json = serde_json::to_string(&scope).expect("serialize");
-        let back: ResourceScope = serde_json::from_str(&json).expect("deserialize");
+        let back: Scope = serde_json::from_str(&json).expect("deserialize");
         prop_assert_eq!(scope, back);
     }
 
@@ -178,26 +179,107 @@ proptest! {
     }
 
     #[test]
-    fn scoping_strategy_roundtrips(strategy in arb_scoping_strategy()) {
+    fn strategy_roundtrips(strategy in arb_strategy()) {
         let json = serde_json::to_string(&strategy).expect("serialize");
         let back: ScopingStrategy = serde_json::from_str(&json).expect("deserialize");
         prop_assert_eq!(strategy, back);
     }
 }
 
-/// Verify that LifecycleState JSON output is a simple string (not an object)
+/// Verify that Lifecycle JSON output is a simple string (not an object)
 #[test]
-fn lifecycle_state_json_is_simple_string() {
-    let json = serde_json::to_string(&LifecycleState::Ready).unwrap();
+fn lifecycle_json_is_simple_string() {
+    let json = serde_json::to_string(&Lifecycle::Ready).unwrap();
     // Should be a quoted string like "Ready", not an object
     assert!(json.starts_with('"') && json.ends_with('"'));
     assert_eq!(json, "\"Ready\"");
 }
 
-/// Verify that ResourceScope::Global serializes cleanly
+/// Verify that Scope::Global serializes cleanly
 #[test]
 fn global_scope_serialization() {
-    let json = serde_json::to_string(&ResourceScope::Global).unwrap();
-    let back: ResourceScope = serde_json::from_str(&json).unwrap();
-    assert_eq!(back, ResourceScope::Global);
+    let json = serde_json::to_string(&Scope::Global).unwrap();
+    let back: Scope = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, Scope::Global);
+}
+
+// ---------------------------------------------------------------------------
+// Corrupt / malformed input tests — garbage in must produce Err, not panic
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lifecycle_rejects_unknown_variant() {
+    let result = serde_json::from_str::<Lifecycle>("\"NotAState\"");
+    assert!(result.is_err(), "unknown variant should produce Err");
+}
+
+#[test]
+fn lifecycle_rejects_number() {
+    let result = serde_json::from_str::<Lifecycle>("42");
+    assert!(result.is_err(), "number should produce Err for Lifecycle");
+}
+
+#[test]
+fn lifecycle_rejects_null() {
+    let result = serde_json::from_str::<Lifecycle>("null");
+    assert!(result.is_err(), "null should produce Err for Lifecycle");
+}
+
+#[test]
+fn scope_rejects_empty_object() {
+    let result = serde_json::from_str::<Scope>("{}");
+    assert!(result.is_err(), "empty object should produce Err for Scope");
+}
+
+#[test]
+fn scope_rejects_unknown_variant() {
+    let result = serde_json::from_str::<Scope>("{\"UnknownScope\": {}}");
+    assert!(
+        result.is_err(),
+        "unknown variant should produce Err for Scope"
+    );
+}
+
+#[test]
+fn health_state_rejects_wrong_type() {
+    let result = serde_json::from_str::<HealthState>(
+        r#"{"Degraded":{"reason":"x","performance_impact":"not_a_number"}}"#,
+    );
+    assert!(
+        result.is_err(),
+        "string where f64 expected should produce Err"
+    );
+}
+
+#[test]
+fn health_state_rejects_null() {
+    let result = serde_json::from_str::<HealthState>("null");
+    assert!(result.is_err(), "null should produce Err for HealthState");
+}
+
+#[test]
+fn pool_config_rejects_null() {
+    let result = serde_json::from_str::<PoolConfig>("null");
+    assert!(result.is_err(), "null should produce Err for PoolConfig");
+}
+
+#[test]
+fn pool_config_rejects_truncated_json() {
+    let result = serde_json::from_str::<PoolConfig>(r#"{"min_size": 1, "max_si"#);
+    assert!(result.is_err(), "truncated JSON should produce Err");
+}
+
+#[test]
+fn strategy_rejects_unknown_variant() {
+    let result = serde_json::from_str::<ScopingStrategy>("\"NonExistent\"");
+    assert!(
+        result.is_err(),
+        "unknown variant should produce Err for Strategy"
+    );
+}
+
+#[test]
+fn strategy_rejects_number() {
+    let result = serde_json::from_str::<ScopingStrategy>("99");
+    assert!(result.is_err(), "number should produce Err for Strategy");
 }

@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn fragmentation_display() {
         let stats = FragmentationStats::calculate(2048, 512, 8);
-        let display = format!("{}", stats);
+        let display = format!("{stats}");
         assert!(display.contains("2048 bytes"));
         assert!(display.contains("512 bytes"));
         assert!(display.contains("75%"));

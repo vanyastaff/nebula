@@ -266,7 +266,7 @@ mod tests {
         assert_eq!(policy.base_delay_ms, 100);
         assert_eq!(policy.max_delay_ms, 30_000);
         assert_eq!(policy.multiplier, 2.0);
-        assert_eq!(policy.jitter, true);
+        assert!(policy.jitter);
 
         assert!(policy.validate().is_ok());
     }
@@ -384,7 +384,7 @@ mod tests {
             let jittered_ms = jittered.as_millis() as i64;
 
             // Should be within ±25% of 100ms (75-125ms)
-            assert!(jittered_ms >= 75 && jittered_ms <= 125);
+            assert!((75..=125).contains(&jittered_ms));
         }
     }
 

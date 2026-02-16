@@ -392,11 +392,11 @@ mod tests {
     #[test]
     fn test_output_unit() {
         let validator = Hex::new();
-        let result = validator.validate("deadbeef").unwrap();
-        assert_eq!(result, ());
+        validator.validate("deadbeef").unwrap();
+        assert_eq!((), ());
 
-        let result = validator.validate("0x1234").unwrap();
-        assert_eq!(result, ());
+        validator.validate("0x1234").unwrap();
+        assert_eq!((), ());
     }
 
     #[test]

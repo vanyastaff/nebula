@@ -463,9 +463,9 @@ mod tests {
     fn test_iter_allocation() {
         let arena = TypedArena::<String>::new();
 
-        let strings = vec!["hello", "world", "rust"];
+        let strings = ["hello", "world", "rust"];
         let allocated: Vec<_> = arena
-            .alloc_iter(strings.iter().map(|s| s.to_string()))
+            .alloc_iter(strings.iter().map(std::string::ToString::to_string))
             .unwrap();
 
         assert_eq!(allocated.len(), strings.len());

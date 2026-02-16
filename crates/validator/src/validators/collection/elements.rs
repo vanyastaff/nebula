@@ -783,8 +783,8 @@ mod tests {
     #[test]
     fn test_unique() {
         let validator = unique();
-        assert!(validator.validate(&vec![1, 2, 3]).is_ok());
-        assert!(validator.validate(&vec![1, 2, 2]).is_err());
+        assert!(validator.validate(&[1, 2, 3]).is_ok());
+        assert!(validator.validate(&[1, 2, 2]).is_err());
     }
 
     #[test]

@@ -1,16 +1,16 @@
-//! Tests for ResourceGuard behavior
+//! Tests for Guard behavior
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use nebula_resource::resource::ResourceGuard;
+use nebula_resource::Guard;
 
 #[test]
 fn guard_drop_calls_callback() {
     let called = Arc::new(AtomicBool::new(false));
     let called_clone = Arc::clone(&called);
 
-    let guard = ResourceGuard::new("guarded_resource".to_string(), move |_resource| {
+    let guard = Guard::new("guarded_resource".to_string(), move |_resource| {
         called_clone.store(true, Ordering::SeqCst);
     });
 
@@ -32,7 +32,7 @@ fn guard_into_inner_prevents_callback() {
     let called = Arc::new(AtomicBool::new(false));
     let called_clone = Arc::clone(&called);
 
-    let guard = ResourceGuard::new("guarded_resource".to_string(), move |_resource| {
+    let guard = Guard::new("guarded_resource".to_string(), move |_resource| {
         called_clone.store(true, Ordering::SeqCst);
     });
 
@@ -47,14 +47,14 @@ fn guard_into_inner_prevents_callback() {
 
 #[test]
 fn guard_deref_provides_access_to_inner() {
-    let guard = ResourceGuard::new("hello".to_string(), |_| {});
-    let inner: &String = &*guard;
+    let guard = Guard::new("hello".to_string(), |_| {});
+    let inner: &String = &guard;
     assert_eq!(inner, "hello");
 }
 
 #[test]
 fn guard_deref_mut_allows_modification() {
-    let mut guard = ResourceGuard::new("hello".to_string(), |_| {});
+    let mut guard = Guard::new("hello".to_string(), |_| {});
     guard.push_str(" world");
     assert_eq!(*guard, "hello world");
 }
@@ -64,7 +64,7 @@ fn guard_callback_receives_the_resource() {
     let received = Arc::new(parking_lot::Mutex::new(String::new()));
     let received_clone = Arc::clone(&received);
 
-    let guard = ResourceGuard::new("test_value".to_string(), move |resource| {
+    let guard = Guard::new("test_value".to_string(), move |resource| {
         *received_clone.lock() = resource;
     });
 

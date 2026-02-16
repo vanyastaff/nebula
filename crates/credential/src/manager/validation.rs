@@ -106,6 +106,80 @@ impl ValidationResult {
     }
 }
 
+/// Create ValidationResult from credential metadata
+///
+/// Checks expiration based on rotation policy and created_at timestamp.
+pub fn validate_credential(
+    credential_id: &CredentialId,
+    metadata: &CredentialMetadata,
+) -> ValidationResult {
+    let now = Utc::now();
+
+    // Check if credential has rotation policy with expiration
+    if let Some(policy) = &metadata.rotation_policy {
+        use crate::rotation::policy::RotationPolicy;
+
+        // Calculate expiration time based on policy type
+        let expires_at = match policy {
+            RotationPolicy::Periodic(config) => {
+                // For periodic rotation, credential expires after interval from creation
+                let interval_secs = config.interval().as_secs() as i64;
+                metadata.created_at + chrono::Duration::seconds(interval_secs)
+            }
+            RotationPolicy::BeforeExpiry(_config) => {
+                // For before-expiry, we need the actual TTL from the credential
+                // For now, use a reasonable default or skip expiration check
+                // This will be properly implemented in user stories
+                return ValidationResult {
+                    credential_id: credential_id.clone(),
+                    valid: true,
+                    details: ValidationDetails::Valid { expires_at: None },
+                };
+            }
+            RotationPolicy::Scheduled(config) => {
+                // For scheduled rotation, use the scheduled time
+                config.scheduled_at()
+            }
+            RotationPolicy::Manual(_) => {
+                // Manual rotation has no automatic expiration
+                return ValidationResult {
+                    credential_id: credential_id.clone(),
+                    valid: true,
+                    details: ValidationDetails::Valid { expires_at: None },
+                };
+            }
+        };
+
+        if now >= expires_at {
+            // Credential expired
+            return ValidationResult {
+                credential_id: credential_id.clone(),
+                valid: false,
+                details: ValidationDetails::Expired {
+                    expired_at: expires_at,
+                    now,
+                },
+            };
+        }
+
+        // Valid with expiration
+        return ValidationResult {
+            credential_id: credential_id.clone(),
+            valid: true,
+            details: ValidationDetails::Valid {
+                expires_at: Some(expires_at),
+            },
+        };
+    }
+
+    // No expiration policy - always valid
+    ValidationResult {
+        credential_id: credential_id.clone(),
+        valid: true,
+        details: ValidationDetails::Valid { expires_at: None },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,79 +285,5 @@ mod tests {
         };
 
         assert!(result.rotation_recommended(Duration::from_secs(3600)));
-    }
-}
-
-/// Create ValidationResult from credential metadata
-///
-/// Checks expiration based on rotation policy and created_at timestamp.
-pub fn validate_credential(
-    credential_id: &CredentialId,
-    metadata: &CredentialMetadata,
-) -> ValidationResult {
-    let now = Utc::now();
-
-    // Check if credential has rotation policy with expiration
-    if let Some(policy) = &metadata.rotation_policy {
-        use crate::rotation::policy::RotationPolicy;
-
-        // Calculate expiration time based on policy type
-        let expires_at = match policy {
-            RotationPolicy::Periodic(config) => {
-                // For periodic rotation, credential expires after interval from creation
-                let interval_secs = config.interval().as_secs() as i64;
-                metadata.created_at + chrono::Duration::seconds(interval_secs)
-            }
-            RotationPolicy::BeforeExpiry(_config) => {
-                // For before-expiry, we need the actual TTL from the credential
-                // For now, use a reasonable default or skip expiration check
-                // This will be properly implemented in user stories
-                return ValidationResult {
-                    credential_id: credential_id.clone(),
-                    valid: true,
-                    details: ValidationDetails::Valid { expires_at: None },
-                };
-            }
-            RotationPolicy::Scheduled(config) => {
-                // For scheduled rotation, use the scheduled time
-                config.scheduled_at()
-            }
-            RotationPolicy::Manual(_) => {
-                // Manual rotation has no automatic expiration
-                return ValidationResult {
-                    credential_id: credential_id.clone(),
-                    valid: true,
-                    details: ValidationDetails::Valid { expires_at: None },
-                };
-            }
-        };
-
-        if now >= expires_at {
-            // Credential expired
-            return ValidationResult {
-                credential_id: credential_id.clone(),
-                valid: false,
-                details: ValidationDetails::Expired {
-                    expired_at: expires_at,
-                    now,
-                },
-            };
-        }
-
-        // Valid with expiration
-        return ValidationResult {
-            credential_id: credential_id.clone(),
-            valid: true,
-            details: ValidationDetails::Valid {
-                expires_at: Some(expires_at),
-            },
-        };
-    }
-
-    // No expiration policy - always valid
-    ValidationResult {
-        credential_id: credential_id.clone(),
-        valid: true,
-        details: ValidationDetails::Valid { expires_at: None },
     }
 }

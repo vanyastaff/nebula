@@ -1,5 +1,9 @@
 [advisories]
-ignore = []
+ignore = [
+    # rsa 0.9.9: Marvin Attack timing sidechannel (transitive via sqlx-mysql).
+    # No fixed version available upstream. Track: https://rustsec.org/advisories/RUSTSEC-2023-0071
+    "RUSTSEC-2023-0071",
+]
 
 [output]
 format = "terminal"

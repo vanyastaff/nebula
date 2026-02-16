@@ -770,7 +770,7 @@ mod tests {
         stats.allocation_count = 10;
         stats.total_bytes_allocated = 2048;
 
-        let display_str = format!("{}", stats);
+        let display_str = format!("{stats}");
         assert!(display_str.contains("1024 bytes"));
         assert!(display_str.contains("10"));
     }

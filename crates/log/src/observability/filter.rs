@@ -270,7 +270,7 @@ mod tests {
                 EventFilter::prefix("workflow."),
                 EventFilter::prefix("node."),
             ]),
-            EventFilter::custom(|event| !event.name().ends_with(".internal")).into(),
+            EventFilter::custom(|event| !event.name().ends_with(".internal")),
         ]);
 
         assert!(filter.matches(&TestEvent {

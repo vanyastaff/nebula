@@ -15,31 +15,24 @@ documentation.workspace = true
 default = ["std", "tokio", "serde"]
 
 # Core features
-std = ["tokio/rt", "tracing/std"]
-alloc = []
+std = []
 
 # Runtime features
-tokio = ["dep:tokio"]
+tokio = ["dep:tokio", "tokio-util/rt"]
 
 # Serialization
 serde = ["dep:serde", "dep:serde_json"]
 
 # Observability
 metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
-tracing = ["dep:tracing", "dep:tracing-opentelemetry", "dep:opentelemetry"]
+tracing = ["dep:tracing", "dep:tracing-opentelemetry", "dep:opentelemetry", "tracing/std"]
 
 # Security
 credentials = ["nebula-credential"]
 
-# Pooling strategies (using custom implementation)
-pooling = []
-
-# Testing utilities
-testing = ["dep:mockall", "dep:test-case"]
-
 # Full feature set (for examples and benchmarks)
 full = [
-    "std", "tokio", "serde", "pooling", "testing"
+    "std", "tokio", "serde", "metrics", "tracing", "credentials"
 ]
 
 [dependencies]
@@ -50,10 +43,9 @@ nebula-credential = { path = "../credential", optional = true }
 tokio = { version = "1.0", features = ["rt-multi-thread", "time", "sync", "macros"], optional = true }
 
 # Core utilities
-async-trait = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7" }
 
 # Serialization
 serde = { workspace = true, features = ["derive"], optional = true }
@@ -79,8 +71,12 @@ test-case = { version = "3.3.1", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
-criterion = { workspace = true }
 proptest = { workspace = true }
 test-case = "3.3.1"
 mockall = { workspace = true }
 tempfile = { workspace = true }
+criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
+
+[[bench]]
+name = "pool_throughput"
+harness = false

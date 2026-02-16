@@ -36,7 +36,7 @@ jobs:
         run: |
           cd crates/memory
           MIRIFLAGS="-Zmiri-permissive-provenance -Zmiri-disable-isolation" \
-          cargo +nightly miri test --test miri_safety
+          cargo +nightly miri test --test safety_check
         env:
           RUST_BACKTRACE: 1
 
@@ -67,7 +67,7 @@ jobs:
           unsafe_count=$(rg "unsafe \{" crates/memory/src --count-matches | \
             awk '{sum+=$1} END {print sum}')
 
-          test_count=$(rg "^fn miri_" crates/memory/tests/miri_safety.rs | wc -l)
+          test_count=$(rg "^fn test_" crates/memory/tests/safety_check.rs | wc -l)
 
           echo "- **Unsafe blocks in nebula-memory**: $unsafe_count" >> $GITHUB_STEP_SUMMARY
           echo "- **Miri tests**: $test_count" >> $GITHUB_STEP_SUMMARY

@@ -1,3 +1,7 @@
+// Syscall FFI wrappers require raw pointer casts and deep nesting for
+// platform-specific branches; these pedantic lints add no value here.
+#![allow(clippy::ptr_as_ptr, clippy::excessive_nesting, clippy::collapsible_if)]
+
 //! Direct system call wrappers for memory operations
 //!
 //! This module provides direct, unsafe system call wrappers for memory-related
@@ -144,7 +148,7 @@ pub fn memory_map(
         // OS validates all parameters and returns MAP_FAILED on error.
         let ptr = unsafe {
             mmap(
-                addr.unwrap_or(ptr::null_mut()) as *mut libc::c_void,
+                addr.unwrap_or(ptr::null_mut()).cast::<libc::c_void>(),
                 size,
                 prot,
                 map_flags,
@@ -156,7 +160,7 @@ pub fn memory_map(
         if ptr == MAP_FAILED {
             Err(io::Error::last_os_error())
         } else {
-            Ok(ptr as *mut u8)
+            Ok(ptr.cast::<u8>())
         }
     }
 
@@ -230,7 +234,7 @@ pub fn memory_unmap(addr: *mut u8, size: usize) -> io::Result<()> {
     #[cfg(unix)]
     {
         // SAFETY: FFI call to libc munmap. Caller guarantees addr/size are from mmap.
-        let result = unsafe { libc::munmap(addr as *mut libc::c_void, size) };
+        let result = unsafe { libc::munmap(addr.cast::<libc::c_void>(), size) };
         if result == -1 {
             Err(io::Error::last_os_error())
         } else {
@@ -279,7 +283,7 @@ pub fn memory_protect(addr: *mut u8, size: usize, protection: MemoryProtection) 
     {
         let prot = protection.to_unix_flags();
         // SAFETY: FFI call to mprotect. Caller guarantees addr/size are valid mapped region.
-        let result = unsafe { libc::mprotect(addr as *mut libc::c_void, size, prot) };
+        let result = unsafe { libc::mprotect(addr.cast::<libc::c_void>(), size, prot) };
         if result == -1 {
             Err(io::Error::last_os_error())
         } else {
@@ -373,7 +377,7 @@ pub fn memory_advise(addr: *mut u8, size: usize, advice: MemoryAdvice) -> io::Re
 
         // SAFETY: FFI call to madvise with advice hint. Advice is just a hint to kernel,
         // doesn't change memory validity. Caller should ensure addr/size are valid.
-        let result = unsafe { madvise(addr as *mut libc::c_void, size, advice_val) };
+        let result = unsafe { madvise(addr.cast::<libc::c_void>(), size, advice_val) };
         if result == -1 {
             Err(io::Error::last_os_error())
         } else {
@@ -438,7 +442,7 @@ pub fn memory_sync(addr: *mut u8, size: usize, sync_type: MemorySyncType) -> io:
         // SAFETY: FFI call to msync to flush memory to disk.
         // - addr/size should be valid mapped region (caller responsibility)
         // - flags determine sync behavior (sync/async/invalidate)
-        let result = unsafe { msync(addr as *mut libc::c_void, size, flags) };
+        let result = unsafe { msync(addr.cast::<libc::c_void>(), size, flags) };
         if result == -1 {
             Err(io::Error::last_os_error())
         } else {
@@ -566,7 +570,7 @@ pub fn get_memory_page_info(addr: *const u8) -> io::Result<MemoryPageInfo> {
         let page_size = crate::syscalls::get_page_size();
         let page_addr = (addr as usize / page_size) * page_size;
 
-        let maps_path = format!("/proc/{}/maps", pid);
+        let maps_path = format!("/proc/{pid}/maps");
         let mut file = File::open(maps_path)?;
         let mut content = String::new();
         file.read_to_string(&mut content)?;
@@ -575,30 +579,30 @@ pub fn get_memory_page_info(addr: *const u8) -> io::Result<MemoryPageInfo> {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 5 {
                 let addr_range: Vec<&str> = parts[0].split('-').collect();
-                if addr_range.len() == 2 {
-                    if let (Ok(start), Ok(end)) = (
+                if addr_range.len() == 2
+                    && let (Ok(start), Ok(end)) = (
                         usize::from_str_radix(addr_range[0], 16),
                         usize::from_str_radix(addr_range[1], 16),
-                    ) {
-                        if start <= page_addr && page_addr < end {
-                            let perms = parts[1];
-                            let path = if parts.len() > 5 {
-                                parts[5..].join(" ")
-                            } else {
-                                String::new()
-                            };
+                    )
+                    && start <= page_addr
+                    && page_addr < end
+                {
+                    let perms = parts[1];
+                    let path = if parts.len() > 5 {
+                        parts[5..].join(" ")
+                    } else {
+                        String::new()
+                    };
 
-                            return Ok(MemoryPageInfo {
-                                address: page_addr as *const u8,
-                                size: end - start,
-                                read: perms.contains('r'),
-                                write: perms.contains('w'),
-                                execute: perms.contains('x'),
-                                shared: perms.contains('s'),
-                                path: Some(path),
-                            });
-                        }
-                    }
+                    return Ok(MemoryPageInfo {
+                        address: page_addr as *const u8,
+                        size: end - start,
+                        read: perms.contains('r'),
+                        write: perms.contains('w'),
+                        execute: perms.contains('x'),
+                        shared: perms.contains('s'),
+                        path: Some(path),
+                    });
                 }
             }
         }

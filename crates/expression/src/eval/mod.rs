@@ -1379,7 +1379,7 @@ mod tests {
         let result = evaluator.eval(&expr, &context).unwrap();
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), 3);
-        assert_eq!(arr.get(0).unwrap().as_i64(), Some(3));
+        assert_eq!(arr.first().unwrap().as_i64(), Some(3));
         assert_eq!(arr.get(1).unwrap().as_i64(), Some(4));
         assert_eq!(arr.get(2).unwrap().as_i64(), Some(5));
     }
@@ -1412,7 +1412,7 @@ mod tests {
         let result = evaluator.eval(&expr, &context).unwrap();
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), 3);
-        assert_eq!(arr.get(0).unwrap().as_i64(), Some(2));
+        assert_eq!(arr.first().unwrap().as_i64(), Some(2));
         assert_eq!(arr.get(1).unwrap().as_i64(), Some(4));
         assert_eq!(arr.get(2).unwrap().as_i64(), Some(6));
     }
