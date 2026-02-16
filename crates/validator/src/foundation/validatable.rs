@@ -164,85 +164,36 @@ impl<T> AsValidatable<[T]> for [T] {
     }
 }
 
-// Numeric widenings
-impl AsValidatable<i64> for i32 {
-    type Output<'a> = i64;
+// Numeric widenings — lossless conversions via `From`
+macro_rules! impl_numeric_widening {
+    ($($from:ty => $to:ty),+ $(,)?) => {
+        $(
+            impl AsValidatable<$to> for $from {
+                type Output<'a> = $to;
 
-    #[inline]
-    fn as_validatable(&self) -> Result<i64, ValidationError> {
-        Ok(i64::from(*self))
-    }
+                #[inline]
+                fn as_validatable(&self) -> Result<$to, ValidationError> {
+                    Ok(<$to>::from(*self))
+                }
+            }
+        )+
+    };
 }
 
-impl AsValidatable<i64> for i16 {
-    type Output<'a> = i64;
-
-    #[inline]
-    fn as_validatable(&self) -> Result<i64, ValidationError> {
-        Ok(i64::from(*self))
-    }
+impl_numeric_widening! {
+    i8 => i64, i16 => i64, i32 => i64,
+    u8 => i64, u16 => i64, u32 => i64,
+    f32 => f64,
+    i32 => f64,
 }
 
-impl AsValidatable<i64> for i8 {
-    type Output<'a> = i64;
-
-    #[inline]
-    fn as_validatable(&self) -> Result<i64, ValidationError> {
-        Ok(i64::from(*self))
-    }
-}
-
-impl AsValidatable<i64> for u32 {
-    type Output<'a> = i64;
-
-    #[inline]
-    fn as_validatable(&self) -> Result<i64, ValidationError> {
-        Ok(i64::from(*self))
-    }
-}
-
-impl AsValidatable<i64> for u16 {
-    type Output<'a> = i64;
-
-    #[inline]
-    fn as_validatable(&self) -> Result<i64, ValidationError> {
-        Ok(i64::from(*self))
-    }
-}
-
-impl AsValidatable<i64> for u8 {
-    type Output<'a> = i64;
-
-    #[inline]
-    fn as_validatable(&self) -> Result<i64, ValidationError> {
-        Ok(i64::from(*self))
-    }
-}
-
-impl AsValidatable<f64> for f32 {
-    type Output<'a> = f64;
-
-    #[inline]
-    fn as_validatable(&self) -> Result<f64, ValidationError> {
-        Ok(f64::from(*self))
-    }
-}
-
+// i64 -> f64 is lossy (no From impl), handled separately
 impl AsValidatable<f64> for i64 {
     type Output<'a> = f64;
 
     #[inline]
     fn as_validatable(&self) -> Result<f64, ValidationError> {
         Ok(*self as f64)
-    }
-}
-
-impl AsValidatable<f64> for i32 {
-    type Output<'a> = f64;
-
-    #[inline]
-    fn as_validatable(&self) -> Result<f64, ValidationError> {
-        Ok(f64::from(*self))
     }
 }
 
