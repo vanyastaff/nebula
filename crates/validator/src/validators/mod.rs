@@ -5,10 +5,11 @@
 //!
 //! # Categories
 //!
-//! - **String**: Length, patterns, formats (email, URL, regex)
-//! - **Numeric**: Range (min, max, in_range, greater_than, less_than)
-//! - **Collection**: Size
-//! - **Logical**: Boolean, nullable
+//! - **String** ([`length`], [`pattern`], [`content`]): length bounds, character patterns,
+//!   email/URL/regex matching
+//! - **Numeric** ([`range`]): min, max, in_range, greater_than, less_than
+//! - **Collection** ([`size`]): size bounds for `Vec`, slices, etc.
+//! - **Logical** ([`boolean`], [`nullable`]): boolean checks, required/not-null
 //!
 //! # Examples
 //!
