@@ -25,11 +25,8 @@ crate::validator! {
     pub MatchesRegex { pattern: regex::Regex } for str;
     rule(self, input) { self.pattern.is_match(input) }
     error(self, input) {
-        ValidationError::new(
-            "regex",
-            format!("String must match pattern: {}", self.pattern.as_str()),
-        )
-        .with_param("pattern", self.pattern.as_str().to_string())
+        ValidationError::invalid_format("", "regex")
+            .with_param("pattern", self.pattern.as_str().to_string())
     }
     new(pattern: &str) -> regex::Error {
         Ok(Self {

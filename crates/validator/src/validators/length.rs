@@ -5,7 +5,7 @@
 //! Use the `.bytes()` constructor for byte-length counting when performance
 //! is critical and the input is known to be ASCII.
 
-use crate::foundation::{Validate, ValidationError};
+use crate::foundation::ValidationError;
 
 // ============================================================================
 // LENGTH MODE
@@ -106,12 +106,7 @@ crate::validator! {
     pub ExactLength { length: usize, mode: LengthMode } for str;
     rule(self, input) { self.mode.measure(input) == self.length }
     error(self, input) {
-        ValidationError::new(
-            "exact_length",
-            format!("String must be exactly {} characters", self.length),
-        )
-        .with_param("expected", self.length.to_string())
-        .with_param("actual", self.mode.measure(input).to_string())
+        ValidationError::exact_length("", self.length, self.mode.measure(input))
     }
     new(length: usize) { Self { length, mode: LengthMode::Chars } }
     fn exact_length(length: usize);
@@ -132,24 +127,20 @@ impl ExactLength {
 // LENGTH RANGE
 // ============================================================================
 
-/// Validates that a string length is within a range.
-///
-/// This is more efficient than using `min_length().and(max_length())`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LengthRange {
-    /// Minimum length (inclusive).
-    pub min: usize,
-    /// Maximum length (inclusive).
-    pub max: usize,
-    /// How to count length.
-    pub mode: LengthMode,
-}
-
-impl LengthRange {
-    /// Creates a new length range validator (counts Unicode chars by default).
+crate::validator! {
+    /// Validates that a string length is within a range.
     ///
-    /// Returns an error if `min > max`.
-    pub fn new(min: usize, max: usize) -> Result<Self, ValidationError> {
+    /// This is more efficient than using `min_length().and(max_length())`.
+    #[derive(Copy, PartialEq, Eq, Hash)]
+    pub LengthRange { min: usize, max: usize, mode: LengthMode } for str;
+    rule(self, input) {
+        let len = self.mode.measure(input);
+        len >= self.min && len <= self.max
+    }
+    error(self, input) {
+        ValidationError::length_range("", self.min, self.max, self.mode.measure(input))
+    }
+    new(min: usize, max: usize) -> ValidationError {
         if min > max {
             return Err(ValidationError::new("invalid_range", "min must be <= max"));
         }
@@ -159,7 +150,10 @@ impl LengthRange {
             mode: LengthMode::Chars,
         })
     }
+    fn length_range(min: usize, max: usize) -> ValidationError;
+}
 
+impl LengthRange {
     /// Creates a length range validator that counts bytes.
     ///
     /// Returns an error if `min > max`.
@@ -175,33 +169,6 @@ impl LengthRange {
     }
 }
 
-impl Validate for LengthRange {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        let len = self.mode.measure(input);
-        if len >= self.min && len <= self.max {
-            Ok(())
-        } else {
-            Err(ValidationError::new(
-                "length_range",
-                format!(
-                    "String length must be between {} and {}",
-                    self.min, self.max
-                ),
-            )
-            .with_param("min", self.min.to_string())
-            .with_param("max", self.max.to_string())
-            .with_param("actual", len.to_string()))
-        }
-    }
-}
-
-/// Creates a length range validator.
-pub fn length_range(min: usize, max: usize) -> Result<LengthRange, ValidationError> {
-    LengthRange::new(min, max)
-}
-
 // ============================================================================
 // TESTS
 // ============================================================================
@@ -209,6 +176,7 @@ pub fn length_range(min: usize, max: usize) -> Result<LengthRange, ValidationErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foundation::Validate;
 
     #[test]
     fn test_min_length_valid() {

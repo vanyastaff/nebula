@@ -329,6 +329,38 @@ impl ValidationError {
         .with_param("actual", actual.to_string())
     }
 
+    /// Creates an "exact_length" error.
+    pub fn exact_length(
+        field: impl Into<Cow<'static, str>>,
+        expected: usize,
+        actual: usize,
+    ) -> Self {
+        Self::new(
+            "exact_length",
+            format!("Must be exactly {expected} characters"),
+        )
+        .with_field(field)
+        .with_param("expected", expected.to_string())
+        .with_param("actual", actual.to_string())
+    }
+
+    /// Creates a "length_range" error.
+    pub fn length_range(
+        field: impl Into<Cow<'static, str>>,
+        min: usize,
+        max: usize,
+        actual: usize,
+    ) -> Self {
+        Self::new(
+            "length_range",
+            format!("Must be between {min} and {max} characters"),
+        )
+        .with_field(field)
+        .with_param("min", min.to_string())
+        .with_param("max", max.to_string())
+        .with_param("actual", actual.to_string())
+    }
+
     /// Creates a "custom" error with a message.
     pub fn custom(message: impl Into<Cow<'static, str>>) -> Self {
         Self::new("custom", message)
