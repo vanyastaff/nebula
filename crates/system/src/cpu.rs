@@ -215,13 +215,13 @@ pub fn cache_info() -> CacheInfo {
         let l2 = read_cache_size("/sys/devices/system/cpu/cpu0/cache/index2/size");
         let l3 = read_cache_size("/sys/devices/system/cpu/cpu0/cache/index3/size");
 
-        return CacheInfo {
+        CacheInfo {
             l1_data: l1d,
             l1_instruction: l1i,
             l2,
             l3,
             line_size: info.hardware.cache_line_size,
-        };
+        }
     }
 
     // Default values for other platforms
@@ -243,13 +243,10 @@ fn read_cache_size(path: &str) -> Option<usize> {
 
     fs::read_to_string(path).ok().and_then(|s| {
         let s = s.trim();
-        if s.ends_with('K') {
-            s[..s.len() - 1].parse::<usize>().ok().map(|v| v * 1024)
-        } else if s.ends_with('M') {
-            s[..s.len() - 1]
-                .parse::<usize>()
-                .ok()
-                .map(|v| v * 1024 * 1024)
+        if let Some(num) = s.strip_suffix('K') {
+            num.parse::<usize>().ok().map(|v| v * 1024)
+        } else if let Some(num) = s.strip_suffix('M') {
+            num.parse::<usize>().ok().map(|v| v * 1024 * 1024)
         } else {
             s.parse().ok()
         }
@@ -290,21 +287,21 @@ fn detect_numa_nodes() -> Vec<NumaNode> {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
 
-                if name_str.starts_with("node") {
-                    if let Ok(id) = name_str[4..].parse::<usize>() {
-                        // Read CPUs for this node
-                        let cpu_list_path = format!("{}/node{}/cpulist", node_path, id);
-                        let cpus = fs::read_to_string(cpu_list_path)
-                            .ok()
-                            .and_then(|s| parse_cpu_list(&s))
-                            .unwrap_or_default();
+                if let Some(id) = name_str
+                    .strip_prefix("node")
+                    .and_then(|n| n.parse::<usize>().ok())
+                {
+                    let cpu_list_path = format!("{node_path}/node{id}/cpulist");
+                    let cpus = fs::read_to_string(cpu_list_path)
+                        .ok()
+                        .and_then(|s| parse_cpu_list(&s))
+                        .unwrap_or_default();
 
-                        nodes.push(NumaNode {
-                            id,
-                            cpus,
-                            memory: 0, // Would need to read from meminfo
-                        });
-                    }
+                    nodes.push(NumaNode {
+                        id,
+                        cpus,
+                        memory: 0, // Would need to read from meminfo
+                    });
                 }
             }
         }
@@ -387,7 +384,7 @@ pub mod affinity {
             }
 
             if sched_setaffinity(0, mem::size_of::<cpu_set_t>(), &set) != 0 {
-                return Err(crate::core::error::SystemError::PlatformError(format!(
+                return Err(SystemError::platform_error(format!(
                     "Failed to set CPU affinity: {}",
                     std::io::Error::last_os_error()
                 )));
