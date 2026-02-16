@@ -2,7 +2,6 @@
 //!
 //! This module defines the fundamental traits that all validators must implement.
 
-use crate::foundation::ValidatorMetadata;
 use crate::foundation::validatable::AsValidatable;
 use std::borrow::Borrow;
 
@@ -111,20 +110,6 @@ pub trait Validate {
     {
         let output = value.as_validatable()?;
         self.validate(output.borrow())
-    }
-
-    /// Returns metadata about this validator.
-    ///
-    /// Override this to provide introspection capabilities.
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::default()
-    }
-
-    /// Returns the name of this validator.
-    ///
-    /// Used for debugging and error messages.
-    fn name(&self) -> &str {
-        std::any::type_name::<Self>()
     }
 }
 
@@ -335,11 +320,5 @@ mod tests {
     fn test_validator_trait() {
         let validator = AlwaysValid;
         assert!(validator.validate("test").is_ok());
-    }
-
-    #[test]
-    fn test_validator_name() {
-        let validator = AlwaysValid;
-        assert!(validator.name().contains("AlwaysValid"));
     }
 }

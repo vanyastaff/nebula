@@ -14,12 +14,11 @@
 //! ```
 
 // ============================================================================
-// FOUNDATION: Core traits, errors, metadata
+// FOUNDATION: Core traits, errors
 // ============================================================================
 
 pub use crate::foundation::{
-    AsValidatable, ErrorSeverity, Validate, ValidateExt, ValidationComplexity, ValidationError,
-    ValidationErrors, ValidatorMetadata,
+    AsValidatable, ErrorSeverity, Validate, ValidateExt, ValidationError, ValidationErrors,
 };
 
 // ============================================================================

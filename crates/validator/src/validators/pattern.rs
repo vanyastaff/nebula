@@ -2,7 +2,7 @@
 //!
 //! This module provides validators for checking string patterns and formats.
 
-use crate::foundation::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError};
 
 // ============================================================================
 // CONTAINS
@@ -48,19 +48,6 @@ impl Validate for Contains {
             .with_param("substring", self.substring.clone()))
         }
     }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "Contains".into(),
-            description: Some(format!("String must contain '{}'", self.substring).into()),
-            complexity: ValidationComplexity::Linear,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["string".into(), "pattern".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
 }
 
 /// Creates a contains validator.
@@ -101,19 +88,6 @@ impl Validate for StartsWith {
             .with_param("prefix", self.prefix.clone()))
         }
     }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "StartsWith".into(),
-            description: Some(format!("String must start with '{}'", self.prefix).into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["string".into(), "pattern".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
 }
 
 pub fn starts_with(prefix: impl Into<String>) -> StartsWith {
@@ -151,19 +125,6 @@ impl Validate for EndsWith {
                 format!("String must end with '{}'", self.suffix),
             )
             .with_param("suffix", self.suffix.clone()))
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "EndsWith".into(),
-            description: Some(format!("String must end with '{}'", self.suffix).into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["string".into(), "pattern".into()],
-            version: None,
-            custom: Vec::new(),
         }
     }
 }
@@ -223,13 +184,6 @@ impl Validate for Alphanumeric {
             Err(ValidationError::new("alphanumeric", msg))
         }
     }
-
-    crate::validator_metadata!(
-        "Alphanumeric",
-        "String must be alphanumeric",
-        complexity = Linear,
-        tags = ["string", "pattern"]
-    );
 }
 
 #[must_use]
@@ -286,13 +240,6 @@ impl Validate for Alphabetic {
             ))
         }
     }
-
-    crate::validator_metadata!(
-        "Alphabetic",
-        "String must contain only letters",
-        complexity = Linear,
-        tags = ["string", "pattern"]
-    );
 }
 
 #[must_use]
@@ -321,13 +268,6 @@ impl Validate for Numeric {
             ))
         }
     }
-
-    crate::validator_metadata!(
-        "Numeric",
-        "String must be numeric",
-        complexity = Linear,
-        tags = ["string", "pattern"]
-    );
 }
 
 #[must_use]
@@ -359,13 +299,6 @@ impl Validate for Lowercase {
             ))
         }
     }
-
-    crate::validator_metadata!(
-        "Lowercase",
-        "String must be lowercase",
-        complexity = Constant,
-        tags = ["string", "case"]
-    );
 }
 
 #[must_use]
@@ -393,13 +326,6 @@ impl Validate for Uppercase {
             ))
         }
     }
-
-    crate::validator_metadata!(
-        "Uppercase",
-        "String must be uppercase",
-        complexity = Constant,
-        tags = ["string", "case"]
-    );
 }
 
 #[must_use]

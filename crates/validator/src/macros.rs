@@ -50,7 +50,6 @@
 /// This macro generates a complete validator implementation including:
 /// - Struct definition
 /// - Validate trait implementation
-/// - Metadata generation
 /// - Error handling
 ///
 /// # Syntax
@@ -136,19 +135,6 @@ macro_rules! validator {
                     ))
                 }
             }
-
-            fn metadata(&self) -> $crate::foundation::ValidatorMetadata {
-                $crate::foundation::ValidatorMetadata {
-                    name: ::std::borrow::Cow::Borrowed(stringify!($name)),
-                    description: validator!(@desc $($desc)?),
-                    complexity: $crate::foundation::ValidationComplexity::Linear,
-                    cacheable: true,
-                    estimated_time: None,
-                    tags: vec![],
-                    version: None,
-                    custom: Vec::new(),
-                }
-            }
         }
 
         impl $name {
@@ -156,10 +142,6 @@ macro_rules! validator {
             fn error($($error_param: $error_param_ty),*) -> String $error_body
         }
     };
-
-    // Helper: Extract description
-    (@desc $desc:expr) => { Some(::std::borrow::Cow::Borrowed($desc)) };
-    (@desc) => { None };
 }
 
 // ============================================================================
@@ -262,10 +244,6 @@ macro_rules! validator_fn {
                     ))
                 }
             }
-
-            fn metadata(&self) -> $crate::foundation::ValidatorMetadata {
-                $crate::foundation::ValidatorMetadata::simple(stringify!($name))
-            }
         }
     };
 }
@@ -311,10 +289,6 @@ macro_rules! validator_const {
                         $message,
                     ))
                 }
-            }
-
-            fn metadata(&self) -> $crate::foundation::ValidatorMetadata {
-                $crate::foundation::ValidatorMetadata::simple(stringify!($name))
             }
         }
     };
@@ -403,14 +377,6 @@ mod tests {
         let validator = TestMinLength { min: 5 };
         assert!(validator.validate("hello").is_ok());
         assert!(validator.validate("hi").is_err());
-    }
-
-    #[test]
-    fn test_validator_metadata() {
-        let validator = TestMinLength { min: 5 };
-        let meta = validator.metadata();
-        assert_eq!(meta.name, "TestMinLength");
-        assert!(meta.description.is_some());
     }
 
     #[test]

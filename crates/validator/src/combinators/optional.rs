@@ -1,7 +1,6 @@
 //! OPTIONAL combinator - validates Option types
 
-use crate::foundation::{Validate, ValidationError, ValidatorMetadata};
-use std::borrow::Cow;
+use crate::foundation::{Validate, ValidationError};
 
 /// Makes a validator work with Option types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,26 +32,6 @@ where
         match input {
             None => Ok(()),
             Some(value) => self.inner.validate(value),
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        let inner_meta = self.inner.metadata();
-
-        ValidatorMetadata {
-            name: format!("Optional({})", inner_meta.name).into(),
-            description: Some(format!("Optional {}", inner_meta.name).into()),
-            complexity: inner_meta.complexity,
-            cacheable: inner_meta.cacheable,
-            estimated_time: inner_meta.estimated_time,
-            tags: {
-                let mut tags = inner_meta.tags;
-                tags.push(Cow::Borrowed("combinator"));
-                tags.push("optional".into());
-                tags
-            },
-            version: inner_meta.version,
-            custom: inner_meta.custom,
         }
     }
 }

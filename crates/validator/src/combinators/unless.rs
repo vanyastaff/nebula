@@ -1,7 +1,6 @@
 //! UNLESS combinator - inverse conditional validation
 
-use crate::foundation::{Validate, ValidationError, ValidatorMetadata};
-use std::borrow::Cow;
+use crate::foundation::{Validate, ValidationError};
 
 // ============================================================================
 // UNLESS COMBINATOR
@@ -76,26 +75,6 @@ where
         } else {
             // Condition is false, run validation
             self.validator.validate(input)
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        let inner_meta = self.validator.metadata();
-
-        ValidatorMetadata {
-            name: format!("Unless({})", inner_meta.name).into(),
-            description: Some(format!("Skip {} when condition is true", inner_meta.name).into()),
-            complexity: inner_meta.complexity,
-            cacheable: false, // Condition makes caching unreliable
-            estimated_time: inner_meta.estimated_time,
-            tags: {
-                let mut tags = inner_meta.tags;
-                tags.push(Cow::Borrowed("combinator"));
-                tags.push("conditional".into());
-                tags
-            },
-            version: inner_meta.version,
-            custom: inner_meta.custom,
         }
     }
 }
@@ -174,15 +153,5 @@ mod tests {
         assert!(validator.validate("admin:x").is_ok()); // Admin - skipped
         assert!(validator.validate("user:hi").is_err()); // User - validated (7 chars < 10)
         assert!(validator.validate("user:hello_world").is_ok()); // User - validated (16 chars >= 10)
-    }
-
-    #[test]
-    fn test_unless_metadata() {
-        let validator = Unless::new(MinLength { min: 5 }, |_: &str| false);
-        let meta = validator.metadata();
-
-        assert!(meta.name.contains("Unless"));
-        assert!(meta.tags.contains(&"conditional".into()));
-        assert!(!meta.cacheable);
     }
 }

@@ -33,13 +33,6 @@ impl<T> Validate for MinSize<T> {
             ))
         }
     }
-
-    crate::validator_metadata!(
-        "MinSize",
-        "Validates minimum collection size",
-        complexity = Constant,
-        tags = ["collection", "size"]
-    );
 }
 
 /// Creates a validator that checks if a collection has at least a minimum size.
@@ -90,13 +83,6 @@ impl<T> Validate for MaxSize<T> {
             ))
         }
     }
-
-    crate::validator_metadata!(
-        "MaxSize",
-        "Validates maximum collection size",
-        complexity = Constant,
-        tags = ["collection", "size"]
-    );
 }
 
 /// Creates a validator that checks if a collection has at most a maximum size.
@@ -147,13 +133,6 @@ impl<T> Validate for ExactSize<T> {
             ))
         }
     }
-
-    crate::validator_metadata!(
-        "ExactSize",
-        "Validates exact collection size",
-        complexity = Constant,
-        tags = ["collection", "size"]
-    );
 }
 
 /// Creates a validator that checks if a collection has an exact size.
@@ -200,13 +179,6 @@ impl<T> Validate for NotEmptyCollection<T> {
             Ok(())
         }
     }
-
-    crate::validator_metadata!(
-        "NotEmptyCollection",
-        "Validates that a collection is not empty",
-        complexity = Constant,
-        tags = ["collection", "size"]
-    );
 }
 
 /// Creates a validator that checks if a collection is not empty.
@@ -260,13 +232,6 @@ impl<T> Validate for SizeRange<T> {
             .with_param("actual", size.to_string()))
         }
     }
-
-    crate::validator_metadata!(
-        "SizeRange",
-        "Validates that collection size is within a range",
-        complexity = Constant,
-        tags = ["collection", "size"]
-    );
 }
 
 /// Creates a validator that checks if a collection size is within a range.

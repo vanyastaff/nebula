@@ -1,7 +1,6 @@
 //! AND combinator - logical conjunction of validators
 
-use crate::foundation::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
-use std::borrow::Cow;
+use crate::foundation::{Validate, ValidationError};
 
 /// Combines two validators with logical AND.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,31 +38,6 @@ where
         self.left.validate(input)?;
         self.right.validate(input)?;
         Ok(())
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        let left_meta = self.left.metadata();
-        let right_meta = self.right.metadata();
-        let complexity = std::cmp::max(left_meta.complexity, right_meta.complexity);
-        let cacheable = left_meta.cacheable && right_meta.cacheable;
-
-        ValidatorMetadata {
-            name: format!("And({}, {})", left_meta.name, right_meta.name).into(),
-            description: Some(
-                format!("Both {} and {} must pass", left_meta.name, right_meta.name).into(),
-            ),
-            complexity,
-            cacheable,
-            estimated_time: None,
-            tags: {
-                let mut tags = left_meta.tags;
-                tags.extend(right_meta.tags);
-                tags.push(Cow::Borrowed("combinator"));
-                tags
-            },
-            version: None,
-            custom: Vec::new(),
-        }
     }
 }
 
@@ -112,30 +86,6 @@ where
             validator.validate(input)?;
         }
         Ok(())
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        let mut complexity = ValidationComplexity::Constant;
-        let mut cacheable = true;
-        let mut tags = Vec::new();
-
-        for validator in &self.validators {
-            let meta = validator.metadata();
-            complexity = std::cmp::max(complexity, meta.complexity);
-            cacheable = cacheable && meta.cacheable;
-            tags.extend(meta.tags);
-        }
-
-        ValidatorMetadata {
-            name: format!("AndAll(count={})", self.validators.len()).into(),
-            description: Some(format!("All {} validators must pass", self.validators.len()).into()),
-            complexity,
-            cacheable,
-            estimated_time: None,
-            tags,
-            version: None,
-            custom: Vec::new(),
-        }
     }
 }
 

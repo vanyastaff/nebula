@@ -1,6 +1,6 @@
 //! Numeric range validators
 
-use crate::foundation::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError};
 use std::fmt::Display;
 
 // ============================================================================
@@ -35,19 +35,6 @@ where
                     .with_param("min", self.min.to_string())
                     .with_param("actual", input.to_string()),
             )
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "Min".into(),
-            description: Some(format!("Value must be >= {}", self.min).into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "range".into()],
-            version: None,
-            custom: Vec::new(),
         }
     }
 }
@@ -90,19 +77,6 @@ where
             )
         }
     }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "Max".into(),
-            description: Some(format!("Value must be <= {}", self.max).into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "range".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
 }
 
 pub fn max<T>(value: T) -> Max<T> {
@@ -141,21 +115,6 @@ where
             Err(ValidationError::out_of_range(
                 "", self.min, self.max, *input,
             ))
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "InRange".into(),
-            description: Some(
-                format!("Value must be between {} and {}", self.min, self.max).into(),
-            ),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "range".into()],
-            version: None,
-            custom: Vec::new(),
         }
     }
 }
@@ -211,19 +170,6 @@ where
             )
             .with_param("bound", self.bound.to_string())
             .with_param("actual", input.to_string()))
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "GreaterThan".into(),
-            description: Some(format!("Value must be > {}", self.bound).into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "range".into()],
-            version: None,
-            custom: Vec::new(),
         }
     }
 }
@@ -284,19 +230,6 @@ where
             )
             .with_param("bound", self.bound.to_string())
             .with_param("actual", input.to_string()))
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "LessThan".into(),
-            description: Some(format!("Value must be < {}", self.bound).into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "range".into()],
-            version: None,
-            custom: Vec::new(),
         }
     }
 }
@@ -363,19 +296,6 @@ where
             .with_param("min", self.min.to_string())
             .with_param("max", self.max.to_string())
             .with_param("actual", input.to_string()))
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "ExclusiveRange".into(),
-            description: Some(format!("Value must be in ({}, {})", self.min, self.max).into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["numeric".into(), "range".into()],
-            version: None,
-            custom: Vec::new(),
         }
     }
 }

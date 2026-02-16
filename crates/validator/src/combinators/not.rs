@@ -1,7 +1,6 @@
 //! NOT combinator - logical negation of validators
 
-use crate::foundation::{Validate, ValidationError, ValidatorMetadata};
-use std::borrow::Cow;
+use crate::foundation::{Validate, ValidationError};
 
 /// Inverts a validator with logical NOT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,26 +35,6 @@ where
                 "Validation should have failed but passed",
             )),
             Err(_) => Ok(()),
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        let inner_meta = self.inner.metadata();
-
-        ValidatorMetadata {
-            name: format!("Not({})", inner_meta.name).into(),
-            description: Some(format!("{} must NOT pass", inner_meta.name).into()),
-            complexity: inner_meta.complexity,
-            cacheable: inner_meta.cacheable,
-            estimated_time: inner_meta.estimated_time,
-            tags: {
-                let mut tags = inner_meta.tags;
-                tags.push(Cow::Borrowed("combinator"));
-                tags.push(Cow::Borrowed("negation"));
-                tags
-            },
-            version: inner_meta.version,
-            custom: inner_meta.custom,
         }
     }
 }

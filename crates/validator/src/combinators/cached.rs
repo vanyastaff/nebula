@@ -4,8 +4,7 @@
 //! Useful for expensive validators that may be called multiple times with
 //! the same input.
 
-use crate::foundation::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
-use std::borrow::Cow;
+use crate::foundation::{Validate, ValidationError};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -150,27 +149,6 @@ where
         self.cache.insert(hash, Arc::new(result.clone()));
 
         result
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        let inner_meta = self.validator.metadata();
-
-        ValidatorMetadata {
-            name: format!("Cached({})", inner_meta.name).into(),
-            description: Some(format!("Cached {}", inner_meta.name).into()),
-            complexity: ValidationComplexity::Constant, // O(1) after first call
-            cacheable: false,                           // Already cached!
-            estimated_time: None,                       // Depends on cache hit/miss
-            tags: {
-                let mut tags = inner_meta.tags;
-                tags.push(Cow::Borrowed("combinator"));
-                tags.push("cached".into());
-                tags.push("performance".into());
-                tags
-            },
-            version: inner_meta.version,
-            custom: inner_meta.custom,
-        }
     }
 }
 
@@ -323,18 +301,6 @@ mod tests {
         let stats = validator.cache_stats();
         assert_eq!(stats.entries, 2);
         assert!(stats.weighted_size > 0);
-    }
-
-    #[test]
-    fn test_cached_metadata() {
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let validator = Cached::new(CountingValidator { min: 5, call_count });
-
-        let meta = validator.metadata();
-        assert!(meta.name.contains("Cached"));
-        assert_eq!(meta.complexity, ValidationComplexity::Constant);
-        assert!(!meta.cacheable); // Already cached
-        assert!(meta.tags.contains(&"cached".into()));
     }
 
     #[test]

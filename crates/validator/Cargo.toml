@@ -29,7 +29,6 @@ serde_json = { workspace = true }
 default = ["serde"]
 serde = []
 caching = ["dep:moka"]
-optimizer = []
 full = ["serde", "caching"]
 
 [dev-dependencies]

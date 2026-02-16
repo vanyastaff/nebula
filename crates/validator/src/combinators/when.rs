@@ -1,7 +1,6 @@
 //! WHEN combinator - conditional validation
 
-use crate::foundation::{Validate, ValidationError, ValidatorMetadata};
-use std::borrow::Cow;
+use crate::foundation::{Validate, ValidationError};
 
 /// Conditionally applies a validator based on a predicate.
 #[derive(Debug, Clone, Copy)]
@@ -43,26 +42,6 @@ where
             self.validator.validate(input)
         } else {
             Ok(())
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        let inner_meta = self.validator.metadata();
-
-        ValidatorMetadata {
-            name: format!("When({})", inner_meta.name).into(),
-            description: Some(format!("Conditionally apply {}", inner_meta.name).into()),
-            complexity: inner_meta.complexity,
-            cacheable: false,
-            estimated_time: inner_meta.estimated_time,
-            tags: {
-                let mut tags = inner_meta.tags;
-                tags.push(Cow::Borrowed("combinator"));
-                tags.push("conditional".into());
-                tags
-            },
-            version: inner_meta.version,
-            custom: inner_meta.custom,
         }
     }
 }

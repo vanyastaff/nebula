@@ -2,7 +2,7 @@
 //!
 //! Validators for checking string content and patterns.
 
-use crate::foundation::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError};
 
 // ============================================================================
 // REGEX VALIDATOR
@@ -49,19 +49,6 @@ impl Validate for MatchesRegex {
                 format!("String must match pattern: {}", self.pattern.as_str()),
             )
             .with_param("pattern", self.pattern.as_str().to_string()))
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "MatchesRegex".into(),
-            description: Some(format!("Must match: {}", self.pattern.as_str()).into()),
-            complexity: ValidationComplexity::Expensive,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["string".into(), "regex".into(), "pattern".into()],
-            version: None,
-            custom: Vec::new(),
         }
     }
 }
@@ -111,19 +98,6 @@ impl Validate for Email {
             Err(ValidationError::invalid_format("", "email"))
         }
     }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "Email".into(),
-            description: Some("Valid email address".into()),
-            complexity: ValidationComplexity::Expensive,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["string".into(), "email".into(), "format".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
 }
 
 #[must_use]
@@ -165,19 +139,6 @@ impl Validate for Url {
             Ok(())
         } else {
             Err(ValidationError::invalid_format("", "url"))
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "Url".into(),
-            description: Some("Valid URL".into()),
-            complexity: ValidationComplexity::Expensive,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["string".into(), "url".into(), "format".into()],
-            version: None,
-            custom: Vec::new(),
         }
     }
 }

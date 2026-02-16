@@ -2,7 +2,7 @@
 //!
 //! This module provides validators for nested structs and complex field types.
 
-use crate::foundation::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError};
 use std::marker::PhantomData;
 
 // ============================================================================
@@ -34,19 +34,6 @@ where
 
     fn validate(&self, input: &T) -> Result<(), ValidationError> {
         (self.validate_fn)(input)
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "NestedValidate".into(),
-            description: Some("Validates nested struct by calling its validate method".into()),
-            complexity: ValidationComplexity::Linear,
-            cacheable: false,
-            estimated_time: None,
-            tags: vec!["nested".into(), "composite".into()],
-            version: Some("1.0.0".into()),
-            custom: Vec::new(),
-        }
     }
 }
 
@@ -112,19 +99,6 @@ where
             None => Ok(()),
         }
     }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "OptionalNested".into(),
-            description: Some("Validates optional nested field".into()),
-            complexity: ValidationComplexity::Linear,
-            cacheable: false,
-            estimated_time: None,
-            tags: vec!["nested".into(), "optional".into()],
-            version: Some("1.0.0".into()),
-            custom: Vec::new(),
-        }
-    }
 }
 
 /// Creates an optional nested validator for types that implement `Validatable`.
@@ -171,19 +145,6 @@ where
             })?;
         }
         Ok(())
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "CollectionNested".into(),
-            description: Some("Validates each element in a collection".into()),
-            complexity: ValidationComplexity::Linear,
-            cacheable: false,
-            estimated_time: None,
-            tags: vec!["nested".into(), "collection".into()],
-            version: Some("1.0.0".into()),
-            custom: Vec::new(),
-        }
     }
 }
 

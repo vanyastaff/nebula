@@ -36,7 +36,7 @@
 //! }
 //! ```
 
-use crate::foundation::{Validate, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError};
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -239,11 +239,6 @@ pub trait ContextualValidator {
         input: &Self::Input,
         ctx: &ValidationContext,
     ) -> Result<(), ValidationError>;
-
-    /// Returns metadata about this validator.
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata::default()
-    }
 }
 
 // ============================================================================
@@ -282,10 +277,6 @@ where
         _ctx: &ValidationContext,
     ) -> Result<(), ValidationError> {
         self.validator.validate(input)
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        self.validator.metadata()
     }
 }
 

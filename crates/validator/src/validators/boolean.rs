@@ -20,13 +20,6 @@ impl Validate for IsTrue {
             Err(ValidationError::new("is_true", "Value must be true"))
         }
     }
-
-    crate::validator_metadata!(
-        "IsTrue",
-        "Value must be true",
-        complexity = Constant,
-        tags = ["logical", "boolean"]
-    );
 }
 
 #[must_use]
@@ -52,13 +45,6 @@ impl Validate for IsFalse {
             Ok(())
         }
     }
-
-    crate::validator_metadata!(
-        "IsFalse",
-        "Value must be false",
-        complexity = Constant,
-        tags = ["logical", "boolean"]
-    );
 }
 
 #[must_use]

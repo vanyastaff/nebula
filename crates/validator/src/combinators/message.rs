@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use crate::foundation::{Validate, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError};
 
 // ============================================================================
 // WITH MESSAGE COMBINATOR
@@ -82,21 +82,6 @@ where
             ValidationError::new(code, self.message.clone()).with_nested_error(original)
         })
     }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        let inner_meta = self.inner.metadata();
-
-        ValidatorMetadata {
-            name: format!("WithMessage({})", inner_meta.name).into(),
-            description: Some(self.message.clone().into()),
-            complexity: inner_meta.complexity,
-            cacheable: inner_meta.cacheable,
-            estimated_time: inner_meta.estimated_time,
-            tags: inner_meta.tags,
-            version: inner_meta.version,
-            custom: inner_meta.custom,
-        }
-    }
 }
 
 /// Creates a WithMessage combinator.
@@ -165,10 +150,6 @@ where
             ValidationError::new(self.code.clone(), original.message.clone())
                 .with_nested_error(original)
         })
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        self.inner.metadata()
     }
 }
 

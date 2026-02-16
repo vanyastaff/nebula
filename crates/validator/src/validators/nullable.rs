@@ -23,13 +23,6 @@ impl<T> Validate for Required<T> {
             Err(ValidationError::required(""))
         }
     }
-
-    crate::validator_metadata!(
-        "Required",
-        "Value is required",
-        complexity = Constant,
-        tags = ["logical", "nullable"]
-    );
 }
 
 #[must_use]

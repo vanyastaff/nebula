@@ -4,7 +4,7 @@
 //! without requiring derive macros.
 
 use crate::combinators::error::CombinatorError;
-use crate::foundation::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError};
 use std::borrow::Cow;
 use std::marker::PhantomData;
 
@@ -212,40 +212,6 @@ where
             ValidationError::from(field_error)
         })
     }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        let inner_meta = self.validator.metadata();
-
-        ValidatorMetadata {
-            name: if let Some(name) = &self.name {
-                format!("Field('{}', {})", name, inner_meta.name).into()
-            } else {
-                format!("Field({})", inner_meta.name).into()
-            },
-            description: Some(
-                format!(
-                    "Validates field{} using {}",
-                    self.name
-                        .as_ref()
-                        .map(|n| format!(" '{n}'"))
-                        .unwrap_or_default(),
-                    inner_meta.name
-                )
-                .into(),
-            ),
-            complexity: inner_meta.complexity,
-            cacheable: inner_meta.cacheable,
-            estimated_time: inner_meta.estimated_time,
-            tags: {
-                let mut tags = inner_meta.tags;
-                tags.push(Cow::Borrowed("combinator"));
-                tags.push(Cow::Borrowed("field"));
-                tags
-            },
-            version: inner_meta.version,
-            custom: inner_meta.custom,
-        }
-    }
 }
 
 // ============================================================================
@@ -373,19 +339,6 @@ impl<T> Validate for MultiField<T> {
                 ValidationError::new("multiple_field_errors", "Multiple field validation errors")
                     .with_nested(errors),
             )
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: format!("MultiField(fields={})", self.validators.len()).into(),
-            description: Some(format!("Validates {} fields", self.validators.len()).into()),
-            complexity: ValidationComplexity::Linear,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["combinator".into(), "field".into(), "multi".into()],
-            version: None,
-            custom: Vec::new(),
         }
     }
 }

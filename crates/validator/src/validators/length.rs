@@ -5,7 +5,7 @@
 //! Use the `.bytes()` constructor for byte-length counting when performance
 //! is critical and the input is known to be ASCII.
 
-use crate::foundation::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError};
 
 // ============================================================================
 // LENGTH MODE
@@ -86,19 +86,6 @@ impl Validate for MinLength {
             Err(ValidationError::min_length("", self.min, len))
         }
     }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "MinLength".into(),
-            description: Some(format!("String must be at least {} characters", self.min).into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["string".into(), "length".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
 }
 
 /// Creates a minimum length validator.
@@ -170,19 +157,6 @@ impl Validate for MaxLength {
             Err(ValidationError::max_length("", self.max, len))
         }
     }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "MaxLength".into(),
-            description: Some(format!("String must be at most {} characters", self.max).into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["string".into(), "length".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
 }
 
 /// Creates a maximum length validator.
@@ -249,19 +223,6 @@ impl Validate for ExactLength {
             )
             .with_param("expected", self.length.to_string())
             .with_param("actual", len.to_string()))
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "ExactLength".into(),
-            description: Some(format!("String must be exactly {} characters", self.length).into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["string".into(), "length".into()],
-            version: None,
-            custom: Vec::new(),
         }
     }
 }
@@ -350,25 +311,6 @@ impl Validate for LengthRange {
             .with_param("actual", len.to_string()))
         }
     }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "LengthRange".into(),
-            description: Some(
-                format!(
-                    "String must be between {} and {} characters",
-                    self.min, self.max
-                )
-                .into(),
-            ),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["string".into(), "length".into(), "range".into()],
-            version: None,
-            custom: Vec::new(),
-        }
-    }
 }
 
 /// Creates a length range validator.
@@ -407,19 +349,6 @@ impl Validate for NotEmpty {
             ))
         } else {
             Ok(())
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: "NotEmpty".into(),
-            description: Some("String must not be empty".into()),
-            complexity: ValidationComplexity::Constant,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["string".into(), "length".into()],
-            version: None,
-            custom: Vec::new(),
         }
     }
 }
@@ -546,17 +475,6 @@ mod tests {
         assert!(exact_length(5).validate("hello").is_ok());
         assert!(length_range(5, 10).unwrap().validate("hello").is_ok());
         assert!(not_empty().validate("hello").is_ok());
-    }
-
-    #[test]
-    fn test_metadata() {
-        let validator = MinLength::new(5);
-        let meta = validator.metadata();
-
-        assert_eq!(meta.name, "MinLength");
-        assert!(meta.description.is_some());
-        assert_eq!(meta.complexity, ValidationComplexity::Constant);
-        assert!(meta.tags.contains(&"string".into()));
     }
 
     #[test]

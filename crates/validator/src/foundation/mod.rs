@@ -4,7 +4,6 @@
 //!
 //! - **Traits**: `Validate`, `ValidateExt`
 //! - **Errors**: `ValidationError`, `ValidationErrors`
-//! - **Metadata**: `ValidatorMetadata`, `ValidationComplexity`
 //!
 //! # Architecture
 //!
@@ -73,16 +72,12 @@
 // Module declarations
 pub mod context;
 pub mod error;
-pub mod metadata;
 pub mod traits;
 pub mod validatable;
 
 // Re-export everything at the core level for convenience
 pub use context::{ContextualValidator, ValidationContext, ValidationContextBuilder};
 pub use error::{ErrorSeverity, ValidationError, ValidationErrors};
-#[cfg(feature = "optimizer")]
-pub use metadata::{RegisteredValidatorMetadata, ValidatorStatistics};
-pub use metadata::{ValidationComplexity, ValidatorMetadata, ValidatorMetadataBuilder};
 pub use traits::{Validate, ValidateExt};
 pub use validatable::AsValidatable;
 
@@ -103,8 +98,7 @@ pub use validatable::AsValidatable;
 pub mod prelude {
     pub use super::{
         AsValidatable, ContextualValidator, ErrorSeverity, Validate, ValidateExt,
-        ValidationComplexity, ValidationContext, ValidationContextBuilder, ValidationError,
-        ValidationErrors, ValidatorMetadata,
+        ValidationContext, ValidationContextBuilder, ValidationError, ValidationErrors,
     };
 }
 
