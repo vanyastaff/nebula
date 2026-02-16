@@ -19,10 +19,7 @@ moka = { version = "0.12", features = ["sync"], optional = true }
 thiserror = { workspace = true }
 
 # Data formats
-base64 = { workspace = true }
 regex = { workspace = true }
-url = { workspace = true }
-uuid = { workspace = true, features = ["v4", "serde"] }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }
@@ -33,7 +30,7 @@ default = ["serde"]
 serde = []
 caching = ["dep:moka"]
 optimizer = []
-full = ["serde", "caching", "optimizer"]
+full = ["serde", "caching"]
 
 [dev-dependencies]
 # Testing

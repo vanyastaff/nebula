@@ -153,14 +153,14 @@ fn numeric_f64_validation() {
 
 #[test]
 fn numeric_positive_i64() {
-    use nebula_validator::validators::positive;
+    use nebula_validator::validators::greater_than;
 
-    let v = positive::<i64>();
+    let v = greater_than::<i64>(0);
     assert!(v.validate_any(&json!(42)).is_ok());
     assert!(v.validate_any(&json!(1)).is_ok());
 
     let err = v.validate_any(&json!(-1)).unwrap_err();
-    assert_eq!(err.code.as_ref(), "positive");
+    assert_eq!(err.code.as_ref(), "greater_than");
 }
 
 #[test]
@@ -214,18 +214,6 @@ fn string_contains_json() {
     let v = contains("hello");
     assert!(v.validate_any(&json!("say hello world")).is_ok());
     assert!(v.validate_any(&json!("goodbye")).is_err());
-}
-
-#[test]
-fn string_uuid_json_field() {
-    use nebula_validator::validators::Uuid;
-
-    let data = json!({"id": "550e8400-e29b-41d4-a716-446655440000"});
-    let v = json_field("/id", Uuid::default());
-    assert!(v.validate(&data).is_ok());
-
-    let bad = json!({"id": "not-a-uuid"});
-    assert!(v.validate(&bad).is_err());
 }
 
 // ============================================================================
@@ -301,14 +289,14 @@ fn collection_size_range_json() {
 
 #[test]
 fn or_combinator_json() {
-    // Field can be either a non-empty string OR a positive number
-    use nebula_validator::validators::positive;
+    // Field can be either a non-empty string OR a number > 0
+    use nebula_validator::validators::greater_than;
 
-    let v = json_field("/value", min_length(1)).or(json_field("/value", positive::<i64>()));
+    let v = json_field("/value", min_length(1)).or(json_field("/value", greater_than::<i64>(0)));
 
     assert!(v.validate(&json!({"value": "hello"})).is_ok());
     assert!(v.validate(&json!({"value": 42})).is_ok());
-    // Neither string nor positive number
+    // Neither string nor number > 0
     assert!(v.validate(&json!({"value": -1})).is_err());
 }
 
@@ -521,11 +509,11 @@ fn user_registration_payload() {
 #[test]
 fn server_config_payload() {
     use nebula_validator::validators::contains;
-    use nebula_validator::validators::{in_range, positive};
+    use nebula_validator::validators::{greater_than, in_range};
 
     let validator = json_field("/host", min_length(1))
         .and(json_field("/port", in_range::<i64>(1, 65535)))
-        .and(json_field("/workers", positive::<i64>()))
+        .and(json_field("/workers", greater_than::<i64>(0)))
         .and(json_field_optional("/tls/cert_path", min_length(1)))
         .and(json_field_optional(
             "/log_level",

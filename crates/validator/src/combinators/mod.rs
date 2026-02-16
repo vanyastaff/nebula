@@ -84,8 +84,6 @@ pub mod lazy;
 pub mod message;
 pub mod nested;
 pub mod not;
-#[cfg(feature = "optimizer")]
-pub mod optimizer;
 pub mod optional;
 pub mod or;
 pub mod unless;
@@ -108,11 +106,6 @@ pub use nested::{
     custom_nested, nested_validator, optional_nested,
 };
 pub use not::{Not, not};
-#[cfg(feature = "optimizer")]
-pub use optimizer::{
-    OptimizationReport, OptimizationStrategy, ValidatorChainOptimizer, ValidatorOrdering,
-    ValidatorStats,
-};
 pub use optional::{Optional, optional};
 pub use or::{Or, OrAny, or, or_any};
 pub use unless::{Unless, unless};

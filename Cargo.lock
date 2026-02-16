@@ -3645,7 +3645,6 @@ dependencies = [
 name = "nebula-validator"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "criterion",
  "moka",
  "pretty_assertions",
@@ -3655,8 +3654,6 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tokio-test",
- "url",
- "uuid",
 ]
 
 [[package]]
