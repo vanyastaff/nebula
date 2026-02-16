@@ -188,3 +188,175 @@ impl Error {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configuration_has_no_resource_id() {
+        let err = Error::configuration("bad config");
+        assert!(err.resource_id().is_none());
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn circular_dependency_has_no_resource_id() {
+        let err = Error::CircularDependency {
+            cycle: "a -> b -> a".to_string(),
+        };
+        assert!(err.resource_id().is_none());
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn pool_exhausted_is_retryable_with_resource_id() {
+        let err = Error::PoolExhausted {
+            resource_id: "postgres".to_string(),
+            current_size: 10,
+            max_size: 10,
+            waiters: 5,
+        };
+        assert_eq!(err.resource_id(), Some("postgres"));
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn timeout_is_retryable_with_resource_id() {
+        let err = Error::Timeout {
+            resource_id: "redis".to_string(),
+            timeout_ms: 5000,
+            operation: "connect".to_string(),
+        };
+        assert_eq!(err.resource_id(), Some("redis"));
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn circuit_breaker_open_is_retryable() {
+        let err = Error::CircuitBreakerOpen {
+            resource_id: "api".to_string(),
+            retry_after_ms: Some(30000),
+        };
+        assert_eq!(err.resource_id(), Some("api"));
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn unavailable_retryable_depends_on_flag() {
+        let retryable = Error::Unavailable {
+            resource_id: "db".to_string(),
+            reason: "overloaded".to_string(),
+            retryable: true,
+        };
+        assert!(retryable.is_retryable());
+
+        let not_retryable = Error::Unavailable {
+            resource_id: "db".to_string(),
+            reason: "not found".to_string(),
+            retryable: false,
+        };
+        assert!(!not_retryable.is_retryable());
+    }
+
+    #[test]
+    fn all_resource_id_variants_covered() {
+        // Variants with resource_id
+        let variants_with_id: Vec<Error> = vec![
+            Error::Initialization {
+                resource_id: "r".into(),
+                reason: "fail".into(),
+                source: None,
+            },
+            Error::Unavailable {
+                resource_id: "r".into(),
+                reason: "down".into(),
+                retryable: false,
+            },
+            Error::HealthCheck {
+                resource_id: "r".into(),
+                reason: "timeout".into(),
+                attempt: 1,
+            },
+            Error::MissingCredential {
+                credential_id: "key".into(),
+                resource_id: "r".into(),
+            },
+            Error::Cleanup {
+                resource_id: "r".into(),
+                reason: "fail".into(),
+                source: None,
+            },
+            Error::Timeout {
+                resource_id: "r".into(),
+                timeout_ms: 1000,
+                operation: "op".into(),
+            },
+            Error::CircuitBreakerOpen {
+                resource_id: "r".into(),
+                retry_after_ms: None,
+            },
+            Error::PoolExhausted {
+                resource_id: "r".into(),
+                current_size: 1,
+                max_size: 1,
+                waiters: 0,
+            },
+            Error::DependencyFailure {
+                resource_id: "r".into(),
+                dependency_id: "dep".into(),
+                reason: "fail".into(),
+            },
+            Error::InvalidStateTransition {
+                resource_id: "r".into(),
+                from: "Ready".into(),
+                to: "Created".into(),
+            },
+            Error::Internal {
+                resource_id: "r".into(),
+                message: "bug".into(),
+                source: None,
+            },
+        ];
+
+        for err in &variants_with_id {
+            assert_eq!(
+                err.resource_id(),
+                Some("r"),
+                "expected resource_id for {:?}",
+                err
+            );
+        }
+
+        // Variants without resource_id
+        let variants_without_id: Vec<Error> = vec![
+            Error::configuration("bad"),
+            Error::CircularDependency {
+                cycle: "a -> b".into(),
+            },
+        ];
+
+        for err in &variants_without_id {
+            assert!(
+                err.resource_id().is_none(),
+                "expected no resource_id for {:?}",
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn error_display_messages() {
+        let err = Error::configuration("invalid max_size");
+        assert!(err.to_string().contains("invalid max_size"));
+
+        let err = Error::PoolExhausted {
+            resource_id: "pg".to_string(),
+            current_size: 5,
+            max_size: 5,
+            waiters: 3,
+        };
+        assert!(err.to_string().contains("pg"));
+        assert!(err.to_string().contains("5/5"));
+    }
+}

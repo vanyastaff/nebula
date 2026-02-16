@@ -179,8 +179,6 @@ pub struct HealthCheckConfig {
     pub default_interval: Duration,
     /// Number of consecutive failures before marking as unhealthy
     pub failure_threshold: u32,
-    /// Whether to automatically remove unhealthy instances
-    pub auto_remove_unhealthy: bool,
     /// Health check timeout
     pub check_timeout: Duration,
 }
@@ -190,7 +188,6 @@ impl Default for HealthCheckConfig {
         Self {
             default_interval: Duration::from_secs(30),
             failure_threshold: 3,
-            auto_remove_unhealthy: false,
             check_timeout: Duration::from_secs(5),
         }
     }
@@ -203,6 +200,8 @@ pub struct HealthChecker {
     config: HealthCheckConfig,
     /// Health records by instance ID
     records: Arc<DashMap<uuid::Uuid, HealthRecord>>,
+    /// Per-instance cancellation tokens (child of the global `cancel`)
+    instance_tokens: Arc<DashMap<uuid::Uuid, CancellationToken>>,
     /// Cancellation token for shutdown
     cancel: CancellationToken,
 }
@@ -214,6 +213,7 @@ impl HealthChecker {
         Self {
             config,
             records: Arc::new(DashMap::new()),
+            instance_tokens: Arc::new(DashMap::new()),
             cancel: CancellationToken::new(),
         }
     }
@@ -229,7 +229,11 @@ impl HealthChecker {
         let check_timeout = self.config.check_timeout;
         let failure_threshold = self.config.failure_threshold;
         let records = Arc::clone(&self.records);
+        let instance_tokens = Arc::clone(&self.instance_tokens);
+        // Per-instance token: child of the global cancel token.
+        // Cancelled by either stop_monitoring() or shutdown().
         let cancel = self.cancel.child_token();
+        self.instance_tokens.insert(instance_id, cancel.clone());
 
         tokio::spawn(async move {
             let mut consecutive_failures = 0;
@@ -271,8 +275,9 @@ impl HealthChecker {
                 }
             }
 
-            // Cleanup record on shutdown
+            // Cleanup record and token on shutdown/stop
             records.remove(&instance_id);
+            instance_tokens.remove(&instance_id);
         });
     }
 
@@ -301,8 +306,14 @@ impl HealthChecker {
         }
     }
 
-    /// Stop monitoring an instance
+    /// Stop monitoring an instance.
+    ///
+    /// Cancels the background monitoring task and removes the health record.
     pub fn stop_monitoring(&self, instance_id: &uuid::Uuid) {
+        // Cancel the per-instance token to stop the spawned task.
+        if let Some((_, token)) = self.instance_tokens.remove(instance_id) {
+            token.cancel();
+        }
         self.records.remove(instance_id);
     }
 
@@ -418,7 +429,7 @@ mod tests {
         let config = HealthCheckConfig {
             default_interval: Duration::from_millis(100),
             failure_threshold: 2,
-            auto_remove_unhealthy: false,
+
             check_timeout: Duration::from_secs(1),
         };
         let checker = HealthChecker::new(config);
@@ -447,7 +458,7 @@ mod tests {
         let config = HealthCheckConfig {
             default_interval: Duration::from_millis(50),
             failure_threshold: 3,
-            auto_remove_unhealthy: false,
+
             check_timeout: Duration::from_secs(1),
         };
         let checker = HealthChecker::new(config);
@@ -472,11 +483,177 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_shutdown_cancels_monitoring() {
+        let config = HealthCheckConfig {
+            default_interval: Duration::from_millis(50),
+            failure_threshold: 2,
+
+            check_timeout: Duration::from_secs(1),
+        };
+        let checker = HealthChecker::new(config);
+
+        let instance_id = uuid::Uuid::new_v4();
+        let instance = Arc::new(MockHealthCheckable {
+            should_fail: Arc::new(AtomicBool::new(false)),
+        });
+
+        checker.start_monitoring(instance_id, "test".to_string(), instance);
+
+        // Wait for first check
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(checker.get_health(&instance_id).is_some());
+
+        // Shutdown should cancel the monitoring task
+        checker.shutdown();
+
+        // Give the task time to notice cancellation and clean up
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Record should be removed by the shutdown cleanup in the spawned task
+        assert!(
+            checker.get_health(&instance_id).is_none(),
+            "health record should be removed after shutdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_health_check_timeout() {
+        struct SlowHealthCheck;
+
+        impl HealthCheckable for SlowHealthCheck {
+            async fn health_check(&self) -> Result<HealthStatus> {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                Ok(HealthStatus::healthy())
+            }
+        }
+
+        let config = HealthCheckConfig {
+            default_interval: Duration::from_millis(50),
+            failure_threshold: 2,
+
+            check_timeout: Duration::from_millis(100), // short timeout
+        };
+        let checker = HealthChecker::new(config);
+
+        let instance_id = uuid::Uuid::new_v4();
+        let instance = Arc::new(SlowHealthCheck);
+
+        checker.start_monitoring(instance_id, "slow".to_string(), instance);
+
+        // Wait for a couple of timed-out checks
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let health = checker.get_health(&instance_id).unwrap();
+        assert!(
+            !health.status.is_usable(),
+            "timed-out checks should be unhealthy"
+        );
+        assert!(
+            health.consecutive_failures > 0,
+            "should have consecutive failures from timeouts"
+        );
+
+        checker.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_recovery_resets_failures() {
+        let config = HealthCheckConfig {
+            default_interval: Duration::from_millis(50),
+            failure_threshold: 5,
+
+            check_timeout: Duration::from_secs(1),
+        };
+        let checker = HealthChecker::new(config);
+
+        let instance_id = uuid::Uuid::new_v4();
+        let should_fail = Arc::new(AtomicBool::new(true));
+        let instance = Arc::new(MockHealthCheckable {
+            should_fail: Arc::clone(&should_fail),
+        });
+
+        checker.start_monitoring(instance_id, "test".to_string(), instance);
+
+        // Let it fail for a while
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let health = checker.get_health(&instance_id).unwrap();
+        assert!(health.consecutive_failures > 0);
+
+        // Now make it healthy
+        should_fail.store(false, Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let health = checker.get_health(&instance_id).unwrap();
+        assert_eq!(
+            health.consecutive_failures, 0,
+            "recovery should reset consecutive failures"
+        );
+
+        checker.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_stop_monitoring_removes_record() {
+        let config = HealthCheckConfig {
+            default_interval: Duration::from_millis(50),
+            failure_threshold: 2,
+
+            check_timeout: Duration::from_secs(1),
+        };
+        let checker = HealthChecker::new(config);
+
+        let instance_id = uuid::Uuid::new_v4();
+        let instance = Arc::new(MockHealthCheckable {
+            should_fail: Arc::new(AtomicBool::new(false)),
+        });
+
+        checker.start_monitoring(instance_id, "test".to_string(), instance);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(checker.get_health(&instance_id).is_some());
+
+        checker.stop_monitoring(&instance_id);
+        assert!(
+            checker.get_health(&instance_id).is_none(),
+            "stop_monitoring should remove the health record"
+        );
+
+        checker.shutdown();
+    }
+
+    #[tokio::test]
+    async fn test_get_critical_instances() {
+        let config = HealthCheckConfig {
+            default_interval: Duration::from_millis(30),
+            failure_threshold: 2,
+
+            check_timeout: Duration::from_secs(1),
+        };
+        let checker = HealthChecker::new(config);
+
+        let instance_id = uuid::Uuid::new_v4();
+        let instance = Arc::new(MockHealthCheckable {
+            should_fail: Arc::new(AtomicBool::new(true)),
+        });
+
+        checker.start_monitoring(instance_id, "test".to_string(), instance);
+
+        // Wait for enough failures to exceed threshold
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let critical = checker.get_critical_instances();
+        assert_eq!(critical.len(), 1, "should have one critical instance");
+        assert!(critical[0].consecutive_failures >= 2);
+
+        checker.shutdown();
+    }
+
+    #[tokio::test]
     async fn test_get_unhealthy_instances() {
         let config = HealthCheckConfig {
             default_interval: Duration::from_millis(50),
             failure_threshold: 2,
-            auto_remove_unhealthy: false,
+
             check_timeout: Duration::from_secs(1),
         };
         let checker = HealthChecker::new(config);

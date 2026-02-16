@@ -74,7 +74,10 @@ impl Scope {
     }
 
     /// Create a workflow scope with tenant parent
-    pub fn workflow_in_tenant<S: Into<String>>(workflow_id: S, tenant_id: S) -> Self {
+    pub fn workflow_in_tenant(
+        workflow_id: impl Into<String>,
+        tenant_id: impl Into<String>,
+    ) -> Self {
         Self::Workflow {
             workflow_id: workflow_id.into(),
             tenant_id: Some(tenant_id.into()),
@@ -91,9 +94,9 @@ impl Scope {
     }
 
     /// Create an execution scope with full parent chain
-    pub fn execution_in_workflow<S: Into<String>>(
-        execution_id: S,
-        workflow_id: S,
+    pub fn execution_in_workflow(
+        execution_id: impl Into<String>,
+        workflow_id: impl Into<String>,
         tenant_id: Option<String>,
     ) -> Self {
         Self::Execution {
@@ -114,9 +117,9 @@ impl Scope {
     }
 
     /// Create an action scope with full parent chain
-    pub fn action_in_execution<S: Into<String>>(
-        action_id: S,
-        execution_id: S,
+    pub fn action_in_execution(
+        action_id: impl Into<String>,
+        execution_id: impl Into<String>,
         workflow_id: Option<String>,
         tenant_id: Option<String>,
     ) -> Self {
@@ -129,7 +132,7 @@ impl Scope {
     }
 
     /// Create a custom scope
-    pub fn custom<S: Into<String>>(key: S, value: S) -> Self {
+    pub fn custom(key: impl Into<String>, value: impl Into<String>) -> Self {
         Self::Custom {
             key: key.into(),
             value: value.into(),

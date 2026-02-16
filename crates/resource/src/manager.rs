@@ -53,18 +53,19 @@ impl DependencyGraph {
 
         // Don't allow self-dependency
         if resource == depends_on {
-            return Err(Error::Internal {
-                resource_id: resource.clone(),
-                message: format!("Resource cannot depend on itself: {resource}"),
-                source: None,
+            return Err(Error::CircularDependency {
+                cycle: format!("{resource} -> {resource}"),
             });
         }
 
+        // Skip if this edge already exists
+        let deps = self.dependencies.entry(resource.clone()).or_default();
+        if deps.contains(&depends_on) {
+            return Ok(());
+        }
+
         // Add to dependencies map
-        self.dependencies
-            .entry(resource.clone())
-            .or_default()
-            .push(depends_on.clone());
+        deps.push(depends_on.clone());
 
         // Add to dependents map
         self.dependents
@@ -84,13 +85,35 @@ impl DependencyGraph {
         Ok(())
     }
 
-    /// Remove a dependency relationship
+    /// Remove a single dependency relationship.
     fn remove_dependency(&mut self, resource: &str, depends_on: &str) {
         if let Some(deps) = self.dependencies.get_mut(resource) {
             deps.retain(|d| d != depends_on);
         }
         if let Some(deps) = self.dependents.get_mut(depends_on) {
             deps.retain(|d| d != resource);
+        }
+    }
+
+    /// Remove all dependency edges involving `resource` (both as source and target).
+    ///
+    /// Used when re-registering a resource to ensure a clean slate.
+    pub fn remove_all_for(&mut self, resource: &str) {
+        // Remove edges where `resource` is the dependent (resource -> X)
+        if let Some(deps) = self.dependencies.remove(resource) {
+            for dep in &deps {
+                if let Some(rev) = self.dependents.get_mut(dep.as_str()) {
+                    rev.retain(|d| d != resource);
+                }
+            }
+        }
+        // Remove edges where `resource` is the dependency (X -> resource)
+        if let Some(dependents) = self.dependents.remove(resource) {
+            for dep in &dependents {
+                if let Some(fwd) = self.dependencies.get_mut(dep.as_str()) {
+                    fwd.retain(|d| d != resource);
+                }
+            }
         }
     }
 
@@ -163,7 +186,10 @@ impl DependencyGraph {
                     return cycle;
                 }
             } else if rec_stack.contains(dep.as_str()) {
-                let cycle_start = path.iter().position(|p| p == dep).unwrap();
+                let cycle_start = path
+                    .iter()
+                    .position(|p| p == dep)
+                    .expect("Cycle detected but start node not found in path - this is a bug in cycle detection logic");
                 return Some(path[cycle_start..].to_vec());
             }
         }
@@ -189,7 +215,7 @@ impl DependencyGraph {
 
             for dep in deps {
                 all_nodes.insert(dep.clone());
-                *in_degree.entry(dep.clone()).or_insert(0) += 0; // Ensure it exists
+                in_degree.entry(dep.clone()).or_insert(0);
                 *in_degree.entry(node.clone()).or_insert(0) += 1;
             }
         }
@@ -412,7 +438,7 @@ impl Manager {
     /// Register a resource with its config and pool settings.
     ///
     /// The pool is keyed by `resource.id()`. Registering a second resource
-    /// with the same ID replaces the previous one.
+    /// with the same ID replaces the previous one (including its dependencies).
     pub fn register<R: Resource>(
         &self,
         resource: R,
@@ -423,18 +449,34 @@ impl Manager {
         R::Instance: Any,
     {
         let id = resource.id().to_string();
+        let new_deps: Vec<String> = resource
+            .dependencies()
+            .into_iter()
+            .map(Into::into)
+            .collect();
 
-        // Register dependencies
+        // Create pool first — if this fails, nothing is modified.
+        let pool = Pool::new(resource, config, pool_config)?;
+
+        // Validate all new deps on a clone before touching the real graph.
+        // This ensures the mutation is all-or-nothing.
         {
             let mut deps = self.deps.write();
-            for dep in resource.dependencies() {
-                deps.add_dependency(&id, dep)?;
+            let mut candidate = deps.clone();
+            candidate.remove_all_for(&id);
+            for dep in &new_deps {
+                candidate.add_dependency(&id, dep)?;
             }
+            // Validation passed — swap in the new graph.
+            *deps = candidate;
         }
 
-        let pool = Pool::new(resource, config, pool_config)?;
         let any_pool: Arc<dyn AnyPool> = Arc::new(TypedPool { pool });
-        self.pools.insert(id, any_pool);
+        self.pools.insert(id.clone(), any_pool);
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!(resource_id = %id, "Registered resource");
+
         Ok(())
     }
 
@@ -444,16 +486,23 @@ impl Manager {
     /// instance. When the guard is dropped, the instance is returned to
     /// the pool.
     pub async fn acquire(&self, resource_id: &str, ctx: &Context) -> Result<AnyGuard> {
+        // Clone the Arc to release the DashMap shard lock before awaiting.
+        // Without this, the Ref<> from get() holds a read lock across the
+        // potentially long-running acquire_any().await (up to acquire_timeout).
         let pool = self
             .pools
             .get(resource_id)
+            .map(|entry| Arc::clone(entry.value()))
             .ok_or_else(|| Error::Unavailable {
                 resource_id: resource_id.to_string(),
                 reason: "Resource not registered".to_string(),
                 retryable: false,
             })?;
 
-        pool.acquire_any(ctx).await
+        pool.acquire_any(ctx).await.inspect(|_guard| {
+            #[cfg(feature = "tracing")]
+            tracing::debug!(resource_id, "Acquired resource instance");
+        })
     }
 
     /// Get the initialization order based on dependency graph.
@@ -591,6 +640,43 @@ mod dependency_tests {
         assert!(graph.depends_on("a", "c")); // transitive
         assert!(!graph.depends_on("b", "a"));
     }
+
+    #[test]
+    fn test_self_dependency_returns_circular_dependency_error() {
+        let mut graph = DependencyGraph::new();
+        let err = graph.add_dependency("x", "x").unwrap_err();
+        assert!(
+            matches!(err, Error::CircularDependency { .. }),
+            "self-dependency should be CircularDependency, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_edge_is_idempotent() {
+        let mut graph = DependencyGraph::new();
+
+        graph.add_dependency("a", "b").unwrap();
+        graph.add_dependency("a", "b").unwrap(); // duplicate — should be no-op
+
+        assert_eq!(graph.get_dependencies("a"), vec!["b".to_string()]);
+        assert_eq!(graph.get_dependents("b"), vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn test_remove_all_for() {
+        let mut graph = DependencyGraph::new();
+
+        graph.add_dependency("a", "b").unwrap();
+        graph.add_dependency("a", "c").unwrap();
+        graph.add_dependency("d", "a").unwrap();
+
+        graph.remove_all_for("a");
+
+        assert!(graph.get_dependencies("a").is_empty());
+        assert!(!graph.get_dependents("b").contains(&"a".to_string()));
+        assert!(!graph.get_dependents("c").contains(&"a".to_string()));
+        assert!(!graph.get_dependencies("d").contains(&"a".to_string()));
+    }
 }
 
 #[cfg(test)]
@@ -693,5 +779,80 @@ mod tests {
             .downcast_ref::<String>()
             .expect("should downcast");
         assert_eq!(instance, "instance-pooled");
+    }
+
+    #[test]
+    fn register_with_invalid_pool_config_leaves_no_dirty_deps() {
+        let mgr = Manager::new();
+        let bad_pool = PoolConfig {
+            max_size: 0, // invalid
+            ..Default::default()
+        };
+
+        // Registration should fail because max_size == 0
+        let result = mgr.register(TestResource, TestConfig { value: "x".into() }, bad_pool);
+        assert!(result.is_err());
+
+        // Dependency graph should be clean — no phantom "test" entry
+        let order = mgr.initialization_order().unwrap();
+        assert!(
+            !order.contains(&"test".to_string()),
+            "failed register should not leave deps in graph"
+        );
+    }
+
+    #[test]
+    fn re_register_replaces_dependencies() {
+        struct DepResource {
+            deps: Vec<&'static str>,
+        }
+
+        impl Resource for DepResource {
+            type Config = TestConfig;
+            type Instance = String;
+
+            fn id(&self) -> &str {
+                "with-deps"
+            }
+
+            async fn create(
+                &self,
+                config: &Self::Config,
+                _ctx: &Context,
+            ) -> Result<Self::Instance> {
+                Ok(config.value.clone())
+            }
+
+            fn dependencies(&self) -> Vec<&str> {
+                self.deps.clone()
+            }
+        }
+
+        let mgr = Manager::new();
+
+        // First registration: depends on "a"
+        mgr.register(
+            DepResource { deps: vec!["a"] },
+            TestConfig { value: "v1".into() },
+            PoolConfig::default(),
+        )
+        .unwrap();
+        assert!(mgr.deps.read().depends_on("with-deps", "a"));
+
+        // Re-register: depends on "b" instead of "a"
+        mgr.register(
+            DepResource { deps: vec!["b"] },
+            TestConfig { value: "v2".into() },
+            PoolConfig::default(),
+        )
+        .unwrap();
+        assert!(
+            mgr.deps.read().depends_on("with-deps", "b"),
+            "should have new dependency"
+        );
+        assert!(
+            !mgr.deps.read().depends_on("with-deps", "a"),
+            "old dependency should be cleaned up"
+        );
     }
 }

@@ -131,6 +131,9 @@ pub struct PoolStats {
 struct PoolState<T> {
     idle: VecDeque<Entry<T>>,
     stats: PoolStats,
+    /// Set to true after `shutdown()` to prevent Guard drops from
+    /// reinserting instances into the idle queue.
+    shutdown: bool,
 }
 
 /// Inner shared state for the pool.
@@ -181,6 +184,15 @@ impl<R: Resource> Pool<R> {
     pub fn new(resource: R, config: R::Config, pool_config: PoolConfig) -> Result<Self> {
         pool_config.validate()?;
         let max = pool_config.max_size;
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+             resource_id = %resource.id(),
+             min_size = pool_config.min_size,
+             max_size = pool_config.max_size,
+             "Created new resource pool"
+        );
+
         Ok(Self {
             inner: Arc::new(PoolInner {
                 resource: Arc::new(resource),
@@ -189,6 +201,7 @@ impl<R: Resource> Pool<R> {
                 state: Mutex::new(PoolState {
                     idle: VecDeque::with_capacity(max),
                     stats: PoolStats::default(),
+                    shutdown: false,
                 }),
                 semaphore: Semaphore::new(max),
             }),
@@ -227,6 +240,8 @@ impl<R: Resource> Pool<R> {
             match entry {
                 Some(entry) if entry.is_expired(&inner.pool_config) => {
                     // Expired — clean up and try next
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!("Destroying expired resource instance");
                     let _ = inner.resource.cleanup(entry.instance).await;
                     inner.state.lock().stats.destroyed += 1;
                     // Don't add permit back — we'll create a new instance below if needed
@@ -238,6 +253,8 @@ impl<R: Resource> Pool<R> {
                     match inner.resource.is_valid(&entry.instance).await {
                         Ok(true) => break (entry.instance, Some(created_at)),
                         _ => {
+                            #[cfg(feature = "tracing")]
+                            tracing::debug!("Destroying invalid resource instance");
                             let _ = inner.resource.cleanup(entry.instance).await;
                             inner.state.lock().stats.destroyed += 1;
                             continue;
@@ -246,6 +263,8 @@ impl<R: Resource> Pool<R> {
                 }
                 None => {
                     // No idle instances — create new
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!("Creating new resource instance");
                     let instance = inner.resource.create(&inner.config, ctx).await?;
                     inner.state.lock().stats.created += 1;
                     break (instance, None);
@@ -272,7 +291,7 @@ impl<R: Resource> Pool<R> {
                 // Try to recycle
                 let keep = inner.resource.recycle(&mut inst).await.is_ok();
 
-                if keep {
+                if keep && !inner.state.lock().shutdown {
                     let entry = match created_at {
                         Some(ca) => Entry::returned(inst, ca),
                         None => Entry::new(inst),
@@ -304,6 +323,9 @@ impl<R: Resource> Pool<R> {
 
     /// Run maintenance: evict expired idle instances, ensure min_size.
     pub async fn maintain(&self, ctx: &Context) -> Result<()> {
+        #[cfg(feature = "tracing")]
+        tracing::debug!(resource_id = %self.inner.resource.id(), "Running pool maintenance");
+
         let inner = &self.inner;
 
         // Evict expired idle entries
@@ -358,10 +380,21 @@ impl<R: Resource> Pool<R> {
     }
 
     /// Shut down the pool, cleaning up all idle instances.
+    ///
+    /// After shutdown:
+    /// - New `acquire()` calls fail immediately (semaphore is closed).
+    /// - Any `Guard` dropped will clean up its instance instead of
+    ///   returning it to the idle queue.
     pub async fn shutdown(&self) -> Result<()> {
         let inner = &self.inner;
+
+        // Close the semaphore so new acquire() calls fail immediately
+        // instead of blocking until timeout.
+        inner.semaphore.close();
+
         let entries: Vec<_> = {
             let mut state = inner.state.lock();
+            state.shutdown = true;
             state.idle.drain(..).collect()
         };
 
@@ -519,5 +552,284 @@ mod tests {
         pool.shutdown().await.unwrap();
         let stats = pool.stats();
         assert_eq!(stats.idle, 0);
+    }
+
+    // -- Resource that fails validation --
+
+    struct InvalidatingResource {
+        /// After this many validations, start returning false
+        fail_after: std::sync::atomic::AtomicU32,
+    }
+
+    impl Resource for InvalidatingResource {
+        type Config = TestConfig;
+        type Instance = String;
+
+        fn id(&self) -> &str {
+            "invalidating"
+        }
+
+        async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
+            Ok(format!("{}-inst", config.prefix))
+        }
+
+        async fn is_valid(&self, _instance: &Self::Instance) -> Result<bool> {
+            let remaining = self
+                .fail_after
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(remaining > 0)
+        }
+    }
+
+    #[tokio::test]
+    async fn acquire_skips_invalid_idle_and_creates_new() {
+        let resource = InvalidatingResource {
+            // First is_valid call returns false, subsequent ones return true (underflow wraps)
+            fail_after: std::sync::atomic::AtomicU32::new(0),
+        };
+        let pool_config = PoolConfig {
+            min_size: 0,
+            max_size: 2,
+            acquire_timeout: Duration::from_secs(1),
+            ..Default::default()
+        };
+        let pool = Pool::new(resource, test_config(), pool_config).unwrap();
+
+        // Acquire, drop, wait for return to idle
+        {
+            let _g = pool.acquire(&test_ctx()).await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let stats = pool.stats();
+        assert_eq!(stats.idle, 1, "instance should be in idle pool");
+
+        // Next acquire: idle instance fails is_valid, gets destroyed, new one created
+        let _g = pool.acquire(&test_ctx()).await.unwrap();
+
+        let stats = pool.stats();
+        assert_eq!(stats.destroyed, 1, "invalid instance should be destroyed");
+        assert!(stats.created >= 2, "should have created a replacement");
+    }
+
+    // -- Resource that fails recycle --
+
+    struct RecycleFailResource;
+
+    impl Resource for RecycleFailResource {
+        type Config = TestConfig;
+        type Instance = String;
+
+        fn id(&self) -> &str {
+            "recycle-fail"
+        }
+
+        async fn create(&self, config: &Self::Config, _ctx: &Context) -> Result<Self::Instance> {
+            Ok(format!("{}-inst", config.prefix))
+        }
+
+        async fn recycle(&self, _instance: &mut Self::Instance) -> Result<()> {
+            Err(Error::Internal {
+                resource_id: "recycle-fail".to_string(),
+                message: "recycle failed".to_string(),
+                source: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn recycle_failure_destroys_instance() {
+        let pool_config = PoolConfig {
+            min_size: 0,
+            max_size: 2,
+            acquire_timeout: Duration::from_secs(1),
+            ..Default::default()
+        };
+        let pool = Pool::new(RecycleFailResource, test_config(), pool_config).unwrap();
+
+        // Acquire and drop — recycle will fail, so instance should be destroyed
+        {
+            let _g = pool.acquire(&test_ctx()).await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let stats = pool.stats();
+        assert_eq!(stats.destroyed, 1, "failed recycle should destroy instance");
+        assert_eq!(
+            stats.idle, 0,
+            "destroyed instance should not be in idle pool"
+        );
+    }
+
+    #[tokio::test]
+    async fn pool_recovers_after_recycle_failure() {
+        let pool_config = PoolConfig {
+            min_size: 0,
+            max_size: 1,
+            acquire_timeout: Duration::from_secs(1),
+            ..Default::default()
+        };
+        let pool = Pool::new(RecycleFailResource, test_config(), pool_config).unwrap();
+
+        // Acquire and drop — recycle fails, instance destroyed, permit returned
+        {
+            let _g = pool.acquire(&test_ctx()).await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Should still be able to acquire (permit was returned even though recycle failed)
+        let _g = pool
+            .acquire(&test_ctx())
+            .await
+            .expect("should acquire after recycle failure");
+        let stats = pool.stats();
+        assert_eq!(stats.created, 2, "should have created a second instance");
+    }
+
+    #[tokio::test]
+    async fn maintain_evicts_expired_and_replenishes() {
+        let pool_config = PoolConfig {
+            min_size: 2,
+            max_size: 5,
+            acquire_timeout: Duration::from_secs(1),
+            idle_timeout: Duration::from_millis(50), // very short
+            max_lifetime: Duration::from_secs(3600),
+            validation_interval: Duration::from_secs(30),
+        };
+        let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
+
+        // Acquire and return 3 instances
+        for _ in 0..3 {
+            let _g = pool.acquire(&test_ctx()).await.unwrap();
+            // drop returns to pool
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Wait for idle timeout
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // maintain should evict expired and replenish to min_size
+        pool.maintain(&test_ctx()).await.unwrap();
+
+        let stats = pool.stats();
+        assert!(
+            stats.idle >= 2,
+            "maintain should replenish to min_size, got idle={}",
+            stats.idle
+        );
+    }
+
+    #[tokio::test]
+    async fn maintain_does_not_exceed_min_size() {
+        let pool_config = PoolConfig {
+            min_size: 1,
+            max_size: 5,
+            acquire_timeout: Duration::from_secs(1),
+            idle_timeout: Duration::from_secs(3600),
+            max_lifetime: Duration::from_secs(3600),
+            validation_interval: Duration::from_secs(30),
+        };
+        let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
+
+        // Already have 0 idle, 0 active -> total < min_size
+        pool.maintain(&test_ctx()).await.unwrap();
+
+        let stats = pool.stats();
+        assert_eq!(
+            stats.idle, 1,
+            "maintain should create exactly min_size instances"
+        );
+        assert_eq!(stats.created, 1);
+
+        // Run maintain again — should not create more
+        pool.maintain(&test_ctx()).await.unwrap();
+        let stats = pool.stats();
+        assert_eq!(stats.idle, 1);
+        assert_eq!(
+            stats.created, 1,
+            "maintain should not create beyond min_size"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_acquires_respect_max_size() {
+        let pool_config = PoolConfig {
+            min_size: 0,
+            max_size: 3,
+            acquire_timeout: Duration::from_millis(200),
+            ..Default::default()
+        };
+        let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
+
+        // Acquire max_size instances concurrently
+        let mut guards = Vec::new();
+        for _ in 0..3 {
+            guards.push(pool.acquire(&test_ctx()).await.unwrap());
+        }
+
+        // Next acquire should fail
+        let result = pool.acquire(&test_ctx()).await;
+        assert!(result.is_err(), "should not exceed max_size");
+
+        // Drop one guard, wait for return
+        guards.pop();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Should succeed now
+        let _g = pool
+            .acquire(&test_ctx())
+            .await
+            .expect("should acquire after release");
+    }
+
+    #[tokio::test]
+    async fn acquire_after_shutdown_fails_immediately() {
+        let pool_config = PoolConfig {
+            min_size: 0,
+            max_size: 2,
+            acquire_timeout: Duration::from_secs(5), // long timeout
+            ..Default::default()
+        };
+        let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
+
+        pool.shutdown().await.unwrap();
+
+        // acquire() should fail immediately (semaphore closed), not block for 5s
+        let start = Instant::now();
+        let result = pool.acquire(&test_ctx()).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "acquire after shutdown should fail");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "should fail immediately, not wait for timeout (took {:?})",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn guard_dropped_after_shutdown_cleans_up() {
+        let pool_config = PoolConfig {
+            min_size: 0,
+            max_size: 2,
+            acquire_timeout: Duration::from_secs(1),
+            ..Default::default()
+        };
+        let pool = Pool::new(TestResource, test_config(), pool_config).unwrap();
+
+        // Acquire a guard, then shutdown the pool while still holding it
+        let guard = pool.acquire(&test_ctx()).await.unwrap();
+        pool.shutdown().await.unwrap();
+
+        // Drop the guard — should NOT reinsert into idle, should clean up
+        drop(guard);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let stats = pool.stats();
+        assert_eq!(
+            stats.idle, 0,
+            "instance should not be reinserted after shutdown"
+        );
+        assert_eq!(stats.destroyed, 1, "instance should be cleaned up");
     }
 }
