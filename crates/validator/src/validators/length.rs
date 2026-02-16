@@ -170,6 +170,35 @@ impl LengthRange {
 }
 
 // ============================================================================
+// BYTE-MODE FACTORY FUNCTIONS
+// ============================================================================
+
+/// Creates a minimum length validator that counts bytes.
+#[must_use]
+pub fn min_length_bytes(min: usize) -> MinLength {
+    MinLength::bytes(min)
+}
+
+/// Creates a maximum length validator that counts bytes.
+#[must_use]
+pub fn max_length_bytes(max: usize) -> MaxLength {
+    MaxLength::bytes(max)
+}
+
+/// Creates an exact length validator that counts bytes.
+#[must_use]
+pub fn exact_length_bytes(length: usize) -> ExactLength {
+    ExactLength::bytes(length)
+}
+
+/// Creates a length range validator that counts bytes.
+///
+/// Returns an error if `min > max`.
+pub fn length_range_bytes(min: usize, max: usize) -> Result<LengthRange, ValidationError> {
+    LengthRange::bytes(min, max)
+}
+
+// ============================================================================
 // TESTS
 // ============================================================================
 
@@ -315,5 +344,40 @@ mod tests {
         assert!(validator.validate("hello").is_ok());
         assert!(validator.validate("hi").is_err());
         assert!(validator.validate("verylongstring").is_err());
+    }
+
+    #[test]
+    fn test_min_length_bytes_factory() {
+        let v = min_length_bytes(5);
+        assert_eq!(v.mode, LengthMode::Bytes);
+        assert!(v.validate("hello").is_ok());
+        assert!(v.validate("hi").is_err());
+        // Multi-byte char: 'é' is 2 bytes, so "hél" = 4 bytes < 5
+        assert!(v.validate("h\u{e9}l").is_err());
+    }
+
+    #[test]
+    fn test_max_length_bytes_factory() {
+        let v = max_length_bytes(5);
+        assert_eq!(v.mode, LengthMode::Bytes);
+        assert!(v.validate("hello").is_ok());
+        assert!(v.validate("h\u{e9}llo").is_err()); // 6 bytes > 5
+    }
+
+    #[test]
+    fn test_exact_length_bytes_factory() {
+        let v = exact_length_bytes(6);
+        assert_eq!(v.mode, LengthMode::Bytes);
+        assert!(v.validate("h\u{e9}llo").is_ok()); // 6 bytes
+        assert!(v.validate("hello").is_err()); // 5 bytes
+    }
+
+    #[test]
+    fn test_length_range_bytes_factory() {
+        let v = length_range_bytes(5, 10).unwrap();
+        assert_eq!(v.mode, LengthMode::Bytes);
+        assert!(v.validate("hello").is_ok());
+        assert!(v.validate("hi").is_err());
+        assert!(length_range_bytes(10, 5).is_err());
     }
 }

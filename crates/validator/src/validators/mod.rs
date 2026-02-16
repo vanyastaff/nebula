@@ -49,8 +49,9 @@ pub mod nullable;
 // ============================================================================
 
 pub use length::{
-    ExactLength, LengthRange, MaxLength, MinLength, NotEmpty, exact_length, length_range,
-    max_length, min_length, not_empty,
+    ExactLength, LengthRange, MaxLength, MinLength, NotEmpty, exact_length, exact_length_bytes,
+    length_range, length_range_bytes, max_length, max_length_bytes, min_length, min_length_bytes,
+    not_empty,
 };
 
 pub use pattern::{
