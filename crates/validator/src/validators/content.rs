@@ -1,6 +1,31 @@
 //! String content validators
 //!
-//! Validators for checking string content and patterns.
+//! This module provides validators for checking string content against
+//! common patterns like email addresses and URLs.
+//!
+//! # Validators
+//!
+//! - [`MatchesRegex`] - Validates that a string matches a regular expression
+//! - [`Email`] - Validates email format
+//! - [`Url`] - Validates URL format
+//!
+//! # Examples
+//!
+//! ```rust,ignore
+//! use nebula_validator::prelude::*;
+//!
+//! // Email validation
+//! let validator = email();
+//! assert!(validator.validate("user@example.com").is_ok());
+//!
+//! // URL validation
+//! let validator = url();
+//! assert!(validator.validate("https://example.com").is_ok());
+//!
+//! // Custom regex pattern
+//! let validator = matches_regex(r"^\d{3}-\d{4}$").unwrap();
+//! assert!(validator.validate("123-4567").is_ok());
+//! ```
 
 use std::sync::LazyLock;
 
@@ -15,12 +40,19 @@ static EMAIL_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
 static URL_REGEX: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"^https?://[^\s/$.?#]+\.[^\s]+$").unwrap());
 
-// ============================================================================
-// REGEX VALIDATOR
-// ============================================================================
-
 crate::validator! {
     /// Validates that a string matches a regular expression.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use nebula_validator::validators::matches_regex;
+    /// use nebula_validator::foundation::Validate;
+    ///
+    /// let validator = matches_regex(r"^\d{3}-\d{4}$").unwrap();
+    /// assert!(validator.validate("123-4567").is_ok());
+    /// assert!(validator.validate("invalid").is_err());
+    /// ```
     pub MatchesRegex { pattern: regex::Regex } for str;
     rule(self, input) { self.pattern.is_match(input) }
     error(self, input) {
@@ -35,14 +67,22 @@ crate::validator! {
     fn matches_regex(pattern: &str) -> regex::Error;
 }
 
-// ============================================================================
-// EMAIL VALIDATOR
-// ============================================================================
-
 crate::validator! {
     /// Validates email format.
     ///
-    /// Uses a simple but effective regex pattern.
+    /// Uses a simple but effective regex pattern that checks for basic
+    /// email structure (local part @ domain).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use nebula_validator::validators::email;
+    /// use nebula_validator::foundation::Validate;
+    ///
+    /// let validator = email();
+    /// assert!(validator.validate("user@example.com").is_ok());
+    /// assert!(validator.validate("invalid").is_err());
+    /// ```
     pub Email { pattern: regex::Regex } for str;
     rule(self, input) { self.pattern.is_match(input) }
     error(self, input) { ValidationError::invalid_format("", "email") }
@@ -54,12 +94,22 @@ crate::validator! {
     fn email();
 }
 
-// ============================================================================
-// URL VALIDATOR
-// ============================================================================
-
 crate::validator! {
     /// Validates URL format.
+    ///
+    /// Validates HTTP and HTTPS URLs using a regex pattern.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use nebula_validator::validators::url;
+    /// use nebula_validator::foundation::Validate;
+    ///
+    /// let validator = url();
+    /// assert!(validator.validate("https://example.com").is_ok());
+    /// assert!(validator.validate("http://example.com/path").is_ok());
+    /// assert!(validator.validate("invalid").is_err());
+    /// ```
     pub Url { pattern: regex::Regex } for str;
     rule(self, input) { self.pattern.is_match(input) }
     error(self, input) { ValidationError::invalid_format("", "url") }
@@ -70,10 +120,6 @@ crate::validator! {
     }
     fn url();
 }
-
-// ============================================================================
-// TESTS
-// ============================================================================
 
 #[cfg(test)]
 mod tests {

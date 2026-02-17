@@ -1,6 +1,24 @@
 //! Nested field validators
 //!
 //! This module provides validators for nested structs and complex field types.
+//! It enables validation of custom types by delegating to their own validation logic.
+//!
+//! # Validators
+//!
+//! - [`NestedValidate`] - Validates a nested type using a custom validation function
+//! - [`OptionalNested`] - Validates an optional nested type
+//! - [`CollectionNested`] - Validates a collection of nested types
+//!
+//! # Examples
+//!
+//! ```rust,ignore
+//! use nebula_validator::combinators::nested_validator;
+//! use nebula_validator::foundation::Validate;
+//!
+//! // For types implementing Validatable trait
+//! let validator = nested_validator::<MyStruct>();
+//! assert!(validator.validate(&my_struct_instance).is_ok());
+//! ```
 
 use crate::foundation::{Validate, ValidationError};
 use std::marker::PhantomData;
@@ -9,7 +27,30 @@ use std::marker::PhantomData;
 // NESTED VALIDATOR
 // ============================================================================
 
-/// Validates a nested struct by calling its validation method.
+/// Validates a nested struct by calling its validation function.
+///
+/// This validator is useful when you have a custom type with its own
+/// validation logic that you want to invoke from a parent validator.
+///
+/// # Type Parameters
+///
+/// * `T` - The type being validated
+/// * `F` - The validation function type (`Fn(&T) -> Result<(), ValidationError>`)
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_validator::combinators::NestedValidate;
+/// use nebula_validator::foundation::Validate;
+///
+/// let validator = NestedValidate::new(|user: &User| {
+///     if user.age >= 18 {
+///         Ok(())
+///     } else {
+///         Err(ValidationError::new("age", "Must be 18+"))
+///     }
+/// });
+/// ```
 #[derive(Debug, Clone)]
 pub struct NestedValidate<T, F> {
     validate_fn: F,
@@ -18,6 +59,10 @@ pub struct NestedValidate<T, F> {
 
 impl<T, F> NestedValidate<T, F> {
     /// Creates a new nested validator from a validation function.
+    ///
+    /// # Arguments
+    ///
+    /// * `validate_fn` - A function that validates the nested type
     pub fn new(validate_fn: F) -> Self {
         Self {
             validate_fn,
@@ -41,7 +86,23 @@ where
 // VALIDATABLE TRAIT
 // ============================================================================
 
-/// Trait for types that can be validated.
+/// Trait for types that can validate themselves.
+///
+/// Types implementing this trait can be validated using the
+/// [`nested_validator`] function.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// impl Validatable for User {
+///     fn validate(&self) -> Result<(), ValidationError> {
+///         if self.name.is_empty() {
+///             return Err(ValidationError::new("name", "Name is required"));
+///         }
+///         Ok(())
+///     }
+/// }
+/// ```
 pub trait Validatable {
     /// Validates the instance.
     fn validate(&self) -> Result<(), ValidationError>;
@@ -51,7 +112,21 @@ pub trait Validatable {
 // HELPER FUNCTIONS
 // ============================================================================
 
-/// Creates a nested validator for types that implement `Validatable`.
+/// Creates a nested validator for types that implement [`Validatable`].
+///
+/// # Type Parameters
+///
+/// * `T` - A type implementing [`Validatable`]
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_validator::combinators::nested_validator;
+/// use nebula_validator::foundation::Validate;
+///
+/// let validator = nested_validator::<User>();
+/// assert!(validator.validate(&user).is_ok());
+/// ```
 #[must_use]
 pub fn nested_validator<T>() -> NestedValidate<T, impl Fn(&T) -> Result<(), ValidationError>>
 where
@@ -61,6 +136,25 @@ where
 }
 
 /// Creates a nested validator with a custom validation function.
+///
+/// # Arguments
+///
+/// * `validate_fn` - A function that validates the nested type
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_validator::combinators::custom_nested;
+/// use nebula_validator::foundation::Validate;
+///
+/// let validator = custom_nested(|user: &User| {
+///     if user.email.contains('@') {
+///         Ok(())
+///     } else {
+///         Err(ValidationError::new("email", "Invalid email"))
+///     }
+/// });
+/// ```
 pub fn custom_nested<T, F>(validate_fn: F) -> NestedValidate<T, F>
 where
     F: Fn(&T) -> Result<(), ValidationError>,
@@ -72,7 +166,15 @@ where
 // OPTIONAL NESTED VALIDATOR
 // ============================================================================
 
-/// Validates optional nested fields.
+/// Validates an optional nested field.
+///
+/// Passes validation for `None` values and delegates to the nested
+/// validator for `Some` values.
+///
+/// # Type Parameters
+///
+/// * `T` - The nested type being validated
+/// * `F` - The validation function type
 #[derive(Debug, Clone)]
 pub struct OptionalNested<T, F> {
     validator: NestedValidate<T, F>,
@@ -80,6 +182,10 @@ pub struct OptionalNested<T, F> {
 
 impl<T, F> OptionalNested<T, F> {
     /// Creates a new optional nested validator.
+    ///
+    /// # Arguments
+    ///
+    /// * `validate_fn` - A function that validates the nested type
     pub fn new(validate_fn: F) -> Self {
         Self {
             validator: NestedValidate::new(validate_fn),
@@ -101,7 +207,22 @@ where
     }
 }
 
-/// Creates an optional nested validator for types that implement `Validatable`.
+/// Creates an optional nested validator for types that implement [`Validatable`].
+///
+/// # Type Parameters
+///
+/// * `T` - A type implementing [`Validatable`]
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_validator::combinators::optional_nested;
+/// use nebula_validator::foundation::Validate;
+///
+/// let validator = optional_nested::<Address>();
+/// assert!(validator.validate(&None).is_ok());
+/// assert!(validator.validate(&Some(address)).is_ok());
+/// ```
 #[must_use]
 pub fn optional_nested<T>() -> OptionalNested<T, impl Fn(&T) -> Result<(), ValidationError>>
 where
@@ -115,6 +236,15 @@ where
 // ============================================================================
 
 /// Validates each element in a collection of nested structs.
+///
+/// Iterates through a slice and validates each element using the
+/// nested validator. Returns an error containing the index of the
+/// first failing element.
+///
+/// # Type Parameters
+///
+/// * `T` - The nested type being validated
+/// * `F` - The validation function type
 #[derive(Debug, Clone)]
 pub struct CollectionNested<T, F> {
     validator: NestedValidate<T, F>,
@@ -122,6 +252,10 @@ pub struct CollectionNested<T, F> {
 
 impl<T, F> CollectionNested<T, F> {
     /// Creates a new collection nested validator.
+    ///
+    /// # Arguments
+    ///
+    /// * `validate_fn` - A function that validates each element
     pub fn new(validate_fn: F) -> Self {
         Self {
             validator: NestedValidate::new(validate_fn),
@@ -148,7 +282,22 @@ where
     }
 }
 
-/// Creates a collection nested validator for types that implement `Validatable`.
+/// Creates a collection nested validator for types that implement [`Validatable`].
+///
+/// # Type Parameters
+///
+/// * `T` - A type implementing [`Validatable`]
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_validator::combinators::collection_nested;
+/// use nebula_validator::foundation::Validate;
+///
+/// let validator = collection_nested::<User>();
+/// let users = vec![user1, user2, user3];
+/// assert!(validator.validate(&users).is_ok());
+/// ```
 #[must_use]
 pub fn collection_nested<T>() -> CollectionNested<T, impl Fn(&T) -> Result<(), ValidationError>>
 where

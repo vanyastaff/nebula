@@ -44,10 +44,6 @@ pub mod size;
 pub mod boolean;
 pub mod nullable;
 
-// ============================================================================
-// RE-EXPORTS: String validators
-// ============================================================================
-
 pub use length::{
     ExactLength, LengthRange, MaxLength, MinLength, NotEmpty, exact_length, exact_length_bytes,
     length_range, length_range_bytes, max_length, max_length_bytes, min_length, min_length_bytes,
@@ -61,27 +57,15 @@ pub use pattern::{
 
 pub use content::{Email, MatchesRegex, Url, email, matches_regex, url};
 
-// ============================================================================
-// RE-EXPORTS: Numeric validators
-// ============================================================================
-
 pub use range::{
     ExclusiveRange, GreaterThan, InRange, LessThan, Max, Min, exclusive_range, greater_than,
     in_range, less_than, max, min,
 };
 
-// ============================================================================
-// RE-EXPORTS: Collection validators
-// ============================================================================
-
 pub use size::{
     ExactSize, MaxSize, MinSize, NotEmptyCollection, SizeRange, exact_size, max_size, min_size,
     not_empty_collection, size_range,
 };
-
-// ============================================================================
-// RE-EXPORTS: Logical validators
-// ============================================================================
 
 pub use boolean::{IsFalse, IsTrue, is_false, is_true};
 pub use nullable::{NotNull, Required, not_null, required};

@@ -5,10 +5,6 @@
 use crate::foundation::{Validate, ValidationError};
 use std::marker::PhantomData;
 
-// ============================================================================
-// MIN SIZE
-// ============================================================================
-
 /// Validates that a collection has at least a minimum size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MinSize<T> {
@@ -55,10 +51,6 @@ pub fn min_size<T>(min: usize) -> MinSize<T> {
     }
 }
 
-// ============================================================================
-// MAX SIZE
-// ============================================================================
-
 /// Validates that a collection has at most a maximum size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MaxSize<T> {
@@ -104,10 +96,6 @@ pub fn max_size<T>(max: usize) -> MaxSize<T> {
         _phantom: PhantomData,
     }
 }
-
-// ============================================================================
-// EXACT SIZE
-// ============================================================================
 
 /// Validates that a collection has an exact size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -156,10 +144,6 @@ pub fn exact_size<T>(size: usize) -> ExactSize<T> {
     }
 }
 
-// ============================================================================
-// NOT EMPTY
-// ============================================================================
-
 /// Validates that a collection is not empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NotEmptyCollection<T> {
@@ -199,10 +183,6 @@ pub fn not_empty_collection<T>() -> NotEmptyCollection<T> {
         _phantom: PhantomData,
     }
 }
-
-// ============================================================================
-// SIZE RANGE
-// ============================================================================
 
 /// Validates that a collection size is within a range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

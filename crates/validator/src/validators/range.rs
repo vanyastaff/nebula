@@ -4,10 +4,6 @@ use std::fmt::Display;
 
 use crate::foundation::ValidationError;
 
-// ============================================================================
-// MIN VALUE
-// ============================================================================
-
 crate::validator! {
     /// Validates that a value is at least a minimum.
     #[derive(Copy, PartialEq, Eq, Hash)]
@@ -20,10 +16,6 @@ crate::validator! {
     }
     fn min(value: T);
 }
-
-// ============================================================================
-// MAX VALUE
-// ============================================================================
 
 crate::validator! {
     /// Validates that a value does not exceed a maximum.
@@ -38,10 +30,6 @@ crate::validator! {
     fn max(value: T);
 }
 
-// ============================================================================
-// RANGE (inclusive)
-// ============================================================================
-
 crate::validator! {
     /// Validates that a value is within an inclusive range.
     #[derive(Copy, PartialEq, Eq, Hash)]
@@ -52,10 +40,6 @@ crate::validator! {
     }
     fn in_range(min: T, max: T);
 }
-
-// ============================================================================
-// GREATER THAN (exclusive)
-// ============================================================================
 
 crate::validator! {
     /// Validates that a value is strictly greater than a threshold.
@@ -85,10 +69,6 @@ crate::validator! {
     fn greater_than(bound: T);
 }
 
-// ============================================================================
-// LESS THAN (exclusive)
-// ============================================================================
-
 crate::validator! {
     /// Validates that a value is strictly less than a threshold.
     ///
@@ -116,10 +96,6 @@ crate::validator! {
     }
     fn less_than(bound: T);
 }
-
-// ============================================================================
-// EXCLUSIVE RANGE
-// ============================================================================
 
 crate::validator! {
     /// Validates that a value is within an exclusive range (min < value < max).

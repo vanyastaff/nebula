@@ -1,27 +1,82 @@
 //! OR combinator - logical disjunction of validators
+//!
+//! This module provides the [`Or`] combinator which combines two validators
+//! with logical OR semantics - at least one validator must pass for the combined
+//! validator to succeed.
+//!
+//! # Examples
+//!
+//! ```rust,ignore
+//! use nebula_validator::combinators::Or;
+//! use nebula_validator::foundation::Validate;
+//!
+//! // At least one validator must pass
+//! let validator = Or::new(exact_length(5), exact_length(10));
+//! assert!(validator.validate("hello").is_ok()); // 5 chars
+//! assert!(validator.validate("helloworld").is_ok()); // 10 chars
+//! assert!(validator.validate("hi").is_err()); // neither 5 nor 10
+//! ```
 
 use crate::foundation::{Validate, ValidationError};
 
 /// Combines two validators with logical OR.
+///
+/// At least one validator must pass for the combined validator to succeed.
+/// If the first validator passes, the second is not evaluated (short-circuits).
+/// If both fail, the combined error contains both error messages.
+///
+/// # Type Parameters
+///
+/// * `L` - The left (first) validator type
+/// * `R` - The right (second) validator type
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_validator::combinators::Or;
+/// use nebula_validator::foundation::Validate;
+///
+/// let validator = Or::new(exact_length(5), exact_length(10));
+///
+/// // Left validator passes
+/// assert!(validator.validate("hello").is_ok());
+///
+/// // Right validator passes
+/// assert!(validator.validate("helloworld").is_ok());
+///
+/// // Both fail
+/// assert!(validator.validate("hi").is_err());
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Or<L, R> {
+    /// The left (first) validator.
     pub(crate) left: L,
+    /// The right (second) validator.
     pub(crate) right: R,
 }
 
 impl<L, R> Or<L, R> {
+    /// Creates a new `Or` combinator.
+    ///
+    /// # Arguments
+    ///
+    /// * `left` - The first validator to try
+    /// * `right` - The second validator to try if the first fails
     pub fn new(left: L, right: R) -> Self {
         Self { left, right }
     }
 
+    /// Returns a reference to the left validator.
     pub fn left(&self) -> &L {
         &self.left
     }
 
+    /// Returns a reference to the right validator.
     pub fn right(&self) -> &R {
         &self.right
     }
 
+    /// Extracts the left and right validators.
     pub fn into_parts(self) -> (L, R) {
         (self.left, self.right)
     }
@@ -53,6 +108,15 @@ where
     L: Validate,
     R: Validate<Input = L::Input>,
 {
+    /// Chains another validator with OR logic.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use nebula_validator::foundation::ValidateExt;
+    ///
+    /// let validator = exact_length(3).or(exact_length(5)).or(exact_length(7));
+    /// ```
     pub fn or<V>(self, other: V) -> Or<Self, V>
     where
         V: Validate<Input = L::Input>,
@@ -61,6 +125,18 @@ where
     }
 }
 
+/// Creates an `Or` combinator from two validators.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_validator::combinators::or;
+/// use nebula_validator::foundation::Validate;
+///
+/// let validator = or(exact_length(5), exact_length(10));
+/// assert!(validator.validate("hello").is_ok());
+/// assert!(validator.validate("helloworld").is_ok());
+/// ```
 pub fn or<L, R>(left: L, right: R) -> Or<L, R>
 where
     L: Validate,
@@ -69,6 +145,23 @@ where
     Or::new(left, right)
 }
 
+/// Creates an `OrAny` combinator from a vector of validators.
+///
+/// This is useful when you have a dynamic number of validators and
+/// want at least one to pass.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_validator::combinators::or_any;
+/// use nebula_validator::foundation::Validate;
+///
+/// let validators = vec![exact_length(3), exact_length(5), exact_length(7)];
+/// let validator = or_any(validators);
+/// assert!(validator.validate("abc").is_ok());
+/// assert!(validator.validate("hello").is_ok());
+/// assert!(validator.validate("hi").is_err());
+/// ```
 #[must_use]
 pub fn or_any<V>(validators: Vec<V>) -> OrAny<V>
 where
@@ -77,6 +170,15 @@ where
     OrAny { validators }
 }
 
+/// Tries multiple validators until one passes.
+///
+/// Iterates through all validators in order, returning success as soon as
+/// one validator passes. If all validators fail, returns a combined error
+/// containing all individual errors.
+///
+/// # Type Parameters
+///
+/// * `V` - The validator type
 #[derive(Debug, Clone)]
 pub struct OrAny<V> {
     validators: Vec<V>,

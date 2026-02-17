@@ -4,10 +4,6 @@
 
 use crate::foundation::ValidationError;
 
-// ============================================================================
-// CONTAINS
-// ============================================================================
-
 crate::validator! {
     /// Validates that a string contains a substring.
     #[derive(PartialEq, Eq, Hash)]
@@ -23,10 +19,6 @@ crate::validator! {
     new(substring: impl Into<String>) { Self { substring: substring.into() } }
     fn contains(substring: impl Into<String>);
 }
-
-// ============================================================================
-// STARTS WITH
-// ============================================================================
 
 crate::validator! {
     /// Validates that a string starts with a prefix.
@@ -44,10 +36,6 @@ crate::validator! {
     fn starts_with(prefix: impl Into<String>);
 }
 
-// ============================================================================
-// ENDS WITH
-// ============================================================================
-
 crate::validator! {
     /// Validates that a string ends with a suffix.
     #[derive(PartialEq, Eq, Hash)]
@@ -63,10 +51,6 @@ crate::validator! {
     new(suffix: impl Into<String>) { Self { suffix: suffix.into() } }
     fn ends_with(suffix: impl Into<String>);
 }
-
-// ============================================================================
-// ALPHANUMERIC
-// ============================================================================
 
 crate::validator! {
     /// Validates that a string contains only alphanumeric characters.
@@ -85,10 +69,6 @@ crate::validator! {
     new() { Self { allow_spaces: false } }
     fn alphanumeric();
 }
-
-// ============================================================================
-// ALPHABETIC
-// ============================================================================
 
 crate::validator! {
     /// Validates that a string contains only alphabetic characters.
@@ -120,10 +100,6 @@ crate::validator! {
     fn numeric();
 }
 
-// ============================================================================
-// LOWERCASE
-// ============================================================================
-
 crate::validator! {
     /// Validates that a string is lowercase.
     pub Lowercase for str;
@@ -132,10 +108,6 @@ crate::validator! {
     fn lowercase();
 }
 
-// ============================================================================
-// UPPERCASE
-// ============================================================================
-
 crate::validator! {
     /// Validates that a string is uppercase.
     pub Uppercase for str;
@@ -143,10 +115,6 @@ crate::validator! {
     error(input) { ValidationError::new("uppercase", "String must be uppercase") }
     fn uppercase();
 }
-
-// ============================================================================
-// TESTS
-// ============================================================================
 
 #[cfg(test)]
 mod tests {

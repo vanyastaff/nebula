@@ -7,10 +7,6 @@
 
 use crate::foundation::ValidationError;
 
-// ============================================================================
-// LENGTH MODE
-// ============================================================================
-
 /// How to count string length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum LengthMode {
@@ -32,10 +28,6 @@ impl LengthMode {
     }
 }
 
-// ============================================================================
-// NOT EMPTY
-// ============================================================================
-
 crate::validator! {
     /// Validates that a string is not empty.
     ///
@@ -45,10 +37,6 @@ crate::validator! {
     error(input) { ValidationError::new("not_empty", "String must not be empty") }
     fn not_empty();
 }
-
-// ============================================================================
-// MIN LENGTH
-// ============================================================================
 
 crate::validator! {
     /// Validates that a string has at least a minimum length.
@@ -71,10 +59,6 @@ impl MinLength {
     }
 }
 
-// ============================================================================
-// MAX LENGTH
-// ============================================================================
-
 crate::validator! {
     /// Validates that a string does not exceed a maximum length.
     #[derive(Copy, PartialEq, Eq, Hash)]
@@ -95,10 +79,6 @@ impl MaxLength {
         }
     }
 }
-
-// ============================================================================
-// EXACT LENGTH
-// ============================================================================
 
 crate::validator! {
     /// Validates that a string has an exact length.
@@ -169,10 +149,6 @@ impl LengthRange {
     }
 }
 
-// ============================================================================
-// BYTE-MODE FACTORY FUNCTIONS
-// ============================================================================
-
 /// Creates a minimum length validator that counts bytes.
 #[must_use]
 pub fn min_length_bytes(min: usize) -> MinLength {
@@ -197,10 +173,6 @@ pub fn exact_length_bytes(length: usize) -> ExactLength {
 pub fn length_range_bytes(min: usize, max: usize) -> Result<LengthRange, ValidationError> {
     LengthRange::bytes(min, max)
 }
-
-// ============================================================================
-// TESTS
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
