@@ -108,7 +108,10 @@ fn health_propagation_prefix_collision() {
         Some(HealthState::Unhealthy { .. })
     ));
     assert!(
-        matches!(mgr.get_health_state("app"), Some(HealthState::Degraded { .. })),
+        matches!(
+            mgr.get_health_state("app"),
+            Some(HealthState::Degraded { .. })
+        ),
         "app should be Degraded because db-replica is unhealthy"
     );
 
@@ -182,11 +185,17 @@ fn health_propagation_no_collision() {
     );
 
     assert!(
-        matches!(mgr.get_health_state("cache"), Some(HealthState::Unhealthy { .. })),
+        matches!(
+            mgr.get_health_state("cache"),
+            Some(HealthState::Unhealthy { .. })
+        ),
         "cache should be Unhealthy"
     );
     assert!(
-        matches!(mgr.get_health_state("service"), Some(HealthState::Degraded { .. })),
+        matches!(
+            mgr.get_health_state("service"),
+            Some(HealthState::Degraded { .. })
+        ),
         "service should be Degraded due to cache"
     );
 
@@ -195,7 +204,10 @@ fn health_propagation_no_collision() {
     mgr.set_health_state("queue", HealthState::Healthy);
 
     assert!(
-        matches!(mgr.get_health_state("service"), Some(HealthState::Degraded { .. })),
+        matches!(
+            mgr.get_health_state("service"),
+            Some(HealthState::Degraded { .. })
+        ),
         "service should still be Degraded (cache is still unhealthy)"
     );
 

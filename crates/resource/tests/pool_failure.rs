@@ -159,13 +159,17 @@ impl Resource for ExpiredThenFailResource {
     }
 }
 
+// NOTE: Cannot use `start_paused = true` here because the pool tracks idle
+// timestamps with `std::time::Instant` (not `tokio::time::Instant`), so mock
+// time does not advance the idle timeout. We use generous real-time margins
+// instead (500ms sleep vs 50ms idle_timeout = 10x margin).
 #[tokio::test]
 async fn create_failure_after_expired_cleanup() {
     let pool_config = PoolConfig {
         min_size: 0,
         max_size: 2,
-        acquire_timeout: Duration::from_secs(1),
-        idle_timeout: Duration::from_millis(30),
+        acquire_timeout: Duration::from_secs(2),
+        idle_timeout: Duration::from_millis(50),
         ..Default::default()
     };
     let pool = Pool::new(
@@ -182,11 +186,8 @@ async fn create_failure_after_expired_cleanup() {
         let guard = pool.acquire(&ctx()).await.unwrap();
         assert_eq!(*guard, "inst-0");
     }
-    // Return to pool
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // Wait for idle timeout to expire the entry
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Return to pool, then wait well beyond idle_timeout (50ms) for expiration
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Next acquire: expired entry gets cleaned up, then create (call 1) fails
     let result = pool.acquire(&ctx()).await;
