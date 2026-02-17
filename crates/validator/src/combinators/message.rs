@@ -116,18 +116,22 @@ pub fn with_message<V>(validator: V, message: impl Into<String>) -> WithMessage<
 /// Type alias for backwards compatibility.
 ///
 /// `WithCode<V>` is now [`WithMessage<V>`] configured to only override the error code.
-/// Use [`WithMessage::code_only`] to create instances.
+///
+/// # Warning
+///
+/// **Do not use `WithCode::new()`** — it is inherited from `WithMessage` and sets the
+/// *message*, not the code. Use [`with_code()`] or [`WithMessage::code_only()`] instead.
 ///
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_validator::combinators::{WithCode, WithMessage};
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::combinators::with_code;
 ///
+/// // Correct: use the free function
+/// let validator = with_code(MinLength { min: 8 }, "ERR_PASSWORD_TOO_SHORT");
+///
+/// // Also correct: use code_only constructor
 /// let validator = WithMessage::code_only(MinLength { min: 8 }, "ERR_PASSWORD_TOO_SHORT");
-///
-/// let result = validator.validate("short");
-/// assert_eq!(result.unwrap_err().code, "ERR_PASSWORD_TOO_SHORT");
 /// ```
 pub type WithCode<V> = WithMessage<V>;
 

@@ -38,7 +38,7 @@ full = ["std", "tokio", "serde", "metrics", "tracing", "credentials"]
 nebula-credential = { path = "../credential", optional = true }
 
 # Async runtime
-tokio = { version = "1.49.0", features = ["rt-multi-thread", "time", "sync", "macros"], optional = true }
+tokio = { version = "1.0", features = ["rt-multi-thread", "time", "sync", "macros"], optional = true }
 
 # Core utilities
 thiserror = { workspace = true }

@@ -60,18 +60,8 @@ fn pool_config() -> PoolConfig {
 fn health_propagation_prefix_collision() {
     let mgr = Manager::new();
 
-    // Register "app" which depends on both "db" and "db-replica"
-    mgr.register(
-        NamedResource {
-            name: "app".into(),
-            deps: vec!["db".into(), "db-replica".into()],
-        },
-        TestConfig,
-        pool_config(),
-    )
-    .unwrap();
-
-    // Register the dependencies (needed for pool lookup but not for dep graph)
+    // Register leaf resources (no dependencies) FIRST to avoid
+    // remove_all_for() destroying dependency edges during registration.
     mgr.register(
         NamedResource {
             name: "db".into(),
@@ -92,6 +82,17 @@ fn health_propagation_prefix_collision() {
     )
     .unwrap();
 
+    // Register "app" which depends on both "db" and "db-replica"
+    mgr.register(
+        NamedResource {
+            name: "app".into(),
+            deps: vec!["db".into(), "db-replica".into()],
+        },
+        TestConfig,
+        pool_config(),
+    )
+    .unwrap();
+
     // Mark db-replica as unhealthy -> app becomes Degraded
     mgr.set_health_state(
         "db-replica",
@@ -101,11 +102,15 @@ fn health_propagation_prefix_collision() {
         },
     );
 
-    // Verify app is degraded due to db-replica
-    let _app_health = mgr.health_checker(); // just to access health_states
-    // Use set_health_state / propagation to verify via a new healthy set
-    // Actually, let's check by trying to set "db" healthy and see if app
-    // is incorrectly cleared.
+    // Verify db-replica is unhealthy and app is degraded
+    assert!(matches!(
+        mgr.get_health_state("db-replica"),
+        Some(HealthState::Unhealthy { .. })
+    ));
+    assert!(
+        matches!(mgr.get_health_state("app"), Some(HealthState::Degraded { .. })),
+        "app should be Degraded because db-replica is unhealthy"
+    );
 
     // Now mark "db" (NOT "db-replica") as healthy.
     // This should NOT clear app's degraded state, because app is degraded
@@ -115,16 +120,15 @@ fn health_propagation_prefix_collision() {
     // BUG: reason.contains("db") matches "Dependency db-replica is unhealthy"
     // because "db-replica" contains the substring "db".
     //
-    // This test documents the current (buggy) behavior:
-    // After setting "db" healthy, "app" is incorrectly cleared to Healthy
-    // even though "db-replica" is still unhealthy.
+    // KNOWN BUGGY BEHAVIOR: After setting "db" healthy, "app" is incorrectly
+    // cleared to Healthy even though "db-replica" is still unhealthy.
     //
     // When the bug is fixed, change this assertion to:
-    //   assert!(matches!(..., HealthState::Degraded { .. }))
-    //
-    // For now, we just verify the test runs and documents the issue.
-    // The actual behavior depends on health_states access, which is private.
-    // We test indirectly via acquire behavior.
+    //   assert!(matches!(mgr.get_health_state("app"), Some(HealthState::Degraded { .. })));
+    assert!(
+        matches!(mgr.get_health_state("app"), Some(HealthState::Healthy)),
+        "KNOWN BUG: app is incorrectly cleared to Healthy due to prefix collision"
+    );
 
     // Set "db-replica" back to healthy to clean up
     mgr.set_health_state("db-replica", HealthState::Healthy);
@@ -135,17 +139,8 @@ fn health_propagation_prefix_collision() {
 fn health_propagation_no_collision() {
     let mgr = Manager::new();
 
-    // "service" depends on "cache" and "queue" (no prefix overlap)
-    mgr.register(
-        NamedResource {
-            name: "service".into(),
-            deps: vec!["cache".into(), "queue".into()],
-        },
-        TestConfig,
-        pool_config(),
-    )
-    .unwrap();
-
+    // Register leaf resources (no dependencies) FIRST to avoid
+    // remove_all_for() destroying dependency edges during registration.
     mgr.register(
         NamedResource {
             name: "cache".into(),
@@ -166,6 +161,17 @@ fn health_propagation_no_collision() {
     )
     .unwrap();
 
+    // "service" depends on "cache" and "queue" (no prefix overlap)
+    mgr.register(
+        NamedResource {
+            name: "service".into(),
+            deps: vec!["cache".into(), "queue".into()],
+        },
+        TestConfig,
+        pool_config(),
+    )
+    .unwrap();
+
     // Mark cache unhealthy -> service degraded
     mgr.set_health_state(
         "cache",
@@ -175,10 +181,32 @@ fn health_propagation_no_collision() {
         },
     );
 
+    assert!(
+        matches!(mgr.get_health_state("cache"), Some(HealthState::Unhealthy { .. })),
+        "cache should be Unhealthy"
+    );
+    assert!(
+        matches!(mgr.get_health_state("service"), Some(HealthState::Degraded { .. })),
+        "service should be Degraded due to cache"
+    );
+
     // Mark queue healthy -> should NOT clear service's degraded state
     // (service is degraded due to cache, not queue)
     mgr.set_health_state("queue", HealthState::Healthy);
 
+    assert!(
+        matches!(mgr.get_health_state("service"), Some(HealthState::Degraded { .. })),
+        "service should still be Degraded (cache is still unhealthy)"
+    );
+
     // Mark cache healthy -> NOW service should be cleared
     mgr.set_health_state("cache", HealthState::Healthy);
+
+    assert!(
+        matches!(
+            mgr.get_health_state("service"),
+            Some(HealthState::Healthy) | None
+        ),
+        "service should be Healthy now that cache is restored"
+    );
 }

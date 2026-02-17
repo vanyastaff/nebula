@@ -822,6 +822,12 @@ impl Manager {
         &self.quarantine
     }
 
+    /// Get the current health state of a resource, if set.
+    #[must_use]
+    pub fn get_health_state(&self, resource_id: &str) -> Option<HealthState> {
+        self.health_states.get(resource_id).map(|r| r.clone())
+    }
+
     /// Set a resource's health state and propagate the effect to dependents.
     ///
     /// When a resource becomes `Unhealthy`, all its direct dependents are
