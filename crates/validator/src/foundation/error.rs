@@ -123,10 +123,17 @@ impl ValidationError {
     }
 
     /// Sets the field path for this error.
+    ///
+    /// Empty strings are treated as "no field" and leave `field` as `None`.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_field(mut self, field: impl Into<Cow<'static, str>>) -> Self {
-        self.field = Some(field.into());
-        self
+        let field = field.into();
+        if field.is_empty() {
+            self
+        } else {
+            self.field = Some(field);
+            self
+        }
     }
 
     /// Adds a parameter to the error.

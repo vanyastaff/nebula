@@ -70,7 +70,7 @@ crate::validator! {
 
 crate::validator! {
     /// Validates that a string contains only alphanumeric characters.
-    #[derive(Copy, PartialEq, Eq, Hash)]
+    #[derive(Copy, PartialEq, Eq, Hash, Default)]
     pub Alphanumeric { allow_spaces: bool } for str;
     rule(self, input) {
         input.chars().all(|c| c.is_alphanumeric() || (self.allow_spaces && c.is_whitespace()))
@@ -86,52 +86,26 @@ crate::validator! {
     fn alphanumeric();
 }
 
-impl Alphanumeric {
-    /// Allow spaces in the string.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_spaces(mut self) -> Self {
-        self.allow_spaces = true;
-        self
-    }
-}
-
-impl Default for Alphanumeric {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 // ============================================================================
 // ALPHABETIC
 // ============================================================================
 
 crate::validator! {
     /// Validates that a string contains only alphabetic characters.
-    #[derive(Copy, PartialEq, Eq, Hash)]
+    #[derive(Copy, PartialEq, Eq, Hash, Default)]
     pub Alphabetic { allow_spaces: bool } for str;
     rule(self, input) {
         input.chars().all(|c| c.is_alphabetic() || (self.allow_spaces && c.is_whitespace()))
     }
     error(self, input) {
-        ValidationError::new("alphabetic", "String must contain only letters")
+        ValidationError::new("alphabetic", if self.allow_spaces {
+            "String must contain only letters and spaces"
+        } else {
+            "String must contain only letters"
+        })
     }
     new() { Self { allow_spaces: false } }
     fn alphabetic();
-}
-
-impl Alphabetic {
-    /// Allow spaces in the alphabetic string.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_spaces(mut self) -> Self {
-        self.allow_spaces = true;
-        self
-    }
-}
-
-impl Default for Alphabetic {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 // ============================================================================
@@ -210,7 +184,7 @@ mod tests {
 
     #[test]
     fn test_alphanumeric_with_spaces() {
-        let validator = alphanumeric().with_spaces();
+        let validator = Alphanumeric { allow_spaces: true };
         assert!(validator.validate("hello 123").is_ok());
         assert!(validator.validate("hello_123").is_err());
     }
