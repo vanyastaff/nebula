@@ -512,8 +512,7 @@ mod tests {
             _ctx: &'a Context,
         ) -> Pin<Box<dyn Future<Output = HookResult> + Send + 'a>> {
             Box::pin(async {
-                self.called
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                self.called.store(true, std::sync::atomic::Ordering::SeqCst);
                 HookResult::Continue
             })
         }
