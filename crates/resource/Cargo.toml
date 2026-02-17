@@ -31,9 +31,7 @@ tracing = ["dep:tracing", "dep:tracing-opentelemetry", "dep:opentelemetry", "tra
 credentials = ["nebula-credential"]
 
 # Full feature set (for examples and benchmarks)
-full = [
-    "std", "tokio", "serde", "metrics", "tracing", "credentials"
-]
+full = ["std", "tokio", "serde", "metrics", "tracing", "credentials"]
 
 [dependencies]
 # Nebula ecosystem

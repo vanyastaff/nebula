@@ -822,6 +822,12 @@ impl Manager {
         &self.quarantine
     }
 
+    /// Get the current health state of a resource, if set.
+    #[must_use]
+    pub fn get_health_state(&self, resource_id: &str) -> Option<HealthState> {
+        self.health_states.get(resource_id).map(|r| r.clone())
+    }
+
     /// Set a resource's health state and propagate the effect to dependents.
     ///
     /// When a resource becomes `Unhealthy`, all its direct dependents are
@@ -1338,50 +1344,92 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Shared test hook structs (extracted to module level to avoid nesting)
+    // -----------------------------------------------------------------------
+
+    struct CountingHook {
+        before_count: std::sync::atomic::AtomicU32,
+        after_count: std::sync::atomic::AtomicU32,
+    }
+
+    impl crate::hooks::ResourceHook for CountingHook {
+        fn name(&self) -> &str {
+            "counter"
+        }
+        fn events(&self) -> Vec<crate::hooks::HookEvent> {
+            vec![crate::hooks::HookEvent::Acquire]
+        }
+        fn before<'a>(
+            &'a self,
+            _event: &'a crate::hooks::HookEvent,
+            _resource_id: &'a str,
+            _ctx: &'a Context,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = crate::hooks::HookResult> + Send + 'a>,
+        > {
+            Box::pin(async {
+                self.before_count
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                crate::hooks::HookResult::Continue
+            })
+        }
+        fn after<'a>(
+            &'a self,
+            _event: &'a crate::hooks::HookEvent,
+            _resource_id: &'a str,
+            _ctx: &'a Context,
+            _success: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+            Box::pin(async {
+                self.after_count
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+        }
+    }
+
+    struct BlockerHook;
+
+    impl crate::hooks::ResourceHook for BlockerHook {
+        fn name(&self) -> &str {
+            "blocker"
+        }
+        fn events(&self) -> Vec<crate::hooks::HookEvent> {
+            vec![crate::hooks::HookEvent::Acquire]
+        }
+        fn before<'a>(
+            &'a self,
+            _event: &'a crate::hooks::HookEvent,
+            _resource_id: &'a str,
+            _ctx: &'a Context,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = crate::hooks::HookResult> + Send + 'a>,
+        > {
+            Box::pin(async {
+                crate::hooks::HookResult::Cancel(Error::Unavailable {
+                    resource_id: "test".to_string(),
+                    reason: "blocked by hook".to_string(),
+                    retryable: false,
+                })
+            })
+        }
+        fn after<'a>(
+            &'a self,
+            _event: &'a crate::hooks::HookEvent,
+            _resource_id: &'a str,
+            _ctx: &'a Context,
+            _success: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+            Box::pin(async {})
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Hooks wired into acquire
     // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn acquire_runs_before_and_after_hooks() {
         use std::sync::atomic::{AtomicU32, Ordering};
-
-        struct CountingHook {
-            before_count: AtomicU32,
-            after_count: AtomicU32,
-        }
-
-        impl crate::hooks::ResourceHook for CountingHook {
-            fn name(&self) -> &str {
-                "counter"
-            }
-            fn events(&self) -> Vec<crate::hooks::HookEvent> {
-                vec![crate::hooks::HookEvent::Acquire]
-            }
-            fn before<'a>(
-                &'a self,
-                _event: &'a crate::hooks::HookEvent,
-                _resource_id: &'a str,
-                _ctx: &'a Context,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = crate::hooks::HookResult> + Send + 'a>,
-            > {
-                Box::pin(async {
-                    self.before_count.fetch_add(1, Ordering::SeqCst);
-                    crate::hooks::HookResult::Continue
-                })
-            }
-            fn after<'a>(
-                &'a self,
-                _event: &'a crate::hooks::HookEvent,
-                _resource_id: &'a str,
-                _ctx: &'a Context,
-                _success: bool,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
-                Box::pin(async {
-                    self.after_count.fetch_add(1, Ordering::SeqCst);
-                })
-            }
-        }
 
         let mgr = Manager::new();
         let hook = Arc::new(CountingHook {
@@ -1408,45 +1456,9 @@ mod tests {
 
     #[tokio::test]
     async fn before_hook_cancel_blocks_acquire() {
-        struct CancelHook;
-
-        impl crate::hooks::ResourceHook for CancelHook {
-            fn name(&self) -> &str {
-                "blocker"
-            }
-            fn events(&self) -> Vec<crate::hooks::HookEvent> {
-                vec![crate::hooks::HookEvent::Acquire]
-            }
-            fn before<'a>(
-                &'a self,
-                _event: &'a crate::hooks::HookEvent,
-                _resource_id: &'a str,
-                _ctx: &'a Context,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = crate::hooks::HookResult> + Send + 'a>,
-            > {
-                Box::pin(async {
-                    crate::hooks::HookResult::Cancel(Error::Unavailable {
-                        resource_id: "test".to_string(),
-                        reason: "blocked by hook".to_string(),
-                        retryable: false,
-                    })
-                })
-            }
-            fn after<'a>(
-                &'a self,
-                _event: &'a crate::hooks::HookEvent,
-                _resource_id: &'a str,
-                _ctx: &'a Context,
-                _success: bool,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
-                Box::pin(async {})
-            }
-        }
-
         let mgr = Manager::new();
         mgr.hooks()
-            .register(Arc::new(CancelHook) as Arc<dyn crate::hooks::ResourceHook>);
+            .register(Arc::new(BlockerHook) as Arc<dyn crate::hooks::ResourceHook>);
 
         mgr.register(
             TestResource,
@@ -1633,5 +1645,81 @@ mod tests {
             result.unwrap_err().to_string().contains("unhealthy"),
             "acquire should fail with unhealthy reason"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // reload_config availability gap
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn reload_config_swaps_pool() {
+        let mgr = Manager::new();
+        let config_a = TestConfig { value: "A".into() };
+        let config_b = TestConfig { value: "B".into() };
+
+        mgr.register(TestResource, config_a, PoolConfig::default())
+            .unwrap();
+
+        // Acquire from pool A
+        let guard = mgr.acquire("test", &ctx()).await.unwrap();
+        let inst = guard.as_any().downcast_ref::<String>().expect("downcast");
+        assert_eq!(inst, "instance-A");
+        drop(guard);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Reload with config B
+        mgr.reload_config(TestResource, config_b, PoolConfig::default())
+            .await
+            .unwrap();
+
+        // Acquire from pool B
+        let guard = mgr.acquire("test", &ctx()).await.unwrap();
+        let inst = guard.as_any().downcast_ref::<String>().expect("downcast");
+        assert_eq!(inst, "instance-B");
+    }
+
+    #[tokio::test]
+    async fn reload_config_while_guard_held() {
+        let mgr = Manager::new();
+        mgr.register(
+            TestResource,
+            TestConfig {
+                value: "old".into(),
+            },
+            PoolConfig::default(),
+        )
+        .unwrap();
+
+        // Hold a guard from the old pool
+        let old_guard = mgr.acquire("test", &ctx()).await.unwrap();
+        let old_inst = old_guard
+            .as_any()
+            .downcast_ref::<String>()
+            .expect("downcast")
+            .clone();
+        assert_eq!(old_inst, "instance-old");
+
+        // Reload: old pool shut down, new pool installed
+        mgr.reload_config(
+            TestResource,
+            TestConfig {
+                value: "new".into(),
+            },
+            PoolConfig::default(),
+        )
+        .await
+        .unwrap();
+
+        // Drop old guard — should not panic (old pool still alive via Arc)
+        drop(old_guard);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Acquire from new pool
+        let new_guard = mgr.acquire("test", &ctx()).await.unwrap();
+        let new_inst = new_guard
+            .as_any()
+            .downcast_ref::<String>()
+            .expect("downcast");
+        assert_eq!(new_inst, "instance-new");
     }
 }

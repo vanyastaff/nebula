@@ -2,13 +2,15 @@
 //!
 //! Tests performance of:
 //! - Basic combinators (And, Or, Not)
-//! - Advanced combinators (Map, When, Optional)
+//! - Advanced combinators (When, Optional)
 //! - Cached combinator with various hit rates
 //! - Nested compositions
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use nebula_validator::core::{Validate, ValidateExt};
-use nebula_validator::validators::string::*;
+#[cfg(feature = "caching")]
+use criterion::BenchmarkId;
+use criterion::{Criterion, criterion_group, criterion_main};
+use nebula_validator::foundation::{Validate, ValidateExt};
+use nebula_validator::validators::*;
 use std::hint::black_box;
 
 // ============================================================================
@@ -109,22 +111,6 @@ fn bench_not_combinator(c: &mut Criterion) {
 // ADVANCED COMBINATORS
 // ============================================================================
 
-fn bench_map_combinator(c: &mut Criterion) {
-    let mut group = c.benchmark_group("map_combinator");
-
-    let validator = min_length(5).map(|_| "Valid!");
-
-    group.bench_function("success", |b| {
-        b.iter(|| validator.validate(black_box("hello world")))
-    });
-
-    group.bench_function("failure", |b| {
-        b.iter(|| validator.validate(black_box("hi")))
-    });
-
-    group.finish();
-}
-
 fn bench_when_combinator(c: &mut Criterion) {
     let mut group = c.benchmark_group("when_combinator");
 
@@ -146,7 +132,7 @@ fn bench_when_combinator(c: &mut Criterion) {
 }
 
 fn bench_optional_combinator(c: &mut Criterion) {
-    use nebula_validator::core::{ValidationError, ValidatorMetadata};
+    use nebula_validator::foundation::ValidationError;
 
     // Wrapper with sized Input type for Optional compatibility
     struct SizedMinLength(usize);
@@ -158,9 +144,6 @@ fn bench_optional_combinator(c: &mut Criterion) {
             } else {
                 Err(ValidationError::new("min_length", "too short"))
             }
-        }
-        fn metadata(&self) -> ValidatorMetadata {
-            ValidatorMetadata::default()
         }
     }
 
@@ -187,6 +170,7 @@ fn bench_optional_combinator(c: &mut Criterion) {
 // CACHED COMBINATOR
 // ============================================================================
 
+#[cfg(feature = "caching")]
 fn bench_cached_combinator_cold(c: &mut Criterion) {
     let mut group = c.benchmark_group("cached_cold");
 
@@ -205,6 +189,7 @@ fn bench_cached_combinator_cold(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "caching")]
 fn bench_cached_combinator_hot(c: &mut Criterion) {
     let mut group = c.benchmark_group("cached_hot");
 
@@ -222,6 +207,7 @@ fn bench_cached_combinator_hot(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "caching")]
 fn bench_cached_hit_rates(c: &mut Criterion) {
     let mut group = c.benchmark_group("cached_hit_rates");
 
@@ -256,6 +242,7 @@ fn bench_cached_hit_rates(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "caching")]
 fn bench_cached_capacity(c: &mut Criterion) {
     let mut group = c.benchmark_group("cached_capacity");
 
@@ -453,11 +440,11 @@ criterion_group!(
 
 criterion_group!(
     advanced_combinators,
-    bench_map_combinator,
     bench_when_combinator,
     bench_optional_combinator
 );
 
+#[cfg(feature = "caching")]
 criterion_group!(
     cached_combinators,
     bench_cached_combinator_cold,
@@ -475,10 +462,19 @@ criterion_group!(
 
 criterion_group!(real_world, bench_form_validation);
 
+#[cfg(feature = "caching")]
 criterion_main!(
     basic_combinators,
     advanced_combinators,
     cached_combinators,
+    composition,
+    real_world
+);
+
+#[cfg(not(feature = "caching"))]
+criterion_main!(
+    basic_combinators,
+    advanced_combinators,
     composition,
     real_world
 );

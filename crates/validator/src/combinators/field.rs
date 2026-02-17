@@ -4,7 +4,7 @@
 //! without requiring derive macros.
 
 use crate::combinators::error::CombinatorError;
-use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError};
 use std::borrow::Cow;
 use std::marker::PhantomData;
 
@@ -24,7 +24,7 @@ pub struct Field<T, U, V, F>
 where
     U: ?Sized,
 {
-    name: Option<String>,
+    name: Option<Cow<'static, str>>,
     validator: V,
     accessor: F,
     _phantom: PhantomData<fn(&T) -> &U>,
@@ -45,7 +45,7 @@ where
     }
 
     /// Creates a new field validator with a name.
-    pub fn named(name: impl Into<String>, validator: V, accessor: F) -> Self {
+    pub fn named(name: impl Into<Cow<'static, str>>, validator: V, accessor: F) -> Self {
         Self {
             name: Some(name.into()),
             validator,
@@ -70,7 +70,7 @@ where
     }
 
     /// Extracts the validator and accessor.
-    pub fn into_parts(self) -> (Option<String>, V, F) {
+    pub fn into_parts(self) -> (Option<Cow<'static, str>>, V, F) {
         (self.name, self.validator, self.accessor)
     }
 }
@@ -115,14 +115,14 @@ where
 #[derive(Debug, Clone)]
 pub struct FieldError {
     /// Name of the field that failed validation
-    pub field_name: Option<String>,
+    pub field_name: Option<Cow<'static, str>>,
     /// The underlying validation error
     pub inner: ValidationError,
 }
 
 impl FieldError {
     /// Creates a new field error.
-    pub fn new(field_name: Option<String>, inner: ValidationError) -> Self {
+    pub fn new(field_name: Option<Cow<'static, str>>, inner: ValidationError) -> Self {
         Self { field_name, inner }
     }
 
@@ -143,7 +143,7 @@ impl FieldError {
 
     /// Adds a field name to an unnamed error.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_field_name(mut self, name: impl Into<String>) -> Self {
+    pub fn with_field_name(mut self, name: impl Into<Cow<'static, str>>) -> Self {
         self.field_name = Some(name.into());
         self
     }
@@ -173,7 +173,7 @@ impl std::error::Error for FieldError {
 impl From<FieldError> for CombinatorError<ValidationError> {
     fn from(error: FieldError) -> Self {
         CombinatorError::FieldFailed {
-            field_name: error.field_name,
+            field_name: error.field_name.map(Cow::into_owned),
             error: Box::new(error.inner),
         }
     }
@@ -212,40 +212,6 @@ where
             ValidationError::from(field_error)
         })
     }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        let inner_meta = self.validator.metadata();
-
-        ValidatorMetadata {
-            name: if let Some(name) = &self.name {
-                format!("Field('{}', {})", name, inner_meta.name).into()
-            } else {
-                format!("Field({})", inner_meta.name).into()
-            },
-            description: Some(
-                format!(
-                    "Validates field{} using {}",
-                    self.name
-                        .as_ref()
-                        .map(|n| format!(" '{n}'"))
-                        .unwrap_or_default(),
-                    inner_meta.name
-                )
-                .into(),
-            ),
-            complexity: inner_meta.complexity,
-            cacheable: inner_meta.cacheable,
-            estimated_time: inner_meta.estimated_time,
-            tags: {
-                let mut tags = inner_meta.tags;
-                tags.push(Cow::Borrowed("combinator"));
-                tags.push(Cow::Borrowed("field"));
-                tags
-            },
-            version: inner_meta.version,
-            custom: inner_meta.custom,
-        }
-    }
 }
 
 // ============================================================================
@@ -262,7 +228,7 @@ where
 
 /// Creates a field validator with a name.
 pub fn named_field<T, U, V, F>(
-    name: impl Into<String>,
+    name: impl Into<Cow<'static, str>>,
     validator: V,
     accessor: F,
 ) -> Field<T, U, V, F>
@@ -279,7 +245,11 @@ where
 /// Extension trait for creating field validators.
 pub trait FieldValidateExt: Validate + Sized {
     /// Creates a field validator for this validator.
-    fn for_field<T, F>(self, name: impl Into<String>, accessor: F) -> Field<T, Self::Input, Self, F>
+    fn for_field<T, F>(
+        self,
+        name: impl Into<Cow<'static, str>>,
+        accessor: F,
+    ) -> Field<T, Self::Input, Self, F>
     where
         F: Fn(&T) -> &Self::Input,
     {
@@ -317,13 +287,18 @@ impl<T> MultiField<T> {
 
     /// Adds a field validator.
     #[must_use = "builder methods must be chained or built"]
-    pub fn add_field<U, V, F>(mut self, name: impl Into<String>, validator: V, accessor: F) -> Self
+    pub fn add_field<U, V, F>(
+        mut self,
+        name: impl Into<Cow<'static, str>>,
+        validator: V,
+        accessor: F,
+    ) -> Self
     where
         U: ?Sized,
         V: Validate<Input = U> + Send + Sync + 'static,
         F: Fn(&T) -> &U + Send + Sync + 'static,
     {
-        let name = name.into();
+        let name: Cow<'static, str> = name.into();
         self.validators.push(Box::new(move |input: &T| {
             let field_value = accessor(input);
             validator.validate(field_value).map_err(|err| {
@@ -364,19 +339,6 @@ impl<T> Validate for MultiField<T> {
                 ValidationError::new("multiple_field_errors", "Multiple field validation errors")
                     .with_nested(errors),
             )
-        }
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        ValidatorMetadata {
-            name: format!("MultiField(fields={})", self.validators.len()).into(),
-            description: Some(format!("Validates {} fields", self.validators.len()).into()),
-            complexity: ValidationComplexity::Linear,
-            cacheable: true,
-            estimated_time: None,
-            tags: vec!["combinator".into(), "field".into(), "multi".into()],
-            version: None,
-            custom: Vec::new(),
         }
     }
 }
@@ -467,7 +429,7 @@ mod tests {
     #[test]
     fn test_field_error_display() {
         let error = FieldError::new(
-            Some("age".to_string()),
+            Some(Cow::Borrowed("age")),
             ValidationError::new("invalid", "Invalid value"),
         );
 
@@ -536,7 +498,7 @@ mod tests {
         let validator: Field<TestUser, u32, _, _> =
             named_field("age", MinValue { min: 18 }, get_age);
         let (name, min_value, _accessor) = validator.into_parts();
-        assert_eq!(name, Some("age".to_string()));
+        assert_eq!(name, Some(Cow::Borrowed("age")));
         assert_eq!(min_value.min, 18);
     }
 

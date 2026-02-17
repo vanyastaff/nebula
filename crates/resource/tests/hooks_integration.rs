@@ -467,7 +467,7 @@ async fn hook_filter_prefix_matches_multiple_resources() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn hook_filter_via_manager_only_fires_for_matching_resource() {
     let mgr = Manager::new();
 

@@ -3,8 +3,8 @@
 //! These tests verify the public API works correctly
 
 use nebula_validator::combinators::and::and;
-use nebula_validator::core::Validate;
-use nebula_validator::validators::string::{max_length, min_length};
+use nebula_validator::foundation::Validate;
+use nebula_validator::validators::{max_length, min_length};
 
 #[test]
 fn test_min_length_validator() {

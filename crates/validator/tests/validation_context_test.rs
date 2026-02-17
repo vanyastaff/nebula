@@ -1,4 +1,4 @@
-use nebula_validator::core::{
+use nebula_validator::foundation::{
     ContextualValidator, ValidationContext, ValidationContextBuilder, ValidationError,
 };
 

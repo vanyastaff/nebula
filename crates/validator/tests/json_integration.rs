@@ -3,8 +3,8 @@
 #![cfg(feature = "serde")]
 
 use nebula_validator::combinators::{json_field, json_field_optional};
-use nebula_validator::core::{Validate, ValidateExt};
-use nebula_validator::validators::string::min_length;
+use nebula_validator::foundation::{Validate, ValidateExt};
+use nebula_validator::validators::min_length;
 use serde_json::{Value, json};
 
 // ============================================================================
@@ -76,7 +76,7 @@ fn null_value_type_mismatch() {
 
 #[test]
 fn min_size_with_json_array() {
-    use nebula_validator::validators::collection::min_size;
+    use nebula_validator::validators::min_size;
 
     let validator = min_size::<Value>(2);
     assert!(validator.validate_any(&json!([1, 2, 3])).is_ok());
@@ -107,7 +107,7 @@ fn composed_json_field_validators() {
 
 #[test]
 fn numeric_min_value_i64() {
-    use nebula_validator::validators::numeric::min;
+    use nebula_validator::validators::min;
 
     let v = min::<i64>(18);
     assert!(v.validate_any(&json!(25)).is_ok());
@@ -119,7 +119,7 @@ fn numeric_min_value_i64() {
 
 #[test]
 fn numeric_max_value_i64() {
-    use nebula_validator::validators::numeric::max;
+    use nebula_validator::validators::max;
 
     let v = max::<i64>(100);
     assert!(v.validate_any(&json!(50)).is_ok());
@@ -129,7 +129,7 @@ fn numeric_max_value_i64() {
 
 #[test]
 fn numeric_in_range_i64() {
-    use nebula_validator::validators::numeric::in_range;
+    use nebula_validator::validators::in_range;
 
     let v = in_range::<i64>(1, 65535);
     assert!(v.validate_any(&json!(8080)).is_ok());
@@ -140,7 +140,7 @@ fn numeric_in_range_i64() {
 
 #[test]
 fn numeric_f64_validation() {
-    use nebula_validator::validators::numeric::{in_range, min};
+    use nebula_validator::validators::{in_range, min};
 
     let v = min::<f64>(0.0);
     assert!(v.validate_any(&json!(3.14)).is_ok());
@@ -153,19 +153,19 @@ fn numeric_f64_validation() {
 
 #[test]
 fn numeric_positive_i64() {
-    use nebula_validator::validators::numeric::positive;
+    use nebula_validator::validators::greater_than;
 
-    let v = positive::<i64>();
+    let v = greater_than::<i64>(0);
     assert!(v.validate_any(&json!(42)).is_ok());
     assert!(v.validate_any(&json!(1)).is_ok());
 
     let err = v.validate_any(&json!(-1)).unwrap_err();
-    assert_eq!(err.code.as_ref(), "positive");
+    assert_eq!(err.code.as_ref(), "greater_than");
 }
 
 #[test]
 fn numeric_json_field_port() {
-    use nebula_validator::validators::numeric::in_range;
+    use nebula_validator::validators::in_range;
 
     let data = json!({"server": {"port": 8080}});
     let v = json_field("/server/port", in_range::<i64>(1, 65535));
@@ -182,7 +182,7 @@ fn numeric_json_field_port() {
 
 #[test]
 fn string_email_json() {
-    use nebula_validator::validators::string::email;
+    use nebula_validator::validators::email;
 
     let v = email();
     assert!(v.validate_any(&json!("user@example.com")).is_ok());
@@ -191,7 +191,7 @@ fn string_email_json() {
 
 #[test]
 fn string_url_json() {
-    use nebula_validator::validators::string::url;
+    use nebula_validator::validators::url;
 
     let v = url();
     assert!(v.validate_any(&json!("https://example.com")).is_ok());
@@ -200,7 +200,7 @@ fn string_url_json() {
 
 #[test]
 fn string_regex_json() {
-    use nebula_validator::validators::string::matches_regex;
+    use nebula_validator::validators::matches_regex;
 
     let v = matches_regex("^[a-z0-9_]+$").unwrap();
     assert!(v.validate_any(&json!("hello_world")).is_ok());
@@ -209,23 +209,11 @@ fn string_regex_json() {
 
 #[test]
 fn string_contains_json() {
-    use nebula_validator::validators::string::contains;
+    use nebula_validator::validators::contains;
 
     let v = contains("hello");
     assert!(v.validate_any(&json!("say hello world")).is_ok());
     assert!(v.validate_any(&json!("goodbye")).is_err());
-}
-
-#[test]
-fn string_uuid_json_field() {
-    use nebula_validator::validators::string::Uuid;
-
-    let data = json!({"id": "550e8400-e29b-41d4-a716-446655440000"});
-    let v = json_field("/id", Uuid::default());
-    assert!(v.validate(&data).is_ok());
-
-    let bad = json!({"id": "not-a-uuid"});
-    assert!(v.validate(&bad).is_err());
 }
 
 // ============================================================================
@@ -234,7 +222,7 @@ fn string_uuid_json_field() {
 
 #[test]
 fn bool_is_true_json() {
-    use nebula_validator::validators::logical::is_true;
+    use nebula_validator::validators::is_true;
 
     let v = is_true();
     assert!(v.validate_any(&json!(true)).is_ok());
@@ -243,7 +231,7 @@ fn bool_is_true_json() {
 
 #[test]
 fn bool_type_mismatch() {
-    use nebula_validator::validators::logical::is_true;
+    use nebula_validator::validators::is_true;
 
     // string "true" is not bool true
     let err = is_true().validate_any(&json!("true")).unwrap_err();
@@ -257,7 +245,7 @@ fn bool_type_mismatch() {
 
 #[test]
 fn collection_max_size_json() {
-    use nebula_validator::validators::collection::max_size;
+    use nebula_validator::validators::max_size;
 
     let v = max_size::<Value>(3);
     assert!(v.validate_any(&json!([1, 2, 3])).is_ok());
@@ -266,7 +254,7 @@ fn collection_max_size_json() {
 
 #[test]
 fn collection_exact_size_json() {
-    use nebula_validator::validators::collection::exact_size;
+    use nebula_validator::validators::exact_size;
 
     let v = exact_size::<Value>(2);
     assert!(v.validate_any(&json!([1, 2])).is_ok());
@@ -276,7 +264,7 @@ fn collection_exact_size_json() {
 
 #[test]
 fn collection_not_empty_json() {
-    use nebula_validator::validators::collection::not_empty_collection;
+    use nebula_validator::validators::not_empty_collection;
 
     let v = not_empty_collection::<Value>();
     assert!(v.validate_any(&json!([1])).is_ok());
@@ -287,7 +275,7 @@ fn collection_not_empty_json() {
 
 #[test]
 fn collection_size_range_json() {
-    use nebula_validator::validators::collection::size_range;
+    use nebula_validator::validators::size_range;
 
     let v = size_range::<Value>(1, 5);
     assert!(v.validate_any(&json!([1, 2, 3])).is_ok());
@@ -301,21 +289,21 @@ fn collection_size_range_json() {
 
 #[test]
 fn or_combinator_json() {
-    // Field can be either a non-empty string OR a positive number
-    use nebula_validator::validators::numeric::positive;
+    // Field can be either a non-empty string OR a number > 0
+    use nebula_validator::validators::greater_than;
 
-    let v = json_field("/value", min_length(1)).or(json_field("/value", positive::<i64>()));
+    let v = json_field("/value", min_length(1)).or(json_field("/value", greater_than::<i64>(0)));
 
     assert!(v.validate(&json!({"value": "hello"})).is_ok());
     assert!(v.validate(&json!({"value": 42})).is_ok());
-    // Neither string nor positive number
+    // Neither string nor number > 0
     assert!(v.validate(&json!({"value": -1})).is_err());
 }
 
 #[test]
 fn not_combinator_json() {
     use nebula_validator::combinators::not;
-    use nebula_validator::validators::string::contains;
+    use nebula_validator::validators::contains;
 
     // Status must NOT contain "error"
     let v = not(json_field("/status", contains("error")));
@@ -326,7 +314,7 @@ fn not_combinator_json() {
 #[test]
 fn when_combinator_json() {
     use nebula_validator::combinators::when;
-    use nebula_validator::validators::string::email;
+    use nebula_validator::validators::email;
 
     // Validate email only when notify=true
     let v = when(json_field("/email", email()), |v: &Value| {
@@ -398,7 +386,7 @@ fn with_code_json() {
 
 #[test]
 fn deeply_nested_4_levels() {
-    use nebula_validator::validators::numeric::min;
+    use nebula_validator::validators::min;
 
     let data = json!({
         "a": {
@@ -425,7 +413,7 @@ fn empty_object_missing_fields() {
 
 #[test]
 fn empty_array_not_empty() {
-    use nebula_validator::validators::collection::not_empty_collection;
+    use nebula_validator::validators::not_empty_collection;
 
     let v = json_field("/items", not_empty_collection::<Value>());
     let err = v.validate(&json!({"items": []})).unwrap_err();
@@ -434,7 +422,7 @@ fn empty_array_not_empty() {
 
 #[test]
 fn multiple_field_errors() {
-    use nebula_validator::validators::string::email;
+    use nebula_validator::validators::email;
 
     let data = json!({
         "name": "",
@@ -463,9 +451,9 @@ fn multiple_field_errors() {
 
 #[test]
 fn user_registration_payload() {
-    use nebula_validator::validators::logical::is_true;
-    use nebula_validator::validators::numeric::in_range;
-    use nebula_validator::validators::string::{email, max_length};
+    use nebula_validator::validators::in_range;
+    use nebula_validator::validators::is_true;
+    use nebula_validator::validators::{email, max_length};
 
     let validator = json_field("/name", min_length(1))
         .and(json_field("/name", max_length(100)))
@@ -520,12 +508,12 @@ fn user_registration_payload() {
 
 #[test]
 fn server_config_payload() {
-    use nebula_validator::validators::numeric::{in_range, positive};
-    use nebula_validator::validators::string::contains;
+    use nebula_validator::validators::contains;
+    use nebula_validator::validators::{greater_than, in_range};
 
     let validator = json_field("/host", min_length(1))
         .and(json_field("/port", in_range::<i64>(1, 65535)))
-        .and(json_field("/workers", positive::<i64>()))
+        .and(json_field("/workers", greater_than::<i64>(0)))
         .and(json_field_optional("/tls/cert_path", min_length(1)))
         .and(json_field_optional(
             "/log_level",

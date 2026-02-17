@@ -1,7 +1,6 @@
 //! Basic usage example for nebula-validator
 
-use nebula_validator::core::Validate;
-use nebula_validator::validators::string::min_length;
+use nebula_validator::prelude::*;
 
 fn main() {
     // Create a simple string validator

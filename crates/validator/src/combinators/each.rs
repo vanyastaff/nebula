@@ -1,7 +1,6 @@
 //! EACH combinator - validates each element of a collection
 
-use crate::core::{Validate, ValidationComplexity, ValidationError, ValidatorMetadata};
-use std::borrow::Cow;
+use crate::foundation::{Validate, ValidationError};
 
 // ============================================================================
 // EACH COMBINATOR
@@ -16,7 +15,7 @@ use std::borrow::Cow;
 ///
 /// ```rust,ignore
 /// use nebula_validator::combinators::Each;
-/// use nebula_validator::core::Validate;
+/// use nebula_validator::foundation::Validate;
 ///
 /// let validator = Each::new(MinLength { min: 3 });
 ///
@@ -124,33 +123,6 @@ where
             Err(error)
         }
     }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        let inner_meta = self.inner.metadata();
-
-        ValidatorMetadata {
-            name: format!("Each({})", inner_meta.name).into(),
-            description: Some(
-                format!(
-                    "Validates each element with {}{}",
-                    inner_meta.name,
-                    if self.fail_fast { " (fail-fast)" } else { "" }
-                )
-                .into(),
-            ),
-            complexity: ValidationComplexity::Linear,
-            cacheable: inner_meta.cacheable,
-            estimated_time: None,
-            tags: {
-                let mut tags = inner_meta.tags;
-                tags.push(Cow::Borrowed("combinator"));
-                tags.push("collection".into());
-                tags
-            },
-            version: None,
-            custom: Vec::new(),
-        }
-    }
 }
 
 /// Creates an EACH combinator that validates all elements.
@@ -170,7 +142,7 @@ pub fn each_fail_fast<V>(validator: V) -> Each<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Validate;
+    use crate::foundation::Validate;
 
     struct Positive;
 
@@ -238,14 +210,5 @@ mod tests {
 
         assert!(v1.validate(&[1, 2, 3]).is_ok());
         assert!(v2.validate(&[1, 2, 3]).is_ok());
-    }
-
-    #[test]
-    fn test_each_metadata() {
-        let validator = Each::new(Positive);
-        let meta = validator.metadata();
-
-        assert!(meta.name.contains("Each"));
-        assert!(meta.tags.contains(&"collection".into()));
     }
 }

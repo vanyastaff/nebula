@@ -1,7 +1,6 @@
 //! LAZY combinator - deferred validator initialization
 
-use crate::core::{Validate, ValidationError, ValidatorMetadata};
-use std::borrow::Cow;
+use crate::foundation::{Validate, ValidationError};
 use std::sync::OnceLock;
 
 // ============================================================================
@@ -19,7 +18,7 @@ use std::sync::OnceLock;
 ///
 /// ```rust,ignore
 /// use nebula_validator::combinators::Lazy;
-/// use nebula_validator::core::Validate;
+/// use nebula_validator::foundation::Validate;
 ///
 /// // Validate is created only when first used
 /// let validator = Lazy::new(|| {
@@ -81,39 +80,6 @@ where
     fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
         let validator = self.validator.get_or_init(&self.init);
         validator.validate(input)
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        match self.validator.get() {
-            Some(v) => {
-                let inner_meta = v.metadata();
-                ValidatorMetadata {
-                    name: format!("Lazy({})", inner_meta.name).into(),
-                    description: inner_meta.description,
-                    complexity: inner_meta.complexity,
-                    cacheable: inner_meta.cacheable,
-                    estimated_time: inner_meta.estimated_time,
-                    tags: {
-                        let mut tags = inner_meta.tags;
-                        tags.push(Cow::Borrowed("combinator"));
-                        tags.push("lazy".into());
-                        tags
-                    },
-                    version: inner_meta.version,
-                    custom: inner_meta.custom,
-                }
-            }
-            None => ValidatorMetadata {
-                name: "Lazy(uninitialized)".into(),
-                description: Some("Lazy validator not yet initialized".into()),
-                complexity: crate::core::ValidationComplexity::Constant,
-                cacheable: false,
-                estimated_time: None,
-                tags: vec!["combinator".into(), "lazy".into()],
-                version: None,
-                custom: Vec::new(),
-            },
-        }
     }
 }
 
@@ -245,23 +211,5 @@ mod tests {
 
         assert!(validator.get().is_some());
         assert_eq!(validator.get().unwrap().min, 5);
-    }
-
-    #[test]
-    fn test_lazy_metadata_uninitialized() {
-        let validator = lazy(|| MinLength { min: 5 });
-        let meta = validator.metadata();
-
-        assert!(meta.name.contains("uninitialized"));
-    }
-
-    #[test]
-    fn test_lazy_metadata_initialized() {
-        let validator = lazy(|| MinLength { min: 5 });
-        validator.force();
-
-        let meta = validator.metadata();
-        assert!(meta.name.contains("Lazy"));
-        assert!(meta.tags.contains(&"lazy".into()));
     }
 }

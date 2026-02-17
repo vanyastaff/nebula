@@ -9,7 +9,6 @@
 //! Combinators transform or combine validators:
 //!
 //! - **Logical**: `And`, `Or`, `Not` - boolean logic
-//! - **Transformational**: `Map` - transform outputs
 //! - **Conditional**: `When` - conditional validation
 //! - **Optional**: `Optional`, `RequiredSome` - nullable handling
 //! - **Performance**: `Cached` - memoization
@@ -29,14 +28,6 @@
 //!
 //! // NOT: must not pass
 //! let validator = contains("test").not();
-//! ```
-//!
-//! ## Transformational Combinators
-//!
-//! ```rust,ignore
-//! // MAP: transform output
-//! let validator = min_length(5).map(|_| "Valid!");
-//! assert_eq!(validator.validate("hello").unwrap(), "Valid!");
 //! ```
 //!
 //! ## Conditional Validation
@@ -84,16 +75,15 @@
 
 // Module declarations
 pub mod and;
+#[cfg(feature = "caching")]
 pub mod cached;
 pub mod each;
 pub mod error;
 pub mod field;
 pub mod lazy;
-pub mod map;
 pub mod message;
 pub mod nested;
 pub mod not;
-pub mod optimizer;
 pub mod optional;
 pub mod or;
 pub mod unless;
@@ -104,23 +94,18 @@ pub mod json_field;
 
 // Re-export all combinator types
 pub use and::{And, AndAll, and, and_all};
+#[cfg(feature = "caching")]
 pub use cached::{CacheStats, Cached, cached};
 pub use each::{Each, each, each_fail_fast};
 pub use error::CombinatorError;
 pub use field::{Field, FieldError, FieldValidateExt, MultiField, field, named_field};
 pub use lazy::{Lazy, lazy};
-#[allow(deprecated)]
-pub use map::{Map, map, map_to, map_unit};
 pub use message::{WithCode, WithMessage, with_code, with_message};
 pub use nested::{
     CollectionNested, NestedValidate, OptionalNested, Validatable, collection_nested,
     custom_nested, nested_validator, optional_nested,
 };
 pub use not::{Not, not};
-pub use optimizer::{
-    OptimizationReport, OptimizationStrategy, ValidatorChainOptimizer, ValidatorOrdering,
-    ValidatorStats,
-};
 pub use optional::{Optional, optional};
 pub use or::{Or, OrAny, or, or_any};
 pub use unless::{Unless, unless};
@@ -149,13 +134,14 @@ pub use json_field::{JsonField, json_field, json_field_optional};
 ///     .or(exact_length(0));
 /// ```
 pub mod prelude {
-    #[allow(deprecated)]
     pub use super::{
-        And, AndAll, Cached, Each, Field, FieldValidateExt, Lazy, Map, Not, Optional, Or, OrAny,
-        Unless, When, WithCode, WithMessage, and, and_all, cached, each, each_fail_fast, field,
-        lazy, map, map_to, named_field, not, optional, or, or_any, unless, when, with_code,
-        with_message,
+        And, AndAll, Each, Field, FieldValidateExt, Lazy, Not, Optional, Or, OrAny, Unless, When,
+        WithCode, WithMessage, and, and_all, each, each_fail_fast, field, lazy, named_field, not,
+        optional, or, or_any, unless, when, with_code, with_message,
     };
+
+    #[cfg(feature = "caching")]
+    pub use super::{Cached, cached};
 
     #[cfg(feature = "serde")]
     pub use super::{JsonField, json_field, json_field_optional};
@@ -172,7 +158,7 @@ pub mod prelude {
 #[cfg(test)]
 mod laws {
     use super::*;
-    use crate::core::{Validate, ValidationError};
+    use crate::foundation::{Validate, ValidationError};
 
     struct AlwaysValid;
     impl Validate for AlwaysValid {
@@ -269,7 +255,7 @@ mod laws {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::core::{Validate, ValidateExt, ValidationError};
+    use crate::foundation::{Validate, ValidateExt, ValidationError};
 
     struct MinLength {
         min: usize,
@@ -354,18 +340,7 @@ mod integration_tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn test_map_with_and() {
-        let validator = MinLength { min: 5 }
-            .and(MaxLength { max: 10 })
-            .map(|_: ()| "Valid!");
-
-        // Map now just delegates validation - returns () on success
-        assert!(validator.validate(&"hello".to_string()).is_ok());
-        assert!(validator.validate(&"hi".to_string()).is_err());
-    }
-
-    #[test]
+    #[cfg(feature = "caching")]
     fn test_cached_with_complex_validator() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -409,7 +384,7 @@ mod integration_tests {
 mod doc_tests {
     //! These tests verify that documentation examples compile and work.
 
-    use crate::core::{Validate, ValidateExt, ValidationError};
+    use crate::foundation::{Validate, ValidateExt, ValidationError};
 
     #[test]
     fn test_readme_example() {

@@ -53,7 +53,7 @@ fn ctx() -> Context {
 
 /// Shutdown cleans up idle instances, then guard dropped post-shutdown
 /// triggers cleanup (not return-to-pool).
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn shutdown_cleans_idle_then_guard_drop_cleans_active() {
     let cleanup_count = Arc::new(AtomicU32::new(0));
 
@@ -112,7 +112,7 @@ async fn shutdown_cleans_idle_then_guard_drop_cleans_active() {
 }
 
 /// Manager-level phased shutdown cleans up all pools and clears entries.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn manager_shutdown_clears_all_pools() {
     let cleanup_count = Arc::new(AtomicU32::new(0));
 

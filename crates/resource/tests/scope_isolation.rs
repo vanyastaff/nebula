@@ -432,7 +432,7 @@ mod manager_scope_tests {
     }
 
     /// Global-scoped resource allows access from any scope.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn global_resource_accessible_from_any_scope() {
         let mgr = Manager::new();
         mgr.register(

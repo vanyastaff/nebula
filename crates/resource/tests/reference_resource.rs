@@ -168,7 +168,7 @@ async fn recycle_resets_instance_state() {
     assert_eq!(resource.recycle_count.load(Ordering::SeqCst), 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn cleanup_is_called_on_shutdown() {
     let cleanup_called = Arc::new(AtomicBool::new(false));
 
@@ -248,7 +248,7 @@ async fn config_validation_rejects_empty_prefix() {
     assert!(result.is_err());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn full_lifecycle_through_pool() {
     let pool = Pool::new(ReferenceResource::new(), config(), pool_config()).unwrap();
 

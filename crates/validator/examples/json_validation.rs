@@ -3,10 +3,10 @@
 //! Run: `cargo run -p nebula-validator --features serde --example json_validation`
 
 use nebula_validator::combinators::{json_field, json_field_optional, not, when, with_message};
-use nebula_validator::core::{Validate, ValidateExt};
-use nebula_validator::validators::logical::is_true;
-use nebula_validator::validators::numeric::{in_range, positive};
-use nebula_validator::validators::string::{contains, email, max_length, min_length};
+use nebula_validator::foundation::{Validate, ValidateExt};
+use nebula_validator::validators::is_true;
+use nebula_validator::validators::{contains, email, max_length, min_length};
+use nebula_validator::validators::{greater_than, in_range};
 use serde_json::{Value, json};
 
 fn main() {
@@ -95,8 +95,8 @@ fn composed_validators() {
     let bad = json!({"host": "", "port": 8080});
     println!("host AND port (empty host): {}", status(&v.validate(&bad)));
 
-    // OR: field is either a string or a positive number
-    let v = json_field("/value", min_length(1)).or(json_field("/value", positive::<i64>()));
+    // OR: field is either a string or a number > 0
+    let v = json_field("/value", min_length(1)).or(json_field("/value", greater_than::<i64>(0)));
 
     println!(
         "string OR number (\"hello\"): {}",
@@ -134,7 +134,7 @@ fn real_world_config_validation() {
 
     let validator = json_field("/host", min_length(1))
         .and(json_field("/port", in_range::<i64>(1, 65535)))
-        .and(json_field("/workers", positive::<i64>()))
+        .and(json_field("/workers", greater_than::<i64>(0)))
         .and(json_field_optional("/log_level", min_length(1)))
         .and(json_field("/database/url", min_length(10)))
         .and(json_field_optional(
@@ -225,7 +225,7 @@ fn error_reporting() {
     }
 }
 
-fn status(result: &Result<(), nebula_validator::core::ValidationError>) -> &'static str {
+fn status(result: &Result<(), nebula_validator::foundation::ValidationError>) -> &'static str {
     match result {
         Ok(()) => "PASS",
         Err(_) => "FAIL",

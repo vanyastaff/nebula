@@ -12,14 +12,14 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-# Caching
-moka = { version = "0.12", features = ["sync"] }
+# Caching (optional)
+moka = { version = "0.12", features = ["sync"], optional = true }
+
+# Error handling
+thiserror = { workspace = true }
 
 # Data formats
-base64 = { workspace = true }
 regex = { workspace = true }
-url = { workspace = true }
-uuid = { workspace = true, features = ["v4", "serde"] }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }
@@ -28,12 +28,15 @@ serde_json = { workspace = true }
 [features]
 default = ["serde"]
 serde = []
+caching = ["dep:moka"]
+full = ["serde", "caching"]
 
 [dev-dependencies]
 # Testing
 pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = "0.4"
+proptest = "1"
 
 # Benchmarking
 criterion = { workspace = true }

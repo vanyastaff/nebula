@@ -22,8 +22,7 @@
 //! let error = CombinatorError::field_failed("email", validation_err);
 //! ```
 
-use crate::core::ValidationError;
-use std::fmt;
+use crate::foundation::ValidationError;
 
 // ============================================================================
 // COMBINATOR ERROR TYPE
@@ -33,29 +32,42 @@ use std::fmt;
 ///
 /// This enum captures different failure modes across all combinators,
 /// providing a consistent error handling experience.
-#[derive(Debug, Clone)]
-pub enum CombinatorError<E = ValidationError> {
+#[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
+pub enum CombinatorError<E: std::error::Error + Clone + 'static = ValidationError> {
     /// OR combinator: all alternatives failed.
     ///
     /// Contains errors from left and right validators.
-    OrAllFailed { left: Box<E>, right: Box<E> },
+    #[error("All validators failed. Left: {left}; Right: {right}")]
+    OrAllFailed {
+        #[source]
+        left: Box<E>,
+        right: Box<E>,
+    },
 
     /// AND combinator: one or both validators failed.
     ///
     /// Contains error from the validator that failed.
-    AndFailed(E),
+    #[error("AND combinator failed: {0}")]
+    AndFailed(#[source] E),
 
     /// NOT combinator: validator unexpectedly passed.
     ///
     /// The NOT combinator inverts validation logic - it fails when
     /// the inner validator succeeds.
+    #[error("Validation must NOT pass, but it did")]
     NotValidatorPassed,
 
     /// Field validation failed.
     ///
     /// Contains field name and the validation error for that field.
+    #[error("{}", match field_name {
+        Some(name) => format!("Validation failed for field '{}': {}", name, error),
+        None => format!("Validation failed for field: {}", error),
+    })]
     FieldFailed {
         field_name: Option<String>,
+        #[source]
         error: Box<E>,
     },
 
@@ -63,22 +75,26 @@ pub enum CombinatorError<E = ValidationError> {
     ///
     /// Used by Optional/Required combinators when a value is required
     /// but None was provided.
+    #[error("Value is required but was None")]
     RequiredValueMissing,
 
     /// Inner validator failed with an error.
     ///
     /// Generic wrapper for errors from inner validators.
-    ValidationFailed(E),
+    #[error("Validation failed: {0}")]
+    ValidationFailed(#[source] E),
 
     /// Multiple validators failed.
     ///
     /// Used when validating multiple items or fields where several
     /// can fail independently.
+    #[error("Multiple validations failed ({} errors)", .0.len())]
     MultipleFailed(Vec<E>),
 
     /// Custom error with a message.
     ///
     /// For cases not covered by other variants.
+    #[error("[{code}] {message}")]
     Custom { code: String, message: String },
 }
 
@@ -86,7 +102,7 @@ pub enum CombinatorError<E = ValidationError> {
 // CONSTRUCTOR HELPERS
 // ============================================================================
 
-impl<E> CombinatorError<E> {
+impl<E: std::error::Error + Clone + 'static> CombinatorError<E> {
     /// Creates an OR error when all alternatives fail.
     pub fn or_all_failed(left: E, right: E) -> Self {
         Self::OrAllFailed {
@@ -167,61 +183,6 @@ impl<E> CombinatorError<E> {
 }
 
 // ============================================================================
-// DISPLAY IMPLEMENTATION
-// ============================================================================
-
-impl<E: fmt::Display> fmt::Display for CombinatorError<E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::OrAllFailed { left, right } => {
-                write!(f, "All validators failed. Left: {left}; Right: {right}")
-            }
-            Self::AndFailed(e) => {
-                write!(f, "AND combinator failed: {e}")
-            }
-            Self::NotValidatorPassed => {
-                write!(f, "Validation must NOT pass, but it did")
-            }
-            Self::FieldFailed { field_name, error } => {
-                if let Some(name) = field_name {
-                    write!(f, "Validation failed for field '{name}': {error}")
-                } else {
-                    write!(f, "Validation failed for field: {error}")
-                }
-            }
-            Self::RequiredValueMissing => {
-                write!(f, "Value is required but was None")
-            }
-            Self::ValidationFailed(e) => {
-                write!(f, "Validation failed: {e}")
-            }
-            Self::MultipleFailed(errors) => {
-                write!(f, "Multiple validations failed ({} errors)", errors.len())
-            }
-            Self::Custom { code, message } => {
-                write!(f, "[{code}] {message}")
-            }
-        }
-    }
-}
-
-// ============================================================================
-// ERROR TRAIT IMPLEMENTATION
-// ============================================================================
-
-impl<E: std::error::Error + 'static> std::error::Error for CombinatorError<E> {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::OrAllFailed { left, .. } => Some(left.as_ref()),
-            Self::AndFailed(e) | Self::ValidationFailed(e) => Some(e),
-            Self::FieldFailed { error, .. } => Some(error.as_ref()),
-            Self::MultipleFailed(errors) if !errors.is_empty() => Some(&errors[0]),
-            _ => None,
-        }
-    }
-}
-
-// ============================================================================
 // CONVERSION FROM VALIDATIONERROR
 // ============================================================================
 
@@ -237,7 +198,7 @@ impl From<ValidationError> for CombinatorError<ValidationError> {
 
 impl<E> From<CombinatorError<E>> for ValidationError
 where
-    E: fmt::Display,
+    E: std::error::Error + Clone + 'static,
 {
     fn from(error: CombinatorError<E>) -> Self {
         match error {

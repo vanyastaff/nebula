@@ -1,20 +1,20 @@
 //! Built-in validators
 //!
-//! This module provides a comprehensive set of ready-to-use validators
-//! for common validation scenarios.
+//! This module provides a set of ready-to-use validators for common
+//! validation scenarios.
 //!
 //! # Categories
 //!
-//! - **String**: Length, patterns, formats (email, URL, UUID, phone, IBAN, etc.)
-//! - **Numeric**: Range, properties (even, odd, positive)
-//! - **Collection**: Size, elements, structure
-//! - **Logical**: Boolean, nullable
-//! - **Network**: IP address, MAC address, port
+//! - **String** ([`length`], [`pattern`], [`content`]): length bounds, character patterns,
+//!   email/URL/regex matching
+//! - **Numeric** ([`range`]): min, max, in_range, greater_than, less_than
+//! - **Collection** ([`size`]): size bounds for `Vec`, slices, etc.
+//! - **Logical** ([`boolean`], [`nullable`]): boolean checks, required/not-null
 //!
 //! # Examples
 //!
 //! ```rust,ignore
-//! use nebula_validator::validators::prelude::*;
+//! use nebula_validator::prelude::*;
 //!
 //! // String validation
 //! let username = min_length(3).and(max_length(20)).and(alphanumeric());
@@ -29,34 +29,59 @@
 //! let email_validator = not_empty().and(email());
 //! ```
 
-pub mod collection;
-pub mod logical;
-pub mod network;
-pub mod numeric;
-pub mod string;
+// String validators
+pub mod content;
+pub mod length;
+pub mod pattern;
 
-// Re-export all validators
-#[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
-pub use collection::*;
-#[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
-pub use logical::*;
-#[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
-pub use network::*;
-#[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
-pub use numeric::*;
-#[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
-pub use string::*;
+// Numeric validators
+pub mod range;
 
-/// Prelude with all validators.
-pub mod prelude {
-    #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
-    pub use super::collection::prelude::*;
-    #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
-    pub use super::logical::prelude::*;
-    #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
-    pub use super::network::*;
-    #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
-    pub use super::numeric::prelude::*;
-    #[allow(clippy::wildcard_imports, ambiguous_glob_reexports)]
-    pub use super::string::prelude::*;
-}
+// Collection validators
+pub mod size;
+
+// Logical validators
+pub mod boolean;
+pub mod nullable;
+
+// ============================================================================
+// RE-EXPORTS: String validators
+// ============================================================================
+
+pub use length::{
+    ExactLength, LengthRange, MaxLength, MinLength, NotEmpty, exact_length, exact_length_bytes,
+    length_range, length_range_bytes, max_length, max_length_bytes, min_length, min_length_bytes,
+    not_empty,
+};
+
+pub use pattern::{
+    Alphabetic, Alphanumeric, Contains, EndsWith, Lowercase, Numeric, StartsWith, Uppercase,
+    alphabetic, alphanumeric, contains, ends_with, lowercase, numeric, starts_with, uppercase,
+};
+
+pub use content::{Email, MatchesRegex, Url, email, matches_regex, url};
+
+// ============================================================================
+// RE-EXPORTS: Numeric validators
+// ============================================================================
+
+pub use range::{
+    ExclusiveRange, GreaterThan, InRange, LessThan, Max, Min, exclusive_range, greater_than,
+    in_range, less_than, max, min,
+};
+
+// ============================================================================
+// RE-EXPORTS: Collection validators
+// ============================================================================
+
+pub use size::{
+    ExactSize, MaxSize, MinSize, NotEmptyCollection, SizeRange, exact_size, max_size, min_size,
+    not_empty_collection, size_range,
+};
+
+// ============================================================================
+// RE-EXPORTS: Logical validators
+// ============================================================================
+
+pub use boolean::{IsFalse, IsTrue, is_false, is_true};
+pub use nullable::{NotNull, Required, not_null, required};

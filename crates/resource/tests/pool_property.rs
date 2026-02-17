@@ -124,7 +124,7 @@ proptest! {
 }
 
 /// Deterministic test: rapid acquire-release cycles maintain pool invariants.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn rapid_acquire_release_preserves_invariants() {
     let max_size = 4;
     let pool_config = PoolConfig {
@@ -148,8 +148,175 @@ async fn rapid_acquire_release_preserves_invariants() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Property 8a: total_acquisitions >= total_releases (monotonicity)
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(20))]
+
+    #[test]
+    fn total_acquisitions_ge_total_releases(
+        max_size in 1usize..6,
+        ops in proptest::collection::vec(prop_oneof![Just(true), Just(false)], 1..20),
+    ) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let pool_config = PoolConfig {
+                min_size: 0,
+                max_size,
+                acquire_timeout: Duration::from_millis(50),
+                ..Default::default()
+            };
+            let pool = Pool::new(CountingResource::new(), TestConfig, pool_config).unwrap();
+            let mut guards = Vec::new();
+
+            for op_is_acquire in &ops {
+                if *op_is_acquire {
+                    if let Ok(guard) = pool.acquire(&ctx()).await {
+                        guards.push(guard);
+                    }
+                } else if !guards.is_empty() {
+                    guards.pop();
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+
+                let stats = pool.stats();
+                prop_assert!(
+                    stats.total_acquisitions >= stats.total_releases,
+                    "monotonicity violated: acquisitions={} < releases={}",
+                    stats.total_acquisitions, stats.total_releases,
+                );
+            }
+
+            drop(guards);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            let stats = pool.stats();
+            prop_assert!(
+                stats.total_acquisitions >= stats.total_releases,
+                "final monotonicity violated"
+            );
+
+            Ok(())
+        })?;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property 8b: after all guards dropped, active == 0
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(20))]
+
+    #[test]
+    fn all_guards_dropped_means_active_zero(
+        max_size in 1usize..6,
+        acquire_count in 1usize..10,
+    ) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let pool_config = PoolConfig {
+                min_size: 0,
+                max_size,
+                acquire_timeout: Duration::from_millis(50),
+                ..Default::default()
+            };
+            let pool = Pool::new(CountingResource::new(), TestConfig, pool_config).unwrap();
+            let mut guards = Vec::new();
+
+            for _ in 0..acquire_count {
+                if let Ok(guard) = pool.acquire(&ctx()).await {
+                    guards.push(guard);
+                }
+            }
+
+            drop(guards);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            let stats = pool.stats();
+            prop_assert_eq!(
+                stats.active, 0,
+                "all guards dropped but active={}",
+                stats.active,
+            );
+
+            Ok(())
+        })?;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property 8c: stats.created >= stats.destroyed
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(20))]
+
+    #[test]
+    fn created_ge_destroyed(
+        max_size in 1usize..6,
+        ops in proptest::collection::vec(prop_oneof![Just(true), Just(false)], 1..20),
+    ) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let pool_config = PoolConfig {
+                min_size: 0,
+                max_size,
+                acquire_timeout: Duration::from_millis(50),
+                ..Default::default()
+            };
+            let pool = Pool::new(CountingResource::new(), TestConfig, pool_config).unwrap();
+            let mut guards = Vec::new();
+
+            for op_is_acquire in &ops {
+                if *op_is_acquire {
+                    if let Ok(guard) = pool.acquire(&ctx()).await {
+                        guards.push(guard);
+                    }
+                } else if !guards.is_empty() {
+                    guards.pop();
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+
+                let stats = pool.stats();
+                prop_assert!(
+                    stats.created >= stats.destroyed,
+                    "can't destroy more than created: created={} < destroyed={}",
+                    stats.created, stats.destroyed,
+                );
+            }
+
+            drop(guards);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            let stats = pool.stats();
+            prop_assert!(
+                stats.created >= stats.destroyed,
+                "final: created={} < destroyed={}",
+                stats.created, stats.destroyed,
+            );
+
+            Ok(())
+        })?;
+    }
+}
+
 /// Verify that total_releases == total_acquisitions after all guards are dropped.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn acquisitions_equal_releases_after_cleanup() {
     let pool_config = PoolConfig {
         min_size: 0,

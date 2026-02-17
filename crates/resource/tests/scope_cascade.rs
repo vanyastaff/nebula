@@ -108,7 +108,7 @@ fn pool_cfg() -> PoolConfig {
 // T047: Tenant shutdown cascades to child workflow and execution resources
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn tenant_shutdown_cascades_to_child_scopes() {
     let mgr = Manager::new();
 
@@ -177,7 +177,7 @@ async fn tenant_shutdown_cascades_to_child_scopes() {
 // Shutdown of one tenant does NOT affect resources under a different tenant
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn scope_shutdown_does_not_affect_other_tenants() {
     let mgr = Manager::new();
 
@@ -324,7 +324,7 @@ async fn workflow_scope_shutdown_does_not_affect_siblings() {
 // Dependency ordering: dependents shut down before their dependencies
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn shutdown_scope_follows_dependency_ordering() {
     let order = Arc::new(parking_lot::Mutex::new(Vec::new()));
     let mgr = Manager::new();
@@ -411,7 +411,7 @@ async fn shutdown_scope_follows_dependency_ordering() {
 // Cleanup callbacks are invoked during scope shutdown
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn scope_shutdown_invokes_cleanup() {
     let cleanup_count = Arc::new(AtomicU32::new(0));
     let mgr = Manager::new();

@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use crate::core::{Validate, ValidationError, ValidatorMetadata};
+use crate::foundation::{Validate, ValidationError};
 
 // ============================================================================
 // WITH MESSAGE COMBINATOR
@@ -16,7 +16,7 @@ use crate::core::{Validate, ValidationError, ValidatorMetadata};
 ///
 /// ```rust,ignore
 /// use nebula_validator::combinators::WithMessage;
-/// use nebula_validator::core::Validate;
+/// use nebula_validator::foundation::Validate;
 ///
 /// let validator = WithMessage::new(
 ///     MinLength { min: 8 },
@@ -43,6 +43,15 @@ impl<V> WithMessage<V> {
         }
     }
 
+    /// Creates a combinator that only overrides the error code, keeping the original message.
+    pub fn code_only(inner: V, code: impl Into<String>) -> Self {
+        Self {
+            inner,
+            message: String::new(),
+            code: Some(code.into()),
+        }
+    }
+
     /// Also replaces the error code.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_code(mut self, code: impl Into<String>) -> Self {
@@ -58,6 +67,11 @@ impl<V> WithMessage<V> {
     /// Returns the custom message.
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// Returns the custom code, if set.
+    pub fn code(&self) -> Option<&str> {
+        self.code.as_deref()
     }
 
     /// Extracts the inner validator.
@@ -79,23 +93,14 @@ where
                 .clone()
                 .map_or_else(|| original.code.clone(), Cow::Owned);
 
-            ValidationError::new(code, self.message.clone()).with_nested_error(original)
+            let message = if self.message.is_empty() {
+                original.message.clone()
+            } else {
+                Cow::Owned(self.message.clone())
+            };
+
+            ValidationError::new(code, message).with_nested_error(original)
         })
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        let inner_meta = self.inner.metadata();
-
-        ValidatorMetadata {
-            name: format!("WithMessage({})", inner_meta.name).into(),
-            description: Some(self.message.clone().into()),
-            complexity: inner_meta.complexity,
-            cacheable: inner_meta.cacheable,
-            estimated_time: inner_meta.estimated_time,
-            tags: inner_meta.tags,
-            version: inner_meta.version,
-            custom: inner_meta.custom,
-        }
     }
 }
 
@@ -105,76 +110,34 @@ pub fn with_message<V>(validator: V, message: impl Into<String>) -> WithMessage<
 }
 
 // ============================================================================
-// WITH CODE COMBINATOR
+// WITH CODE (type alias for backwards compatibility)
 // ============================================================================
 
-/// Replaces only the error code of a validator.
+/// Type alias for backwards compatibility.
 ///
-/// Useful for categorizing errors or for i18n lookup keys.
+/// `WithCode<V>` is now [`WithMessage<V>`] configured to only override the error code.
+///
+/// # Warning
+///
+/// **Do not use `WithCode::new()`** — it is inherited from `WithMessage` and sets the
+/// *message*, not the code. Use [`with_code()`] or [`WithMessage::code_only()`] instead.
 ///
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_validator::combinators::WithCode;
-/// use nebula_validator::core::Validate;
+/// use nebula_validator::combinators::with_code;
 ///
-/// let validator = WithCode::new(MinLength { min: 8 }, "ERR_PASSWORD_TOO_SHORT");
+/// // Correct: use the free function
+/// let validator = with_code(MinLength { min: 8 }, "ERR_PASSWORD_TOO_SHORT");
 ///
-/// let result = validator.validate("short");
-/// assert_eq!(result.unwrap_err().code, "ERR_PASSWORD_TOO_SHORT");
+/// // Also correct: use code_only constructor
+/// let validator = WithMessage::code_only(MinLength { min: 8 }, "ERR_PASSWORD_TOO_SHORT");
 /// ```
-#[derive(Debug, Clone)]
-pub struct WithCode<V> {
-    inner: V,
-    code: String,
-}
+pub type WithCode<V> = WithMessage<V>;
 
-impl<V> WithCode<V> {
-    /// Creates a new WithCode combinator.
-    pub fn new(inner: V, code: impl Into<String>) -> Self {
-        Self {
-            inner,
-            code: code.into(),
-        }
-    }
-
-    /// Returns a reference to the inner validator.
-    pub fn inner(&self) -> &V {
-        &self.inner
-    }
-
-    /// Returns the custom code.
-    pub fn code(&self) -> &str {
-        &self.code
-    }
-
-    /// Extracts the inner validator.
-    pub fn into_inner(self) -> V {
-        self.inner
-    }
-}
-
-impl<V> Validate for WithCode<V>
-where
-    V: Validate,
-{
-    type Input = V::Input;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
-        self.inner.validate(input).map_err(|original| {
-            ValidationError::new(self.code.clone(), original.message.clone())
-                .with_nested_error(original)
-        })
-    }
-
-    fn metadata(&self) -> ValidatorMetadata {
-        self.inner.metadata()
-    }
-}
-
-/// Creates a WithCode combinator.
-pub fn with_code<V>(validator: V, code: impl Into<String>) -> WithCode<V> {
-    WithCode::new(validator, code)
+/// Creates a combinator that overrides only the error code.
+pub fn with_code<V>(validator: V, code: impl Into<String>) -> WithMessage<V> {
+    WithMessage::code_only(validator, code)
 }
 
 // ============================================================================
@@ -236,13 +199,13 @@ mod tests {
 
     #[test]
     fn test_with_code_success() {
-        let validator = WithCode::new(MinLength { min: 3 }, "CUSTOM_CODE");
+        let validator = WithMessage::code_only(MinLength { min: 3 }, "CUSTOM_CODE");
         assert!(validator.validate("hello").is_ok());
     }
 
     #[test]
     fn test_with_code_replaces_code() {
-        let validator = WithCode::new(MinLength { min: 10 }, "ERR_TOO_SHORT");
+        let validator = WithMessage::code_only(MinLength { min: 10 }, "ERR_TOO_SHORT");
         let result = validator.validate("short");
 
         assert!(result.is_err());
