@@ -1,8 +1,8 @@
 extern crate self as nebula_action;
-extern crate self as nebula_plugin;
-extern crate self as nebula_resource;
 extern crate self as nebula_credential;
 extern crate self as nebula_parameter;
+extern crate self as nebula_plugin;
+extern crate self as nebula_resource;
 
 pub mod capability {
     #[derive(Clone, Copy)]
@@ -169,29 +169,58 @@ pub mod core {
 }
 
 #[::async_trait::async_trait]
-pub trait Credential: Send + Sync + 'static {
+pub trait CredentialType: Send + Sync + 'static {
     type Input: Send + Sync + 'static;
     type State: Send + Sync + Clone + 'static;
 
-    fn description(&self) -> crate::core::CredentialDescription;
+    fn description() -> crate::core::CredentialDescription
+    where
+        Self: Sized;
 
     async fn initialize(
         &self,
         input: &Self::Input,
         ctx: &mut crate::core::CredentialContext,
     ) -> Result<crate::core::result::InitializeResult<Self::State>, crate::core::CredentialError>;
+}
 
-    async fn refresh(
-        &self,
-        state: &mut Self::State,
-        ctx: &mut crate::core::CredentialContext,
-    ) -> Result<(), crate::core::CredentialError>;
+pub trait CredentialProtocol: Send + Sync + 'static {
+    type State: Send + Sync + Clone + 'static;
 
-    async fn revoke(
-        &self,
-        state: &mut Self::State,
-        ctx: &mut crate::core::CredentialContext,
-    ) -> Result<(), crate::core::CredentialError>;
+    fn parameters() -> crate::collection::ParameterCollection
+    where
+        Self: Sized;
+
+    fn build_state(
+        values: &crate::values::ParameterValues,
+    ) -> Result<Self::State, crate::core::CredentialError>
+    where
+        Self: Sized;
+}
+
+pub mod traits {
+    pub use crate::CredentialProtocol;
+    pub use crate::CredentialType;
+}
+
+pub mod values {
+    #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+    pub struct ParameterValues {
+        #[serde(flatten)]
+        values: std::collections::HashMap<String, serde_json::Value>,
+    }
+
+    impl ParameterValues {
+        pub fn new() -> Self {
+            Self::default()
+        }
+        pub fn get_string(&self, key: &str) -> Option<&str> {
+            self.values.get(key)?.as_str()
+        }
+        pub fn set(&mut self, key: impl Into<String>, value: serde_json::Value) {
+            self.values.insert(key.into(), value);
+        }
+    }
 }
 
 pub mod collection {

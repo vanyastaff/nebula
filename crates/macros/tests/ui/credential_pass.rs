@@ -4,18 +4,8 @@ use nebula_macros::Credential;
 use serde::{Deserialize, Serialize};
 include!("support.rs");
 
-/// An API key credential.
-#[derive(Credential)]
-#[credential(
-    key = "api_key",
-    name = "API Key",
-    description = "Simple API key authentication",
-    input = ApiKeyInput,
-    state = ApiKeyState
-)]
-pub struct ApiKeyCredential;
+// ── Case 1: explicit input + state (no extends) ────────────────────────────
 
-/// OAuth2 credential.
 #[derive(Credential)]
 #[credential(
     key = "oauth2",
@@ -25,18 +15,6 @@ pub struct ApiKeyCredential;
     state = OAuth2State
 )]
 pub struct OAuth2Credential;
-
-// Supporting types
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ApiKeyInput {
-    pub key: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiKeyState {
-    pub key: String,
-    pub created_at: String,
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OAuth2Input {
@@ -51,10 +29,45 @@ pub struct OAuth2State {
     pub expires_at: String,
 }
 
-fn main() {
-    let api_key = ApiKeyCredential;
-    let _ = api_key.description();
+// ── Case 2: extends = Protocol (no explicit input/state) ───────────────────
 
-    let oauth2 = OAuth2Credential;
-    let _ = oauth2.description();
+/// Stub protocol for the trybuild test
+pub struct StubApiKeyProtocol;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StubApiKeyState {
+    pub server: String,
+    pub token: String,
+}
+
+impl CredentialProtocol for StubApiKeyProtocol {
+    type State = StubApiKeyState;
+
+    fn parameters() -> collection::ParameterCollection {
+        collection::ParameterCollection::new()
+    }
+
+    fn build_state(
+        _values: &values::ParameterValues,
+    ) -> Result<Self::State, core::CredentialError> {
+        Ok(StubApiKeyState {
+            server: "https://api.example.com".to_string(),
+            token: "secret".to_string(),
+        })
+    }
+}
+
+#[derive(Credential)]
+#[credential(
+    key = "github-api",
+    name = "GitHub API",
+    description = "GitHub API credentials via personal access token",
+    extends = StubApiKeyProtocol,
+)]
+pub struct GithubApi;
+
+fn main() {
+    // static description — no instance needed
+    let _desc = OAuth2Credential::description();
+    let _desc2 = GithubApi::description();
 }

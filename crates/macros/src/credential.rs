@@ -26,13 +26,14 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| name.clone());
 
-    let input_type = cred_attrs.get_type("input")?.ok_or_else(|| {
-        diag::error_spanned(struct_name, "missing required attribute `input = Type`")
-    })?;
+    // Optional: extends = SomeProtocol (must impl CredentialProtocol)
+    let extends_type = cred_attrs.get_type("extends")?;
 
-    let state_type = cred_attrs.get_type("state")?.ok_or_else(|| {
-        diag::error_spanned(struct_name, "missing required attribute `state = Type`")
-    })?;
+    // Optional explicit input type; when `extends` is set it defaults to ParameterValues
+    let explicit_input = cred_attrs.get_type("input")?;
+
+    // Optional explicit state type; when `extends` is set it defaults to <Protocol as CredentialProtocol>::State
+    let explicit_state = cred_attrs.get_type("state")?;
 
     match &input.data {
         Data::Struct(_) => {}
@@ -42,18 +43,75 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                 "Credential derive can only be used on structs",
             ));
         }
+    }
+
+    // Resolve Input type
+    let resolved_input = match &explicit_input {
+        Some(t) => quote! { #t },
+        None if extends_type.is_some() => {
+            quote! { ::nebula_parameter::values::ParameterValues }
+        }
+        None => {
+            return Err(diag::error_spanned(
+                struct_name,
+                "missing required attribute `input = Type` (or use `extends = Protocol` to inherit input)",
+            ));
+        }
+    };
+
+    // Resolve State type
+    let resolved_state = match (&explicit_state, &extends_type) {
+        (Some(s), _) => quote! { #s },
+        (None, Some(proto)) => quote! {
+            <#proto as ::nebula_credential::traits::CredentialProtocol>::State
+        },
+        (None, None) => {
+            return Err(diag::error_spanned(
+                struct_name,
+                "missing required attribute `state = Type` (or use `extends = Protocol` to inherit state)",
+            ));
+        }
+    };
+
+    // Resolve properties expression for CredentialDescription
+    let properties_expr = match &extends_type {
+        Some(proto) => quote! {
+            <#proto as ::nebula_credential::traits::CredentialProtocol>::parameters()
+        },
+        None => quote! {
+            ::nebula_parameter::collection::ParameterCollection::new()
+        },
+    };
+
+    // Resolve initialize body
+    let initialize_body = match &extends_type {
+        Some(proto) => quote! {
+            let state = <#proto as ::nebula_credential::traits::CredentialProtocol>::build_state(input)?;
+            ::std::result::Result::Ok(
+                ::nebula_credential::core::result::InitializeResult::Complete(state)
+            )
+        },
+        None => quote! {
+            ::std::todo!(
+                "implement `initialize` for credential `{}`",
+                stringify!(#struct_name)
+            )
+        },
     };
 
     let expanded = quote! {
         #[::async_trait::async_trait]
-        impl #impl_generics ::nebula_credential::CredentialType for #struct_name #ty_generics #where_clause {
-            type Input = #input_type;
-            type State = #state_type;
+        impl #impl_generics ::nebula_credential::traits::CredentialType
+            for #struct_name #ty_generics #where_clause
+        {
+            type Input = #resolved_input;
+            type State = #resolved_state;
 
             fn description() -> ::nebula_credential::core::CredentialDescription {
                 use ::std::sync::OnceLock;
 
-                static DESCRIPTION: OnceLock<::nebula_credential::core::CredentialDescription> = OnceLock::new();
+                static DESCRIPTION: OnceLock<::nebula_credential::core::CredentialDescription> =
+                    OnceLock::new();
                 DESCRIPTION.get_or_init(|| {
                     ::nebula_credential::core::CredentialDescription {
                         key: #key.to_string(),
@@ -62,23 +120,21 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                         icon: None,
                         icon_url: None,
                         documentation_url: None,
-                        properties: ::nebula_parameter::collection::ParameterCollection::new(),
+                        properties: #properties_expr,
                     }
-                }).clone()
+                })
+                .clone()
             }
 
             async fn initialize(
                 &self,
-                _input: &Self::Input,
+                input: &Self::Input,
                 _ctx: &mut ::nebula_credential::core::CredentialContext,
             ) -> ::std::result::Result<
                 ::nebula_credential::core::result::InitializeResult<Self::State>,
                 ::nebula_credential::core::CredentialError,
             > {
-                ::std::todo!(
-                    "implement `initialize` for credential `{}`",
-                    stringify!(#struct_name)
-                )
+                #initialize_body
             }
         }
     };
