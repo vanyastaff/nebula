@@ -3,7 +3,9 @@
 //! See [`OAuth2Protocol`] for the main entry point.
 
 pub mod config;
+pub mod flow;
 pub mod state;
 
 pub use config::{AuthStyle, GrantType, OAuth2Config, OAuth2ConfigBuilder};
+pub use flow::OAuth2Protocol;
 pub use state::OAuth2State;
