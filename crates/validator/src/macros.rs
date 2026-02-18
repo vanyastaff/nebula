@@ -31,7 +31,42 @@
 //! ```
 
 // ============================================================================
-// VALIDATOR MACRO
+// VALIDATOR MACRO — Unified Architecture
+// ============================================================================
+//
+// The macro is organized in three layers:
+//
+// 1. ENTRY POINTS (5 arms) — parse user syntax, normalize into canonical form
+//    - Unit:           `Name for Type;`
+//    - Struct:         `Name { fields } for Type;`
+//    - Bounded generic:`Name<T: Bounds> { fields } for Type;`
+//    - Phantom unit:   `Name<T> for Type;`
+//    - Phantom struct: `Name<T> { fields } for Type;`
+//
+// 2. TAIL PARSER (5 arms) — parse optional `new(…)` / `fn factory(…)` after rule+error
+//    - (empty)                     → auto new, no factory
+//    - `fn f(…);`                  → auto new + factory
+//    - `new(…) {…}`               → custom new, no factory
+//    - `new(…) {…} fn f(…);`      → custom new + factory
+//    - `new(…)->E {…} fn f(…)->E;` → fallible new + factory
+//
+// 3. CODE GENERATORS (@helpers) — each responsible for one piece, zero duplication
+//    - @struct_def        — struct definition with derives
+//    - @auto_new_impl     — auto-generated constructor from fields
+//    - @custom_new_impl   — user-provided constructor body
+//    - @fallible_new_impl — user-provided fallible constructor
+//    - @validate_impl     — Validate trait implementation
+//    - @factory_fn        — convenience factory function
+//    - @fallible_factory_fn — fallible factory function
+//
+// Key design decisions:
+// - Meta attributes flow as opaque `tt` tokens (not `:meta`) through internal rules
+// - Input types are wrapped in `[$input]` to satisfy `:ty` follow-set rules
+// - The user's `self` identifier is threaded as `self_ref` for Rust 2024 macro hygiene
+// - A `kind` marker (`[unit]`/`[fields]`) enables const factories for zero-sized types
+//
+// Adding a new feature (e.g. async validate, new generic pattern) means
+// touching ONE helper, not N×M cross-product arms.
 // ============================================================================
 
 /// Creates a complete validator: struct definition, `Validate` implementation,
@@ -73,6 +108,20 @@
 /// }
 /// ```
 ///
+/// **Fallible constructor** (returns Result):
+/// ```rust,ignore
+/// validator! {
+///     pub Range { lo: usize, hi: usize } for usize;
+///     rule(self, input) { *input >= self.lo && *input <= self.hi }
+///     error(self, input) { ValidationError::new("range", "out of range") }
+///     new(lo: usize, hi: usize) -> ValidationError {
+///         if lo > hi { return Err(ValidationError::new("invalid", "lo > hi")); }
+///         Ok(Self { lo, hi })
+///     }
+///     fn range(lo: usize, hi: usize) -> ValidationError;
+/// }
+/// ```
+///
 /// **Generic validator**:
 /// ```rust,ignore
 /// validator! {
@@ -83,381 +132,482 @@
 ///     fn min(value: T);
 /// }
 /// ```
+///
+/// **Phantom generic** (generic with no trait bounds):
+/// ```rust,ignore
+/// validator! {
+///     pub Required<T> for Option<T>;
+///     rule(input) { input.is_some() }
+///     error(input) { ValidationError::new("required", "required") }
+///     fn required();
+/// }
+/// ```
 #[macro_export]
 macro_rules! validator {
-    // ── Variant 1a: Unit validator (no fields) + factory fn ──────────────
+    // ====================================================================
+    // LAYER 1: ENTRY POINTS — parse header, delegate to @parse_tail
+    // ====================================================================
+    //
+    // Meta attributes are passed as `[$(#[$meta])*]` — the #[…] wrappers
+    // are included so they flow through internal rules as opaque `tt` tokens.
+    //
+    // `self_ref` carries the user's self identifier for Rust 2024 hygiene.
+    // `kind` is `[unit]` for zero-sized types, `[fields]` for structs.
+
+    // ── 1. Unit (no fields, no generics) ─────────────────────────────────
     (
         $(#[$meta:meta])*
         $vis:vis $name:ident for $input:ty;
         rule($inp:ident) $rule:block
         error($einp:ident) $err:block
-        fn $factory:ident();
+        $($tail:tt)*
     ) => {
-        $crate::validator! {
-            $(#[$meta])*
-            $vis $name for $input;
-            rule($inp) $rule
-            error($einp) $err
+        $crate::validator! { @parse_tail
+            meta:           [$(#[$meta])*]
+            vis:            [$vis]
+            name:           $name
+            generics_decl:  []
+            generics_use:   []
+            fields:         []
+            extra_fields:   []
+            extra_init:     []
+            extra_derives:  [Copy, PartialEq, Eq, Hash]
+            kind:           [unit]
+            self_ref:       [self]
+            input:          [$input]
+            inp:            $inp
+            rule:           $rule
+            einp:           $einp
+            err:            $err
+            tail:           [$($tail)*]
         }
+    };
 
-        #[must_use]
+    // ── 2. Struct (fields, no generics) ──────────────────────────────────
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
+        rule($self_:ident, $inp:ident) $rule:block
+        error($self2:ident, $einp:ident) $err:block
+        $($tail:tt)*
+    ) => {
+        $crate::validator! { @parse_tail
+            meta:           [$(#[$meta])*]
+            vis:            [$vis]
+            name:           $name
+            generics_decl:  []
+            generics_use:   []
+            fields:         [$(pub $field: $fty,)+]
+            extra_fields:   []
+            extra_init:     []
+            extra_derives:  []
+            kind:           [fields]
+            self_ref:       [$self_]
+            input:          [$input]
+            inp:            $inp
+            rule:           $rule
+            einp:           $einp
+            err:            $err
+            tail:           [$($tail)*]
+        }
+    };
+
+    // ── 3. Bounded generic struct (T: Bounds) ────────────────────────────
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident<$gen:ident: $first:ident $(+ $rest:ident)*>
+            { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
+        rule($self_:ident, $inp:ident) $rule:block
+        error($self2:ident, $einp:ident) $err:block
+        $($tail:tt)*
+    ) => {
+        $crate::validator! { @parse_tail
+            meta:           [$(#[$meta])*]
+            vis:            [$vis]
+            name:           $name
+            generics_decl:  [<$gen: $first $(+ $rest)*>]
+            generics_use:   [<$gen>]
+            fields:         [$(pub $field: $fty,)+]
+            extra_fields:   []
+            extra_init:     []
+            extra_derives:  []
+            kind:           [fields]
+            self_ref:       [$self_]
+            input:          [$input]
+            inp:            $inp
+            rule:           $rule
+            einp:           $einp
+            err:            $err
+            tail:           [$($tail)*]
+        }
+    };
+
+    // ── 4. Phantom unit (generic T, no bounds, no fields) ────────────────
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident<$gen:ident> for $input:ty;
+        rule($inp:ident) $rule:block
+        error($einp:ident) $err:block
+        $($tail:tt)*
+    ) => {
+        $crate::validator! { @parse_tail
+            meta:           [$(#[$meta])*]
+            vis:            [$vis]
+            name:           $name
+            generics_decl:  [<$gen>]
+            generics_use:   [<$gen>]
+            fields:         []
+            extra_fields:   [_phantom: ::std::marker::PhantomData<$gen>,]
+            extra_init:     [_phantom: ::std::marker::PhantomData,]
+            extra_derives:  [Copy, PartialEq, Eq, Hash]
+            kind:           [unit]
+            self_ref:       [self]
+            input:          [$input]
+            inp:            $inp
+            rule:           $rule
+            einp:           $einp
+            err:            $err
+            tail:           [$($tail)*]
+        }
+    };
+
+    // ── 5. Phantom struct (generic T, no bounds, with fields) ────────────
+    (
+        $(#[$meta:meta])*
+        $vis:vis $name:ident<$gen:ident>
+            { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
+        rule($self_:ident, $inp:ident) $rule:block
+        error($self2:ident, $einp:ident) $err:block
+        $($tail:tt)*
+    ) => {
+        $crate::validator! { @parse_tail
+            meta:           [$(#[$meta])*]
+            vis:            [$vis]
+            name:           $name
+            generics_decl:  [<$gen>]
+            generics_use:   [<$gen>]
+            fields:         [$(pub $field: $fty,)+]
+            extra_fields:   [_phantom: ::std::marker::PhantomData<$gen>,]
+            extra_init:     [_phantom: ::std::marker::PhantomData,]
+            extra_derives:  []
+            kind:           [fields]
+            self_ref:       [$self_]
+            input:          [$input]
+            inp:            $inp
+            rule:           $rule
+            einp:           $einp
+            err:            $err
+            tail:           [$($tail)*]
+        }
+    };
+
+    // ====================================================================
+    // LAYER 2: TAIL PARSER — detect new/factory, emit code via helpers
+    // ====================================================================
+    //
+    // `meta` is matched as `[$($meta:tt)*]` so #[…] attributes flow
+    // through as opaque token trees without re-parsing as `:meta`.
+
+    // ── Tail 1: (empty) → auto new, no factory ──────────────────────────
+    (@parse_tail
+        meta: [$($meta:tt)*] vis: [$vis:vis] name: $name:ident
+        generics_decl: [$($gd:tt)*] generics_use: [$($gu:tt)*]
+        fields: [$($fields:tt)*] extra_fields: [$($ef:tt)*]
+        extra_init: [$($ei:tt)*] extra_derives: [$($ed:ident),*]
+        kind: [$kind:tt] self_ref: [$self_ref:ident]
+        input: [$input:ty] inp: $inp:ident rule: $rule:block
+        einp: $einp:ident err: $err:block
+        tail: []
+    ) => {
+        $crate::validator!(@struct_def
+            [$($meta)*] $vis $name [$($gd)*] [$($gu)*]
+            [$($fields)* $($ef)*] [$($ed),*]
+        );
+        $crate::validator!(@auto_new_impl
+            $vis $name [$($gd)*] [$($gu)*]
+            [$($fields)*] [$($ei)*]
+        );
+        $crate::validator!(@validate_impl
+            $name [$($gd)*] [$($gu)*] [$input] $self_ref $inp $rule $einp $err
+        );
+    };
+
+    // ── Tail 2: factory only → auto new + factory ────────────────────────
+    (@parse_tail
+        meta: [$($meta:tt)*] vis: [$vis:vis] name: $name:ident
+        generics_decl: [$($gd:tt)*] generics_use: [$($gu:tt)*]
+        fields: [$($fields:tt)*] extra_fields: [$($ef:tt)*]
+        extra_init: [$($ei:tt)*] extra_derives: [$($ed:ident),*]
+        kind: [$kind:tt] self_ref: [$self_ref:ident]
+        input: [$input:ty] inp: $inp:ident rule: $rule:block
+        einp: $einp:ident err: $err:block
+        tail: [fn $factory:ident($($farg:ident: $faty:ty),* $(,)?);]
+    ) => {
+        $crate::validator!(@struct_def
+            [$($meta)*] $vis $name [$($gd)*] [$($gu)*]
+            [$($fields)* $($ef)*] [$($ed),*]
+        );
+        $crate::validator!(@auto_new_impl
+            $vis $name [$($gd)*] [$($gu)*]
+            [$($fields)*] [$($ei)*]
+        );
+        $crate::validator!(@validate_impl
+            $name [$($gd)*] [$($gu)*] [$input] $self_ref $inp $rule $einp $err
+        );
+        $crate::validator!(@factory_fn
+            [$kind] $vis $name [$($gd)*] [$($gu)*]
+            $factory [$($farg: $faty),*] [$($farg),*]
+        );
+    };
+
+    // ── Tail 3: custom new, no factory ───────────────────────────────────
+    (@parse_tail
+        meta: [$($meta:tt)*] vis: [$vis:vis] name: $name:ident
+        generics_decl: [$($gd:tt)*] generics_use: [$($gu:tt)*]
+        fields: [$($fields:tt)*] extra_fields: [$($ef:tt)*]
+        extra_init: [$($ei:tt)*] extra_derives: [$($ed:ident),*]
+        kind: [$kind:tt] self_ref: [$self_ref:ident]
+        input: [$input:ty] inp: $inp:ident rule: $rule:block
+        einp: $einp:ident err: $err:block
+        tail: [new($($narg:ident: $naty:ty),* $(,)?) $new_body:block]
+    ) => {
+        $crate::validator!(@struct_def
+            [$($meta)*] $vis $name [$($gd)*] [$($gu)*]
+            [$($fields)* $($ef)*] [$($ed),*]
+        );
+        $crate::validator!(@custom_new_impl
+            $vis $name [$($gd)*] [$($gu)*]
+            [$($narg: $naty),*] $new_body
+        );
+        $crate::validator!(@validate_impl
+            $name [$($gd)*] [$($gu)*] [$input] $self_ref $inp $rule $einp $err
+        );
+    };
+
+    // ── Tail 4: custom new + factory ─────────────────────────────────────
+    (@parse_tail
+        meta: [$($meta:tt)*] vis: [$vis:vis] name: $name:ident
+        generics_decl: [$($gd:tt)*] generics_use: [$($gu:tt)*]
+        fields: [$($fields:tt)*] extra_fields: [$($ef:tt)*]
+        extra_init: [$($ei:tt)*] extra_derives: [$($ed:ident),*]
+        kind: [$kind:tt] self_ref: [$self_ref:ident]
+        input: [$input:ty] inp: $inp:ident rule: $rule:block
+        einp: $einp:ident err: $err:block
+        tail: [
+            new($($narg:ident: $naty:ty),* $(,)?) $new_body:block
+            fn $factory:ident($($farg:ident: $faty:ty),* $(,)?);
+        ]
+    ) => {
+        $crate::validator!(@struct_def
+            [$($meta)*] $vis $name [$($gd)*] [$($gu)*]
+            [$($fields)* $($ef)*] [$($ed),*]
+        );
+        $crate::validator!(@custom_new_impl
+            $vis $name [$($gd)*] [$($gu)*]
+            [$($narg: $naty),*] $new_body
+        );
+        $crate::validator!(@validate_impl
+            $name [$($gd)*] [$($gu)*] [$input] $self_ref $inp $rule $einp $err
+        );
+        $crate::validator!(@factory_fn
+            [$kind] $vis $name [$($gd)*] [$($gu)*]
+            $factory [$($farg: $faty),*] [$($farg),*]
+        );
+    };
+
+    // ── Tail 5: fallible new + fallible factory ──────────────────────────
+    (@parse_tail
+        meta: [$($meta:tt)*] vis: [$vis:vis] name: $name:ident
+        generics_decl: [$($gd:tt)*] generics_use: [$($gu:tt)*]
+        fields: [$($fields:tt)*] extra_fields: [$($ef:tt)*]
+        extra_init: [$($ei:tt)*] extra_derives: [$($ed:ident),*]
+        kind: [$kind:tt] self_ref: [$self_ref:ident]
+        input: [$input:ty] inp: $inp:ident rule: $rule:block
+        einp: $einp:ident err: $err:block
+        tail: [
+            new($($narg:ident: $naty:ty),* $(,)?) -> $ety:ty $new_body:block
+            fn $factory:ident($($farg:ident: $faty:ty),* $(,)?) -> $efty:ty;
+        ]
+    ) => {
+        $crate::validator!(@struct_def
+            [$($meta)*] $vis $name [$($gd)*] [$($gu)*]
+            [$($fields)* $($ef)*] [$($ed),*]
+        );
+        $crate::validator!(@fallible_new_impl
+            $vis $name [$($gd)*] [$($gu)*]
+            [$($narg: $naty),*] $ety $new_body
+        );
+        $crate::validator!(@validate_impl
+            $name [$($gd)*] [$($gu)*] [$input] $self_ref $inp $rule $einp $err
+        );
+        $crate::validator!(@fallible_factory_fn
+            $vis $name [$($gd)*] [$($gu)*]
+            $factory [$($farg: $faty),*] [$($farg),*] $efty
+        );
+    };
+
+    // ====================================================================
+    // LAYER 3: CODE GENERATORS — each handles exactly one concern
+    // ====================================================================
+
+    // ── @struct_def: unit struct (no fields at all) ──────────────────────
+    (@struct_def
+        [$($meta:tt)*] $vis:vis $name:ident
+        [$($gd:tt)*] [$($gu:tt)*]
+        [] [$($ed:ident),*]
+    ) => {
+        $($meta)*
+        #[derive(Debug, Clone, $($ed,)*)]
+        $vis struct $name $($gd)*;
+    };
+
+    // ── @struct_def: struct with fields ──────────────────────────────────
+    (@struct_def
+        [$($meta:tt)*] $vis:vis $name:ident
+        [$($gd:tt)*] [$($gu:tt)*]
+        [$($all_fields:tt)+] [$($ed:ident),*]
+    ) => {
+        $($meta)*
+        #[derive(Debug, Clone, $($ed,)*)]
+        $vis struct $name $($gu)* {
+            $($all_fields)+
+        }
+    };
+
+    // ── @auto_new_impl: true unit (no fields, no phantom) → skip ────────
+    (@auto_new_impl
+        $vis:vis $name:ident [$($gd:tt)*] [$($gu:tt)*]
+        [] []
+    ) => {
+        // True unit structs don't need a constructor.
+    };
+
+    // ── @auto_new_impl: phantom unit (no user fields, has phantom) ──────
+    (@auto_new_impl
+        $vis:vis $name:ident [$($gd:tt)*] [$($gu:tt)*]
+        [] [$($ei:tt)+]
+    ) => {
+        impl $($gd)* $name $($gu)* {
+            #[must_use] #[inline]
+            pub fn new() -> Self {
+                Self { $($ei)+ }
+            }
+        }
+    };
+
+    // ── @auto_new_impl: has user fields → generate new(fields) ──────────
+    (@auto_new_impl
+        $vis:vis $name:ident [$($gd:tt)*] [$($gu:tt)*]
+        [$(pub $field:ident: $fty:ty,)+] [$($ei:tt)*]
+    ) => {
+        impl $($gd)* $name $($gu)* {
+            #[must_use] #[inline]
+            pub fn new($($field: $fty),+) -> Self {
+                Self { $($field,)+ $($ei)* }
+            }
+        }
+    };
+
+    // ── @custom_new_impl ─────────────────────────────────────────────────
+    (@custom_new_impl
+        $vis:vis $name:ident [$($gd:tt)*] [$($gu:tt)*]
+        [$($args:tt)*] $body:block
+    ) => {
+        #[allow(clippy::new_without_default)]
+        impl $($gd)* $name $($gu)* {
+            #[must_use] #[inline]
+            pub fn new($($args)*) -> Self $body
+        }
+    };
+
+    // ── @fallible_new_impl ───────────────────────────────────────────────
+    (@fallible_new_impl
+        $vis:vis $name:ident [$($gd:tt)*] [$($gu:tt)*]
+        [$($args:tt)*] $ety:ty $body:block
+    ) => {
+        impl $($gd)* $name $($gu)* {
+            #[inline]
+            pub fn new($($args)*) -> ::std::result::Result<Self, $ety> $body
+        }
+    };
+
+    // ── @validate_impl ──────────────────────────────────────────────────
+    //
+    // Uses the user's `$self_ref` identifier as the method self parameter
+    // so that Rust 2024 macro hygiene allows the rule/error bodies to
+    // reference `self` fields.
+    (@validate_impl
+        $name:ident [$($gd:tt)*] [$($gu:tt)*]
+        [$input:ty] $self_ref:ident $inp:ident $rule:block $einp:ident $err:block
+    ) => {
+        impl $($gd)* $crate::foundation::Validate for $name $($gu)* {
+            type Input = $input;
+
+            #[inline]
+            #[allow(unused_variables)]
+            fn validate(&$self_ref, $inp: &Self::Input)
+                -> ::std::result::Result<(), $crate::foundation::ValidationError>
+            {
+                if $rule {
+                    Ok(())
+                } else {
+                    let $einp = $inp;
+                    Err($err)
+                }
+            }
+        }
+    };
+
+    // ── @factory_fn: unit, no generics, no args → const, direct value ───
+    (@factory_fn
+        [unit] $vis:vis $name:ident [] []
+        $factory:ident [] []
+    ) => {
+        #[must_use] #[inline]
         $vis const fn $factory() -> $name { $name }
     };
 
-    // ── Variant 1b: Unit validator (no fields), no factory ───────────────
-    (
-        $(#[$meta:meta])*
-        $vis:vis $name:ident for $input:ty;
-        rule($inp:ident) $rule:block
-        error($einp:ident) $err:block
+    // ── @factory_fn: generic no-args → delegates to new() ────────────────
+    (@factory_fn
+        [$_kind:tt] $vis:vis $name:ident [$($gd:tt)+] [$($gu:tt)+]
+        $factory:ident [] []
     ) => {
-        $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        $vis struct $name;
-
-        impl $crate::foundation::Validate for $name {
-            type Input = $input;
-
-            #[allow(unused_variables)]
-            fn validate(&self, $inp: &Self::Input) -> Result<(), $crate::foundation::ValidationError> {
-                if $rule {
-                    Ok(())
-                } else {
-                    let $einp = $inp;
-                    Err($err)
-                }
-            }
+        #[must_use] #[inline]
+        $vis fn $factory $($gd)+() -> $name $($gu)+ {
+            $name::new()
         }
     };
 
-    // ── Variant 3a: Struct with fields + custom new + factory fn ─────────
-    (
-        $(#[$meta:meta])*
-        $vis:vis $name:ident { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
-        rule($self_:ident, $inp:ident) $rule:block
-        error($self2:ident, $einp:ident) $err:block
-        new($($narg:ident: $naty:ty),* $(,)?) $new_body:block
-        fn $factory:ident($($farg:ident: $faty:ty),* $(,)?);
+    // ── @factory_fn: non-generic no-args (fields) → delegates to new() ──
+    (@factory_fn
+        [fields] $vis:vis $name:ident [] []
+        $factory:ident [] []
     ) => {
-        $crate::validator! {
-            $(#[$meta])*
-            $vis $name { $($field: $fty),+ } for $input;
-            rule($self_, $inp) $rule
-            error($self2, $einp) $err
-            new($($narg: $naty),*) $new_body
-        }
-
-        #[must_use]
-        $vis fn $factory($($farg: $faty),*) -> $name {
-            $name::new($($farg),*)
+        #[must_use] #[inline]
+        $vis fn $factory() -> $name {
+            $name::new()
         }
     };
 
-    // ── Variant 3b: Struct with fields + custom new, no factory ──────────
-    (
-        $(#[$meta:meta])*
-        $vis:vis $name:ident { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
-        rule($self_:ident, $inp:ident) $rule:block
-        error($self2:ident, $einp:ident) $err:block
-        new($($narg:ident: $naty:ty),* $(,)?) $new_body:block
+    // ── @factory_fn: with args → delegates to new() ──────────────────────
+    (@factory_fn
+        [$_kind:tt] $vis:vis $name:ident [$($gd:tt)*] [$($gu:tt)*]
+        $factory:ident [$($args:tt)+] [$($passthrough:tt)+]
     ) => {
-        $(#[$meta])*
-        #[derive(Debug, Clone)]
-        $vis struct $name {
-            $(pub $field: $fty,)+
-        }
-
-        #[allow(clippy::new_without_default)]
-        impl $name {
-            #[must_use]
-            pub fn new($($narg: $naty),*) -> Self $new_body
-        }
-
-        impl $crate::foundation::Validate for $name {
-            type Input = $input;
-
-            #[allow(unused_variables)]
-            fn validate(&$self_, $inp: &Self::Input) -> Result<(), $crate::foundation::ValidationError> {
-                if $rule {
-                    Ok(())
-                } else {
-                    let $einp = $inp;
-                    Err($err)
-                }
-            }
+        #[must_use] #[inline]
+        $vis fn $factory $($gd)*($($args)+) -> $name $($gu)* {
+            $name::new($($passthrough)+)
         }
     };
 
-    // ── Variant 3c: Struct with fields + fallible new + fallible factory ─
-    //
-    // For validators whose constructor can fail (returns Result).
-    // The type after `->` is the error type; the macro wraps it in Result.
-    (
-        $(#[$meta:meta])*
-        $vis:vis $name:ident { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
-        rule($self_:ident, $inp:ident) $rule:block
-        error($self2:ident, $einp:ident) $err:block
-        new($($narg:ident: $naty:ty),* $(,)?) -> $ety:ty $new_body:block
-        fn $factory:ident($($farg:ident: $faty:ty),* $(,)?) -> $efty:ty;
+    // ── @fallible_factory_fn ─────────────────────────────────────────────
+    (@fallible_factory_fn
+        $vis:vis $name:ident [$($gd:tt)*] [$($gu:tt)*]
+        $factory:ident [$($args:tt)*] [$($passthrough:tt)*] $efty:ty
     ) => {
-        $(#[$meta])*
-        #[derive(Debug, Clone)]
-        $vis struct $name {
-            $(pub $field: $fty,)+
-        }
-
-        impl $name {
-            pub fn new($($narg: $naty),*) -> ::std::result::Result<Self, $ety> $new_body
-        }
-
-        impl $crate::foundation::Validate for $name {
-            type Input = $input;
-
-            #[allow(unused_variables)]
-            fn validate(&$self_, $inp: &Self::Input) -> ::std::result::Result<(), $crate::foundation::ValidationError> {
-                if $rule {
-                    Ok(())
-                } else {
-                    let $einp = $inp;
-                    Err($err)
-                }
-            }
-        }
-
-        $vis fn $factory($($farg: $faty),*) -> ::std::result::Result<$name, $efty> {
-            $name::new($($farg),*)
-        }
-    };
-
-    // ── Variant 2a: Struct with fields + auto new + factory fn ───────────
-    (
-        $(#[$meta:meta])*
-        $vis:vis $name:ident { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
-        rule($self_:ident, $inp:ident) $rule:block
-        error($self2:ident, $einp:ident) $err:block
-        fn $factory:ident($($farg:ident: $faty:ty),* $(,)?);
-    ) => {
-        $crate::validator! {
-            $(#[$meta])*
-            $vis $name { $($field: $fty),+ } for $input;
-            rule($self_, $inp) $rule
-            error($self2, $einp) $err
-        }
-
-        #[must_use]
-        $vis fn $factory($($farg: $faty),*) -> $name {
-            $name::new($($farg),*)
-        }
-    };
-
-    // ── Variant 2b: Struct with fields + auto new, no factory ────────────
-    (
-        $(#[$meta:meta])*
-        $vis:vis $name:ident { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
-        rule($self_:ident, $inp:ident) $rule:block
-        error($self2:ident, $einp:ident) $err:block
-    ) => {
-        $(#[$meta])*
-        #[derive(Debug, Clone)]
-        $vis struct $name {
-            $(pub $field: $fty,)+
-        }
-
-        impl $name {
-            #[must_use]
-            pub fn new($($field: $fty),+) -> Self {
-                Self { $($field),+ }
-            }
-        }
-
-        impl $crate::foundation::Validate for $name {
-            type Input = $input;
-
-            #[allow(unused_variables)]
-            fn validate(&$self_, $inp: &Self::Input) -> Result<(), $crate::foundation::ValidationError> {
-                if $rule {
-                    Ok(())
-                } else {
-                    let $einp = $inp;
-                    Err($err)
-                }
-            }
-        }
-    };
-
-    // ── Variant 4a: Generic struct + auto new + factory fn ───────────────
-    //
-    // Supports a single generic type parameter with one or more trait bounds.
-    // Bounds must be simple identifiers (use imports for paths).
-    (
-        $(#[$meta:meta])*
-        $vis:vis $name:ident<$gen:ident: $first_bound:ident $(+ $rest_bound:ident)*>
-            { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
-        rule($self_:ident, $inp:ident) $rule:block
-        error($self2:ident, $einp:ident) $err:block
-        fn $factory:ident($($farg:ident: $faty:ty),* $(,)?);
-    ) => {
-        $crate::validator! {
-            $(#[$meta])*
-            $vis $name<$gen: $first_bound $(+ $rest_bound)*>
-                { $($field: $fty),+ } for $input;
-            rule($self_, $inp) $rule
-            error($self2, $einp) $err
-        }
-
-        #[must_use]
-        $vis fn $factory<$gen: $first_bound $(+ $rest_bound)*>($($farg: $faty),*) -> $name<$gen> {
-            $name::new($($farg),*)
-        }
-    };
-
-    // ── Variant 4b: Generic struct + auto new, no factory ────────────────
-    (
-        $(#[$meta:meta])*
-        $vis:vis $name:ident<$gen:ident: $first_bound:ident $(+ $rest_bound:ident)*>
-            { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
-        rule($self_:ident, $inp:ident) $rule:block
-        error($self2:ident, $einp:ident) $err:block
-    ) => {
-        $(#[$meta])*
-        #[derive(Debug, Clone)]
-        $vis struct $name<$gen> {
-            $(pub $field: $fty,)+
-        }
-
-        impl<$gen: $first_bound $(+ $rest_bound)*> $name<$gen> {
-            #[must_use]
-            pub fn new($($field: $fty),+) -> Self {
-                Self { $($field),+ }
-            }
-        }
-
-        impl<$gen: $first_bound $(+ $rest_bound)*> $crate::foundation::Validate for $name<$gen> {
-            type Input = $input;
-
-            #[allow(unused_variables)]
-            fn validate(&$self_, $inp: &Self::Input) -> Result<(), $crate::foundation::ValidationError> {
-                if $rule {
-                    Ok(())
-                } else {
-                    let $einp = $inp;
-                    Err($err)
-                }
-            }
-        }
-    };
-
-    // ── Variant 5a: Phantom generic unit + factory fn ─────────────────
-    //
-    // For generic validators with no fields and no trait bounds on T.
-    // Automatically adds `PhantomData<T>` to the struct.
-    (
-        $(#[$meta:meta])*
-        $vis:vis $name:ident<$gen:ident> for $input:ty;
-        rule($inp:ident) $rule:block
-        error($einp:ident) $err:block
-        fn $factory:ident();
-    ) => {
-        $crate::validator! {
-            $(#[$meta])*
-            $vis $name<$gen> for $input;
-            rule($inp) $rule
-            error($einp) $err
-        }
-
-        #[must_use]
-        $vis fn $factory<$gen>() -> $name<$gen> {
-            $name { _phantom: ::std::marker::PhantomData }
-        }
-    };
-
-    // ── Variant 5b: Phantom generic unit, no factory ──────────────────
-    (
-        $(#[$meta:meta])*
-        $vis:vis $name:ident<$gen:ident> for $input:ty;
-        rule($inp:ident) $rule:block
-        error($einp:ident) $err:block
-    ) => {
-        $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        $vis struct $name<$gen> {
-            _phantom: ::std::marker::PhantomData<$gen>,
-        }
-
-        impl<$gen> $crate::foundation::Validate for $name<$gen> {
-            type Input = $input;
-
-            #[allow(unused_variables)]
-            fn validate(&self, $inp: &Self::Input) -> Result<(), $crate::foundation::ValidationError> {
-                if $rule {
-                    Ok(())
-                } else {
-                    let $einp = $inp;
-                    Err($err)
-                }
-            }
-        }
-    };
-
-    // ── Variant 6a: Phantom generic struct + auto new + factory fn ────
-    //
-    // For generic validators with fields but no trait bounds on T.
-    // Automatically adds `PhantomData<T>` to the struct.
-    (
-        $(#[$meta:meta])*
-        $vis:vis $name:ident<$gen:ident>
-            { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
-        rule($self_:ident, $inp:ident) $rule:block
-        error($self2:ident, $einp:ident) $err:block
-        fn $factory:ident($($farg:ident: $faty:ty),* $(,)?);
-    ) => {
-        $crate::validator! {
-            $(#[$meta])*
-            $vis $name<$gen> { $($field: $fty),+ } for $input;
-            rule($self_, $inp) $rule
-            error($self2, $einp) $err
-        }
-
-        #[must_use]
-        $vis fn $factory<$gen>($($farg: $faty),*) -> $name<$gen> {
-            $name::new($($farg),*)
-        }
-    };
-
-    // ── Variant 6b: Phantom generic struct + auto new, no factory ─────
-    (
-        $(#[$meta:meta])*
-        $vis:vis $name:ident<$gen:ident>
-            { $($field:ident: $fty:ty),+ $(,)? } for $input:ty;
-        rule($self_:ident, $inp:ident) $rule:block
-        error($self2:ident, $einp:ident) $err:block
-    ) => {
-        $(#[$meta])*
-        #[derive(Debug, Clone)]
-        $vis struct $name<$gen> {
-            $(pub $field: $fty,)+
-            _phantom: ::std::marker::PhantomData<$gen>,
-        }
-
-        impl<$gen> $name<$gen> {
-            #[must_use]
-            pub fn new($($field: $fty),+) -> Self {
-                Self { $($field,)+ _phantom: ::std::marker::PhantomData }
-            }
-        }
-
-        impl<$gen> $crate::foundation::Validate for $name<$gen> {
-            type Input = $input;
-
-            #[allow(unused_variables)]
-            fn validate(&$self_, $inp: &Self::Input) -> Result<(), $crate::foundation::ValidationError> {
-                if $rule {
-                    Ok(())
-                } else {
-                    let $einp = $inp;
-                    Err($err)
-                }
-            }
+        #[inline]
+        $vis fn $factory $($gd)*($($args)*) -> ::std::result::Result<$name $($gu)*, $efty> {
+            $name::new($($passthrough)*)
         }
     };
 }
@@ -473,9 +623,7 @@ macro_rules! validator {
 /// ```
 #[macro_export]
 macro_rules! compose {
-    ($first:expr) => {
-        $first
-    };
+    ($first:expr) => { $first };
     ($first:expr, $($rest:expr),+ $(,)?) => {
         $first$(.and($rest))+
     };
@@ -492,9 +640,7 @@ macro_rules! compose {
 /// ```
 #[macro_export]
 macro_rules! any_of {
-    ($first:expr) => {
-        $first
-    };
+    ($first:expr) => { $first };
     ($first:expr, $($rest:expr),+ $(,)?) => {
         $first$(.or($rest))+
     };
