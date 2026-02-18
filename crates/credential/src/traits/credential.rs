@@ -74,7 +74,8 @@ pub trait Revocable: CredentialType {
 
 /// Synchronous form-to-State protocol. No IO, no async.
 ///
-/// Use for: API keys, Basic Auth, database credentials, header auth.
+/// Use for: API keys, Basic Auth, database credentials, header auth, and
+/// other token-based credentials where initialization is pure form → State.
 /// Protocols are purely static — no `&self`. They define a fixed schema
 /// and default initialization logic that concrete [`CredentialType`]s can
 /// inherit via `#[credential(extends = XyzProtocol)]`.
