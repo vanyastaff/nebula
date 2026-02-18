@@ -44,7 +44,10 @@ pub use crate::traits::{
 };
 
 // Protocols
-pub use crate::protocols::{ApiKeyProtocol, ApiKeyState};
+pub use crate::protocols::{
+    ApiKeyProtocol, ApiKeyState, BasicAuthProtocol, BasicAuthState, DatabaseProtocol,
+    DatabaseState, HeaderAuthProtocol, HeaderAuthState,
+};
 
 // Utils - crypto
 pub use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
@@ -71,7 +74,10 @@ pub mod prelude {
     };
 
     // Protocols
-    pub use crate::protocols::{ApiKeyProtocol, ApiKeyState};
+    pub use crate::protocols::{
+        ApiKeyProtocol, ApiKeyState, BasicAuthProtocol, BasicAuthState, DatabaseProtocol,
+        DatabaseState, HeaderAuthProtocol, HeaderAuthState,
+    };
 
     // Utils - crypto functions
     pub use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
