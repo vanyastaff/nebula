@@ -22,8 +22,10 @@ pub mod api_key;
 pub mod basic_auth;
 pub mod database;
 pub mod header_auth;
+pub mod oauth2;
 
 pub use api_key::{ApiKeyProtocol, ApiKeyState};
 pub use basic_auth::{BasicAuthProtocol, BasicAuthState};
 pub use database::{DatabaseProtocol, DatabaseState};
 pub use header_auth::{HeaderAuthProtocol, HeaderAuthState};
+pub use oauth2::{AuthStyle, GrantType, OAuth2Config, OAuth2ConfigBuilder, OAuth2State};
