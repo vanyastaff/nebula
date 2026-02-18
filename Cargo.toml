@@ -22,8 +22,8 @@ members = [
     # Drivers
     "crates/drivers/queue-memory",
     "crates/drivers/sandbox-inprocess",
-    # Nodes
-    # "nodes/node-core",  # TODO: re-enable when node-core crate is created
+    "crates/macros",
+    "crates/sdk", "plugins/github",
 ]
 exclude = [
     "crates/*/fuzz",

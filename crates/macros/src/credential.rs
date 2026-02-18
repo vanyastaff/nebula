@@ -26,13 +26,13 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| name.clone());
 
-    // Optional: extends = SomeProtocol (must impl CredentialProtocol)
+    // Optional: extends = SomeProtocol (must impl StaticProtocol)
     let extends_type = cred_attrs.get_type("extends")?;
 
     // Optional explicit input type; when `extends` is set it defaults to ParameterValues
     let explicit_input = cred_attrs.get_type("input")?;
 
-    // Optional explicit state type; when `extends` is set it defaults to <Protocol as CredentialProtocol>::State
+    // Optional explicit state type; when `extends` is set it defaults to <Protocol as StaticProtocol>::State
     let explicit_state = cred_attrs.get_type("state")?;
 
     match &input.data {
@@ -63,7 +63,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
     let resolved_state = match (&explicit_state, &extends_type) {
         (Some(s), _) => quote! { #s },
         (None, Some(proto)) => quote! {
-            <#proto as ::nebula_credential::traits::CredentialProtocol>::State
+            <#proto as ::nebula_credential::traits::StaticProtocol>::State
         },
         (None, None) => {
             return Err(diag::error_spanned(
@@ -76,7 +76,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
     // Resolve properties expression for CredentialDescription
     let properties_expr = match &extends_type {
         Some(proto) => quote! {
-            <#proto as ::nebula_credential::traits::CredentialProtocol>::parameters()
+            <#proto as ::nebula_credential::traits::StaticProtocol>::parameters()
         },
         None => quote! {
             ::nebula_parameter::collection::ParameterCollection::new()
@@ -86,7 +86,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
     // Resolve initialize body
     let initialize_body = match &extends_type {
         Some(proto) => quote! {
-            let state = <#proto as ::nebula_credential::traits::CredentialProtocol>::build_state(input)?;
+            let state = <#proto as ::nebula_credential::traits::StaticProtocol>::build_state(input)?;
             ::std::result::Result::Ok(
                 ::nebula_credential::core::result::InitializeResult::Complete(state)
             )

@@ -72,8 +72,9 @@ pub trait Revocable: CredentialType {
     ) -> Result<(), CredentialError>;
 }
 
-/// A reusable credential building block.
+/// Synchronous form-to-State protocol. No IO, no async.
 ///
+/// Use for: API keys, Basic Auth, database credentials, header auth.
 /// Protocols are purely static — no `&self`. They define a fixed schema
 /// and default initialization logic that concrete [`CredentialType`]s can
 /// inherit via `#[credential(extends = XyzProtocol)]`.
@@ -88,7 +89,7 @@ pub trait Revocable: CredentialType {
 /// #[credential(key = "github-api", name = "GitHub API", extends = ApiKeyProtocol)]
 /// pub struct GithubApi;
 /// ```
-pub trait CredentialProtocol: Send + Sync + 'static {
+pub trait StaticProtocol: Send + Sync + 'static {
     /// The state this protocol produces after initialization.
     type State: CredentialState;
 

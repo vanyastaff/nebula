@@ -1,0 +1,55 @@
+[package]
+name = "nebula-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description = "Public SDK for Nebula workflow engine developers"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+# Core re-exports
+nebula-core = { path = "../core" }
+nebula-action = { path = "../action" }
+nebula-workflow = { path = "../workflow" }
+nebula-parameter = { path = "../parameter" }
+nebula-credential = { path = "../credential" }
+nebula-plugin = { path = "../plugin" }
+nebula-macros = { path = "../macros" }
+nebula-validator = { path = "../validator" }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+tokio-test = "0.4"
+pretty_assertions = { workspace = true }
+
+[features]
+default = ["derive", "testing"]
+derive = []
+testing = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

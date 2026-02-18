@@ -40,7 +40,7 @@ pub struct StubApiKeyState {
     pub token: String,
 }
 
-impl CredentialProtocol for StubApiKeyProtocol {
+impl StaticProtocol for StubApiKeyProtocol {
     type State = StubApiKeyState;
 
     fn parameters() -> collection::ParameterCollection {

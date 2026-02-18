@@ -1,0 +1,27 @@
+error: missing required attribute `key = "..."`
+  --> tests/ui/action_fail.rs:10:12
+   |
+10 | pub struct MissingKeyAction;
+   |            ^^^^^^^^^^^^^^^^
+
+error: missing required attribute `name = "..."`
+  --> tests/ui/action_fail.rs:17:12
+   |
+17 | pub struct MissingNameAction;
+   |            ^^^^^^^^^^^^^^^^^
+
+error: Unknown action type: unknown. Expected one of: process, stateful, trigger, streaming, transactional, interactive
+  --> tests/ui/action_fail.rs:20:10
+   |
+20 | #[derive(Action)]
+   |          ^^^^^^
+   |
+   = note: this error originates in the derive macro `Action` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: Unknown isolation level: invalid. Expected one of: none, sandbox, process, vm
+  --> tests/ui/action_fail.rs:29:10
+   |
+29 | #[derive(Action)]
+   |          ^^^^^^
+   |
+   = note: this error originates in the derive macro `Action` (in Nightly builds, run with -Z macro-backtrace for more info)

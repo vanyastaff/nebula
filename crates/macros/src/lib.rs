@@ -11,6 +11,7 @@
 //! | [`Plugin`](derive@Plugin) | Implements the `Plugin` trait |
 //! | [`Credential`](derive@Credential) | Implements the `Credential` trait |
 //! | [`Parameters`](derive@Parameters) | Generates parameter definitions |
+//! | [`Validator`](derive@Validator) | Implements field-based validation |
 //!
 //! ## Examples
 //!
@@ -51,6 +52,7 @@ mod parameter;
 mod plugin;
 mod resource;
 mod support;
+mod validator;
 
 /// Derive macro for the `Action` trait.
 ///
@@ -227,4 +229,25 @@ pub fn derive_credential(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Parameters, attributes(param))]
 pub fn derive_parameters(input: TokenStream) -> TokenStream {
     parameter::derive(input)
+}
+
+/// Derive macro for generating field-based validators.
+///
+/// Implements `nebula_validator::foundation::Validate` for the struct and
+/// generates an inherent `validate_fields()` helper.
+///
+/// # Container attributes (`#[validator(...)]`)
+///
+/// - `message = "..."` - Root error message when multiple field errors are aggregated
+///
+/// # Field attributes (`#[validate(...)]`)
+///
+/// - `required` - `Option<T>` must be `Some`
+/// - `min_length = N` - `len()` must be at least `N`
+/// - `max_length = N` - `len()` must be at most `N`
+/// - `min = N` - numeric value must be `>= N`
+/// - `max = N` - numeric value must be `<= N`
+#[proc_macro_derive(Validator, attributes(validator, validate))]
+pub fn derive_validator(input: TokenStream) -> TokenStream {
+    validator::derive(input)
 }

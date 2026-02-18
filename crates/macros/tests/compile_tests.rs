@@ -40,3 +40,15 @@ fn test_parameters_derive() {
     let t = trybuild::TestCases::new();
     t.pass("tests/ui/parameters_pass.rs");
 }
+
+#[test]
+fn test_validator_derive() {
+    let t = trybuild::TestCases::new();
+    t.pass("tests/ui/validator_pass.rs");
+}
+
+#[test]
+fn test_validator_derive_fail() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/ui/validator_fail.rs");
+}

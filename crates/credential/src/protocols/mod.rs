@@ -1,6 +1,6 @@
 //! Built-in credential protocols for reuse across plugins.
 //!
-//! A [`CredentialProtocol`] is a static building block that defines:
+//! A [`StaticProtocol`] is a static building block that defines:
 //! - A fixed set of parameters (e.g. `server`, `token`)
 //! - A [`CredentialState`] type for those fields
 //! - A default `build_state` implementation
@@ -15,7 +15,7 @@
 //! }
 //! ```
 //!
-//! [`CredentialProtocol`]: crate::traits::CredentialProtocol
+//! [`StaticProtocol`]: crate::traits::StaticProtocol
 //! [`CredentialState`]: crate::core::CredentialState
 
 pub mod api_key;

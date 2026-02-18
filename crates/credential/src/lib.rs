@@ -39,7 +39,7 @@ pub use crate::core::{
 
 // Traits
 pub use crate::traits::{
-    CredentialProtocol, CredentialType, DistributedLock, InteractiveCredential, LockError,
+    StaticProtocol, CredentialType, DistributedLock, InteractiveCredential, LockError,
     LockGuard, Refreshable, Revocable, StateStore, StorageProvider,
 };
 
@@ -66,7 +66,7 @@ pub mod prelude {
 
     // Traits
     pub use crate::traits::{
-        CredentialProtocol, CredentialType, DistributedLock, InteractiveCredential, LockError,
+        StaticProtocol, CredentialType, DistributedLock, InteractiveCredential, LockError,
         LockGuard, Refreshable, Revocable, StateStore, StorageProvider,
     };
 

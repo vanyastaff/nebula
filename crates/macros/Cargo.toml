@@ -24,6 +24,7 @@ trybuild = "1.0"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
+nebula-validator = { path = "../validator" }
 
 [package.metadata.docs.rs]
 all-features = true

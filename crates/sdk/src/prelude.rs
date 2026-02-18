@@ -35,7 +35,7 @@ pub use nebula_parameter::prelude::*;
 pub use nebula_credential::{
     core::CredentialContext, core::CredentialDescription, core::CredentialError,
     core::CredentialState, protocols::ApiKeyProtocol, protocols::ApiKeyState,
-    traits::CredentialProtocol, traits::CredentialType, traits::Refreshable, traits::Revocable,
+    traits::StaticProtocol, traits::CredentialType, traits::Refreshable, traits::Revocable,
 };
 
 // Plugin types

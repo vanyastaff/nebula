@@ -8,7 +8,7 @@ use nebula_parameter::types::{SecretParameter, TextParameter};
 use nebula_parameter::values::ParameterValues;
 
 use crate::core::{CredentialError, CredentialState, ValidationError};
-use crate::traits::CredentialProtocol;
+use crate::traits::StaticProtocol;
 
 /// State produced by [`ApiKeyProtocol`] after initialization.
 ///
@@ -62,7 +62,7 @@ impl CredentialState for ApiKeyState {
 /// ```
 pub struct ApiKeyProtocol;
 
-impl CredentialProtocol for ApiKeyProtocol {
+impl StaticProtocol for ApiKeyProtocol {
     type State = ApiKeyState;
 
     fn parameters() -> ParameterCollection {

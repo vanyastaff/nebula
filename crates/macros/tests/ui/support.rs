@@ -184,7 +184,7 @@ pub trait CredentialType: Send + Sync + 'static {
     ) -> Result<crate::core::result::InitializeResult<Self::State>, crate::core::CredentialError>;
 }
 
-pub trait CredentialProtocol: Send + Sync + 'static {
+pub trait StaticProtocol: Send + Sync + 'static {
     type State: Send + Sync + Clone + 'static;
 
     fn parameters() -> crate::collection::ParameterCollection
@@ -199,7 +199,7 @@ pub trait CredentialProtocol: Send + Sync + 'static {
 }
 
 pub mod traits {
-    pub use crate::CredentialProtocol;
+    pub use crate::StaticProtocol;
     pub use crate::CredentialType;
 }
 

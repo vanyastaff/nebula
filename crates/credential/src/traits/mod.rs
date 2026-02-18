@@ -7,7 +7,7 @@ mod storage;
 mod testable;
 
 pub use credential::{
-    CredentialProtocol, CredentialType, InteractiveCredential, Refreshable, Revocable,
+    StaticProtocol, CredentialType, InteractiveCredential, Refreshable, Revocable,
 };
 pub use lock::{DistributedLock, LockError, LockGuard};
 pub use rotation::RotatableCredential;

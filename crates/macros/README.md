@@ -11,6 +11,7 @@ This crate provides derive macros for simplifying the implementation of core Neb
 - `Plugin` - For plugin definitions
 - `Credential` - For credential types
 - `Parameters` - For parameter definitions
+- `Validator` - For field-based validation rules
 
 ## Usage
 
@@ -174,6 +175,36 @@ pub struct DatabaseConfig {
 - `secret` - Marks as sensitive data
 - `default` - Default value
 - `options = [...]` - Select options
+
+### Validator
+
+Generate field-based validation with `nebula-validator`:
+
+```rust
+use nebula_macros::Validator;
+
+#[derive(Validator)]
+#[validator(message = "input is invalid")]
+pub struct UserInput {
+    #[validate(required, min_length = 3, max_length = 32)]
+    username: Option<String>,
+
+    #[validate(min = 18, max = 120)]
+    age: u8,
+}
+```
+
+**Container attributes:**
+
+- `message` - Root error message for aggregated validation errors
+
+**Field attributes:**
+
+- `required` - Requires `Option<T>` to be `Some`
+- `min_length = N` - Requires `len() >= N`
+- `max_length = N` - Requires `len() <= N`
+- `min = N` - Requires numeric value `>= N`
+- `max = N` - Requires numeric value `<= N`
 
 ## License
 
