@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use std::time::Duration;
 
-use super::credential::Credential;
+use super::credential::CredentialType;
 use crate::rotation::{RotationResult, TestResult};
 
 /// Trait for credentials that can test themselves
@@ -52,7 +52,7 @@ use crate::rotation::{RotationResult, TestResult};
 /// }
 /// ```
 #[async_trait]
-pub trait TestableCredential: Credential {
+pub trait TestableCredential: CredentialType {
     /// Test the credential by performing actual operation
     ///
     /// Each credential type implements this using their client library:

@@ -10,14 +10,14 @@ use crate::core::{
 
 /// Base credential trait
 ///
-/// The `Credential` trait defines the interface for credential implementations.
+/// The `CredentialType` trait defines the interface for credential implementations.
 /// It supports both simple (non-interactive) and complex (interactive) flows.
 ///
 /// # Type Parameters
 /// - `Input`: Parameters needed to initialize the credential (e.g., {`api_key`}, {username, password}, {`client_id`, `client_secret`})
 /// - `State`: The persisted state of the credential (can contain sensitive information, tokens, etc.)
 #[async_trait]
-pub trait Credential: Send + Sync + 'static {
+pub trait CredentialType: Send + Sync + 'static {
     /// Input type for initialization
     type Input: Serialize + DeserializeOwned + Send + Sync + 'static;
 
@@ -58,7 +58,7 @@ pub trait Credential: Send + Sync + 'static {
 /// Implement this trait for credentials that require user interaction
 /// (`OAuth2` authorization code flow, SAML, device flow, 2FA, etc.)
 #[async_trait]
-pub trait InteractiveCredential: Credential {
+pub trait InteractiveCredential: CredentialType {
     /// Continue flow after user interaction
     ///
     /// Called by the manager when user provides input for a pending flow.

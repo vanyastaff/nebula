@@ -36,7 +36,10 @@ pub use crate::core::{
 };
 
 // Traits
-pub use crate::traits::{DistributedLock, LockError, LockGuard, StateStore, StorageProvider};
+pub use crate::traits::{
+    CredentialType, DistributedLock, InteractiveCredential, LockError, LockGuard, StateStore,
+    StorageProvider,
+};
 
 // Utils - crypto
 pub use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
@@ -58,11 +61,7 @@ pub mod prelude {
 
     // Traits
     pub use crate::traits::{
-        // Credential, InteractiveCredential,
-        DistributedLock,
-        LockError,
-        LockGuard,
-        StateStore,
+        CredentialType, DistributedLock, InteractiveCredential, LockError, LockGuard, StateStore,
         StorageProvider,
     };
 
