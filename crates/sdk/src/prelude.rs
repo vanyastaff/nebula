@@ -33,9 +33,42 @@ pub use nebula_parameter::prelude::*;
 
 // Credential types
 pub use nebula_credential::{
-    core::CredentialContext, core::CredentialDescription, core::CredentialError,
-    core::CredentialState, protocols::ApiKeyProtocol, protocols::ApiKeyState,
-    traits::StaticProtocol, traits::CredentialType, traits::Refreshable, traits::Revocable,
+    // Core
+    core::CredentialContext,
+    core::CredentialDescription,
+    core::CredentialError,
+    core::CredentialState,
+    // Protocols — StaticProtocol
+    protocols::ApiKeyProtocol,
+    protocols::ApiKeyState,
+    protocols::AuthStyle,
+    protocols::BasicAuthProtocol,
+    protocols::BasicAuthState,
+    protocols::DatabaseProtocol,
+    protocols::DatabaseState,
+    protocols::GrantType,
+    protocols::HeaderAuthProtocol,
+    protocols::HeaderAuthState,
+    protocols::KerberosConfig,
+    protocols::LdapConfig,
+    protocols::LdapProtocol,
+    protocols::LdapState,
+    protocols::MtlsConfig,
+    protocols::OAuth2Config,
+    protocols::OAuth2ConfigBuilder,
+    // Protocols — FlowProtocol
+    protocols::OAuth2Protocol,
+    protocols::OAuth2State,
+    protocols::SamlBinding,
+    protocols::SamlConfig,
+    protocols::TlsMode,
+    traits::CredentialResource,
+    traits::CredentialType,
+    traits::FlowProtocol,
+    traits::Refreshable,
+    traits::Revocable,
+    // Traits
+    traits::StaticProtocol,
 };
 
 // Plugin types
