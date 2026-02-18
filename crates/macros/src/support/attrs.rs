@@ -90,6 +90,32 @@ impl AttrArgs {
             .any(|item| matches!(item, AttrItem::Flag(f) if f == flag))
     }
 
+    /// Get an ident value by key (e.g. `auth_style = PostBody`).
+    pub fn get_ident(&self, key: &str) -> Option<&Ident> {
+        self.get_value(key).and_then(|v| match v {
+            AttrValue::Ident(i) => Some(i),
+            _ => None,
+        })
+    }
+
+    /// Get an ident value as a string (e.g. `auth_style = PostBody` → `"PostBody"`).
+    pub fn get_ident_str(&self, key: &str) -> Option<String> {
+        self.get_ident(key).map(|i| i.to_string())
+    }
+
+    /// Get a boolean value by key (e.g. `pkce = true`).
+    pub fn get_bool(&self, key: &str) -> Option<bool> {
+        self.get_value(key).and_then(|v| match v {
+            AttrValue::Lit(Lit::Bool(b)) => Some(b.value()),
+            AttrValue::Ident(i) => match i.to_string().as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            },
+            _ => None,
+        })
+    }
+
     /// Get values from a list attribute like `group = ["a", "b"]`.
     pub fn get_list(&self, key: &str) -> Option<Vec<String>> {
         self.items.iter().find_map(|item| match item {
@@ -221,8 +247,21 @@ impl Parse for AttrValueParser {
         if input.peek(Lit) {
             return Ok(Self(AttrValue::Lit(input.parse()?)));
         }
+        // Try to parse a path (e.g. `protocols::OAuth2Protocol` or plain `Ident`).
+        // We use syn::Path which handles `a::b::c` correctly, then decide based on
+        // whether it is a single-segment plain identifier or a multi-segment path.
         if input.peek(Ident) {
-            return Ok(Self(AttrValue::Ident(input.parse()?)));
+            let path: syn::Path = input.parse()?;
+            if path.segments.len() == 1 && path.leading_colon.is_none() {
+                // Simple ident — preserve the original AttrValue::Ident behaviour.
+                let ident = path.segments.into_iter().next().unwrap().ident;
+                return Ok(Self(AttrValue::Ident(ident)));
+            }
+            // Multi-segment path — store as Tokens so get_type() can parse it as a Type.
+            use quote::ToTokens as _;
+            let mut ts = TokenStream2::new();
+            path.to_tokens(&mut ts);
+            return Ok(Self(AttrValue::Tokens(ts)));
         }
         Ok(Self(AttrValue::Tokens(input.parse()?)))
     }

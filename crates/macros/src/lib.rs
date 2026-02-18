@@ -33,7 +33,7 @@
 //! pub struct HttpRequestInput {
 //!     #[param(description = "URL to request", required = true)]
 //!     url: String,
-//!     
+//!
 //!     #[param(description = "HTTP method", default = "GET")]
 //!     method: String,
 //! }
@@ -88,7 +88,7 @@ mod validator;
 /// pub struct SlackSendAction {
 ///     #[action(config)]
 ///     config: SlackConfig,
-///     
+///
 ///     #[action(resource)]
 ///     http_client: HttpClient,
 /// }
@@ -190,7 +190,7 @@ pub fn derive_plugin(input: TokenStream) -> TokenStream {
 ///     pub created_at: DateTime<Utc>,
 /// }
 /// ```
-#[proc_macro_derive(Credential, attributes(credential))]
+#[proc_macro_derive(Credential, attributes(credential, oauth2, ldap))]
 pub fn derive_credential(input: TokenStream) -> TokenStream {
     credential::derive(input)
 }
@@ -215,13 +215,13 @@ pub fn derive_credential(input: TokenStream) -> TokenStream {
 /// pub struct DatabaseConfig {
 ///     #[param(description = "Database host", required, default = "localhost")]
 ///     host: String,
-///     
+///
 ///     #[param(description = "Port number", validation = "range(1, 65535)", default = 5432)]
 ///     port: u16,
-///     
+///
 ///     #[param(description = "Password", secret)]
 ///     password: String,
-///     
+///
 ///     #[param(description = "Log level", options = ["debug", "info", "warn", "error"])]
 ///     log_level: String,
 /// }

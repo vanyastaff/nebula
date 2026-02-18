@@ -36,6 +36,12 @@ fn test_credential_derive() {
 }
 
 #[test]
+fn test_credential_flow_derive() {
+    let t = trybuild::TestCases::new();
+    t.pass("tests/ui/credential_flow_pass.rs");
+}
+
+#[test]
 fn test_parameters_derive() {
     let t = trybuild::TestCases::new();
     t.pass("tests/ui/parameters_pass.rs");

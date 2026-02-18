@@ -199,8 +199,207 @@ pub trait StaticProtocol: Send + Sync + 'static {
 }
 
 pub mod traits {
-    pub use crate::StaticProtocol;
     pub use crate::CredentialType;
+    pub use crate::FlowProtocol;
+    pub use crate::StaticProtocol;
+}
+
+// ── FlowProtocol stub ──────────────────────────────────────────────────────
+
+#[allow(async_fn_in_trait)]
+pub trait FlowProtocol: Send + Sync + 'static {
+    type Config: Send + Sync + 'static;
+    type State: Send + Sync + Clone + 'static;
+
+    fn parameters() -> crate::collection::ParameterCollection
+    where
+        Self: Sized;
+
+    async fn initialize(
+        config: &Self::Config,
+        values: &crate::values::ParameterValues,
+        ctx: &mut crate::core::CredentialContext,
+    ) -> Result<crate::core::result::InitializeResult<Self::State>, crate::core::CredentialError>
+    where
+        Self: Sized;
+
+    async fn refresh(
+        _config: &Self::Config,
+        _state: &mut Self::State,
+        _ctx: &mut crate::core::CredentialContext,
+    ) -> Result<(), crate::core::CredentialError>
+    where
+        Self: Sized,
+    {
+        Ok(())
+    }
+}
+
+// ── OAuth2 stub types ──────────────────────────────────────────────────────
+
+pub mod protocols {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+    pub enum AuthStyle {
+        #[default]
+        Header,
+        PostBody,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+    pub enum GrantType {
+        #[default]
+        AuthorizationCode,
+        ClientCredentials,
+        DeviceCode,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct OAuth2Config {
+        pub auth_url: String,
+        pub token_url: String,
+        pub scopes: Vec<String>,
+        pub grant_type: GrantType,
+        pub auth_style: AuthStyle,
+        pub pkce: bool,
+    }
+
+    impl OAuth2Config {
+        pub fn authorization_code() -> OAuth2ConfigBuilder {
+            OAuth2ConfigBuilder {
+                grant_type: GrantType::AuthorizationCode,
+                auth_url: String::new(),
+                token_url: String::new(),
+                scopes: Vec::new(),
+                auth_style: AuthStyle::Header,
+                pkce: false,
+            }
+        }
+    }
+
+    pub struct OAuth2ConfigBuilder {
+        pub grant_type: GrantType,
+        pub auth_url: String,
+        pub token_url: String,
+        pub scopes: Vec<String>,
+        pub auth_style: AuthStyle,
+        pub pkce: bool,
+    }
+
+    impl OAuth2ConfigBuilder {
+        pub fn auth_url(mut self, url: impl Into<String>) -> Self {
+            self.auth_url = url.into();
+            self
+        }
+        pub fn token_url(mut self, url: impl Into<String>) -> Self {
+            self.token_url = url.into();
+            self
+        }
+        pub fn scopes(mut self, s: Vec<String>) -> Self {
+            self.scopes = s;
+            self
+        }
+        pub fn auth_style(mut self, style: AuthStyle) -> Self {
+            self.auth_style = style;
+            self
+        }
+        pub fn pkce(mut self, p: bool) -> Self {
+            self.pkce = p;
+            self
+        }
+        pub fn build(self) -> OAuth2Config {
+            OAuth2Config {
+                auth_url: self.auth_url,
+                token_url: self.token_url,
+                scopes: self.scopes,
+                grant_type: self.grant_type,
+                auth_style: self.auth_style,
+                pkce: self.pkce,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct OAuth2State {
+        pub access_token: String,
+    }
+
+    pub struct OAuth2Protocol;
+
+    impl crate::FlowProtocol for OAuth2Protocol {
+        type Config = OAuth2Config;
+        type State = OAuth2State;
+
+        fn parameters() -> crate::collection::ParameterCollection {
+            crate::collection::ParameterCollection::new()
+        }
+
+        async fn initialize(
+            _config: &OAuth2Config,
+            _values: &crate::values::ParameterValues,
+            _ctx: &mut crate::core::CredentialContext,
+        ) -> Result<crate::core::result::InitializeResult<OAuth2State>, crate::core::CredentialError>
+        {
+            Ok(crate::core::result::InitializeResult::Complete(
+                OAuth2State {
+                    access_token: String::new(),
+                },
+            ))
+        }
+    }
+
+    // ── LDAP stub types ────────────────────────────────────────────────────
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+    pub enum TlsMode {
+        #[default]
+        None,
+        Tls,
+        StartTls,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct LdapConfig {
+        pub tls: TlsMode,
+        pub timeout: std::time::Duration,
+        pub ca_cert: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct LdapState {
+        pub host: String,
+        pub port: u16,
+        pub bind_dn: String,
+        pub bind_password: String,
+        pub tls: TlsMode,
+    }
+
+    pub struct LdapProtocol;
+
+    impl crate::FlowProtocol for LdapProtocol {
+        type Config = LdapConfig;
+        type State = LdapState;
+
+        fn parameters() -> crate::collection::ParameterCollection {
+            crate::collection::ParameterCollection::new()
+        }
+
+        async fn initialize(
+            _config: &LdapConfig,
+            _values: &crate::values::ParameterValues,
+            _ctx: &mut crate::core::CredentialContext,
+        ) -> Result<crate::core::result::InitializeResult<LdapState>, crate::core::CredentialError>
+        {
+            Ok(crate::core::result::InitializeResult::Complete(LdapState {
+                host: String::new(),
+                port: 389,
+                bind_dn: String::new(),
+                bind_password: String::new(),
+                tls: TlsMode::None,
+            }))
+        }
+    }
 }
 
 pub mod values {
