@@ -46,8 +46,9 @@ pub use crate::traits::{
 // Protocols
 pub use crate::protocols::{
     ApiKeyProtocol, ApiKeyState, AuthStyle, BasicAuthProtocol, BasicAuthState, DatabaseProtocol,
-    DatabaseState, GrantType, HeaderAuthProtocol, HeaderAuthState, OAuth2Config,
-    OAuth2ConfigBuilder, OAuth2Protocol, OAuth2State,
+    DatabaseState, GrantType, HeaderAuthProtocol, HeaderAuthState, KerberosConfig, LdapConfig,
+    LdapProtocol, LdapState, MtlsConfig, OAuth2Config, OAuth2ConfigBuilder, OAuth2Protocol,
+    OAuth2State, SamlBinding, SamlConfig, TlsMode,
 };
 
 // Utils - crypto
@@ -78,7 +79,8 @@ pub mod prelude {
     pub use crate::protocols::{
         ApiKeyProtocol, ApiKeyState, AuthStyle, BasicAuthProtocol, BasicAuthState,
         DatabaseProtocol, DatabaseState, GrantType, HeaderAuthProtocol, HeaderAuthState,
-        OAuth2Config, OAuth2ConfigBuilder, OAuth2Protocol, OAuth2State,
+        KerberosConfig, LdapConfig, LdapProtocol, LdapState, MtlsConfig, OAuth2Config,
+        OAuth2ConfigBuilder, OAuth2Protocol, OAuth2State, SamlBinding, SamlConfig, TlsMode,
     };
 
     // Utils - crypto functions
