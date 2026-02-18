@@ -487,7 +487,7 @@ mod tests {
 
     use crate::core::result::InitializeResult;
     use crate::core::{CredentialContext, CredentialDescription, CredentialError, CredentialState};
-    use crate::traits::{Credential, RotatableCredential};
+    use crate::traits::{CredentialType, Refreshable, Revocable, RotatableCredential};
 
     #[derive(Clone, Serialize, Deserialize)]
     struct MockState;
@@ -506,11 +506,11 @@ mod tests {
     }
 
     #[async_trait]
-    impl Credential for MockCredential {
+    impl CredentialType for MockCredential {
         type Input = MockInput;
         type State = MockState;
 
-        fn description(&self) -> CredentialDescription {
+        fn description() -> CredentialDescription {
             CredentialDescription::builder()
                 .key("mock")
                 .name("Mock Credential")
@@ -527,7 +527,10 @@ mod tests {
         ) -> Result<InitializeResult<Self::State>, CredentialError> {
             Ok(InitializeResult::Complete(MockState))
         }
+    }
 
+    #[async_trait]
+    impl Refreshable for MockCredential {
         async fn refresh(
             &self,
             _state: &mut Self::State,
@@ -535,7 +538,10 @@ mod tests {
         ) -> Result<(), CredentialError> {
             Ok(())
         }
+    }
 
+    #[async_trait]
+    impl Revocable for MockCredential {
         async fn revoke(
             &self,
             _state: &mut Self::State,

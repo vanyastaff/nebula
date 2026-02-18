@@ -16,6 +16,8 @@
 pub mod core;
 /// Credential manager - high-level API for credential operations
 pub mod manager;
+/// Built-in reusable credential protocols (ApiKey, OAuth2, etc.)
+pub mod protocols;
 /// Storage provider implementations
 pub mod providers;
 /// Credential rotation (Phase 4)
@@ -37,9 +39,12 @@ pub use crate::core::{
 
 // Traits
 pub use crate::traits::{
-    CredentialType, DistributedLock, InteractiveCredential, LockError, LockGuard, Refreshable,
-    Revocable, StateStore, StorageProvider,
+    CredentialProtocol, CredentialType, DistributedLock, InteractiveCredential, LockError,
+    LockGuard, Refreshable, Revocable, StateStore, StorageProvider,
 };
+
+// Protocols
+pub use crate::protocols::{ApiKeyProtocol, ApiKeyState};
 
 // Utils - crypto
 pub use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};
@@ -61,9 +66,12 @@ pub mod prelude {
 
     // Traits
     pub use crate::traits::{
-        CredentialType, DistributedLock, InteractiveCredential, LockError, LockGuard, Refreshable,
-        Revocable, StateStore, StorageProvider,
+        CredentialProtocol, CredentialType, DistributedLock, InteractiveCredential, LockError,
+        LockGuard, Refreshable, Revocable, StateStore, StorageProvider,
     };
+
+    // Protocols
+    pub use crate::protocols::{ApiKeyProtocol, ApiKeyState};
 
     // Utils - crypto functions
     pub use crate::utils::{EncryptedData, EncryptionKey, decrypt, encrypt};

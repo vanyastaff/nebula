@@ -3,6 +3,9 @@
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 
+use nebula_parameter::collection::ParameterCollection;
+use nebula_parameter::values::ParameterValues;
+
 use crate::core::{
     CredentialContext, CredentialDescription, CredentialError, CredentialState,
     result::{InitializeResult, PartialState, UserInput},
@@ -67,6 +70,42 @@ pub trait Revocable: CredentialType {
         state: &mut Self::State,
         ctx: &mut CredentialContext,
     ) -> Result<(), CredentialError>;
+}
+
+/// A reusable credential building block.
+///
+/// Protocols are purely static — no `&self`. They define a fixed schema
+/// and default initialization logic that concrete [`CredentialType`]s can
+/// inherit via `#[credential(extends = XyzProtocol)]`.
+///
+/// # Example
+///
+/// ```ignore
+/// use nebula_credential::protocols::ApiKeyProtocol;
+/// use nebula_macros::Credential;
+///
+/// #[derive(Credential)]
+/// #[credential(key = "github-api", name = "GitHub API", extends = ApiKeyProtocol)]
+/// pub struct GithubApi;
+/// ```
+pub trait CredentialProtocol: Send + Sync + 'static {
+    /// The state this protocol produces after initialization.
+    type State: CredentialState;
+
+    /// Parameters this protocol contributes.
+    ///
+    /// Merged first (before own params) by the macro.
+    fn parameters() -> ParameterCollection
+    where
+        Self: Sized;
+
+    /// Build state from flat parameter values.
+    ///
+    /// Called by the macro-generated `initialize()` when `extends` is set.
+    /// `values` contains the full flat input (protocol fields + own fields).
+    fn build_state(values: &ParameterValues) -> Result<Self::State, CredentialError>
+    where
+        Self: Sized;
 }
 
 /// Trait for credentials that support interactive flows.

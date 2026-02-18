@@ -1,0 +1,67 @@
+//! Prelude module for Nebula SDK.
+//!
+//! This module re-exports the most commonly used types and traits.
+//!
+//! # Examples
+//!
+//! ```rust,no_run
+//! use nebula_sdk::prelude::*;
+//! ```
+
+// Core traits and types
+pub use nebula_core::{
+    ActionId, ExecutionId, InterfaceVersion, NodeId, PluginKey, ScopeLevel, Version, WorkflowId,
+};
+
+// Action traits and types
+pub use nebula_action::{
+    Action, ActionContext, ActionError, ActionResult, InteractiveAction, ParameterCollection,
+    ParameterDef, ProcessAction, SimpleAction, StatefulAction, StreamingAction,
+    TransactionalAction, TriggerAction, capability::Capability, capability::IsolationLevel,
+    metadata::ActionMetadata, metadata::ActionType, metadata::ExecutionMode, port::InputPort,
+    port::OutputPort,
+};
+
+// Workflow traits and types
+pub use nebula_workflow::{
+    ParamValue, WorkflowBuilder as CoreWorkflowBuilder, WorkflowDefinition, connection::Connection,
+    node::NodeDefinition,
+};
+
+// Parameter types
+pub use nebula_parameter::prelude::*;
+
+// Credential types
+pub use nebula_credential::{
+    core::CredentialContext, core::CredentialDescription, core::CredentialError,
+    core::CredentialState, protocols::ApiKeyProtocol, protocols::ApiKeyState,
+    traits::CredentialProtocol, traits::CredentialType, traits::Refreshable, traits::Revocable,
+};
+
+// Plugin types
+pub use nebula_plugin::{Plugin, PluginComponents, PluginMetadata};
+
+// Macros
+pub use nebula_macros::{Action, Credential, Parameters, Plugin, Resource, Validator};
+
+// Validator traits
+pub use nebula_validator::foundation::{Validate, ValidateExt, ValidationError, ValidationErrors};
+
+// SDK builders and result types
+pub use crate::action::ActionBuilder;
+pub use crate::workflow::WorkflowBuilder;
+pub use crate::{Error as SdkError, Result as SdkResult};
+
+// Async traits
+pub use async_trait::async_trait;
+
+// Serialization
+pub use serde::{Deserialize, Serialize};
+pub use serde_json::{Map, Value, json};
+
+// Error handling
+pub use anyhow::{Context, Result as AnyhowResult, anyhow, bail};
+pub use thiserror::Error;
+
+// Re-export SDK macros
+pub use crate::{params, simple_action, workflow};
