@@ -101,9 +101,19 @@ impl StaticProtocol for DatabaseProtocol {
             })?
             .to_owned();
 
-        let ssl_mode = values.get_string("ssl_mode").unwrap_or("disable").to_owned();
+        let ssl_mode = values
+            .get_string("ssl_mode")
+            .unwrap_or("disable")
+            .to_owned();
 
-        Ok(DatabaseState { host, port, database, username, password, ssl_mode })
+        Ok(DatabaseState {
+            host,
+            port,
+            database,
+            username,
+            password,
+            ssl_mode,
+        })
     }
 }
 

@@ -64,7 +64,10 @@ impl StaticProtocol for HeaderAuthProtocol {
             })?
             .to_owned();
 
-        Ok(HeaderAuthState { header_name, header_value })
+        Ok(HeaderAuthState {
+            header_name,
+            header_value,
+        })
     }
 }
 
