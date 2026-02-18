@@ -126,3 +126,71 @@ pub trait InteractiveCredential: CredentialType {
         ctx: &mut CredentialContext,
     ) -> Result<InitializeResult<Self::State>, CredentialError>;
 }
+
+/// Async multi-step protocol. Configurable per provider.
+///
+/// Use for: OAuth2, LDAP, SAML, Kerberos, mTLS.
+/// Plugin implements `Config` type and uses macro attributes to wire it up.
+#[allow(async_fn_in_trait)]
+pub trait FlowProtocol: Send + Sync + 'static {
+    /// Provider-specific configuration (endpoints, scopes, options)
+    type Config: Send + Sync + 'static;
+
+    /// State produced after successful flow completion
+    type State: CredentialState;
+
+    /// Parameters shown to user in UI (client_id, client_secret, etc.)
+    fn parameters() -> ParameterCollection
+    where
+        Self: Sized;
+
+    /// Execute the authentication flow
+    async fn initialize(
+        config: &Self::Config,
+        values: &ParameterValues,
+        ctx: &mut CredentialContext,
+    ) -> Result<InitializeResult<Self::State>, CredentialError>
+    where
+        Self: Sized;
+
+    /// Refresh an expired credential (default: no-op)
+    async fn refresh(
+        config: &Self::Config,
+        state: &mut Self::State,
+        ctx: &mut CredentialContext,
+    ) -> Result<(), CredentialError>
+    where
+        Self: Sized,
+    {
+        let _ = (config, state, ctx);
+        Ok(())
+    }
+
+    /// Revoke an active credential (default: no-op)
+    async fn revoke(
+        config: &Self::Config,
+        state: &mut Self::State,
+        ctx: &mut CredentialContext,
+    ) -> Result<(), CredentialError>
+    where
+        Self: Sized,
+    {
+        let _ = (config, state, ctx);
+        Ok(())
+    }
+}
+
+/// Links a resource client to its required credential type at compile time.
+///
+/// The runtime retrieves the credential State automatically and calls
+/// `authorize()` when creating or refreshing the resource instance.
+pub trait CredentialResource {
+    /// The credential type required by this resource
+    type Credential: CredentialType;
+
+    /// Apply credential state to authorize this resource's client.
+    ///
+    /// Called after the resource is created and whenever the credential
+    /// is refreshed (e.g. OAuth2 token rotation).
+    fn authorize(&mut self, state: &<Self::Credential as CredentialType>::State);
+}
