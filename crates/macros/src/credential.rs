@@ -46,11 +46,11 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
 
     let expanded = quote! {
         #[::async_trait::async_trait]
-        impl #impl_generics ::nebula_credential::Credential for #struct_name #ty_generics #where_clause {
+        impl #impl_generics ::nebula_credential::CredentialType for #struct_name #ty_generics #where_clause {
             type Input = #input_type;
             type State = #state_type;
 
-            fn description(&self) -> ::nebula_credential::core::CredentialDescription {
+            fn description() -> ::nebula_credential::core::CredentialDescription {
                 use ::std::sync::OnceLock;
 
                 static DESCRIPTION: OnceLock<::nebula_credential::core::CredentialDescription> = OnceLock::new();
@@ -79,22 +79,6 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                     "implement `initialize` for credential `{}`",
                     stringify!(#struct_name)
                 )
-            }
-
-            async fn refresh(
-                &self,
-                _state: &mut Self::State,
-                _ctx: &mut ::nebula_credential::core::CredentialContext,
-            ) -> ::std::result::Result<(), ::nebula_credential::core::CredentialError> {
-                Ok(())
-            }
-
-            async fn revoke(
-                &self,
-                _state: &mut Self::State,
-                _ctx: &mut ::nebula_credential::core::CredentialContext,
-            ) -> ::std::result::Result<(), ::nebula_credential::core::CredentialError> {
-                Ok(())
             }
         }
     };
