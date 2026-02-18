@@ -1,0 +1,254 @@
+//! Action development utilities.
+//!
+//! This module provides helpers and wrappers for creating actions.
+//!
+//! # Examples
+//!
+//! ```rust,no_run
+//! use nebula_sdk::action::ActionBuilder;
+//! use nebula_sdk::prelude::*;
+//!
+//! let action = ActionBuilder::new("my.action", "My Action")
+//!     .with_description("Does something useful")
+//!     .with_capability(Capability::Network {
+//!         allowed_hosts: vec!["api.example.com".to_string()],
+//!     })
+//!     .build();
+//! ```
+
+use nebula_action::{
+    ActionMetadata, ActionType, Capability, ExecutionMode, IsolationLevel, metadata::RetryPolicy,
+    metadata::TimeoutPolicy,
+};
+use nebula_parameter::collection::ParameterCollection;
+
+/// Builder for creating action metadata.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_sdk::action::ActionBuilder;
+///
+/// let metadata = ActionBuilder::new("http.request", "HTTP Request")
+///     .with_description("Makes HTTP requests")
+///     .with_version(2, 0)
+///     .build();
+/// ```
+pub struct ActionBuilder {
+    key: String,
+    name: String,
+    description: String,
+    version: (u32, u32),
+    capabilities: Vec<Capability>,
+    isolation: IsolationLevel,
+    execution_mode: ExecutionMode,
+    action_type: ActionType,
+    parameters: Option<ParameterCollection>,
+    credential: Option<String>,
+    retry_policy: Option<RetryPolicy>,
+    timeout_policy: Option<TimeoutPolicy>,
+}
+
+impl ActionBuilder {
+    /// Create a new action builder.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - Unique action identifier (e.g., "http.request")
+    /// * `name` - Human-readable name
+    pub fn new(key: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            name: name.into(),
+            description: String::new(),
+            version: (1, 0),
+            capabilities: Vec::new(),
+            isolation: IsolationLevel::None,
+            execution_mode: ExecutionMode::Dynamic,
+            action_type: ActionType::Process,
+            parameters: None,
+            credential: None,
+            retry_policy: None,
+            timeout_policy: None,
+        }
+    }
+
+    /// Set the action description.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// Set the interface version.
+    pub fn with_version(mut self, major: u32, minor: u32) -> Self {
+        self.version = (major, minor);
+        self
+    }
+
+    /// Add a required capability.
+    pub fn with_capability(mut self, capability: Capability) -> Self {
+        self.capabilities.push(capability);
+        self
+    }
+
+    /// Set the isolation level.
+    pub fn with_isolation(mut self, isolation: IsolationLevel) -> Self {
+        self.isolation = isolation;
+        self
+    }
+
+    /// Set the execution mode.
+    pub fn with_execution_mode(mut self, mode: ExecutionMode) -> Self {
+        self.execution_mode = mode;
+        self
+    }
+
+    /// Set the action type.
+    pub fn with_action_type(mut self, action_type: ActionType) -> Self {
+        self.action_type = action_type;
+        self
+    }
+
+    /// Set the parameter definitions.
+    pub fn with_parameters(mut self, parameters: ParameterCollection) -> Self {
+        self.parameters = Some(parameters);
+        self
+    }
+
+    /// Set the required credential type.
+    pub fn with_credential(mut self, credential: impl Into<String>) -> Self {
+        self.credential = Some(credential.into());
+        self
+    }
+
+    /// Set the retry policy.
+    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = Some(policy);
+        self
+    }
+
+    /// Set the timeout policy.
+    pub fn with_timeout_policy(mut self, policy: TimeoutPolicy) -> Self {
+        self.timeout_policy = Some(policy);
+        self
+    }
+
+    /// Build the action metadata.
+    pub fn build(self) -> ActionMetadata {
+        let mut metadata = ActionMetadata::new(self.key, self.name, self.description)
+            .with_version(self.version.0, self.version.1)
+            .with_isolation(self.isolation)
+            .with_execution_mode(self.execution_mode)
+            .with_action_type(self.action_type);
+
+        for cap in self.capabilities {
+            metadata = metadata.with_capability(cap);
+        }
+
+        if let Some(params) = self.parameters {
+            metadata = metadata.with_parameters(params);
+        }
+
+        if let Some(cred) = self.credential {
+            metadata = metadata.with_credential(cred);
+        }
+
+        if let Some(retry) = self.retry_policy {
+            metadata = metadata.with_retry_policy(retry);
+        }
+
+        if let Some(timeout) = self.timeout_policy {
+            metadata = metadata.with_timeout_policy(timeout);
+        }
+
+        metadata
+    }
+}
+
+/// Helper functions for action development.
+pub mod helpers {
+    use serde_json::Value;
+
+    fn check_required_fields(input: &Value, required: &[Value]) -> Result<(), String> {
+        for req in required {
+            if let Some(field) = req.as_str()
+                && input.get(field).is_none()
+            {
+                return Err(format!("Missing required field: {}", field));
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate input against a JSON schema.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use nebula_sdk::action::helpers::validate_schema;
+    ///
+    /// let schema = serde_json::json!({
+    ///     "type": "object",
+    ///     "properties": {
+    ///         "name": { "type": "string" }
+    ///     },
+    ///     "required": ["name"]
+    /// });
+    ///
+    /// let input = serde_json::json!({ "name": "test" });
+    /// assert!(validate_schema(&input, &schema).is_ok());
+    /// ```
+    pub fn validate_schema(input: &Value, schema: &Value) -> Result<(), String> {
+        // Basic validation - in production, use jsonschema crate
+        if schema.get("type").and_then(|t| t.as_str()) != Some("object") {
+            return Ok(());
+        }
+        if !input.is_object() {
+            return Err("Expected object".to_string());
+        }
+        if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
+            check_required_fields(input, required)?;
+        }
+        Ok(())
+    }
+
+    /// Parse and validate input.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use nebula_sdk::action::helpers::parse_input;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct MyInput {
+    ///     name: String,
+    /// }
+    ///
+    /// let value = serde_json::json!({ "name": "test" });
+    /// let input: MyInput = parse_input(&value)?;
+    /// ```
+    pub fn parse_input<T: serde::de::DeserializeOwned>(input: &Value) -> Result<T, crate::Error> {
+        serde_json::from_value(input.clone()).map_err(crate::Error::Serialization)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ActionBuilder, Capability, IsolationLevel};
+
+    #[test]
+    fn test_action_builder() {
+        let metadata = ActionBuilder::new("test.action", "Test Action")
+            .with_description("A test action")
+            .with_version(2, 1)
+            .with_capability(Capability::Network {
+                allowed_hosts: vec!["api.example.com".to_string()],
+            })
+            .with_isolation(IsolationLevel::CapabilityGated)
+            .build();
+
+        assert_eq!(metadata.key, "test.action");
+        assert_eq!(metadata.name, "Test Action");
+        assert_eq!(metadata.description, "A test action");
+    }
+}

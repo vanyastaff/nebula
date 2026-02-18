@@ -156,7 +156,6 @@ fn infer_kind(ty: &Type, secret: bool) -> ParamKind {
     }
 
     let base = unwrap_option(ty);
-    let text = is_type(base, &["String", "str"]);
     let checkbox = is_type(base, &["bool"]);
     let number = is_type(
         base,
@@ -170,14 +169,12 @@ fn infer_kind(ty: &Type, secret: bool) -> ParamKind {
         ParamKind::Checkbox
     } else if number {
         ParamKind::Number
-    } else if text {
-        ParamKind::Text
     } else {
         ParamKind::Text
     }
 }
 
-fn unwrap_option<'a>(ty: &'a Type) -> &'a Type {
+fn unwrap_option(ty: &Type) -> &Type {
     if let Type::Path(type_path) = ty
         && let Some(segment) = type_path.path.segments.last()
         && segment.ident == "Option"

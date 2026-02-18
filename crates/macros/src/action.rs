@@ -164,6 +164,7 @@ fn parse_isolation_level(isolation: &str) -> syn::Result<TokenStream2> {
     Ok(level)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_metadata_init(
     key: &str,
     name: &str,
