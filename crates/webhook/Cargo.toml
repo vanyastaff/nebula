@@ -1,0 +1,52 @@
+[package]
+name = "nebula-webhook"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description = "Webhook server infrastructure for Nebula workflow engine"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+# Nebula crates
+nebula-core = { version = "0.1.0", path = "../core" }
+nebula-resource = { version = "0.1.0", path = "../resource", features = ["tokio"] }
+
+# Async runtime
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+tokio-util = { workspace = true, features = ["rt"] }
+async-trait = { workspace = true }
+
+# HTTP server
+axum = { version = "0.7", features = ["json"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip"] }
+
+# Data structures
+dashmap = { workspace = true }
+uuid = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+pretty_assertions = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[features]
+default = []
+metrics = ["nebula-resource/metrics"]
