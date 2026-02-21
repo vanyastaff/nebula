@@ -12,6 +12,7 @@ mod error;
 mod filter;
 mod id;
 mod metadata;
+pub mod reference;
 
 pub use context::CredentialContext;
 pub use description::CredentialDescription;
@@ -22,6 +23,7 @@ pub use error::{
 pub use filter::CredentialFilter;
 pub use id::{CredentialId, ScopeId};
 pub use metadata::CredentialMetadata;
+pub use reference::{CredentialProvider, CredentialRef};
 pub use state::CredentialState;
 
 // Re-exports from utils

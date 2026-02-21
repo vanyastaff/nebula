@@ -9,6 +9,42 @@
 //! - **Interactive authentication** - Multi-step flows with user interaction
 //! - **Secure storage** - Zero-copy secrets with automatic zeroization
 //! - **Minimal boilerplate** - ~30-50 lines to add new integrations
+//! - **Provider abstraction** - Decoupled credential access via `CredentialProvider` trait
+//!
+//! # Quick Start
+//!
+//! ```rust,ignore
+//! use nebula_credential::{CredentialManager, CredentialContext, SecretString};
+//!
+//! // Create manager
+//! let manager = CredentialManager::builder()
+//!     .with_storage(local_storage)
+//!     .build()?;
+//!
+//! // Store credential
+//! let ctx = CredentialContext::new("user_123");
+//! manager.store("github_token", secret_data, &ctx).await?;
+//!
+//! // Retrieve credential
+//! let secret = manager.get("github_token", &ctx).await?;
+//! ```
+//!
+//! # CredentialProvider Pattern
+//!
+//! For decoupled credential access in actions/triggers:
+//!
+//! ```rust,ignore
+//! use nebula_credential::{CredentialProvider, CredentialRef};
+//!
+//! // Type-safe acquisition
+//! struct GithubToken;
+//! let token = provider.credential::<GithubToken>(&ctx).await?;
+//!
+//! // Dynamic acquisition
+//! let token = provider.get("github_token", &ctx).await?;
+//! ```
+//!
+//! See [`core::reference`] module for details on `CredentialRef` and `CredentialProvider`.
 #![deny(unsafe_code)]
 #![forbid(unsafe_code)]
 
@@ -33,8 +69,8 @@ pub mod utils;
 // Core types & errors
 pub use crate::core::{
     CredentialContext, CredentialDescription, CredentialError, CredentialFilter, CredentialId,
-    CredentialMetadata, CredentialState, CryptoError, ManagerError, ManagerResult, ScopeId,
-    SecretString, StorageError, ValidationError,
+    CredentialMetadata, CredentialProvider, CredentialRef, CredentialState, CryptoError,
+    ManagerError, ManagerResult, ScopeId, SecretString, StorageError, ValidationError,
 };
 
 // Traits
@@ -62,7 +98,7 @@ pub mod prelude {
     // Core types
     pub use crate::core::{
         CredentialContext, CredentialError, CredentialFilter, CredentialId, CredentialMetadata,
-        SecretString,
+        CredentialProvider, CredentialRef, SecretString,
     };
 
     // Rotation types

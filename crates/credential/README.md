@@ -13,8 +13,26 @@ Universal credential management system for workflow automation.
 - **Interactive Authentication** - Multi-step flows with user interaction
 - **Secure Storage** - Zero-copy secrets with automatic zeroization
 - **Minimal Boilerplate** - ~30-50 lines to add new integrations
+- **Provider Abstraction** - Decoupled credential access via `CredentialProvider` trait
 
 ## Quick Start
+
+### Using CredentialProvider (Decoupled Access)
+
+For actions and triggers, use the provider pattern:
+
+```rust
+use nebula_credential::{CredentialProvider, CredentialContext, SecretString};
+
+// Type-safe acquisition
+struct GithubToken;
+let token = provider.credential::<GithubToken>(&ctx).await?;
+
+// Or dynamic acquisition by ID
+let token = provider.get("github_token", &ctx).await?;
+```
+
+See [CREDENTIAL_REF.md](./CREDENTIAL_REF.md) for detailed documentation.
 
 ### API Key Authentication
 
@@ -227,12 +245,17 @@ impl Credential for MyCustomFlow {
 ```
 nebula-credential/
 ├── core/              # Core types and errors
+│   ├── reference.rs  # CredentialRef + CredentialProvider (NEW)
+│   └── ...
 ├── flows/             # Built-in flows
 │   ├── api_key/
 │   ├── basic_auth/
 │   ├── bearer_token/
 │   ├── oauth2/
 │   └── password/
+├── manager/           # Credential manager
+├── protocols/         # Protocol implementations
+├── providers/         # Storage providers
 ├── traits/            # Core traits
 └── utils/             # Helper functions
 ```
