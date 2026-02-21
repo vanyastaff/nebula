@@ -1,4 +1,5 @@
 use crate::port::{self, InputPort, OutputPort};
+use nebula_parameter::collection::ParameterCollection;
 
 // Re-export from core so downstream code can continue using `nebula_action::InterfaceVersion`.
 pub use nebula_core::InterfaceVersion;
@@ -23,6 +24,8 @@ pub struct ActionMetadata {
     /// Output ports this action produces.
     /// Defaults to a single main flow output `"out"`.
     pub outputs: Vec<OutputPort>,
+    /// Parameter definitions for this action (from nebula-parameter).
+    pub parameters: ParameterCollection,
 }
 
 impl ActionMetadata {
@@ -39,6 +42,7 @@ impl ActionMetadata {
             version: InterfaceVersion::new(1, 0),
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
+            parameters: ParameterCollection::new(),
         }
     }
 
@@ -57,6 +61,12 @@ impl ActionMetadata {
     /// Set the output port definitions for this action.
     pub fn with_outputs(mut self, outputs: Vec<OutputPort>) -> Self {
         self.outputs = outputs;
+        self
+    }
+
+    /// Set the parameter definitions for this action.
+    pub fn with_parameters(mut self, parameters: ParameterCollection) -> Self {
+        self.parameters = parameters;
         self
     }
 }
@@ -105,6 +115,8 @@ mod tests {
         assert_eq!(meta.outputs.len(), 1);
         assert!(meta.outputs[0].is_flow());
         assert_eq!(meta.outputs[0].key(), "out");
+        // Default parameters
+        assert!(meta.parameters.is_empty());
     }
 
     // ── Port builder tests ──────────────────────────────────────────
