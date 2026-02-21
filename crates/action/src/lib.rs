@@ -64,6 +64,8 @@ pub mod adapters;
 pub mod budget;
 /// Capability declarations and isolation levels for sandboxed execution.
 pub mod capability;
+/// Action component collection for dependency declarations.
+pub mod components;
 /// Runtime context provided to actions during execution.
 pub mod context;
 /// Error types distinguishing retryable from fatal failures.
@@ -93,6 +95,7 @@ mod types;
 
 pub use action::Action;
 pub use capability::{Capability, IsolationLevel};
+pub use components::ActionComponents;
 pub use context::ActionContext;
 pub use error::ActionError;
 pub use metadata::{
@@ -110,16 +113,28 @@ pub use provider::{
 };
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
 pub use types::InteractiveAction;
+pub use types::PollAction;
 pub use types::ProcessAction;
 pub use types::SimpleAction;
 pub use types::StatefulAction;
 pub use types::StreamingAction;
 pub use types::TransactionalAction;
 pub use types::TriggerAction;
+pub use types::WebhookAction;
 pub use types::interactive::{InteractionRequest, InteractionResponse, InteractionType};
+pub use types::poll::{
+    CursorStore, CursorStoreExt, DeduplicationStore, PollContext, PollContextExt,
+    PollContextFunctions, PollStats,
+};
 pub use types::streaming::{StreamItem, StreamMetadata};
 pub use types::transactional::{PrepareResult, TransactionOutcome, TransactionVote};
-pub use types::trigger::{TriggerEvent, TriggerKind, WebhookRequest};
+pub use types::trigger::{
+    PollResult, TriggerContext, TriggerContextFunctions, TriggerEventEmitter, TriggerHandle,
+    TriggerMetadataStore, TriggerResult, WebhookRequest,
+};
+pub use types::webhook::{
+    HmacAlgorithm, WebhookContext, WebhookContextFunctions, WebhookStateStore,
+};
 
 pub use budget::{DataPassingPolicy, ExecutionBudget, LargeDataStrategy};
 pub use registry::ActionRegistry;
@@ -129,8 +144,8 @@ pub use sandbox::SandboxedContext;
 pub use adapters::ProcessActionAdapter;
 #[doc(hidden)]
 pub use adapters::StatefulActionAdapter;
-#[doc(hidden)]
-pub use adapters::TriggerActionAdapter;
+// #[doc(hidden)]
+// pub use adapters::TriggerActionAdapter;
 #[doc(hidden)]
 pub use handler::InternalHandler;
 

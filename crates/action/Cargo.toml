@@ -13,7 +13,9 @@ documentation.workspace = true
 
 [dependencies]
 nebula-core = { path = "../core" }
+nebula-credential = { path = "../credential" }
 nebula-parameter = { path = "../parameter" }
+nebula-resource = { path = "../resource", features = ["tokio"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -21,6 +23,10 @@ tokio-util = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 parking_lot = { workspace = true }
+uuid = { workspace = true }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 tokio = { workspace = true, features = ["time"] }
 
