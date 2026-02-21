@@ -24,11 +24,7 @@ pub use nebula_action::{
     // TODO: Action types temporarily unavailable
     // InteractiveAction, ProcessAction, SimpleAction, StatefulAction, StreamingAction,
     // TransactionalAction, TriggerAction,
-    capability::Capability,
-    capability::IsolationLevel,
     metadata::ActionMetadata,
-    metadata::ActionType,
-    metadata::ExecutionMode,
     port::InputPort,
     port::OutputPort,
 };

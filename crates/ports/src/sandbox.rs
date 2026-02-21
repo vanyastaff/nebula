@@ -16,10 +16,7 @@ pub struct SandboxedContext;
 
 impl SandboxedContext {
     /// Temporary placeholder constructor
-    pub fn new(
-        _context: nebula_action::ActionContext,
-        _capabilities: Vec<nebula_action::Capability>,
-    ) -> Self {
+    pub fn new(_context: nebula_action::ActionContext) -> Self {
         Self
     }
 

@@ -1,20 +1,10 @@
-refactor(action): remove capabilities, isolation, execution mode, policies, and action type
+refactor(action): remove capability module
 
-Remove the following fields from ActionMetadata:
-- capabilities: Vec<Capability>
-- isolation_level: IsolationLevel
-- execution_mode: ExecutionMode
-- retry_policy: Option<RetryPolicy>
-- timeout_policy: Option<TimeoutPolicy>
-- action_type: ActionType
-
-These policy and execution control fields are being removed from the core
-action metadata as part of simplifying the action system. Runtime behavior
-will be configured separately.
+Remove the entire capability module containing Capability enum and IsolationLevel
+enum, as these types are no longer used in ActionMetadata.
 
 Updated:
-- crates/action/src/metadata.rs: removed fields and builder methods
-- crates/action/src/action.rs: removed Action::action_type() method
-- crates/sdk/src/action.rs: removed from ActionBuilder
-- crates/runtime/src/runtime.rs: simplified execution logic (TODO: restore isolation)
-- crates/drivers/sandbox-inprocess/src/lib.rs: removed isolation logging
+- crates/action/src/capability.rs: deleted file
+- crates/action/src/lib.rs: removed module and re-exports
+- crates/ports/src/sandbox.rs: simplified SandboxedContext::new (no capabilities param)
+- crates/sdk/src/prelude.rs: removed capability re-exports

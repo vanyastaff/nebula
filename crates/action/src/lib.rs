@@ -57,8 +57,6 @@
 
 /// Base action trait defining identity and metadata.
 pub mod action;
-/// Capability declarations and isolation levels for sandboxed execution.
-pub mod capability;
 /// Action component collection for dependency declarations.
 pub mod components;
 /// Runtime context provided to actions during execution.
@@ -83,7 +81,6 @@ pub mod result;
 // ── Public re-exports ───────────────────────────────────────────────────────
 
 pub use action::Action;
-pub use capability::{Capability, IsolationLevel};
 pub use components::ActionComponents;
 pub use context::ActionContext;
 pub use error::ActionError;
