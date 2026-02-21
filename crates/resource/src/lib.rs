@@ -1,8 +1,54 @@
 //! # Nebula Resource Management
 //!
 //! Resource lifecycle management for the Nebula workflow engine.
-//! Provides lifecycle management, pooling, scoping, and health checks
-//! for resources used within workflows and actions.
+//! Provides lifecycle management, pooling, scoping, health checks,
+//! and provider abstractions for resources used within workflows and actions.
+//!
+//! ## Core Concepts
+//!
+//! - **Resource**: Trait defining a reusable resource type (database connection, HTTP client, etc.)
+//! - **Manager**: Central registry managing multiple resource pools with dependency ordering
+//! - **Pool**: Efficient resource pooling with configurable strategies (FIFO/LIFO)
+//! - **Context**: Execution context carrying scope, tenant, workflow, and cancellation info
+//! - **ResourceProvider**: Trait for decoupled resource acquisition (type-safe + dynamic)
+//! - **ResourceRef**: Type-safe wrapper around `TypeId` for resource identification
+//!
+//! ## Quick Start
+//!
+//! ```rust,ignore
+//! use nebula_resource::{Manager, Resource, PoolConfig, Context, Scope};
+//!
+//! // Define a resource
+//! struct DbResource;
+//! impl Resource for DbResource {
+//!     type Config = DbConfig;
+//!     type Instance = DbConnection;
+//!     fn id() -> &'static str { "postgres" }
+//! }
+//!
+//! // Register and acquire
+//! let manager = Manager::new();
+//! manager.register(DbResource, config, PoolConfig::default())?;
+//!
+//! let ctx = Context::new(Scope::Global, "wf-1", "ex-1");
+//! let conn = manager.acquire("postgres", &ctx).await?;
+//! ```
+//!
+//! ## ResourceProvider Pattern
+//!
+//! For decoupled resource access in actions/triggers:
+//!
+//! ```rust,ignore
+//! use nebula_resource::{ResourceProvider, Resource};
+//!
+//! // Type-safe acquisition
+//! let conn = provider.resource::<DbResource>(&ctx).await?;
+//!
+//! // Dynamic acquisition
+//! let any = provider.acquire("postgres", &ctx).await?;
+//! ```
+//!
+//! See [`mod@reference`] module for details on `ResourceRef` and `ResourceProvider`.
 
 #![warn(missing_docs)]
 
@@ -12,6 +58,7 @@ pub mod credentials;
 pub mod error;
 pub mod guard;
 pub mod lifecycle;
+pub mod reference;
 pub mod resource;
 pub mod scope;
 
@@ -38,6 +85,7 @@ pub use context::Context;
 pub use error::{Error, FieldViolation, Result};
 pub use guard::Guard;
 pub use lifecycle::Lifecycle;
+pub use reference::{ResourceProvider, ResourceRef};
 pub use resource::{Config, Resource};
 pub use scope::{Scope, Strategy};
 
@@ -78,6 +126,7 @@ pub mod prelude {
     pub use crate::error::{Error, Result};
     pub use crate::guard::Guard;
     pub use crate::lifecycle::Lifecycle;
+    pub use crate::reference::{ResourceProvider, ResourceRef};
     pub use crate::resource::{Config, Resource};
     pub use crate::scope::{Scope, Strategy};
 
