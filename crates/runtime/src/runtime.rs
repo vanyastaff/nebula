@@ -6,11 +6,10 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use nebula_action::SandboxedContext;
 use nebula_action::capability::IsolationLevel;
 use nebula_action::context::ActionContext;
 use nebula_action::result::ActionResult;
-use nebula_ports::SandboxRunner;
+use nebula_ports::sandbox::{SandboxRunner, SandboxedContext};
 use nebula_telemetry::event::{EventBus, ExecutionEvent};
 use nebula_telemetry::metrics::MetricsRegistry;
 
@@ -221,10 +220,12 @@ mod tests {
     use nebula_action::ParameterCollection;
     use nebula_action::capability::IsolationLevel;
     use nebula_action::error::ActionError;
-    use nebula_action::handler::InternalHandler;
+    // TODO: InternalHandler and ActionMetadata unavailable in nebula_action
+    // use nebula_action::handler::InternalHandler;
     use nebula_action::metadata::{ActionMetadata, ActionType};
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
     use nebula_core::scope::ScopeLevel;
+    use nebula_plugin::InternalHandler;
     use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};
 
     struct EchoHandler {

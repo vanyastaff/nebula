@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
-use nebula_action::handler::InternalHandler;
+// TODO: InternalHandler is currently unavailable
+// use nebula_action::handler::InternalHandler;
+use nebula_plugin::InternalHandler;
 
 use crate::error::RuntimeError;
 
@@ -44,6 +46,8 @@ impl ActionRegistry {
         self.handlers.insert(key, handler);
     }
 
+    // TODO: These methods are disabled until action types are restored
+    /*
     /// Register a typed [`ProcessAction`](nebula_action::ProcessAction) directly.
     ///
     /// Wraps the action in a [`ProcessActionAdapter`](nebula_action::ProcessActionAdapter)
@@ -75,17 +79,19 @@ impl ActionRegistry {
 
     /// Register a typed [`TriggerAction`](nebula_action::TriggerAction) directly.
     ///
-    /// Wraps the action in a [`TriggerActionAdapter`](nebula_action::TriggerActionAdapter)
-    /// automatically.
-    pub fn register_trigger<A>(&self, action: A)
+    /// Triggers use TriggerContext instead of InternalHandler, so they are NOT
+    /// registered via adapters. This method is deprecated.
+    #[deprecated(note = "Triggers now use TriggerContext and are managed differently")]
+    pub fn register_trigger<A>(&self, _action: A)
     where
         A: nebula_action::TriggerAction + Send + Sync + 'static,
         A::Config: serde::de::DeserializeOwned + Send + Sync + 'static,
         A::Event: serde::Serialize + Send + Sync + 'static,
     {
-        let adapter = nebula_action::TriggerActionAdapter::new(action);
-        self.register(Arc::new(adapter));
+        // No-op: triggers are now managed by TriggerCoordinator/Manager
+        panic!("register_trigger is deprecated. Use TriggerManager instead.");
     }
+    */
 
     /// Look up an action handler by key.
     pub fn get(&self, key: &str) -> Result<Arc<dyn InternalHandler>, RuntimeError> {

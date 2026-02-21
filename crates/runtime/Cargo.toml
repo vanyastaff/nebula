@@ -14,6 +14,7 @@ documentation.workspace = true
 [dependencies]
 nebula-core = { path = "../core" }
 nebula-action = { path = "../action" }
+nebula-plugin = { path = "../plugin" }
 nebula-ports = { path = "../ports" }
 nebula-telemetry = { path = "../telemetry" }
 async-trait = { workspace = true }

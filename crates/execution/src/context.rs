@@ -3,7 +3,26 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nebula_action::ExecutionBudget;
+// TODO: ExecutionBudget is currently unavailable, ActionError and ActionMetadata unused
+// use nebula_action::{ActionError, ActionMetadata};
+// use nebula_action::ExecutionBudget;
+
+/// Temporary placeholder for ExecutionBudget
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct ExecutionBudget {
+    /// Temporary field for max concurrent nodes
+    pub max_concurrent_nodes: usize,
+}
+
+impl ExecutionBudget {
+    /// Default budget with reasonable concurrency
+    pub fn default() -> Self {
+        Self {
+            max_concurrent_nodes: 10,
+        }
+    }
+}
+
 use nebula_core::{ExecutionId, NodeId};
 use nebula_workflow::WorkflowDefinition;
 use parking_lot::RwLock;

@@ -2,16 +2,40 @@
 
 use std::sync::Arc;
 
-use nebula_action::ProcessAction;
-use nebula_action::StatefulAction;
-use nebula_action::StatefulActionAdapter;
-use nebula_action::TriggerAction;
-use nebula_action::TriggerActionAdapter;
-use nebula_action::adapters::ProcessActionAdapter;
-use nebula_action::handler::InternalHandler;
+// TODO: These types are currently unavailable in nebula-action
+// use nebula_action::ProcessAction;
+// use nebula_action::StatefulAction;
+// use nebula_action::StatefulActionAdapter;
+// use nebula_action::TriggerAction;
+// // TriggerActionAdapter is deprecated - triggers now use TriggerContext
+// use nebula_action::adapters::ProcessActionAdapter;
+// use nebula_action::handler::InternalHandler;
 use nebula_credential::CredentialDescription;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
+// use serde::Serialize;
+// use serde::de::DeserializeOwned;
+
+// Temporary placeholder for InternalHandler
+/// Temporary handler trait until types are restored
+pub trait InternalHandler: Send + Sync {
+    /// Get action metadata
+    fn metadata(&self) -> &nebula_action::ActionMetadata;
+    /// Execute the action (placeholder)
+    fn execute(
+        &self,
+        _input: serde_json::Value,
+        _context: nebula_action::ActionContext,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        nebula_action::ActionResult<serde_json::Value>,
+                        nebula_action::ActionError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    >;
+}
 
 /// Collects the runtime components (actions, credentials) registered by a plugin.
 ///
@@ -38,51 +62,54 @@ impl PluginComponents {
         self
     }
 
-    /// Register a typed [`ProcessAction`].
-    ///
-    /// The action is wrapped in a [`ProcessActionAdapter`] that handles
-    /// JSON-to-typed conversion automatically.
-    pub fn process_action<A>(&mut self, action: A) -> &mut Self
-    where
-        A: ProcessAction + Send + Sync + 'static,
-        A::Input: DeserializeOwned + Send + Sync + 'static,
-        A::Output: Serialize + Send + Sync + 'static,
-    {
-        self.handlers
-            .push(Arc::new(ProcessActionAdapter::new(action)));
-        self
-    }
+    // TODO: These methods are disabled until action types are restored
 
-    /// Register a typed [`StatefulAction`].
-    ///
-    /// The action is wrapped in a [`StatefulActionAdapter`] that handles
-    /// JSON-to-typed conversion and the Continue/Break loop automatically.
-    pub fn stateful_action<A>(&mut self, action: A) -> &mut Self
-    where
-        A: StatefulAction + Send + Sync + 'static,
-        A::Input: DeserializeOwned + Clone + Send + Sync + 'static,
-        A::Output: Serialize + Send + Sync + 'static,
-        A::State: Send + Sync + 'static,
-    {
-        self.handlers
-            .push(Arc::new(StatefulActionAdapter::new(action)));
-        self
-    }
+    // /// Register a typed [`ProcessAction`].
+    // ///
+    // /// The action is wrapped in a [`ProcessActionAdapter`] that handles
+    // /// JSON-to-typed conversion automatically.
+    // pub fn process_action<A>(&mut self, action: A) -> &mut Self
+    // where
+    //     A: ProcessAction + Send + Sync + 'static,
+    //     A::Input: DeserializeOwned + Send + Sync + 'static,
+    //     A::Output: Serialize + Send + Sync + 'static,
+    // {
+    //     self.handlers
+    //         .push(Arc::new(ProcessActionAdapter::new(action)));
+    //     self
+    // }
 
-    /// Register a typed [`TriggerAction`].
-    ///
-    /// The action is wrapped in a [`TriggerActionAdapter`] that handles
-    /// JSON-to-typed conversion and operation dispatch automatically.
-    pub fn trigger_action<A>(&mut self, action: A) -> &mut Self
-    where
-        A: TriggerAction + Send + Sync + 'static,
-        A::Config: DeserializeOwned + Send + Sync + 'static,
-        A::Event: Serialize + Send + Sync + 'static,
-    {
-        self.handlers
-            .push(Arc::new(TriggerActionAdapter::new(action)));
-        self
-    }
+    // /// Register a typed [`StatefulAction`].
+    // ///
+    // /// The action is wrapped in a [`StatefulActionAdapter`] that handles
+    // /// JSON-to-typed conversion and the Continue/Break loop automatically.
+    // pub fn stateful_action<A>(&mut self, action: A) -> &mut Self
+    // where
+    //     A: StatefulAction + Send + Sync + 'static,
+    //     A::Input: DeserializeOwned + Clone + Send + Sync + 'static,
+    //     A::Output: Serialize + Send + Sync + 'static,
+    //     A::State: Send + Sync + 'static,
+    // {
+    //     self.handlers
+    //         .push(Arc::new(StatefulActionAdapter::new(action)));
+    //     self
+    // }
+
+    // /// Register a typed [`TriggerAction`].
+    // ///
+    // /// NOTE: Triggers now use TriggerContext and are NOT registered via adapters.
+    // /// This method is deprecated and will panic.
+    // #[deprecated(note = "Triggers now use TriggerContext. Register directly with TriggerManager")]
+    // pub fn trigger_action<A>(&mut self, _action: A) -> &mut Self
+    // where
+    //     A: TriggerAction + Send + Sync + 'static,
+    //     A::Config: DeserializeOwned + Send + Sync + 'static,
+    //     A::Event: Serialize + Send + Sync + 'static,
+    // {
+    //     panic!(
+    //         "trigger_action is deprecated. Triggers now use TriggerContext and should be registered with TriggerManager"
+    //     );
+    // }
 
     /// Add a pre-built internal handler directly.
     pub fn handler(&mut self, handler: Arc<dyn InternalHandler>) -> &mut Self {

@@ -6,7 +6,28 @@
 
 use async_trait::async_trait;
 use nebula_action::result::ActionResult;
-use nebula_action::{ActionError, ActionMetadata, SandboxedContext};
+use nebula_action::{ActionError, ActionMetadata};
+// TODO: SandboxedContext is currently unavailable
+// use nebula_action::SandboxedContext;
+
+/// Temporary placeholder for SandboxedContext until it's restored
+#[derive(Clone, Debug)]
+pub struct SandboxedContext;
+
+impl SandboxedContext {
+    /// Temporary placeholder constructor
+    pub fn new(
+        _context: nebula_action::ActionContext,
+        _capabilities: Vec<nebula_action::Capability>,
+    ) -> Self {
+        Self
+    }
+
+    /// Temporary placeholder method
+    pub fn check_cancelled(&self) -> Result<(), nebula_action::ActionError> {
+        Ok(())
+    }
+}
 
 /// Port trait for executing actions within an isolation boundary.
 ///

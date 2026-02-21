@@ -22,8 +22,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nebula_action::result::ActionResult;
-use nebula_action::{ActionError, ActionMetadata, SandboxedContext};
-use nebula_ports::SandboxRunner;
+use nebula_action::{ActionError, ActionMetadata};
+use nebula_ports::sandbox::{SandboxRunner, SandboxedContext};
 
 /// Boxed future returned by the action executor.
 pub type ActionExecutorFuture = std::pin::Pin<

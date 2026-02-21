@@ -3,9 +3,9 @@
 //! This example demonstrates how to create a Telegram bot webhook trigger
 //! that receives messages and commands from Telegram.
 
-use nebula_webhook::prelude::*;
 use async_trait::async_trait;
 use nebula_resource::{Context, Scope};
+use nebula_webhook::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -62,8 +62,9 @@ impl TelegramTrigger {
     /// Set webhook URL at Telegram
     async fn set_webhook(&self, url: &str) -> Result<()> {
         let api_url = format!("{}/bot{}/setWebhook", TELEGRAM_API, self.bot_token);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&api_url)
             .json(&serde_json::json!({
                 "url": url,
@@ -84,8 +85,9 @@ impl TelegramTrigger {
     /// Delete webhook from Telegram
     async fn delete_webhook(&self) -> Result<()> {
         let api_url = format!("{}/bot{}/deleteWebhook", TELEGRAM_API, self.bot_token);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&api_url)
             .send()
             .await
@@ -102,8 +104,9 @@ impl TelegramTrigger {
     /// Get bot info
     async fn get_me(&self) -> Result<serde_json::Value> {
         let api_url = format!("{}/bot{}/getMe", TELEGRAM_API, self.bot_token);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .get(&api_url)
             .send()
             .await
@@ -114,7 +117,9 @@ impl TelegramTrigger {
             return Err(Error::other(format!("Telegram API error: {}", text)));
         }
 
-        let json: serde_json::Value = response.json().await
+        let json: serde_json::Value = response
+            .json()
+            .await
             .map_err(|e| Error::other(format!("Failed to parse response: {}", e)))?;
 
         Ok(json)
@@ -123,8 +128,9 @@ impl TelegramTrigger {
     /// Send a message to a chat
     async fn send_message(&self, chat_id: i64, text: &str) -> Result<()> {
         let api_url = format!("{}/bot{}/sendMessage", TELEGRAM_API, self.bot_token);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&api_url)
             .json(&serde_json::json!({
                 "chat_id": chat_id,
@@ -149,10 +155,10 @@ impl WebhookAction for TelegramTrigger {
 
     async fn on_subscribe(&self, ctx: &TriggerCtx) -> Result<()> {
         println!("📱 Registering Telegram webhook...");
-        
+
         let webhook_url = ctx.webhook_url();
         self.set_webhook(&webhook_url).await?;
-        
+
         println!("✅ Telegram webhook registered at: {}", webhook_url);
         Ok(())
     }
@@ -163,14 +169,17 @@ impl WebhookAction for TelegramTrigger {
         payload: WebhookPayload,
     ) -> Result<Option<Self::Event>> {
         // Parse Telegram update
-        let update: TelegramUpdate = payload.body_json()
+        let update: TelegramUpdate = payload
+            .body_json()
             .map_err(|e| Error::payload_parse(format!("Invalid Telegram update: {}", e)))?;
 
         println!("📥 Telegram update #{}", update.update_id);
-        
+
         if let Some(ref message) = update.message {
             if let Some(ref text) = message.text {
-                let username = message.from.as_ref()
+                let username = message
+                    .from
+                    .as_ref()
                     .and_then(|u| u.username.as_deref())
                     .unwrap_or("unknown");
                 println!("   💬 Message from @{}: {}", username, text);
@@ -189,7 +198,7 @@ impl WebhookAction for TelegramTrigger {
 
     async fn test(&self, _ctx: &TriggerCtx) -> Result<TestResult> {
         println!("🔍 Testing Telegram bot connection...");
-        
+
         let start = std::time::Instant::now();
         let bot_info = self.get_me().await?;
         let latency = start.elapsed();
@@ -197,12 +206,10 @@ impl WebhookAction for TelegramTrigger {
         let bot_name = bot_info["result"]["first_name"]
             .as_str()
             .unwrap_or("Unknown");
-        let bot_username = bot_info["result"]["username"]
-            .as_str()
-            .unwrap_or("unknown");
+        let bot_username = bot_info["result"]["username"].as_str().unwrap_or("unknown");
 
         let message = format!("✅ Connected to bot: {} (@{})", bot_name, bot_username);
-        
+
         Ok(TestResult::success(message)
             .with_sample(bot_info)
             .with_latency(latency))
@@ -280,7 +287,7 @@ async fn main() -> Result<()> {
                 match trigger.on_webhook(&ctx, payload).await {
                     Ok(Some(update)) => {
                         println!("✅ Update processed: {}", update.update_id);
-                        
+
                         // Автоматически отвечаем на сообщения
                         if let Some(ref message) = update.message {
                             if let Some(ref text) = message.text {

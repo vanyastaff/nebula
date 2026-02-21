@@ -100,21 +100,14 @@ impl<A> ActionTester<A> {
     }
 }
 
+// TODO: ProcessAction temporarily disabled
+/*
 impl<A, I, O> ActionTester<A>
 where
     A: nebula_action::ProcessAction<Input = I, Output = O>,
     I: serde::de::DeserializeOwned + Send + Sync,
     O: serde::Serialize + Send + Sync,
 {
-    /// Execute the action with the given input.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let tester = ActionTester::new(my_action);
-    /// let result = tester.execute(MyInput { value: 42 }).await;
-    /// assert!(is_success(&result));
-    /// ```
     pub async fn execute(
         &self,
         input: I,
@@ -132,6 +125,7 @@ where
         self.action.execute(input, &ctx).await
     }
 }
+*/
 
 /// Check if an action result is successful.
 ///

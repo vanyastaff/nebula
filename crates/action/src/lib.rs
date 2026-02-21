@@ -57,11 +57,6 @@
 
 /// Base action trait defining identity and metadata.
 pub mod action;
-/// Adapter implementations bridging typed action traits to [`InternalHandler`].
-#[doc(hidden)]
-pub mod adapters;
-/// Execution budget and data passing policies.
-pub mod budget;
 /// Capability declarations and isolation levels for sandboxed execution.
 pub mod capability;
 /// Action component collection for dependency declarations.
@@ -70,9 +65,6 @@ pub mod components;
 pub mod context;
 /// Error types distinguishing retryable from fatal failures.
 pub mod error;
-/// Type-erased internal handler for action execution (runtime use only).
-#[doc(hidden)]
-pub mod handler;
 /// Static metadata, versioning, and execution mode descriptors.
 pub mod metadata;
 /// Output data representations (inline JSON and blob references).
@@ -87,9 +79,6 @@ pub mod provider;
 pub mod registry;
 /// Execution result types carrying data and flow-control intent.
 pub mod result;
-/// Sandboxed execution context and runner port trait.
-pub mod sandbox;
-mod types;
 
 // ── Public re-exports ───────────────────────────────────────────────────────
 
@@ -110,42 +99,8 @@ pub use output::{
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use provider::{CredentialProvider, ResourceProvider, SecureString};
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
-pub use types::InteractiveAction;
-pub use types::PollAction;
-pub use types::ProcessAction;
-pub use types::SimpleAction;
-pub use types::StatefulAction;
-pub use types::StreamingAction;
-pub use types::TransactionalAction;
-pub use types::TriggerAction;
-pub use types::WebhookAction;
-pub use types::interactive::{InteractionRequest, InteractionResponse, InteractionType};
-pub use types::poll::{
-    CursorStore, CursorStoreExt, DeduplicationStore, PollContext, PollContextExt,
-    PollContextFunctions, PollStats,
-};
-pub use types::streaming::{StreamItem, StreamMetadata};
-pub use types::transactional::{PrepareResult, TransactionOutcome, TransactionVote};
-pub use types::trigger::{
-    PollResult, TriggerContext, TriggerContextFunctions, TriggerEventEmitter, TriggerHandle,
-    TriggerMetadataStore, TriggerResult, WebhookRequest,
-};
-pub use types::webhook::{
-    HmacAlgorithm, WebhookContext, WebhookContextFunctions, WebhookStateStore,
-};
 
-pub use budget::{DataPassingPolicy, ExecutionBudget, LargeDataStrategy};
 pub use registry::ActionRegistry;
-pub use sandbox::SandboxedContext;
-
-#[doc(hidden)]
-pub use adapters::ProcessActionAdapter;
-#[doc(hidden)]
-pub use adapters::StatefulActionAdapter;
-// #[doc(hidden)]
-// pub use adapters::TriggerActionAdapter;
-#[doc(hidden)]
-pub use handler::InternalHandler;
 
 // Re-export parameter types so action authors can define parameters without
 // depending on `nebula-parameter` directly.

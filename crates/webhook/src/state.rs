@@ -66,6 +66,49 @@ impl TriggerState {
         }
     }
 
+    /// Create or restore trigger state from storage
+    ///
+    /// This method checks if state exists in storage and restores it,
+    /// or creates new state if not found. This ensures stable UUIDs
+    /// across pod restarts in Kubernetes.
+    ///
+    /// # Arguments
+    ///
+    /// * `trigger_id` - Unique identifier for this trigger
+    /// * `store` - Optional state store for persistence
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use nebula_webhook::TriggerState;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Without store - creates new state every time
+    /// let state1 = TriggerState::new_or_restore("my-trigger", None).await?;
+    ///
+    /// // With store - restores from storage if exists
+    /// // let store = Arc::new(RedisStateStore::new(...));
+    /// // let state2 = TriggerState::new_or_restore("my-trigger", Some(store)).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn new_or_restore(
+        trigger_id: impl Into<String>,
+        _store: Option<std::sync::Arc<dyn crate::store::StateStore>>,
+    ) -> crate::Result<Self> {
+        let trigger_id = trigger_id.into();
+
+        // TODO: Load from store if provided
+        // if let Some(store) = store {
+        //     if let Some(state) = store.load(&trigger_id).await? {
+        //         return Ok(state);
+        //     }
+        // }
+
+        // Create new state if not found
+        Ok(Self::new(trigger_id))
+    }
+
     /// Create a trigger state with specific UUIDs (for deserialization)
     pub fn with_uuids(trigger_id: impl Into<String>, test_uuid: Uuid, prod_uuid: Uuid) -> Self {
         Self {

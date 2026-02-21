@@ -39,7 +39,7 @@ mod versions;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
-pub use components::PluginComponents;
+pub use components::{InternalHandler, PluginComponents};
 pub use error::PluginError;
 #[cfg(feature = "dynamic-loading")]
 pub use loader::{PluginLoadError, PluginLoader};

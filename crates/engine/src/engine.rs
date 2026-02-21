@@ -10,12 +10,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use dashmap::DashMap;
-use nebula_action::ExecutionBudget;
-use nebula_action::context::ActionContext;
-use nebula_action::result::ActionResult;
+// TODO: ExecutionBudget moved to nebula-execution
+use nebula_action::{ActionContext, ActionResult};
 use nebula_core::id::{ActionId, ExecutionId, NodeId, WorkflowId};
 use nebula_core::scope::ScopeLevel;
 use nebula_execution::ExecutionStatus;
+use nebula_execution::context::ExecutionBudget;
 use nebula_execution::plan::ExecutionPlan;
 use nebula_execution::state::ExecutionState;
 use nebula_runtime::ActionRuntime;

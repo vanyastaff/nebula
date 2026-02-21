@@ -63,6 +63,7 @@ mod payload;
 mod route_map;
 mod server;
 mod state;
+mod store;
 mod traits;
 
 pub use context::TriggerCtx;
@@ -72,12 +73,14 @@ pub use handle::TriggerHandle;
 pub use payload::WebhookPayload;
 pub use server::{WebhookServer, WebhookServerConfig};
 pub use state::TriggerState;
+pub use store::{MemoryStateStore, StateStore};
 pub use traits::{TestResult, WebhookAction};
 
 /// Convenience re-exports
 pub mod prelude {
     pub use crate::{
-        Environment, Error, Result, TestResult, TriggerCtx, TriggerHandle, TriggerState,
-        WebhookAction, WebhookPayload, WebhookServer, WebhookServerConfig,
+        Environment, Error, MemoryStateStore, Result, StateStore, TestResult, TriggerCtx,
+        TriggerHandle, TriggerState, WebhookAction, WebhookPayload, WebhookServer,
+        WebhookServerConfig,
     };
 }

@@ -3902,6 +3902,7 @@ dependencies = [
  "dashmap",
  "nebula-action",
  "nebula-core",
+ "nebula-plugin",
  "nebula-ports",
  "nebula-sandbox-inprocess",
  "nebula-telemetry",
