@@ -13,7 +13,8 @@ use dashmap::DashMap;
 // TODO: ExecutionBudget moved to nebula-execution
 use nebula_action::{ActionContext, ActionResult};
 use nebula_core::id::{ActionId, ExecutionId, NodeId, WorkflowId};
-use nebula_core::scope::ScopeLevel;
+// ScopeLevel removed from ActionContext
+// use nebula_core::scope::ScopeLevel;
 use nebula_execution::ExecutionStatus;
 use nebula_execution::context::ExecutionBudget;
 use nebula_execution::plan::ExecutionPlan;
@@ -526,19 +527,16 @@ impl NodeTask {
             return (self.node_id, Err(EngineError::Cancelled));
         }
 
-        let mut action_ctx = ActionContext::new(
-            self.execution_id,
-            self.node_id,
-            self.workflow_id,
-            ScopeLevel::Global,
-        )
-        .with_cancellation(self.cancel.child_token());
-        if !self.support_inputs.is_empty() {
-            action_ctx = action_ctx.with_support_inputs(self.support_inputs);
-        }
-        if let Some(resources) = self.resource_provider {
-            action_ctx = action_ctx.with_resources(resources);
-        }
+        let action_ctx = ActionContext::new(self.execution_id, self.node_id, self.workflow_id)
+            .with_cancellation(self.cancel.child_token());
+
+        // TODO: support_inputs and resource_provider removed from ActionContext
+        // if !self.support_inputs.is_empty() {
+        //     action_ctx = action_ctx.with_support_inputs(self.support_inputs);
+        // }
+        // if let Some(resources) = self.resource_provider {
+        //     action_ctx = action_ctx.with_resources(resources);
+        // }
 
         let result = self
             .runtime

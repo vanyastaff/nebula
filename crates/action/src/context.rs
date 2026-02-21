@@ -1,20 +1,13 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+//! Action execution context.
 
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
-use nebula_core::scope::ScopeLevel;
-use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ActionError;
-use crate::provider::{CredentialProvider, ResourceProvider, SecureString};
 
-/// Runtime context provided to every action during execution.
+/// Minimal runtime context provided to actions during execution.
 ///
-/// Constructed by the engine before invoking an action. Provides identity
-/// information (which execution, workflow, and node this is), workflow-scoped
-/// variables, and a cancellation token.
-///
+/// Provides identity information and cancellation support.
 /// Actions **must** periodically call [`check_cancelled`](Self::check_cancelled)
 /// in long-running loops to support cooperative cancellation.
 #[non_exhaustive]
@@ -25,41 +18,18 @@ pub struct ActionContext {
     pub node_id: NodeId,
     /// Workflow this execution belongs to.
     pub workflow_id: WorkflowId,
-    /// Scope level for resource access control.
-    pub scope: ScopeLevel,
     /// Cancellation signal — checked cooperatively by actions.
     pub cancellation: CancellationToken,
-    /// Shared workflow-scoped variables.
-    variables: Arc<RwLock<serde_json::Map<String, serde_json::Value>>>,
-    /// Optional credential provider for accessing secrets.
-    credentials: Option<Arc<dyn CredentialProvider>>,
-    /// Optional resource provider for acquiring runtime resources.
-    resources: Option<Arc<dyn ResourceProvider>>,
-    /// Data arriving on support input ports, keyed by port name.
-    ///
-    /// Each key is a support port name (e.g., "tools", "model") and the value
-    /// is the list of JSON values from all connections targeting that port.
-    support_inputs: HashMap<String, Vec<serde_json::Value>>,
 }
 
 impl ActionContext {
     /// Create a new context with the given identifiers.
-    pub fn new(
-        execution_id: ExecutionId,
-        node_id: NodeId,
-        workflow_id: WorkflowId,
-        scope: ScopeLevel,
-    ) -> Self {
+    pub fn new(execution_id: ExecutionId, node_id: NodeId, workflow_id: WorkflowId) -> Self {
         Self {
             execution_id,
             node_id,
             workflow_id,
-            scope,
             cancellation: CancellationToken::new(),
-            variables: Arc::new(RwLock::new(serde_json::Map::new())),
-            credentials: None,
-            resources: None,
-            support_inputs: HashMap::new(),
         }
     }
 
@@ -67,33 +37,6 @@ impl ActionContext {
     pub fn with_cancellation(mut self, token: CancellationToken) -> Self {
         self.cancellation = token;
         self
-    }
-
-    /// Create a context with pre-populated variables.
-    pub fn with_variables(mut self, vars: serde_json::Map<String, serde_json::Value>) -> Self {
-        self.variables = Arc::new(RwLock::new(vars));
-        self
-    }
-
-    /// Read a variable from the workflow scope.
-    ///
-    /// Returns `None` if the variable does not exist.
-    pub fn get_variable(&self, key: &str) -> Option<serde_json::Value> {
-        self.variables.read().get(key).cloned()
-    }
-
-    /// Write a variable to the workflow scope.
-    ///
-    /// Overwrites any existing variable with the same key.
-    pub fn set_variable(&self, key: &str, value: serde_json::Value) {
-        self.variables.write().insert(key.to_owned(), value);
-    }
-
-    /// Remove a variable from the workflow scope.
-    ///
-    /// Returns the previous value, if any.
-    pub fn remove_variable(&self, key: &str) -> Option<serde_json::Value> {
-        self.variables.write().remove(key)
     }
 
     /// Check whether execution has been cancelled.
@@ -111,65 +54,6 @@ impl ActionContext {
             Ok(())
         }
     }
-
-    /// Attach a credential provider.
-    pub fn with_credentials(mut self, provider: Arc<dyn CredentialProvider>) -> Self {
-        self.credentials = Some(provider);
-        self
-    }
-
-    /// Attach a resource provider.
-    pub fn with_resources(mut self, provider: Arc<dyn ResourceProvider>) -> Self {
-        self.resources = Some(provider);
-        self
-    }
-
-    /// Attach support port data.
-    ///
-    /// Each entry maps a support port name to the list of values received
-    /// on that port from predecessor connections.
-    pub fn with_support_inputs(
-        mut self,
-        support_inputs: HashMap<String, Vec<serde_json::Value>>,
-    ) -> Self {
-        self.support_inputs = support_inputs;
-        self
-    }
-
-    /// Get all values received on a support input port.
-    ///
-    /// Returns an empty slice if no data was received on the given port.
-    pub fn support_input(&self, port: &str) -> &[serde_json::Value] {
-        self.support_inputs
-            .get(port)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-    }
-
-    /// Get the full map of support inputs.
-    pub fn support_inputs(&self) -> &HashMap<String, Vec<serde_json::Value>> {
-        &self.support_inputs
-    }
-
-    /// Retrieve a credential value by key.
-    ///
-    /// Returns an error if no credential provider is configured.
-    pub async fn credential(&self, key: &str) -> Result<SecureString, ActionError> {
-        match &self.credentials {
-            Some(provider) => provider.get(key).await,
-            None => Err(ActionError::fatal("no credential provider configured")),
-        }
-    }
-
-    /// Acquire a resource instance by key.
-    ///
-    /// Returns an error if no resource provider is configured.
-    pub async fn resource(&self, key: &str) -> Result<Box<dyn std::any::Any + Send>, ActionError> {
-        match &self.resources {
-            Some(provider) => provider.acquire(key).await,
-            None => Err(ActionError::fatal("no resource provider configured")),
-        }
-    }
 }
 
 impl std::fmt::Debug for ActionContext {
@@ -178,7 +62,6 @@ impl std::fmt::Debug for ActionContext {
             .field("execution_id", &self.execution_id)
             .field("node_id", &self.node_id)
             .field("workflow_id", &self.workflow_id)
-            .field("scope", &self.scope)
             .field("cancelled", &self.cancellation.is_cancelled())
             .finish_non_exhaustive()
     }
@@ -189,38 +72,7 @@ mod tests {
     use super::*;
 
     fn test_context() -> ActionContext {
-        ActionContext::new(
-            ExecutionId::v4(),
-            NodeId::v4(),
-            WorkflowId::v4(),
-            ScopeLevel::Global,
-        )
-    }
-
-    #[test]
-    fn get_set_variable() {
-        let ctx = test_context();
-        assert!(ctx.get_variable("count").is_none());
-
-        ctx.set_variable("count", serde_json::json!(42));
-        assert_eq!(ctx.get_variable("count"), Some(serde_json::json!(42)));
-    }
-
-    #[test]
-    fn overwrite_variable() {
-        let ctx = test_context();
-        ctx.set_variable("name", serde_json::json!("alice"));
-        ctx.set_variable("name", serde_json::json!("bob"));
-        assert_eq!(ctx.get_variable("name"), Some(serde_json::json!("bob")));
-    }
-
-    #[test]
-    fn remove_variable() {
-        let ctx = test_context();
-        ctx.set_variable("temp", serde_json::json!(true));
-        let old = ctx.remove_variable("temp");
-        assert_eq!(old, Some(serde_json::json!(true)));
-        assert!(ctx.get_variable("temp").is_none());
+        ActionContext::new(ExecutionId::v4(), NodeId::v4(), WorkflowId::v4())
     }
 
     #[test]
@@ -248,58 +100,10 @@ mod tests {
     }
 
     #[test]
-    fn with_variables() {
-        let mut vars = serde_json::Map::new();
-        vars.insert("preset".into(), serde_json::json!("value"));
-        let ctx = test_context().with_variables(vars);
-        assert_eq!(ctx.get_variable("preset"), Some(serde_json::json!("value")));
-    }
-
-    #[test]
     fn debug_format() {
         let ctx = test_context();
         let debug = format!("{ctx:?}");
         assert!(debug.contains("ActionContext"));
         assert!(debug.contains("execution_id"));
-    }
-
-    #[test]
-    fn secure_string_redacts_debug() {
-        let s = SecureString::new("secret123");
-        assert_eq!(format!("{s:?}"), "SecureString(***)");
-        assert_eq!(format!("{s}"), "***");
-        assert_eq!(s.expose(), "secret123");
-    }
-
-    #[tokio::test]
-    async fn resource_returns_error_without_provider() {
-        let ctx = test_context();
-        let err = ctx.resource("db").await.unwrap_err();
-        assert!(
-            matches!(err, ActionError::Fatal { .. }),
-            "expected Fatal, got {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn with_resources_builder() {
-        use crate::provider::ResourceProvider;
-
-        struct FakeResources;
-
-        #[async_trait::async_trait]
-        impl ResourceProvider for FakeResources {
-            async fn acquire(
-                &self,
-                _key: &str,
-            ) -> Result<Box<dyn std::any::Any + Send>, ActionError> {
-                Ok(Box::new(42_u32))
-            }
-        }
-
-        let ctx = test_context().with_resources(Arc::new(FakeResources));
-        let res = ctx.resource("anything").await.unwrap();
-        let value = res.downcast::<u32>().expect("should downcast to u32");
-        assert_eq!(*value, 42);
     }
 }
