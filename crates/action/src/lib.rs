@@ -71,8 +71,6 @@ pub mod output;
 pub mod port;
 /// Convenience re-exports for action authors.
 pub mod prelude;
-/// Dependency-injection port traits (credentials, logging, metrics).
-pub mod provider;
 /// Action registry for type-erased discovery and lookup.
 pub mod registry;
 /// Execution result types carrying data and flow-control intent.
@@ -94,7 +92,6 @@ pub use output::{
     StreamState, Timing, TokenUsage,
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
-pub use provider::{CredentialProvider, ResourceProvider, SecureString};
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
 
 pub use registry::ActionRegistry;

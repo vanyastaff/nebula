@@ -1,10 +1,13 @@
-refactor(action): remove capability module
+refactor(action): remove provider module
 
-Remove the entire capability module containing Capability enum and IsolationLevel
-enum, as these types are no longer used in ActionMetadata.
+Remove the provider module containing CredentialProvider, ResourceProvider,
+and SecureString types, as these port traits are no longer needed in the
+simplified action system.
 
 Updated:
-- crates/action/src/capability.rs: deleted file
+- crates/action/src/provider.rs: deleted file
 - crates/action/src/lib.rs: removed module and re-exports
-- crates/ports/src/sandbox.rs: simplified SandboxedContext::new (no capabilities param)
-- crates/sdk/src/prelude.rs: removed capability re-exports
+- crates/action/src/prelude.rs: removed provider re-exports
+- crates/engine/src/resource.rs: deleted (implemented removed ResourceProvider trait)
+- crates/engine/src/lib.rs: commented out resource module
+- crates/engine/src/engine.rs: commented out resource_provider usage in NodeTask

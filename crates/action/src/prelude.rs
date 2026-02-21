@@ -16,7 +16,6 @@ pub use crate::output::{
 pub use crate::port::{
     ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort,
 };
-pub use crate::provider::{CredentialProvider, ResourceProvider, SecureString};
 pub use crate::result::ActionResult;
 // pub use crate::types::InteractiveAction;
 // pub use crate::types::ProcessAction;

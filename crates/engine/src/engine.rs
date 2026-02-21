@@ -431,14 +431,15 @@ impl WorkflowEngine {
         let sem = semaphore.clone();
         let outputs_ref = outputs.clone();
 
-        let resource_provider = self.resource_manager.as_ref().map(|mgr| {
-            Arc::new(crate::resource::Resources::new(
-                mgr.clone(),
-                workflow_id.to_string(),
-                execution_id.to_string(),
-                cancel_token.child_token(),
-            )) as Arc<dyn nebula_action::provider::ResourceProvider>
-        });
+        // TODO: Restore resource provider once ResourceProvider trait is available
+        // let resource_provider = self.resource_manager.as_ref().map(|mgr| {
+        //     Arc::new(crate::resource::Resources::new(
+        //         mgr.clone(),
+        //         workflow_id.to_string(),
+        //         execution_id.to_string(),
+        //         cancel_token.child_token(),
+        //     )) as Arc<dyn nebula_action::provider::ResourceProvider>
+        // });
 
         join_set.spawn(
             NodeTask {
@@ -452,7 +453,7 @@ impl WorkflowEngine {
                 action_key,
                 input: action_input,
                 support_inputs,
-                resource_provider,
+                // resource_provider,
             }
             .run(),
         );
@@ -514,8 +515,8 @@ struct NodeTask {
     input: serde_json::Value,
     /// Data for support input ports, keyed by port name.
     support_inputs: HashMap<String, Vec<serde_json::Value>>,
-    /// Optional resource provider for this execution.
-    resource_provider: Option<Arc<dyn nebula_action::provider::ResourceProvider>>,
+    // /// Optional resource provider for this execution.
+    // resource_provider: Option<Arc<dyn nebula_action::provider::ResourceProvider>>,
 }
 
 impl NodeTask {
