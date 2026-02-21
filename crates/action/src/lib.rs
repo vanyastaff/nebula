@@ -80,14 +80,12 @@ pub use action::Action;
 pub use components::ActionComponents;
 pub use context::ActionContext;
 pub use error::ActionError;
-pub use metadata::{
-    ActionMetadata, ActionType, ExecutionMode, InterfaceVersion, RetryPolicy, TimeoutPolicy,
-};
+pub use metadata::{ActionMetadata, InterfaceVersion};
 pub use output::{
     ActionOutput, BinaryData, BinaryStorage, BufferConfig, CacheInfo, Cost, DataReference,
-    DeferredOutput, DeltaFormat, ExpectedOutput, OutputEnvelope, OutputMeta, OutputOrigin,
-    Overflow, PollTarget, Producer, ProducerKind, Progress, Resolution, StreamMode, StreamOutput,
-    StreamState, Timing, TokenUsage,
+    DeferredOutput, DeferredRetryConfig, DeltaFormat, ExpectedOutput, OutputEnvelope, OutputMeta,
+    OutputOrigin, Overflow, PollTarget, Producer, ProducerKind, Progress, Resolution, StreamMode,
+    StreamOutput, StreamState, Timing, TokenUsage,
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};

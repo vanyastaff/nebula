@@ -1,10 +1,10 @@
-refactor(action): remove simple ActionRegistry
+refactor(action): remove ActionType, ExecutionMode, RetryPolicy, TimeoutPolicy
 
-Remove the simple HashMap-based ActionRegistry from nebula-action as it's
-superseded by the more advanced DashMap-based ActionRegistry in nebula-runtime
-which provides lock-free concurrent access.
+Remove policy and type discriminant types from metadata as part of
+simplifying the action system.
 
-Updated:
-- crates/action/src/registry.rs: deleted file
-- crates/action/src/lib.rs: removed module and re-export
-- crates/action/src/action.rs: added ActionComponents import
+- ActionType, ExecutionMode: removed enums
+- RetryPolicy, TimeoutPolicy: removed structs and builder methods
+- DeferredOutput.retry: replaced with DeferredRetryConfig in output.rs
+- Macros: removed action_type and isolation attribute parsing
+- Tests: updated metadata tests, macro UI tests

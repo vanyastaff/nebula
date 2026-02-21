@@ -5,6 +5,21 @@ use serde::{Deserialize, Serialize};
 
 // ── Supporting types ────────────────────────────────────────────────────────
 
+/// Minimal retry config for deferred output resolution.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeferredRetryConfig {
+    /// Maximum number of attempts.
+    pub max_attempts: u32,
+    /// Initial delay between retries.
+    pub initial_interval: Duration,
+    /// Backoff multiplier.
+    pub backoff_coefficient: f64,
+    /// Upper bound on delay.
+    pub max_interval: Option<Duration>,
+    /// Error type names that should NOT be retried.
+    pub non_retryable_errors: Vec<String>,
+}
+
 /// A not-yet-available output with instructions for the engine on how
 /// to obtain the final result.
 ///
@@ -23,8 +38,8 @@ pub struct DeferredOutput {
     pub progress: Option<Progress>,
     /// Who/what is producing this output.
     pub producer: Producer,
-    /// Retry policy if a resolution fails.
-    pub retry: Option<crate::metadata::RetryPolicy>,
+    /// Retry config if a resolution fails.
+    pub retry: Option<DeferredRetryConfig>,
     /// Maximum time to wait before treating as failed.
     pub timeout: Option<Duration>,
 }
@@ -566,7 +581,7 @@ impl<T> ActionOutput<T> {
                 name: Some(model.into()),
                 version: None,
             },
-            retry: Some(crate::metadata::RetryPolicy {
+            retry: Some(DeferredRetryConfig {
                 max_attempts: 3,
                 initial_interval: Duration::from_secs(2),
                 backoff_coefficient: 2.0,

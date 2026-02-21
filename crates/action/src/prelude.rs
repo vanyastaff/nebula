@@ -8,7 +8,7 @@ pub use crate::action::Action;
 pub use crate::components::ActionComponents;
 pub use crate::context::ActionContext;
 pub use crate::error::ActionError;
-pub use crate::metadata::{ActionMetadata, ActionType};
+pub use crate::metadata::ActionMetadata;
 pub use crate::output::{
     ActionOutput, DeferredOutput, ExpectedOutput, Producer, ProducerKind, Progress, Resolution,
     StreamMode, StreamOutput,

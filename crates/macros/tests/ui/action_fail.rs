@@ -16,22 +16,4 @@ pub struct MissingKeyAction;
 )]
 pub struct MissingNameAction;
 
-// Invalid action type
-#[derive(Action)]
-#[action(
-    key = "test.invalid_type",
-    name = "Invalid Type",
-    action_type = "unknown"
-)]
-pub struct InvalidTypeAction;
-
-// Invalid isolation level
-#[derive(Action)]
-#[action(
-    key = "test.invalid_isolation",
-    name = "Invalid Isolation",
-    isolation = "invalid"
-)]
-pub struct InvalidIsolationAction;
-
 fn main() {}

@@ -32,17 +32,6 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
         .unwrap_or_else(|| "1.0".to_string());
     let (version_major, version_minor) = parse_version(&version)?;
 
-    let action_type = action_attrs
-        .get_string("action_type")
-        .unwrap_or_else(|| "process".to_string());
-    let isolation = action_attrs
-        .get_string("isolation")
-        .unwrap_or_else(|| "none".to_string());
-    let credential = action_attrs.get_string("credential");
-
-    let action_type_variant = parse_action_type(&action_type)?;
-    let isolation_level = parse_isolation_level(&isolation)?;
-
     let fields = match &input.data {
         Data::Struct(data) => &data.fields,
         _ => {
@@ -55,16 +44,8 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
 
     validate_field_attrs(fields)?;
 
-    let metadata_init = generate_metadata_init(
-        &key,
-        &name,
-        &description,
-        version_major,
-        version_minor,
-        action_type_variant,
-        isolation_level,
-        credential.as_deref(),
-    );
+    let metadata_init =
+        generate_metadata_init(&key, &name, &description, version_major, version_minor);
 
     let expanded = quote! {
         impl #impl_generics ::nebula_action::Action for #struct_name #ty_generics #where_clause {
@@ -124,66 +105,15 @@ fn parse_version(version: &str) -> syn::Result<(u32, u32)> {
     Ok((major, minor))
 }
 
-fn parse_action_type(action_type: &str) -> syn::Result<TokenStream2> {
-    let variant = match action_type.to_lowercase().as_str() {
-        "process" => quote!(::nebula_action::metadata::ActionType::Process),
-        "stateful" => quote!(::nebula_action::metadata::ActionType::Stateful),
-        "trigger" => quote!(::nebula_action::metadata::ActionType::Trigger),
-        "streaming" => quote!(::nebula_action::metadata::ActionType::Streaming),
-        "transactional" => quote!(::nebula_action::metadata::ActionType::Transactional),
-        "interactive" => quote!(::nebula_action::metadata::ActionType::Interactive),
-        _ => {
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                format!(
-                    "Unknown action type: {}. Expected one of: process, stateful, trigger, streaming, transactional, interactive",
-                    action_type
-                ),
-            ));
-        }
-    };
-    Ok(variant)
-}
-
-fn parse_isolation_level(isolation: &str) -> syn::Result<TokenStream2> {
-    let level = match isolation.to_lowercase().as_str() {
-        "none" => quote!(::nebula_action::capability::IsolationLevel::None),
-        "sandbox" => quote!(::nebula_action::capability::IsolationLevel::Sandbox),
-        "process" => quote!(::nebula_action::capability::IsolationLevel::Process),
-        "vm" => quote!(::nebula_action::capability::IsolationLevel::Vm),
-        _ => {
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                format!(
-                    "Unknown isolation level: {}. Expected one of: none, sandbox, process, vm",
-                    isolation
-                ),
-            ));
-        }
-    };
-    Ok(level)
-}
-
-#[allow(clippy::too_many_arguments)]
 fn generate_metadata_init(
     key: &str,
     name: &str,
     description: &str,
     version_major: u32,
     version_minor: u32,
-    action_type: TokenStream2,
-    isolation_level: TokenStream2,
-    credential: Option<&str>,
 ) -> TokenStream2 {
-    let credential_part = credential
-        .map(|c| quote!(.with_credential(#c)))
-        .unwrap_or_default();
-
     quote! {
         ActionMetadata::new(#key, #name, #description)
             .with_version(#version_major, #version_minor)
-            .with_action_type(#action_type)
-            .with_isolation(#isolation_level)
-            #credential_part
     }
 }

@@ -4,61 +4,16 @@ extern crate self as nebula_parameter;
 extern crate self as nebula_plugin;
 extern crate self as nebula_resource;
 
-pub mod capability {
-    #[derive(Clone, Copy)]
-    pub enum IsolationLevel {
-        None,
-        Sandbox,
-        Process,
-        Vm,
-    }
-}
-
 pub mod metadata {
-    use crate::capability::IsolationLevel;
-
-    #[derive(Clone, Copy)]
-    pub enum ActionType {
-        Process,
-        Stateful,
-        Trigger,
-        Streaming,
-        Transactional,
-        Interactive,
-    }
-
     #[derive(Clone)]
-    pub struct ActionMetadata {
-        pub action_type: ActionType,
-        pub isolation_level: IsolationLevel,
-        pub credential: Option<String>,
-    }
+    pub struct ActionMetadata;
 
     impl ActionMetadata {
         pub fn new(_key: &str, _name: &str, _description: &str) -> Self {
-            Self {
-                action_type: ActionType::Process,
-                isolation_level: IsolationLevel::None,
-                credential: None,
-            }
+            Self
         }
 
         pub fn with_version(self, _major: u32, _minor: u32) -> Self {
-            self
-        }
-
-        pub fn with_action_type(mut self, action_type: ActionType) -> Self {
-            self.action_type = action_type;
-            self
-        }
-
-        pub fn with_isolation(mut self, isolation_level: IsolationLevel) -> Self {
-            self.isolation_level = isolation_level;
-            self
-        }
-
-        pub fn with_credential(mut self, credential: &str) -> Self {
-            self.credential = Some(credential.to_string());
             self
         }
     }
