@@ -1,4 +1,4 @@
-use crate::metadata::{ActionMetadata, ActionType};
+use crate::metadata::ActionMetadata;
 
 /// Base trait for all action types.
 ///
@@ -13,12 +13,4 @@ use crate::metadata::{ActionMetadata, ActionType};
 pub trait Action: Send + Sync + 'static {
     /// Static metadata describing this action type.
     fn metadata(&self) -> &ActionMetadata;
-
-    /// The kind of action (Process, Stateful, Trigger, etc.).
-    ///
-    /// Defaults to the `action_type` field from [`ActionMetadata`].
-    /// Override only if the action type is determined dynamically.
-    fn action_type(&self) -> ActionType {
-        self.metadata().action_type
-    }
 }

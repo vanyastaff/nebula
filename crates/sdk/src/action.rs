@@ -16,10 +16,7 @@
 //!     .build();
 //! ```
 
-use nebula_action::{
-    ActionMetadata, ActionType, Capability, ExecutionMode, IsolationLevel, metadata::RetryPolicy,
-    metadata::TimeoutPolicy,
-};
+use nebula_action::ActionMetadata;
 
 /// Builder for creating action metadata.
 ///
@@ -38,12 +35,6 @@ pub struct ActionBuilder {
     name: String,
     description: String,
     version: (u32, u32),
-    capabilities: Vec<Capability>,
-    isolation: IsolationLevel,
-    execution_mode: ExecutionMode,
-    action_type: ActionType,
-    retry_policy: Option<RetryPolicy>,
-    timeout_policy: Option<TimeoutPolicy>,
 }
 
 impl ActionBuilder {
@@ -59,12 +50,6 @@ impl ActionBuilder {
             name: name.into(),
             description: String::new(),
             version: (1, 0),
-            capabilities: Vec::new(),
-            isolation: IsolationLevel::None,
-            execution_mode: ExecutionMode::Dynamic,
-            action_type: ActionType::Process,
-            retry_policy: None,
-            timeout_policy: None,
         }
     }
 
@@ -80,63 +65,10 @@ impl ActionBuilder {
         self
     }
 
-    /// Add a required capability.
-    pub fn with_capability(mut self, capability: Capability) -> Self {
-        self.capabilities.push(capability);
-        self
-    }
-
-    /// Set the isolation level.
-    pub fn with_isolation(mut self, isolation: IsolationLevel) -> Self {
-        self.isolation = isolation;
-        self
-    }
-
-    /// Set the execution mode.
-    pub fn with_execution_mode(mut self, mode: ExecutionMode) -> Self {
-        self.execution_mode = mode;
-        self
-    }
-
-    /// Set the action type.
-    pub fn with_action_type(mut self, action_type: ActionType) -> Self {
-        self.action_type = action_type;
-        self
-    }
-
-    /// Set the retry policy.
-    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
-        self.retry_policy = Some(policy);
-        self
-    }
-
-    /// Set the timeout policy.
-    pub fn with_timeout_policy(mut self, policy: TimeoutPolicy) -> Self {
-        self.timeout_policy = Some(policy);
-        self
-    }
-
     /// Build the action metadata.
     pub fn build(self) -> ActionMetadata {
-        let mut metadata = ActionMetadata::new(self.key, self.name, self.description)
+        ActionMetadata::new(self.key, self.name, self.description)
             .with_version(self.version.0, self.version.1)
-            .with_isolation(self.isolation)
-            .with_execution_mode(self.execution_mode)
-            .with_action_type(self.action_type);
-
-        for cap in self.capabilities {
-            metadata = metadata.with_capability(cap);
-        }
-
-        if let Some(retry) = self.retry_policy {
-            metadata = metadata.with_retry_policy(retry);
-        }
-
-        if let Some(timeout) = self.timeout_policy {
-            metadata = metadata.with_timeout_policy(timeout);
-        }
-
-        metadata
     }
 }
 

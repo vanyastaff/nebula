@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::capability::{Capability, IsolationLevel};
 use crate::port::{self, InputPort, OutputPort};
 
 // Re-export from core so downstream code can continue using `nebula_action::InterfaceVersion`.
@@ -22,21 +21,6 @@ pub struct ActionMetadata {
     pub description: String,
     /// Interface version — changes only when input/output schema changes.
     pub version: InterfaceVersion,
-    /// Capabilities this action requires from the runtime.
-    pub capabilities: Vec<Capability>,
-    /// Required isolation level.
-    pub isolation_level: IsolationLevel,
-    /// Whether inputs/outputs are strongly typed or dynamic JSON.
-    pub execution_mode: ExecutionMode,
-    /// Declarative retry policy for this action.
-    /// When set, the engine uses this to decide how to retry failed executions.
-    pub retry_policy: Option<RetryPolicy>,
-    /// Timeout policy for this action.
-    /// The engine enforces these timeouts and cancels the action via its cancellation token.
-    pub timeout_policy: Option<TimeoutPolicy>,
-    /// The kind of action this metadata describes.
-    /// Used as a default when implementing [`Action::action_type`](crate::Action::action_type).
-    pub action_type: ActionType,
     /// Input ports this action accepts.
     /// Defaults to a single flow input `"in"`.
     pub inputs: Vec<InputPort>,
@@ -57,12 +41,6 @@ impl ActionMetadata {
             name: name.into(),
             description: description.into(),
             version: InterfaceVersion::new(1, 0),
-            capabilities: Vec::new(),
-            isolation_level: IsolationLevel::default(),
-            execution_mode: ExecutionMode::Dynamic,
-            retry_policy: None,
-            timeout_policy: None,
-            action_type: ActionType::Process,
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
         }
@@ -71,42 +49,6 @@ impl ActionMetadata {
     /// Set the interface version (major, minor).
     pub fn with_version(mut self, major: u32, minor: u32) -> Self {
         self.version = InterfaceVersion::new(major, minor);
-        self
-    }
-
-    /// Add a required capability.
-    pub fn with_capability(mut self, cap: Capability) -> Self {
-        self.capabilities.push(cap);
-        self
-    }
-
-    /// Set the required isolation level.
-    pub fn with_isolation(mut self, level: IsolationLevel) -> Self {
-        self.isolation_level = level;
-        self
-    }
-
-    /// Set the execution mode (typed or dynamic).
-    pub fn with_execution_mode(mut self, mode: ExecutionMode) -> Self {
-        self.execution_mode = mode;
-        self
-    }
-
-    /// Set the retry policy for this action.
-    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
-        self.retry_policy = Some(policy);
-        self
-    }
-
-    /// Set the timeout policy for this action.
-    pub fn with_timeout_policy(mut self, policy: TimeoutPolicy) -> Self {
-        self.timeout_policy = Some(policy);
-        self
-    }
-
-    /// Set the action type discriminant.
-    pub fn with_action_type(mut self, action_type: ActionType) -> Self {
-        self.action_type = action_type;
         self
     }
 

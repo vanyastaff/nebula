@@ -1,16 +1,20 @@
-refactor(action): remove schema, parameters, and credential from ActionMetadata
+refactor(action): remove capabilities, isolation, execution mode, policies, and action type
 
 Remove the following fields from ActionMetadata:
-- input_schema
-- output_schema
-- parameters
-- credential
+- capabilities: Vec<Capability>
+- isolation_level: IsolationLevel
+- execution_mode: ExecutionMode
+- retry_policy: Option<RetryPolicy>
+- timeout_policy: Option<TimeoutPolicy>
+- action_type: ActionType
 
-These fields are moved out of the core action metadata as part of simplifying
-the action system. Component declarations are now handled separately via
-ActionComponents.
+These policy and execution control fields are being removed from the core
+action metadata as part of simplifying the action system. Runtime behavior
+will be configured separately.
 
 Updated:
 - crates/action/src/metadata.rs: removed fields and builder methods
-- crates/action/src/action.rs: removed Action::parameters() method
+- crates/action/src/action.rs: removed Action::action_type() method
 - crates/sdk/src/action.rs: removed from ActionBuilder
+- crates/runtime/src/runtime.rs: simplified execution logic (TODO: restore isolation)
+- crates/drivers/sandbox-inprocess/src/lib.rs: removed isolation logging

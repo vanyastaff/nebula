@@ -87,7 +87,6 @@ impl SandboxRunner for InProcessSandbox {
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         tracing::debug!(
             action_key = %metadata.key,
-            isolation = ?metadata.isolation_level,
             "executing action in-process"
         );
 

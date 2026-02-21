@@ -6,10 +6,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use nebula_action::capability::IsolationLevel;
 use nebula_action::context::ActionContext;
 use nebula_action::result::ActionResult;
-use nebula_ports::sandbox::{SandboxRunner, SandboxedContext};
+use nebula_ports::sandbox::SandboxRunner;
 use nebula_telemetry::event::{EventBus, ExecutionEvent};
 use nebula_telemetry::metrics::MetricsRegistry;
 
@@ -82,8 +81,6 @@ impl ActionRuntime {
         context: ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let handler = self.registry.get(action_key)?;
-        let metadata = handler.metadata();
-        let isolation = &metadata.isolation_level;
         let node_id = context.node_id.to_string();
         let execution_id = context.execution_id.to_string();
 
@@ -97,19 +94,8 @@ impl ActionRuntime {
         let error_counter = self.metrics.counter("actions_failed_total");
         let duration_hist = self.metrics.histogram("action_duration_seconds");
 
-        let result = match isolation {
-            IsolationLevel::None => {
-                // Trusted: execute directly, no sandbox.
-                tracing::debug!(action_key, "executing trusted action directly");
-                handler.execute(input, context).await
-            }
-            IsolationLevel::CapabilityGated | IsolationLevel::Isolated => {
-                // Wrap in SandboxedContext for capability checks.
-                tracing::debug!(action_key, ?isolation, "executing action through sandbox");
-                let sandboxed = SandboxedContext::new(context, metadata.capabilities.clone());
-                self.sandbox.execute(sandboxed, metadata, input).await
-            }
-        };
+        // TODO: Restore isolation level logic once ActionMetadata has capabilities/isolation
+        let result = handler.execute(input, context).await;
 
         let elapsed = started.elapsed();
         duration_hist.observe(elapsed.as_secs_f64());
