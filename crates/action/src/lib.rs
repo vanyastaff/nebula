@@ -71,8 +71,6 @@ pub mod output;
 pub mod port;
 /// Convenience re-exports for action authors.
 pub mod prelude;
-/// Action registry for type-erased discovery and lookup.
-pub mod registry;
 /// Execution result types carrying data and flow-control intent.
 pub mod result;
 
@@ -93,8 +91,6 @@ pub use output::{
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
-
-pub use registry::ActionRegistry;
 
 // Re-export parameter types so action authors can define parameters without
 // depending on `nebula-parameter` directly.

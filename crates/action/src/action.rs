@@ -1,3 +1,4 @@
+use crate::components::ActionComponents;
 use crate::metadata::ActionMetadata;
 
 /// Base trait for all action types.
@@ -13,4 +14,7 @@ use crate::metadata::ActionMetadata;
 pub trait Action: Send + Sync + 'static {
     /// Static metadata describing this action type.
     fn metadata(&self) -> &ActionMetadata;
+
+    /// Components required by this action.
+    fn components(&self) -> ActionComponents;
 }
