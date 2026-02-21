@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use nebula_parameter::collection::ParameterCollection;
 use serde::{Deserialize, Serialize};
 
 use crate::capability::{Capability, IsolationLevel};
@@ -29,17 +28,6 @@ pub struct ActionMetadata {
     pub isolation_level: IsolationLevel,
     /// Whether inputs/outputs are strongly typed or dynamic JSON.
     pub execution_mode: ExecutionMode,
-    /// JSON Schema for input validation (optional).
-    pub input_schema: Option<serde_json::Value>,
-    /// JSON Schema for output validation (optional).
-    pub output_schema: Option<serde_json::Value>,
-    /// User-facing configuration parameters for this action.
-    /// Describes the form fields shown in the workflow editor when configuring this node.
-    /// Validation of values against this collection is the engine's responsibility.
-    pub parameters: Option<ParameterCollection>,
-    /// Credential type this action requires, referenced by key.
-    /// The engine resolves this to an actual credential at runtime.
-    pub credential: Option<String>,
     /// Declarative retry policy for this action.
     /// When set, the engine uses this to decide how to retry failed executions.
     pub retry_policy: Option<RetryPolicy>,
@@ -72,10 +60,6 @@ impl ActionMetadata {
             capabilities: Vec::new(),
             isolation_level: IsolationLevel::default(),
             execution_mode: ExecutionMode::Dynamic,
-            input_schema: None,
-            output_schema: None,
-            parameters: None,
-            credential: None,
             retry_policy: None,
             timeout_policy: None,
             action_type: ActionType::Process,
@@ -105,30 +89,6 @@ impl ActionMetadata {
     /// Set the execution mode (typed or dynamic).
     pub fn with_execution_mode(mut self, mode: ExecutionMode) -> Self {
         self.execution_mode = mode;
-        self
-    }
-
-    /// Set the JSON Schema for input validation.
-    pub fn with_input_schema(mut self, schema: serde_json::Value) -> Self {
-        self.input_schema = Some(schema);
-        self
-    }
-
-    /// Set the JSON Schema for output validation.
-    pub fn with_output_schema(mut self, schema: serde_json::Value) -> Self {
-        self.output_schema = Some(schema);
-        self
-    }
-
-    /// Set user-facing configuration parameters for this action.
-    pub fn with_parameters(mut self, parameters: ParameterCollection) -> Self {
-        self.parameters = Some(parameters);
-        self
-    }
-
-    /// Set the credential type this action requires.
-    pub fn with_credential(mut self, credential_key: impl Into<String>) -> Self {
-        self.credential = Some(credential_key.into());
         self
     }
 
@@ -349,10 +309,6 @@ mod tests {
         assert_eq!(meta.isolation_level, IsolationLevel::default());
         assert_eq!(meta.execution_mode, ExecutionMode::Dynamic);
         assert!(meta.capabilities.is_empty());
-        assert!(meta.input_schema.is_none());
-        assert!(meta.output_schema.is_none());
-        assert!(meta.parameters.is_none());
-        assert!(meta.credential.is_none());
         assert!(meta.retry_policy.is_none());
         assert!(meta.timeout_policy.is_none());
         // Default ports
@@ -362,59 +318,6 @@ mod tests {
         assert_eq!(meta.outputs.len(), 1);
         assert!(meta.outputs[0].is_flow());
         assert_eq!(meta.outputs[0].key(), "out");
-    }
-
-    #[test]
-    fn with_parameters_builder() {
-        use nebula_parameter::prelude::*;
-
-        let params = ParameterCollection::new()
-            .with(ParameterDef::Text(TextParameter::new("url", "URL")))
-            .with(ParameterDef::Select(SelectParameter::new(
-                "method", "Method",
-            )));
-
-        let meta = ActionMetadata::new("http.request", "HTTP Request", "Make HTTP calls")
-            .with_parameters(params);
-
-        let params = meta.parameters.expect("parameters should be Some");
-        assert_eq!(params.len(), 2);
-        assert_eq!(params.get_by_key("url").unwrap().key(), "url");
-        assert_eq!(params.get_by_key("method").unwrap().key(), "method");
-    }
-
-    #[test]
-    fn with_credential_builder() {
-        let meta = ActionMetadata::new("slack.send", "Slack Send", "Send a Slack message")
-            .with_credential("slack_oauth");
-        assert_eq!(meta.credential.as_deref(), Some("slack_oauth"));
-    }
-
-    #[test]
-    fn builder_chaining_all_new_fields() {
-        use nebula_parameter::prelude::*;
-
-        let params = ParameterCollection::new()
-            .with(ParameterDef::Text(TextParameter::new("channel", "Channel")));
-
-        let meta = ActionMetadata::new("slack.send", "Slack Send", "Send message")
-            .with_parameters(params)
-            .with_credential("slack_oauth")
-            .with_execution_mode(ExecutionMode::Dynamic);
-
-        assert!(meta.parameters.is_some());
-        assert_eq!(meta.credential.as_deref(), Some("slack_oauth"));
-        assert_eq!(meta.execution_mode, ExecutionMode::Dynamic);
-    }
-
-    #[test]
-    fn parameters_none_by_default() {
-        let meta = ActionMetadata::new("noop", "No-Op", "Does nothing");
-        assert!(meta.parameters.is_none());
-        assert!(meta.credential.is_none());
-        // Existing fields still have their defaults
-        assert!(meta.input_schema.is_none());
-        assert!(meta.output_schema.is_none());
     }
 
     #[test]

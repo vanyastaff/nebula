@@ -1,0 +1,16 @@
+refactor(action): remove schema, parameters, and credential from ActionMetadata
+
+Remove the following fields from ActionMetadata:
+- input_schema
+- output_schema
+- parameters
+- credential
+
+These fields are moved out of the core action metadata as part of simplifying
+the action system. Component declarations are now handled separately via
+ActionComponents.
+
+Updated:
+- crates/action/src/metadata.rs: removed fields and builder methods
+- crates/action/src/action.rs: removed Action::parameters() method
+- crates/sdk/src/action.rs: removed from ActionBuilder

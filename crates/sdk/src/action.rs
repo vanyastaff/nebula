@@ -20,7 +20,6 @@ use nebula_action::{
     ActionMetadata, ActionType, Capability, ExecutionMode, IsolationLevel, metadata::RetryPolicy,
     metadata::TimeoutPolicy,
 };
-use nebula_parameter::collection::ParameterCollection;
 
 /// Builder for creating action metadata.
 ///
@@ -43,8 +42,6 @@ pub struct ActionBuilder {
     isolation: IsolationLevel,
     execution_mode: ExecutionMode,
     action_type: ActionType,
-    parameters: Option<ParameterCollection>,
-    credential: Option<String>,
     retry_policy: Option<RetryPolicy>,
     timeout_policy: Option<TimeoutPolicy>,
 }
@@ -66,8 +63,6 @@ impl ActionBuilder {
             isolation: IsolationLevel::None,
             execution_mode: ExecutionMode::Dynamic,
             action_type: ActionType::Process,
-            parameters: None,
-            credential: None,
             retry_policy: None,
             timeout_policy: None,
         }
@@ -109,18 +104,6 @@ impl ActionBuilder {
         self
     }
 
-    /// Set the parameter definitions.
-    pub fn with_parameters(mut self, parameters: ParameterCollection) -> Self {
-        self.parameters = Some(parameters);
-        self
-    }
-
-    /// Set the required credential type.
-    pub fn with_credential(mut self, credential: impl Into<String>) -> Self {
-        self.credential = Some(credential.into());
-        self
-    }
-
     /// Set the retry policy.
     pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
         self.retry_policy = Some(policy);
@@ -143,14 +126,6 @@ impl ActionBuilder {
 
         for cap in self.capabilities {
             metadata = metadata.with_capability(cap);
-        }
-
-        if let Some(params) = self.parameters {
-            metadata = metadata.with_parameters(params);
-        }
-
-        if let Some(cred) = self.credential {
-            metadata = metadata.with_credential(cred);
         }
 
         if let Some(retry) = self.retry_policy {
