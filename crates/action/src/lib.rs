@@ -108,9 +108,7 @@ pub use output::{
     StreamState, Timing, TokenUsage,
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
-pub use provider::{
-    ActionLogger, ActionMetrics, CredentialProvider, ResourceProvider, SecureString,
-};
+pub use provider::{CredentialProvider, ResourceProvider, SecureString};
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
 pub use types::InteractiveAction;
 pub use types::PollAction;

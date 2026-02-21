@@ -7,9 +7,7 @@ use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::ActionError;
-use crate::provider::{
-    ActionLogger, ActionMetrics, CredentialProvider, ResourceProvider, SecureString,
-};
+use crate::provider::{CredentialProvider, ResourceProvider, SecureString};
 
 /// Runtime context provided to every action during execution.
 ///
@@ -35,10 +33,6 @@ pub struct ActionContext {
     variables: Arc<RwLock<serde_json::Map<String, serde_json::Value>>>,
     /// Optional credential provider for accessing secrets.
     credentials: Option<Arc<dyn CredentialProvider>>,
-    /// Optional logger for structured action logging.
-    logger: Option<Arc<dyn ActionLogger>>,
-    /// Optional metrics emitter for custom action metrics.
-    metrics: Option<Arc<dyn ActionMetrics>>,
     /// Optional resource provider for acquiring runtime resources.
     resources: Option<Arc<dyn ResourceProvider>>,
     /// Data arriving on support input ports, keyed by port name.
@@ -64,8 +58,6 @@ impl ActionContext {
             cancellation: CancellationToken::new(),
             variables: Arc::new(RwLock::new(serde_json::Map::new())),
             credentials: None,
-            logger: None,
-            metrics: None,
             resources: None,
             support_inputs: HashMap::new(),
         }
@@ -126,18 +118,6 @@ impl ActionContext {
         self
     }
 
-    /// Attach a logger.
-    pub fn with_logger(mut self, logger: Arc<dyn ActionLogger>) -> Self {
-        self.logger = Some(logger);
-        self
-    }
-
-    /// Attach a metrics emitter.
-    pub fn with_metrics(mut self, metrics: Arc<dyn ActionMetrics>) -> Self {
-        self.metrics = Some(metrics);
-        self
-    }
-
     /// Attach a resource provider.
     pub fn with_resources(mut self, provider: Arc<dyn ResourceProvider>) -> Self {
         self.resources = Some(provider);
@@ -188,48 +168,6 @@ impl ActionContext {
         match &self.resources {
             Some(provider) => provider.acquire(key).await,
             None => Err(ActionError::fatal("no resource provider configured")),
-        }
-    }
-
-    /// Log a debug message. No-op if no logger is attached.
-    pub fn log_debug(&self, message: &str) {
-        if let Some(logger) = &self.logger {
-            logger.debug(message);
-        }
-    }
-
-    /// Log an info message. No-op if no logger is attached.
-    pub fn log_info(&self, message: &str) {
-        if let Some(logger) = &self.logger {
-            logger.info(message);
-        }
-    }
-
-    /// Log a warning. No-op if no logger is attached.
-    pub fn log_warn(&self, message: &str) {
-        if let Some(logger) = &self.logger {
-            logger.warn(message);
-        }
-    }
-
-    /// Log an error. No-op if no logger is attached.
-    pub fn log_error(&self, message: &str) {
-        if let Some(logger) = &self.logger {
-            logger.error(message);
-        }
-    }
-
-    /// Record a counter metric. No-op if no metrics emitter is attached.
-    pub fn record_counter(&self, name: &str, value: u64) {
-        if let Some(metrics) = &self.metrics {
-            metrics.counter(name, value);
-        }
-    }
-
-    /// Record a histogram metric. No-op if no metrics emitter is attached.
-    pub fn record_histogram(&self, name: &str, value: f64) {
-        if let Some(metrics) = &self.metrics {
-            metrics.histogram(name, value);
         }
     }
 }
@@ -331,24 +269,6 @@ mod tests {
         assert_eq!(format!("{s:?}"), "SecureString(***)");
         assert_eq!(format!("{s}"), "***");
         assert_eq!(s.expose(), "secret123");
-    }
-
-    #[test]
-    fn log_methods_noop_without_logger() {
-        let ctx = test_context();
-        // These should not panic even without a logger.
-        ctx.log_debug("debug");
-        ctx.log_info("info");
-        ctx.log_warn("warn");
-        ctx.log_error("error");
-    }
-
-    #[test]
-    fn metrics_methods_noop_without_metrics() {
-        let ctx = test_context();
-        // These should not panic even without metrics.
-        ctx.record_counter("requests", 1);
-        ctx.record_histogram("latency", 0.5);
     }
 
     #[tokio::test]

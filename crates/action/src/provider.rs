@@ -54,32 +54,6 @@ pub trait CredentialProvider: Send + Sync {
     async fn get(&self, key: &str) -> Result<SecureString, ActionError>;
 }
 
-/// Port trait for action-level logging.
-///
-/// Actions use this to emit structured log messages that are captured
-/// by the runtime's logging infrastructure.
-pub trait ActionLogger: Send + Sync {
-    /// Log a debug message.
-    fn debug(&self, message: &str);
-    /// Log an info message.
-    fn info(&self, message: &str);
-    /// Log a warning.
-    fn warn(&self, message: &str);
-    /// Log an error.
-    fn error(&self, message: &str);
-}
-
-/// Port trait for action-level metrics.
-///
-/// Actions use this to emit custom metrics (counters, histograms)
-/// that are collected by the runtime's metrics infrastructure.
-pub trait ActionMetrics: Send + Sync {
-    /// Increment a counter by 1.
-    fn counter(&self, name: &str, value: u64);
-    /// Record a histogram observation.
-    fn histogram(&self, name: &str, value: f64);
-}
-
 /// Port trait for providing resources to actions.
 ///
 /// Implemented by the runtime to inject resource access (database connections,
