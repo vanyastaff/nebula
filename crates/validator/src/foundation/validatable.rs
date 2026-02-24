@@ -210,6 +210,71 @@ impl AsValidatable<f64> for i64 {
 }
 
 // ============================================================================
+// STANDARD LIBRARY TYPE CONVERSIONS
+// ============================================================================
+// These allow validators that work on `str` to also accept typed values
+// via `validate_any()`. The types are converted to their string representation
+// so that e.g. `ipv4().validate_any(&my_ipv4_addr)` works naturally.
+
+macro_rules! impl_via_display {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl AsValidatable<str> for $ty {
+                type Output<'a> = String;
+
+                #[inline]
+                fn as_validatable(&self) -> Result<String, ValidationError> {
+                    Ok(self.to_string())
+                }
+            }
+        )+
+    };
+}
+
+impl_via_display! {
+    std::net::IpAddr,
+    std::net::Ipv4Addr,
+    std::net::Ipv6Addr,
+    std::net::SocketAddr,
+    std::net::SocketAddrV4,
+    std::net::SocketAddrV6,
+}
+
+impl AsValidatable<str> for std::path::Path {
+    type Output<'a>
+        = &'a str
+    where
+        Self: 'a;
+
+    #[inline]
+    fn as_validatable(&self) -> Result<&str, ValidationError> {
+        self.to_str().ok_or_else(|| {
+            ValidationError::new(
+                "invalid_path",
+                "Path contains non-UTF-8 characters and cannot be validated as a string",
+            )
+        })
+    }
+}
+
+impl AsValidatable<str> for std::path::PathBuf {
+    type Output<'a>
+        = &'a str
+    where
+        Self: 'a;
+
+    #[inline]
+    fn as_validatable(&self) -> Result<&str, ValidationError> {
+        self.as_path().to_str().ok_or_else(|| {
+            ValidationError::new(
+                "invalid_path",
+                "Path contains non-UTF-8 characters and cannot be validated as a string",
+            )
+        })
+    }
+}
+
+// ============================================================================
 // SERDE JSON VALUE CONVERSIONS
 // ============================================================================
 
@@ -330,6 +395,25 @@ impl AsValidatable<[serde_json::Value]> for serde_json::Value {
     }
 }
 
+// ============================================================================
+// OPTIONAL THIRD-PARTY TYPE CONVERSIONS
+// ============================================================================
+
+/// `url::Url` → `&str` via `Url::as_str()` (zero-copy).
+/// Enabled by `features = ["url"]` in nebula-validator.
+#[cfg(feature = "url")]
+impl AsValidatable<str> for ::url::Url {
+    type Output<'a>
+        = &'a str
+    where
+        Self: 'a;
+
+    #[inline]
+    fn as_validatable(&self) -> Result<&str, ValidationError> {
+        Ok(self.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,6 +493,47 @@ mod tests {
         for n in [-100i64, -1, 0, 1, 42, 100] {
             assert!(AsValidatable::<f64>::as_validatable(&n).is_ok());
         }
+    }
+
+    #[test]
+    fn std_net_types_as_str() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+        let ip4: Ipv4Addr = "192.168.0.1".parse().unwrap();
+        assert_eq!(ip4.as_validatable().unwrap(), "192.168.0.1");
+
+        let ip6: Ipv6Addr = "::1".parse().unwrap();
+        assert_eq!(ip6.as_validatable().unwrap(), "::1");
+
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        assert_eq!(ip.as_validatable().unwrap(), "10.0.0.1");
+
+        let addr: SocketAddr = "0.0.0.0:8080".parse().unwrap();
+        assert_eq!(addr.as_validatable().unwrap(), "0.0.0.0:8080");
+    }
+
+    #[test]
+    fn path_types_as_str() {
+        use std::path::{Path, PathBuf};
+
+        let path = Path::new("/var/data");
+        assert_eq!(path.as_validatable().unwrap(), "/var/data");
+
+        let buf = PathBuf::from("/tmp/file.txt");
+        assert_eq!(buf.as_validatable().unwrap(), "/tmp/file.txt");
+    }
+
+    #[test]
+    fn validate_any_with_ip_and_str_validator() {
+        use crate::foundation::Validate as _;
+        use crate::validators::{hostname, ipv4};
+        use std::net::Ipv4Addr;
+
+        let ip: Ipv4Addr = "192.168.0.1".parse().unwrap();
+        assert!(ipv4().validate_any(&ip).is_ok());
+
+        let path = std::path::PathBuf::from("example.com");
+        assert!(hostname().validate_any(&path).is_ok());
     }
 
     #[test]

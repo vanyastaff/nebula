@@ -25,11 +25,15 @@ regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
+# Optional third-party type support
+url = { workspace = true, optional = true }
+
 [features]
 default = ["serde"]
 serde = []
 caching = ["dep:moka"]
-full = ["serde", "caching"]
+url = ["dep:url"]
+full = ["serde", "caching", "url"]
 
 [dev-dependencies]
 # Testing
