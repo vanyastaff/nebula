@@ -99,17 +99,7 @@ impl AsValidatable<usize> for usize {
 // ============================================================================
 
 impl AsValidatable<str> for String {
-    type Output<'a> = &'a str;
-
-    #[inline]
-    fn as_validatable(&self) -> Result<&str, ValidationError> {
-        Ok(self.as_str())
-    }
-}
-
-impl AsValidatable<str> for &String {
-    type Output<'a>
-        = &'a str
+    type Output<'a> = &'a str
     where
         Self: 'a;
 
@@ -120,7 +110,9 @@ impl AsValidatable<str> for &String {
 }
 
 impl AsValidatable<str> for Box<str> {
-    type Output<'a> = &'a str;
+    type Output<'a> = &'a str
+    where
+        Self: 'a;
 
     #[inline]
     fn as_validatable(&self) -> Result<&str, ValidationError> {
@@ -129,8 +121,7 @@ impl AsValidatable<str> for Box<str> {
 }
 
 impl AsValidatable<str> for std::borrow::Cow<'_, str> {
-    type Output<'a>
-        = &'a str
+    type Output<'a> = &'a str
     where
         Self: 'a;
 
@@ -138,6 +129,31 @@ impl AsValidatable<str> for std::borrow::Cow<'_, str> {
     fn as_validatable(&self) -> Result<&str, ValidationError> {
         Ok(self.as_ref())
     }
+}
+
+// std::net types — all implement Display
+macro_rules! impl_display_as_str {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl AsValidatable<str> for $ty {
+                type Output<'a> = String;
+
+                #[inline]
+                fn as_validatable(&self) -> Result<String, ValidationError> {
+                    Ok(self.to_string())
+                }
+            }
+        )+
+    };
+}
+
+impl_display_as_str! {
+    std::net::IpAddr,
+    std::net::Ipv4Addr,
+    std::net::Ipv6Addr,
+    std::net::SocketAddr,
+    std::net::SocketAddrV4,
+    std::net::SocketAddrV6,
 }
 
 impl<T> AsValidatable<[T]> for Vec<T> {
@@ -210,35 +226,40 @@ impl AsValidatable<f64> for i64 {
 }
 
 // ============================================================================
-// STANDARD LIBRARY TYPE CONVERSIONS
+// OPTIONAL THIRD-PARTY TYPE CONVERSIONS
 // ============================================================================
-// These allow validators that work on `str` to also accept typed values
-// via `validate_any()`. The types are converted to their string representation
-// so that e.g. `ipv4().validate_any(&my_ipv4_addr)` works naturally.
+// All use impl_display_as_str! since these types implement Display.
+// Enabled via feature flags so users don't pull in unused dependencies.
 
-macro_rules! impl_via_display {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            impl AsValidatable<str> for $ty {
-                type Output<'a> = String;
+#[cfg(feature = "url")]
+impl_display_as_str!(::url::Url);
 
-                #[inline]
-                fn as_validatable(&self) -> Result<String, ValidationError> {
-                    Ok(self.to_string())
-                }
-            }
-        )+
-    };
+#[cfg(feature = "uuid")]
+impl_display_as_str!(::uuid::Uuid);
+
+#[cfg(feature = "chrono")]
+impl_display_as_str! {
+    ::chrono::NaiveDate,
+    ::chrono::NaiveTime,
+    ::chrono::NaiveDateTime,
 }
 
-impl_via_display! {
-    std::net::IpAddr,
-    std::net::Ipv4Addr,
-    std::net::Ipv6Addr,
-    std::net::SocketAddr,
-    std::net::SocketAddrV4,
-    std::net::SocketAddrV6,
+#[cfg(feature = "chrono")]
+impl<Tz: ::chrono::TimeZone> AsValidatable<str> for ::chrono::DateTime<Tz>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    type Output<'a> = String where Self: 'a;
+
+    #[inline]
+    fn as_validatable(&self) -> Result<String, ValidationError> {
+        Ok(self.to_rfc3339())
+    }
 }
+
+// ============================================================================
+// PATH CONVERSIONS (Path/PathBuf don't implement Display)
+// ============================================================================
 
 impl AsValidatable<str> for std::path::Path {
     type Output<'a>
@@ -392,79 +413,6 @@ impl AsValidatable<[serde_json::Value]> for serde_json::Value {
             .with_param("expected", "array")
             .with_param("actual", json_type_name(other))),
         }
-    }
-}
-
-// ============================================================================
-// OPTIONAL THIRD-PARTY TYPE CONVERSIONS
-// ============================================================================
-
-/// `url::Url` → `&str` via `Url::as_str()` (zero-copy).
-/// Enabled by `features = ["url"]` in nebula-validator.
-#[cfg(feature = "url")]
-impl AsValidatable<str> for ::url::Url {
-    type Output<'a>
-        = &'a str
-    where
-        Self: 'a;
-
-    #[inline]
-    fn as_validatable(&self) -> Result<&str, ValidationError> {
-        Ok(self.as_str())
-    }
-}
-
-/// `uuid::Uuid` → `String` via hyphenated display.
-/// Enabled by `features = ["uuid"]` in nebula-validator.
-#[cfg(feature = "uuid")]
-impl AsValidatable<str> for ::uuid::Uuid {
-    type Output<'a> = String;
-
-    #[inline]
-    fn as_validatable(&self) -> Result<String, ValidationError> {
-        Ok(self.to_string())
-    }
-}
-
-/// `chrono::DateTime<Tz>` → `String` via RFC 3339 display.
-/// Enabled by `features = ["chrono"]` in nebula-validator.
-#[cfg(feature = "chrono")]
-impl<Tz: ::chrono::TimeZone> AsValidatable<str> for ::chrono::DateTime<Tz>
-where
-    Tz::Offset: std::fmt::Display,
-{
-    type Output<'a>
-        = String
-    where
-        Self: 'a;
-
-    #[inline]
-    fn as_validatable(&self) -> Result<String, ValidationError> {
-        Ok(self.to_rfc3339())
-    }
-}
-
-/// `chrono::NaiveDate` → `String` via `%Y-%m-%d`.
-/// Enabled by `features = ["chrono"]` in nebula-validator.
-#[cfg(feature = "chrono")]
-impl AsValidatable<str> for ::chrono::NaiveDate {
-    type Output<'a> = String;
-
-    #[inline]
-    fn as_validatable(&self) -> Result<String, ValidationError> {
-        Ok(self.format("%Y-%m-%d").to_string())
-    }
-}
-
-/// `chrono::NaiveTime` → `String` via `%H:%M:%S`.
-/// Enabled by `features = ["chrono"]` in nebula-validator.
-#[cfg(feature = "chrono")]
-impl AsValidatable<str> for ::chrono::NaiveTime {
-    type Output<'a> = String;
-
-    #[inline]
-    fn as_validatable(&self) -> Result<String, ValidationError> {
-        Ok(self.format("%H:%M:%S").to_string())
     }
 }
 
