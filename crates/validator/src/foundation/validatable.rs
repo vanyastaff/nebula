@@ -414,6 +414,60 @@ impl AsValidatable<str> for ::url::Url {
     }
 }
 
+/// `uuid::Uuid` → `String` via hyphenated display.
+/// Enabled by `features = ["uuid"]` in nebula-validator.
+#[cfg(feature = "uuid")]
+impl AsValidatable<str> for ::uuid::Uuid {
+    type Output<'a> = String;
+
+    #[inline]
+    fn as_validatable(&self) -> Result<String, ValidationError> {
+        Ok(self.to_string())
+    }
+}
+
+/// `chrono::DateTime<Tz>` → `String` via RFC 3339 display.
+/// Enabled by `features = ["chrono"]` in nebula-validator.
+#[cfg(feature = "chrono")]
+impl<Tz: ::chrono::TimeZone> AsValidatable<str> for ::chrono::DateTime<Tz>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    type Output<'a>
+        = String
+    where
+        Self: 'a;
+
+    #[inline]
+    fn as_validatable(&self) -> Result<String, ValidationError> {
+        Ok(self.to_rfc3339())
+    }
+}
+
+/// `chrono::NaiveDate` → `String` via `%Y-%m-%d`.
+/// Enabled by `features = ["chrono"]` in nebula-validator.
+#[cfg(feature = "chrono")]
+impl AsValidatable<str> for ::chrono::NaiveDate {
+    type Output<'a> = String;
+
+    #[inline]
+    fn as_validatable(&self) -> Result<String, ValidationError> {
+        Ok(self.format("%Y-%m-%d").to_string())
+    }
+}
+
+/// `chrono::NaiveTime` → `String` via `%H:%M:%S`.
+/// Enabled by `features = ["chrono"]` in nebula-validator.
+#[cfg(feature = "chrono")]
+impl AsValidatable<str> for ::chrono::NaiveTime {
+    type Output<'a> = String;
+
+    #[inline]
+    fn as_validatable(&self) -> Result<String, ValidationError> {
+        Ok(self.format("%H:%M:%S").to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -27,13 +27,17 @@ serde_json = { workspace = true }
 
 # Optional third-party type support
 url = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
 
 [features]
 default = ["serde"]
 serde = []
 caching = ["dep:moka"]
 url = ["dep:url"]
-full = ["serde", "caching", "url"]
+uuid = ["dep:uuid"]
+chrono = ["dep:chrono"]
+full = ["serde", "caching", "url", "uuid", "chrono"]
 
 [dev-dependencies]
 # Testing
