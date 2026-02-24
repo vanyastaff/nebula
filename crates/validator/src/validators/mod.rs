@@ -44,6 +44,12 @@ pub mod size;
 pub mod boolean;
 pub mod nullable;
 
+// Network validators
+pub mod network;
+
+// Temporal validators (date, time, datetime, uuid)
+pub mod temporal;
+
 pub use length::{
     ExactLength, LengthRange, MaxLength, MinLength, NotEmpty, exact_length, exact_length_bytes,
     length_range, length_range_bytes, max_length, max_length_bytes, min_length, min_length_bytes,
@@ -69,3 +75,6 @@ pub use size::{
 
 pub use boolean::{IsFalse, IsTrue, is_false, is_true};
 pub use nullable::{NotNull, Required, not_null, required};
+
+pub use network::{Hostname, IpAddr, Ipv4, Ipv6, hostname, ip_addr, ipv4, ipv6};
+pub use temporal::{Date, DateTime, Time, Uuid, date, date_time, time, uuid};

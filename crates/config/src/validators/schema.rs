@@ -455,27 +455,28 @@ impl SchemaValidator {
 
     /// Validate string format
     fn validate_string_format(&self, s: &str, format: &str, path: &str) -> ConfigResult<()> {
-        let is_valid = match format {
-            "email" => self.is_valid_email(s),
-            "uri" | "url" => self.is_valid_url(s),
-            "ipv4" => self.is_valid_ipv4(s),
-            "ipv6" => self.is_valid_ipv6(s),
-            "uuid" => self.is_valid_uuid(s),
-            "date" => self.is_valid_date(s),
-            "date-time" => self.is_valid_datetime(s),
-            "time" => self.is_valid_time(s),
-            "hostname" => self.is_valid_hostname(s),
-            _ => true, // Unknown format, skip validation
+        use nebula_validator::foundation::Validate as _;
+        use nebula_validator::validators;
+
+        let result = match format {
+            "email" => validators::email().validate(s),
+            "uri" | "url" => validators::url().validate(s),
+            "ipv4" => validators::ipv4().validate(s),
+            "ipv6" => validators::ipv6().validate(s),
+            "uuid" => validators::uuid().validate(s),
+            "date" => validators::date().validate(s),
+            "date-time" => validators::date_time().validate(s),
+            "time" => validators::time().validate(s),
+            "hostname" => validators::hostname().validate(s),
+            _ => return Ok(()), // Unknown format, skip validation
         };
 
-        if !is_valid {
-            return Err(ConfigError::validation_error(
-                format!("String at '{}' is not a valid {}", path, format),
+        result.map_err(|_| {
+            ConfigError::validation_error(
+                format!("String at '{path}' is not a valid {format}"),
                 Some(path.to_string()),
-            ));
-        }
-
-        Ok(())
+            )
+        })
     }
 
     /// Validate reference
@@ -522,46 +523,6 @@ impl SchemaValidator {
             _ => {}
         }
         false
-    }
-
-    // Format validators
-    fn is_valid_email(&self, s: &str) -> bool {
-        s.contains('@') && s.contains('.')
-    }
-
-    fn is_valid_url(&self, s: &str) -> bool {
-        s.starts_with("http://") || s.starts_with("https://") || s.starts_with("ftp://")
-    }
-
-    fn is_valid_ipv4(&self, s: &str) -> bool {
-        s.parse::<std::net::Ipv4Addr>().is_ok()
-    }
-
-    fn is_valid_ipv6(&self, s: &str) -> bool {
-        s.parse::<std::net::Ipv6Addr>().is_ok()
-    }
-
-    fn is_valid_uuid(&self, s: &str) -> bool {
-        uuid::Uuid::parse_str(s).is_ok()
-    }
-
-    fn is_valid_date(&self, s: &str) -> bool {
-        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
-    }
-
-    fn is_valid_datetime(&self, s: &str) -> bool {
-        chrono::DateTime::parse_from_rfc3339(s).is_ok()
-    }
-
-    fn is_valid_time(&self, s: &str) -> bool {
-        chrono::NaiveTime::parse_from_str(s, "%H:%M:%S").is_ok()
-    }
-
-    fn is_valid_hostname(&self, s: &str) -> bool {
-        !s.is_empty()
-            && s.len() <= 253
-            && s.chars()
-                .all(|c| c.is_alphanumeric() || c == '.' || c == '-')
     }
 }
 

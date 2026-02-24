@@ -215,120 +215,69 @@ fn evaluate_rule(
     path: &str,
     errors: &mut Vec<ParameterError>,
 ) {
-    match rule {
-        ValidationRule::MinLength { length, message } => {
-            if let Some(s) = value.as_str()
-                && s.len() < *length
-            {
+    use nebula_validator::foundation::Validate as _;
+    use nebula_validator::validators;
+
+    // Custom rules are evaluated by the engine layer (requires ExpressionEngine).
+    if matches!(rule, ValidationRule::Custom { .. }) {
+        return;
+    }
+
+    let result = match rule {
+        ValidationRule::MinLength { length, .. } => {
+            validators::min_length(*length).validate_any(value)
+        }
+        ValidationRule::MaxLength { length, .. } => {
+            validators::max_length(*length).validate_any(value)
+        }
+        ValidationRule::Pattern { pattern, .. } => match validators::matches_regex(pattern) {
+            Ok(v) => v.validate_any(value),
+            Err(e) => {
                 errors.push(ParameterError::ValidationError {
                     key: path.to_owned(),
-                    reason: message
-                        .clone()
-                        .unwrap_or_else(|| format!("must be at least {length} characters")),
+                    reason: format!("invalid regex pattern '{pattern}': {e}"),
                 });
+                return;
             }
-        }
-        ValidationRule::MaxLength { length, message } => {
-            if let Some(s) = value.as_str()
-                && s.len() > *length
-            {
-                errors.push(ParameterError::ValidationError {
-                    key: path.to_owned(),
-                    reason: message
-                        .clone()
-                        .unwrap_or_else(|| format!("must be at most {length} characters")),
-                });
+        },
+        ValidationRule::Min { value: min, .. } => validators::min(*min).validate_any(value),
+        ValidationRule::Max { value: max, .. } => validators::max(*max).validate_any(value),
+        ValidationRule::OneOf { values, .. } => {
+            if values.contains(value) {
+                return;
             }
+            Err(nebula_validator::foundation::ValidationError::new(
+                "one_of",
+                "value is not one of the allowed options",
+            ))
         }
-        ValidationRule::Pattern { pattern, message } => {
-            if let Some(s) = value.as_str() {
-                match regex::Regex::new(pattern) {
-                    Ok(re) => {
-                        if !re.is_match(s) {
-                            errors.push(ParameterError::ValidationError {
-                                key: path.to_owned(),
-                                reason: message
-                                    .clone()
-                                    .unwrap_or_else(|| format!("must match pattern: {pattern}")),
-                            });
-                        }
-                    }
-                    Err(e) => {
-                        errors.push(ParameterError::ValidationError {
-                            key: path.to_owned(),
-                            reason: format!("invalid regex pattern '{pattern}': {e}"),
-                        });
-                    }
-                }
-            }
+        ValidationRule::MinItems { count, .. } => {
+            validators::min_size::<Value>(*count).validate_any(value)
         }
-        ValidationRule::Min {
-            value: min,
-            message,
-        } => {
-            if let Some(n) = value.as_f64()
-                && n < *min
-            {
-                errors.push(ParameterError::ValidationError {
-                    key: path.to_owned(),
-                    reason: message
-                        .clone()
-                        .unwrap_or_else(|| format!("must be at least {min}")),
-                });
-            }
+        ValidationRule::MaxItems { count, .. } => {
+            validators::max_size::<Value>(*count).validate_any(value)
         }
-        ValidationRule::Max {
-            value: max,
-            message,
-        } => {
-            if let Some(n) = value.as_f64()
-                && n > *max
-            {
-                errors.push(ParameterError::ValidationError {
-                    key: path.to_owned(),
-                    reason: message
-                        .clone()
-                        .unwrap_or_else(|| format!("must be at most {max}")),
-                });
-            }
-        }
-        ValidationRule::OneOf { values, message } => {
-            if !values.contains(value) {
-                errors.push(ParameterError::ValidationError {
-                    key: path.to_owned(),
-                    reason: message
-                        .clone()
-                        .unwrap_or_else(|| "value is not one of the allowed options".to_owned()),
-                });
-            }
-        }
-        ValidationRule::Custom { .. } => {
-            // TODO: expression evaluation belongs in the engine layer
-        }
-        ValidationRule::MinItems { count, message } => {
-            if let Some(arr) = value.as_array()
-                && arr.len() < *count
-            {
-                errors.push(ParameterError::ValidationError {
-                    key: path.to_owned(),
-                    reason: message
-                        .clone()
-                        .unwrap_or_else(|| format!("must have at least {count} items")),
-                });
-            }
-        }
-        ValidationRule::MaxItems { count, message } => {
-            if let Some(arr) = value.as_array()
-                && arr.len() > *count
-            {
-                errors.push(ParameterError::ValidationError {
-                    key: path.to_owned(),
-                    reason: message
-                        .clone()
-                        .unwrap_or_else(|| format!("must have at most {count} items")),
-                });
-            }
-        }
+        ValidationRule::Custom { .. } => unreachable!(),
+    };
+
+    if let Err(e) = result {
+        let custom_message = match rule {
+            ValidationRule::MinLength { message, .. }
+            | ValidationRule::MaxLength { message, .. }
+            | ValidationRule::Pattern { message, .. }
+            | ValidationRule::Min { message, .. }
+            | ValidationRule::Max { message, .. }
+            | ValidationRule::OneOf { message, .. }
+            | ValidationRule::MinItems { message, .. }
+            | ValidationRule::MaxItems { message, .. } => message.as_deref(),
+            ValidationRule::Custom { .. } => None,
+        };
+        errors.push(ParameterError::ValidationError {
+            key: path.to_owned(),
+            reason: custom_message
+                .map(str::to_owned)
+                .unwrap_or_else(|| e.message.to_string()),
+        });
     }
 }
 
@@ -853,8 +802,8 @@ mod tests {
         let errs = col.validate(&values).unwrap_err();
         assert_eq!(errs.len(), 1);
         assert!(
-            matches!(&errs[0], ParameterError::ValidationError { key, reason }
-            if key == "email" && reason.contains("must match pattern"))
+            matches!(&errs[0], ParameterError::ValidationError { key, .. }
+            if key == "email")
         );
     }
 
