@@ -13,8 +13,6 @@ pub struct SchemaValidator {
     allow_additional: bool,
     /// Whether to coerce types when possible
     coerce_types: bool,
-    /// Cache for compiled regex patterns (avoids recompilation on every validation)
-    regex_cache: std::sync::Mutex<std::collections::HashMap<String, regex::Regex>>,
 }
 
 impl Clone for SchemaValidator {
@@ -23,7 +21,6 @@ impl Clone for SchemaValidator {
             schema: self.schema.clone(),
             allow_additional: self.allow_additional,
             coerce_types: self.coerce_types,
-            regex_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 }
@@ -45,7 +42,6 @@ impl SchemaValidator {
             schema,
             allow_additional: true,
             coerce_types: false,
-            regex_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -329,54 +325,34 @@ impl SchemaValidator {
         schema_obj: &serde_json::Map<String, Value>,
         path: &str,
     ) -> ConfigResult<()> {
-        // Check length constraints
-        if let Some(min) = schema_obj.get("minLength").and_then(Value::as_u64)
-            && (s.len() as u64) < min
-        {
-            return Err(ConfigError::validation_error(
-                format!("String at '{}' must be at least {} characters", path, min),
-                Some(path.to_string()),
-            ));
+        use nebula_validator::foundation::Validate as _;
+        use nebula_validator::validators;
+
+        let to_err = |msg: String| ConfigError::validation_error(msg, Some(path.to_string()));
+
+        if let Some(min) = schema_obj.get("minLength").and_then(Value::as_u64) {
+            validators::min_length(min as usize)
+                .validate(s)
+                .map_err(|e| to_err(format!("String at '{path}': {}", e.message)))?;
         }
 
-        if let Some(max) = schema_obj.get("maxLength").and_then(Value::as_u64)
-            && (s.len() as u64) > max
-        {
-            return Err(ConfigError::validation_error(
-                format!("String at '{}' must be at most {} characters", path, max),
-                Some(path.to_string()),
-            ));
+        if let Some(max) = schema_obj.get("maxLength").and_then(Value::as_u64) {
+            validators::max_length(max as usize)
+                .validate(s)
+                .map_err(|e| to_err(format!("String at '{path}': {}", e.message)))?;
         }
 
-        // Check pattern (with compiled regex cache)
         if let Some(pattern_str) = schema_obj.get("pattern").and_then(Value::as_str) {
-            let matches = {
-                let mut cache = self.regex_cache.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(re) = cache.get(pattern_str) {
-                    Some(re.is_match(s))
-                } else {
-                    match regex::Regex::new(pattern_str) {
-                        Ok(re) => {
-                            let result = re.is_match(s);
-                            cache.insert(pattern_str.to_string(), re);
-                            Some(result)
-                        }
-                        Err(_) => {
-                            nebula_log::warn!("Invalid regex pattern in schema: {}", pattern_str);
-                            None
-                        }
-                    }
-                }
-            };
-            if matches == Some(false) {
-                return Err(ConfigError::validation_error(
-                    format!("String at '{}' must match pattern '{}'", path, pattern_str),
-                    Some(path.to_string()),
-                ));
+            match validators::matches_regex(pattern_str) {
+                Ok(v) => v.validate(s).map_err(|_| {
+                    to_err(format!(
+                        "String at '{path}' must match pattern '{pattern_str}'"
+                    ))
+                })?,
+                Err(_) => nebula_log::warn!("Invalid regex pattern in schema: {}", pattern_str),
             }
         }
 
-        // Check format
         if let Some(format_str) = schema_obj.get("format").and_then(Value::as_str) {
             self.validate_string_format(s, format_str, path)?;
         }
@@ -384,69 +360,57 @@ impl SchemaValidator {
         Ok(())
     }
 
-    /// Validate number
     fn validate_number(
         &self,
         n: &serde_json::Number,
         schema_obj: &serde_json::Map<String, Value>,
         path: &str,
     ) -> ConfigResult<()> {
-        let value = n.as_f64().unwrap_or(0.0);
+        use nebula_validator::foundation::Validate as _;
+        use nebula_validator::validators;
 
-        // Check minimum
+        let value = n.as_f64().unwrap_or(0.0);
+        let to_err = |msg: String| ConfigError::validation_error(msg, Some(path.to_string()));
+
         if let Some(min) = schema_obj.get("minimum").and_then(Value::as_f64) {
             let exclusive = schema_obj
                 .get("exclusiveMinimum")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-
-            if (exclusive && value <= min) || (!exclusive && value < min) {
-                return Err(ConfigError::validation_error(
-                    format!(
-                        "Number at '{}' must be {} {}",
-                        path,
-                        if exclusive {
-                            "greater than"
-                        } else {
-                            "at least"
-                        },
-                        min
-                    ),
-                    Some(path.to_string()),
-                ));
+            if exclusive {
+                validators::greater_than(min)
+                    .validate(&value)
+                    .map_err(|e| to_err(format!("Number at '{path}': {}", e.message)))?;
+            } else {
+                validators::min(min)
+                    .validate(&value)
+                    .map_err(|e| to_err(format!("Number at '{path}': {}", e.message)))?;
             }
         }
 
-        // Check maximum
         if let Some(max) = schema_obj.get("maximum").and_then(Value::as_f64) {
             let exclusive = schema_obj
                 .get("exclusiveMaximum")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-
-            if (exclusive && value >= max) || (!exclusive && value > max) {
-                return Err(ConfigError::validation_error(
-                    format!(
-                        "Number at '{}' must be {} {}",
-                        path,
-                        if exclusive { "less than" } else { "at most" },
-                        max
-                    ),
-                    Some(path.to_string()),
-                ));
+            if exclusive {
+                validators::less_than(max)
+                    .validate(&value)
+                    .map_err(|e| to_err(format!("Number at '{path}': {}", e.message)))?;
+            } else {
+                validators::max(max)
+                    .validate(&value)
+                    .map_err(|e| to_err(format!("Number at '{path}': {}", e.message)))?;
             }
         }
 
-        // Check multipleOf
         if let Some(divisor) = schema_obj.get("multipleOf").and_then(Value::as_f64)
             && divisor != 0.0
         {
-            let remainder = value % divisor;
-            if remainder.abs() > f64::EPSILON {
-                return Err(ConfigError::validation_error(
-                    format!("Number at '{}' must be a multiple of {}", path, divisor),
-                    Some(path.to_string()),
-                ));
+            if (value % divisor).abs() > f64::EPSILON {
+                return Err(to_err(format!(
+                    "Number at '{path}' must be a multiple of {divisor}"
+                )));
             }
         }
 
