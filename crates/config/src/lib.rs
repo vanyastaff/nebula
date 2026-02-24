@@ -49,11 +49,6 @@
 // Core module with main functionality
 pub mod core;
 
-// Serde helpers for types that need custom deserialization (e.g. Duration)
-pub mod serde_helpers;
-/// Convenience alias: `use nebula_config::serde::duration_human` etc.
-pub use serde_helpers as serde;
-
 // Implementation modules
 pub mod loaders;
 pub mod validators;
@@ -348,38 +343,6 @@ mod tests {
             .unwrap();
         let p: PathBuf = cfg.get("data_dir").await.unwrap();
         assert_eq!(p.to_str(), Some("/var/app/data"));
-    }
-
-    #[tokio::test]
-    async fn test_get_duration_with_serde_helper() {
-        use serde::Deserialize;
-        use serde_json::json;
-        use std::time::Duration;
-
-        #[derive(Deserialize)]
-        struct AppConfig {
-            #[serde(with = "crate::serde_helpers::duration_secs")]
-            timeout: Duration,
-            #[serde(with = "crate::serde_helpers::duration_millis")]
-            poll: Duration,
-            #[serde(with = "crate::serde_helpers::duration_human")]
-            ttl: Duration,
-        }
-
-        let cfg = ConfigBuilder::new()
-            .with_defaults_json(json!({
-                "timeout": 30,
-                "poll": 500,
-                "ttl": "1h30m"
-            }))
-            .build()
-            .await
-            .unwrap();
-
-        let app: AppConfig = cfg.get_all().await.unwrap();
-        assert_eq!(app.timeout, Duration::from_secs(30));
-        assert_eq!(app.poll, Duration::from_millis(500));
-        assert_eq!(app.ttl, Duration::from_secs(5400));
     }
 
     #[tokio::test]
