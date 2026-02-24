@@ -87,6 +87,70 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
             ));
         }
 
+        // Format validator flags — each calls a zero-arg factory from nebula_validator::validators
+        let str_validators: &[(&str, TokenStream2)] = &[
+            ("email", quote!(::nebula_validator::validators::email())),
+            ("url", quote!(::nebula_validator::validators::url())),
+            ("ipv4", quote!(::nebula_validator::validators::ipv4())),
+            ("ipv6", quote!(::nebula_validator::validators::ipv6())),
+            ("ip_addr", quote!(::nebula_validator::validators::ip_addr())),
+            (
+                "hostname",
+                quote!(::nebula_validator::validators::hostname()),
+            ),
+            ("uuid", quote!(::nebula_validator::validators::uuid())),
+            ("date", quote!(::nebula_validator::validators::date())),
+            (
+                "date_time",
+                quote!(::nebula_validator::validators::date_time()),
+            ),
+            ("time", quote!(::nebula_validator::validators::time())),
+        ];
+        for (flag, expr) in str_validators {
+            if validate_attrs.has_flag(flag) {
+                field_checks.push(generate_str_validator_check(
+                    field_name,
+                    &field_key,
+                    is_option,
+                    expr.clone(),
+                ));
+            }
+        }
+
+        // regex = "pattern" key-value attribute
+        if let Some(pattern) = validate_attrs.get_string("regex") {
+            let check = if is_option {
+                quote! {
+                    if let Some(ref value) = input.#field_name {
+                        match ::nebula_validator::validators::matches_regex(#pattern) {
+                            Ok(v) => {
+                                if let Err(e) = ::nebula_validator::foundation::Validate::validate(&v, value.as_str()) {
+                                    errors.add(e.with_field(#field_key));
+                                }
+                            }
+                            Err(_) => panic!(
+                                concat!("invalid regex pattern in #[validate(regex = ...)] on field `", #field_key, "`")
+                            ),
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    match ::nebula_validator::validators::matches_regex(#pattern) {
+                        Ok(v) => {
+                            if let Err(e) = ::nebula_validator::foundation::Validate::validate(&v, input.#field_name.as_str()) {
+                                errors.add(e.with_field(#field_key));
+                            }
+                        }
+                        Err(_) => panic!(
+                            concat!("invalid regex pattern in #[validate(regex = ...)] on field `", #field_key, "`")
+                        ),
+                    }
+                }
+            };
+            field_checks.push(check);
+        }
+
         checks.extend(field_checks);
     }
 
@@ -298,4 +362,28 @@ fn is_option_type(ty: &Type) -> bool {
         return segment.ident == "Option";
     }
     false
+}
+
+/// Generates a check that calls a zero-argument string validator factory.
+fn generate_str_validator_check(
+    field_name: &syn::Ident,
+    field_key: &str,
+    is_option: bool,
+    validator_expr: TokenStream2,
+) -> TokenStream2 {
+    if is_option {
+        quote! {
+            if let Some(ref value) = input.#field_name {
+                if let Err(e) = ::nebula_validator::foundation::Validate::validate(&#validator_expr, value.as_str()) {
+                    errors.add(e.with_field(#field_key));
+                }
+            }
+        }
+    } else {
+        quote! {
+            if let Err(e) = ::nebula_validator::foundation::Validate::validate(&#validator_expr, input.#field_name.as_str()) {
+                errors.add(e.with_field(#field_key));
+            }
+        }
+    }
 }
