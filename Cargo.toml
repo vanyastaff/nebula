@@ -2,6 +2,7 @@
 members = [
     "crates/action",
     "crates/config",
+    "crates/storage",
     "crates/core",
     "crates/credential",
     "crates/engine",
@@ -18,13 +19,17 @@ members = [
     "crates/system",
     "crates/telemetry",
     "crates/validator",
+    "crates/api",
     "crates/webhook",
     "crates/workflow",
     # Drivers
     "crates/drivers/queue-memory",
     "crates/drivers/sandbox-inprocess",
     "crates/macros",
-    "crates/sdk", "plugins/github",
+    "crates/sdk",
+    "crates/app",
+    "plugins/github",
+    "plugins/telegram",
 ]
 exclude = [
     "crates/*/fuzz",
@@ -87,7 +92,7 @@ rust_decimal = { version = "1.39", features = ["serde"] }
 
 # String and data processing
 regex = "1.11"
-url = "2.5"
+url = { version = "2.5", features = ["serde"] }
 base64 = "0.22.1"
 bytes = "1.11.1"
 

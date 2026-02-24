@@ -49,6 +49,11 @@
 // Core module with main functionality
 pub mod core;
 
+// Serde helpers for types that need custom deserialization (e.g. Duration)
+pub mod serde_helpers;
+/// Convenience alias: `use nebula_config::serde::duration_human` etc.
+pub use serde_helpers as serde;
+
 // Implementation modules
 pub mod loaders;
 pub mod validators;
@@ -288,6 +293,93 @@ mod tests {
         assert_eq!(value["server"]["port"], 8081);
         assert_eq!(value["server"]["host"], "localhost");
         assert_eq!(value["enabled"], false);
+    }
+
+    // ── typed value integration tests ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_url() {
+        use serde_json::json;
+        use url::Url;
+        let cfg = ConfigBuilder::new()
+            .with_defaults_json(json!({ "endpoint": "https://api.example.com/v1" }))
+            .build()
+            .await
+            .unwrap();
+        let u: Url = cfg.get("endpoint").await.unwrap();
+        assert_eq!(u.host_str(), Some("api.example.com"));
+        assert_eq!(u.path(), "/v1");
+    }
+
+    #[tokio::test]
+    async fn test_get_socket_addr() {
+        use serde_json::json;
+        use std::net::SocketAddr;
+        let cfg = ConfigBuilder::new()
+            .with_defaults_json(json!({ "bind": "0.0.0.0:8080" }))
+            .build()
+            .await
+            .unwrap();
+        let addr: SocketAddr = cfg.get("bind").await.unwrap();
+        assert_eq!(addr.port(), 8080);
+    }
+
+    #[tokio::test]
+    async fn test_get_ip_addr() {
+        use serde_json::json;
+        use std::net::IpAddr;
+        let cfg = ConfigBuilder::new()
+            .with_defaults_json(json!({ "host": "192.168.0.1" }))
+            .build()
+            .await
+            .unwrap();
+        let ip: IpAddr = cfg.get("host").await.unwrap();
+        assert!(ip.is_ipv4());
+    }
+
+    #[tokio::test]
+    async fn test_get_path_buf() {
+        use serde_json::json;
+        use std::path::PathBuf;
+        let cfg = ConfigBuilder::new()
+            .with_defaults_json(json!({ "data_dir": "/var/app/data" }))
+            .build()
+            .await
+            .unwrap();
+        let p: PathBuf = cfg.get("data_dir").await.unwrap();
+        assert_eq!(p.to_str(), Some("/var/app/data"));
+    }
+
+    #[tokio::test]
+    async fn test_get_duration_with_serde_helper() {
+        use serde::Deserialize;
+        use serde_json::json;
+        use std::time::Duration;
+
+        #[derive(Deserialize)]
+        struct AppConfig {
+            #[serde(with = "crate::serde_helpers::duration_secs")]
+            timeout: Duration,
+            #[serde(with = "crate::serde_helpers::duration_millis")]
+            poll: Duration,
+            #[serde(with = "crate::serde_helpers::duration_human")]
+            ttl: Duration,
+        }
+
+        let cfg = ConfigBuilder::new()
+            .with_defaults_json(json!({
+                "timeout": 30,
+                "poll": 500,
+                "ttl": "1h30m"
+            }))
+            .build()
+            .await
+            .unwrap();
+
+        let app: AppConfig = cfg.get_all().await.unwrap();
+        assert_eq!(app.timeout, Duration::from_secs(30));
+        assert_eq!(app.poll, Duration::from_millis(500));
+        assert_eq!(app.ttl, Duration::from_secs(5400));
     }
 
     #[tokio::test]

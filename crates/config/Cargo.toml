@@ -35,6 +35,7 @@ serde_json = { workspace = true }
 
 # Utilities
 chrono = { workspace = true, features = ["serde"] }
+url = { workspace = true }
 dashmap = { workspace = true }
 
 # Internal crates
