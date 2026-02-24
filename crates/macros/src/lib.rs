@@ -52,6 +52,7 @@ mod parameter;
 mod plugin;
 mod resource;
 mod support;
+mod types;
 mod validator;
 
 /// Derive macro for the `Action` trait.
@@ -64,15 +65,15 @@ mod validator;
 /// - `name = "..."` - Human-readable name (required)
 /// - `description = "..."` - Short description (required)
 /// - `version = "..."` - Interface version, e.g., "1.0" (default: "1.0")
-/// - `action_type = "..."` - One of: process, stateful, trigger, streaming, transactional, interactive (default: process)
-/// - `isolation = "..."` - Isolation level: none, sandbox, process, vm (default: none)
-/// - `credential = "..."` - Required credential type key (optional)
+/// - `credential = Type` - Single credential type for `ActionComponents` (optional)
+/// - `credentials = [Type1, Type2]` - Multiple credential types (optional)
+/// - `resource = Type` - Single resource type for `ActionComponents` (optional)
+/// - `resources = [Type1, Type2]` - Multiple resource types (optional)
+/// - `parameters = Type` - Type with `parameters()` for `ActionMetadata` (optional)
 ///
-/// ## Field attributes
+/// Note: `credential = "key"` (string) is ignored; use `credential = CredentialType` for type-based refs.
 ///
-/// - `#[action(config)]` - Marks the config field
-/// - `#[action(resource)]` - Marks a resource to be injected
-/// - `#[action(skip)]` - Skips this field
+/// Action structs must be unit structs with no fields (e.g. `struct MyAction;`).
 ///
 /// # Example
 ///
@@ -83,15 +84,10 @@ mod validator;
 ///     name = "Send Slack Message",
 ///     description = "Sends a message to a Slack channel",
 ///     version = "2.1",
-///     credential = "slack_oauth"
+///     credential = SlackOAuthCredential,
+///     resources = [HttpClient]
 /// )]
-/// pub struct SlackSendAction {
-///     #[action(config)]
-///     config: SlackConfig,
-///
-///     #[action(resource)]
-///     http_client: HttpClient,
-/// }
+/// pub struct SlackSendAction;
 /// ```
 #[proc_macro_derive(Action, attributes(action, nebula))]
 pub fn derive_action(input: TokenStream) -> TokenStream {
@@ -242,11 +238,50 @@ pub fn derive_parameters(input: TokenStream) -> TokenStream {
 ///
 /// # Field attributes (`#[validate(...)]`)
 ///
+/// ## Size / length
 /// - `required` - `Option<T>` must be `Some`
-/// - `min_length = N` - `len()` must be at least `N`
-/// - `max_length = N` - `len()` must be at most `N`
+/// - `min_length = N` - string `len()` must be at least `N`
+/// - `max_length = N` - string `len()` must be at most `N`
 /// - `min = N` - numeric value must be `>= N`
 /// - `max = N` - numeric value must be `<= N`
+///
+/// ## Format flags (operate on `String` / `Option<String>` fields)
+/// - `email` - valid email address
+/// - `url` - valid HTTP/HTTPS URL
+/// - `ipv4` - valid IPv4 address
+/// - `ipv6` - valid IPv6 address
+/// - `ip_addr` - valid IPv4 or IPv6 address
+/// - `hostname` - valid hostname (RFC 1123)
+/// - `uuid` - valid UUID (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`)
+/// - `date` - valid date (`YYYY-MM-DD`)
+/// - `date_time` - valid RFC 3339 date-time
+/// - `time` - valid time (`HH:MM:SS`)
+///
+/// ## Pattern
+/// - `regex = "pattern"` - string must match the given regex
+///
+/// # Example
+///
+/// ```ignore
+/// use nebula_macros::Validator;
+/// use nebula_validator::foundation::Validate;
+///
+/// #[derive(Validator)]
+/// #[validator(message = "invalid webhook config")]
+/// struct WebhookConfig {
+///     #[validate(url)]
+///     endpoint: String,
+///
+///     #[validate(min_length = 8)]
+///     secret: String,
+///
+///     #[validate(email)]
+///     notify: Option<String>,
+///
+///     #[validate(regex = r"^v\d+$")]
+///     version: String,
+/// }
+/// ```
 #[proc_macro_derive(Validator, attributes(validator, validate))]
 pub fn derive_validator(input: TokenStream) -> TokenStream {
     validator::derive(input)
