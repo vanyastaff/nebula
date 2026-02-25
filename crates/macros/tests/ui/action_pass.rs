@@ -12,22 +12,17 @@ include!("support.rs");
 )]
 pub struct UnitAction;
 
-/// An action with configuration.
+/// Action with version.
 #[derive(Action)]
 #[action(
     key = "http.request",
     name = "HTTP Request",
     description = "Make HTTP requests to external APIs",
-    version = "2.1",
-    action_type = "process",
-    isolation = "sandbox"
+    version = "2.1"
 )]
-pub struct HttpRequestAction {
-    #[action(config)]
-    config: HttpConfig,
-}
+pub struct HttpRequestAction;
 
-/// Action with credential requirement.
+/// Action with credential (string key is ignored; use credential = Type for components).
 #[derive(Action)]
 #[action(
     key = "slack.send",
@@ -35,35 +30,36 @@ pub struct HttpRequestAction {
     description = "Send a message to a Slack channel",
     credential = "slack_oauth"
 )]
-pub struct SlackSendAction {
-    #[action(config)]
-    config: SlackConfig,
-}
+pub struct SlackSendAction;
 
-// Supporting types
-#[derive(Debug, Default)]
-pub struct HttpConfig {
-    timeout: u64,
-}
+/// Action with credential and resource types (type-based components).
+#[derive(Action)]
+#[action(
+    key = "db.query",
+    name = "Database Query",
+    description = "Execute a query against the database",
+    credential = SlackOAuthCredential,
+    resources = [PostgresDb, RedisCache]
+)]
+pub struct DbQueryAction;
 
-#[derive(Debug, Default)]
-pub struct SlackConfig {
-    channel: String,
-}
+// Credential and resource types for component tests
+pub struct SlackOAuthCredential;
+pub struct PostgresDb;
+pub struct RedisCache;
 
 fn main() {
     let unit = UnitAction;
     let _ = unit.metadata();
 
-    let http = HttpRequestAction {
-        config: HttpConfig { timeout: 30 },
-    };
+    let http = HttpRequestAction;
     let _ = http.metadata();
 
-    let slack = SlackSendAction {
-        config: SlackConfig {
-            channel: "#general".to_string(),
-        },
-    };
+    let slack = SlackSendAction;
     let _ = slack.metadata();
+    let _ = slack.components();
+
+    let db = DbQueryAction;
+    let _ = db.metadata();
+    let _ = db.components();
 }

@@ -141,17 +141,13 @@ pub mod helpers {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionBuilder, Capability, IsolationLevel};
+    use super::ActionBuilder;
 
     #[test]
     fn test_action_builder() {
         let metadata = ActionBuilder::new("test.action", "Test Action")
             .with_description("A test action")
             .with_version(2, 1)
-            .with_capability(Capability::Network {
-                allowed_hosts: vec!["api.example.com".to_string()],
-            })
-            .with_isolation(IsolationLevel::CapabilityGated)
             .build();
 
         assert_eq!(metadata.key, "test.action");

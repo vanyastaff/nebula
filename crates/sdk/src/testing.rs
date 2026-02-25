@@ -112,15 +112,15 @@ where
         &self,
         input: I,
     ) -> Result<nebula_action::ActionResult<O>, nebula_action::ActionError> {
-        use nebula_action::ActionContext;
-        use nebula_core::{ExecutionId, NodeId, ScopeLevel, WorkflowId};
+        use nebula_action::NodeContext;
+        use nebula_core::{ExecutionId, NodeId, WorkflowId};
 
         let workflow_id = WorkflowId::new(uuid::Uuid::new_v4());
-        let ctx = ActionContext::new(
+        let ctx = NodeContext::new(
             ExecutionId::new(uuid::Uuid::new_v4()),
             NodeId::new(uuid::Uuid::new_v4()),
             workflow_id,
-            ScopeLevel::Workflow(workflow_id),
+            tokio_util::sync::CancellationToken::new(),
         );
         self.action.execute(input, &ctx).await
     }

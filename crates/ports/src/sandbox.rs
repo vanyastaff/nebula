@@ -10,19 +10,35 @@ use nebula_action::{ActionError, ActionMetadata};
 // TODO: SandboxedContext is currently unavailable
 // use nebula_action::SandboxedContext;
 
-/// Temporary placeholder for SandboxedContext until it's restored
-#[derive(Clone, Debug)]
-pub struct SandboxedContext;
+/// Sandboxed execution context wrapping a [`NodeContext`](nebula_action::NodeContext).
+///
+/// Holds the node context so capability checks and cancellation can be
+/// enforced at the sandbox boundary.
+pub struct SandboxedContext {
+    context: nebula_action::NodeContext,
+}
 
 impl SandboxedContext {
-    /// Temporary placeholder constructor
-    pub fn new(_context: nebula_action::ActionContext) -> Self {
-        Self
+    /// Wrap a [`NodeContext`](nebula_action::NodeContext) in a sandboxed context.
+    pub fn new(context: nebula_action::NodeContext) -> Self {
+        Self { context }
     }
 
-    /// Temporary placeholder method
+    /// Check whether execution has been cancelled.
+    ///
+    /// Returns `Err(ActionError::Cancelled)` if the cancellation token
+    /// has been triggered.
     pub fn check_cancelled(&self) -> Result<(), nebula_action::ActionError> {
-        Ok(())
+        if self.context.cancellation.is_cancelled() {
+            Err(nebula_action::ActionError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Access the inner [`NodeContext`](nebula_action::NodeContext).
+    pub fn inner(&self) -> &nebula_action::NodeContext {
+        &self.context
     }
 }
 

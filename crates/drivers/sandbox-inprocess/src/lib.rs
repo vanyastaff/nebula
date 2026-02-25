@@ -112,24 +112,21 @@ impl SandboxRunner for InProcessSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_action::capability::{Capability, IsolationLevel};
-    use nebula_action::context::ActionContext;
+    use nebula_action::NodeContext;
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
-    use nebula_core::scope::ScopeLevel;
 
     fn test_metadata() -> ActionMetadata {
         ActionMetadata::new("test.echo", "Echo", "Returns input as output")
-            .with_isolation(IsolationLevel::CapabilityGated)
     }
 
-    fn test_context(caps: Vec<Capability>) -> SandboxedContext {
-        let ctx = ActionContext::new(
+    fn test_context() -> SandboxedContext {
+        let ctx = NodeContext::new(
             ExecutionId::v4(),
             NodeId::v4(),
             WorkflowId::v4(),
-            ScopeLevel::Global,
+            tokio_util::sync::CancellationToken::new(),
         );
-        SandboxedContext::new(ctx, caps)
+        SandboxedContext::new(ctx)
     }
 
     #[tokio::test]
@@ -141,7 +138,7 @@ mod tests {
         let sandbox = InProcessSandbox::new(executor);
         let metadata = test_metadata();
         let input = serde_json::json!({"hello": "world"});
-        let ctx = test_context(vec![]);
+        let ctx = test_context();
 
         let result = sandbox.execute(ctx, &metadata, input.clone()).await;
         match result.unwrap() {
@@ -160,7 +157,7 @@ mod tests {
 
         let sandbox = InProcessSandbox::new(executor);
         let metadata = test_metadata();
-        let ctx = test_context(vec![]);
+        let ctx = test_context();
 
         let result = sandbox
             .execute(ctx, &metadata, serde_json::json!(null))
@@ -180,15 +177,10 @@ mod tests {
         let sandbox = InProcessSandbox::new(executor);
         let metadata = test_metadata();
 
-        let ctx = ActionContext::new(
-            ExecutionId::v4(),
-            NodeId::v4(),
-            WorkflowId::v4(),
-            ScopeLevel::Global,
-        );
-        // Cancel before execution.
-        ctx.cancellation.cancel();
-        let sandboxed = SandboxedContext::new(ctx, vec![]);
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        let ctx = NodeContext::new(ExecutionId::v4(), NodeId::v4(), WorkflowId::v4(), token);
+        let sandboxed = SandboxedContext::new(ctx);
 
         let result = sandbox
             .execute(sandboxed, &metadata, serde_json::json!(null))

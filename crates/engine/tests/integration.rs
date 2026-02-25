@@ -8,17 +8,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use nebula_action::ParameterCollection;
-use nebula_action::capability::IsolationLevel;
-use nebula_action::context::ActionContext;
-use nebula_action::handler::InternalHandler;
-use nebula_action::metadata::{ActionMetadata, ActionType};
+use nebula_action::metadata::ActionMetadata;
 use nebula_action::result::ActionResult;
-use nebula_action::{ActionError, ExecutionBudget};
+use nebula_action::{ActionError, NodeContext};
 use nebula_core::Version;
 use nebula_core::id::{ActionId, NodeId, WorkflowId};
 use nebula_engine::WorkflowEngine;
 use nebula_execution::ExecutionStatus;
+use nebula_execution::context::ExecutionBudget;
+use nebula_plugin::InternalHandler;
 use nebula_runtime::registry::ActionRegistry;
 use nebula_runtime::{ActionRuntime, DataPassingPolicy};
 use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};
@@ -40,18 +38,12 @@ impl InternalHandler for EchoHandler {
     async fn execute(
         &self,
         input: serde_json::Value,
-        _ctx: ActionContext,
+        _ctx: NodeContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         Ok(ActionResult::success(input))
     }
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
-    }
-    fn action_type(&self) -> ActionType {
-        ActionType::Process
-    }
-    fn parameters(&self) -> Option<&ParameterCollection> {
-        None
     }
 }
 
@@ -65,7 +57,7 @@ impl InternalHandler for DoubleHandler {
     async fn execute(
         &self,
         input: serde_json::Value,
-        _ctx: ActionContext,
+        _ctx: NodeContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         let n = input
             .as_i64()
@@ -74,12 +66,6 @@ impl InternalHandler for DoubleHandler {
     }
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
-    }
-    fn action_type(&self) -> ActionType {
-        ActionType::Process
-    }
-    fn parameters(&self) -> Option<&ParameterCollection> {
-        None
     }
 }
 
@@ -93,7 +79,7 @@ impl InternalHandler for Add10Handler {
     async fn execute(
         &self,
         input: serde_json::Value,
-        _ctx: ActionContext,
+        _ctx: NodeContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         let n = input
             .as_i64()
@@ -102,12 +88,6 @@ impl InternalHandler for Add10Handler {
     }
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
-    }
-    fn action_type(&self) -> ActionType {
-        ActionType::Process
-    }
-    fn parameters(&self) -> Option<&ParameterCollection> {
-        None
     }
 }
 
@@ -122,7 +102,7 @@ impl InternalHandler for SlowHandler {
     async fn execute(
         &self,
         input: serde_json::Value,
-        ctx: ActionContext,
+        ctx: NodeContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         tokio::select! {
             () = tokio::time::sleep(self.delay) => Ok(ActionResult::success(input)),
@@ -131,12 +111,6 @@ impl InternalHandler for SlowHandler {
     }
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
-    }
-    fn action_type(&self) -> ActionType {
-        ActionType::Process
-    }
-    fn parameters(&self) -> Option<&ParameterCollection> {
-        None
     }
 }
 
@@ -150,18 +124,12 @@ impl InternalHandler for FailHandler {
     async fn execute(
         &self,
         _input: serde_json::Value,
-        _ctx: ActionContext,
+        _ctx: NodeContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         Err(ActionError::fatal("intentional failure"))
     }
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
-    }
-    fn action_type(&self) -> ActionType {
-        ActionType::Process
-    }
-    fn parameters(&self) -> Option<&ParameterCollection> {
-        None
     }
 }
 
@@ -176,7 +144,7 @@ impl InternalHandler for CounterHandler {
     async fn execute(
         &self,
         input: serde_json::Value,
-        _ctx: ActionContext,
+        _ctx: NodeContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         self.count.fetch_add(1, Ordering::SeqCst);
         // Small yield to allow concurrency observation
@@ -185,12 +153,6 @@ impl InternalHandler for CounterHandler {
     }
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
-    }
-    fn action_type(&self) -> ActionType {
-        ActionType::Process
-    }
-    fn parameters(&self) -> Option<&ParameterCollection> {
-        None
     }
 }
 
@@ -237,7 +199,7 @@ fn make_engine(
 }
 
 fn meta(key: &str) -> ActionMetadata {
-    ActionMetadata::new(key, key, "integration test handler").with_isolation(IsolationLevel::None)
+    ActionMetadata::new(key, key, "integration test handler")
 }
 
 // ---------------------------------------------------------------------------

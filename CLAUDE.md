@@ -53,7 +53,10 @@ All crates live under `crates/` with short directory names. Package names retain
 - `crates/memory` - Memory management, arenas, caching
 - `crates/resilience` - Circuit breaker, retry, rate limiting
 - `crates/resource` - Resource lifecycle, scopes, policies
+- `crates/storage` - Storage abstraction (key-value backends)
 - `crates/system` - Cross-platform utilities, pressure detection
+
+**Database:** SQL migrations live in repo root `migrations/` (sqlx). See [docs/database-migrations.md](docs/database-migrations.md) for commands and per-crate options.
 
 ## Error Handling
 

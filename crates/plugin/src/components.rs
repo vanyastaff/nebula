@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 // TODO: These types are currently unavailable in nebula-action
 // use nebula_action::ProcessAction;
 // use nebula_action::StatefulAction;
@@ -16,25 +17,16 @@ use nebula_credential::CredentialDescription;
 
 // Temporary placeholder for InternalHandler
 /// Temporary handler trait until types are restored
+#[async_trait]
 pub trait InternalHandler: Send + Sync {
     /// Get action metadata
     fn metadata(&self) -> &nebula_action::ActionMetadata;
     /// Execute the action (placeholder)
-    fn execute(
+    async fn execute(
         &self,
-        _input: serde_json::Value,
-        _context: nebula_action::ActionContext,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<
-                        nebula_action::ActionResult<serde_json::Value>,
-                        nebula_action::ActionError,
-                    >,
-                > + Send
-                + '_,
-        >,
-    >;
+        input: serde_json::Value,
+        context: nebula_action::NodeContext,
+    ) -> Result<nebula_action::ActionResult<serde_json::Value>, nebula_action::ActionError>;
 }
 
 /// Collects the runtime components (actions, credentials) registered by a plugin.

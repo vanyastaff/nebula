@@ -57,11 +57,11 @@ impl Default for WebhookServerConfig {
     }
 }
 
-/// Shared server state
+/// Shared server state (used by both standalone and embedded mode).
 #[derive(Clone)]
-struct ServerState {
-    routes: SharedRouteMap,
-    config: Arc<WebhookServerConfig>,
+pub(crate) struct ServerState {
+    pub(crate) routes: SharedRouteMap,
+    pub(crate) config: Arc<WebhookServerConfig>,
 }
 
 /// Singleton HTTP webhook server
@@ -108,7 +108,59 @@ impl WebhookServer {
         Ok(server)
     }
 
-    /// Start the HTTP server
+    /// Create a webhook server in **embedded** mode (no bind, no spawn).
+    ///
+    /// Use [`router`](Self::router) to get an Axum `Router` and merge it into
+    /// another server (e.g. unified API server on one port).
+    pub fn new_embedded(config: WebhookServerConfig) -> Result<Arc<Self>> {
+        let routes = Arc::new(RouteMap::new());
+        let config = Arc::new(config);
+        info!(
+            base_url = %config.base_url,
+            path_prefix = %config.path_prefix,
+            "Webhook server created in embedded mode"
+        );
+        Ok(Arc::new(Self {
+            config: config.clone(),
+            routes: routes.clone(),
+            server_handle: Arc::new(Mutex::new(None)),
+            shutdown: CancellationToken::new(),
+        }))
+    }
+
+    /// Build the webhook HTTP router for embedding into another server.
+    ///
+    /// Mount this router at the root (it already uses [`path_prefix`](WebhookServerConfig::path_prefix)
+    /// for webhook routes). Example: `api_app.merge(webhook_server.router())`.
+    pub fn router(&self) -> Router {
+        let state = ServerState {
+            routes: self.routes.clone(),
+            config: self.config.clone(),
+        };
+        let app = Router::new()
+            .route(
+                &format!("{}/*path", self.config.path_prefix),
+                any(webhook_handler),
+            )
+            .with_state(state)
+            .layer(
+                TraceLayer::new_for_http()
+                    .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                    .on_response(DefaultOnResponse::new().level(Level::INFO)),
+            );
+        let app = if self.config.enable_compression {
+            app.layer(CompressionLayer::new())
+        } else {
+            app
+        };
+        if self.config.enable_cors {
+            app.layer(CorsLayer::permissive())
+        } else {
+            app
+        }
+    }
+
+    /// Start the HTTP server (standalone mode).
     async fn start_server(
         config: Arc<WebhookServerConfig>,
         routes: SharedRouteMap,
@@ -119,11 +171,8 @@ impl WebhookServer {
             config: config.clone(),
         };
 
-        // Build the router
         let app = Router::new()
-            // Health check endpoint
             .route("/health", get(health_check))
-            // Wildcard route for all webhooks
             .route(
                 &format!("{}/*path", config.path_prefix),
                 any(webhook_handler),
@@ -135,7 +184,6 @@ impl WebhookServer {
                     .on_response(DefaultOnResponse::new().level(Level::INFO)),
             );
 
-        // Add optional layers
         let app = if config.enable_compression {
             app.layer(CompressionLayer::new())
         } else {
@@ -148,14 +196,12 @@ impl WebhookServer {
             app
         };
 
-        // Bind to address
         let listener = TcpListener::bind(&config.bind_addr)
             .await
             .map_err(|e| Error::bind_failed(config.bind_addr.to_string(), e))?;
 
         info!(addr = %config.bind_addr, "Webhook server listening");
 
-        // Spawn the server task
         let handle = tokio::spawn(async move {
             tokio::select! {
                 result = axum::serve(listener, app) => {

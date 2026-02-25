@@ -2,8 +2,7 @@
 //!
 //! Tests performance of:
 //! - Basic combinators (And, Or, Not)
-//! - Advanced combinators (When, Optional)
-//! - Cached combinator with various hit rates
+//! - Advanced combinators (When)
 //! - Nested compositions
 
 use criterion::BenchmarkId;
@@ -126,138 +125,6 @@ fn bench_when_combinator(c: &mut Criterion) {
     group.bench_function("condition_false_skipped", |b| {
         b.iter(|| validator.validate(black_box("short")))
     });
-
-    group.finish();
-}
-
-fn bench_optional_combinator(c: &mut Criterion) {
-    use nebula_validator::foundation::ValidationError;
-
-    // Wrapper with sized Input type for Optional compatibility
-    struct SizedMinLength(usize);
-    impl Validate for SizedMinLength {
-        type Input = String;
-        fn validate(&self, input: &String) -> Result<(), ValidationError> {
-            if input.len() >= self.0 {
-                Ok(())
-            } else {
-                Err(ValidationError::new("min_length", "too short"))
-            }
-        }
-    }
-
-    let mut group = c.benchmark_group("optional_combinator");
-
-    let validator = SizedMinLength(5).optional();
-
-    group.bench_function("some_valid", |b| {
-        b.iter(|| validator.validate(black_box(&Some("hello world".to_string()))))
-    });
-
-    group.bench_function("some_invalid", |b| {
-        b.iter(|| validator.validate(black_box(&Some("hi".to_string()))))
-    });
-
-    group.bench_function("none", |b| {
-        b.iter(|| validator.validate(black_box(&None::<String>)))
-    });
-
-    group.finish();
-}
-
-// ============================================================================
-// CACHED COMBINATOR
-// ============================================================================
-
-fn bench_cached_combinator_cold(c: &mut Criterion) {
-    let mut group = c.benchmark_group("cached_cold");
-
-    // Expensive validator simulation (alphanumeric check is relatively cheap, but we'll use it)
-    let validator = alphanumeric().cached();
-
-    group.bench_function("unique_inputs", |b| {
-        let mut counter = 0;
-        b.iter(|| {
-            let input = format!("input{}", counter);
-            counter += 1;
-            validator.validate(black_box(&input))
-        })
-    });
-
-    group.finish();
-}
-
-fn bench_cached_combinator_hot(c: &mut Criterion) {
-    let mut group = c.benchmark_group("cached_hot");
-
-    let validator = alphanumeric().cached();
-
-    // Warm up cache
-    for _ in 0..10 {
-        let _ = validator.validate("hello123");
-    }
-
-    group.bench_function("repeated_input", |b| {
-        b.iter(|| validator.validate(black_box("hello123")))
-    });
-
-    group.finish();
-}
-
-fn bench_cached_hit_rates(c: &mut Criterion) {
-    let mut group = c.benchmark_group("cached_hit_rates");
-
-    let validator = alphanumeric().cached_with_capacity(100);
-
-    // 100% hit rate (single repeated input)
-    group.bench_function("hit_rate_100", |b| {
-        let _ = validator.validate("test");
-        b.iter(|| validator.validate(black_box("test")))
-    });
-
-    // ~50% hit rate (two inputs alternating)
-    group.bench_function("hit_rate_50", |b| {
-        let mut toggle = false;
-        b.iter(|| {
-            toggle = !toggle;
-            let input = if toggle { "test1" } else { "test2" };
-            validator.validate(black_box(input))
-        })
-    });
-
-    // ~0% hit rate (always unique)
-    group.bench_function("hit_rate_0", |b| {
-        let mut counter = 0u64;
-        b.iter(|| {
-            let input = format!("unique{}", counter);
-            counter += 1;
-            validator.validate(black_box(&input))
-        })
-    });
-
-    group.finish();
-}
-
-fn bench_cached_capacity(c: &mut Criterion) {
-    let mut group = c.benchmark_group("cached_capacity");
-
-    for capacity in [10, 100, 1000, 10000].iter() {
-        let validator = alphanumeric().cached_with_capacity(*capacity);
-
-        group.bench_with_input(
-            BenchmarkId::from_parameter(capacity),
-            capacity,
-            |b, _cap| {
-                // Access patterns that fit in cache
-                b.iter(|| {
-                    for i in 0..10 {
-                        let input = format!("test{}", i);
-                        let _re = validator.validate(black_box(&input));
-                    }
-                })
-            },
-        );
-    }
 
     group.finish();
 }
@@ -433,19 +300,7 @@ criterion_group!(
     bench_not_combinator
 );
 
-criterion_group!(
-    advanced_combinators,
-    bench_when_combinator,
-    bench_optional_combinator
-);
-
-criterion_group!(
-    cached_combinators,
-    bench_cached_combinator_cold,
-    bench_cached_combinator_hot,
-    bench_cached_hit_rates,
-    bench_cached_capacity
-);
+criterion_group!(advanced_combinators, bench_when_combinator);
 
 criterion_group!(
     composition,
@@ -459,7 +314,6 @@ criterion_group!(real_world, bench_form_validation);
 criterion_main!(
     basic_combinators,
     advanced_combinators,
-    cached_combinators,
     composition,
     real_world
 );

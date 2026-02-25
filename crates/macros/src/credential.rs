@@ -1,8 +1,13 @@
+//! Credential derive macro.
+//!
+//! Generates `CredentialType` trait impl for StaticProtocol, OAuth2, or LDAP flows.
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, parse_macro_input};
 
 use crate::support::{attrs, diag, utils};
+use crate::types::CredentialAttrs;
 
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -17,39 +22,23 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
     let struct_name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    let cred_attrs = attrs::parse_attrs(&input.attrs, "credential")?;
-    let key = cred_attrs.require_string("key", struct_name)?;
-    let name = cred_attrs.require_string("name", struct_name)?;
-    let description = cred_attrs
-        .get_string("description")
-        .or_else(|| Some(utils::doc_string(&input.attrs)))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| name.clone());
+    validate_struct(&input)?;
 
-    // Optional: extends = SomeProtocol
-    let extends_type = cred_attrs.get_type("extends")?;
+    let cred_attr_args = attrs::parse_attrs(&input.attrs, "credential")?;
+    let description_fallback = utils::doc_string(&input.attrs);
+    let description_fallback = if description_fallback.is_empty() {
+        None
+    } else {
+        Some(description_fallback)
+    };
 
-    // Optional explicit input/state types
-    let explicit_input = cred_attrs.get_type("input")?;
-    let explicit_state = cred_attrs.get_type("state")?;
+    let cred_attrs = CredentialAttrs::parse(&cred_attr_args, struct_name, description_fallback)?;
 
-    // Sub-protocol attribute blocks
     let oauth2_attrs = attrs::parse_attrs(&input.attrs, "oauth2")?;
     let ldap_attrs = attrs::parse_attrs(&input.attrs, "ldap")?;
 
-    // Detect protocol family by presence of sub-attribute blocks
     let has_oauth2 = !oauth2_attrs.items.is_empty();
     let has_ldap = !ldap_attrs.items.is_empty();
-
-    match &input.data {
-        Data::Struct(_) => {}
-        _ => {
-            return Err(syn::Error::new(
-                input.ident.span(),
-                "Credential derive can only be used on structs",
-            ));
-        }
-    }
 
     // ── FlowProtocol path (OAuth2) ─────────────────────────────────────────
     if has_oauth2 {
@@ -58,10 +47,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
             &impl_generics,
             &ty_generics,
             &where_clause,
-            &extends_type,
-            &key,
-            &name,
-            &description,
+            &cred_attrs,
             &oauth2_attrs,
         );
     }
@@ -73,10 +59,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
             &impl_generics,
             &ty_generics,
             &where_clause,
-            &extends_type,
-            &key,
-            &name,
-            &description,
+            &cred_attrs,
             &ldap_attrs,
         );
     }
@@ -84,9 +67,9 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
     // ── StaticProtocol path (default) ─────────────────────────────────────
 
     // Resolve Input type
-    let resolved_input = match &explicit_input {
+    let resolved_input = match &cred_attrs.input {
         Some(t) => quote! { #t },
-        None if extends_type.is_some() => {
+        None if cred_attrs.extends.is_some() => {
             quote! { ::nebula_parameter::values::ParameterValues }
         }
         None => {
@@ -98,7 +81,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
     };
 
     // Resolve State type
-    let resolved_state = match (&explicit_state, &extends_type) {
+    let resolved_state = match (&cred_attrs.state, &cred_attrs.extends) {
         (Some(s), _) => quote! { #s },
         (None, Some(proto)) => quote! {
             <#proto as ::nebula_credential::traits::StaticProtocol>::State
@@ -112,7 +95,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
     };
 
     // Resolve properties expression for CredentialDescription
-    let properties_expr = match &extends_type {
+    let properties_expr = match &cred_attrs.extends {
         Some(proto) => quote! {
             <#proto as ::nebula_credential::traits::StaticProtocol>::parameters()
         },
@@ -122,7 +105,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
     };
 
     // Resolve initialize body
-    let initialize_body = match &extends_type {
+    let initialize_body = match &cred_attrs.extends {
         Some(proto) => quote! {
             let state = <#proto as ::nebula_credential::traits::StaticProtocol>::build_state(input)?;
             ::std::result::Result::Ok(
@@ -136,6 +119,8 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
             )
         },
     };
+
+    let desc_fields = cred_attrs.description_fields_expr(properties_expr);
 
     let expanded = quote! {
         #[::async_trait::async_trait]
@@ -152,13 +137,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                     OnceLock::new();
                 DESCRIPTION.get_or_init(|| {
                     ::nebula_credential::core::CredentialDescription {
-                        key: #key.to_string(),
-                        name: #name.to_string(),
-                        description: #description.to_string(),
-                        icon: None,
-                        icon_url: None,
-                        documentation_url: None,
-                        properties: #properties_expr,
+                        #desc_fields
                     }
                 })
                 .clone()
@@ -182,20 +161,19 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
 
 // ── OAuth2 FlowProtocol expansion ─────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
 fn expand_oauth2_flow(
     struct_name: &syn::Ident,
     impl_generics: &syn::ImplGenerics<'_>,
     ty_generics: &syn::TypeGenerics<'_>,
     where_clause: &Option<&syn::WhereClause>,
-    extends_type: &Option<syn::Type>,
-    key: &str,
-    name: &str,
-    description: &str,
+    cred_attrs: &CredentialAttrs,
     oauth2_attrs: &attrs::AttrArgs,
 ) -> syn::Result<TokenStream> {
-    // The protocol type — default to OAuth2Protocol
-    let proto = match extends_type {
+    let key = &cred_attrs.key;
+    let name = &cred_attrs.name;
+    let description = &cred_attrs.description;
+
+    let proto = match &cred_attrs.extends {
         Some(t) => quote! { #t },
         None => quote! { ::nebula_credential::protocols::OAuth2Protocol },
     };
@@ -286,19 +264,19 @@ fn expand_oauth2_flow(
 
 // ── LDAP FlowProtocol expansion ───────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
 fn expand_ldap_flow(
     struct_name: &syn::Ident,
     impl_generics: &syn::ImplGenerics<'_>,
     ty_generics: &syn::TypeGenerics<'_>,
     where_clause: &Option<&syn::WhereClause>,
-    extends_type: &Option<syn::Type>,
-    key: &str,
-    name: &str,
-    description: &str,
+    cred_attrs: &CredentialAttrs,
     ldap_attrs: &attrs::AttrArgs,
 ) -> syn::Result<TokenStream> {
-    let proto = match extends_type {
+    let key = &cred_attrs.key;
+    let name = &cred_attrs.name;
+    let description = &cred_attrs.description;
+
+    let proto = match &cred_attrs.extends {
         Some(t) => quote! { #t },
         None => quote! { ::nebula_credential::protocols::LdapProtocol },
     };
@@ -361,4 +339,14 @@ fn expand_ldap_flow(
     };
 
     Ok(expanded.into())
+}
+
+fn validate_struct(input: &DeriveInput) -> syn::Result<()> {
+    match &input.data {
+        Data::Struct(_) => Ok(()),
+        _ => Err(syn::Error::new(
+            input.ident.span(),
+            "Credential derive can only be used on structs",
+        )),
+    }
 }

@@ -29,4 +29,5 @@ dashmap = { workspace = true }
 nebula-core = { path = "../core" }
 nebula-sandbox-inprocess = { path = "../drivers/sandbox-inprocess" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio-util = { workspace = true }
 pretty_assertions = { workspace = true }

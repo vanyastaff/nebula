@@ -19,8 +19,55 @@ pub mod metadata {
     }
 }
 
+pub struct ActionComponents;
+
+impl ActionComponents {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn credential(self, _: CredentialRef) -> Self {
+        self
+    }
+
+    pub fn resource(self, _: ResourceRef) -> Self {
+        self
+    }
+
+    pub fn credentials(&self) -> &[CredentialRef] {
+        &[]
+    }
+
+    pub fn resources(&self) -> &[ResourceRef] {
+        &[]
+    }
+}
+
+impl Default for ActionComponents {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct CredentialRef(std::any::TypeId);
+
+impl CredentialRef {
+    pub fn of<T: 'static>() -> Self {
+        Self(std::any::TypeId::of::<T>())
+    }
+}
+
+pub struct ResourceRef(std::any::TypeId);
+
+impl ResourceRef {
+    pub fn of<T: 'static>() -> Self {
+        Self(std::any::TypeId::of::<T>())
+    }
+}
+
 pub trait Action: Send + Sync + 'static {
     fn metadata(&self) -> &crate::metadata::ActionMetadata;
+    fn components(&self) -> ActionComponents;
 }
 
 pub struct PluginComponents;

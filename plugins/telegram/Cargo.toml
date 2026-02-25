@@ -1,0 +1,27 @@
+[package]
+name = "nebula-telegram"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description = "Telegram bot plugin for Nebula (Resource + teloxide client)"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+nebula-resource = { path = "../../crates/resource", features = ["tokio"] }
+teloxide = { version = "0.17", default-features = false, features = ["macros", "native-tls"] }
+url = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[[example]]
+name = "check_bot"
+path = "examples/check_bot.rs"
+
+[[example]]
+name = "echo_bot"
+path = "examples/echo_bot.rs"

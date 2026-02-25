@@ -1,8 +1,13 @@
+//! Plugin derive macro.
+//!
+//! Generates `Plugin` trait impl with `metadata()` and `register()`.
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, parse_macro_input};
 
 use crate::support::{attrs, diag, utils};
+use crate::types::PluginAttrs;
 
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -17,28 +22,18 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
     let struct_name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    let plugin_attrs = attrs::parse_attrs(&input.attrs, "plugin")?;
-    let key = plugin_attrs.require_string("key", struct_name)?;
-    let name = plugin_attrs.require_string("name", struct_name)?;
-    let description = plugin_attrs
-        .get_string("description")
-        .or_else(|| Some(utils::doc_string(&input.attrs)))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| name.clone());
-    let version = plugin_attrs.get_int("version").unwrap_or(1) as u32;
-    let group = plugin_attrs.get_list("group").unwrap_or_default();
+    validate_struct(&input)?;
 
-    match &input.data {
-        Data::Struct(_) => {}
-        _ => {
-            return Err(syn::Error::new(
-                input.ident.span(),
-                "Plugin derive can only be used on structs",
-            ));
-        }
+    let attr_args = attrs::parse_attrs(&input.attrs, "plugin")?;
+    let description_fallback = utils::doc_string(&input.attrs);
+    let description_fallback = if description_fallback.is_empty() {
+        None
+    } else {
+        Some(description_fallback)
     };
 
-    let group_items: Vec<_> = group.iter().map(|g| quote!(#g.to_string())).collect();
+    let attrs = PluginAttrs::parse(&attr_args, struct_name, description_fallback)?;
+    let metadata_expr = attrs.metadata_builder_expr();
 
     let expanded = quote! {
         impl #impl_generics ::nebula_plugin::Plugin for #struct_name #ty_generics #where_clause {
@@ -46,14 +41,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
                 use ::std::sync::OnceLock;
 
                 static METADATA: OnceLock<::nebula_plugin::PluginMetadata> = OnceLock::new();
-                METADATA.get_or_init(|| {
-                    ::nebula_plugin::PluginMetadata::builder(#key, #name)
-                        .description(#description)
-                        .version(#version)
-                        .group(vec![#(#group_items),*])
-                        .build()
-                        .expect("invalid plugin metadata")
-                })
+                METADATA.get_or_init(|| #metadata_expr)
             }
 
             fn register(&self, _components: &mut ::nebula_plugin::PluginComponents) {}
@@ -61,4 +49,14 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
     };
 
     Ok(expanded.into())
+}
+
+fn validate_struct(input: &DeriveInput) -> syn::Result<()> {
+    match &input.data {
+        Data::Struct(_) => Ok(()),
+        _ => Err(syn::Error::new(
+            input.ident.span(),
+            "Plugin derive can only be used on structs",
+        )),
+    }
 }

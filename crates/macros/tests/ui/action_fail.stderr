@@ -9,3 +9,9 @@ error: missing required attribute `name = "..."`
    |
 17 | pub struct MissingNameAction;
    |            ^^^^^^^^^^^^^^^^^
+
+error: Action derive requires a unit struct with no fields (e.g. `struct MyAction;`)
+  --> tests/ui/action_fail.rs:22:12
+   |
+22 | pub struct ActionWithFields {
+   |            ^^^^^^^^^^^^^^^^

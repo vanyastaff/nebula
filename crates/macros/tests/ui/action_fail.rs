@@ -16,4 +16,11 @@ pub struct MissingKeyAction;
 )]
 pub struct MissingNameAction;
 
+// Struct with fields — not allowed
+#[derive(Action)]
+#[action(key = "test.with_fields", name = "With Fields")]
+pub struct ActionWithFields {
+    config: String,
+}
+
 fn main() {}

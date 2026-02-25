@@ -1,0 +1,33 @@
+# Локальное окружение: БД и при необходимости другие сервисы.
+# Запуск из корня репо: docker compose -f deploy/docker/docker-compose.yml up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nebula-postgres
+    environment:
+      POSTGRES_USER: nebula
+      POSTGRES_PASSWORD: nebula
+      POSTGRES_DB: nebula
+    ports:
+      - "5432:5432"
+    volumes:
+      - nebula_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nebula -d nebula"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Опционально: Redis для кеша/очередей
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: nebula-redis
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - nebula_redis_data:/data
+
+volumes:
+  nebula_pgdata:
+  # nebula_redis_data:

@@ -22,4 +22,5 @@ tracing = { workspace = true }
 [dev-dependencies]
 nebula-core = { path = "../../core" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio-util = { workspace = true }
 pretty_assertions = { workspace = true }

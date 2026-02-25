@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use nebula_action::context::ActionContext;
+use nebula_action::NodeContext;
 use nebula_action::result::ActionResult;
 use nebula_ports::sandbox::SandboxRunner;
 use nebula_telemetry::event::{EventBus, ExecutionEvent};
@@ -78,7 +78,7 @@ impl ActionRuntime {
         &self,
         action_key: &str,
         input: serde_json::Value,
-        context: ActionContext,
+        context: NodeContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let handler = self.registry.get(action_key)?;
         let node_id = context.node_id.to_string();
@@ -203,14 +203,9 @@ fn primary_output(result: &ActionResult<serde_json::Value>) -> Option<&serde_jso
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_action::ParameterCollection;
-    use nebula_action::capability::IsolationLevel;
     use nebula_action::error::ActionError;
-    // TODO: InternalHandler and ActionMetadata unavailable in nebula_action
-    // use nebula_action::handler::InternalHandler;
-    use nebula_action::metadata::{ActionMetadata, ActionType};
+    use nebula_action::metadata::ActionMetadata;
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
-    use nebula_core::scope::ScopeLevel;
     use nebula_plugin::InternalHandler;
     use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};
 
@@ -223,18 +218,12 @@ mod tests {
         async fn execute(
             &self,
             input: serde_json::Value,
-            _ctx: ActionContext,
+            _ctx: NodeContext,
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             Ok(ActionResult::success(input))
         }
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
-        }
-        fn action_type(&self) -> ActionType {
-            ActionType::Process
-        }
-        fn parameters(&self) -> Option<&ParameterCollection> {
-            None
         }
     }
 
@@ -247,27 +236,21 @@ mod tests {
         async fn execute(
             &self,
             _input: serde_json::Value,
-            _ctx: ActionContext,
+            _ctx: NodeContext,
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             Err(ActionError::retryable("transient failure"))
         }
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
         }
-        fn action_type(&self) -> ActionType {
-            ActionType::Process
-        }
-        fn parameters(&self) -> Option<&ParameterCollection> {
-            None
-        }
     }
 
-    fn test_context() -> ActionContext {
-        ActionContext::new(
+    fn test_context() -> NodeContext {
+        NodeContext::new(
             ExecutionId::v4(),
             NodeId::v4(),
             WorkflowId::v4(),
-            ScopeLevel::Global,
+            tokio_util::sync::CancellationToken::new(),
         )
     }
 
@@ -292,8 +275,7 @@ mod tests {
     async fn execute_trusted_action() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("test.echo", "Echo", "echoes input")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("test.echo", "Echo", "echoes input"),
         }));
 
         let rt = make_runtime(registry);
@@ -324,8 +306,7 @@ mod tests {
     async fn execute_failing_action_propagates_error() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(FailHandler {
-            meta: ActionMetadata::new("test.fail", "Fail", "always fails")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("test.fail", "Fail", "always fails"),
         }));
 
         let rt = make_runtime(registry);
@@ -340,8 +321,7 @@ mod tests {
     async fn data_limit_enforcement() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("test.big", "Big", "returns big output")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("test.big", "Big", "returns big output"),
         }));
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
@@ -374,8 +354,7 @@ mod tests {
     async fn telemetry_events_emitted() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("test.tele", "Tele", "test")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("test.tele", "Tele", "test"),
         }));
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {

@@ -20,7 +20,7 @@
 //! - [`ActionResult`] — execution result carrying data and flow-control intent
 //! - [`ActionOutput`] — first-class output type (value, binary, reference, stream)
 //! - [`ActionError`] — error type distinguishing retryable from fatal failures
-//! - [`ActionContext`] — runtime context with IDs, variables, cancellation
+//! - [`Context`] — base trait for execution contexts
 //! - [`ActionMetadata`] — static descriptor (key, version, capabilities)
 //!
 //! ## Quick Start
@@ -44,7 +44,7 @@
 //!     async fn execute(
 //!         &self,
 //!         input: Self::Input,
-//!         ctx: &ActionContext,
+//!         ctx: &impl Context,
 //!     ) -> Result<ActionResult<Self::Output>, ActionError> {
 //!         ctx.check_cancelled()?;
 //!         Ok(ActionResult::success(input))
@@ -78,7 +78,7 @@ pub mod result;
 
 pub use action::Action;
 pub use components::ActionComponents;
-pub use context::ActionContext;
+pub use context::{Context, NodeContext};
 pub use error::ActionError;
 pub use metadata::{ActionMetadata, InterfaceVersion};
 pub use output::{
@@ -90,7 +90,5 @@ pub use output::{
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
 
-// Re-export parameter types so action authors can define parameters without
-// depending on `nebula-parameter` directly.
 pub use nebula_parameter::collection::ParameterCollection;
 pub use nebula_parameter::def::ParameterDef;

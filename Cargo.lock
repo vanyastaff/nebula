@@ -6500,6 +6500,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.17",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -6514,6 +6515,7 @@ dependencies = [
  "pretty_assertions",
  "serde_json",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

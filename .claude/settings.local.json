@@ -70,7 +70,10 @@
       "Bash(wc:*)",
       "Bash(cargo doc:*)",
       "mcp__filesystem__list_directory_with_sizes",
-      "Bash(git -C /c/Users/vanya/RustroverProjects/nebula branch -a)"
+      "Bash(git -C /c/Users/vanya/RustroverProjects/nebula branch -a)",
+      "mcp__filesystem__edit_file",
+      "Bash(dir:*)",
+      "Bash(git -C \"C:/Users/vanya/RustroverProjects/nebula\" status --short)"
     ]
   }
 }

@@ -24,10 +24,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+async-trait = { workspace = true }
 
 # Optional: dynamic library loading
 libloading = { version = "0.8", optional = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
-async-trait = { workspace = true }

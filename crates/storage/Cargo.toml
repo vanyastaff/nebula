@@ -1,0 +1,36 @@
+[package]
+name = "nebula-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Storage abstraction for Nebula: key-value backends (memory, Redis, Postgres, S3)"
+keywords.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+nebula-core = { path = "../core" }
+
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+# Optional backends (см. docs/nebula-architecture-final.md)
+sqlx = { version = "0.8", optional = true, features = ["runtime-tokio", "postgres"] }
+redis = { version = "0.27", optional = true, features = ["tokio-comp"] }
+aws-config = { version = "1.4", optional = true }
+aws-sdk-s3 = { version = "1.30", optional = true }
+
+[features]
+default = []
+postgres = ["dep:sqlx"]
+redis = ["dep:redis"]
+s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

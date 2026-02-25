@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use dashmap::DashMap;
 // TODO: ExecutionBudget moved to nebula-execution
-use nebula_action::{ActionContext, ActionResult};
+use nebula_action::{ActionResult, NodeContext};
 use nebula_core::id::{ActionId, ExecutionId, NodeId, WorkflowId};
 // ScopeLevel removed from ActionContext
 // use nebula_core::scope::ScopeLevel;
@@ -528,8 +528,12 @@ impl NodeTask {
             return (self.node_id, Err(EngineError::Cancelled));
         }
 
-        let action_ctx = ActionContext::new(self.execution_id, self.node_id, self.workflow_id)
-            .with_cancellation(self.cancel.child_token());
+        let action_ctx = NodeContext::new(
+            self.execution_id,
+            self.node_id,
+            self.workflow_id,
+            self.cancel.child_token(),
+        );
 
         // TODO: support_inputs and resource_provider removed from ActionContext
         // if !self.support_inputs.is_empty() {
@@ -904,13 +908,11 @@ fn extract_primary_output(result: &ActionResult<serde_json::Value>) -> Option<se
 mod tests {
     use super::*;
     use nebula_action::ActionError;
-    use nebula_action::ParameterCollection;
-    use nebula_action::capability::IsolationLevel;
-    use nebula_action::handler::InternalHandler;
-    use nebula_action::metadata::{ActionMetadata, ActionType};
+    use nebula_action::metadata::ActionMetadata;
     use nebula_action::result::ActionResult;
     use nebula_core::Version;
     use nebula_core::id::ActionId;
+    use nebula_plugin::InternalHandler;
     use nebula_runtime::DataPassingPolicy;
     use nebula_runtime::registry::ActionRegistry;
     use nebula_sandbox_inprocess::{ActionExecutor, InProcessSandbox};
@@ -927,18 +929,12 @@ mod tests {
         async fn execute(
             &self,
             input: serde_json::Value,
-            _ctx: ActionContext,
+            _ctx: NodeContext,
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             Ok(ActionResult::success(input))
         }
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
-        }
-        fn action_type(&self) -> ActionType {
-            ActionType::Process
-        }
-        fn parameters(&self) -> Option<&ParameterCollection> {
-            None
         }
     }
 
@@ -951,18 +947,12 @@ mod tests {
         async fn execute(
             &self,
             _input: serde_json::Value,
-            _ctx: ActionContext,
+            _ctx: NodeContext,
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             Err(ActionError::fatal("intentional failure"))
         }
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
-        }
-        fn action_type(&self) -> ActionType {
-            ActionType::Process
-        }
-        fn parameters(&self) -> Option<&ParameterCollection> {
-            None
         }
     }
 
@@ -1017,8 +1007,7 @@ mod tests {
         let action_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
 
         let (mut engine, _, _) = make_engine(registry);
@@ -1041,8 +1030,7 @@ mod tests {
         let echo_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
 
         let (mut engine, _, _) = make_engine(registry);
@@ -1074,8 +1062,7 @@ mod tests {
         let echo_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
 
         let (mut engine, _, _) = make_engine(registry);
@@ -1121,12 +1108,10 @@ mod tests {
         let fail_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
         registry.register(Arc::new(FailHandler {
-            meta: ActionMetadata::new("fail", "Fail", "always fails")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("fail", "Fail", "always fails"),
         }));
 
         let (mut engine, _, _) = make_engine(registry);
@@ -1190,8 +1175,7 @@ mod tests {
         let echo_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
 
         let (mut engine, event_bus, metrics) = make_engine(registry);
@@ -1223,8 +1207,7 @@ mod tests {
         let fail_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(FailHandler {
-            meta: ActionMetadata::new("fail", "Fail", "always fails")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("fail", "Fail", "always fails"),
         }));
 
         let (mut engine, _, metrics) = make_engine(registry);
@@ -1254,18 +1237,12 @@ mod tests {
         async fn execute(
             &self,
             _input: serde_json::Value,
-            _ctx: ActionContext,
+            _ctx: NodeContext,
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             Ok(ActionResult::skip("skipped by test"))
         }
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
-        }
-        fn action_type(&self) -> ActionType {
-            ActionType::Process
-        }
-        fn parameters(&self) -> Option<&ParameterCollection> {
-            None
         }
     }
 
@@ -1279,7 +1256,7 @@ mod tests {
         async fn execute(
             &self,
             input: serde_json::Value,
-            _ctx: ActionContext,
+            _ctx: NodeContext,
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             Ok(ActionResult::Branch {
                 selected: self.selected.clone(),
@@ -1289,12 +1266,6 @@ mod tests {
         }
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
-        }
-        fn action_type(&self) -> ActionType {
-            ActionType::Process
-        }
-        fn parameters(&self) -> Option<&ParameterCollection> {
-            None
         }
     }
 
@@ -1308,12 +1279,10 @@ mod tests {
         let branch_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
         registry.register(Arc::new(BranchHandler {
-            meta: ActionMetadata::new("branch", "Branch", "branches")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("branch", "Branch", "branches"),
             selected: "true".into(),
         }));
 
@@ -1363,12 +1332,10 @@ mod tests {
         let skip_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
         registry.register(Arc::new(SkipHandler {
-            meta: ActionMetadata::new("skip", "Skip", "always skips")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("skip", "Skip", "always skips"),
         }));
 
         let (mut engine, _, _) = make_engine(registry);
@@ -1409,12 +1376,10 @@ mod tests {
         let fail_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
         registry.register(Arc::new(FailHandler {
-            meta: ActionMetadata::new("fail", "Fail", "always fails")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("fail", "Fail", "always fails"),
         }));
 
         let (mut engine, _, _) = make_engine(registry);
@@ -1461,12 +1426,10 @@ mod tests {
         let fail_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
         registry.register(Arc::new(FailHandler {
-            meta: ActionMetadata::new("fail", "Fail", "always fails")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("fail", "Fail", "always fails"),
         }));
 
         let (mut engine, _, _) = make_engine(registry);
@@ -1502,8 +1465,7 @@ mod tests {
         let echo_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
 
         let (mut engine, _, _) = make_engine(registry);
@@ -1541,8 +1503,7 @@ mod tests {
         let echo_id = ActionId::v4();
         let registry = Arc::new(ActionRegistry::new());
         registry.register(Arc::new(EchoHandler {
-            meta: ActionMetadata::new("echo", "Echo", "echoes input")
-                .with_isolation(IsolationLevel::None),
+            meta: ActionMetadata::new("echo", "Echo", "echoes input"),
         }));
 
         let (mut engine, _, _) = make_engine(registry);

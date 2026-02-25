@@ -134,6 +134,51 @@ impl AttrArgs {
         })
     }
 
+    /// Get type from attribute, returning None when value is a string literal.
+    /// Use for credential/resource where `key = "string"` should be ignored.
+    pub fn get_type_skip_string(&self, key: &str) -> Result<Option<Type>> {
+        let value = match self.get_value(key) {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        if matches!(value, AttrValue::Lit(Lit::Str(_))) {
+            return Ok(None);
+        }
+        self.get_type(key)
+    }
+
+    /// Get a list of types from an attribute like `resources = [PostgresDb, RedisCache]`.
+    pub fn get_type_list(&self, key: &str) -> Result<Vec<Type>> {
+        let values = self.items.iter().find_map(|item| match item {
+            AttrItem::List { key: k, values } if k == key => Some(values),
+            _ => None,
+        });
+
+        let Some(values) = values else {
+            return Ok(Vec::new());
+        };
+
+        let mut types = Vec::with_capacity(values.len());
+        for v in values {
+            let ty = match v {
+                AttrValue::Lit(Lit::Str(s)) => syn::parse_str::<Type>(&s.value())
+                    .map_err(|e| diag::error_spanned(s, format!("invalid type: {e}")))?,
+                AttrValue::Ident(i) => syn::parse_str::<Type>(&i.to_string())
+                    .map_err(|e| diag::error_spanned(i, format!("invalid type: {e}")))?,
+                AttrValue::Tokens(ts) => syn::parse2::<Type>(ts.clone())
+                    .map_err(|e| diag::error_spanned(ts, format!("invalid type: {e}")))?,
+                AttrValue::Lit(other) => {
+                    return Err(diag::error_spanned(
+                        other,
+                        format!("expected a type in `{key}` list"),
+                    ));
+                }
+            };
+            types.push(ty);
+        }
+        Ok(types)
+    }
+
     /// Require a string value, returning an error if missing.
     pub fn require_string(&self, key: &str, span: &impl quote::ToTokens) -> Result<String> {
         self.get_string(key).ok_or_else(|| {

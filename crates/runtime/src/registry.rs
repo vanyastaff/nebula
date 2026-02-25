@@ -142,10 +142,9 @@ impl Default for ActionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_action::ParameterCollection;
-    use nebula_action::context::ActionContext;
+    use nebula_action::NodeContext;
     use nebula_action::error::ActionError;
-    use nebula_action::metadata::{ActionMetadata, ActionType};
+    use nebula_action::metadata::ActionMetadata;
     use nebula_action::result::ActionResult;
 
     /// Minimal test handler that echoes input.
@@ -166,21 +165,13 @@ mod tests {
         async fn execute(
             &self,
             input: serde_json::Value,
-            _ctx: ActionContext,
+            _ctx: NodeContext,
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             Ok(ActionResult::success(input))
         }
 
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
-        }
-
-        fn action_type(&self) -> ActionType {
-            ActionType::Process
-        }
-
-        fn parameters(&self) -> Option<&ParameterCollection> {
-            None
         }
     }
 

@@ -16,7 +16,6 @@ pub use nebula_core::{
 // Action traits and types
 pub use nebula_action::{
     Action,
-    ActionContext,
     ActionError,
     ActionResult,
     ParameterCollection,
