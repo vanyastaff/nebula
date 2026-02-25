@@ -58,6 +58,7 @@ pub mod credentials;
 pub mod error;
 pub mod guard;
 pub mod lifecycle;
+pub mod metadata;
 pub mod reference;
 pub mod resource;
 pub mod scope;
@@ -85,6 +86,7 @@ pub use context::Context;
 pub use error::{Error, FieldViolation, Result};
 pub use guard::Guard;
 pub use lifecycle::Lifecycle;
+pub use metadata::ResourceMetadata;
 pub use reference::{ResourceProvider, ResourceRef};
 pub use resource::{Config, Resource};
 pub use scope::{Scope, Strategy};
@@ -105,6 +107,7 @@ pub use hooks::{
 #[cfg(feature = "tokio")]
 pub use manager::{
     AnyGuard, AnyGuardTrait, DependencyGraph, Manager, ResourceHandle, ShutdownConfig,
+    TypedResourceGuard,
 };
 #[cfg(feature = "tokio")]
 #[cfg(feature = "metrics")]
@@ -126,6 +129,7 @@ pub mod prelude {
     pub use crate::error::{Error, Result};
     pub use crate::guard::Guard;
     pub use crate::lifecycle::Lifecycle;
+    pub use crate::metadata::ResourceMetadata;
     pub use crate::reference::{ResourceProvider, ResourceRef};
     pub use crate::resource::{Config, Resource};
     pub use crate::scope::{Scope, Strategy};
@@ -139,7 +143,7 @@ pub mod prelude {
     #[cfg(feature = "tokio")]
     pub use crate::hooks::{HookEvent, HookFilter, HookRegistry, HookResult, ResourceHook};
     #[cfg(feature = "tokio")]
-    pub use crate::manager::{Manager, ResourceHandle};
+    pub use crate::manager::{Manager, ResourceHandle, TypedResourceGuard};
     #[cfg(feature = "tokio")]
     pub use crate::pool::{Pool, PoolConfig, PoolStats, PoolStrategy};
 }

@@ -15,6 +15,7 @@ use crate::events::{EventBus, ResourceEvent};
 use crate::guard::Guard;
 use crate::health::HealthState;
 use crate::hooks::{HookEvent, HookRegistry};
+use crate::metadata::ResourceMetadata;
 use crate::pool::{Pool, PoolConfig};
 use crate::quarantine::{QuarantineConfig, QuarantineManager};
 use crate::resource::Resource;
@@ -399,6 +400,66 @@ impl ResourceHandle {
     }
 }
 
+/// Type-safe guard returned by [`Manager::acquire_typed`].
+///
+/// Holds the same underlying pool guard as [`AnyGuard`], but exposes the
+/// instance as a concrete type so you avoid manual downcasting.
+///
+/// Implements [`Deref`](std::ops::Deref) to `T`, so you can call methods on the
+/// instance directly: `guard.get_me().await` instead of `guard.get().get_me().await`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let guard = manager.acquire_typed(TelegramBotResource, &ctx).await?;
+/// let me = guard.get_me().await?;  // Deref to inner type
+/// ```
+pub struct TypedResourceGuard<T: Send + Sync + 'static> {
+    guard: AnyGuard,
+    _marker: std::marker::PhantomData<T>,
+}
+
+impl<T: Send + Sync + 'static> TypedResourceGuard<T> {
+    /// Access the resource instance. The type is guaranteed by [`Manager::acquire_typed`].
+    #[must_use]
+    pub fn get(&self) -> &T {
+        self.guard
+            .as_any()
+            .downcast_ref()
+            .expect("TypedResourceGuard type mismatch")
+    }
+
+    /// Mutably access the resource instance.
+    pub fn get_mut(&mut self) -> &mut T {
+        self.guard
+            .as_any_mut()
+            .downcast_mut()
+            .expect("TypedResourceGuard type mismatch")
+    }
+}
+
+impl<T: Send + Sync + 'static> std::fmt::Debug for TypedResourceGuard<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TypedResourceGuard")
+            .field("type", &std::any::type_name::<T>())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: Send + Sync + 'static> std::ops::Deref for TypedResourceGuard<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.get()
+    }
+}
+
+impl<T: Send + Sync + 'static> std::ops::DerefMut for TypedResourceGuard<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.get_mut()
+    }
+}
+
 /// Concrete guard wrapping a typed `Guard`.
 struct TypedGuard<R: Resource> {
     guard: Guard<R::Instance>,
@@ -432,6 +493,9 @@ trait AnyPool: Send + Sync {
 
     /// Shut down the pool.
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>>;
+
+    /// Current pool utilization: (active, idle, max_size).
+    fn utilization_snapshot(&self) -> (usize, usize, usize);
 }
 
 /// Concrete adapter from `Pool<R>` to `AnyPool`.
@@ -455,6 +519,10 @@ where
 
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> {
         Box::pin(async move { self.pool.shutdown().await })
+    }
+
+    fn utilization_snapshot(&self) -> (usize, usize, usize) {
+        self.pool.utilization_snapshot()
     }
 }
 
@@ -506,6 +574,8 @@ pub struct Manager {
     quarantine: QuarantineManager,
     /// Per-resource health states (set externally or by health checker events).
     health_states: DashMap<String, HealthState>,
+    /// Per-resource metadata (from `Resource::metadata()` at registration).
+    metadata: DashMap<String, ResourceMetadata>,
     /// Hook registry for lifecycle hooks.
     hooks: HookRegistry,
 }
@@ -521,6 +591,7 @@ impl Default for Manager {
             event_bus: Arc::new(EventBus::default()),
             quarantine: QuarantineManager::default(),
             health_states: DashMap::new(),
+            metadata: DashMap::new(),
             hooks: HookRegistry::default(),
         }
     }
@@ -601,6 +672,7 @@ impl Manager {
         R::Instance: Any,
     {
         let id = resource.id().to_string();
+        let meta = resource.metadata();
         let new_deps: Vec<String> = resource
             .dependencies()
             .into_iter()
@@ -631,6 +703,7 @@ impl Manager {
                 scope: scope.clone(),
             },
         );
+        self.metadata.insert(id.clone(), meta);
 
         self.event_bus.emit(ResourceEvent::Created {
             resource_id: id.clone(),
@@ -753,6 +826,32 @@ impl Manager {
                 Err(err)
             }
         }
+    }
+
+    /// Acquire a resource by type, without string ID or manual downcast.
+    ///
+    /// Use this when the resource type is known at compile time. Returns a
+    /// [`TypedResourceGuard<R::Instance>`] so you can call `.get()` directly.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let guard = manager.acquire_typed(TelegramBotResource, &ctx).await?;
+    /// let bot = guard.get(); // &Arc<teloxide::Bot>
+    /// ```
+    pub async fn acquire_typed<R: Resource>(
+        &self,
+        resource: R,
+        ctx: &Context,
+    ) -> Result<TypedResourceGuard<R::Instance>>
+    where
+        R::Instance: Any,
+    {
+        let guard = self.acquire(resource.id(), ctx).await?;
+        Ok(TypedResourceGuard {
+            guard,
+            _marker: std::marker::PhantomData,
+        })
     }
 
     /// Shut down all pools whose scope is contained by `scope`.
@@ -907,6 +1006,7 @@ impl Manager {
         }
 
         self.pools.clear();
+        self.metadata.clear();
         self.health_checker.shutdown();
         Ok(())
     }
@@ -941,6 +1041,7 @@ impl Manager {
         for id in &ordered {
             if let Some((_, entry)) = self.pools.remove(id) {
                 let _ = tokio::time::timeout(config.cleanup_timeout, entry.pool.shutdown()).await;
+                self.metadata.remove(id);
                 self.event_bus.emit(ResourceEvent::CleanedUp {
                     resource_id: id.clone(),
                     reason: crate::events::CleanupReason::Shutdown,
@@ -952,6 +1053,7 @@ impl Manager {
         if !self.pools.is_empty() {
             tokio::time::sleep(config.terminate_timeout).await;
             self.pools.clear();
+            self.metadata.clear();
         }
 
         self.health_checker.shutdown();

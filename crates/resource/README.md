@@ -74,6 +74,7 @@ See [RESOURCE_REF.md](./RESOURCE_REF.md) for detailed documentation on `Resource
 
 - **Manager**: The central entry point. Manages multiple pools and the dependency graph.
 - **Pool**: Handles the actual storage, creation, and recycling of resource instances.
+- **ResourceMetadata**: Static descriptor (key, name, description, icon, tags) for UI and discovery — similar to `ActionMetadata` in nebula-action. Implement `Resource::metadata()` to provide it; default builds from `id()`.
 - **HealthChecker**: Runs sidecar tasks to verify resource health.
 - **ResourceProvider**: Trait for decoupled resource acquisition (supports type-safe and dynamic access).
 - **ResourceRef**: Type-safe wrapper around `TypeId` for resource identification.

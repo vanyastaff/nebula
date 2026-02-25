@@ -7,6 +7,7 @@ use std::future::Future;
 
 use crate::context::Context;
 use crate::error::Result;
+use crate::metadata::ResourceMetadata;
 
 /// Configuration trait for resource types.
 pub trait Config: Send + Sync + 'static {
@@ -29,6 +30,13 @@ pub trait Resource: Send + Sync + 'static {
 
     /// Unique string identifier for this resource type (e.g. "postgres", "redis").
     fn id(&self) -> &str;
+
+    /// Static metadata (display name, description, kind) for UI and discovery.
+    ///
+    /// Default implementation builds from `id()` only; override to provide name/description/kind.
+    fn metadata(&self) -> ResourceMetadata {
+        ResourceMetadata::from_key(self.id())
+    }
 
     /// Create a new instance from config and context.
     fn create(
