@@ -22,12 +22,31 @@ use crate::error::Error;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HookEvent {
     /// Before/after acquiring a resource instance.
+    ///
+    /// Before-hooks can cancel the acquisition by returning
+    /// [`HookResult::Cancel`].
     Acquire,
     /// Before/after releasing a resource instance.
+    ///
+    /// **Note:** Release happens inside a `Drop` impl (via
+    /// [`ReleaseHookGuard`](crate::manager::ReleaseHookGuard-internal)),
+    /// so the before-hook result is **ignored** — a release cannot be
+    /// cancelled. Before-hooks are still invoked for observability
+    /// (logging, metrics), but returning [`HookResult::Cancel`] has no
+    /// effect. If you need cancellable release semantics, use an
+    /// explicit release method instead of relying on guard drop.
     Release,
     /// Before/after creating a new resource instance.
+    ///
+    /// Before-hooks can cancel the creation by returning
+    /// [`HookResult::Cancel`], which causes the acquire to fail with
+    /// the error from the hook.
     Create,
-    /// Before/after cleaning up a resource instance.
+    /// Before/after cleaning up (permanently destroying) a resource instance.
+    ///
+    /// **Note:** Cleanup is irrevocable — the before-hook result is
+    /// **ignored** and cannot prevent the cleanup from proceeding.
+    /// Before-hooks are called for observability only.
     Cleanup,
 }
 
@@ -107,7 +126,14 @@ pub trait ResourceHook: Send + Sync {
         HookFilter::All
     }
 
-    /// Called before the operation. Can cancel by returning [`HookResult::Cancel`].
+    /// Called before the operation.
+    ///
+    /// Returning [`HookResult::Cancel`] cancels the operation for
+    /// [`Acquire`](HookEvent::Acquire) and [`Create`](HookEvent::Create).
+    /// For [`Release`](HookEvent::Release) and
+    /// [`Cleanup`](HookEvent::Cleanup), the result is ignored (the
+    /// operation proceeds regardless) because these occur in
+    /// irrevocable contexts (e.g. `Drop`).
     fn before<'a>(
         &'a self,
         event: &'a HookEvent,

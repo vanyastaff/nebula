@@ -14,7 +14,7 @@ use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::events::{EventBus, ResourceEvent};
 use crate::guard::Guard;
-use crate::health::{HealthCheckConfig, HealthState};
+use crate::health::{HealthCheckConfig, HealthCheckable, HealthState};
 use crate::hooks::{HookEvent, HookRegistry};
 use crate::metadata::ResourceMetadata;
 use crate::pool::{Pool, PoolConfig};
@@ -599,6 +599,10 @@ pub struct Manager {
     hooks: Arc<HookRegistry>,
     /// Per-resource auto-scalers (resource_id → JoinHandle).
     auto_scalers: DashMap<String, tokio::task::JoinHandle<()>>,
+    /// Default auto-scale policy applied to every pool at registration time.
+    /// `None` means auto-scaling is off by default (enable per-resource via
+    /// [`enable_autoscaling`](Self::enable_autoscaling)).
+    default_autoscale_policy: Option<AutoScalePolicy>,
 }
 
 // ---------------------------------------------------------------------------
@@ -624,6 +628,7 @@ pub struct ManagerBuilder {
     health_config: HealthCheckConfig,
     event_bus: Option<Arc<EventBus>>,
     quarantine_config: QuarantineConfig,
+    default_autoscale_policy: Option<AutoScalePolicy>,
 }
 
 impl ManagerBuilder {
@@ -651,6 +656,20 @@ impl ManagerBuilder {
     #[must_use]
     pub fn quarantine_config(mut self, config: QuarantineConfig) -> Self {
         self.quarantine_config = config;
+        self
+    }
+
+    /// Set a default auto-scale policy applied to every pool at registration.
+    ///
+    /// When set, [`Manager::register`] / [`Manager::register_scoped`] will
+    /// automatically call [`Manager::enable_autoscaling`] with this policy
+    /// for each newly registered resource.
+    ///
+    /// Individual resources can still override via
+    /// [`enable_autoscaling`](Manager::enable_autoscaling) after registration.
+    #[must_use]
+    pub fn default_autoscale_policy(mut self, policy: AutoScalePolicy) -> Self {
+        self.default_autoscale_policy = Some(policy);
         self
     }
 
@@ -714,6 +733,7 @@ impl ManagerBuilder {
             metadata: DashMap::new(),
             hooks: Arc::new(HookRegistry::default()),
             auto_scalers: DashMap::new(),
+            default_autoscale_policy: self.default_autoscale_policy,
         }
     }
 }
@@ -845,6 +865,12 @@ impl Manager {
             resource_id: id.clone(),
             scope,
         });
+
+        // Apply default auto-scale policy if configured.
+        if let Some(policy) = &self.default_autoscale_policy {
+            // Errors are non-fatal — the pool is registered regardless.
+            let _ = self.enable_autoscaling(&id, policy.clone());
+        }
 
         #[cfg(feature = "tracing")]
         tracing::debug!(resource_id = %id, "Registered resource");
@@ -1047,15 +1073,33 @@ impl Manager {
         self.pools.contains_key(resource_id)
     }
 
-    /// Deregister a resource, shutting down its pool and removing all
-    /// dependency edges.
+    /// Deregister a resource, shutting down its pool, cancelling its
+    /// auto-scaler, stopping health monitoring, releasing it from
+    /// quarantine, and removing all dependency edges.
     ///
     /// Returns `true` if the resource was registered, `false` otherwise.
     pub async fn deregister(&self, resource_id: &str) -> bool {
+        // Cancel auto-scaler (if any) — must happen before pool shutdown
+        // so the scaler doesn't keep the Arc<dyn AnyPool> alive.
+        if let Some((_, handle)) = self.auto_scalers.remove(resource_id) {
+            handle.abort();
+        }
+
+        // Stop all health monitoring tasks for this resource.
+        self.health_checker.stop_monitoring_resource(resource_id);
+
         let removed = self.pools.remove(resource_id);
         self.deps.write().remove_all_for(resource_id);
         self.metadata.remove(resource_id);
         self.health_states.remove(resource_id);
+
+        // Release from quarantine (if quarantined) and emit event.
+        if let Some(entry) = self.quarantine.release(resource_id) {
+            self.event_bus.emit(ResourceEvent::QuarantineReleased {
+                resource_id: resource_id.to_string(),
+                recovery_attempts: entry.recovery_attempts,
+            });
+        }
 
         if let Some((_, entry)) = removed {
             let _ = entry.pool.shutdown().await;
@@ -1128,6 +1172,38 @@ impl Manager {
     #[must_use]
     pub fn hooks(&self) -> &Arc<HookRegistry> {
         &self.hooks
+    }
+
+    /// Start health monitoring for a resource.
+    ///
+    /// This is a convenience wrapper around
+    /// [`HealthChecker::start_monitoring`](crate::health::HealthChecker::start_monitoring).
+    /// It generates a UUID instance ID automatically.
+    ///
+    /// **Note:** [`register`](Self::register) /
+    /// [`register_scoped`](Self::register_scoped) do **not** start
+    /// monitoring automatically because building a
+    /// [`HealthCheckable`](crate::health::HealthCheckable) requires
+    /// access to the resource and config (which are consumed by the
+    /// pool). Use [`ResourceHealthAdapter`](crate::health::ResourceHealthAdapter)
+    /// to bridge a `Resource` to `HealthCheckable`, then call this
+    /// method:
+    ///
+    /// ```rust,ignore
+    /// let adapter = ResourceHealthAdapter::new(resource_clone, config_clone, scope);
+    /// manager.start_health_monitoring("postgres", adapter);
+    /// ```
+    pub fn start_health_monitoring<H: HealthCheckable + 'static>(
+        &self,
+        resource_id: &str,
+        checkable: H,
+    ) {
+        let instance_id = uuid::Uuid::new_v4();
+        self.health_checker.start_monitoring(
+            instance_id,
+            resource_id.to_string(),
+            Arc::new(checkable),
+        );
     }
 
     /// Get a reference to the quarantine manager.
@@ -1412,6 +1488,14 @@ impl std::fmt::Debug for Manager {
 // ---------------------------------------------------------------------------
 
 /// Wrapper around an [`AnyGuard`] that fires Release hooks when dropped.
+///
+/// **Semantics of `before(Release)`:** Because resource release happens
+/// inside a `Drop` impl, the before-hook's [`HookResult`] is ignored —
+/// a release **cannot** be cancelled. Before-hooks are still called for
+/// observability (logging, metrics) but returning
+/// [`HookResult::Cancel`](crate::hooks::HookResult::Cancel) has no
+/// effect. If you need cancellable release semantics, use an explicit
+/// `release()` method instead of relying on guard drop.
 struct ReleaseHookGuard {
     inner: Option<AnyGuard>,
     resource_id: String,

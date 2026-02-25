@@ -437,6 +437,30 @@ impl HealthChecker {
         self.records.remove(instance_id);
     }
 
+    /// Stop monitoring **all** instances whose `resource_id` matches.
+    ///
+    /// This is useful when deregistering a resource — all monitoring
+    /// tasks associated with that resource are cancelled and their
+    /// records removed.
+    ///
+    /// Returns the number of instances that were stopped.
+    pub fn stop_monitoring_resource(&self, resource_id: &str) -> usize {
+        // Collect matching instance IDs first to avoid holding the
+        // DashMap shard lock while cancelling tokens.
+        let matching: Vec<uuid::Uuid> = self
+            .records
+            .iter()
+            .filter(|entry| entry.value().resource_id == resource_id)
+            .map(|entry| *entry.key())
+            .collect();
+
+        let count = matching.len();
+        for id in &matching {
+            self.stop_monitoring(id);
+        }
+        count
+    }
+
     /// Get the current health status of an instance
     #[must_use]
     pub fn get_health(&self, instance_id: &uuid::Uuid) -> Option<HealthRecord> {

@@ -183,12 +183,94 @@ pub struct PoolStats {
     pub max_wait_time_ms: u64,
     /// Number of times the pool was exhausted (acquire timed out).
     pub exhausted_count: u64,
+    /// Median acquire latency over the recent window (milliseconds).
+    /// `None` when no acquisitions have been recorded yet.
+    pub acquire_latency_p50_ms: Option<u64>,
+    /// 95th-percentile acquire latency (milliseconds).
+    pub acquire_latency_p95_ms: Option<u64>,
+    /// 99th-percentile acquire latency (milliseconds).
+    pub acquire_latency_p99_ms: Option<u64>,
+}
+
+// ---------------------------------------------------------------------------
+// LatencyRingBuffer — fixed-size sliding window for percentile computation
+// ---------------------------------------------------------------------------
+
+/// Fixed-capacity ring buffer that stores the most recent `N` acquire
+/// latency samples (in milliseconds). Percentiles are computed on demand
+/// by sorting a snapshot — this is cheap for the default window size
+/// (1024) and avoids external histogram dependencies.
+const LATENCY_WINDOW: usize = 1024;
+
+#[derive(Clone)]
+struct LatencyRingBuffer {
+    buf: Vec<u64>,
+    pos: usize,
+    full: bool,
+}
+
+impl std::fmt::Debug for LatencyRingBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LatencyRingBuffer")
+            .field("len", &self.len())
+            .field("capacity", &self.buf.len())
+            .finish()
+    }
+}
+
+impl Default for LatencyRingBuffer {
+    fn default() -> Self {
+        Self::new(LATENCY_WINDOW)
+    }
+}
+
+impl LatencyRingBuffer {
+    fn new(capacity: usize) -> Self {
+        Self {
+            buf: vec![0; capacity],
+            pos: 0,
+            full: false,
+        }
+    }
+
+    /// Record a latency sample (milliseconds).
+    fn push(&mut self, value: u64) {
+        self.buf[self.pos] = value;
+        self.pos += 1;
+        if self.pos >= self.buf.len() {
+            self.pos = 0;
+            self.full = true;
+        }
+    }
+
+    /// Number of samples currently stored.
+    fn len(&self) -> usize {
+        if self.full { self.buf.len() } else { self.pos }
+    }
+
+    /// Compute a percentile (0–100). Returns `None` if the buffer is empty.
+    fn percentile(&self, pct: f64) -> Option<u64> {
+        let n = self.len();
+        if n == 0 {
+            return None;
+        }
+        let mut sorted: Vec<u64> = if self.full {
+            self.buf.clone()
+        } else {
+            self.buf[..self.pos].to_vec()
+        };
+        sorted.sort_unstable();
+        let idx = ((pct / 100.0) * (n as f64 - 1.0)).round() as usize;
+        Some(sorted[idx.min(n - 1)])
+    }
 }
 
 /// Combined pool state: idle queue + statistics under a single lock.
 struct PoolState<T> {
     idle: VecDeque<Entry<T>>,
     stats: PoolStats,
+    /// Sliding window of recent acquire latencies for percentile computation.
+    latency_window: LatencyRingBuffer,
     /// Set to true after `shutdown()` to prevent Guard drops from
     /// reinserting instances into the idle queue.
     shutdown: bool,
@@ -311,6 +393,7 @@ impl<R: Resource> Pool<R> {
                 state: Mutex::new(PoolState {
                     idle: VecDeque::with_capacity(max),
                     stats: PoolStats::default(),
+                    latency_window: LatencyRingBuffer::default(),
                     shutdown: false,
                 }),
                 semaphore: Semaphore::new(max),
@@ -489,6 +572,7 @@ impl<R: Resource> Pool<R> {
             if wait_ms > state.stats.max_wait_time_ms {
                 state.stats.max_wait_time_ms = wait_ms;
             }
+            state.latency_window.push(wait_ms);
         }
 
         // Forget the permit — we'll add it back when the guard drops.
@@ -653,10 +737,16 @@ impl<R: Resource> Pool<R> {
         );
     }
 
-    /// Get current pool statistics.
+    /// Get current pool statistics, including latency percentiles
+    /// computed from a sliding window of recent acquisitions.
     #[must_use]
     pub fn stats(&self) -> PoolStats {
-        self.inner.state.lock().stats.clone()
+        let state = self.inner.state.lock();
+        let mut stats = state.stats.clone();
+        stats.acquire_latency_p50_ms = state.latency_window.percentile(50.0);
+        stats.acquire_latency_p95_ms = state.latency_window.percentile(95.0);
+        stats.acquire_latency_p99_ms = state.latency_window.percentile(99.0);
+        stats
     }
 
     /// Get a reference to the pool configuration.
