@@ -71,12 +71,10 @@ impl<T, F> NestedValidate<T, F> {
     }
 }
 
-impl<T, F> Validate for NestedValidate<T, F>
+impl<T, F> Validate<T> for NestedValidate<T, F>
 where
     F: Fn(&T) -> Result<(), ValidationError>,
 {
-    type Input = T;
-
     fn validate(&self, input: &T) -> Result<(), ValidationError> {
         (self.validate_fn)(input)
     }
@@ -193,12 +191,10 @@ impl<T, F> OptionalNested<T, F> {
     }
 }
 
-impl<T, F> Validate for OptionalNested<T, F>
+impl<T, F> Validate<Option<T>> for OptionalNested<T, F>
 where
     F: Fn(&T) -> Result<(), ValidationError>,
 {
-    type Input = Option<T>;
-
     fn validate(&self, input: &Option<T>) -> Result<(), ValidationError> {
         match input {
             Some(value) => self.validator.validate(value),
@@ -263,12 +259,10 @@ impl<T, F> CollectionNested<T, F> {
     }
 }
 
-impl<T, F> Validate for CollectionNested<T, F>
+impl<T, F> Validate<[T]> for CollectionNested<T, F>
 where
     F: Fn(&T) -> Result<(), ValidationError>,
 {
-    type Input = [T];
-
     fn validate(&self, input: &[T]) -> Result<(), ValidationError> {
         for (index, item) in input.iter().enumerate() {
             self.validator.validate(item).map_err(|e| {

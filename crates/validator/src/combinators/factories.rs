@@ -85,13 +85,11 @@ impl<V> AllOf<V> {
     }
 }
 
-impl<V> Validate for AllOf<V>
+impl<T: ?Sized, V> Validate<T> for AllOf<V>
 where
-    V: Validate,
+    V: Validate<T>,
 {
-    type Input = V::Input;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
         let mut errors = ValidationErrors::new();
 
         for validator in &self.validators {
@@ -169,13 +167,11 @@ impl<V> AnyOf<V> {
     }
 }
 
-impl<V> Validate for AnyOf<V>
+impl<T: ?Sized, V> Validate<T> for AnyOf<V>
 where
-    V: Validate,
+    V: Validate<T>,
 {
-    type Input = V::Input;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
         if self.validators.is_empty() {
             return Ok(());
         }

@@ -6,7 +6,6 @@
 //! - Cached combinator with various hit rates
 //! - Nested compositions
 
-#[cfg(feature = "caching")]
 use criterion::BenchmarkId;
 use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_validator::foundation::{Validate, ValidateExt};
@@ -170,7 +169,6 @@ fn bench_optional_combinator(c: &mut Criterion) {
 // CACHED COMBINATOR
 // ============================================================================
 
-#[cfg(feature = "caching")]
 fn bench_cached_combinator_cold(c: &mut Criterion) {
     let mut group = c.benchmark_group("cached_cold");
 
@@ -189,7 +187,6 @@ fn bench_cached_combinator_cold(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(feature = "caching")]
 fn bench_cached_combinator_hot(c: &mut Criterion) {
     let mut group = c.benchmark_group("cached_hot");
 
@@ -207,7 +204,6 @@ fn bench_cached_combinator_hot(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(feature = "caching")]
 fn bench_cached_hit_rates(c: &mut Criterion) {
     let mut group = c.benchmark_group("cached_hit_rates");
 
@@ -242,7 +238,6 @@ fn bench_cached_hit_rates(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(feature = "caching")]
 fn bench_cached_capacity(c: &mut Criterion) {
     let mut group = c.benchmark_group("cached_capacity");
 
@@ -444,7 +439,6 @@ criterion_group!(
     bench_optional_combinator
 );
 
-#[cfg(feature = "caching")]
 criterion_group!(
     cached_combinators,
     bench_cached_combinator_cold,
@@ -462,19 +456,10 @@ criterion_group!(
 
 criterion_group!(real_world, bench_form_validation);
 
-#[cfg(feature = "caching")]
 criterion_main!(
     basic_combinators,
     advanced_combinators,
     cached_combinators,
-    composition,
-    real_world
-);
-
-#[cfg(not(feature = "caching"))]
-criterion_main!(
-    basic_combinators,
-    advanced_combinators,
     composition,
     real_world
 );

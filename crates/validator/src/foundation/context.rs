@@ -249,14 +249,18 @@ pub trait ContextualValidator {
 ///
 /// This provides backward compatibility - existing validators can be used
 /// in contexts that expect `ContextualValidator`.
-pub struct ContextAdapter<V> {
+pub struct ContextAdapter<V, T: ?Sized> {
     validator: V,
+    _phantom: std::marker::PhantomData<fn(&T)>,
 }
 
-impl<V> ContextAdapter<V> {
+impl<V, T: ?Sized> ContextAdapter<V, T> {
     /// Creates a new context adapter.
     pub fn new(validator: V) -> Self {
-        Self { validator }
+        Self {
+            validator,
+            _phantom: std::marker::PhantomData,
+        }
     }
 
     /// Consumes the adapter and returns the inner validator.
@@ -265,11 +269,11 @@ impl<V> ContextAdapter<V> {
     }
 }
 
-impl<V> ContextualValidator for ContextAdapter<V>
+impl<T: ?Sized, V> ContextualValidator for ContextAdapter<V, T>
 where
-    V: Validate,
+    V: Validate<T>,
 {
-    type Input = V::Input;
+    type Input = T;
 
     fn validate_with_context(
         &self,
@@ -416,9 +420,7 @@ mod tests {
 
     struct TestValidator;
 
-    impl Validate for TestValidator {
-        type Input = str;
-
+    impl Validate<str> for TestValidator {
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
             if input.is_empty() {
                 Err(ValidationError::new("empty", "String is empty"))
@@ -430,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_context_adapter() {
-        let validator = ContextAdapter::new(TestValidator);
+        let validator = ContextAdapter::<_, str>::new(TestValidator);
         let ctx = ValidationContext::new();
 
         assert!(validator.validate_with_context("hello", &ctx).is_ok());

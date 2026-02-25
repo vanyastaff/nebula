@@ -240,10 +240,8 @@ mod tests {
 
     struct TestStringValidator;
 
-    impl Validate for TestStringValidator {
-        type Input = str;
-
-        fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    impl Validate<str> for TestStringValidator {
+        fn validate(&self, input: &str) -> Result<(), ValidationError> {
             if input.len() >= 3 {
                 Ok(())
             } else {

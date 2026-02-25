@@ -8,27 +8,25 @@
 //! ```rust,ignore
 //! use nebula_validator::prelude::*;
 //!
-//! let username = min_length(3).and(max_length(20)).and(alphanumeric());
-//! let age = in_range(18, 100);
-//! let tags = min_size::<String>(1).and(max_size::<String>(10));
+//! // Extension method style - read left-to-right
+//! "hello".validate_with(&min_length(3))?;
+//! 42.validate_with(&min(10))?;
 //!
-//! // New: use all_of for cleaner composition
-//! let validator = all_of([min_length(3), max_length(20)]);
+//! // Direct method style - traditional
+//! min_length(3).validate("hello")?;
 //!
-//! // New: use AnyValidator for type erasure
-//! let validators: Vec<AnyValidator<str>> = vec![
-//!     AnyValidator::new(min_length(3)),
-//!     AnyValidator::new(email()),
-//! ];
+//! // Composition with combinators
+//! let validator = min_length(3).and(max_length(20));
+//! "hello".validate_with(&validator)?;
 //! ```
 
 // ============================================================================
-// FOUNDATION: Core traits, errors, type erasure
+// FOUNDATION: Core traits, errors, combinators
 // ============================================================================
 
 pub use crate::foundation::{
-    AnyValidator, AsValidatable, ErrorSeverity, Validate, ValidateExt, ValidationError,
-    ValidationErrors, ValidatorFor,
+    And, AnyValidator, AsValidatable, ErrorSeverity, Not, Or, Validatable, Validate, ValidateExt,
+    ValidationError, ValidationErrors, When,
 };
 
 // ============================================================================
@@ -43,21 +41,5 @@ pub use crate::validators::*;
 // ============================================================================
 
 pub use crate::combinators::{
-    AllOf, And, AnyOf, Each, Field, FieldValidateExt, Lazy, Not, Optional, Or, Unless, When,
-    WithCode, WithMessage, all_of, and, any_of, each, each_fail_fast, field, lazy, named_field,
-    not, optional, or, unless, when, with_code, with_message,
+    Cached, JsonField, and, cached, json_field, json_field_optional, not, or,
 };
-
-// ============================================================================
-// SERDE-GATED: JSON field validators
-// ============================================================================
-
-#[cfg(feature = "serde")]
-pub use crate::combinators::{JsonField, json_field, json_field_optional};
-
-// ============================================================================
-// CACHING-GATED: Memoized validators
-// ============================================================================
-
-#[cfg(feature = "caching")]
-pub use crate::combinators::{Cached, cached};

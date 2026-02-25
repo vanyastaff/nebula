@@ -80,13 +80,11 @@ impl<V> WithMessage<V> {
     }
 }
 
-impl<V> Validate for WithMessage<V>
+impl<T: ?Sized, V> Validate<T> for WithMessage<V>
 where
-    V: Validate,
+    V: Validate<T>,
 {
-    type Input = V::Input;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
         self.inner.validate(input).map_err(|original| {
             let code = self
                 .code
@@ -152,9 +150,7 @@ mod tests {
         min: usize,
     }
 
-    impl Validate for MinLength {
-        type Input = str;
-
+    impl Validate<str> for MinLength {
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
             if input.len() >= self.min {
                 Ok(())

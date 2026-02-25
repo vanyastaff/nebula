@@ -98,14 +98,12 @@ impl<V, C> When<V, C> {
     }
 }
 
-impl<V, C> Validate for When<V, C>
+impl<T: ?Sized, V, C> Validate<T> for When<V, C>
 where
-    V: Validate,
-    C: Fn(&V::Input) -> bool,
+    V: Validate<T>,
+    C: Fn(&T) -> bool,
 {
-    type Input = V::Input;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
         if (self.condition)(input) {
             self.validator.validate(input)
         } else {
@@ -127,11 +125,7 @@ where
 /// assert!(validator.validate("prefix:short").is_err()); // validated, fails
 /// assert!(validator.validate("prefix:long enough").is_ok()); // validated, passes
 /// ```
-pub fn when<V, C>(validator: V, condition: C) -> When<V, C>
-where
-    V: Validate,
-    C: Fn(&V::Input) -> bool,
-{
+pub fn when<V, C>(validator: V, condition: C) -> When<V, C> {
     When::new(validator, condition)
 }
 
@@ -144,8 +138,7 @@ mod tests {
         min: usize,
     }
 
-    impl Validate for MinLength {
-        type Input = str;
+    impl Validate<str> for MinLength {
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
             if input.len() >= self.min {
                 Ok(())

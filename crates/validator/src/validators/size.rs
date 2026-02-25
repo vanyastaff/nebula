@@ -12,10 +12,8 @@ pub struct MinSize<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validate for MinSize<T> {
-    type Input = [T];
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+impl<T> Validate<[T]> for MinSize<T> {
+    fn validate(&self, input: &[T]) -> Result<(), ValidationError> {
         let size = input.len();
         if size >= self.min {
             Ok(())
@@ -58,10 +56,8 @@ pub struct MaxSize<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validate for MaxSize<T> {
-    type Input = [T];
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+impl<T> Validate<[T]> for MaxSize<T> {
+    fn validate(&self, input: &[T]) -> Result<(), ValidationError> {
         let size = input.len();
         if size <= self.max {
             Ok(())
@@ -104,10 +100,8 @@ pub struct ExactSize<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validate for ExactSize<T> {
-    type Input = [T];
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+impl<T> Validate<[T]> for ExactSize<T> {
+    fn validate(&self, input: &[T]) -> Result<(), ValidationError> {
         let actual_size = input.len();
         if actual_size == self.size {
             Ok(())
@@ -150,10 +144,8 @@ pub struct NotEmptyCollection<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validate for NotEmptyCollection<T> {
-    type Input = [T];
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+impl<T> Validate<[T]> for NotEmptyCollection<T> {
+    fn validate(&self, input: &[T]) -> Result<(), ValidationError> {
         if input.is_empty() {
             Err(ValidationError::new(
                 "not_empty",
@@ -192,10 +184,8 @@ pub struct SizeRange<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validate for SizeRange<T> {
-    type Input = [T];
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+impl<T> Validate<[T]> for SizeRange<T> {
+    fn validate(&self, input: &[T]) -> Result<(), ValidationError> {
         let size = input.len();
         if size >= self.min && size <= self.max {
             Ok(())

@@ -197,15 +197,13 @@ impl From<FieldError> for ValidationError {
 // VALIDATOR IMPLEMENTATION
 // ============================================================================
 
-impl<T, U, V, F> Validate for Field<T, U, V, F>
+impl<T, U, V, F> Validate<T> for Field<T, U, V, F>
 where
-    V: Validate<Input = U>,
+    V: Validate<U>,
     F: Fn(&T) -> &U,
     U: ?Sized,
 {
-    type Input = T;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
         let field_value = (self.accessor)(input);
         self.validator.validate(field_value).map_err(|err| {
             let field_error = FieldError::new(self.name.clone(), err);
@@ -243,29 +241,29 @@ where
 // ============================================================================
 
 /// Extension trait for creating field validators.
-pub trait FieldValidateExt: Validate + Sized {
+pub trait FieldValidateExt<U: ?Sized>: Validate<U> + Sized {
     /// Creates a field validator for this validator.
     fn for_field<T, F>(
         self,
         name: impl Into<Cow<'static, str>>,
         accessor: F,
-    ) -> Field<T, Self::Input, Self, F>
+    ) -> Field<T, U, Self, F>
     where
-        F: Fn(&T) -> &Self::Input,
+        F: Fn(&T) -> &U,
     {
         Field::named(name, self, accessor)
     }
 
     /// Creates an unnamed field validator.
-    fn for_field_unnamed<T, F>(self, accessor: F) -> Field<T, Self::Input, Self, F>
+    fn for_field_unnamed<T, F>(self, accessor: F) -> Field<T, U, Self, F>
     where
-        F: Fn(&T) -> &Self::Input,
+        F: Fn(&T) -> &U,
     {
         Field::new(self, accessor)
     }
 }
 
-impl<V: Validate> FieldValidateExt for V {}
+impl<U: ?Sized, V: Validate<U>> FieldValidateExt<U> for V {}
 
 // ============================================================================
 // MULTI-FIELD VALIDATOR
@@ -295,7 +293,7 @@ impl<T> MultiField<T> {
     ) -> Self
     where
         U: ?Sized,
-        V: Validate<Input = U> + Send + Sync + 'static,
+        V: Validate<U> + Send + Sync + 'static,
         F: Fn(&T) -> &U + Send + Sync + 'static,
     {
         let name: Cow<'static, str> = name.into();
@@ -315,10 +313,8 @@ impl<T> Default for MultiField<T> {
     }
 }
 
-impl<T> Validate for MultiField<T> {
-    type Input = T;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+impl<T> Validate<T> for MultiField<T> {
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
         let mut errors = Vec::new();
 
         for validator in &self.validators {
@@ -361,9 +357,7 @@ mod tests {
         min: u32,
     }
 
-    impl Validate for MinValue {
-        type Input = u32;
-
+    impl Validate<u32> for MinValue {
         fn validate(&self, input: &u32) -> Result<(), ValidationError> {
             if *input >= self.min {
                 Ok(())
@@ -381,9 +375,7 @@ mod tests {
         min: usize,
     }
 
-    impl Validate for MinLength {
-        type Input = str;
-
+    impl Validate<str> for MinLength {
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
             if input.len() >= self.min {
                 Ok(())

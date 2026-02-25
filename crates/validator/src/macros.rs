@@ -536,16 +536,18 @@ macro_rules! validator {
     // Uses the user's `$self_ref` identifier as the method self parameter
     // so that Rust 2024 macro hygiene allows the rule/error bodies to
     // reference `self` fields.
+    //
+    // Implements `Validate<T>` where T is the input type, enabling:
+    // - Direct: `validator.validate("hello")`
+    // - Extension: `"hello".validate(&validator)`
     (@validate_impl
         $name:ident [$($gd:tt)*] [$($gu:tt)*]
         [$input:ty] $self_ref:ident $inp:ident $rule:block $einp:ident $err:block
     ) => {
-        impl $($gd)* $crate::foundation::Validate for $name $($gu)* {
-            type Input = $input;
-
+        impl $($gd)* $crate::foundation::Validate<$input> for $name $($gu)* {
             #[inline]
             #[allow(unused_variables)]
-            fn validate(&$self_ref, $inp: &Self::Input)
+            fn validate(&$self_ref, $inp: &$input)
                 -> ::std::result::Result<(), $crate::foundation::ValidationError>
             {
                 if $rule {

@@ -30,10 +30,7 @@ use std::sync::Arc;
 /// - Thread-safe using lock-free `moka` cache
 /// - **LRU eviction policy** with configurable capacity (default: 1000 entries)
 /// - Cache persists for the lifetime of the validator
-pub struct Cached<V>
-where
-    V: Validate,
-{
+pub struct Cached<V> {
     pub(crate) validator: V,
     pub(crate) cache: Arc<moka::sync::Cache<u64, CachedResult>>,
 }
@@ -44,10 +41,7 @@ type CachedResult = Arc<Result<(), ValidationError>>;
 /// Default cache capacity (1000 entries)
 const DEFAULT_CACHE_CAPACITY: u64 = 1000;
 
-impl<V> Cached<V>
-where
-    V: Validate,
-{
+impl<V> Cached<V> {
     /// Creates a new CACHED combinator with default capacity (1000 entries).
     pub fn new(validator: V) -> Self {
         Self::with_capacity(validator, DEFAULT_CACHE_CAPACITY as usize)
@@ -125,14 +119,11 @@ impl CacheStats {
 // VALIDATOR IMPLEMENTATION
 // ============================================================================
 
-impl<V> Validate for Cached<V>
+impl<T: Hash + ?Sized, V> Validate<T> for Cached<V>
 where
-    V: Validate,
-    V::Input: Hash,
+    V: Validate<T>,
 {
-    type Input = V::Input;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
         // Compute hash of input
         let hash = compute_hash(input);
 
@@ -164,11 +155,7 @@ fn compute_hash<T: Hash + ?Sized>(value: &T) -> u64 {
 }
 
 /// Creates a CACHED combinator from a validator.
-pub fn cached<V>(validator: V) -> Cached<V>
-where
-    V: Validate,
-    V::Input: Hash,
-{
+pub fn cached<V>(validator: V) -> Cached<V> {
     Cached::new(validator)
 }
 
@@ -186,9 +173,7 @@ mod tests {
         call_count: Arc<AtomicUsize>,
     }
 
-    impl Validate for CountingValidator {
-        type Input = str;
-
+    impl Validate<str> for CountingValidator {
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
 

@@ -70,13 +70,11 @@ impl<V> Each<V> {
     }
 }
 
-impl<V, T> Validate for Each<V>
+impl<V, T> Validate<[T]> for Each<V>
 where
-    V: Validate<Input = T>,
+    V: Validate<T>,
 {
-    type Input = [T];
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    fn validate(&self, input: &[T]) -> Result<(), ValidationError> {
         let mut errors: Vec<(usize, ValidationError)> = Vec::new();
 
         for (index, element) in input.iter().enumerate() {
@@ -146,9 +144,7 @@ mod tests {
 
     struct Positive;
 
-    impl Validate for Positive {
-        type Input = i32;
-
+    impl Validate<i32> for Positive {
         fn validate(&self, input: &i32) -> Result<(), ValidationError> {
             if *input > 0 {
                 Ok(())

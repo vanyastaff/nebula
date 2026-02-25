@@ -12,8 +12,8 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-# Caching (optional)
-moka = { version = "0.12", features = ["sync"], optional = true }
+# Caching
+moka = { version = "0.12", features = ["sync"] }
 
 # Error handling
 thiserror = { workspace = true }
@@ -28,20 +28,6 @@ regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
-# Optional third-party type support
-url = { workspace = true, optional = true }
-uuid = { workspace = true, optional = true }
-chrono = { workspace = true, optional = true }
-
-[features]
-default = ["serde"]
-serde = []
-caching = ["dep:moka"]
-url = ["dep:url"]
-uuid = ["dep:uuid"]
-chrono = ["dep:chrono"]
-full = ["serde", "caching", "url", "uuid", "chrono"]
-
 [dev-dependencies]
 # Testing
 pretty_assertions = { workspace = true }
@@ -54,7 +40,6 @@ criterion = { workspace = true }
 
 [[example]]
 name = "json_validation"
-required-features = ["serde"]
 
 [[bench]]
 name = "string_validators"

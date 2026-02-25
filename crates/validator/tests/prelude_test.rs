@@ -3,8 +3,6 @@
 //! Verifies that `use nebula_validator::prelude::*` brings in everything
 //! a consumer needs for common validation scenarios.
 
-#![cfg(feature = "serde")]
-
 use nebula_validator::prelude::*;
 use serde_json::{Value, json};
 

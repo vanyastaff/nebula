@@ -54,7 +54,7 @@
 //!
 //! ```rust,ignore
 //! // CACHED: memoize results
-//! let validator = expensive_validation().cached();
+//! let validator = cached(expensive_validation());
 //!
 //! validator.validate("test")?;  // First call: slow
 //! validator.validate("test")?;  // Second call: instant!
@@ -75,7 +75,6 @@
 
 // Module declarations
 pub mod and;
-#[cfg(feature = "caching")]
 pub mod cached;
 pub mod each;
 pub mod error;
@@ -90,17 +89,16 @@ pub mod or;
 pub mod unless;
 pub mod when;
 
-#[cfg(feature = "serde")]
 pub mod json_field;
 
 // Re-export all combinator types
 pub use and::{And, AndAll, and, and_all};
-#[cfg(feature = "caching")]
 pub use cached::{CacheStats, Cached, cached};
 pub use each::{Each, each, each_fail_fast};
 pub use error::CombinatorError;
 pub use factories::{AllOf, AnyOf, all_of, any_of};
 pub use field::{Field, FieldError, FieldValidateExt, MultiField, field, named_field};
+pub use json_field::{JsonField, json_field, json_field_optional};
 pub use lazy::{Lazy, lazy};
 pub use message::{WithCode, WithMessage, with_code, with_message};
 pub use nested::{
@@ -112,13 +110,6 @@ pub use optional::{Optional, optional};
 pub use or::{Or, OrAny, or, or_any};
 pub use unless::{Unless, unless};
 pub use when::{When, when};
-
-#[cfg(feature = "serde")]
-pub use json_field::{JsonField, json_field, json_field_optional};
-
-// TODO: Re-enable when lru crate is added as dependency
-// #[cfg(feature = "lru")]
-// pub use cached::{LruCached, lru_cached};
 
 // ============================================================================
 // PRELUDE
@@ -137,16 +128,11 @@ pub use json_field::{JsonField, json_field, json_field_optional};
 /// ```
 pub mod prelude {
     pub use super::{
-        AllOf, And, AndAll, AnyOf, Each, Field, FieldValidateExt, Lazy, Not, Optional, Or, OrAny,
-        Unless, When, WithCode, WithMessage, all_of, and, and_all, any_of, each, each_fail_fast,
-        field, lazy, named_field, not, optional, or, or_any, unless, when, with_code, with_message,
+        AllOf, And, AndAll, AnyOf, Cached, Each, Field, FieldValidateExt, JsonField, Lazy, Not,
+        Optional, Or, OrAny, Unless, When, WithCode, WithMessage, all_of, and, and_all, any_of,
+        cached, each, each_fail_fast, field, json_field, json_field_optional, lazy, named_field,
+        not, optional, or, or_any, unless, when, with_code, with_message,
     };
-
-    #[cfg(feature = "caching")]
-    pub use super::{Cached, cached};
-
-    #[cfg(feature = "serde")]
-    pub use super::{JsonField, json_field, json_field_optional};
 }
 
 // ============================================================================
@@ -163,16 +149,14 @@ mod laws {
     use crate::foundation::{Validate, ValidationError};
 
     struct AlwaysValid;
-    impl Validate for AlwaysValid {
-        type Input = str;
+    impl Validate<str> for AlwaysValid {
         fn validate(&self, _: &str) -> Result<(), ValidationError> {
             Ok(())
         }
     }
 
     struct AlwaysFails;
-    impl Validate for AlwaysFails {
-        type Input = str;
+    impl Validate<str> for AlwaysFails {
         fn validate(&self, _: &str) -> Result<(), ValidationError> {
             Err(ValidationError::new("fail", "Always fails"))
         }
@@ -263,9 +247,7 @@ mod integration_tests {
         min: usize,
     }
 
-    impl Validate for MinLength {
-        type Input = String;
-
+    impl Validate<String> for MinLength {
         fn validate(&self, input: &String) -> Result<(), ValidationError> {
             if input.len() >= self.min {
                 Ok(())
@@ -279,9 +261,7 @@ mod integration_tests {
         max: usize,
     }
 
-    impl Validate for MaxLength {
-        type Input = String;
-
+    impl Validate<String> for MaxLength {
         fn validate(&self, input: &String) -> Result<(), ValidationError> {
             if input.len() <= self.max {
                 Ok(())
@@ -342,7 +322,6 @@ mod integration_tests {
     }
 
     #[test]
-    #[cfg(feature = "caching")]
     fn test_cached_with_complex_validator() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -354,20 +333,19 @@ mod integration_tests {
             counter: Arc<AtomicUsize>,
         }
 
-        impl Validate for Counting {
-            type Input = String;
-
+        impl Validate<String> for Counting {
             fn validate(&self, _: &String) -> Result<(), ValidationError> {
                 self.counter.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
         }
 
-        let validator = Counting {
-            counter: call_count_clone,
-        }
-        .and(MinLength { min: 5 })
-        .cached();
+        let validator = cached(
+            Counting {
+                counter: call_count_clone,
+            }
+            .and(MinLength { min: 5 }),
+        );
 
         validator.validate(&"hello".to_string()).unwrap();
         validator.validate(&"hello".to_string()).unwrap();
@@ -397,8 +375,7 @@ mod doc_tests {
             max: usize,
         }
 
-        impl Validate for MinLength {
-            type Input = String;
+        impl Validate<String> for MinLength {
             fn validate(&self, input: &String) -> Result<(), ValidationError> {
                 if input.len() >= self.min {
                     Ok(())
@@ -408,8 +385,7 @@ mod doc_tests {
             }
         }
 
-        impl Validate for MaxLength {
-            type Input = String;
+        impl Validate<String> for MaxLength {
             fn validate(&self, input: &String) -> Result<(), ValidationError> {
                 if input.len() <= self.max {
                     Ok(())

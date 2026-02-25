@@ -6,13 +6,12 @@
 //! # Examples
 //!
 //! ```rust,ignore
-//! use nebula_validator::combinators::Not;
-//! use nebula_validator::foundation::Validate;
+//! use nebula_validator::prelude::*;
 //!
 //! // Validator that forbids a pattern
-//! let validator = Not::new(contains("forbidden"));
-//! assert!(validator.validate("this is allowed").is_ok());
-//! assert!(validator.validate("this is forbidden").is_err());
+//! let validator = contains("forbidden").not();
+//! assert!("this is allowed".validate(&validator).is_ok());
+//! assert!("this is forbidden".validate(&validator).is_err());
 //! ```
 
 use crate::foundation::{Validate, ValidationError};
@@ -22,39 +21,14 @@ use crate::foundation::{Validate, ValidationError};
 /// The `Not` combinator reverses the validation result:
 /// - If the inner validator succeeds, `Not` fails
 /// - If the inner validator fails, `Not` succeeds
-///
-/// # Type Parameters
-///
-/// * `V` - The inner validator type
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::combinators::Not;
-/// use nebula_validator::foundation::Validate;
-///
-/// // Validator that forbids specific words
-/// let validator = Not::new(contains("admin"));
-///
-/// // Does not contain "admin" - passes
-/// assert!(validator.validate("user123").is_ok());
-///
-/// // Contains "admin" - fails
-/// assert!(validator.validate("admin123").is_err());
-/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Not<V> {
-    /// The inner validator to invert.
     pub(crate) inner: V,
 }
 
 impl<V> Not<V> {
     /// Creates a new `Not` combinator.
-    ///
-    /// # Arguments
-    ///
-    /// * `inner` - The validator to invert
-    pub fn new(inner: V) -> Self {
+    pub const fn new(inner: V) -> Self {
         Self { inner }
     }
 
@@ -69,13 +43,11 @@ impl<V> Not<V> {
     }
 }
 
-impl<V> Validate for Not<V>
+impl<T: ?Sized, V> Validate<T> for Not<V>
 where
-    V: Validate,
+    V: Validate<T>,
 {
-    type Input = V::Input;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
         match self.inner.validate(input) {
             Ok(()) => Err(ValidationError::new(
                 "not_failed",
@@ -87,17 +59,6 @@ where
 }
 
 /// Creates a `Not` combinator from a validator.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::combinators::not;
-/// use nebula_validator::foundation::Validate;
-///
-/// let validator = not(contains("forbidden"));
-/// assert!(validator.validate("allowed").is_ok());
-/// assert!(validator.validate("forbidden").is_err());
-/// ```
 pub fn not<V>(validator: V) -> Not<V> {
     Not::new(validator)
 }
@@ -105,21 +66,18 @@ pub fn not<V>(validator: V) -> Not<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::foundation::traits::ValidateExt;
+    use crate::foundation::{Validatable, ValidateExt};
 
-    struct Contains {
-        substring: &'static str,
-    }
+    struct Contains(&'static str);
 
-    impl Validate for Contains {
-        type Input = str;
+    impl Validate<str> for Contains {
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
-            if input.contains(self.substring) {
+            if input.contains(self.0) {
                 Ok(())
             } else {
                 Err(ValidationError::new(
                     "contains",
-                    format!("Must contain '{}'", self.substring),
+                    format!("Must contain '{}'", self.0),
                 ))
             }
         }
@@ -127,31 +85,27 @@ mod tests {
 
     #[test]
     fn test_not_inverts_success() {
-        let validator = Not::new(Contains {
-            substring: "forbidden",
-        });
-        assert!(validator.validate("this is forbidden").is_err());
+        let validator = Not::new(Contains("forbidden"));
+        assert!("this is forbidden".validate_with(&validator).is_err());
     }
 
     #[test]
     fn test_not_inverts_failure() {
-        let validator = Not::new(Contains {
-            substring: "forbidden",
-        });
-        assert!(validator.validate("this is allowed").is_ok());
+        let validator = Not::new(Contains("forbidden"));
+        assert!("this is allowed".validate_with(&validator).is_ok());
     }
 
     #[test]
     fn test_not_via_ext() {
-        let validator = Contains { substring: "test" }.not();
-        assert!(validator.validate("hello world").is_ok());
-        assert!(validator.validate("test string").is_err());
+        let validator = Contains("test").not();
+        assert!("hello world".validate_with(&validator).is_ok());
+        assert!("test string".validate_with(&validator).is_err());
     }
 
     #[test]
     fn test_double_negation() {
-        let validator = Contains { substring: "test" }.not().not();
-        assert!(validator.validate("test").is_ok());
-        assert!(validator.validate("hello").is_err());
+        let validator = Contains("test").not().not();
+        assert!("test".validate_with(&validator).is_ok());
+        assert!("hello".validate_with(&validator).is_err());
     }
 }

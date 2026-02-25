@@ -70,14 +70,12 @@ where
     }
 }
 
-impl<V, F> Validate for Lazy<V, F>
+impl<T: ?Sized, V, F> Validate<T> for Lazy<V, F>
 where
-    V: Validate,
+    V: Validate<T>,
     F: Fn() -> V,
 {
-    type Input = V::Input;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
         let validator = self.validator.get_or_init(&self.init);
         validator.validate(input)
     }
@@ -119,9 +117,7 @@ mod tests {
         min: usize,
     }
 
-    impl Validate for MinLength {
-        type Input = str;
-
+    impl Validate<str> for MinLength {
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
             if input.len() >= self.min {
                 Ok(())

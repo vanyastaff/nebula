@@ -73,13 +73,11 @@ impl<V> Optional<V> {
     }
 }
 
-impl<V, T> Validate for Optional<V>
+impl<V, T> Validate<Option<T>> for Optional<V>
 where
-    V: Validate<Input = T>,
+    V: Validate<T>,
 {
-    type Input = Option<T>;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    fn validate(&self, input: &Option<T>) -> Result<(), ValidationError> {
         match input {
             None => Ok(()),
             Some(value) => self.inner.validate(value),
@@ -113,8 +111,7 @@ mod tests {
         min: usize,
     }
 
-    impl Validate for MinLength {
-        type Input = String;
+    impl Validate<String> for MinLength {
         fn validate(&self, input: &String) -> Result<(), ValidationError> {
             if input.len() >= self.min {
                 Ok(())

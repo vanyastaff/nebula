@@ -295,7 +295,6 @@ impl ValidationError {
     }
 
     /// Converts the error to a JSON-like structure (for serialization).
-    #[cfg(feature = "serde")]
     pub fn to_json_value(&self) -> serde_json::Value {
         use serde_json::json;
 

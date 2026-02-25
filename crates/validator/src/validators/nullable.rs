@@ -43,10 +43,8 @@ pub struct Required<T> {
     _phantom: PhantomData<T>,
 }
 
-impl<T> Validate for Required<T> {
-    type Input = Option<T>;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+impl<T> Validate<Option<T>> for Required<T> {
+    fn validate(&self, input: &Option<T>) -> Result<(), ValidationError> {
         if input.is_some() {
             Ok(())
         } else {

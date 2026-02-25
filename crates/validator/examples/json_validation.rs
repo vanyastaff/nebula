@@ -208,7 +208,7 @@ fn error_reporting() {
     }
 
     // Validate all fields independently to collect all errors
-    let validators: Vec<(&str, Box<dyn Validate<Input = Value>>)> = vec![
+    let validators: Vec<(&str, Box<dyn Validate<Value>>)> = vec![
         ("name", Box::new(json_field("/name", min_length(1)))),
         ("email", Box::new(json_field("/email", email()))),
         (

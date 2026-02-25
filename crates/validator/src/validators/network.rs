@@ -13,10 +13,8 @@ use crate::foundation::{Validate, ValidationError};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ipv4;
 
-impl Validate for Ipv4 {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+impl Validate<str> for Ipv4 {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         input
             .parse::<std::net::Ipv4Addr>()
             .map(|_| ())
@@ -41,10 +39,8 @@ pub fn ipv4() -> Ipv4 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ipv6;
 
-impl Validate for Ipv6 {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+impl Validate<str> for Ipv6 {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         input
             .parse::<std::net::Ipv6Addr>()
             .map(|_| ())
@@ -69,10 +65,8 @@ pub fn ipv6() -> Ipv6 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct IpAddr;
 
-impl Validate for IpAddr {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+impl Validate<str> for IpAddr {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         input.parse::<std::net::IpAddr>().map(|_| ()).map_err(|_| {
             ValidationError::new("ip_addr", format!("'{input}' is not a valid IP address"))
                 .with_param("actual", input.to_string())
@@ -100,10 +94,8 @@ pub fn ip_addr() -> IpAddr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Hostname;
 
-impl Validate for Hostname {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+impl Validate<str> for Hostname {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         if input.is_empty() || input.len() > 253 {
             return Err(ValidationError::new(
                 "hostname",

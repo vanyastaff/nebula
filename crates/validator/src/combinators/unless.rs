@@ -61,14 +61,12 @@ impl<V, C> Unless<V, C> {
     }
 }
 
-impl<V, C> Validate for Unless<V, C>
+impl<T: ?Sized, V, C> Validate<T> for Unless<V, C>
 where
-    V: Validate,
-    C: Fn(&V::Input) -> bool,
+    V: Validate<T>,
+    C: Fn(&T) -> bool,
 {
-    type Input = V::Input;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
         if (self.condition)(input) {
             // Condition is true, skip validation
             Ok(())
@@ -82,11 +80,7 @@ where
 /// Creates an UNLESS combinator.
 ///
 /// Validation is skipped when `condition` returns true.
-pub fn unless<V, C>(validator: V, condition: C) -> Unless<V, C>
-where
-    V: Validate,
-    C: Fn(&V::Input) -> bool,
-{
+pub fn unless<V, C>(validator: V, condition: C) -> Unless<V, C> {
     Unless::new(validator, condition)
 }
 
@@ -102,9 +96,7 @@ mod tests {
         min: usize,
     }
 
-    impl Validate for MinLength {
-        type Input = str;
-
+    impl Validate<str> for MinLength {
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
             if input.len() >= self.min {
                 Ok(())

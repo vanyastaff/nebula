@@ -48,7 +48,7 @@ trait ErasedValidator<T: ?Sized>: Send + Sync {
 
 impl<T: ?Sized, V> ErasedValidator<T> for V
 where
-    V: Validate<Input = T> + Clone + Send + Sync + 'static,
+    V: Validate<T> + Clone + Send + Sync + 'static,
 {
     #[inline]
     fn validate_erased(&self, input: &T) -> Result<(), ValidationError> {
@@ -104,7 +104,7 @@ impl<T: ?Sized> AnyValidator<T> {
     /// ```
     pub fn new<V>(validator: V) -> Self
     where
-        V: Validate<Input = T> + Clone + Send + Sync + 'static,
+        V: Validate<T> + Clone + Send + Sync + 'static,
     {
         Self {
             inner: Box::new(validator),
@@ -112,11 +112,9 @@ impl<T: ?Sized> AnyValidator<T> {
     }
 }
 
-impl<T: ?Sized> Validate for AnyValidator<T> {
-    type Input = T;
-
+impl<T: ?Sized> Validate<T> for AnyValidator<T> {
     #[inline]
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
         self.inner.validate_erased(input)
     }
 }

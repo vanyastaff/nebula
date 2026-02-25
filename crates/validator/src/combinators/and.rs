@@ -7,13 +7,12 @@
 //! # Examples
 //!
 //! ```rust,ignore
-//! use nebula_validator::combinators::And;
-//! use nebula_validator::foundation::Validate;
+//! use nebula_validator::prelude::*;
 //!
 //! // Both validators must pass
-//! let validator = And::new(min_length(5), max_length(20));
-//! assert!(validator.validate("hello").is_ok());
-//! assert!(validator.validate("hi").is_err()); // fails min_length
+//! let validator = min_length(5).and(max_length(20));
+//! assert!("hello".validate(&validator).is_ok());
+//! assert!("hi".validate(&validator).is_err()); // fails min_length
 //! ```
 
 use crate::foundation::{Validate, ValidationError};
@@ -31,36 +30,28 @@ use crate::foundation::{Validate, ValidationError};
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_validator::combinators::And;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::prelude::*;
 ///
-/// let validator = And::new(min_length(5), max_length(10));
+/// let validator = min_length(5).and(max_length(10));
 ///
 /// // Both conditions satisfied
-/// assert!(validator.validate("hello").is_ok());
+/// assert!("hello".validate(&validator).is_ok());
 ///
 /// // First condition fails
-/// assert!(validator.validate("hi").is_err());
+/// assert!("hi".validate(&validator).is_err());
 ///
 /// // Second condition fails
-/// assert!(validator.validate("verylongstring").is_err());
+/// assert!("verylongstring".validate(&validator).is_err());
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct And<L, R> {
-    /// The left (first) validator.
     pub(crate) left: L,
-    /// The right (second) validator.
     pub(crate) right: R,
 }
 
 impl<L, R> And<L, R> {
     /// Creates a new `And` combinator.
-    ///
-    /// # Arguments
-    ///
-    /// * `left` - The first validator to apply
-    /// * `right` - The second validator to apply
-    pub fn new(left: L, right: R) -> Self {
+    pub const fn new(left: L, right: R) -> Self {
         Self { left, right }
     }
 
@@ -80,39 +71,15 @@ impl<L, R> And<L, R> {
     }
 }
 
-impl<L, R> Validate for And<L, R>
+impl<T: ?Sized, L, R> Validate<T> for And<L, R>
 where
-    L: Validate,
-    R: Validate<Input = L::Input>,
+    L: Validate<T>,
+    R: Validate<T>,
 {
-    type Input = L::Input;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    #[inline]
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
         self.left.validate(input)?;
-        self.right.validate(input)?;
-        Ok(())
-    }
-}
-
-impl<L, R> And<L, R>
-where
-    L: Validate,
-    R: Validate<Input = L::Input>,
-{
-    /// Chains another validator with AND logic.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use nebula_validator::foundation::ValidateExt;
-    ///
-    /// let validator = min_length(5).and(max_length(10)).and(alphanumeric());
-    /// ```
-    pub fn and<V>(self, other: V) -> And<Self, V>
-    where
-        V: Validate<Input = L::Input>,
-    {
-        And::new(self, other)
+        self.right.validate(input)
     }
 }
 
@@ -121,17 +88,12 @@ where
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_validator::combinators::and;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::prelude::*;
 ///
 /// let validator = and(min_length(5), max_length(10));
-/// assert!(validator.validate("hello").is_ok());
+/// assert!("hello".validate(&validator).is_ok());
 /// ```
-pub fn and<L, R>(left: L, right: R) -> And<L, R>
-where
-    L: Validate,
-    R: Validate<Input = L::Input>,
-{
+pub fn and<L, R>(left: L, right: R) -> And<L, R> {
     And::new(left, right)
 }
 
@@ -142,19 +104,15 @@ where
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_validator::combinators::and_all;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::prelude::*;
 ///
 /// let validators = vec![min_length(3), min_length(5), min_length(7)];
 /// let validator = and_all(validators);
-/// assert!(validator.validate("helloworld").is_ok());
-/// assert!(validator.validate("hello").is_err());
+/// assert!("helloworld".validate(&validator).is_ok());
+/// assert!("hello".validate(&validator).is_err());
 /// ```
 #[must_use]
-pub fn and_all<V>(validators: Vec<V>) -> AndAll<V>
-where
-    V: Validate,
-{
+pub fn and_all<V>(validators: Vec<V>) -> AndAll<V> {
     AndAll { validators }
 }
 
@@ -162,22 +120,16 @@ where
 ///
 /// All validators in the collection must pass for this validator to succeed.
 /// Validation stops at the first failure (short-circuits).
-///
-/// # Type Parameters
-///
-/// * `V` - The validator type
 #[derive(Debug, Clone)]
 pub struct AndAll<V> {
     validators: Vec<V>,
 }
 
-impl<V> Validate for AndAll<V>
+impl<T: ?Sized, V> Validate<T> for AndAll<V>
 where
-    V: Validate,
+    V: Validate<T>,
 {
-    type Input = V::Input;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
         for validator in &self.validators {
             validator.validate(input)?;
         }
@@ -188,68 +140,57 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::foundation::traits::ValidateExt;
+    use crate::foundation::Validatable;
 
-    struct MinLength {
-        min: usize,
-    }
+    struct MinLength(usize);
 
-    impl Validate for MinLength {
-        type Input = str;
+    impl Validate<str> for MinLength {
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
-            if input.len() >= self.min {
+            if input.len() >= self.0 {
                 Ok(())
             } else {
-                Err(ValidationError::min_length("", self.min, input.len()))
+                Err(ValidationError::min_length("", self.0, input.len()))
             }
         }
     }
 
-    struct MaxLength {
-        max: usize,
-    }
+    struct MaxLength(usize);
 
-    impl Validate for MaxLength {
-        type Input = str;
+    impl Validate<str> for MaxLength {
         fn validate(&self, input: &str) -> Result<(), ValidationError> {
-            if input.len() <= self.max {
+            if input.len() <= self.0 {
                 Ok(())
             } else {
-                Err(ValidationError::max_length("", self.max, input.len()))
+                Err(ValidationError::max_length("", self.0, input.len()))
             }
         }
     }
 
     #[test]
     fn test_and_both_pass() {
-        let validator = And::new(MinLength { min: 5 }, MaxLength { max: 10 });
-        assert!(validator.validate("hello").is_ok());
+        let validator = And::new(MinLength(5), MaxLength(10));
+        assert!("hello".validate_with(&validator).is_ok());
     }
 
     #[test]
     fn test_and_left_fails() {
-        let validator = And::new(MinLength { min: 5 }, MaxLength { max: 10 });
-        assert!(validator.validate("hi").is_err());
+        let validator = And::new(MinLength(5), MaxLength(10));
+        assert!("hi".validate_with(&validator).is_err());
     }
 
     #[test]
     fn test_and_chain() {
-        let validator = MinLength { min: 3 }
-            .and(MaxLength { max: 10 })
-            .and(MinLength { min: 5 });
-        assert!(validator.validate("hello").is_ok());
-        assert!(validator.validate("hi").is_err());
+        use crate::foundation::ValidateExt;
+        let validator = MinLength(3).and(MaxLength(10)).and(MinLength(5));
+        assert!("hello".validate_with(&validator).is_ok());
+        assert!("hi".validate_with(&validator).is_err());
     }
 
     #[test]
     fn test_and_all() {
-        let validators = vec![
-            MinLength { min: 3 },
-            MinLength { min: 5 },
-            MinLength { min: 7 },
-        ];
+        let validators = vec![MinLength(3), MinLength(5), MinLength(7)];
         let combined = and_all(validators);
-        assert!(combined.validate("helloworld").is_ok());
-        assert!(combined.validate("hello").is_err());
+        assert!("helloworld".validate_with(&combined).is_ok());
+        assert!("hello".validate_with(&combined).is_err());
     }
 }

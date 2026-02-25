@@ -2,6 +2,39 @@
 //!
 //! This module provides the `AsValidatable` trait that enables validators to accept
 //! multiple input types seamlessly through Generic Associated Types (GATs).
+//!
+//! # Implementing for Custom Types
+//!
+//! Similar to how serde works, external crates can implement `AsValidatable` for their
+//! own types without any feature flags:
+//!
+//! ```ignore
+//! use nebula_validator::foundation::{AsValidatable, ValidationError};
+//!
+//! // For types that implement Display (uuid, chrono, url, etc.)
+//! impl AsValidatable<str> for uuid::Uuid {
+//!     type Output<'a> = String;
+//!
+//!     fn as_validatable(&self) -> Result<String, ValidationError> {
+//!         Ok(self.to_string())
+//!     }
+//! }
+//!
+//! // For chrono DateTime with RFC3339 format
+//! impl<Tz: chrono::TimeZone> AsValidatable<str> for chrono::DateTime<Tz>
+//! where
+//!     Tz::Offset: std::fmt::Display,
+//! {
+//!     type Output<'a> = String where Self: 'a;
+//!
+//!     fn as_validatable(&self) -> Result<String, ValidationError> {
+//!         Ok(self.to_rfc3339())
+//!     }
+//! }
+//! ```
+//!
+//! This design ensures nebula-validator has zero knowledge of third-party crates,
+//! avoiding version conflicts entirely.
 
 use crate::foundation::ValidationError;
 use std::borrow::Borrow;
@@ -229,41 +262,6 @@ impl AsValidatable<f64> for i64 {
 }
 
 // ============================================================================
-// OPTIONAL THIRD-PARTY TYPE CONVERSIONS
-// ============================================================================
-// All use impl_display_as_str! since these types implement Display.
-// Enabled via feature flags so users don't pull in unused dependencies.
-
-#[cfg(feature = "url")]
-impl_display_as_str!(::url::Url);
-
-#[cfg(feature = "uuid")]
-impl_display_as_str!(::uuid::Uuid);
-
-#[cfg(feature = "chrono")]
-impl_display_as_str! {
-    ::chrono::NaiveDate,
-    ::chrono::NaiveTime,
-    ::chrono::NaiveDateTime,
-}
-
-#[cfg(feature = "chrono")]
-impl<Tz: ::chrono::TimeZone> AsValidatable<str> for ::chrono::DateTime<Tz>
-where
-    Tz::Offset: std::fmt::Display,
-{
-    type Output<'a>
-        = String
-    where
-        Self: 'a;
-
-    #[inline]
-    fn as_validatable(&self) -> Result<String, ValidationError> {
-        Ok(self.to_rfc3339())
-    }
-}
-
-// ============================================================================
 // PATH CONVERSIONS (Path/PathBuf don't implement Display)
 // ============================================================================
 
@@ -306,7 +304,6 @@ impl AsValidatable<str> for std::path::PathBuf {
 // ============================================================================
 
 /// Returns a human-readable type name for a JSON value.
-#[cfg(feature = "serde")]
 pub(crate) fn json_type_name(value: &serde_json::Value) -> &'static str {
     match value {
         serde_json::Value::Null => "null",
@@ -318,7 +315,6 @@ pub(crate) fn json_type_name(value: &serde_json::Value) -> &'static str {
     }
 }
 
-#[cfg(feature = "serde")]
 impl AsValidatable<str> for serde_json::Value {
     type Output<'a>
         = &'a str
@@ -339,7 +335,6 @@ impl AsValidatable<str> for serde_json::Value {
     }
 }
 
-#[cfg(feature = "serde")]
 impl AsValidatable<i64> for serde_json::Value {
     type Output<'a> = i64;
 
@@ -361,7 +356,6 @@ impl AsValidatable<i64> for serde_json::Value {
     }
 }
 
-#[cfg(feature = "serde")]
 impl AsValidatable<f64> for serde_json::Value {
     type Output<'a> = f64;
 
@@ -383,7 +377,6 @@ impl AsValidatable<f64> for serde_json::Value {
     }
 }
 
-#[cfg(feature = "serde")]
 impl AsValidatable<bool> for serde_json::Value {
     type Output<'a> = bool;
 
@@ -401,7 +394,6 @@ impl AsValidatable<bool> for serde_json::Value {
     }
 }
 
-#[cfg(feature = "serde")]
 impl AsValidatable<[serde_json::Value]> for serde_json::Value {
     type Output<'a>
         = &'a [serde_json::Value]
@@ -532,30 +524,29 @@ mod tests {
     }
 
     #[test]
-    fn validate_any_with_ip_and_str_validator() {
-        use crate::foundation::Validate as _;
+    fn validate_with_extension_method() {
+        use crate::foundation::{Validatable, Validate};
         use crate::validators::{hostname, ipv4};
-        use std::net::Ipv4Addr;
 
-        let ip: Ipv4Addr = "192.168.0.1".parse().unwrap();
-        assert!(ipv4().validate_any(&ip).is_ok());
+        // Direct: validator.validate(input)
+        assert!(ipv4().validate("192.168.0.1").is_ok());
+        assert!(hostname().validate("example.com").is_ok());
 
-        let path = std::path::PathBuf::from("example.com");
-        assert!(hostname().validate_any(&path).is_ok());
+        // Extension: input.validate_with(&validator)
+        assert!("192.168.0.1".validate_with(&ipv4()).is_ok());
+        assert!("example.com".validate_with(&hostname()).is_ok());
     }
 
     #[test]
-    fn test_validate_any_with_string_validator() {
-        use crate::foundation::{Validate, ValidationError};
+    fn test_validate_with_string_validator() {
+        use crate::foundation::{Validatable, Validate, ValidationError};
 
         struct MinLength {
             min: usize,
         }
 
-        impl Validate for MinLength {
-            type Input = str;
-
-            fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+        impl Validate<str> for MinLength {
+            fn validate(&self, input: &str) -> Result<(), ValidationError> {
                 if input.len() >= self.min {
                     Ok(())
                 } else {
@@ -566,35 +557,29 @@ mod tests {
 
         let validator = MinLength { min: 3 };
 
-        // Works with &str
-        assert!(validator.validate_any("hello").is_ok());
-        assert!(validator.validate_any("hi").is_err());
+        // Direct validator style
+        assert!(validator.validate("hello").is_ok());
+        assert!(validator.validate("hi").is_err());
 
-        // Works with String
+        // Extension method style
+        assert!("hello".validate_with(&validator).is_ok());
+        assert!("hi".validate_with(&validator).is_err());
+
+        // Works with String via Validatable
         let s = String::from("hello");
-        assert!(validator.validate_any(&s).is_ok());
-
-        // Works with Cow<str>
-        use std::borrow::Cow;
-        let cow: Cow<str> = Cow::Borrowed("hello");
-        assert!(validator.validate_any(&cow).is_ok());
-
-        let cow_owned: Cow<str> = Cow::Owned(String::from("world"));
-        assert!(validator.validate_any(&cow_owned).is_ok());
+        assert!(validator.validate(&s).is_ok());
     }
 
     #[test]
-    fn test_validate_any_with_numeric_validator() {
-        use crate::foundation::{Validate, ValidationError};
+    fn test_validate_with_numeric_validator() {
+        use crate::foundation::{Validatable, Validate, ValidationError};
 
         struct MinValue {
             min: i64,
         }
 
-        impl Validate for MinValue {
-            type Input = i64;
-
-            fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+        impl Validate<i64> for MinValue {
+            fn validate(&self, input: &i64) -> Result<(), ValidationError> {
                 if *input >= self.min {
                     Ok(())
                 } else {
@@ -605,24 +590,18 @@ mod tests {
 
         let validator = MinValue { min: 10 };
 
-        // Works with i64
-        assert!(validator.validate_any(&42i64).is_ok());
-        assert!(validator.validate_any(&5i64).is_err());
+        // Direct validator style
+        assert!(validator.validate(&42i64).is_ok());
+        assert!(validator.validate(&5i64).is_err());
 
-        // Works with i32 (widened to i64)
-        assert!(validator.validate_any(&42i32).is_ok());
-        assert!(validator.validate_any(&5i32).is_err());
-
-        // Works with i16
-        assert!(validator.validate_any(&42i16).is_ok());
-
-        // Works with u8
-        assert!(validator.validate_any(&42u8).is_ok());
+        // Extension method style
+        assert!(42i64.validate_with(&validator).is_ok());
+        assert!(5i64.validate_with(&validator).is_err());
     }
 }
 
 #[cfg(test)]
-#[cfg(feature = "serde")]
+
 mod serde_json_tests {
     use super::*;
     use crate::foundation::Validate;
@@ -715,15 +694,15 @@ mod serde_json_tests {
         assert!(AsValidatable::<[serde_json::Value]>::as_validatable(&json!("not array")).is_err());
     }
 
-    // -- validate_any integration --
+    // -- json_field integration --
 
     #[test]
-    fn validate_any_str_validator_with_json_value() {
+    fn json_field_validator_with_json_value() {
+        use crate::combinators::json_field;
         use crate::validators::min_length;
 
-        let validator = min_length(3);
-        assert!(validator.validate_any(&json!("hello")).is_ok());
-        assert!(validator.validate_any(&json!("hi")).is_err());
-        assert!(validator.validate_any(&json!(42)).is_err()); // type mismatch
+        let validator = json_field("", min_length(3));
+        assert!(validator.validate(&json!("hello")).is_ok());
+        assert!(validator.validate(&json!("hi")).is_err());
     }
 }

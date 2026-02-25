@@ -7,11 +7,17 @@ use crate::foundation::validatable::AsValidatable;
 use crate::foundation::{Validate, ValidationError};
 use std::borrow::{Borrow, Cow};
 use std::fmt;
+use std::marker::PhantomData;
 
 /// Validates a field within a JSON value by RFC 6901 JSON Pointer path.
 ///
 /// Extracts a value at the given pointer path and validates it with the
 /// inner validator. Supports required (default) and optional modes.
+///
+/// # Type Parameters
+///
+/// * `V` - The inner validator type
+/// * `I` - The target type that JSON values are converted to (e.g., `str`, `i64`)
 ///
 /// # Path syntax
 ///
@@ -19,13 +25,14 @@ use std::fmt;
 /// - `"/server/port"` — nested object access
 /// - `"/items/0/name"` — array index + nested key
 /// - `""` — root value
-pub struct JsonField<V> {
+pub struct JsonField<V, I: ?Sized> {
     pointer: Cow<'static, str>,
     inner: V,
     required: bool,
+    _phantom: PhantomData<fn(&I)>,
 }
 
-impl<V> JsonField<V> {
+impl<V, I: ?Sized> JsonField<V, I> {
     /// Creates a required field validator.
     ///
     /// Validation fails if the path does not exist in the input.
@@ -34,6 +41,7 @@ impl<V> JsonField<V> {
             pointer: pointer.into(),
             inner,
             required: true,
+            _phantom: PhantomData,
         }
     }
 
@@ -45,17 +53,17 @@ impl<V> JsonField<V> {
             pointer: pointer.into(),
             inner,
             required: false,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<V> Validate for JsonField<V>
+impl<V, I> Validate<serde_json::Value> for JsonField<V, I>
 where
-    V: Validate,
-    serde_json::Value: AsValidatable<V::Input>,
+    V: Validate<I>,
+    I: ?Sized,
+    serde_json::Value: AsValidatable<I>,
 {
-    type Input = serde_json::Value;
-
     fn validate(&self, input: &serde_json::Value) -> Result<(), ValidationError> {
         let resolved = if self.pointer.is_empty() {
             Some(input)
@@ -66,7 +74,7 @@ where
         match resolved {
             Some(value) if !self.required && value.is_null() => Ok(()),
             Some(value) => {
-                let converted = AsValidatable::<V::Input>::as_validatable(value)
+                let converted = AsValidatable::<I>::as_validatable(value)
                     .map_err(|e| e.with_field(self.pointer.clone()))?;
                 self.inner
                     .validate(converted.borrow())
@@ -83,7 +91,7 @@ where
     }
 }
 
-impl<V: fmt::Debug> fmt::Debug for JsonField<V> {
+impl<V: fmt::Debug, I: ?Sized> fmt::Debug for JsonField<V, I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("JsonField")
             .field("pointer", &self.pointer)
@@ -93,12 +101,13 @@ impl<V: fmt::Debug> fmt::Debug for JsonField<V> {
     }
 }
 
-impl<V: Clone> Clone for JsonField<V> {
+impl<V: Clone, I: ?Sized> Clone for JsonField<V, I> {
     fn clone(&self) -> Self {
         Self {
             pointer: self.pointer.clone(),
             inner: self.inner.clone(),
             required: self.required,
+            _phantom: PhantomData,
         }
     }
 }
@@ -117,7 +126,10 @@ impl<V: Clone> Clone for JsonField<V> {
 /// assert!(v.validate(&json!({"port": 8080})).is_ok());
 /// assert!(v.validate(&json!({"port": 0})).is_err());
 /// ```
-pub fn json_field<V>(pointer: impl Into<Cow<'static, str>>, validator: V) -> JsonField<V> {
+pub fn json_field<V, I: ?Sized>(
+    pointer: impl Into<Cow<'static, str>>,
+    validator: V,
+) -> JsonField<V, I> {
     JsonField::required(pointer, validator)
 }
 
@@ -138,7 +150,10 @@ pub fn json_field<V>(pointer: impl Into<Cow<'static, str>>, validator: V) -> Jso
 /// assert!(v.validate(&json!({"email": null})).is_ok());    // null = ok
 /// assert!(v.validate(&json!({"email": "a@b.c"})).is_ok()); // valid = ok
 /// ```
-pub fn json_field_optional<V>(pointer: impl Into<Cow<'static, str>>, validator: V) -> JsonField<V> {
+pub fn json_field_optional<V, I: ?Sized>(
+    pointer: impl Into<Cow<'static, str>>,
+    validator: V,
+) -> JsonField<V, I> {
     JsonField::optional(pointer, validator)
 }
 

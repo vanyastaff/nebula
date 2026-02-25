@@ -135,10 +135,8 @@ fn parse_time_parts(s: &str) -> Result<&str, ValidationError> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Date;
 
-impl Validate for Date {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+impl Validate<str> for Date {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         parse_date_parts(input).map(|_| ())
     }
 }
@@ -159,10 +157,8 @@ pub fn date() -> Date {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Time;
 
-impl Validate for Time {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+impl Validate<str> for Time {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         parse_time_parts(input)?;
         Ok(())
     }
@@ -188,10 +184,8 @@ pub fn time() -> Time {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DateTime;
 
-impl Validate for DateTime {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+impl Validate<str> for DateTime {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         let err = || {
             ValidationError::new(
                 "datetime",
@@ -259,10 +253,8 @@ pub fn date_time() -> DateTime {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Uuid;
 
-impl Validate for Uuid {
-    type Input = str;
-
-    fn validate(&self, input: &Self::Input) -> Result<(), ValidationError> {
+impl Validate<str> for Uuid {
+    fn validate(&self, input: &str) -> Result<(), ValidationError> {
         let err = || {
             ValidationError::new(
                 "uuid",

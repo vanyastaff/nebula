@@ -1,7 +1,5 @@
 //! Integration tests for serde_json::Value validation.
 
-#![cfg(feature = "serde")]
-
 use nebula_validator::combinators::{json_field, json_field_optional};
 use nebula_validator::foundation::{Validate, ValidateExt};
 use nebula_validator::validators::min_length;
@@ -430,7 +428,7 @@ fn multiple_field_errors() {
     });
 
     // Validate each field independently and collect errors
-    let validators: Vec<Box<dyn Validate<Input = Value>>> = vec![
+    let validators: Vec<Box<dyn Validate<serde_json::Value>>> = vec![
         Box::new(json_field("/name", min_length(1))),
         Box::new(json_field("/email", email())),
     ];

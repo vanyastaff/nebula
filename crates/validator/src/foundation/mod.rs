@@ -1,74 +1,50 @@
 //! Core validation types and traits
 //!
-//! This module contains the fundamental building blocks of the validation system:
+//! This module provides the fundamental building blocks for type-safe validation:
 //!
-//! - **Traits**: `Validate`, `ValidateExt`
-//! - **Errors**: `ValidationError`, `ValidationErrors`
+//! - [`Validate<T>`] - Core trait for validators, generic over input type
+//! - [`Validatable`] - Extension trait enabling `value.validate(&validator)` syntax
+//! - [`ValidateExt<T>`] - Combinator methods (`.and()`, `.or()`, `.not()`)
+//! - [`ValidationError`] - Structured validation errors
 //!
-//! # Architecture
-//!
-//! The core is designed around several key principles:
-//!
-//! ## 1. Type Safety
-//!
-//! Validators are generic over their input type, providing compile-time guarantees:
+//! # Two Ways to Validate
 //!
 //! ```rust,ignore
-//! use nebula_validator::foundation::Validate;
+//! use nebula_validator::prelude::*;
 //!
-//! struct MinLength { min: usize }
+//! // Extension method: read left-to-right
+//! "hello".validate(&min_length(3))?;
 //!
-//! impl Validate for MinLength {
-//!     type Input = str;  // Only validates strings
-//!
-//!     fn validate(&self, input: &str) -> Result<(), ValidationError> {
-//!         // ...
-//!     }
-//! }
+//! // Direct method: traditional style
+//! min_length(3).validate("hello")?;
 //! ```
 //!
-//! ## 2. Composition
+//! # Type Safety Through Trait Bounds
 //!
-//! Validators compose using logical combinators:
+//! Validators use trait bounds to ensure compile-time type safety:
+//!
+//! ```rust,ignore
+//! // String validators: work with any AsRef<str>
+//! impl<T: AsRef<str> + ?Sized> Validate<T> for MinLength { ... }
+//!
+//! // Numeric validators: work with any Ord type
+//! impl<T: Ord> Validate<T> for Min<T> { ... }
+//!
+//! // Compile-time errors for invalid combinations:
+//! "hello".validate(&min_length(3));  // ✓ Compiles
+//! 42.validate(&min_length(3));       // ✗ Error: i32 doesn't impl AsRef<str>
+//! ```
+//!
+//! # Composition
 //!
 //! ```rust,ignore
 //! let validator = min_length(5)
 //!     .and(max_length(20))
 //!     .and(alphanumeric());
+//!
+//! "hello123".validate(&validator)?;
 //! ```
-//!
-//! ## 3. Zero-Cost Abstractions
-//!
-//! Validators use generics and inline code, resulting in zero runtime overhead:
-//!
-//! ```rust,ignore
-//! // This compiles to the same code as manually writing the checks!
-//! let validator = min_length(5).and(max_length(20));
-//! ```
-//!
-//! ## 4. Rich Error Information
-//!
-//! Errors are structured and contain detailed information:
-//!
-//! ```rust,ignore
-//! let error = ValidationError::new("min_length", "Too short")
-//!     .with_field("username")
-//!     .with_param("min", "5")
-//!     .with_param("actual", "3");
-//! ```
-//!
-//! # Examples
-//!
-//! ## Basic validation
-//!
-//! ```rust,ignore
-//! use nebula_validator::prelude::*;
-//!
-//! let validator = MinLength { min: 5 };
-//! assert!(validator.validate("hello").is_ok());
-//! assert!(validator.validate("hi").is_err());
-//! ```
-//!
+
 // Module declarations
 pub mod any;
 pub mod context;
@@ -76,11 +52,11 @@ pub mod error;
 pub mod traits;
 pub mod validatable;
 
-// Re-export everything at the core level for convenience
+// Re-export core types
 pub use any::AnyValidator;
 pub use context::{ContextualValidator, ValidationContext, ValidationContextBuilder};
 pub use error::{ErrorSeverity, ValidationError, ValidationErrors};
-pub use traits::{Validate, ValidateExt, ValidatorFor};
+pub use traits::{And, Not, Or, Validatable, Validate, ValidateExt, When};
 pub use validatable::AsValidatable;
 
 // ============================================================================
@@ -89,106 +65,22 @@ pub use validatable::AsValidatable;
 
 /// Common imports for working with the validator core.
 ///
-/// # Examples
-///
 /// ```rust,ignore
 /// use nebula_validator::foundation::prelude::*;
 ///
-/// // Now you have access to all common types and traits
-/// let validator = MinLength { min: 5 }.and(MaxLength { max: 20 });
+/// // Extension method style
+/// "hello".validate(&min_length(3))?;
+/// 42.validate(&min(10))?;
+///
+/// // Direct method style
+/// min_length(3).validate("hello")?;
 /// ```
 pub mod prelude {
     pub use super::{
-        AnyValidator, AsValidatable, ContextualValidator, ErrorSeverity, Validate, ValidateExt,
-        ValidationContext, ValidationContextBuilder, ValidationError, ValidationErrors,
-        ValidatorFor,
+        And, AnyValidator, ContextualValidator, ErrorSeverity, Not, Or, Validatable, Validate,
+        ValidateExt, ValidationContext, ValidationContextBuilder, ValidationError,
+        ValidationErrors, When,
     };
-}
-
-// ============================================================================
-// UTILITIES
-// ============================================================================
-
-/// Validates a value and returns a more detailed result.
-///
-/// This is a convenience function for one-off validations.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::foundation::validate_value;
-///
-/// let result = validate_value("hello", &min_length(5))?;
-/// ```
-#[must_use = "validation result must be checked"]
-pub fn validate_value<V>(value: &V::Input, validator: &V) -> Result<(), ValidationError>
-where
-    V: Validate,
-{
-    validator.validate(value)
-}
-
-/// Validates a value with multiple validators.
-///
-/// All validators must pass for this to succeed.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::foundation::validate_with_all;
-///
-/// let result = validate_with_all("hello", &[
-///     &min_length(3),
-///     &max_length(10),
-/// ])?;
-/// ```
-pub fn validate_with_all<V>(value: &V::Input, validators: &[&V]) -> Result<(), ValidationErrors>
-where
-    V: Validate + ?Sized,
-{
-    let mut errors = ValidationErrors::new();
-
-    for validator in validators {
-        if let Err(e) = validator.validate(value) {
-            errors.add(e);
-        }
-    }
-
-    if errors.has_errors() {
-        Err(errors)
-    } else {
-        Ok(())
-    }
-}
-
-/// Validates a value with multiple validators (at least one must pass).
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_validator::foundation::validate_with_any;
-///
-/// let result = validate_with_any("hello", &[
-///     &exact_length(5),
-///     &exact_length(10),
-/// ])?;
-/// ```
-pub fn validate_with_any<V>(value: &V::Input, validators: &[&V]) -> Result<(), ValidationErrors>
-where
-    V: Validate + ?Sized,
-{
-    let mut errors = ValidationErrors::new();
-
-    for validator in validators {
-        match validator.validate(value) {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                errors.add(e);
-            }
-        }
-    }
-
-    Err(errors)
 }
 
 // ============================================================================
@@ -209,60 +101,70 @@ pub type ValidationResultMulti<T> = Result<T, ValidationErrors>;
 mod core_tests {
     use super::*;
 
-    // Simple test validator for testing utilities
+    // Test validator using the new Validate<T> pattern
     struct AlwaysValid;
 
-    impl Validate for AlwaysValid {
-        type Input = str;
-
-        fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {
+    impl Validate<str> for AlwaysValid {
+        fn validate(&self, _input: &str) -> Result<(), ValidationError> {
             Ok(())
         }
     }
 
     struct AlwaysFails;
 
-    impl Validate for AlwaysFails {
-        type Input = str;
-
-        fn validate(&self, _input: &Self::Input) -> Result<(), ValidationError> {
+    impl Validate<str> for AlwaysFails {
+        fn validate(&self, _input: &str) -> Result<(), ValidationError> {
             Err(ValidationError::new("always_fails", "Always fails"))
         }
     }
 
     #[test]
-    fn test_validate_value() {
-        let validator = AlwaysValid;
-        assert!(validate_value("test", &validator).is_ok());
+    fn test_extension_method() {
+        // New: extension method style
+        assert!("test".validate_with(&AlwaysValid).is_ok());
+        assert!("test".validate_with(&AlwaysFails).is_err());
     }
 
     #[test]
-    fn test_validate_with_all_success() {
-        let result = validate_with_all("test", &[&AlwaysValid, &AlwaysValid]);
+    fn test_direct_method() {
+        // Traditional: direct call style
+        assert!(AlwaysValid.validate("test").is_ok());
+        assert!(AlwaysFails.validate("test").is_err());
+    }
+
+    #[test]
+    fn test_and_combinator() {
+        let both = AlwaysValid.and(AlwaysValid);
+        assert!("test".validate_with(&both).is_ok());
+
+        let one_fails = AlwaysValid.and(AlwaysFails);
+        assert!("test".validate_with(&one_fails).is_err());
+    }
+
+    #[test]
+    fn test_or_combinator() {
+        let one_passes = AlwaysFails.or(AlwaysValid);
+        assert!("test".validate_with(&one_passes).is_ok());
+
+        let both_fail = AlwaysFails.or(AlwaysFails);
+        assert!("test".validate_with(&both_fail).is_err());
+    }
+
+    #[test]
+    fn test_not_combinator() {
+        let not_fails = AlwaysFails.not();
+        assert!("test".validate_with(&not_fails).is_ok());
+
+        let not_valid = AlwaysValid.not();
+        assert!("test".validate_with(&not_valid).is_err());
+    }
+
+    #[test]
+    fn test_method_chaining() {
+        // Chain multiple validations via extension method
+        let result = "hello"
+            .validate_with(&AlwaysValid)
+            .and_then(|s| s.validate_with(&AlwaysValid));
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_with_all_failure() {
-        let valid = AlwaysValid;
-        let fails = AlwaysFails;
-        let validators: &[&dyn Validate<Input = str>] = &[&valid, &fails];
-        let result = validate_with_all("test", validators);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_validate_with_any_success() {
-        let valid = AlwaysValid;
-        let fails = AlwaysFails;
-        let validators: &[&dyn Validate<Input = str>] = &[&fails, &valid];
-        let result = validate_with_any("test", validators);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_with_any_all_fail() {
-        let result = validate_with_any("test", &[&AlwaysFails, &AlwaysFails]);
-        assert!(result.is_err());
     }
 }
