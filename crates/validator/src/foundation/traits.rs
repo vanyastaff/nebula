@@ -102,6 +102,7 @@ pub trait Validate {
     /// use std::borrow::Cow;
     /// assert!(validator.validate_any(&Cow::Borrowed("hello")).is_ok());
     /// ```
+    #[inline]
     fn validate_any<S>(&self, value: &S) -> Result<(), crate::foundation::ValidationError>
     where
         Self: Sized,
@@ -112,6 +113,39 @@ pub trait Validate {
         self.validate(output.borrow())
     }
 }
+
+// ============================================================================
+// VALIDATOR FOR TRAIT (Ergonomic helper)
+// ============================================================================
+
+/// Convenience trait for specifying validator input types.
+///
+/// This trait provides a more ergonomic way to express type bounds
+/// on validators. Instead of writing:
+///
+/// ```rust,ignore
+/// fn validate<V: Validate>(v: V) where V::Input: AsRef<str>
+/// ```
+///
+/// You can write:
+///
+/// ```rust,ignore
+/// fn validate(v: impl ValidatorFor<str>)
+/// ```
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_validator::foundation::{ValidatorFor, Validate};
+///
+/// fn run_string_validation(validator: impl ValidatorFor<str>, input: &str) {
+///     validator.validate(input).unwrap();
+/// }
+/// ```
+pub trait ValidatorFor<T: ?Sized>: Validate<Input = T> {}
+
+// Blanket implementation
+impl<T: ?Sized, V: Validate<Input = T>> ValidatorFor<T> for V {}
 
 // ============================================================================
 // VALIDATOR EXTENSION TRAIT

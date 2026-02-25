@@ -3,11 +3,52 @@
 //! This module provides a rich, structured error type that supports
 //! nested errors, field paths, error codes, and parameterized messages.
 //!
-//! All string fields use `Cow<'static, str>` for zero-allocation in the
-//! common case of static error codes and messages.
+//! # Memory Optimization
+//!
+//! `ValidationError` is optimized for the common case (80 bytes):
+//! - `code`, `message`, `field` are inline (most errors only use these)
+//! - `params`, `nested`, `severity`, `help` are boxed in `ErrorExtras` (lazy allocated)
+//!
+//! This reduces stack size by ~47% compared to inlining all fields.
 
+use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::fmt;
+
+// ============================================================================
+// ERROR EXTRAS (Boxed for rare fields)
+// ============================================================================
+
+/// Extended error data, boxed to reduce `ValidationError` size.
+///
+/// Most validation errors only need `code`, `message`, and `field`.
+/// This struct holds rarely-used fields that are lazily allocated.
+#[derive(Debug, Clone, PartialEq)]
+struct ErrorExtras {
+    /// Parameters for the error message template.
+    /// SmallVec optimizes for 0-2 params inline (covers ~95% of cases).
+    params: SmallVec<[(Cow<'static, str>, Cow<'static, str>); 2]>,
+
+    /// Nested validation errors for complex objects.
+    nested: Vec<ValidationError>,
+
+    /// Severity level (defaults to Error).
+    severity: ErrorSeverity,
+
+    /// Help text or suggestion for fixing the error.
+    help: Option<Cow<'static, str>>,
+}
+
+impl Default for ErrorExtras {
+    fn default() -> Self {
+        Self {
+            params: SmallVec::new(),
+            nested: Vec::new(),
+            severity: ErrorSeverity::Error,
+            help: None,
+        }
+    }
+}
 
 // ============================================================================
 // VALIDATION ERROR
@@ -18,11 +59,18 @@ use std::fmt;
 /// Uses `Cow<'static, str>` for zero-allocation when error codes and messages
 /// are known at compile time (the common case).
 ///
+/// # Memory Layout (80 bytes)
+///
+/// - `code`: 24 bytes (Cow<'static, str>)
+/// - `message`: 24 bytes (Cow<'static, str>)
+/// - `field`: 24 bytes (Option<Cow<'static, str>>)
+/// - `extras`: 8 bytes (Option<Box<ErrorExtras>>)
+///
 /// # Examples
 ///
 /// ## Simple error
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::foundation::ValidationError;
 ///
 /// let error = ValidationError::new("min_length", "String is too short");
@@ -30,7 +78,7 @@ use std::fmt;
 ///
 /// ## Error with parameters
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::foundation::ValidationError;
 ///
 /// let error = ValidationError::new("min_length", "String is too short")
@@ -40,7 +88,7 @@ use std::fmt;
 ///
 /// ## Nested errors
 ///
-/// ```rust,ignore
+/// ```rust
 /// use nebula_validator::foundation::ValidationError;
 ///
 /// let error = ValidationError::new("object_validation", "Object validation failed")
@@ -63,25 +111,12 @@ pub struct ValidationError {
 
     /// Optional field path for nested object validation.
     ///
-    /// Examples: "user.email", "address.zipcode", "items\[0\].name"
+    /// Examples: "user.email", "address.zipcode", "items[0].name"
     pub field: Option<Cow<'static, str>>,
 
-    /// Parameters for the error message template.
-    ///
-    /// Stored as ordered key-value pairs (typically 0-3 params).
-    /// Example: `[("min", "5"), ("actual", "3")]`
-    pub params: Vec<(Cow<'static, str>, Cow<'static, str>)>,
-
-    /// Nested validation errors for complex objects.
-    ///
-    /// Used when validating objects with multiple fields that can each fail.
-    pub nested: Vec<ValidationError>,
-
-    /// Optional severity level.
-    pub severity: ErrorSeverity,
-
-    /// Optional help text or suggestion for fixing the error.
-    pub help: Option<Cow<'static, str>>,
+    /// Extended error data (params, nested, severity, help).
+    /// Boxed to reduce struct size; lazily allocated on first use.
+    extras: Option<Box<ErrorExtras>>,
 }
 
 /// Severity level of a validation error.
@@ -101,24 +136,22 @@ impl ValidationError {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use nebula_validator::foundation::ValidationError;
     ///
-    /// // Static strings — zero allocation:
+    /// // Static strings - zero allocation:
     /// let error = ValidationError::new("min_length", "String is too short");
     ///
-    /// // Dynamic strings — allocates only when needed:
+    /// // Dynamic strings - allocates only when needed:
     /// let error = ValidationError::new("min_length", format!("Must be at least {} chars", 5));
     /// ```
+    #[inline]
     pub fn new(code: impl Into<Cow<'static, str>>, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             code: code.into(),
             message: message.into(),
             field: None,
-            params: Vec::new(),
-            nested: Vec::new(),
-            severity: ErrorSeverity::Error,
-            help: None,
+            extras: None,
         }
     }
 
@@ -126,77 +159,126 @@ impl ValidationError {
     ///
     /// Empty strings are treated as "no field" and leave `field` as `None`.
     #[must_use = "builder methods must be chained or built"]
+    #[inline]
     pub fn with_field(mut self, field: impl Into<Cow<'static, str>>) -> Self {
         let field = field.into();
-        if field.is_empty() {
-            self
-        } else {
+        if !field.is_empty() {
             self.field = Some(field);
-            self
         }
+        self
     }
 
     /// Adds a parameter to the error.
     ///
     /// Parameters are used for message templating and i18n.
     #[must_use = "builder methods must be chained or built"]
+    #[inline]
     pub fn with_param(
         mut self,
         key: impl Into<Cow<'static, str>>,
         value: impl Into<Cow<'static, str>>,
     ) -> Self {
-        self.params.push((key.into(), value.into()));
+        self.extras_mut().params.push((key.into(), value.into()));
         self
     }
 
     /// Adds nested validation errors.
     #[must_use = "builder methods must be chained or built"]
+    #[inline]
     pub fn with_nested(mut self, errors: Vec<ValidationError>) -> Self {
-        self.nested = errors;
+        if !errors.is_empty() {
+            self.extras_mut().nested = errors;
+        }
         self
     }
 
     /// Adds a single nested error.
     #[must_use = "builder methods must be chained or built"]
+    #[inline]
     pub fn with_nested_error(mut self, error: ValidationError) -> Self {
-        self.nested.push(error);
+        self.extras_mut().nested.push(error);
         self
     }
 
     /// Sets the severity level.
     #[must_use = "builder methods must be chained or built"]
+    #[inline]
     pub fn with_severity(mut self, severity: ErrorSeverity) -> Self {
-        self.severity = severity;
+        self.extras_mut().severity = severity;
         self
     }
 
     /// Adds help text or a suggestion.
     #[must_use = "builder methods must be chained or built"]
+    #[inline]
     pub fn with_help(mut self, help: impl Into<Cow<'static, str>>) -> Self {
-        self.help = Some(help.into());
+        self.extras_mut().help = Some(help.into());
         self
     }
 
+    // ========================================================================
+    // ACCESSORS
+    // ========================================================================
+
     /// Looks up a parameter value by key.
     #[must_use]
+    #[inline]
     pub fn param(&self, key: &str) -> Option<&str> {
-        self.params
+        self.params()
             .iter()
             .find(|(k, _)| k.as_ref() == key)
             .map(|(_, v)| v.as_ref())
     }
 
+    /// Returns all parameters.
+    #[must_use]
+    #[inline]
+    pub fn params(&self) -> &[(Cow<'static, str>, Cow<'static, str>)] {
+        self.extras
+            .as_ref()
+            .map(|e| e.params.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Returns nested errors.
+    #[must_use]
+    #[inline]
+    pub fn nested(&self) -> &[ValidationError] {
+        self.extras
+            .as_ref()
+            .map(|e| e.nested.as_slice())
+            .unwrap_or(&[])
+    }
+
     /// Returns true if this error has nested errors.
     #[must_use]
+    #[inline]
     pub fn has_nested(&self) -> bool {
-        !self.nested.is_empty()
+        self.extras.as_ref().is_some_and(|e| !e.nested.is_empty())
+    }
+
+    /// Returns the severity level.
+    #[must_use]
+    #[inline]
+    pub fn severity(&self) -> ErrorSeverity {
+        self.extras
+            .as_ref()
+            .map(|e| e.severity)
+            .unwrap_or(ErrorSeverity::Error)
+    }
+
+    /// Returns help text if available.
+    #[must_use]
+    #[inline]
+    pub fn help(&self) -> Option<&str> {
+        self.extras.as_ref()?.help.as_deref()
     }
 
     /// Returns the number of errors (including nested).
     #[must_use]
     pub fn total_error_count(&self) -> usize {
         1 + self
-            .nested
+            .nested()
             .iter()
             .map(ValidationError::total_error_count)
             .sum::<usize>()
@@ -206,7 +288,7 @@ impl ValidationError {
     #[must_use]
     pub fn flatten(&self) -> Vec<&ValidationError> {
         let mut result = vec![self];
-        for nested in &self.nested {
+        for nested in self.nested() {
             result.extend(nested.flatten());
         }
         result
@@ -218,7 +300,7 @@ impl ValidationError {
         use serde_json::json;
 
         let params: serde_json::Map<String, serde_json::Value> = self
-            .params
+            .params()
             .iter()
             .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
             .collect();
@@ -228,10 +310,21 @@ impl ValidationError {
             "message": self.message,
             "field": self.field,
             "params": params,
-            "severity": format!("{:?}", self.severity),
-            "help": self.help,
-            "nested": self.nested.iter().map(|e| e.to_json_value()).collect::<Vec<_>>(),
+            "severity": format!("{:?}", self.severity()),
+            "help": self.help(),
+            "nested": self.nested().iter().map(|e| e.to_json_value()).collect::<Vec<_>>(),
         })
+    }
+
+    // ========================================================================
+    // INTERNAL HELPERS
+    // ========================================================================
+
+    /// Gets mutable reference to extras, creating if needed.
+    #[inline]
+    fn extras_mut(&mut self) -> &mut ErrorExtras {
+        self.extras
+            .get_or_insert_with(|| Box::new(ErrorExtras::default()))
     }
 }
 
@@ -243,9 +336,10 @@ impl fmt::Display for ValidationError {
             write!(f, "{}: {}", self.code, self.message)?;
         }
 
-        if !self.params.is_empty() {
+        let params = self.params();
+        if !params.is_empty() {
             write!(f, " (params: [")?;
-            for (i, (k, v)) in self.params.iter().enumerate() {
+            for (i, (k, v)) in params.iter().enumerate() {
                 if i > 0 {
                     write!(f, ", ")?;
                 }
@@ -254,13 +348,14 @@ impl fmt::Display for ValidationError {
             write!(f, "])")?;
         }
 
-        if let Some(help) = &self.help {
+        if let Some(help) = self.help() {
             write!(f, "\n  Help: {help}")?;
         }
 
-        if !self.nested.is_empty() {
+        let nested = self.nested();
+        if !nested.is_empty() {
             write!(f, "\n  Nested errors:")?;
-            for (i, error) in self.nested.iter().enumerate() {
+            for (i, error) in nested.iter().enumerate() {
                 write!(f, "\n    {}. {}", i + 1, error)?;
             }
         }
@@ -277,11 +372,13 @@ impl std::error::Error for ValidationError {}
 
 impl ValidationError {
     /// Creates a "required" error.
+    #[inline]
     pub fn required(field: impl Into<Cow<'static, str>>) -> Self {
         Self::new("required", "This field is required").with_field(field)
     }
 
     /// Creates a "min_length" error.
+    #[inline]
     pub fn min_length(field: impl Into<Cow<'static, str>>, min: usize, actual: usize) -> Self {
         Self::new("min_length", format!("Must be at least {min} characters"))
             .with_field(field)
@@ -290,6 +387,7 @@ impl ValidationError {
     }
 
     /// Creates a "max_length" error.
+    #[inline]
     pub fn max_length(field: impl Into<Cow<'static, str>>, max: usize, actual: usize) -> Self {
         Self::new("max_length", format!("Must be at most {max} characters"))
             .with_field(field)
@@ -298,6 +396,7 @@ impl ValidationError {
     }
 
     /// Creates an "invalid_format" error.
+    #[inline]
     pub fn invalid_format(
         field: impl Into<Cow<'static, str>>,
         expected: impl Into<Cow<'static, str>>,
@@ -308,6 +407,7 @@ impl ValidationError {
     }
 
     /// Creates a "type_mismatch" error.
+    #[inline]
     pub fn type_mismatch(
         field: impl Into<Cow<'static, str>>,
         expected: impl Into<Cow<'static, str>>,
@@ -320,6 +420,7 @@ impl ValidationError {
     }
 
     /// Creates a "range" error.
+    #[inline]
     pub fn out_of_range<T: fmt::Display>(
         field: impl Into<Cow<'static, str>>,
         min: T,
@@ -337,6 +438,7 @@ impl ValidationError {
     }
 
     /// Creates an "exact_length" error.
+    #[inline]
     pub fn exact_length(
         field: impl Into<Cow<'static, str>>,
         expected: usize,
@@ -352,6 +454,7 @@ impl ValidationError {
     }
 
     /// Creates a "length_range" error.
+    #[inline]
     pub fn length_range(
         field: impl Into<Cow<'static, str>>,
         min: usize,
@@ -369,6 +472,7 @@ impl ValidationError {
     }
 
     /// Creates a "custom" error with a message.
+    #[inline]
     pub fn custom(message: impl Into<Cow<'static, str>>) -> Self {
         Self::new("custom", message)
     }
@@ -389,51 +493,60 @@ pub struct ValidationErrors {
 impl ValidationErrors {
     /// Creates a new empty error collection.
     #[must_use]
+    #[inline]
     pub fn new() -> Self {
         Self { errors: Vec::new() }
     }
 
     /// Adds an error to the collection.
+    #[inline]
     pub fn add(&mut self, error: ValidationError) {
         self.errors.push(error);
     }
 
     /// Adds multiple errors to the collection.
+    #[inline]
     pub fn extend(&mut self, errors: impl IntoIterator<Item = ValidationError>) {
         self.errors.extend(errors);
     }
 
     /// Returns true if there are any errors.
     #[must_use]
+    #[inline]
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
     }
 
     /// Returns the number of errors.
     #[must_use]
+    #[inline]
     pub fn len(&self) -> usize {
         self.errors.len()
     }
 
     /// Returns true if empty.
     #[must_use]
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.errors.is_empty()
     }
 
     /// Returns all errors.
     #[must_use]
+    #[inline]
     pub fn errors(&self) -> &[ValidationError] {
         &self.errors
     }
 
     /// Converts to a single error with nested errors.
+    #[inline]
     pub fn into_single_error(self, message: impl Into<Cow<'static, str>>) -> ValidationError {
         ValidationError::new("validation_errors", message).with_nested(self.errors)
     }
 
     /// Converts to a Result.
     #[must_use = "result must be used"]
+    #[inline]
     pub fn into_result<T>(self, ok_value: T) -> Result<T, ValidationErrors> {
         if self.is_empty() {
             Ok(ok_value)
@@ -490,16 +603,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_simple_error() {
+    fn test_validation_error_size() {
+        // Ensure our optimized struct is <= 80 bytes
+        let size = std::mem::size_of::<ValidationError>();
+        assert!(
+            size <= 80,
+            "ValidationError size is {size} bytes, expected <= 80"
+        );
+    }
+
+    #[test]
+    fn test_simple_error_no_allocation() {
         let error = ValidationError::new("test", "Test error");
         assert_eq!(error.code, "test");
         assert_eq!(error.message, "Test error");
+        // Simple error should not allocate extras
+        assert!(error.extras.is_none());
     }
 
     #[test]
     fn test_error_with_field() {
         let error = ValidationError::new("required", "Field is required").with_field("email");
         assert_eq!(error.field.as_deref(), Some("email"));
+        // Field is inline, should not allocate extras
+        assert!(error.extras.is_none());
     }
 
     #[test]
@@ -510,6 +637,8 @@ mod tests {
 
         assert_eq!(error.param("min"), Some("5"));
         assert_eq!(error.param("actual"), Some("3"));
+        // Params trigger extras allocation
+        assert!(error.extras.is_some());
     }
 
     #[test]
@@ -519,7 +648,7 @@ mod tests {
             ValidationError::new("age", "Too young").with_field("age"),
         ]);
 
-        assert_eq!(error.nested.len(), 2);
+        assert_eq!(error.nested().len(), 2);
         assert_eq!(error.total_error_count(), 3); // 1 parent + 2 nested
     }
 
@@ -559,5 +688,50 @@ mod tests {
         let error = ValidationError::new(code, "Dynamic error");
         assert!(matches!(error.code, Cow::Owned(_)));
         assert!(matches!(error.message, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn test_severity_default() {
+        let error = ValidationError::new("test", "Test");
+        assert_eq!(error.severity(), ErrorSeverity::Error);
+    }
+
+    #[test]
+    fn test_severity_custom() {
+        let error = ValidationError::new("test", "Test").with_severity(ErrorSeverity::Warning);
+        assert_eq!(error.severity(), ErrorSeverity::Warning);
+    }
+
+    #[test]
+    fn test_help_text() {
+        let error = ValidationError::new("test", "Test").with_help("Try using a longer password");
+        assert_eq!(error.help(), Some("Try using a longer password"));
+    }
+
+    #[test]
+    fn test_empty_field_ignored() {
+        let error = ValidationError::new("test", "Test").with_field("");
+        assert!(error.field.is_none());
+    }
+
+    #[test]
+    fn test_params_accessor() {
+        let error = ValidationError::new("test", "Test")
+            .with_param("a", "1")
+            .with_param("b", "2");
+
+        let params = error.params();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0], (Cow::Borrowed("a"), Cow::Borrowed("1")));
+    }
+
+    #[test]
+    fn test_has_nested() {
+        let error_without = ValidationError::new("test", "Test");
+        assert!(!error_without.has_nested());
+
+        let error_with = ValidationError::new("test", "Test")
+            .with_nested(vec![ValidationError::new("child", "Child")]);
+        assert!(error_with.has_nested());
     }
 }

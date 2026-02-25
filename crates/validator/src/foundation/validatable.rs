@@ -99,7 +99,8 @@ impl AsValidatable<usize> for usize {
 // ============================================================================
 
 impl AsValidatable<str> for String {
-    type Output<'a> = &'a str
+    type Output<'a>
+        = &'a str
     where
         Self: 'a;
 
@@ -110,7 +111,8 @@ impl AsValidatable<str> for String {
 }
 
 impl AsValidatable<str> for Box<str> {
-    type Output<'a> = &'a str
+    type Output<'a>
+        = &'a str
     where
         Self: 'a;
 
@@ -121,7 +123,8 @@ impl AsValidatable<str> for Box<str> {
 }
 
 impl AsValidatable<str> for std::borrow::Cow<'_, str> {
-    type Output<'a> = &'a str
+    type Output<'a>
+        = &'a str
     where
         Self: 'a;
 
@@ -249,7 +252,10 @@ impl<Tz: ::chrono::TimeZone> AsValidatable<str> for ::chrono::DateTime<Tz>
 where
     Tz::Offset: std::fmt::Display,
 {
-    type Output<'a> = String where Self: 'a;
+    type Output<'a>
+        = String
+    where
+        Self: 'a;
 
     #[inline]
     fn as_validatable(&self) -> Result<String, ValidationError> {

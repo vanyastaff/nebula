@@ -79,6 +79,7 @@ pub mod and;
 pub mod cached;
 pub mod each;
 pub mod error;
+pub mod factories;
 pub mod field;
 pub mod lazy;
 pub mod message;
@@ -98,6 +99,7 @@ pub use and::{And, AndAll, and, and_all};
 pub use cached::{CacheStats, Cached, cached};
 pub use each::{Each, each, each_fail_fast};
 pub use error::CombinatorError;
+pub use factories::{AllOf, AnyOf, all_of, any_of};
 pub use field::{Field, FieldError, FieldValidateExt, MultiField, field, named_field};
 pub use lazy::{Lazy, lazy};
 pub use message::{WithCode, WithMessage, with_code, with_message};
@@ -135,9 +137,9 @@ pub use json_field::{JsonField, json_field, json_field_optional};
 /// ```
 pub mod prelude {
     pub use super::{
-        And, AndAll, Each, Field, FieldValidateExt, Lazy, Not, Optional, Or, OrAny, Unless, When,
-        WithCode, WithMessage, and, and_all, each, each_fail_fast, field, lazy, named_field, not,
-        optional, or, or_any, unless, when, with_code, with_message,
+        AllOf, And, AndAll, AnyOf, Each, Field, FieldValidateExt, Lazy, Not, Optional, Or, OrAny,
+        Unless, When, WithCode, WithMessage, all_of, and, and_all, any_of, each, each_fail_fast,
+        field, lazy, named_field, not, optional, or, or_any, unless, when, with_code, with_message,
     };
 
     #[cfg(feature = "caching")]

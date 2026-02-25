@@ -248,9 +248,9 @@ mod tests {
         let validator = Or::new(ExactLength { length: 5 }, ExactLength { length: 10 });
         let err = validator.validate("hi").unwrap_err();
         assert_eq!(err.code.as_ref(), "or_failed");
-        assert_eq!(err.nested.len(), 2);
-        assert_eq!(err.nested[0].code.as_ref(), "exact_length");
-        assert_eq!(err.nested[1].code.as_ref(), "exact_length");
+        assert_eq!(err.nested().len(), 2);
+        assert_eq!(err.nested()[0].code.as_ref(), "exact_length");
+        assert_eq!(err.nested()[1].code.as_ref(), "exact_length");
     }
 
     #[test]
@@ -276,8 +276,8 @@ mod tests {
 
         let err = combined.validate("hi").unwrap_err();
         assert_eq!(err.code.as_ref(), "or_any_failed");
-        assert_eq!(err.nested.len(), 3);
-        for nested in &err.nested {
+        assert_eq!(err.nested().len(), 3);
+        for nested in err.nested() {
             assert_eq!(nested.code.as_ref(), "exact_length");
         }
     }

@@ -202,7 +202,7 @@ fn error_reporting() {
         if let Some(field) = &e.field {
             println!("Error field:   {}", field);
         }
-        for (k, v) in &e.params {
+        for (k, v) in e.params() {
             println!("  param {}: {}", k, v);
         }
     }

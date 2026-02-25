@@ -230,7 +230,7 @@ mod tests {
         let result = validator.validate("short");
 
         let error = result.unwrap_err();
-        assert_eq!(error.nested.len(), 1);
-        assert_eq!(error.nested[0].code, "min_length");
+        assert_eq!(error.nested().len(), 1);
+        assert_eq!(error.nested()[0].code, "min_length");
     }
 }

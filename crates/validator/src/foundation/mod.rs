@@ -70,15 +70,17 @@
 //! ```
 //!
 // Module declarations
+pub mod any;
 pub mod context;
 pub mod error;
 pub mod traits;
 pub mod validatable;
 
 // Re-export everything at the core level for convenience
+pub use any::AnyValidator;
 pub use context::{ContextualValidator, ValidationContext, ValidationContextBuilder};
 pub use error::{ErrorSeverity, ValidationError, ValidationErrors};
-pub use traits::{Validate, ValidateExt};
+pub use traits::{Validate, ValidateExt, ValidatorFor};
 pub use validatable::AsValidatable;
 
 // ============================================================================
@@ -97,8 +99,9 @@ pub use validatable::AsValidatable;
 /// ```
 pub mod prelude {
     pub use super::{
-        AsValidatable, ContextualValidator, ErrorSeverity, Validate, ValidateExt,
+        AnyValidator, AsValidatable, ContextualValidator, ErrorSeverity, Validate, ValidateExt,
         ValidationContext, ValidationContextBuilder, ValidationError, ValidationErrors,
+        ValidatorFor,
     };
 }
 

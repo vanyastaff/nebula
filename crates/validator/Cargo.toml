@@ -18,6 +18,9 @@ moka = { version = "0.12", features = ["sync"], optional = true }
 # Error handling
 thiserror = { workspace = true }
 
+# Small vector optimization for error params
+smallvec = "1.13"
+
 # Data formats
 regex = { workspace = true }
 

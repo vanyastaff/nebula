@@ -109,7 +109,7 @@ fn test_multiple_errors_with_conversion() {
 
     let ve: ValidationError = error.into();
     assert_eq!(ve.code, "multiple_failures");
-    assert_eq!(ve.nested.len(), 3);
+    assert_eq!(ve.nested().len(), 3);
 }
 
 #[test]

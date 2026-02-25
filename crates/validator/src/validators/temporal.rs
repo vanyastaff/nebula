@@ -25,7 +25,7 @@ fn parse_u32(s: &[u8]) -> Option<u32> {
 }
 
 fn is_leap_year(year: u32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 fn days_in_month(year: u32, month: u32) -> u32 {
@@ -49,7 +49,7 @@ fn parse_date_parts(s: &str) -> Result<(u32, u32, u32), ValidationError> {
     let month = parse_u32(&b[5..7]).ok_or_else(|| date_format_err(s))?;
     let day = parse_u32(&b[8..10]).ok_or_else(|| date_format_err(s))?;
 
-    if month < 1 || month > 12 {
+    if !(1..=12).contains(&month) {
         return Err(ValidationError::new(
             "date",
             format!("Month {month} is out of range (1-12)"),
@@ -112,15 +112,14 @@ fn parse_time_parts(s: &str) -> Result<&str, ValidationError> {
 
     let rest = &s[8..];
     // Optional fractional seconds
-    let rest = if rest.starts_with('.') {
-        let frac = &rest[1..];
+    let rest = if let Some(frac) = rest.strip_prefix('.') {
         let frac_end = frac
             .find(|c: char| !c.is_ascii_digit())
             .unwrap_or(frac.len());
         if frac_end == 0 {
             return Err(time_format_err(s));
         }
-        &rest[1 + frac_end..]
+        &frac[frac_end..]
     } else {
         rest
     };
