@@ -63,6 +63,14 @@ pub mod reference;
 pub mod resource;
 pub mod scope;
 
+// Submodules split out from `manager` for readability
+#[cfg(feature = "tokio")]
+pub mod dependency_graph;
+#[cfg(feature = "tokio")]
+pub(crate) mod manager_guard;
+#[cfg(feature = "tokio")]
+pub(crate) mod manager_pool;
+
 // Modules requiring the tokio runtime
 #[cfg(feature = "tokio")]
 pub mod autoscale;
