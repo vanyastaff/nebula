@@ -172,12 +172,10 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
             }
         }
 
-        impl #impl_generics ::nebula_validator::foundation::Validate for #struct_name #ty_generics #where_clause {
-            type Input = Self;
-
+        impl #impl_generics ::nebula_validator::foundation::Validate<#struct_name #ty_generics> for #struct_name #ty_generics #where_clause {
             fn validate(
                 &self,
-                input: &Self::Input,
+                input: &#struct_name #ty_generics,
             ) -> ::std::result::Result<(), ::nebula_validator::foundation::ValidationError> {
                 let _ = self;
                 input
