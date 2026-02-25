@@ -119,7 +119,18 @@ pub enum Error {
         operation: String,
     },
 
-    /// Circuit breaker is open
+    /// Circuit breaker is open — the resource has been temporarily blocked
+    /// due to repeated failures.
+    ///
+    /// **Status:** This variant is reserved for future integration with the
+    /// [`nebula-resilience`](../../nebula_resilience/index.html) crate, which
+    /// provides circuit-breaker, retry, and rate-limiting primitives. It is
+    /// not currently emitted by any code in `nebula-resource` itself, but
+    /// downstream wrappers (e.g. a resilience-aware pool decorator) can
+    /// return this error to signal that the circuit is open.
+    ///
+    /// The error is intentionally kept so that consumers can already
+    /// pattern-match on it and handle `is_retryable() == true` correctly.
     #[error("Circuit breaker is open for resource '{resource_id}'")]
     CircuitBreakerOpen {
         /// The resource identifier

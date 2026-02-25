@@ -48,7 +48,15 @@ pub enum Scope {
         /// Owning tenant (if known)
         tenant_id: Option<String>,
     },
-    /// Custom scope with a key-value pair
+    /// Custom scope with a key-value pair.
+    ///
+    /// **Note:** Custom scopes are always *isolated* — they only contain
+    /// themselves (exact key + value match). The [`Strategy::Hierarchical`]
+    /// containment rules do **not** apply to `Custom` scopes because
+    /// there is no defined parent-child relationship between arbitrary
+    /// key-value pairs. If you need hierarchical scoping, use the
+    /// built-in variants ([`Tenant`](Self::Tenant),
+    /// [`Workflow`](Self::Workflow), etc.) instead.
     Custom {
         /// The scope key
         key: String,
@@ -319,7 +327,8 @@ impl Scope {
             // Action only contains the exact same action (all fields must match)
             (Self::Action { .. }, Self::Action { .. }) => self == other,
 
-            // Custom scopes only contain themselves
+            // Custom scopes only contain themselves (always isolated,
+            // no hierarchical containment — see `Scope::Custom` docs).
             (
                 Self::Custom {
                     key: k1, value: v1, ..

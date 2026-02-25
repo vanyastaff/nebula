@@ -2,6 +2,17 @@
 //!
 //! `Pool<R>` calls `R::create`, `R::is_valid`, `R::recycle` and `R::cleanup`
 //! directly, removing the need for closure factories.
+//!
+//! ## Lifecycle Hooks
+//!
+//! When a [`HookRegistry`] is attached (via [`Pool::with_hooks`]), the pool
+//! fires [`HookEvent::Create`] before/after [`Resource::create()`] and
+//! [`HookEvent::Cleanup`] before/after [`Resource::cleanup()`]. Before-hooks
+//! can cancel create operations; cleanup hooks are best-effort (errors are
+//! logged but never propagated).
+//!
+//! [`Resource::create()`]: crate::Resource::create
+//! [`Resource::cleanup()`]: crate::Resource::cleanup
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -16,6 +27,8 @@ use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::events::{CleanupReason, EventBus, ResourceEvent};
 use crate::guard::Guard;
+use crate::hooks::{HookEvent, HookRegistry};
+use crate::lifecycle::Lifecycle;
 use crate::resource::Resource;
 use crate::scope::Scope;
 
@@ -111,11 +124,15 @@ impl PoolConfig {
 // Pool internals
 // ---------------------------------------------------------------------------
 
-/// A pool entry wrapping a resource instance.
+/// A pool entry wrapping a resource instance with lifecycle tracking.
 struct Entry<T> {
     instance: T,
     created_at: Instant,
     last_used: Instant,
+    /// Current lifecycle state of this entry.
+    /// Tracked for observability and future use in drain/shutdown logic.
+    #[allow(dead_code)]
+    lifecycle: Lifecycle,
 }
 
 impl<T> Entry<T> {
@@ -125,6 +142,7 @@ impl<T> Entry<T> {
             instance,
             created_at: now,
             last_used: now,
+            lifecycle: Lifecycle::Ready,
         }
     }
 
@@ -134,6 +152,7 @@ impl<T> Entry<T> {
             instance,
             created_at,
             last_used: Instant::now(),
+            lifecycle: Lifecycle::Idle,
         }
     }
 
@@ -191,6 +210,11 @@ struct PoolInner<R: Resource> {
     event_bus: Option<Arc<EventBus>>,
     /// Number of callers currently waiting to acquire an instance.
     waiting_count: Arc<AtomicUsize>,
+    /// Optional hook registry for lifecycle hooks (Create, Cleanup).
+    hooks: Option<Arc<HookRegistry>>,
+    /// Handle for the background maintenance task, if spawned.
+    /// Stored so we can join on it during shutdown.
+    maintenance_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -233,7 +257,7 @@ impl<R: Resource> Pool<R> {
     /// # Errors
     /// Returns error if `pool_config` is invalid (e.g. max_size == 0).
     pub fn new(resource: R, config: R::Config, pool_config: PoolConfig) -> Result<Self> {
-        Self::with_event_bus(resource, config, pool_config, None)
+        Self::with_hooks(resource, config, pool_config, None, None)
     }
 
     /// Create a new pool with an optional event bus for lifecycle events.
@@ -247,6 +271,24 @@ impl<R: Resource> Pool<R> {
         config: R::Config,
         pool_config: PoolConfig,
         event_bus: Option<Arc<EventBus>>,
+    ) -> Result<Self> {
+        Self::with_hooks(resource, config, pool_config, event_bus, None)
+    }
+
+    /// Create a new pool with an optional event bus **and** hook registry.
+    ///
+    /// When a [`HookRegistry`] is provided, the pool fires
+    /// [`HookEvent::Create`] around `Resource::create()` and
+    /// [`HookEvent::Cleanup`] around `Resource::cleanup()`.
+    ///
+    /// # Errors
+    /// Returns error if `pool_config` is invalid (e.g. max_size == 0).
+    pub fn with_hooks(
+        resource: R,
+        config: R::Config,
+        pool_config: PoolConfig,
+        event_bus: Option<Arc<EventBus>>,
+        hooks: Option<Arc<HookRegistry>>,
     ) -> Result<Self> {
         pool_config.validate()?;
         let max = pool_config.max_size;
@@ -275,13 +317,15 @@ impl<R: Resource> Pool<R> {
                 cancel: cancel.clone(),
                 event_bus,
                 waiting_count: Arc::new(AtomicUsize::new(0)),
+                hooks,
+                maintenance_handle: Mutex::new(None),
             }),
         };
 
         // Spawn automatic maintenance task if configured.
         if let Some(interval) = maintenance_interval {
             let maintenance_pool = pool.clone();
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 loop {
                     tokio::select! {
                         () = tokio::time::sleep(interval) => {}
@@ -292,6 +336,7 @@ impl<R: Resource> Pool<R> {
                     let _ = maintenance_pool.maintain(&ctx).await;
                 }
             });
+            *pool.inner.maintenance_handle.lock() = Some(handle);
         }
 
         Ok(pool)
@@ -398,8 +443,8 @@ impl<R: Resource> Pool<R> {
                     // Expired — clean up and try next
                     #[cfg(feature = "tracing")]
                     tracing::debug!("Destroying expired resource instance");
-                    let _ = inner.resource.cleanup(entry.instance).await;
-                    inner.state.lock().stats.destroyed += 1;
+                    Self::cleanup_with_hooks(inner, entry.instance, &CleanupReason::Expired, None)
+                        .await;
                     // Don't add permit back — we'll create a new instance below if needed
                     continue;
                 }
@@ -411,17 +456,22 @@ impl<R: Resource> Pool<R> {
                         _ => {
                             #[cfg(feature = "tracing")]
                             tracing::debug!("Destroying invalid resource instance");
-                            let _ = inner.resource.cleanup(entry.instance).await;
-                            inner.state.lock().stats.destroyed += 1;
+                            Self::cleanup_with_hooks(
+                                inner,
+                                entry.instance,
+                                &CleanupReason::HealthCheckFailed,
+                                None,
+                            )
+                            .await;
                             continue;
                         }
                     }
                 }
                 None => {
-                    // No idle instances — create new
+                    // No idle instances — create new, firing Create hooks.
                     #[cfg(feature = "tracing")]
                     tracing::debug!("Creating new resource instance");
-                    let instance = inner.resource.create(&inner.config, ctx).await?;
+                    let instance = Self::create_with_hooks(inner, ctx).await?;
                     inner.state.lock().stats.created += 1;
                     break (instance, None);
                 }
@@ -496,15 +546,7 @@ impl<R: Resource> Pool<R> {
         }
 
         if let Some((to_cleanup, reason)) = cleanup_reason {
-            let _ = inner.resource.cleanup(to_cleanup).await;
-            inner.state.lock().stats.destroyed += 1;
-            Self::emit_event(
-                inner,
-                ResourceEvent::CleanedUp {
-                    resource_id: inner.resource.id().to_string(),
-                    reason,
-                },
-            );
+            Self::cleanup_with_hooks(inner, to_cleanup, &reason, None).await;
             #[cfg(feature = "tracing")]
             tracing::debug!(
                 resource_id = %inner.resource.id(),
@@ -535,6 +577,80 @@ impl<R: Resource> Pool<R> {
         if let Some(bus) = &inner.event_bus {
             bus.emit(event);
         }
+    }
+
+    /// Create a new resource instance, firing [`HookEvent::Create`]
+    /// before/after hooks when a [`HookRegistry`] is attached.
+    ///
+    /// Before-hooks can cancel the creation by returning
+    /// [`HookResult::Cancel`](crate::hooks::HookResult::Cancel).
+    async fn create_with_hooks(inner: &PoolInner<R>, ctx: &Context) -> Result<R::Instance> {
+        let resource_id = inner.resource.id();
+
+        // Run Create before-hooks.
+        if let Some(hooks) = &inner.hooks {
+            hooks
+                .run_before(&HookEvent::Create, resource_id, ctx)
+                .await?;
+        }
+
+        let result = inner.resource.create(&inner.config, ctx).await;
+
+        // Run Create after-hooks (errors are logged, never propagated).
+        if let Some(hooks) = &inner.hooks {
+            hooks
+                .run_after(&HookEvent::Create, resource_id, ctx, result.is_ok())
+                .await;
+        }
+
+        result
+    }
+
+    /// Clean up an instance, firing [`HookEvent::Cleanup`] before/after
+    /// hooks when a [`HookRegistry`] is attached.
+    ///
+    /// This also increments the `destroyed` stat and emits a
+    /// [`ResourceEvent::CleanedUp`] event.
+    async fn cleanup_with_hooks(
+        inner: &PoolInner<R>,
+        instance: R::Instance,
+        reason: &CleanupReason,
+        ctx: Option<&Context>,
+    ) {
+        let resource_id = inner.resource.id();
+        let synthetic_ctx;
+        let ctx = match ctx {
+            Some(c) => c,
+            None => {
+                synthetic_ctx = Context::new(Scope::Global, "pool-cleanup", "pool-cleanup");
+                &synthetic_ctx
+            }
+        };
+
+        // Run Cleanup before-hooks (result is best-effort — cannot cancel a cleanup).
+        if let Some(hooks) = &inner.hooks {
+            let _ = hooks
+                .run_before(&HookEvent::Cleanup, resource_id, ctx)
+                .await;
+        }
+
+        let cleanup_ok = inner.resource.cleanup(instance).await.is_ok();
+
+        // Run Cleanup after-hooks.
+        if let Some(hooks) = &inner.hooks {
+            hooks
+                .run_after(&HookEvent::Cleanup, resource_id, ctx, cleanup_ok)
+                .await;
+        }
+
+        inner.state.lock().stats.destroyed += 1;
+        Self::emit_event(
+            inner,
+            ResourceEvent::CleanedUp {
+                resource_id: resource_id.to_string(),
+                reason: reason.clone(),
+            },
+        );
     }
 
     /// Get current pool statistics.
@@ -571,7 +687,7 @@ impl<R: Resource> Pool<R> {
                 break;
             }
 
-            let instance = match inner.resource.create(&inner.config, &ctx).await {
+            let instance = match Self::create_with_hooks(inner, &ctx).await {
                 Ok(inst) => inst,
                 Err(_) => break,
             };
@@ -593,7 +709,7 @@ impl<R: Resource> Pool<R> {
             };
 
             if let Some(surplus) = rejected {
-                let _ = inner.resource.cleanup(surplus).await;
+                Self::cleanup_with_hooks(inner, surplus, &CleanupReason::Evicted, Some(&ctx)).await;
                 break;
             }
         }
@@ -620,9 +736,9 @@ impl<R: Resource> Pool<R> {
             };
 
             if let Some(entry) = entry {
-                let _ = inner.resource.cleanup(entry.instance).await;
+                Self::cleanup_with_hooks(inner, entry.instance, &CleanupReason::Evicted, None)
+                    .await;
                 let mut state = inner.state.lock();
-                state.stats.destroyed += 1;
                 state.stats.idle = state.idle.len();
                 removed += 1;
             } else {
@@ -664,7 +780,6 @@ impl<R: Resource> Pool<R> {
         let mut to_cleanup = Vec::new();
         {
             let mut state = inner.state.lock();
-            let before = state.idle.len();
             let mut kept = VecDeque::with_capacity(state.idle.len());
             while let Some(entry) = state.idle.pop_front() {
                 if entry.is_expired(&inner.pool_config) {
@@ -674,20 +789,10 @@ impl<R: Resource> Pool<R> {
                 }
             }
             state.idle = kept;
-            let removed = before - state.idle.len();
-            if removed > 0 {
-                state.stats.destroyed += removed as u64;
-            }
         }
 
         for inst in to_cleanup {
-            let _ = inner.resource.cleanup(inst).await;
-            if let Some(bus) = &inner.event_bus {
-                bus.emit(ResourceEvent::CleanedUp {
-                    resource_id: inner.resource.id().to_string(),
-                    reason: CleanupReason::Evicted,
-                });
-            }
+            Self::cleanup_with_hooks(inner, inst, &CleanupReason::Evicted, Some(ctx)).await;
         }
 
         // Ensure min_size
@@ -699,7 +804,7 @@ impl<R: Resource> Pool<R> {
         if total < inner.pool_config.min_size {
             let needed = inner.pool_config.min_size - total;
             for _ in 0..needed {
-                match inner.resource.create(&inner.config, ctx).await {
+                match Self::create_with_hooks(inner, ctx).await {
                     Ok(instance) => {
                         let mut state = inner.state.lock();
                         state.idle.push_back(Entry::new(instance));
@@ -720,7 +825,7 @@ impl<R: Resource> Pool<R> {
     /// Shut down the pool, cleaning up all idle instances.
     ///
     /// After shutdown:
-    /// - Background maintenance task (if any) is cancelled.
+    /// - Background maintenance task (if any) is cancelled and awaited.
     /// - New `acquire()` calls fail immediately (semaphore is closed).
     /// - Any `Guard` dropped will clean up its instance instead of
     ///   returning it to the idle queue.
@@ -729,6 +834,13 @@ impl<R: Resource> Pool<R> {
 
         // Cancel background maintenance task.
         inner.cancel.cancel();
+
+        // Wait for the maintenance task to finish if it was spawned.
+        let handle = inner.maintenance_handle.lock().take();
+        if let Some(h) = handle {
+            // The task should exit promptly because we cancelled above.
+            let _ = h.await;
+        }
 
         // Close the semaphore so new acquire() calls fail immediately
         // instead of blocking until timeout.
@@ -741,14 +853,7 @@ impl<R: Resource> Pool<R> {
         };
 
         for entry in entries {
-            let _ = inner.resource.cleanup(entry.instance).await;
-            inner.state.lock().stats.destroyed += 1;
-            if let Some(bus) = &inner.event_bus {
-                bus.emit(ResourceEvent::CleanedUp {
-                    resource_id: inner.resource.id().to_string(),
-                    reason: CleanupReason::Shutdown,
-                });
-            }
+            Self::cleanup_with_hooks(inner, entry.instance, &CleanupReason::Shutdown, None).await;
         }
 
         inner.state.lock().stats.idle = 0;

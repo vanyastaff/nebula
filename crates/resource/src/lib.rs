@@ -94,11 +94,11 @@ pub use scope::{Scope, Strategy};
 #[cfg(feature = "tokio")]
 pub use autoscale::{AutoScalePolicy, AutoScaler};
 #[cfg(feature = "tokio")]
-pub use events::{CleanupReason, EventBus, ResourceEvent};
+pub use events::{BackPressurePolicy, CleanupReason, EventBus, EventBusStats, ResourceEvent};
 #[cfg(feature = "tokio")]
 pub use health::{
-    ConnectivityStage, HealthCheckConfig, HealthCheckable, HealthChecker, HealthPipeline,
-    HealthRecord, HealthStage, HealthState, HealthStatus, PerformanceStage, ThresholdCallback,
+    HealthCheckConfig, HealthCheckable, HealthChecker, HealthRecord, HealthStage, HealthState,
+    HealthStatus, ResourceHealthAdapter, ThresholdCallback,
 };
 #[cfg(feature = "tokio")]
 pub use hooks::{
@@ -137,9 +137,9 @@ pub mod prelude {
     #[cfg(feature = "tokio")]
     pub use crate::autoscale::AutoScalePolicy;
     #[cfg(feature = "tokio")]
-    pub use crate::events::{EventBus, ResourceEvent};
+    pub use crate::events::{BackPressurePolicy, EventBus, EventBusStats, ResourceEvent};
     #[cfg(feature = "tokio")]
-    pub use crate::health::{HealthCheckable, HealthState, HealthStatus};
+    pub use crate::health::{HealthCheckable, HealthState, HealthStatus, ResourceHealthAdapter};
     #[cfg(feature = "tokio")]
     pub use crate::hooks::{HookEvent, HookFilter, HookRegistry, HookResult, ResourceHook};
     #[cfg(feature = "tokio")]

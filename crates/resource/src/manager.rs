@@ -595,8 +595,8 @@ pub struct Manager {
     health_states: DashMap<String, HealthState>,
     /// Per-resource metadata (from `Resource::metadata()` at registration).
     metadata: DashMap<String, ResourceMetadata>,
-    /// Hook registry for lifecycle hooks.
-    hooks: HookRegistry,
+    /// Hook registry for lifecycle hooks (Arc-wrapped so pools can share it).
+    hooks: Arc<HookRegistry>,
     /// Per-resource auto-scalers (resource_id → JoinHandle).
     auto_scalers: DashMap<String, tokio::task::JoinHandle<()>>,
 }
@@ -712,7 +712,7 @@ impl ManagerBuilder {
             quarantine,
             health_states,
             metadata: DashMap::new(),
-            hooks: HookRegistry::default(),
+            hooks: Arc::new(HookRegistry::default()),
             auto_scalers: DashMap::new(),
         }
     }
@@ -809,7 +809,14 @@ impl Manager {
             .collect();
 
         // Create pool first -- if this fails, nothing is modified.
-        let pool = Pool::new(resource, config, pool_config)?;
+        // Pass event bus and hooks so the pool can fire Create/Cleanup hooks.
+        let pool = Pool::with_hooks(
+            resource,
+            config,
+            pool_config,
+            Some(Arc::clone(&self.event_bus)),
+            Some(Arc::clone(&self.hooks)),
+        )?;
 
         // Validate all new deps on a clone before touching the real graph.
         // This ensures the mutation is all-or-nothing.
@@ -1008,6 +1015,12 @@ impl Manager {
         self.hooks.snapshot()
     }
 
+    /// Get an `Arc` reference to the hook registry (e.g. for passing to pools).
+    #[must_use]
+    pub fn hooks_arc(&self) -> &Arc<HookRegistry> {
+        &self.hooks
+    }
+
     /// Wrap an AnyGuard so that Release hooks fire when it is dropped.
     fn wrap_guard_with_release_hook(
         &self,
@@ -1113,7 +1126,7 @@ impl Manager {
 
     /// Get a reference to the hook registry.
     #[must_use]
-    pub fn hooks(&self) -> &HookRegistry {
+    pub fn hooks(&self) -> &Arc<HookRegistry> {
         &self.hooks
     }
 
@@ -1350,11 +1363,12 @@ impl Manager {
         let id = resource.id().to_string();
 
         // Build the new pool before touching the registry.
-        let new_pool = Pool::with_event_bus(
+        let new_pool = Pool::with_hooks(
             resource,
             config,
             pool_config,
             Some(Arc::clone(&self.event_bus)),
+            Some(Arc::clone(&self.hooks)),
         )?;
 
         // Shut down the old pool (if any), preserving the existing scope.

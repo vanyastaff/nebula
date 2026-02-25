@@ -749,6 +749,109 @@ impl HealthStage for PerformanceStage {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ResourceHealthAdapter — bridge Resource → HealthCheckable
+// ---------------------------------------------------------------------------
+
+/// Adapter that bridges any [`Resource`](crate::Resource) to
+/// [`HealthCheckable`] so that the [`HealthChecker`] can monitor it.
+///
+/// The health check works by attempting a probe cycle:
+///
+/// 1. **Create** a new instance via [`Resource::create`](crate::Resource::create).
+/// 2. **Validate** the instance via [`Resource::is_valid`](crate::Resource::is_valid).
+/// 3. **Cleanup** the instance via [`Resource::cleanup`](crate::Resource::cleanup).
+///
+/// If all steps succeed, the resource is considered healthy. This verifies
+/// the resource's ability to produce *new* working instances, not just the
+/// validity of an existing one.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use nebula_resource::health::ResourceHealthAdapter;
+///
+/// let adapter = ResourceHealthAdapter::new(
+///     my_resource,
+///     my_config,
+///     Scope::Global,
+/// );
+/// health_checker.start_monitoring("my-resource", "probe-0", adapter, None);
+/// ```
+pub struct ResourceHealthAdapter<R: crate::Resource> {
+    resource: std::sync::Arc<R>,
+    config: R::Config,
+    scope: crate::Scope,
+}
+
+impl<R: crate::Resource> ResourceHealthAdapter<R> {
+    /// Create a new adapter that will probe the resource via create → validate → cleanup.
+    pub fn new(resource: R, config: R::Config, scope: crate::Scope) -> Self {
+        Self {
+            resource: std::sync::Arc::new(resource),
+            config,
+            scope,
+        }
+    }
+
+    /// Create from an already-`Arc`-wrapped resource.
+    pub fn from_arc(resource: std::sync::Arc<R>, config: R::Config, scope: crate::Scope) -> Self {
+        Self {
+            resource,
+            config,
+            scope,
+        }
+    }
+}
+
+impl<R: crate::Resource> HealthCheckable for ResourceHealthAdapter<R> {
+    async fn health_check(&self) -> Result<HealthStatus> {
+        let ctx = Context::new(self.scope.clone(), "health-probe", "health-probe");
+        let start = std::time::Instant::now();
+
+        // Step 1: try to create a new instance.
+        let instance = match self.resource.create(&self.config, &ctx).await {
+            Ok(inst) => inst,
+            Err(e) => {
+                return Ok(HealthStatus::unhealthy(format!(
+                    "Resource create failed: {e}"
+                )));
+            }
+        };
+
+        // Step 2: validate the new instance.
+        let valid = match self.resource.is_valid(&instance).await {
+            Ok(v) => v,
+            Err(e) => {
+                // Cleanup before returning.
+                let _ = self.resource.cleanup(instance).await;
+                return Ok(HealthStatus::unhealthy(format!(
+                    "Resource validation failed: {e}"
+                )));
+            }
+        };
+
+        // Step 3: cleanup the probe instance.
+        let _ = self.resource.cleanup(instance).await;
+
+        let latency = start.elapsed();
+        if valid {
+            Ok(HealthStatus::healthy().with_latency(latency))
+        } else {
+            Ok(HealthStatus::unhealthy("Probe instance failed validation"))
+        }
+    }
+}
+
+impl<R: crate::Resource> std::fmt::Debug for ResourceHealthAdapter<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResourceHealthAdapter")
+            .field("resource_id", &self.resource.id())
+            .field("scope", &self.scope)
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
